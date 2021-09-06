@@ -1,18 +1,18 @@
 /******************************************************************************
  * The MIT License (MIT)
- * 
- * Copyright (c) 2015-2016 Baldur Karlsson
- * 
+ *
+ * Copyright (c) 2020-2021 Baldur Karlsson
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -21,20 +21,29 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  ******************************************************************************/
- 
-layout(binding = 0) uniform sampler2DArray srcDepthArray;
-layout(binding = 1) uniform usampler2DArray srcStencilArray;
-// binding = 2 used as an image in the colour copy compute shaders
+
+#if defined(GLES)
+#extension GL_OES_sample_variables : require
+#elif defined(OPENGL_CORE)
+#extension GL_ARB_sample_shading : require
+#endif
+
+#include "glsl_globals.h"
 
 #ifdef VULKAN
 
+layout(binding = 0) uniform PRECISION sampler2DArray srcDepthArray;
+layout(binding = 1) uniform PRECISION usampler2DArray srcStencilArray;
+// binding = 2 used as an image in the colour copy compute shaders
+
 layout(push_constant) uniform multisamplePush
 {
-	int numMultiSamples;
-	int currentSample;
-	int currentSlice;
-	uint currentStencil;
-} mscopy;
+  int numMultiSamples;
+  int currentSample;
+  int currentSlice;
+  uint currentStencil;
+}
+mscopy;
 
 #define numMultiSamples (mscopy.numMultiSamples)
 #define currentSample (mscopy.currentSample)
@@ -43,26 +52,31 @@ layout(push_constant) uniform multisamplePush
 
 #else
 
-uniform uvec4 mscopy;
+uniform PRECISION sampler2DArray srcDepthArray;
+uniform PRECISION usampler2DArray srcStencilArray;
+// binding = 2 used as an image in the colour copy compute shaders
 
-#define numMultiSamples (int(mscopy.x))
+uniform ivec4 mscopy;
+
+#define numMultiSamples (mscopy.x)
 #define currentSample (mscopy.y)
 #define currentSlice (mscopy.z)
-#define currentStencil (mscopy.w)
+#define currentStencil (uint(mscopy.w))
 
 #endif
 
 void main()
 {
-	ivec3 srcCoord = ivec3(int(gl_FragCoord.x), int(gl_FragCoord.y), currentSlice*numMultiSamples + gl_SampleID);
+  ivec3 srcCoord =
+      ivec3(int(gl_FragCoord.x), int(gl_FragCoord.y), currentSlice *numMultiSamples + gl_SampleID);
 
-	if(currentStencil < 256)
-	{
-		uint stencil = texelFetch(srcStencilArray, srcCoord, 0).x;
+  if(currentStencil < 256u)
+  {
+    uint stencil = texelFetch(srcStencilArray, srcCoord, 0).x;
 
-		if(stencil != currentStencil)
-			discard;
-	}
+    if(stencil != currentStencil)
+      discard;
+  }
 
-	gl_FragDepth = texelFetch(srcDepthArray, srcCoord, 0).x;
+  gl_FragDepth = texelFetch(srcDepthArray, srcCoord, 0).x;
 }

@@ -1,30 +1,31 @@
 /******************************************************************************
-* The MIT License (MIT)
-*
-* Copyright (c) 2015-2016 Baldur Karlsson
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-* THE SOFTWARE.
-******************************************************************************/
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2019-2021 Baldur Karlsson
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ ******************************************************************************/
 
 #include "d3d9_debug.h"
 #include "os/os_specific.h"
 #include "stb/stb_truetype.h"
+#include "strings/string_utils.h"
 
 D3D9DebugManager::D3D9DebugManager(WrappedD3DDevice9 *wrapper)
     : m_WrappedDevice(wrapper), m_fvf(D3DFVF_XYZ | D3DFVF_TEX1)
@@ -44,7 +45,7 @@ bool D3D9DebugManager::InitFontRendering()
   int width = FONT_TEX_WIDTH;
   int height = FONT_TEX_HEIGHT;
 
-  string font = GetEmbeddedResource(sourcecodepro_ttf);
+  rdcstr font = GetEmbeddedResource(sourcecodepro_ttf);
   byte *ttfdata = (byte *)font.c_str();
 
   const int firstChar = int(' ') + 1;
@@ -73,7 +74,7 @@ bool D3D9DebugManager::InitFontRendering()
 
   if(FAILED(hr))
   {
-    RDCERR("Failed to create font texture %08x", hr);
+    RDCERR("Failed to create font texture HRESULT: %s", ToStr(hr).c_str());
   }
 
   D3DLOCKED_RECT lockedRegion;
@@ -81,7 +82,7 @@ bool D3D9DebugManager::InitFontRendering()
 
   if(FAILED(hr))
   {
-    RDCERR("Failed to lock font texture %08x", hr);
+    RDCERR("Failed to lock font texture HRESULT: %s", ToStr(hr).c_str());
   }
   else
   {
@@ -103,7 +104,7 @@ bool D3D9DebugManager::InitFontRendering()
     hr = fontTex->UnlockRect(0);
     if(hr != S_OK)
     {
-      RDCERR("Failed to unlock font texture %08x", hr);
+      RDCERR("Failed to unlock font texture HRESULT: %s", ToStr(hr).c_str());
     }
   }
 
@@ -127,34 +128,24 @@ void D3D9DebugManager::SetOutputWindow(HWND w)
   // m_supersamplingY = float(m_height) / float(rect.bottom - rect.top);
 }
 
-void D3D9DebugManager::RenderText(float x, float y, const char *textfmt, ...)
+void D3D9DebugManager::RenderText(float x, float y, const rdcstr &text)
 {
-  static char tmpBuf[4096];
+  rdcarray<rdcstr> lines;
+  split(text, lines, '\n');
 
-  va_list args;
-  va_start(args, textfmt);
-  StringFormat::vsnprintf(tmpBuf, 4095, textfmt, args);
-  tmpBuf[4095] = '\0';
-  va_end(args);
-
-  RenderTextInternal(x, y, tmpBuf);
+  for(const rdcstr &line : lines)
+  {
+    RenderTextInternal(x, y, line);
+    y += 1.0f;
+  }
 }
 
-void D3D9DebugManager::RenderTextInternal(float x, float y, const char *text)
+void D3D9DebugManager::RenderTextInternal(float x, float y, const rdcstr &text)
 {
-  if(char *t = strchr((char *)text, '\n'))
-  {
-    *t = 0;
-    RenderTextInternal(x, y, text);
-    RenderTextInternal(x, y + 1.0f, t + 1);
-    *t = '\n';
-    return;
-  }
-
-  if(strlen(text) == 0)
+  if(text.empty())
     return;
 
-  RDCASSERT(strlen(text) < FONT_MAX_CHARS);
+  RDCASSERT(text.size() < FONT_MAX_CHARS);
 
   // transforms
   float width = (float)m_width;
@@ -272,13 +263,13 @@ void D3D9DebugManager::RenderTextInternal(float x, float y, const char *text)
   Quad background;
   UINT triangleCount = 0;
   {
-    UINT quadCount = (UINT)strlen(text);    // calculate string length
+    UINT quadCount = (UINT)text.size();    // calculate string length
 
     triangleCount = quadCount * 2;
     // create text VB
     quads = new Quad[quadCount];
 
-    float textStartingPositionX = (-width / 2.f) + (x * m_Font.charData->xadvance);
+    float textStartingPositionX = (-width / 2.f) + (x * m_Font.charData[0].xadvance);
     float textStartingPositionY = (-height / 2.f) + ((y + 1.f) * m_Font.maxHeight);
 
     float textPositionX = textStartingPositionX;
@@ -290,7 +281,7 @@ void D3D9DebugManager::RenderTextInternal(float x, float y, const char *text)
       if(glyphIndex < 0)
       {
         float currentX = textPositionX;
-        textPositionX += m_Font.charData->xadvance;
+        textPositionX += m_Font.charData[0].xadvance;
         quads[i] = Quad(currentX, textPositionY - m_Font.maxHeight, 0.5f, 0.f, 0.f, textPositionX,
                         textPositionY, 0.f, 0.f);
       }
@@ -307,7 +298,6 @@ void D3D9DebugManager::RenderTextInternal(float x, float y, const char *text)
                       0.f, textPositionX, textPositionY + 3.f, 0.f, 0.f);
   }
 
-  if(quads != NULL)
   {
     // overlay render states
     res |= m_WrappedDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);

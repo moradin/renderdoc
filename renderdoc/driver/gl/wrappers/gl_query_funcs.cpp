@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -25,17 +25,54 @@
 
 #include "../gl_driver.h"
 #include "common/common.h"
-#include "serialise/string_utils.h"
+#include "strings/string_utils.h"
 
-bool WrappedOpenGL::Serialise_glFenceSync(GLsync real, GLenum condition, GLbitfield flags)
+enum GLsyncbitfield
 {
-  SERIALISE_ELEMENT(GLenum, Condition, condition);
-  SERIALISE_ELEMENT(uint32_t, Flags, flags);
-  SERIALISE_ELEMENT(ResourceId, id, GetResourceManager()->GetSyncID(real));
+  SYNC_FLUSH_COMMANDS_BIT = 1,
+};
 
-  if(m_State < WRITING)
+DECLARE_REFLECTION_ENUM(GLsyncbitfield);
+
+template <>
+rdcstr DoStringise(const GLsyncbitfield &el)
+{
+  RDCCOMPILE_ASSERT(
+      sizeof(GLsyncbitfield) == sizeof(GLbitfield) && sizeof(GLsyncbitfield) == sizeof(uint32_t),
+      "Fake bitfield enum must be uint32_t sized");
+
+  BEGIN_BITFIELD_STRINGISE(GLsyncbitfield);
   {
-    real = m_Real.glFenceSync(Condition, Flags);
+    STRINGISE_BITFIELD_BIT_NAMED(SYNC_FLUSH_COMMANDS_BIT, "GL_SYNC_FLUSH_COMMANDS_BIT");
+  }
+  END_BITFIELD_STRINGISE();
+}
+
+template <typename SerialiserType>
+bool WrappedOpenGL::Serialise_glFenceSync(SerialiserType &ser, GLsync real, GLenum condition,
+                                          GLbitfield flags)
+{
+  SERIALISE_ELEMENT_LOCAL(sync, GetResourceManager()->GetSyncID(real)).TypedAs("GLsync"_lit);
+  SERIALISE_ELEMENT(condition);
+  SERIALISE_ELEMENT_TYPED(GLsyncbitfield, flags);
+
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
+  {
+    // if we've already sync'd, delete the old one
+    if(GetResourceManager()->HasLiveResource(sync))
+    {
+      GLResource res = GetResourceManager()->GetLiveResource(sync);
+      GLsync oldSyncObj = GetResourceManager()->GetSync(res.name);
+
+      GL.glDeleteSync(oldSyncObj);
+
+      GetResourceManager()->UnregisterResource(res);
+      GetResourceManager()->EraseLiveResource(sync);
+    }
+
+    real = GL.glFenceSync(condition, flags);
 
     GLuint name = 0;
     ResourceId liveid = ResourceId();
@@ -44,7 +81,9 @@ bool WrappedOpenGL::Serialise_glFenceSync(GLsync real, GLenum condition, GLbitfi
     GLResource res = SyncRes(GetCtx(), name);
 
     ResourceId live = m_ResourceManager->RegisterResource(res);
-    GetResourceManager()->AddLiveResource(id, res);
+    GetResourceManager()->AddLiveResource(sync, res);
+
+    AddResource(sync, ResourceType::Sync, "Sync");
   }
 
   return true;
@@ -52,25 +91,27 @@ bool WrappedOpenGL::Serialise_glFenceSync(GLsync real, GLenum condition, GLbitfi
 
 GLsync WrappedOpenGL::glFenceSync(GLenum condition, GLbitfield flags)
 {
-  GLsync sync = m_Real.glFenceSync(condition, flags);
+  GLsync sync;
+  SERIALISE_TIME_CALL(sync = GL.glFenceSync(condition, flags));
 
   GLuint name = 0;
   ResourceId id = ResourceId();
   GetResourceManager()->RegisterSync(GetCtx(), sync, name, id);
   GLResource res = SyncRes(GetCtx(), name);
 
-  if(m_State == WRITING_CAPFRAME)
+  if(IsActiveCapturing(m_State))
   {
     Chunk *chunk = NULL;
 
     {
-      SCOPED_SERIALISE_CONTEXT(FENCE_SYNC);
-      Serialise_glFenceSync(sync, condition, flags);
+      USE_SCRATCH_SERIALISER();
+      SCOPED_SERIALISE_CHUNK(gl_CurChunk);
+      Serialise_glFenceSync(ser, sync, condition, flags);
 
       chunk = scope.Get();
     }
 
-    m_ContextRecord->AddChunk(chunk);
+    GetContextRecord()->AddChunk(chunk);
   }
   else
   {
@@ -80,19 +121,20 @@ GLsync WrappedOpenGL::glFenceSync(GLenum condition, GLbitfield flags)
   return sync;
 }
 
-bool WrappedOpenGL::Serialise_glClientWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout)
+template <typename SerialiserType>
+bool WrappedOpenGL::Serialise_glClientWaitSync(SerialiserType &ser, GLsync sync_, GLbitfield flags,
+                                               GLuint64 timeout)
 {
-  SERIALISE_ELEMENT(uint32_t, Flags, flags);
-  SERIALISE_ELEMENT(uint64_t, Timeout, timeout);
-  SERIALISE_ELEMENT(ResourceId, id, GetResourceManager()->GetSyncID(sync));
+  SERIALISE_ELEMENT_LOCAL(sync, GetResourceManager()->GetSyncID(sync_)).TypedAs("GLsync"_lit);
+  SERIALISE_ELEMENT_TYPED(GLsyncbitfield, flags);
+  SERIALISE_ELEMENT(timeout);
 
-  if(m_State < WRITING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading() && GetResourceManager()->HasLiveResource(sync))
   {
-    if(GetResourceManager()->HasLiveResource(id))
-    {
-      GLResource res = GetResourceManager()->GetLiveResource(id);
-      m_Real.glClientWaitSync(GetResourceManager()->GetSync(res.name), Flags, Timeout);
-    }
+    GLResource res = GetResourceManager()->GetLiveResource(sync);
+    GL.glClientWaitSync(GetResourceManager()->GetSync(res.name), flags, timeout);
   }
 
   return true;
@@ -100,32 +142,35 @@ bool WrappedOpenGL::Serialise_glClientWaitSync(GLsync sync, GLbitfield flags, GL
 
 GLenum WrappedOpenGL::glClientWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout)
 {
-  GLenum ret = m_Real.glClientWaitSync(sync, flags, timeout);
+  GLenum ret;
+  SERIALISE_TIME_CALL(ret = GL.glClientWaitSync(sync, flags, timeout));
 
-  if(m_State == WRITING_CAPFRAME)
+  if(IsActiveCapturing(m_State))
   {
-    SCOPED_SERIALISE_CONTEXT(CLIENTWAIT_SYNC);
-    Serialise_glClientWaitSync(sync, flags, timeout);
+    USE_SCRATCH_SERIALISER();
+    SCOPED_SERIALISE_CHUNK(gl_CurChunk);
+    Serialise_glClientWaitSync(ser, sync, flags, timeout);
 
-    m_ContextRecord->AddChunk(scope.Get());
+    GetContextRecord()->AddChunk(scope.Get());
   }
 
   return ret;
 }
 
-bool WrappedOpenGL::Serialise_glWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout)
+template <typename SerialiserType>
+bool WrappedOpenGL::Serialise_glWaitSync(SerialiserType &ser, GLsync sync_, GLbitfield flags,
+                                         GLuint64 timeout)
 {
-  SERIALISE_ELEMENT(uint32_t, Flags, flags);
-  SERIALISE_ELEMENT(uint64_t, Timeout, timeout);
-  SERIALISE_ELEMENT(ResourceId, id, GetResourceManager()->GetSyncID(sync));
+  SERIALISE_ELEMENT_LOCAL(sync, GetResourceManager()->GetSyncID(sync_)).TypedAs("GLsync"_lit);
+  SERIALISE_ELEMENT_TYPED(GLsyncbitfield, flags);
+  SERIALISE_ELEMENT(timeout);
 
-  if(m_State < WRITING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading() && GetResourceManager()->HasLiveResource(sync))
   {
-    if(GetResourceManager()->HasLiveResource(id))
-    {
-      GLResource res = GetResourceManager()->GetLiveResource(id);
-      m_Real.glWaitSync(GetResourceManager()->GetSync(res.name), Flags, Timeout);
-    }
+    GLResource res = GetResourceManager()->GetLiveResource(sync);
+    GL.glWaitSync(GetResourceManager()->GetSync(res.name), flags, timeout);
   }
 
   return true;
@@ -133,20 +178,21 @@ bool WrappedOpenGL::Serialise_glWaitSync(GLsync sync, GLbitfield flags, GLuint64
 
 void WrappedOpenGL::glWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout)
 {
-  m_Real.glWaitSync(sync, flags, timeout);
+  SERIALISE_TIME_CALL(GL.glWaitSync(sync, flags, timeout));
 
-  if(m_State == WRITING_CAPFRAME)
+  if(IsActiveCapturing(m_State))
   {
-    SCOPED_SERIALISE_CONTEXT(WAIT_SYNC);
-    Serialise_glWaitSync(sync, flags, timeout);
+    USE_SCRATCH_SERIALISER();
+    SCOPED_SERIALISE_CHUNK(gl_CurChunk);
+    Serialise_glWaitSync(ser, sync, flags, timeout);
 
-    m_ContextRecord->AddChunk(scope.Get());
+    GetContextRecord()->AddChunk(scope.Get());
   }
 }
 
 void WrappedOpenGL::glDeleteSync(GLsync sync)
 {
-  m_Real.glDeleteSync(sync);
+  GL.glDeleteSync(sync);
 
   ResourceId id = GetResourceManager()->GetSyncID(sync);
 
@@ -154,19 +200,26 @@ void WrappedOpenGL::glDeleteSync(GLsync sync)
     GetResourceManager()->UnregisterResource(GetResourceManager()->GetCurrentResource(id));
 }
 
-bool WrappedOpenGL::Serialise_glGenQueries(GLsizei n, GLuint *ids)
+template <typename SerialiserType>
+bool WrappedOpenGL::Serialise_glGenQueries(SerialiserType &ser, GLsizei n, GLuint *ids)
 {
-  SERIALISE_ELEMENT(ResourceId, id, GetResourceManager()->GetID(QueryRes(GetCtx(), *ids)));
+  SERIALISE_ELEMENT(n);
+  SERIALISE_ELEMENT_LOCAL(query, GetResourceManager()->GetResID(QueryRes(GetCtx(), *ids)))
+      .TypedAs("GLResource"_lit);
 
-  if(m_State == READING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
     GLuint real = 0;
-    m_Real.glGenQueries(1, &real);
+    GL.glGenQueries(1, &real);
 
     GLResource res = QueryRes(GetCtx(), real);
 
     ResourceId live = m_ResourceManager->RegisterResource(res);
-    GetResourceManager()->AddLiveResource(id, res);
+    GetResourceManager()->AddLiveResource(query, res);
+
+    AddResource(query, ResourceType::Query, "Query");
   }
 
   return true;
@@ -174,20 +227,21 @@ bool WrappedOpenGL::Serialise_glGenQueries(GLsizei n, GLuint *ids)
 
 void WrappedOpenGL::glGenQueries(GLsizei count, GLuint *ids)
 {
-  m_Real.glGenQueries(count, ids);
+  SERIALISE_TIME_CALL(GL.glGenQueries(count, ids));
 
   for(GLsizei i = 0; i < count; i++)
   {
     GLResource res = QueryRes(GetCtx(), ids[i]);
     ResourceId id = GetResourceManager()->RegisterResource(res);
 
-    if(m_State >= WRITING)
+    if(IsCaptureMode(m_State))
     {
       Chunk *chunk = NULL;
 
       {
-        SCOPED_SERIALISE_CONTEXT(GEN_QUERIES);
-        Serialise_glGenQueries(1, ids + i);
+        USE_SCRATCH_SERIALISER();
+        SCOPED_SERIALISE_CHUNK(gl_CurChunk);
+        Serialise_glGenQueries(ser, 1, ids + i);
 
         chunk = scope.Get();
       }
@@ -204,20 +258,28 @@ void WrappedOpenGL::glGenQueries(GLsizei count, GLuint *ids)
   }
 }
 
-bool WrappedOpenGL::Serialise_glCreateQueries(GLenum target, GLsizei n, GLuint *ids)
+template <typename SerialiserType>
+bool WrappedOpenGL::Serialise_glCreateQueries(SerialiserType &ser, GLenum target, GLsizei n,
+                                              GLuint *ids)
 {
-  SERIALISE_ELEMENT(ResourceId, id, GetResourceManager()->GetID(QueryRes(GetCtx(), *ids)));
-  SERIALISE_ELEMENT(GLenum, Target, target);
+  SERIALISE_ELEMENT(target);
+  SERIALISE_ELEMENT(n);
+  SERIALISE_ELEMENT_LOCAL(query, GetResourceManager()->GetResID(QueryRes(GetCtx(), *ids)))
+      .TypedAs("GLResource"_lit);
 
-  if(m_State == READING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
     GLuint real = 0;
-    m_Real.glCreateQueries(Target, 1, &real);
+    GL.glCreateQueries(target, 1, &real);
 
     GLResource res = QueryRes(GetCtx(), real);
 
     ResourceId live = m_ResourceManager->RegisterResource(res);
-    GetResourceManager()->AddLiveResource(id, res);
+    GetResourceManager()->AddLiveResource(query, res);
+
+    AddResource(query, ResourceType::Query, "Query");
   }
 
   return true;
@@ -225,20 +287,21 @@ bool WrappedOpenGL::Serialise_glCreateQueries(GLenum target, GLsizei n, GLuint *
 
 void WrappedOpenGL::glCreateQueries(GLenum target, GLsizei count, GLuint *ids)
 {
-  m_Real.glCreateQueries(target, count, ids);
+  SERIALISE_TIME_CALL(GL.glCreateQueries(target, count, ids));
 
   for(GLsizei i = 0; i < count; i++)
   {
     GLResource res = QueryRes(GetCtx(), ids[i]);
     ResourceId id = GetResourceManager()->RegisterResource(res);
 
-    if(m_State >= WRITING)
+    if(IsCaptureMode(m_State))
     {
       Chunk *chunk = NULL;
 
       {
-        SCOPED_SERIALISE_CONTEXT(CREATE_QUERIES);
-        Serialise_glCreateQueries(target, 1, ids + i);
+        USE_SCRATCH_SERIALISER();
+        SCOPED_SERIALISE_CHUNK(gl_CurChunk);
+        Serialise_glCreateQueries(ser, target, 1, ids + i);
 
         chunk = scope.Get();
       }
@@ -255,15 +318,22 @@ void WrappedOpenGL::glCreateQueries(GLenum target, GLsizei count, GLuint *ids)
   }
 }
 
-bool WrappedOpenGL::Serialise_glBeginQuery(GLenum target, GLuint qid)
+template <typename SerialiserType>
+bool WrappedOpenGL::Serialise_glBeginQuery(SerialiserType &ser, GLenum target, GLuint qid)
 {
-  SERIALISE_ELEMENT(GLenum, Target, target);
-  SERIALISE_ELEMENT(ResourceId, id, GetResourceManager()->GetID(QueryRes(GetCtx(), qid)));
+  SERIALISE_ELEMENT(target);
+  SERIALISE_ELEMENT_LOCAL(query, QueryRes(GetCtx(), qid));
 
-  if(m_State < WRITING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
-    m_Real.glBeginQuery(Target, GetResourceManager()->GetLiveResource(id).name);
-    m_ActiveQueries[QueryIdx(Target)][0] = true;
+    // Queries in the log interfere with the queries from FetchCounters.
+    if(!m_FetchCounters)
+    {
+      GL.glBeginQuery(target, query.name);
+      m_ActiveQueries[QueryIdx(target)][0] = true;
+    }
   }
 
   return true;
@@ -271,29 +341,39 @@ bool WrappedOpenGL::Serialise_glBeginQuery(GLenum target, GLuint qid)
 
 void WrappedOpenGL::glBeginQuery(GLenum target, GLuint id)
 {
-  m_Real.glBeginQuery(target, id);
+  SERIALISE_TIME_CALL(GL.glBeginQuery(target, id));
+  if(m_ActiveQueries[QueryIdx(target)][0])
+    RDCLOG("Query already active %s", ToStr(target).c_str());
   m_ActiveQueries[QueryIdx(target)][0] = true;
 
-  if(m_State == WRITING_CAPFRAME)
+  if(IsActiveCapturing(m_State))
   {
-    SCOPED_SERIALISE_CONTEXT(BEGIN_QUERY);
-    Serialise_glBeginQuery(target, id);
+    USE_SCRATCH_SERIALISER();
+    SCOPED_SERIALISE_CHUNK(gl_CurChunk);
+    Serialise_glBeginQuery(ser, target, id);
 
-    m_ContextRecord->AddChunk(scope.Get());
+    GetContextRecord()->AddChunk(scope.Get());
     GetResourceManager()->MarkResourceFrameReferenced(QueryRes(GetCtx(), id), eFrameRef_Read);
   }
 }
 
-bool WrappedOpenGL::Serialise_glBeginQueryIndexed(GLenum target, GLuint index, GLuint qid)
+template <typename SerialiserType>
+bool WrappedOpenGL::Serialise_glBeginQueryIndexed(SerialiserType &ser, GLenum target, GLuint index,
+                                                  GLuint qid)
 {
-  SERIALISE_ELEMENT(GLenum, Target, target);
-  SERIALISE_ELEMENT(uint32_t, Index, index);
-  SERIALISE_ELEMENT(ResourceId, id, GetResourceManager()->GetID(QueryRes(GetCtx(), qid)));
+  SERIALISE_ELEMENT(target);
+  SERIALISE_ELEMENT(index);
+  SERIALISE_ELEMENT_LOCAL(query, QueryRes(GetCtx(), qid));
 
-  if(m_State < WRITING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
-    m_Real.glBeginQueryIndexed(Target, Index, GetResourceManager()->GetLiveResource(id).name);
-    m_ActiveQueries[QueryIdx(Target)][Index] = true;
+    if(!m_FetchCounters)
+    {
+      GL.glBeginQueryIndexed(target, index, query.name);
+      m_ActiveQueries[QueryIdx(target)][index] = true;
+    }
   }
 
   return true;
@@ -301,27 +381,35 @@ bool WrappedOpenGL::Serialise_glBeginQueryIndexed(GLenum target, GLuint index, G
 
 void WrappedOpenGL::glBeginQueryIndexed(GLenum target, GLuint index, GLuint id)
 {
-  m_Real.glBeginQueryIndexed(target, index, id);
+  SERIALISE_TIME_CALL(GL.glBeginQueryIndexed(target, index, id));
   m_ActiveQueries[QueryIdx(target)][index] = true;
 
-  if(m_State == WRITING_CAPFRAME)
+  if(IsActiveCapturing(m_State))
   {
-    SCOPED_SERIALISE_CONTEXT(BEGIN_QUERY_INDEXED);
-    Serialise_glBeginQueryIndexed(target, index, id);
+    USE_SCRATCH_SERIALISER();
+    SCOPED_SERIALISE_CHUNK(gl_CurChunk);
+    Serialise_glBeginQueryIndexed(ser, target, index, id);
 
-    m_ContextRecord->AddChunk(scope.Get());
+    GetContextRecord()->AddChunk(scope.Get());
     GetResourceManager()->MarkResourceFrameReferenced(QueryRes(GetCtx(), id), eFrameRef_Read);
   }
 }
 
-bool WrappedOpenGL::Serialise_glEndQuery(GLenum target)
+template <typename SerialiserType>
+bool WrappedOpenGL::Serialise_glEndQuery(SerialiserType &ser, GLenum target)
 {
-  SERIALISE_ELEMENT(GLenum, Target, target);
+  SERIALISE_ELEMENT(target);
 
-  if(m_State < WRITING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
-    m_ActiveQueries[QueryIdx(Target)][0] = false;
-    m_Real.glEndQuery(Target);
+    // Queries in the log interfere with the queries from FetchCounters.
+    if(!m_FetchCounters)
+    {
+      m_ActiveQueries[QueryIdx(target)][0] = false;
+      GL.glEndQuery(target);
+    }
   }
 
   return true;
@@ -329,27 +417,34 @@ bool WrappedOpenGL::Serialise_glEndQuery(GLenum target)
 
 void WrappedOpenGL::glEndQuery(GLenum target)
 {
-  m_Real.glEndQuery(target);
+  SERIALISE_TIME_CALL(GL.glEndQuery(target));
   m_ActiveQueries[QueryIdx(target)][0] = false;
 
-  if(m_State == WRITING_CAPFRAME)
+  if(IsActiveCapturing(m_State))
   {
-    SCOPED_SERIALISE_CONTEXT(END_QUERY);
-    Serialise_glEndQuery(target);
+    USE_SCRATCH_SERIALISER();
+    SCOPED_SERIALISE_CHUNK(gl_CurChunk);
+    Serialise_glEndQuery(ser, target);
 
-    m_ContextRecord->AddChunk(scope.Get());
+    GetContextRecord()->AddChunk(scope.Get());
   }
 }
 
-bool WrappedOpenGL::Serialise_glEndQueryIndexed(GLenum target, GLuint index)
+template <typename SerialiserType>
+bool WrappedOpenGL::Serialise_glEndQueryIndexed(SerialiserType &ser, GLenum target, GLuint index)
 {
-  SERIALISE_ELEMENT(GLenum, Target, target);
-  SERIALISE_ELEMENT(uint32_t, Index, index);
+  SERIALISE_ELEMENT(target);
+  SERIALISE_ELEMENT(index);
 
-  if(m_State < WRITING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
-    m_Real.glEndQueryIndexed(Target, Index);
-    m_ActiveQueries[QueryIdx(Target)][Index] = false;
+    if(!m_FetchCounters)
+    {
+      GL.glEndQueryIndexed(target, index);
+      m_ActiveQueries[QueryIdx(target)][index] = false;
+    }
   }
 
   return true;
@@ -357,27 +452,31 @@ bool WrappedOpenGL::Serialise_glEndQueryIndexed(GLenum target, GLuint index)
 
 void WrappedOpenGL::glEndQueryIndexed(GLenum target, GLuint index)
 {
-  m_Real.glEndQueryIndexed(target, index);
+  SERIALISE_TIME_CALL(GL.glEndQueryIndexed(target, index));
   m_ActiveQueries[QueryIdx(target)][index] = false;
 
-  if(m_State == WRITING_CAPFRAME)
+  if(IsActiveCapturing(m_State))
   {
-    SCOPED_SERIALISE_CONTEXT(END_QUERY_INDEXED);
-    Serialise_glEndQueryIndexed(target, index);
+    USE_SCRATCH_SERIALISER();
+    SCOPED_SERIALISE_CHUNK(gl_CurChunk);
+    Serialise_glEndQueryIndexed(ser, target, index);
 
-    m_ContextRecord->AddChunk(scope.Get());
+    GetContextRecord()->AddChunk(scope.Get());
   }
 }
 
-bool WrappedOpenGL::Serialise_glBeginConditionalRender(GLuint id, GLenum mode)
+template <typename SerialiserType>
+bool WrappedOpenGL::Serialise_glBeginConditionalRender(SerialiserType &ser, GLuint id, GLenum mode)
 {
-  SERIALISE_ELEMENT(ResourceId, qid, GetResourceManager()->GetID(QueryRes(GetCtx(), id)));
-  SERIALISE_ELEMENT(GLenum, Mode, mode);
+  SERIALISE_ELEMENT_LOCAL(query, QueryRes(GetCtx(), id));
+  SERIALISE_ELEMENT(mode);
 
-  if(m_State < WRITING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
     m_ActiveConditional = true;
-    m_Real.glBeginConditionalRender(GetResourceManager()->GetLiveResource(qid).name, Mode);
+    GL.glBeginConditionalRender(query.name, mode);
   }
 
   return true;
@@ -385,26 +484,28 @@ bool WrappedOpenGL::Serialise_glBeginConditionalRender(GLuint id, GLenum mode)
 
 void WrappedOpenGL::glBeginConditionalRender(GLuint id, GLenum mode)
 {
-  m_Real.glBeginConditionalRender(id, mode);
+  SERIALISE_TIME_CALL(GL.glBeginConditionalRender(id, mode));
 
   m_ActiveConditional = true;
 
-  if(m_State == WRITING_CAPFRAME)
+  if(IsActiveCapturing(m_State))
   {
-    SCOPED_SERIALISE_CONTEXT(BEGIN_CONDITIONAL);
-    Serialise_glBeginConditionalRender(id, mode);
+    USE_SCRATCH_SERIALISER();
+    SCOPED_SERIALISE_CHUNK(gl_CurChunk);
+    Serialise_glBeginConditionalRender(ser, id, mode);
 
-    m_ContextRecord->AddChunk(scope.Get());
+    GetContextRecord()->AddChunk(scope.Get());
     GetResourceManager()->MarkResourceFrameReferenced(QueryRes(GetCtx(), id), eFrameRef_Read);
   }
 }
 
-bool WrappedOpenGL::Serialise_glEndConditionalRender()
+template <typename SerialiserType>
+bool WrappedOpenGL::Serialise_glEndConditionalRender(SerialiserType &ser)
 {
-  if(m_State < WRITING)
+  if(IsReplayingAndReading())
   {
     m_ActiveConditional = false;
-    m_Real.glEndConditionalRender();
+    GL.glEndConditionalRender();
   }
 
   return true;
@@ -412,26 +513,31 @@ bool WrappedOpenGL::Serialise_glEndConditionalRender()
 
 void WrappedOpenGL::glEndConditionalRender()
 {
-  m_Real.glEndConditionalRender();
+  SERIALISE_TIME_CALL(GL.glEndConditionalRender());
   m_ActiveConditional = false;
 
-  if(m_State == WRITING_CAPFRAME)
+  if(IsActiveCapturing(m_State))
   {
-    SCOPED_SERIALISE_CONTEXT(END_CONDITIONAL);
-    Serialise_glEndConditionalRender();
+    USE_SCRATCH_SERIALISER();
+    SCOPED_SERIALISE_CHUNK(gl_CurChunk);
+    Serialise_glEndConditionalRender(ser);
 
-    m_ContextRecord->AddChunk(scope.Get());
+    GetContextRecord()->AddChunk(scope.Get());
   }
 }
 
-bool WrappedOpenGL::Serialise_glQueryCounter(GLuint query, GLenum target)
+template <typename SerialiserType>
+bool WrappedOpenGL::Serialise_glQueryCounter(SerialiserType &ser, GLuint query_, GLenum target)
 {
-  SERIALISE_ELEMENT(ResourceId, id, GetResourceManager()->GetID(QueryRes(GetCtx(), query)));
-  SERIALISE_ELEMENT(GLenum, Target, target);
+  SERIALISE_ELEMENT_LOCAL(query, QueryRes(GetCtx(), query_));
+  SERIALISE_ELEMENT(target);
 
-  if(m_State < WRITING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
-    m_Real.glQueryCounter(GetResourceManager()->GetLiveResource(id).name, Target);
+    if(!m_FetchCounters)
+      GL.glQueryCounter(query.name, target);
   }
 
   return true;
@@ -439,14 +545,15 @@ bool WrappedOpenGL::Serialise_glQueryCounter(GLuint query, GLenum target)
 
 void WrappedOpenGL::glQueryCounter(GLuint query, GLenum target)
 {
-  m_Real.glQueryCounter(query, target);
+  SERIALISE_TIME_CALL(GL.glQueryCounter(query, target));
 
-  if(m_State == WRITING_CAPFRAME)
+  if(IsActiveCapturing(m_State))
   {
-    SCOPED_SERIALISE_CONTEXT(QUERY_COUNTER);
-    Serialise_glQueryCounter(query, target);
+    USE_SCRATCH_SERIALISER();
+    SCOPED_SERIALISE_CHUNK(gl_CurChunk);
+    Serialise_glQueryCounter(ser, query, target);
 
-    m_ContextRecord->AddChunk(scope.Get());
+    GetContextRecord()->AddChunk(scope.Get());
     GetResourceManager()->MarkResourceFrameReferenced(QueryRes(GetCtx(), query), eFrameRef_Read);
   }
 }
@@ -464,5 +571,80 @@ void WrappedOpenGL::glDeleteQueries(GLsizei n, const GLuint *ids)
     }
   }
 
-  m_Real.glDeleteQueries(n, ids);
+  GL.glDeleteQueries(n, ids);
 }
+
+void WrappedOpenGL::glBeginPerfQueryINTEL(GLuint queryHandle)
+{
+  GL.glBeginPerfQueryINTEL(queryHandle);
+}
+
+void WrappedOpenGL::glCreatePerfQueryINTEL(GLuint queryId, GLuint *queryHandle)
+{
+  GL.glCreatePerfQueryINTEL(queryId, queryHandle);
+}
+
+void WrappedOpenGL::glDeletePerfQueryINTEL(GLuint queryHandle)
+{
+  GL.glDeletePerfQueryINTEL(queryHandle);
+}
+
+void WrappedOpenGL::glEndPerfQueryINTEL(GLuint queryHandle)
+{
+  GL.glEndPerfQueryINTEL(queryHandle);
+}
+
+void WrappedOpenGL::glGetFirstPerfQueryIdINTEL(GLuint *queryId)
+{
+  GL.glGetFirstPerfQueryIdINTEL(queryId);
+}
+
+void WrappedOpenGL::glGetNextPerfQueryIdINTEL(GLuint queryId, GLuint *nextQueryId)
+{
+  GL.glGetNextPerfQueryIdINTEL(queryId, nextQueryId);
+}
+
+void WrappedOpenGL::glGetPerfCounterInfoINTEL(GLuint queryId, GLuint counterId,
+                                              GLuint counterNameLength, GLchar *counterName,
+                                              GLuint counterDescLength, GLchar *counterDesc,
+                                              GLuint *counterOffset, GLuint *counterDataSize,
+                                              GLuint *counterTypeEnum, GLuint *counterDataTypeEnum,
+                                              GLuint64 *rawCounterMaxValue)
+{
+  GL.glGetPerfCounterInfoINTEL(queryId, counterId, counterNameLength, counterName,
+                               counterDescLength, counterDesc, counterOffset, counterDataSize,
+                               counterTypeEnum, counterDataTypeEnum, rawCounterMaxValue);
+}
+
+void WrappedOpenGL::glGetPerfQueryDataINTEL(GLuint queryHandle, GLuint flags, GLsizei dataSize,
+                                            GLvoid *data, GLuint *bytesWritten)
+{
+  GL.glGetPerfQueryDataINTEL(queryHandle, flags, dataSize, data, bytesWritten);
+}
+
+void WrappedOpenGL::glGetPerfQueryIdByNameINTEL(GLchar *queryName, GLuint *queryId)
+{
+  GL.glGetPerfQueryIdByNameINTEL(queryName, queryId);
+}
+
+void WrappedOpenGL::glGetPerfQueryInfoINTEL(GLuint queryId, GLuint queryNameLength,
+                                            GLchar *queryName, GLuint *dataSize, GLuint *noCounters,
+                                            GLuint *noInstances, GLuint *capsMask)
+{
+  GL.glGetPerfQueryInfoINTEL(queryId, queryNameLength, queryName, dataSize, noCounters, noInstances,
+                             capsMask);
+}
+
+INSTANTIATE_FUNCTION_SERIALISED(void, glFenceSync, GLsync real, GLenum condition, GLbitfield flags);
+INSTANTIATE_FUNCTION_SERIALISED(void, glClientWaitSync, GLsync sync_, GLbitfield flags,
+                                GLuint64 timeout);
+INSTANTIATE_FUNCTION_SERIALISED(void, glWaitSync, GLsync sync_, GLbitfield flags, GLuint64 timeout);
+INSTANTIATE_FUNCTION_SERIALISED(void, glGenQueries, GLsizei n, GLuint *ids);
+INSTANTIATE_FUNCTION_SERIALISED(void, glCreateQueries, GLenum target, GLsizei n, GLuint *ids);
+INSTANTIATE_FUNCTION_SERIALISED(void, glBeginQuery, GLenum target, GLuint qid);
+INSTANTIATE_FUNCTION_SERIALISED(void, glBeginQueryIndexed, GLenum target, GLuint index, GLuint qid);
+INSTANTIATE_FUNCTION_SERIALISED(void, glEndQuery, GLenum target);
+INSTANTIATE_FUNCTION_SERIALISED(void, glEndQueryIndexed, GLenum target, GLuint index);
+INSTANTIATE_FUNCTION_SERIALISED(void, glBeginConditionalRender, GLuint id, GLenum mode);
+INSTANTIATE_FUNCTION_SERIALISED(void, glEndConditionalRender);
+INSTANTIATE_FUNCTION_SERIALISED(void, glQueryCounter, GLuint query_, GLenum target);

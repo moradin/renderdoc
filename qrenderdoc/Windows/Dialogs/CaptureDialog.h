@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,7 +26,7 @@
 
 #include <QFrame>
 #include <functional>
-#include "Code/CaptureContext.h"
+#include "Code/Interface/QRDInterface.h"
 
 namespace Ui
 {
@@ -35,44 +35,48 @@ class CaptureDialog;
 
 class QStandardItemModel;
 class LiveCapture;
+class MainWindow;
+class RDLabel;
 
-struct CaptureSettings
-{
-  CaptureSettings();
-
-  CaptureOptions Options;
-  bool Inject;
-  bool AutoStart;
-  QString Executable;
-  QString WorkingDir;
-  QString CmdLine;
-  QList<EnvironmentModification> Environment;
-
-  QVariantMap toJSON() const;
-  void fromJSON(const QVariantMap &data);
-};
-
-class CaptureDialog : public QFrame
+class CaptureDialog : public QFrame, public ICaptureDialog
 {
   Q_OBJECT
 
 public:
-  typedef std::function<LiveCapture *(const QString &exe, const QString &workingDir, const QString &cmdLine,
-                                      const QList<EnvironmentModification> &env, CaptureOptions opts)>
+  typedef std::function<void(const QString &exe, const QString &workingDir, const QString &cmdLine,
+                             const rdcarray<EnvironmentModification> &env, CaptureOptions opts,
+                             std::function<void(LiveCapture *)> callback)>
       OnCaptureMethod;
-  typedef std::function<LiveCapture *(uint32_t PID, const QList<EnvironmentModification> &env,
-                                      const QString &name, CaptureOptions opts)>
+  typedef std::function<void(uint32_t PID, const rdcarray<EnvironmentModification> &env, const QString &name,
+                             CaptureOptions opts, std::function<void(LiveCapture *)> callback)>
       OnInjectMethod;
 
-  explicit CaptureDialog(CaptureContext *ctx, OnCaptureMethod captureCallback,
-                         OnInjectMethod injectCallback, QWidget *parent = 0);
+  explicit CaptureDialog(ICaptureContext &ctx, OnCaptureMethod captureCallback,
+                         OnInjectMethod injectCallback, MainWindow *main, QWidget *parent = 0);
   ~CaptureDialog();
 
-  bool injectMode() { return m_Inject; }
-  void setInjectMode(bool inject);
+  // ICaptureDialog
+  QWidget *Widget() override { return this; }
+  bool IsInjectMode() override { return m_Inject; }
+  void SetInjectMode(bool inject) override;
 
-  void setExecutableFilename(QString filename);
-  void loadSettings(QString filename);
+  void SetExecutableFilename(const rdcstr &filename) override;
+  void SetWorkingDirectory(const rdcstr &dir) override;
+  void SetCommandLine(const rdcstr &cmd) override;
+  void SetEnvironmentModifications(const rdcarray<EnvironmentModification> &modifications) override;
+
+  void SetSettings(CaptureSettings settings) override;
+  CaptureSettings Settings() override;
+
+  void TriggerCapture() override;
+
+  void LoadSettings(const rdcstr &filename) override;
+  void SaveSettings(const rdcstr &filename) override;
+  void UpdateGlobalHook() override;
+  void UpdateRemoteHost() override;
+
+public slots:
+  bool checkAllowClose();
 
 private slots:
   // automatic slots
@@ -84,37 +88,43 @@ private slots:
   void on_processFilter_textChanged(const QString &arg1);
   void on_processRefesh_clicked();
 
+  void on_processList_activated(const QModelIndex &index);
+
   void on_saveSettings_clicked();
   void on_loadSettings_clicked();
+  void on_loadLastCapture_clicked();
 
-  void on_capture_clicked();
-  void on_close_clicked();
+  void on_launch_clicked();
 
   void on_toggleGlobal_clicked();
 
-  void on_vulkanLayerWarn_clicked();
-
   void on_CaptureCallstacks_toggled(bool checked);
+
+  // manual slots
+  void vulkanLayerWarn_mouseClick();
+  void androidWarn_mouseClick();
+  void lineEdit_keyPress(QKeyEvent *);
 
 private:
   Ui::CaptureDialog *ui;
-  CaptureContext *m_Ctx;
+  ICaptureContext &m_Ctx;
+  MainWindow *m_Main;
 
   QStandardItemModel *m_ProcessModel;
 
   OnCaptureMethod m_CaptureCallback;
   OnInjectMethod m_InjectCallback;
 
-  void updateGlobalHook();
-  void setEnvironmentModifications(const QList<EnvironmentModification> &modifications);
-  void triggerCapture();
-
-  void setSettings(CaptureSettings settings);
-  CaptureSettings settings();
-
-  void saveSettings(QString filename);
-
-  QList<EnvironmentModification> m_EnvModifications;
+  rdcarray<EnvironmentModification> m_EnvModifications;
   bool m_Inject;
   void fillProcessList();
+  void initWarning(RDLabel *label);
+
+  QString mostRecentFilename();
+
+  void PopulateMostRecent();
+  CaptureSettings LoadSettingsFromDisk(const rdcstr &filename);
+
+  void CheckAndroidSetup(QString &filename);
+  AndroidFlags m_AndroidFlags;
 };

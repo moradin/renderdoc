@@ -5,21 +5,20 @@ set(glslang_sources
     ${glslang_dir}/SPIRV/GlslangToSpv.cpp
     ${glslang_dir}/SPIRV/GlslangToSpv.h
     ${glslang_dir}/SPIRV/GLSL.std.450.h
+    ${glslang_dir}/SPIRV/GLSL.ext.AMD.h
+    ${glslang_dir}/SPIRV/GLSL.ext.EXT.h
+    ${glslang_dir}/SPIRV/GLSL.ext.KHR.h
+    ${glslang_dir}/SPIRV/GLSL.ext.NV.h
     ${glslang_dir}/SPIRV/hex_float.h
     ${glslang_dir}/SPIRV/InReadableOrder.cpp
     ${glslang_dir}/SPIRV/Logger.cpp
     ${glslang_dir}/SPIRV/Logger.h
     ${glslang_dir}/SPIRV/SpvBuilder.cpp
     ${glslang_dir}/SPIRV/SpvBuilder.h
+    ${glslang_dir}/SPIRV/SpvTools.cpp
+    ${glslang_dir}/SPIRV/SpvTools.h
+    ${glslang_dir}/SPIRV/SpvPostProcess.cpp
     ${glslang_dir}/SPIRV/spvIR.h
-    ${glslang_dir}/hlsl/hlslAttributes.cpp
-    ${glslang_dir}/hlsl/hlslAttributes.h
-    ${glslang_dir}/hlsl/hlslParseHelper.cpp
-    ${glslang_dir}/hlsl/hlslOpMap.cpp
-    ${glslang_dir}/hlsl/hlslParseables.cpp
-    ${glslang_dir}/hlsl/hlslScanContext.cpp
-    ${glslang_dir}/hlsl/hlslGrammar.cpp
-    ${glslang_dir}/hlsl/hlslTokenStream.cpp
     ${glslang_dir}/glslang/GenericCodeGen/CodeGen.cpp
     ${glslang_dir}/glslang/GenericCodeGen/Link.cpp
     ${glslang_dir}/glslang/Include/arrays.h
@@ -62,9 +61,7 @@ set(glslang_sources
     ${glslang_dir}/glslang/MachineIndependent/preprocessor/PpContext.cpp
     ${glslang_dir}/glslang/MachineIndependent/preprocessor/PpContext.h
     ${glslang_dir}/glslang/MachineIndependent/preprocessor/Pp.cpp
-    ${glslang_dir}/glslang/MachineIndependent/preprocessor/PpMemory.cpp
     ${glslang_dir}/glslang/MachineIndependent/preprocessor/PpScanner.cpp
-    ${glslang_dir}/glslang/MachineIndependent/preprocessor/PpSymbols.cpp
     ${glslang_dir}/glslang/MachineIndependent/preprocessor/PpTokens.cpp
     ${glslang_dir}/glslang/MachineIndependent/preprocessor/PpTokens.h
     ${glslang_dir}/glslang/MachineIndependent/reflection.cpp
@@ -79,6 +76,8 @@ set(glslang_sources
     ${glslang_dir}/glslang/MachineIndependent/SymbolTable.h
     ${glslang_dir}/glslang/MachineIndependent/Versions.cpp
     ${glslang_dir}/glslang/MachineIndependent/Versions.h
+    ${glslang_dir}/glslang/MachineIndependent/attribute.cpp
+    ${glslang_dir}/glslang/MachineIndependent/attribute.h
     ${glslang_dir}/glslang/OSDependent/osinclude.h
     ${glslang_dir}/glslang/Public/ShaderLang.h)
 
@@ -88,20 +87,55 @@ if(UNIX)
 endif()
 
 set(sources
+    glslang_compile.cpp
+    glslang_compile.h
     spirv_common.cpp
     spirv_common.h
+    spirv_editor.cpp
+    spirv_editor.h
+    spirv_gen.cpp
+    spirv_gen.h
+    spirv_op_helpers.h
     spirv_compile.cpp
+    spirv_compile.h
+    spirv_debug_setup.cpp
+    spirv_debug_glsl450.cpp
+    spirv_debug.cpp
+    spirv_debug.h
+    spirv_reflect.cpp
+    spirv_reflect.h
+    spirv_processor.cpp
+    spirv_processor.h
     spirv_disassemble.cpp
+    spirv_stringise.cpp
+    var_dispatch_helpers.h
     ${glslang_sources})
 
-set_source_files_properties(${glslang_sources}
-    PROPERTIES COMPILE_FLAGS "-Wno-ignored-qualifiers")
+add_definitions(-DAMD_EXTENSIONS)
+add_definitions(-DNV_EXTENSIONS)
+
+set_property(SOURCE ${glslang_sources}
+    PROPERTY COMPILE_FLAGS "-Wno-ignored-qualifiers -Wno-strict-aliasing -Wno-unreachable-code-break")
+
+# GCC 7.0 and above needs -Wno-implicit-fallthrough on these files
+if(CMAKE_COMPILER_IS_GNUCXX AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 6.9)
+    set_property(SOURCE
+        ${glslang_dir}/glslang/MachineIndependent/reflection.cpp
+        ${glslang_dir}/glslang/MachineIndependent/Intermediate.cpp
+        ${glslang_dir}/glslang/MachineIndependent/ParseHelper.cpp
+        APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-implicit-fallthrough")
+endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    set_source_files_properties(${glslang_dir}/SPIRV/GlslangToSpv.cpp
-        PROPERTIES COMPILE_FLAGS "-Wno-tautological-constant-out-of-range-compare")
+    set_property(SOURCE ${glslang_sources}
+        APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-unknown-warning-option")
+
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 9.9)
+        set_property(SOURCE ${glslang_dir}/glslang/MachineIndependent/iomapper.cpp
+            APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-deprecated-copy")
+    endif()
 endif()
 
 add_library(rdoc_spirv OBJECT ${sources})
 target_compile_definitions(rdoc_spirv ${RDOC_DEFINITIONS})
-target_include_directories(rdoc_spirv ${RDOC_INCLUDES})
+target_include_directories(rdoc_spirv ${RDOC_INCLUDES} ${glslang_dir})

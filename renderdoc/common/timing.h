@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -27,11 +27,8 @@
 
 #include <stdarg.h>
 #include <stdint.h>
-#include <string>
 #include "os/os_specific.h"
 #include "common.h"
-
-using std::string;
 
 class PerformanceTimer
 {
@@ -40,6 +37,10 @@ public:
   double GetMilliseconds() const
   {
     return double(Timing::GetTick() - m_Start) / m_CounterFrequency;
+  }
+  double GetMicroseconds() const
+  {
+    return (double(Timing::GetTick() - m_Start) * 1000.0) / m_CounterFrequency;
   }
 
   void Restart() { m_Start = Timing::GetTick(); }
@@ -92,7 +93,7 @@ public:
   double GetMaxFrameTime() const { return m_MaxFrametime; }
 private:
   PerformanceTimer m_HighPrecisionTimer;
-  vector<double> m_FrameTimes;
+  rdcarray<double> m_FrameTimes;
   double m_TotalTime;
   double m_AvgFrametime;
   double m_MinFrametime;
@@ -102,34 +103,26 @@ private:
 class ScopedTimer
 {
 public:
-  ScopedTimer(const char *file, unsigned int line, const char *fmt, ...)
+  ScopedTimer(const char *file, unsigned int line, const rdcstr &msg)
   {
     m_File = file;
     m_Line = line;
 
-    va_list args;
-    va_start(args, fmt);
-
-    char buf[1024];
-    buf[1023] = 0;
-    StringFormat::vsnprintf(buf, 1023, fmt, args);
-
-    m_Message = buf;
-
-    va_end(args);
+    m_Message = msg;
   }
 
   ~ScopedTimer()
   {
-    rdclog_int(RDCLog_Comment, RDCLOG_PROJECT, m_File, m_Line, "Timer %s - %.3lf ms",
-               m_Message.c_str(), m_Timer.GetMilliseconds());
+    rdclog_direct(FILL_AUTO_VALUE, FILL_AUTO_VALUE, LogType::Comment, RDCLOG_PROJECT, m_File,
+                  m_Line, "Timer %s - %.3lf ms", m_Message.c_str(), m_Timer.GetMilliseconds());
   }
 
 private:
   const char *m_File;
   unsigned int m_Line;
-  string m_Message;
+  rdcstr m_Message;
   PerformanceTimer m_Timer;
 };
 
-#define SCOPED_TIMER(...) ScopedTimer CONCAT(timer, __LINE__)(__FILE__, __LINE__, __VA_ARGS__);
+#define SCOPED_TIMER(...) \
+  ScopedTimer CONCAT(timer, __LINE__)(__FILE__, __LINE__, StringFormat::Fmt(__VA_ARGS__));

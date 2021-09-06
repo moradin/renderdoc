@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -31,16 +31,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 #include "api/app/renderdoc_app.h"
+#include "api/replay/data_types.h"
+#include "common/formatting.h"
 #include "common/threading.h"
 #include "os/os_specific.h"
-#include "serialise/string_utils.h"
-
-using std::string;
+#include "strings/string_utils.h"
 
 // gives us an address to identify this so with
 static int soLocator = 0;
@@ -48,9 +49,9 @@ static int soLocator = 0;
 namespace FileIO
 {
 // in posix/.../..._stringio.cpp
-const char *GetTempRootPath();
+rdcstr GetTempRootPath();
 
-string GetHomeFolderFilename()
+rdcstr GetHomeFolderFilename()
 {
   passwd *pw = getpwuid(getuid());
   const char *homedir = pw->pw_dir;
@@ -58,19 +59,21 @@ string GetHomeFolderFilename()
   return homedir;
 }
 
-void CreateParentDirectory(const string &filename)
+rdcstr GetTempFolderFilename()
 {
-  string fn = dirname(filename);
+  return GetTempRootPath() + "/";
+}
+
+void CreateParentDirectory(const rdcstr &filename)
+{
+  rdcstr fn = get_dirname(filename);
 
   // want trailing slash so that we create all directories
   fn.push_back('/');
 
-  if(fn[0] != '/')
-    return;
+  int offs = fn.find('/', 1);
 
-  size_t offs = fn.find('/', 1);
-
-  while(offs != string::npos)
+  while(offs >= 0)
   {
     // create directory path from 0 to offs by NULLing the
     // / at offs, mkdir, then set it back
@@ -78,28 +81,68 @@ void CreateParentDirectory(const string &filename)
     mkdir(fn.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
     fn[offs] = '/';
 
-    offs = fn.find_first_of('/', offs + 1);
+    offs = fn.find('/', offs + 1);
   }
 }
 
-string GetFullPathname(const string &filename)
+bool IsRelativePath(const rdcstr &path)
+{
+  if(path.empty())
+    return false;
+
+  return path.front() != '/';
+}
+
+rdcstr GetFullPathname(const rdcstr &filename)
 {
   char path[PATH_MAX + 1] = {0};
   realpath(filename.c_str(), path);
 
-  return string(path);
+  return rdcstr(path);
 }
 
-string GetReplayAppFilename()
+rdcstr FindFileInPath(const rdcstr &fileName)
+{
+  rdcstr filePath;
+
+  // Search the PATH directory list for the application (like shell which) to get the absolute path
+  // Return "" if no exectuable found in the PATH list
+  char *pathEnvVar = getenv("PATH");
+  if(!pathEnvVar)
+    return filePath;
+
+  // Make a copy of our PATH so strtok can insert NULL without actually changing env
+  char *localPath = new char[strlen(pathEnvVar) + 1];
+  strcpy(localPath, pathEnvVar);
+
+  const char *pathSeparator = ":";
+  const char *path = strtok(localPath, pathSeparator);
+  while(path)
+  {
+    rdcstr testPath(path);
+    testPath += "/" + fileName;
+    if(!access(testPath.c_str(), X_OK))
+    {
+      filePath = testPath;
+      break;
+    }
+    path = strtok(NULL, pathSeparator);
+  }
+
+  delete[] localPath;
+  return filePath;
+}
+
+rdcstr GetReplayAppFilename()
 {
   // look up the shared object's path via dladdr
   Dl_info info;
   dladdr((void *)&soLocator, &info);
-  string path = info.dli_fname ? info.dli_fname : "";
-  path = dirname(path);
-  string replay = path + "/qrenderdoc";
+  rdcstr path = info.dli_fname ? info.dli_fname : "";
+  path = get_dirname(path);
+  rdcstr replay = path + "/qrenderdoc";
 
-  FILE *f = FileIO::fopen(replay.c_str(), "r");
+  FILE *f = FileIO::fopen(replay, FileIO::ReadText);
   if(f)
   {
     FileIO::fclose(f);
@@ -107,10 +150,19 @@ string GetReplayAppFilename()
   }
 
   // if it's not in the same directory, try in a sibling /bin
-  // e.g. /foo/bar/lib/librenderdoc.so -> /foo/bar/bin/qrenderdoc
-  replay = path + "/../bin/qrenderdoc";
+  //
+  // start from our path
+  replay = path + "/";
 
-  f = FileIO::fopen(replay.c_str(), "r");
+// if there's a custom lib subfolder, go up one (e.g. /usr/lib/renderdoc/librenderdoc.so)
+#if defined(RENDERDOC_LIB_SUBFOLDER)
+  replay += "../";
+#endif
+
+  // leave the lib/ folder, and go into bin/
+  replay += "../bin/qrenderdoc";
+
+  f = FileIO::fopen(replay, FileIO::ReadText);
   if(f)
   {
     FileIO::fclose(f);
@@ -123,7 +175,7 @@ string GetReplayAppFilename()
 
   for(size_t i = 0; i < ARRAY_COUNT(guess); i++)
   {
-    f = FileIO::fopen(guess[i], "r");
+    f = FileIO::fopen(guess[i], FileIO::ReadText);
     if(f)
     {
       FileIO::fclose(f);
@@ -135,10 +187,10 @@ string GetReplayAppFilename()
   return "qrenderdoc";
 }
 
-void GetDefaultFiles(const char *logBaseName, string &capture_filename, string &logging_filename,
-                     string &target)
+void GetDefaultFiles(const rdcstr &logBaseName, rdcstr &capture_filename, rdcstr &logging_filename,
+                     rdcstr &target)
 {
-  string path;
+  rdcstr path;
   GetExecutableFilename(path);
 
   const char *mod = strrchr(path.c_str(), '/');
@@ -149,14 +201,14 @@ void GetDefaultFiles(const char *logBaseName, string &capture_filename, string &
   else
     mod = "unknown";
 
-  target = string(mod);
+  target = rdcstr(mod);
 
   time_t t = time(NULL);
   tm now = *localtime(&t);
 
   char temp_folder[2048] = {0};
 
-  strcpy(temp_folder, GetTempRootPath());
+  strcpy(temp_folder, GetTempRootPath().c_str());
 
   char *temp_override = getenv("RENDERDOC_TEMP");
   if(temp_override && temp_override[0] == '/')
@@ -167,27 +219,21 @@ void GetDefaultFiles(const char *logBaseName, string &capture_filename, string &
       temp_folder[--len] = 0;
   }
 
-  char temp_filename[2048] = {0};
-
-  snprintf(temp_filename, sizeof(temp_filename) - 1, "%s/RenderDoc/%s_%04d.%02d.%02d_%02d.%02d.rdc",
-           temp_folder, mod, 1900 + now.tm_year, now.tm_mon + 1, now.tm_mday, now.tm_hour,
-           now.tm_min);
-
-  capture_filename = string(temp_filename);
-
-  snprintf(temp_filename, sizeof(temp_filename) - 1,
-           "%s/RenderDoc/%s_%04d.%02d.%02d_%02d.%02d.%02d.log", temp_folder, logBaseName,
-           1900 + now.tm_year, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min, now.tm_sec);
+  capture_filename =
+      StringFormat::Fmt("%s/RenderDoc/%s_%04d.%02d.%02d_%02d.%02d.rdc", temp_folder, mod,
+                        1900 + now.tm_year, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min);
 
   // set by UI when launching programs so all logging goes to the same file
   char *logfile_override = getenv("RENDERDOC_DEBUG_LOG_FILE");
   if(logfile_override)
-    logging_filename = string(logfile_override);
+    logging_filename = rdcstr(logfile_override);
   else
-    logging_filename = string(temp_filename);
+    logging_filename = StringFormat::Fmt(
+        "%s/RenderDoc/%s_%04d.%02d.%02d_%02d.%02d.%02d.log", temp_folder, logBaseName.c_str(),
+        1900 + now.tm_year, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min, now.tm_sec);
 }
 
-uint64_t GetModifiedTimestamp(const string &filename)
+uint64_t GetModifiedTimestamp(const rdcstr &filename)
 {
   struct ::stat st;
   int res = stat(filename.c_str(), &st);
@@ -200,74 +246,101 @@ uint64_t GetModifiedTimestamp(const string &filename)
   return 0;
 }
 
-void Copy(const char *from, const char *to, bool allowOverwrite)
+uint64_t GetFileSize(const rdcstr &filename)
 {
-  if(from[0] == 0 || to[0] == 0)
-    return;
+  struct ::stat st;
+  int res = stat(filename.c_str(), &st);
 
-  FILE *ff = ::fopen(from, "r");
+  if(res == 0)
+  {
+    return (uint64_t)st.st_size;
+  }
+
+  return 0;
+}
+
+bool Copy(const rdcstr &from, const rdcstr &to, bool allowOverwrite)
+{
+  if(from.empty() || to.empty())
+    return false;
+
+  FILE *ff = FileIO::fopen(from, ReadText);
 
   if(!ff)
   {
-    RDCERR("Can't open source file for copy '%s'", from);
-    return;
+    RDCERR("Can't open source file for copy '%s'", from.c_str());
+    return false;
   }
 
-  FILE *tf = ::fopen(to, "r");
+  FILE *tf = FileIO::fopen(to, FileIO::ReadText);
 
   if(tf && !allowOverwrite)
   {
-    RDCERR("Destination file for non-overwriting copy '%s' already exists", from);
-    ::fclose(ff);
-    ::fclose(tf);
-    return;
+    RDCERR("Destination file for non-overwriting copy '%s' already exists", from.c_str());
+    FileIO::fclose(ff);
+    FileIO::fclose(tf);
+    return false;
   }
 
   if(tf)
-    ::fclose(tf);
+    FileIO::fclose(tf);
 
-  tf = ::fopen(to, "w");
+  tf = FileIO::fopen(to, WriteText);
 
   if(!tf)
   {
-    ::fclose(ff);
-    RDCERR("Can't open destination file for copy '%s'", to);
+    FileIO::fclose(ff);
+    RDCERR("Can't open destination file for copy '%s'", to.c_str());
+    return false;
   }
 
   char buffer[BUFSIZ];
 
-  while(!::feof(ff))
+  while(!FileIO::feof(ff))
   {
-    size_t nread = ::fread(buffer, 1, BUFSIZ, ff);
-    ::fwrite(buffer, 1, nread, tf);
+    size_t nread = FileIO::fread(buffer, 1, BUFSIZ, ff);
+    FileIO::fwrite(buffer, 1, nread, tf);
   }
 
-  ::fclose(ff);
-  ::fclose(tf);
+  FileIO::fclose(ff);
+  FileIO::fclose(tf);
+
+  return true;
 }
 
-void Delete(const char *path)
+bool Move(const rdcstr &from, const rdcstr &to, bool allowOverwrite)
 {
-  unlink(path);
+  if(exists(to.c_str()))
+  {
+    if(!allowOverwrite)
+      return false;
+  }
+
+  return ::rename(from.c_str(), to.c_str()) == 0;
 }
 
-vector<FoundFile> GetFilesInDirectory(const char *path)
+void Delete(const rdcstr &path)
 {
-  vector<FoundFile> ret;
+  unlink(path.c_str());
+}
 
-  DIR *d = opendir(path);
+void GetFilesInDirectory(const rdcstr &path, rdcarray<PathEntry> &ret)
+{
+  ret.clear();
+
+  DIR *d = opendir(path.c_str());
 
   if(d == NULL)
   {
-    uint32_t flags = eFileProp_ErrorUnknown;
+    PathProperty flags = PathProperty::ErrorUnknown;
 
     if(errno == ENOENT)
-      flags = eFileProp_ErrorInvalidPath;
+      flags = PathProperty::ErrorInvalidPath;
     else if(errno == EACCES)
-      flags = eFileProp_ErrorAccessDenied;
+      flags = PathProperty::ErrorAccessDenied;
 
-    ret.push_back(FoundFile(path, flags));
-    return ret;
+    ret.push_back(PathEntry(path, flags));
+    return;
   }
 
   dirent *ent = NULL;
@@ -283,7 +356,7 @@ vector<FoundFile> GetFilesInDirectory(const char *path)
     if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, ".."))
       continue;
 
-    string fullpath = path;
+    rdcstr fullpath = path;
     fullpath += '/';
     fullpath += ent->d_name;
 
@@ -294,50 +367,48 @@ vector<FoundFile> GetFilesInDirectory(const char *path)
     if(res != 0)
       continue;
 
-    uint32_t flags = 0;
+    PathProperty flags = PathProperty::NoFlags;
 
     // make directory/executable mutually exclusive for clarity's sake
     if(S_ISDIR(st.st_mode))
-      flags |= eFileProp_Directory;
+      flags |= PathProperty::Directory;
     else if(st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))
-      flags |= eFileProp_Executable;
+      flags |= PathProperty::Executable;
 
     if(ent->d_name[0] == '.')
-      flags |= eFileProp_Hidden;
+      flags |= PathProperty::Hidden;
 
-    ret.push_back(FoundFile(ent->d_name, flags));
+    PathEntry f(ent->d_name, flags);
+
+    f.lastmod = (uint32_t)st.st_mtime;
+    f.size = (uint64_t)st.st_size;
+
+    ret.push_back(f);
   }
 
   // don't care if we hit an error or enumerated all files, just finish
 
   closedir(d);
-
-  return ret;
 }
 
-FILE *fopen(const char *filename, const char *mode)
+const char *modeString[] = {
+    "r", "rb", "w", "wb", "r+b", "w+b",
+};
+
+FILE *fopen(const rdcstr &filename, FileMode mode)
 {
-  return ::fopen(filename, mode);
+  return ::fopen(filename.c_str(), modeString[mode]);
 }
 
-string getline(FILE *f)
+rdcstr ErrorString()
 {
-  string ret;
+  int err = errno;
 
-  while(!FileIO::feof(f))
-  {
-    char c = (char)::fgetc(f);
+  char buf[256] = {0};
 
-    if(FileIO::feof(f))
-      break;
+  strerror_r(err, buf, 256);
 
-    if(c != 0 && c != '\n')
-      ret.push_back(c);
-    else
-      break;
-  }
-
-  return ret;
+  return buf;
 }
 
 size_t fread(void *buf, size_t elementSize, size_t count, FILE *f)
@@ -363,31 +434,148 @@ bool feof(FILE *f)
   return ::feof(f) != 0;
 }
 
+void ftruncateat(FILE *f, uint64_t length)
+{
+  ::fflush(f);
+  int fd = ::fileno(f);
+  ::ftruncate(fd, (off_t)length);
+}
+
+bool fflush(FILE *f)
+{
+  return ::fflush(f) == 0;
+}
+
 int fclose(FILE *f)
 {
   return ::fclose(f);
 }
 
-void *logfile_open(const char *filename)
+bool exists(const rdcstr &filename)
 {
-  int fd = open(filename, O_APPEND | O_WRONLY | O_CREAT, S_IWUSR);
-  return (void *)(intptr_t)fd;
+  struct ::stat st;
+  int res = stat(filename.c_str(), &st);
+
+  return (res == 0);
 }
 
-void logfile_append(void *handle, const char *msg, size_t length)
+rdcarray<int> logfiles;
+
+// this is used in posix_process.cpp, so that we can close the handle any time that we fork()
+void ReleaseFDAfterFork()
 {
-  if(handle)
+  // we do NOT release the shared lock here, since the file descriptor is shared so we'd be
+  // releasing the parent process's lock. Just close our file descriptor
+  for(int log : logfiles)
+    close(log);
+}
+
+rdcstr logfile_readall(uint64_t offset, const rdcstr &filename)
+{
+  FILE *f = FileIO::fopen(filename, FileIO::ReadText);
+
+  rdcstr ret;
+
+  if(f == NULL)
+    return ret;
+
+  FileIO::fseek64(f, 0, SEEK_END);
+  uint64_t size = FileIO::ftell64(f);
+
+  if(size > offset)
   {
-    int fd = ((intptr_t)handle & 0xffffffff);
+    FileIO::fseek64(f, offset, SEEK_SET);
+
+    ret.resize(size_t(size - offset));
+
+    size_t numRead = FileIO::fread(ret.data(), 1, ret.size(), f);
+    ret.resize(numRead);
+  }
+
+  FileIO::fclose(f);
+
+  return ret;
+}
+
+LogFileHandle *logfile_open(const rdcstr &filename)
+{
+  int fd =
+      open(filename.c_str(), O_APPEND | O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+
+  if(fd < 0)
+  {
+    RDCWARN("Couldn't open logfile '%s': %d", filename.c_str(), (int)errno);
+    return NULL;
+  }
+
+  logfiles.push_back(fd);
+
+  // acquire a shared lock. Every process acquires a shared lock to the common logfile. Each time a
+  // process shuts down and wants to close the logfile, it releases its shared lock and tries to
+  // acquire an exclusive lock, to see if it can delete the file. See logfile_close.
+  int err = flock(fd, LOCK_SH | LOCK_NB);
+
+  if(err < 0)
+    RDCWARN("Couldn't acquire shared lock to '%s': %d", filename.c_str(), (int)errno);
+
+  return (LogFileHandle *)(uintptr_t)fd;
+}
+
+void logfile_append(LogFileHandle *logHandle, const char *msg, size_t length)
+{
+  if(logHandle)
+  {
+    int fd = int(uintptr_t(logHandle) & 0xffffffff);
+
     write(fd, msg, (unsigned int)length);
   }
 }
 
-void logfile_close(void *handle)
+void logfile_close(LogFileHandle *logHandle, const rdcstr &deleteFilename)
 {
-  if(handle)
+  if(logHandle)
   {
-    int fd = ((intptr_t)handle & 0xffffffff);
+    int fd = int(uintptr_t(logHandle) & 0xffffffff);
+
+    // release our shared lock
+    int err = flock(fd, LOCK_UN | LOCK_NB);
+
+    if(err == 0 && !deleteFilename.empty())
+    {
+      // now try to acquire an exclusive lock. If this succeeds, no other processes are using the
+      // file (since no other shared locks exist), so we can delete it. If it fails, some other
+      // shared lock still exists so we can just close our fd and exit.
+      // NOTE: there is a race here between acquiring the exclusive lock and unlinking, but we
+      // aren't interested in this kind of race - we're interested in whether an application is
+      // still running when the UI closes, or vice versa, or similar cases.
+      err = flock(fd, LOCK_EX | LOCK_NB);
+
+      if(err == 0)
+      {
+        // we got the exclusive lock. Now release it, close fd, and unlink the file
+        err = flock(fd, LOCK_UN | LOCK_NB);
+
+        // can't really error handle here apart from retrying
+        if(err != 0)
+          RDCWARN("Couldn't release exclusive lock to '%s': %d", deleteFilename.c_str(), (int)errno);
+
+        close(fd);
+
+        unlink(deleteFilename.c_str());
+
+        // return immediately so we don't close again below.
+        return;
+      }
+    }
+    else if(err)
+    {
+      RDCWARN("Couldn't release shared lock to '%s': %d", deleteFilename.c_str(), (int)errno);
+      // nothing to do, we won't try again, just exit. The log might lie around, but that's
+      // relatively harmless.
+    }
+
+    logfiles.removeOne(fd);
+
     close(fd);
   }
 }
@@ -395,37 +583,39 @@ void logfile_close(void *handle)
 
 namespace StringFormat
 {
-void sntimef(char *str, size_t bufSize, const char *format)
+rdcstr sntimef(time_t utcTime, const char *format)
 {
-  time_t tim;
-  time(&tim);
+  tm *tmv = localtime(&utcTime);
 
-  tm *tmv = localtime(&tim);
+  // conservatively assume that most formatters will replace like-for-like (e.g. %H with 12) and
+  // a few will increase (%Y to 2019) but generally the string will stay the same size.
+  size_t len = strlen(format) + 16;
 
-  strftime(str, bufSize, format, tmv);
-}
+  size_t ret = 0;
+  char *buf = NULL;
 
-string Fmt(const char *format, ...)
-{
-  va_list args;
-  va_start(args, format);
+  // loop until we have successfully formatted
+  while(ret == 0)
+  {
+    // delete any previous buffer
+    delete[] buf;
 
-  va_list args2;
-  va_copy(args2, args);
+    // alloate new one of the new size
+    buf = new char[len + 1];
+    buf[len] = 0;
 
-  int size = StringFormat::vsnprintf(NULL, 0, format, args2);
+    // try formatting
+    ret = strftime(buf, len, format, tmv);
 
-  char *buf = new char[size + 1];
-  StringFormat::vsnprintf(buf, size + 1, format, args);
-  buf[size] = 0;
+    // double the length for next time, if this failed
+    len *= 2;
+  }
 
-  va_end(args);
-  va_end(args2);
+  rdcstr str = buf;
 
-  string ret = buf;
-
+  // delete successful buffer
   delete[] buf;
 
-  return ret;
+  return str;
 }
 };

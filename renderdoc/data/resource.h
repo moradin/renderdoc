@@ -1,47 +1,65 @@
+// clang-format off
 //{{NO_DEPENDENCIES}}
 // Microsoft Visual C++ generated include file.
 // Used by renderdoc.rc
 //
 #define TYPE_EMBED          256
 
-#define RESOURCE_debugdisplay_hlsl  101
-#define RESOURCE_debugtext_hlsl     102
-#define RESOURCE_debugcbuffers_h    103
-#define RESOURCE_debugcommon_hlsl   104
+#define RESOURCE_misc_hlsl          101
+#define RESOURCE_text_hlsl          102
+#define RESOURCE_hlsl_cbuffers_h    103
+#define RESOURCE_hlsl_texsample_h   104
 #define RESOURCE_histogram_hlsl     105
 #define RESOURCE_multisample_hlsl   106
 #define RESOURCE_mesh_hlsl          107
+#define RESOURCE_texdisplay_hlsl    108
+#define RESOURCE_pixelhistory_hlsl  109
+#define RESOURCE_quadoverdraw_hlsl  110
+#define RESOURCE_texremap_hlsl      111
+#define RESOURCE_fixedcol_hlsl      112
+
+#define RESOURCE_fixedcol_0_dxbc    113
+#define RESOURCE_fixedcol_1_dxbc    114
+#define RESOURCE_fixedcol_2_dxbc    115
+#define RESOURCE_fixedcol_3_dxbc    116
+#define RESOURCE_quadwrite_dxbc     117
 
 #define RESOURCE_sourcecodepro_ttf  301
 
-#define RESOURCE_glsl_blit_vert         401
-#define RESOURCE_glsl_checkerboard_frag 402
-#define RESOURCE_glsl_texdisplay_frag   403
-#define RESOURCE_glsl_text_vert         404
-#define RESOURCE_glsl_text_frag         405
-#define RESOURCE_glsl_fixedcol_frag     408
-#define RESOURCE_glsl_mesh_vert         409
-#define RESOURCE_glsl_mesh_geom         410
-#define RESOURCE_glsl_mesh_frag         411
-#define RESOURCE_glsl_minmaxtile_comp   412
-#define RESOURCE_glsl_minmaxresult_comp 413
-#define RESOURCE_glsl_histogram_comp    414
-#define RESOURCE_glsl_outline_frag      415
-#define RESOURCE_glsl_debuguniforms_h   416
-#define RESOURCE_glsl_gl_texsample_h    417
-#define RESOURCE_glsl_vk_texsample_h    418
-#define RESOURCE_glsl_quadresolve_frag  419
-#define RESOURCE_glsl_quadwrite_frag    420
-#define RESOURCE_glsl_mesh_comp         421
-#define RESOURCE_glsl_array2ms_comp     422
-#define RESOURCE_glsl_ms2array_comp     423
-#define RESOURCE_glsl_trisize_geom      424
-#define RESOURCE_glsl_trisize_frag      425
-#define RESOURCE_glsl_deptharr2ms_frag  426
-#define RESOURCE_glsl_depthms2arr_frag  427
-
-#define GIT_COMMIT_HASH							"NO_GIT_COMMIT_HASH_DEFINED"
-//#define RENDERDOC_OFFICIAL_BUILD // used to determine whether to submit auto crash reports
+#define RESOURCE_glsl_blit_vert                      401
+#define RESOURCE_glsl_checkerboard_frag              402
+#define RESOURCE_glsl_texdisplay_frag                403
+#define RESOURCE_glsl_vktext_vert                    404
+#define RESOURCE_glsl_vktext_frag                    405
+#define RESOURCE_glsl_fixedcol_frag                  408
+#define RESOURCE_glsl_mesh_vert                      409
+#define RESOURCE_glsl_mesh_geom                      410
+#define RESOURCE_glsl_mesh_frag                      411
+#define RESOURCE_glsl_minmaxtile_comp                412
+#define RESOURCE_glsl_minmaxresult_comp              413
+#define RESOURCE_glsl_histogram_comp                 414
+#define RESOURCE_glsl_glsl_ubos_h                    416
+#define RESOURCE_glsl_gl_texsample_h                 417
+#define RESOURCE_glsl_vk_texsample_h                 418
+#define RESOURCE_glsl_quadresolve_frag               419
+#define RESOURCE_glsl_quadwrite_frag                 420
+#define RESOURCE_glsl_mesh_comp                      421
+#define RESOURCE_glsl_array2ms_comp                  422
+#define RESOURCE_glsl_ms2array_comp                  423
+#define RESOURCE_glsl_trisize_geom                   424
+#define RESOURCE_glsl_trisize_frag                   425
+#define RESOURCE_glsl_deptharr2ms_frag               426
+#define RESOURCE_glsl_depthms2arr_frag               427
+#define RESOURCE_glsl_gles_texsample_h               428
+#define RESOURCE_glsl_gltext_vert                    429
+#define RESOURCE_glsl_gltext_frag                    430
+#define RESOURCE_glsl_glsl_globals_h                 440
+#define RESOURCE_glsl_texremap_frag                  441
+#define RESOURCE_glsl_pixelhistory_mscopy_comp       442
+#define RESOURCE_glsl_pixelhistory_mscopy_depth_comp 443
+#define RESOURCE_glsl_pixelhistory_primid_frag       444
+#define RESOURCE_glsl_shaderdebug_sample_vert        445
+#define RESOURCE_glsl_discard_frag                   446
 
 // Next default values for new objects
 // 

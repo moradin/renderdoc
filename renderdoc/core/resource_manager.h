@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -25,37 +25,273 @@
 
 #pragma once
 
+#include <algorithm>
 #include <map>
 #include <set>
-#include "api/replay/renderdoc_replay.h"
+#include <unordered_map>
+#include <unordered_set>
+#include "api/replay/rdcflatmap.h"
+#include "api/replay/resourceid.h"
 #include "common/threading.h"
 #include "core/core.h"
 #include "os/os_specific.h"
 #include "serialise/serialiser.h"
 
-using std::set;
-using std::map;
-
-// in what way (read, write, etc) was a resource referenced in a frame -
-// used to determine if initial contents are needed and to what degree
+// In what way (read, write, etc) was a resource referenced in a frame -
+// used to determine if initial contents are needed and to what degree.
+// These values are used both as states (representing the cumulative previous
+// accesses to the resource), and state transitions (access by a single
+// command, modifying the state). This state machine is illustrated below,
+// with states represented in caps, and transitions in lower case.
+//
+//         +------------------ NONE -----------------------------+
+//         |                    |                                |
+//        read            partialWrite                     completeWrite
+//         |                    |                                |
+//         V                    V                                V
+//       READ             PARTIAL_WRITE --completeWrite--> COMPLETE_WRITE
+//         |                    |
+//         |                  read
+//       write                  |
+//         |                    V
+//         |            WRITE_BEFORE_READ
+//         V                    |
+//  READ_BEFORE_WRITE <--write--+
+//
+// Note:
+//  * All resources begin implicitly in the None state.
+//  * The transitions labeled "write" correspond to either PartialWrite or
+//    CompleteWrite (e.g. in the READ state, either a PartialWrite or a
+//    CompleteWrite moves to the READ_BEFORE_WRITE state).
+//  * The state transitions for ReadBeforeWrite are simply the composition of
+//    the transition for read, followed by the transition for write (e.g.
+//    ReadBeforeWrite moves from NONE state to READBEFOREWRITE state);
+//    similarly, the state transitions for WriteBeforeRead are the composition
+//    of the transition for write, followed by the transition for read.
+//  * All other transitions (excluding ReadBeforeWrite and WriteBeforeRead)
+//    that are not explicitly shown leave the state unchanged (e.g. a read in
+//    the COMPLETE_WRITE state remains in the COMPLETE_WRITE state).
 enum FrameRefType
 {
-  eFrameRef_Unknown,    // for the initial start of frame pipeline state - can't be marked as
-                        // written/read yet until first action.
+  // Initial state, no reads or writes
+  eFrameRef_None = 0,
 
-  // Inputs
-  eFrameRef_Read,
-  eFrameRef_Write,
+  // Write to some unknown subset of resource.
+  // As a state, this represents that unlike clear, some part of the
+  // initial contents might still be visible to later reads.
+  eFrameRef_PartialWrite = 1,
 
-  // States
-  eFrameRef_ReadOnly,
-  eFrameRef_ReadAndWrite,
-  eFrameRef_ReadBeforeWrite,
+  // Write to the entire resource.
+  // As a state, this represents that no later reads will even be able to see
+  // the initial contents, and therefore, the initial contents need not be
+  // restored for replay.
+  eFrameRef_CompleteWrite = 2,
+
+  // Read from the resource;
+  // As a state, this represents a read that could have seen the resource's
+  // initial contents, but the value seen by the read has not been overwritten;
+  // therefore, the initial contents needs to be restored before the first time
+  // we replay, but doesn't need to be reset between subsequent replays.
+  eFrameRef_Read = 3,
+
+  // Read followed by a write;
+  // As a state, this represents a read that could have seen the resource
+  // initial contents, followed by a write that could have modified that
+  // initial contents; therefore, the initial contents will need to be reset
+  // before each time we replay the frame.
+  eFrameRef_ReadBeforeWrite = 4,
+
+  // Partial write followed by read;
+  // For the purpose of correct replay, this is equivalent to `Read`. However,
+  // if this resource is inspected by the user before the write, the future
+  // read could, incorrectly, be observed. This is because read-only resources
+  // are not reset, so the write from the previous replay may still be present.
+  eFrameRef_WriteBeforeRead = 5,
+
+  // Similar to a CompleteWrite, but this is effectively an atomic "completely written, used, and
+  // discarded". This encodes more information than CompleteWrite because it tells us that the
+  // resource contents won't ever be used. For most purposes we treat this the same as
+  // CompleteWrite, but below we use it to identify skippable resources.
+  eFrameRef_CompleteWriteAndDiscard = 6,
+
+  // No reference info is available;
+  // This should only appear durring replay, and any (sub)resource with `Unknown`
+  // reference type should be conservatively reset before each replay.
+  eFrameRef_Unknown = 1000000000,
 };
+
+bool IncludesRead(FrameRefType refType);
+
+bool IncludesWrite(FrameRefType refType);
+
+const FrameRefType eFrameRef_Minimum = eFrameRef_None;
+const FrameRefType eFrameRef_Maximum = eFrameRef_CompleteWriteAndDiscard;
+
+// Threshold value for resource "age", i.e. how long it wasn't
+// referred with the any write reference.
+const double PERSISTENT_RESOURCE_AGE = 3000;
+// how long since the first time it was skipped. If the skip state hasn't been invalidated in this
+// long it can be skipped
+const double SKIP_RESOURCE_AGE = 3000;
+
+DECLARE_REFLECTION_ENUM(FrameRefType);
+
+typedef FrameRefType (*FrameRefCompFunc)(FrameRefType, FrameRefType);
+
+// Compose frame refs that occur in a known order.
+// This can be thought of as a state (`first`) and a transition from that state
+// (`second`), returning the new state (see the state diagram for
+// `FrameRefType` above)
+FrameRefType ComposeFrameRefs(FrameRefType first, FrameRefType second);
+
+// Compose frame refs when the order is unknown.
+// This is conservative, in that, if there is both a Read and a Write/Clear, it
+// assumes the Read occurs before the Write/Clear, forcing that resource to be
+// reset for replay.
+FrameRefType ComposeFrameRefsUnordered(FrameRefType first, FrameRefType second);
+
+// Compose frame refs for disjoint subresources.
+// This is used to compute the overall frame ref for images/memory from the
+// frame refs of their subresources.
+FrameRefType ComposeFrameRefsDisjoint(FrameRefType x, FrameRefType y);
+
+// Returns whichever of `first` or `second` is valid.
+FrameRefType ComposeFrameRefsFirstKnown(FrameRefType first, FrameRefType second);
+
+// Dummy frame ref composition that always keeps the old ref.
+FrameRefType KeepOldFrameRef(FrameRefType first, FrameRefType second);
+
+bool IsDirtyFrameRef(FrameRefType refType);
+bool IsCompleteWriteFrameRef(FrameRefType refType);
+
+// Captures the possible initialization/reset requirements for resources.
+// These requirements are entirely determined by the resource's FrameRefType,
+// but this type improves the readability of the code that checks
+// init/reset requirements.
+enum InitReqType
+{
+  // No initialization required.
+  eInitReq_None,
+
+  // Initialize the resource by clearing.
+  eInitReq_Clear,
+
+  // Initialize the resource by copying initial data.
+  eInitReq_Copy,
+};
+
+enum InitPolicy
+{
+  // Completely disable optimizations--copy initial data into every resource
+  // before every replay.
+  eInitPolicy_NoOpt,
+
+  // CopyAll--conservative policy which ensures each subresource begins each
+  // replay with the correct initial data.
+  //
+  // Initialization policy:
+  //   Copy initial data into each subresource
+  //
+  // Reset policy:
+  //   Copy initial data into each subresource which is written
+  eInitPolicy_CopyAll,
+
+  // ClearUnread--avoid copying initial data which is never read by the replay
+  // commands. A user inspecting a resource before it is written may observe
+  // cleared data, rather than the actual initial data.
+  //
+  // Initialization policy:
+  //   Copy initial data into each subresource that is read.
+  //   Clear each subresource that is not read.
+  //
+  // Reset policy:
+  //   Copy initial data into each subresource where the initial data is read
+  //   and then overwritten.
+  //   Clear each subresource which is written, but whose initial data is not read.
+  eInitPolicy_ClearUnread,
+
+  // Fastest--Initialize/reset as little as possible for correct replay.
+  // A user inspecting a resource before it is written may observe the data
+  // from a future write (from the previous replay).
+  //
+  // Initialization policy:
+  //   Copy initial data into each subresource that is read.
+  //   Clear each subresource that is not read.
+  //
+  // Reset policy:
+  //   Copy initial data into each subresource where the initial data is read
+  //   and then overwritten.
+  eInitPolicy_Fastest,
+};
+
+// Return the initialization/reset requirements for a FrameRefType
+inline InitReqType InitReq(FrameRefType refType, InitPolicy policy, bool initialized)
+{
+  if(eFrameRef_Minimum > refType || refType > eFrameRef_Maximum)
+    return eInitReq_Copy;
+#define COPY_ONCE (initialized ? eInitReq_None : eInitReq_Copy)
+#define CLEAR_ONCE (initialized ? eInitReq_None : eInitReq_Clear)
+  switch(policy)
+  {
+    case eInitPolicy_NoOpt: return eInitReq_Copy;
+    case eInitPolicy_CopyAll:
+      switch(refType)
+      {
+        case eFrameRef_None: return COPY_ONCE;
+        case eFrameRef_Read: return COPY_ONCE;
+        default: return eInitReq_Copy;
+      }
+    case eInitPolicy_ClearUnread:
+      switch(refType)
+      {
+        case eFrameRef_None: return CLEAR_ONCE;
+        case eFrameRef_Read: return COPY_ONCE;
+        case eFrameRef_ReadBeforeWrite: return eInitReq_Copy;
+        case eFrameRef_WriteBeforeRead: return eInitReq_Copy;
+        default: return eInitReq_Clear;
+      }
+    case eInitPolicy_Fastest:
+      switch(refType)
+      {
+        case eFrameRef_None: return CLEAR_ONCE;
+        case eFrameRef_Read: return COPY_ONCE;
+        case eFrameRef_ReadBeforeWrite: return eInitReq_Copy;
+        case eFrameRef_WriteBeforeRead: return COPY_ONCE;
+        default: return CLEAR_ONCE;
+      }
+    default: RDCERR("Unknown initialization policy (%d).", policy); return eInitReq_Copy;
+  }
+#undef COPY_ONCE
+#undef CLEAR_ONCE
+}
+
+// handle marking a resource referenced for read or write and storing RAW access etc.
+template <typename Compose>
+bool MarkReferenced(std::map<ResourceId, FrameRefType> &refs, ResourceId id, FrameRefType refType,
+                    Compose comp)
+{
+  auto refit = refs.find(id);
+  if(refit == refs.end())
+  {
+    refs[id] = refType;
+    return true;
+  }
+  else
+  {
+    refit->second = comp(refit->second, refType);
+  }
+  return false;
+}
+
+inline bool MarkReferenced(std::map<ResourceId, FrameRefType> &refs, ResourceId id,
+                           FrameRefType refType)
+{
+  return MarkReferenced(refs, id, refType, ComposeFrameRefs);
+}
 
 // verbose prints with IDs of each dirty resource and whether it was prepared,
 // and whether it was serialised.
-#define VERBOSE_DIRTY_RESOURCES 0
+#define VERBOSE_DIRTY_RESOURCES OPTION_OFF
 
 namespace ResourceIDGen
 {
@@ -69,8 +305,6 @@ class ResourceRecordHandler
 {
 public:
   virtual void MarkDirtyResource(ResourceId id) = 0;
-  virtual void MarkCleanResource(ResourceId id) = 0;
-  virtual void MarkPendingDirty(ResourceId id) = 0;
   virtual void RemoveResourceRecord(ResourceId id) = 0;
   virtual void MarkResourceFrameReferenced(ResourceId id, FrameRefType refType) = 0;
   virtual void DestroyResourceRecord(ResourceRecord *record) = 0;
@@ -94,7 +328,7 @@ struct ResourceRecord
         DataOffset(0),
         Length(0),
         DataWritten(false),
-        SpecialResource(false)
+        InternalResource(false)
   {
     m_ChunkLock = NULL;
 
@@ -102,13 +336,17 @@ struct ResourceRecord
       m_ChunkLock = new Threading::CriticalSection();
   }
 
+  void DisableChunkLocking() { SAFE_DELETE(m_ChunkLock); }
   ~ResourceRecord() { SAFE_DELETE(m_ChunkLock); }
   void AddParent(ResourceRecord *r)
   {
-    if(Parents.find(r) == Parents.end())
+    if(r == this)
+      return;
+
+    if(Parents.indexOf(r) < 0)
     {
       r->AddRef();
-      Parents.insert(r);
+      Parents.push_back(r);
     }
   }
 
@@ -133,7 +371,7 @@ struct ResourceRecord
   }
 
   void MarkDataUnwritten() { DataWritten = false; }
-  void Insert(map<int32_t, Chunk *> &recordlist)
+  void Insert(std::map<int64_t, Chunk *> &recordlist)
   {
     bool dataWritten = DataWritten;
 
@@ -148,7 +386,10 @@ struct ResourceRecord
     }
 
     if(!dataWritten)
-      recordlist.insert(m_Chunks.begin(), m_Chunks.end());
+    {
+      for(auto it = m_Chunks.begin(); it != m_Chunks.end(); ++it)
+        recordlist[it->id] = it->chunk;
+    }
   }
 
   void AddRef() { Atomic::Inc32(&RefCount); }
@@ -156,26 +397,12 @@ struct ResourceRecord
   void Delete(ResourceRecordHandler *mgr);
 
   ResourceId GetResourceID() const { return ResID; }
-  void RemoveChunk(Chunk *chunk)
+  void AddChunk(Chunk *chunk, int64_t ID = 0)
   {
-    LockChunks();
-    for(auto it = m_Chunks.begin(); it != m_Chunks.end(); ++it)
-    {
-      if(it->second == chunk)
-      {
-        m_Chunks.erase(it);
-        break;
-      }
-    }
-    UnlockChunks();
-  }
-
-  void AddChunk(Chunk *chunk, int32_t ID = 0)
-  {
-    LockChunks();
     if(ID == 0)
       ID = GetID();
-    m_Chunks[ID] = chunk;
+    LockChunks();
+    m_Chunks.push_back(StoredChunk(ID, chunk));
     UnlockChunks();
   }
 
@@ -208,7 +435,7 @@ struct ResourceRecord
     other->LockChunks();
 
     for(auto it = other->m_Chunks.begin(); it != other->m_Chunks.end(); ++it)
-      AddChunk(it->second->Duplicate());
+      AddChunk(it->chunk->Duplicate());
 
     for(auto it = other->Parents.begin(); it != other->Parents.end(); ++it)
       AddParent(*it);
@@ -221,7 +448,7 @@ struct ResourceRecord
   {
     LockChunks();
     for(auto it = m_Chunks.begin(); it != m_Chunks.end(); ++it)
-      SAFE_DELETE(it->second);
+      it->chunk->Delete(it->fromAllocator != 0);
     m_Chunks.clear();
     UnlockChunks();
   }
@@ -229,23 +456,28 @@ struct ResourceRecord
   Chunk *GetLastChunk() const
   {
     RDCASSERT(HasChunks());
-    return m_Chunks.rbegin()->second;
+    return m_Chunks.back().chunk;
   }
 
-  int32_t GetLastChunkID() const
+  int64_t GetLastChunkID() const
   {
     RDCASSERT(HasChunks());
-    return m_Chunks.rbegin()->first;
+    return m_Chunks.back().id;
   }
 
-  void PopChunk() { m_Chunks.erase(m_Chunks.rbegin()->first); }
+  void PopChunk() { m_Chunks.pop_back(); }
   byte *GetDataPtr() { return DataPtr + DataOffset; }
   bool HasDataPtr() { return DataPtr != NULL; }
   void SetDataOffset(uint64_t offs) { DataOffset = offs; }
   void SetDataPtr(byte *ptr) { DataPtr = ptr; }
-  void MarkResourceFrameReferenced(ResourceId id, FrameRefType refType);
+  template <typename Compose>
+  bool MarkResourceFrameReferenced(ResourceId id, FrameRefType refType, Compose comp);
+  inline bool MarkResourceFrameReferenced(ResourceId id, FrameRefType refType)
+  {
+    return MarkResourceFrameReferenced(id, refType, ComposeFrameRefs);
+  }
   void AddResourceReferences(ResourceRecordHandler *mgr);
-  void AddReferencedIDs(std::set<ResourceId> &ids)
+  void AddReferencedIDs(std::unordered_set<ResourceId> &ids)
   {
     for(auto it = m_FrameRefs.begin(); it != m_FrameRefs.end(); ++it)
       ids.insert(it->first);
@@ -255,31 +487,63 @@ struct ResourceRecord
 
   int UpdateCount;
   bool DataInSerialiser;
-  bool SpecialResource;    // like the swap chain back buffers
+
+  // anything internal that shouldn't be automatically pulled in by 'Ref All Resources' or have
+  // initial contents stored. This could either be a type of object that would break if its chunks
+  // were inserted into the initialisation phase (like an D3D11 DeviceContext which contains
+  // commands) or just debug objects created during capture as helpers which shouldn't be included.
+  //
+  // The implication is that they are handled specially for being inserted into the capture, or
+  // aren't inserted at all. Note that if a resource is frame-referenced, it will be included
+  // regardless but still without initial contents, capture drivers should be careful.
+  bool InternalResource;
   bool DataWritten;
 
 protected:
-  volatile int32_t RefCount;
+  int32_t RefCount;
 
   byte *DataPtr;
   uint64_t DataOffset;
 
   ResourceId ResID;
 
-  std::set<ResourceRecord *> Parents;
+  rdcarray<ResourceRecord *> Parents;
 
-  int32_t GetID()
+  int64_t GetID()
   {
-    static volatile int32_t globalIDCounter = 10;
+    static int64_t globalIDCounter = 10;
 
-    return Atomic::Inc32(&globalIDCounter);
+    return Atomic::Inc64(&globalIDCounter);
   }
 
-  std::map<int32_t, Chunk *> m_Chunks;
+  struct StoredChunk
+  {
+    StoredChunk(int64_t i, Chunk *c)
+    {
+      id = i;
+      // we store this here because by the time it comes to delete the chunks the allocator may have
+      // already been reset and the contents trashed.
+      fromAllocator = c->IsFromAllocator() ? 1 : 0;
+      chunk = c;
+    }
+    int64_t id : 63;
+    int64_t fromAllocator : 1;
+    Chunk *chunk;
+  };
+
+  rdcarray<StoredChunk> m_Chunks;
   Threading::CriticalSection *m_ChunkLock;
 
-  map<ResourceId, FrameRefType> m_FrameRefs;
+  std::map<ResourceId, FrameRefType> m_FrameRefs;
 };
+
+template <typename Compose>
+bool ResourceRecord::MarkResourceFrameReferenced(ResourceId id, FrameRefType refType, Compose comp)
+{
+  if(id == ResourceId())
+    return false;
+  return MarkReferenced(m_FrameRefs, id, refType, comp);
+}
 
 // the resource manager is a utility class that's not required but is likely wanted by any API
 // implementation.
@@ -292,29 +556,20 @@ protected:
 // In the replay application it will also track which 'live' resources are representing which
 // 'original'
 // resources from the application when it was captured.
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
+template <typename Configuration>
 class ResourceManager : public ResourceRecordHandler
 {
 public:
-  ResourceManager(LogState state, Serialiser *ser);
+  typedef typename Configuration::WrappedResourceType WrappedResourceType;
+  typedef typename Configuration::RealResourceType RealResourceType;
+  typedef typename Configuration::RecordType RecordType;
+  typedef typename Configuration::InitialContentData InitialContentData;
+
+  ResourceManager(CaptureState &state);
   virtual ~ResourceManager();
 
   void Shutdown();
 
-  struct InitialContentData
-  {
-    InitialContentData(WrappedResourceType r, uint32_t n, byte *b) : resource(r), num(n), blob(b) {}
-    InitialContentData()
-        : resource((WrappedResourceType)RecordType::NullResource), num(0), blob(NULL)
-    {
-    }
-    WrappedResourceType resource;
-    uint32_t num;
-    byte *blob;
-  };
-
-  bool IsWriting() { return m_State >= WRITING; }
-  bool IsReading() { return m_State < WRITING; }
   ///////////////////////////////////////////
   // Capture-side methods
 
@@ -331,11 +586,8 @@ public:
   WrappedResourceType GetCurrentResource(ResourceId id);
   void ReleaseCurrentResource(ResourceId id);
 
-  void MarkInFrame(bool inFrame) { m_InFrame = inFrame; }
-  void ReleaseInFrameResources();
-
   // insert the chunks for the resources referenced in the frame
-  void InsertReferencedChunks(Serialiser *fileSer);
+  void InsertReferencedChunks(WriteSerialiser &ser);
 
   // mark resource records as unwritten, ready to be written to a new logfile.
   void MarkUnwrittenResources();
@@ -349,14 +601,6 @@ public:
   // of the frame.
   inline void MarkDirtyResource(ResourceId res);
 
-  // for use when we might be mid-capture, this will get flushed to dirty state before the
-  // next frame but is safe to use mid-capture
-  void MarkPendingDirty(ResourceId res);
-  void FlushPendingDirty();
-
-  // this can be used when the resource is cleared or similar and it's in a known state
-  void MarkCleanResource(ResourceId res);
-
   // returns if the resource has been marked as dirty
   bool IsResourceDirty(ResourceId res);
 
@@ -368,24 +612,25 @@ public:
   void SetInitialChunk(ResourceId id, Chunk *chunk);
 
   // generate chunks for initial contents and insert.
-  void InsertInitialContentsChunks(Serialiser *fileSer);
+  void InsertInitialContentsChunks(WriteSerialiser &ser);
+
+  // for initial contents that don't need a chunk - apply them here. This allows any patching to
+  // creation-time chunks to happen before they're written to disk.
+  void ApplyInitialContentsNonChunks(WriteSerialiser &ser);
 
   // Serialise out which resources need initial contents, along with whether their
   // initial contents are in the serialised stream (e.g. RTs might still want to be
   // cleared on frame init).
-  void Serialise_InitialContentsNeeded();
-
-  // handle marking a resource referenced for read or write and storing RAW access etc.
-  static bool MarkReferenced(map<ResourceId, FrameRefType> &refs, ResourceId id,
-                             FrameRefType refType);
+  void Serialise_InitialContentsNeeded(WriteSerialiser &ser);
 
   // mark resource referenced somewhere in the main frame-affecting calls.
   // That means this resource should be included in the final serialise out
-  inline void MarkResourceFrameReferenced(ResourceId id, FrameRefType refType);
+  template <typename Compose>
+  void MarkResourceFrameReferenced(ResourceId id, FrameRefType refType, Compose comp);
 
-  // check if this resource was read before being written to - can be used to detect if
-  // initial states are necessary
-  bool ReadBeforeWrite(ResourceId id);
+  inline void MarkResourceFrameReferenced(ResourceId id, FrameRefType refType);
+  void MarkBackgroundFrameReferenced(const rdcflatmap<ResourceId, FrameRefType> &refs);
+  void CleanBackgroundFrameReferences();
 
   ///////////////////////////////////////////
   // Replay-side methods
@@ -401,12 +646,17 @@ public:
   bool HasReplacement(ResourceId from);
   void RemoveReplacement(ResourceId id);
 
+  // get the original ID for a real ID that may be a replacement. i.e. if ID 123 is ID 10000005
+  // live, and 10000005 live is replaced with 10000839, then calling this function with either ID
+  // 10000005 or ID 10000839 will return ID 123.
+  ResourceId GetUnreplacedOriginalID(ResourceId id);
+
   // fetch original ID for a real ID or vice-versa.
   ResourceId GetOriginalID(ResourceId id);
   ResourceId GetLiveID(ResourceId id);
 
   // Serialise in which resources need initial contents and set them up.
-  void CreateInitialContents();
+  void CreateInitialContents(ReadSerialiser &ser);
 
   // Free any initial contents that are prepared (for after capture is complete)
   void FreeInitialContents();
@@ -420,91 +670,156 @@ public:
   WrappedResourceType GetWrapper(RealResourceType real);
   void RemoveWrapper(RealResourceType real);
 
+  void ResetLastWriteTimes();
+  void ResetCaptureStartTime();
+
+  bool HasPersistentAge(ResourceId id);
+  bool HasSkippableAge(ResourceId id);
+  bool IsResourcePostponed(ResourceId id);
+  bool IsResourceSkipped(ResourceId id);
+  bool ShouldPostpone(ResourceId id);
+  bool ShouldSkip(ResourceId id);
+
+  virtual bool IsResourceTrackedForPersistency(const WrappedResourceType &res) { return false; }
 protected:
+  friend InitialContentData;
   // 'interface' to implement by derived classes
-  virtual bool SerialisableResource(ResourceId id, RecordType *record) = 0;
   virtual ResourceId GetID(WrappedResourceType res) = 0;
 
   virtual bool ResourceTypeRelease(WrappedResourceType res) = 0;
 
-  virtual bool Force_InitialState(WrappedResourceType res, bool prepare) = 0;
-  virtual bool AllowDeletedResource_InitialState() { return false; }
-  virtual bool Need_InitialStateChunk(WrappedResourceType res) = 0;
+  virtual bool Need_InitialStateChunk(ResourceId id, const InitialContentData &initial)
+  {
+    return true;
+  }
   virtual bool Prepare_InitialState(WrappedResourceType res) = 0;
-  virtual bool Serialise_InitialState(ResourceId id, WrappedResourceType res) = 0;
+  virtual uint64_t GetSize_InitialState(ResourceId id, const InitialContentData &initial) = 0;
+  virtual bool Serialise_InitialState(WriteSerialiser &ser, ResourceId id, RecordType *record,
+                                      const InitialContentData *initialData) = 0;
   virtual void Create_InitialState(ResourceId id, WrappedResourceType live, bool hasData) = 0;
-  virtual void Apply_InitialState(WrappedResourceType live, InitialContentData initial) = 0;
+  virtual void Apply_InitialState(WrappedResourceType live, const InitialContentData &initial) = 0;
+  virtual rdcarray<ResourceId> InitialContentResources();
 
-  LogState m_State;
-  Serialiser *m_pSerialiser;
+  void UpdateLastWriteTime(ResourceId id, FrameRefType refType);
 
-  Serialiser *GetSerialiser() { return m_pSerialiser; }
-  bool m_InFrame;
+  void Prepare_InitialStateIfPostponed(ResourceId id, bool midframe);
+  void SkipOrPostponeOrPrepare_InitialState(ResourceId id, FrameRefType refType);
 
   // very coarse lock, protects EVERYTHING. This could certainly be improved and it may be a
-  // bottleneck
-  // for performance. Given that the main use cases are write-rarely read-often the lock should be
-  // optimised
-  // for that as we only want to make sure we're not modifying the objects together, by far the most
-  // common
-  // operation is looking up data.
+  // bottleneck for performance. Given that the main use cases are write-rarely read-often the lock
+  // should be optimised for that as we only want to make sure we're not modifying the objects
+  // together, by far the most common operation is looking up data.
   Threading::CriticalSection m_Lock;
 
+  // we only need to lock during capturing, on replay we have single threaded access.
+  bool m_Capturing;
+
   // easy optimisation win - don't use maps everywhere. It's convenient but not optimal, and
-  // profiling will
-  // likely prove that some or all of these could be a problem
+  // profiling will likely prove that some or all of these could be a problem
 
   // used during capture - map from real resource to its wrapper (other way can be done just with an
   // Unwrap)
-  map<RealResourceType, WrappedResourceType> m_WrapperMap;
+  std::map<RealResourceType, WrappedResourceType> m_WrapperMap;
 
   // used during capture - holds resources referenced in current frame (and how they're referenced)
-  map<ResourceId, FrameRefType> m_FrameReferencedResources;
+  std::map<ResourceId, FrameRefType> m_FrameReferencedResources;
 
   // used during capture - holds resources marked as dirty, needing initial contents
-  set<ResourceId> m_DirtyResources;
-  set<ResourceId> m_PendingDirtyResources;
+  std::set<ResourceId> m_DirtyResources;
+
+  struct InitialContentDataOrChunk
+  {
+    Chunk *chunk = NULL;
+    InitialContentData data;
+
+    void Free(ResourceManager *mgr)
+    {
+      if(chunk)
+      {
+        chunk->Delete();
+        chunk = NULL;
+      }
+
+      data.Free(mgr);
+    }
+  };
 
   // used during capture or replay - holds initial contents
-  map<ResourceId, InitialContentData> m_InitialContents;
-  // on capture, if a chunk was prepared in Prepare_InitialContents and added, don't re-serialise.
-  // Some initial contents may not need the delayed readback.
-  map<ResourceId, Chunk *> m_InitialChunks;
+  std::map<ResourceId, InitialContentDataOrChunk> m_InitialContents;
 
   // used during capture or replay - map of resources currently alive with their real IDs, used in
   // capture and replay.
-  map<ResourceId, WrappedResourceType> m_CurrentResourceMap;
+  std::unordered_map<ResourceId, WrappedResourceType> m_CurrentResourceMap;
 
   // used during replay - maps back and forth from original id to live id and vice-versa
-  map<ResourceId, ResourceId> m_OriginalIDs, m_LiveIDs;
+  std::unordered_map<ResourceId, ResourceId> m_OriginalIDs, m_LiveIDs;
 
   // used during replay - holds resources allocated and the original id that they represent
-  // for a) in-frame creations and b) pre-frame creations respectively.
-  map<ResourceId, WrappedResourceType> m_InframeResourceMap, m_LiveResourceMap;
+  std::unordered_map<ResourceId, WrappedResourceType> m_LiveResourceMap;
 
   // used during capture - holds resource records by id.
-  map<ResourceId, RecordType *> m_ResourceRecords;
+  std::unordered_map<ResourceId, RecordType *> m_ResourceRecords;
+  Threading::RWLock m_ResourceRecordLock;
 
   // used during replay - holds current resource replacements
-  map<ResourceId, ResourceId> m_Replacements;
+  // replaced -> replacement
+  std::unordered_map<ResourceId, ResourceId> m_Replacements;
+  // replacement -> replaced (for looking up original IDs)
+  std::unordered_map<ResourceId, ResourceId> m_Replaced;
+
+  // During initial resources preparation, persistent resources are
+  // postponed until serializing to RDC file.
+  std::unordered_set<ResourceId> m_PostponedResourceIDs;
+  // During initial resources preparation, resources that are completely written
+  // over are skipped
+  std::unordered_set<ResourceId> m_SkippedResourceIDs;
+
+  struct ResourceRefTimes
+  {
+    ResourceId id;
+
+    // On marking resource write-referenced in frame, its last write time is reset. The time is used
+    // to determine persistent resources, and is checked against the `PERSISTENT_RESOURCE_AGE`.
+    double writeTime;
+
+    // firstSkipTime is referring to the first time we saw a resource get marked as skippable.
+    // Any write will reset this time to 0.0 (not skippable), so if the firstSkipTime is longer than
+    // `SKIP_RESOURCE_AGE` ago then we know the resource has only ever been skipped (or not written)
+    // for that long. If the time is 0.0 then it's been written in a more visible way recently or
+    // has never been marked skippable.
+    double firstSkipTime;
+
+    bool operator<(const ResourceId &o) const { return id < o; }
+  };
+
+  // all resources that are written in some way end up in this list. We then check the last time
+  // they were written, and the last time they were ever partially used (not completely overwritten
+  // in one atomic chunk).
+  rdcarray<ResourceRefTimes> m_ResourceRefTimes;
+
+  // Timestamp at the beginning of the frame capture. Used to determine which
+  // resources to refresh for their last write or partial use time (see `ResourceRefTimes`).
+  double m_captureStartTime;
+
+  PerformanceTimer m_ResourcesUpdateTimer;
+
+  // The capture state is propagated by a specific driver.
+  CaptureState &m_State;
 };
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-ResourceManager<WrappedResourceType, RealResourceType, RecordType>::ResourceManager(LogState state,
-                                                                                    Serialiser *ser)
+template <typename Configuration>
+ResourceManager<Configuration>::ResourceManager(CaptureState &state) : m_State(state)
 {
+  m_Capturing = IsCaptureMode(state);
   if(RenderDoc::Inst().GetCrashHandler())
     RenderDoc::Inst().GetCrashHandler()->RegisterMemoryRegion(this, sizeof(ResourceManager));
-
-  m_State = state;
-  m_pSerialiser = ser;
-
-  m_InFrame = false;
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::Shutdown()
+template <typename Configuration>
+void ResourceManager<Configuration>::Shutdown()
 {
+  FreeInitialContents();
+
   while(!m_LiveResourceMap.empty())
   {
     auto it = m_LiveResourceMap.begin();
@@ -516,27 +831,13 @@ void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::Shutdow
       m_LiveResourceMap.erase(removeit);
   }
 
-  while(!m_InframeResourceMap.empty())
-  {
-    auto it = m_InframeResourceMap.begin();
-    ResourceId id = it->first;
-    ResourceTypeRelease(it->second);
-
-    auto removeit = m_InframeResourceMap.find(id);
-    if(removeit != m_InframeResourceMap.end())
-      m_InframeResourceMap.erase(removeit);
-  }
-
-  FreeInitialContents();
-
   RDCASSERT(m_ResourceRecords.empty());
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-ResourceManager<WrappedResourceType, RealResourceType, RecordType>::~ResourceManager()
+template <typename Configuration>
+ResourceManager<Configuration>::~ResourceManager()
 {
   RDCASSERT(m_LiveResourceMap.empty());
-  RDCASSERT(m_InframeResourceMap.empty());
   RDCASSERT(m_InitialContents.empty());
   RDCASSERT(m_ResourceRecords.empty());
 
@@ -544,59 +845,104 @@ ResourceManager<WrappedResourceType, RealResourceType, RecordType>::~ResourceMan
     RenderDoc::Inst().GetCrashHandler()->UnregisterMemoryRegion(this);
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-bool ResourceManager<WrappedResourceType, RealResourceType, RecordType>::MarkReferenced(
-    map<ResourceId, FrameRefType> &refs, ResourceId id, FrameRefType refType)
+template <typename Configuration>
+void ResourceManager<Configuration>::MarkBackgroundFrameReferenced(
+    const rdcflatmap<ResourceId, FrameRefType> &refs)
 {
-  if(refs.find(id) == refs.end())
-  {
-    if(refType == eFrameRef_Read)
-      refs[id] = eFrameRef_ReadOnly;
-    else if(refType == eFrameRef_Write)
-      refs[id] = eFrameRef_ReadAndWrite;
-    else    // unknown or existing state
-      refs[id] = refType;
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
-    return true;
-  }
-  else
+  if(IsBackgroundCapturing(m_State))
   {
-    if(refType == eFrameRef_Unknown)
+    if(refs.size() <= m_ResourceRefTimes.size())
     {
-      // nothing
+      for(auto it = refs.begin(); it != refs.end(); ++it)
+        UpdateLastWriteTime(it->first, it->second);
     }
-    else if(refType == eFrameRef_ReadBeforeWrite)
+    else
     {
-      // special case, explicitly set to ReadBeforeWrite for when
-      // we know that this use will likely be a partial-write
-      refs[id] = eFrameRef_ReadBeforeWrite;
-    }
-    else if(refs[id] == eFrameRef_Unknown)
-    {
-      if(refType == eFrameRef_Read || refType == eFrameRef_ReadOnly)
-        refs[id] = eFrameRef_ReadOnly;
-      else
-        refs[id] = eFrameRef_ReadAndWrite;
-    }
-    else if(refs[id] == eFrameRef_ReadOnly && refType == eFrameRef_Write)
-    {
-      refs[id] = eFrameRef_ReadBeforeWrite;
+      for(const ResourceRefTimes &res : m_ResourceRefTimes)
+      {
+        auto it = refs.find(res.id);
+
+        if(it != refs.end())
+          UpdateLastWriteTime(it->first, it->second);
+      }
     }
   }
-
-  return false;
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::MarkResourceFrameReferenced(
-    ResourceId id, FrameRefType refType)
+template <typename Configuration>
+void ResourceManager<Configuration>::CleanBackgroundFrameReferences()
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
+
+  if(IsBackgroundCapturing(m_State))
+  {
+    double now = m_ResourcesUpdateTimer.GetMilliseconds();
+
+    // retire any old entries, if they were written once they shouldn't be tracked forever. This
+    // means the list only keeps track of recently written resources, not all resources that have
+    // ever been written.
+    //
+    // walk the array. If we find an item we want to remove we increment src otherwise we copy src
+    // to dst (if they are different). Thus next time dst will point at the item we want to skip, at
+    // each stage copying src to dst (if they are different). If we find an item we want to remove
+    // we increment src and continue (thus it will get copied ove
+    size_t dst = 0, src = 0;
+    for(dst = 0, src = 0; src < m_ResourceRefTimes.size();)
+    {
+      ResourceRefTimes &check = m_ResourceRefTimes[src];
+
+      // if this isn't skippable, and the write time was a long time ago then we can delete it.
+      // Resources not in the list are treated as if they were written an infinite time ago and so
+      // are postponable.
+      if(now - check.writeTime > PERSISTENT_RESOURCE_AGE && check.firstSkipTime == 0.0)
+      {
+        // skip src, check the next one
+        src++;
+        continue;
+      }
+
+      // we want to keep src. If dst == src we can just continue on to the next iteration, if not
+      // then we need to copy src into dst (where dst is the leftovers from previously remove
+      // entries)
+      if(dst != src)
+        m_ResourceRefTimes[dst] = m_ResourceRefTimes[src];
+
+      dst++;
+      src++;
+    }
+
+    m_ResourceRefTimes.resize(dst);
+  }
+}
+
+template <typename Configuration>
+template <typename Compose>
+void ResourceManager<Configuration>::MarkResourceFrameReferenced(ResourceId id,
+                                                                 FrameRefType refType, Compose comp)
+{
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   if(id == ResourceId())
     return;
 
-  bool newRef = MarkReferenced(m_FrameReferencedResources, id, refType);
+  if(IsActiveCapturing(m_State))
+  {
+    SkipOrPostponeOrPrepare_InitialState(id, refType);
+
+    if(IsDirtyFrameRef(refType))
+    {
+      Prepare_InitialStateIfPostponed(id, true);
+    }
+  }
+
+  UpdateLastWriteTime(id, refType);
+
+  if(IsBackgroundCapturing(m_State))
+    return;
+
+  bool newRef = MarkReferenced(m_FrameReferencedResources, id, refType, comp);
 
   if(newRef)
   {
@@ -607,20 +953,16 @@ void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::MarkRes
   }
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-bool ResourceManager<WrappedResourceType, RealResourceType, RecordType>::ReadBeforeWrite(ResourceId id)
+template <typename Configuration>
+void ResourceManager<Configuration>::MarkResourceFrameReferenced(ResourceId id, FrameRefType refType)
 {
-  if(m_FrameReferencedResources.find(id) != m_FrameReferencedResources.end())
-    return m_FrameReferencedResources[id] == eFrameRef_ReadBeforeWrite ||
-           m_FrameReferencedResources[id] == eFrameRef_ReadOnly;
-
-  return false;
+  return MarkResourceFrameReferenced(id, refType, ComposeFrameRefs);
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::MarkDirtyResource(ResourceId res)
+template <typename Configuration>
+void ResourceManager<Configuration>::MarkDirtyResource(ResourceId res)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   if(res == ResourceId())
     return;
@@ -628,30 +970,10 @@ void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::MarkDir
   m_DirtyResources.insert(res);
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::MarkPendingDirty(ResourceId res)
+template <typename Configuration>
+bool ResourceManager<Configuration>::IsResourceDirty(ResourceId res)
 {
-  SCOPED_LOCK(m_Lock);
-
-  if(res == ResourceId())
-    return;
-
-  m_PendingDirtyResources.insert(res);
-}
-
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::FlushPendingDirty()
-{
-  SCOPED_LOCK(m_Lock);
-
-  m_DirtyResources.insert(m_PendingDirtyResources.begin(), m_PendingDirtyResources.end());
-  m_PendingDirtyResources.clear();
-}
-
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-bool ResourceManager<WrappedResourceType, RealResourceType, RecordType>::IsResourceDirty(ResourceId res)
-{
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   if(res == ResourceId())
     return false;
@@ -659,169 +981,358 @@ bool ResourceManager<WrappedResourceType, RealResourceType, RecordType>::IsResou
   return m_DirtyResources.find(res) != m_DirtyResources.end();
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::MarkCleanResource(ResourceId res)
+template <typename Configuration>
+void ResourceManager<Configuration>::SetInitialContents(ResourceId id, InitialContentData contents)
 {
-  SCOPED_LOCK(m_Lock);
-
-  if(res == ResourceId())
-    return;
-
-  if(IsResourceDirty(res))
-  {
-    m_DirtyResources.erase(res);
-  }
-}
-
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::SetInitialContents(
-    ResourceId id, InitialContentData contents)
-{
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   RDCASSERT(id != ResourceId());
 
   auto it = m_InitialContents.find(id);
 
   if(it != m_InitialContents.end())
-  {
-    ResourceTypeRelease(it->second.resource);
-    Serialiser::FreeAlignedBuffer(it->second.blob);
-    m_InitialContents.erase(it);
-  }
+    it->second.Free(this);
 
-  m_InitialContents[id] = contents;
+  m_InitialContents[id].data = contents;
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::SetInitialChunk(ResourceId id,
-                                                                                         Chunk *chunk)
+template <typename Configuration>
+void ResourceManager<Configuration>::SetInitialChunk(ResourceId id, Chunk *chunk)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   RDCASSERT(id != ResourceId());
+  RDCASSERT(chunk->GetChunkType<SystemChunk>() == SystemChunk::InitialContents);
 
-  auto it = m_InitialChunks.find(id);
+  InitialContentDataOrChunk &data = m_InitialContents[id];
 
-  RDCASSERT(chunk->GetChunkType() == INITIAL_CONTENTS);
+  if(data.chunk)
+    data.chunk->Delete();
 
-  if(it != m_InitialChunks.end())
-  {
-    RDCERR("Initial chunk set for ID %llu twice", id);
-    delete chunk;
-    return;
-  }
-
-  m_InitialChunks[id] = chunk;
+  data.chunk = chunk;
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-typename ResourceManager<WrappedResourceType, RealResourceType, RecordType>::InitialContentData ResourceManager<
-    WrappedResourceType, RealResourceType, RecordType>::GetInitialContents(ResourceId id)
+template <typename Configuration>
+typename Configuration::InitialContentData ResourceManager<Configuration>::GetInitialContents(
+    ResourceId id)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   if(id == ResourceId())
     return InitialContentData();
 
   if(m_InitialContents.find(id) != m_InitialContents.end())
-    return m_InitialContents[id];
+    return m_InitialContents[id].data;
 
   return InitialContentData();
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::Serialise_InitialContentsNeeded()
+// use a namespace so this doesn't pollute the global namesapce
+namespace ResourceManagerInternal
 {
-  SCOPED_LOCK(m_Lock);
+struct WrittenRecord
+{
+  ResourceId id;
+  bool written;
+};
+};
 
-  struct WrittenRecord
-  {
-    ResourceId id;
-    bool written;
-  };
-  vector<WrittenRecord> written;
+DECLARE_REFLECTION_STRUCT(ResourceManagerInternal::WrittenRecord);
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, ResourceManagerInternal::WrittenRecord &el)
+{
+  SERIALISE_MEMBER(id);
+  SERIALISE_MEMBER(written);
+}
+
+template <typename Configuration>
+void ResourceManager<Configuration>::Serialise_InitialContentsNeeded(WriteSerialiser &ser)
+{
+  using namespace ResourceManagerInternal;
+
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
+
+  // which resources need initial contents? either those which we didn't have proper initialisation
+  // for (because they were dirty one way or another) or resources that are written mid-frame and so
+  // need to be reset.
+  rdcarray<WrittenRecord> NeededInitials;
 
   // reasonable estimate, and these records are small
-  written.reserve(m_FrameReferencedResources.size());
+  NeededInitials.reserve(m_FrameReferencedResources.size() + m_InitialContents.size());
 
+  // all resources that were recorded as being modified should be included in the list of those
+  // needing initial contents
   for(auto it = m_FrameReferencedResources.begin(); it != m_FrameReferencedResources.end(); ++it)
   {
     RecordType *record = GetResourceRecord(it->first);
-
-    if(it->second != eFrameRef_ReadOnly && it->second != eFrameRef_Unknown)
+    if(IsDirtyFrameRef(it->second))
     {
       WrittenRecord wr = {it->first, record ? record->DataInSerialiser : true};
 
-      written.push_back(wr);
+      NeededInitials.push_back(wr);
     }
   }
 
-  for(auto it = m_DirtyResources.begin(); it != m_DirtyResources.end(); ++it)
+  // any resources that had initial contents generated should also be included, even if they're only
+  // referenced read-only, as anything not in this list will have its initial contents freed on
+  // replay (see CreateInitialContents). However we only need to keep resources that are referenced
+  // (unless we have ref all resources on)
+  for(auto it = m_InitialContents.begin(); it != m_InitialContents.end(); ++it)
   {
-    ResourceId id = *it;
-    auto ref = m_FrameReferencedResources.find(id);
-    if(ref == m_FrameReferencedResources.end() || ref->second == eFrameRef_ReadOnly)
+    bool include = RenderDoc::Inst().GetCaptureOptions().refAllResources;
+
+    ResourceId id = it->first;
+    if(m_FrameReferencedResources.find(id) != m_FrameReferencedResources.end())
+      include = true;
+
+    if(include)
     {
       WrittenRecord wr = {id, true};
 
-      written.push_back(wr);
+      NeededInitials.push_back(wr);
     }
   }
 
-  uint32_t numWritten = (uint32_t)written.size();
-  m_pSerialiser->Serialise("NumWrittenResources", numWritten);
+  uint64_t chunkSize = uint64_t(NeededInitials.size() * sizeof(WrittenRecord) + 16);
 
-  for(auto it = written.begin(); it != written.end(); ++it)
-  {
-    m_pSerialiser->Serialise("id", it->id);
-    m_pSerialiser->Serialise("WrittenData", it->written);
-  }
+  SCOPED_SERIALISE_CHUNK(SystemChunk::InitialContentsList, chunkSize);
+  SERIALISE_ELEMENT(NeededInitials);
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::FreeInitialContents()
+template <typename Configuration>
+void ResourceManager<Configuration>::FreeInitialContents()
 {
   while(!m_InitialContents.empty())
   {
     auto it = m_InitialContents.begin();
-    ResourceTypeRelease(it->second.resource);
-    Serialiser::FreeAlignedBuffer(it->second.blob);
+    it->second.Free(this);
     if(!m_InitialContents.empty())
       m_InitialContents.erase(m_InitialContents.begin());
   }
+  m_PostponedResourceIDs.clear();
+  m_SkippedResourceIDs.clear();
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::CreateInitialContents()
+template <typename Configuration>
+void ResourceManager<Configuration>::Prepare_InitialStateIfPostponed(ResourceId id, bool midframe)
 {
-  set<ResourceId> neededInitials;
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
-  uint32_t NumWrittenResources = 0;
-  m_pSerialiser->Serialise("NumWrittenResources", NumWrittenResources);
+  if(!IsResourcePostponed(id))
+    return;
 
-  for(uint32_t i = 0; i < NumWrittenResources; i++)
+  if(midframe)
+    RDCLOG("Preparing resource %s after it has been postponed.", ToStr(id).c_str());
+
+  WrappedResourceType res = GetCurrentResource(id);
+  Prepare_InitialState(res);
+
+  m_PostponedResourceIDs.erase(id);
+}
+
+template <typename Configuration>
+void ResourceManager<Configuration>::SkipOrPostponeOrPrepare_InitialState(ResourceId id,
+                                                                          FrameRefType refType)
+{
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
+
+  if(!IsResourceSkipped(id))
+    return;
+
+  // the first time we encounter a skipped resource, we can choose to
+  // skip this resource forever, convert it to be postponed, or prepare
+  // it immediately. We can't retrieve its initial state once it has
+  // been written over.
+  m_SkippedResourceIDs.erase(id);
+
+  // skip this forever if the first encounter is a complete write
+  if(IsCompleteWriteFrameRef(refType))
   {
-    ResourceId id = ResourceId();
-    bool WrittenData = false;
-
-    m_pSerialiser->Serialise("id", id);
-    m_pSerialiser->Serialise("WrittenData", WrittenData);
-
-    neededInitials.insert(id);
-
-    if(HasLiveResource(id) && m_InitialContents.find(id) == m_InitialContents.end())
-      Create_InitialState(id, GetLiveResource(id), WrittenData);
+    RDCDEBUG("Resource %s skipped forever on refType of %s", ToStr(id).c_str(),
+             ToStr(refType).c_str());
+    return;
   }
 
+  // If this resource is only being read, we might as well try to
+  // postpone it to conserve memory consumption.
+  if(!IsDirtyFrameRef(refType) && IsResourceTrackedForPersistency(GetCurrentResource(id)))
+  {
+    m_PostponedResourceIDs.insert(id);
+    RDCDEBUG("Resource %s converted from skipped to postponed on refType of %s", ToStr(id).c_str(),
+             ToStr(refType).c_str());
+    SetInitialContents(id, InitialContentData());
+  }
+  else
+  {
+    WrappedResourceType res = GetCurrentResource(id);
+    RDCDEBUG("Preparing resource %s after it has been skipped on refType of %s", ToStr(id).c_str(),
+             ToStr(refType).c_str());
+    Prepare_InitialState(res);
+  }
+}
+
+template <typename Configuration>
+inline void ResourceManager<Configuration>::ResetCaptureStartTime()
+{
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
+  // This time is used to analyze which resources to refresh
+  // for their last write time.
+  m_captureStartTime = m_ResourcesUpdateTimer.GetMilliseconds();
+}
+
+template <typename Configuration>
+inline void ResourceManager<Configuration>::ResetLastWriteTimes()
+{
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
+  for(auto it = m_ResourceRefTimes.begin(); it != m_ResourceRefTimes.end(); ++it)
+  {
+    // Reset only those resources which were below the threshold on
+    // capture start. Other resource are already above the threshold.
+    if(m_captureStartTime - it->writeTime <= PERSISTENT_RESOURCE_AGE)
+      it->writeTime = m_ResourcesUpdateTimer.GetMilliseconds();
+  }
+}
+
+template <typename Configuration>
+inline void ResourceManager<Configuration>::UpdateLastWriteTime(ResourceId id, FrameRefType refType)
+{
+  // parent must hold m_Lock for us
+
+  // only care about write refs. A read ref would invalidate skippable state, however a skippable
+  // resource is left in an undefined state where reads are not valid so we don't. We need to see
+  // another write first before a read could be a problem, so we just pay attention for that write.
+  if(!IsDirtyFrameRef(refType))
+    return;
+
+  ResourceRefTimes *it = std::lower_bound(m_ResourceRefTimes.begin(), m_ResourceRefTimes.end(), id);
+
+  if(it == m_ResourceRefTimes.end() || it->id != id)
+  {
+    // if it's not pointing to the end, figure out where we need to insert it there
+    size_t idx = it - m_ResourceRefTimes.begin();
+    m_ResourceRefTimes.insert(idx, {id, 0.0, 0.0});
+    it = m_ResourceRefTimes.begin() + idx;
+  }
+
+  double now = m_ResourcesUpdateTimer.GetMilliseconds();
+
+  it->writeTime = now;
+
+  if(refType == eFrameRef_CompleteWriteAndDiscard)
+  {
+    // don't continually update it. We want to know that this resource *was* completely written and
+    // discarded, and hasn't been written in any other way since then.
+    if(it->firstSkipTime == 0.0)
+      it->firstSkipTime = now;
+  }
+  else
+  {
+    it->firstSkipTime = 0.0;
+  }
+}
+
+template <typename Configuration>
+inline bool ResourceManager<Configuration>::HasPersistentAge(ResourceId id)
+{
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
+
+  ResourceRefTimes *it = std::lower_bound(m_ResourceRefTimes.begin(), m_ResourceRefTimes.end(), id);
+
+  if(it == m_ResourceRefTimes.end() || it->id != id)
+    return true;
+
+  return m_ResourcesUpdateTimer.GetMilliseconds() - it->writeTime >= PERSISTENT_RESOURCE_AGE;
+}
+
+template <typename Configuration>
+inline bool ResourceManager<Configuration>::HasSkippableAge(ResourceId id)
+{
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
+
+  ResourceRefTimes *it = std::lower_bound(m_ResourceRefTimes.begin(), m_ResourceRefTimes.end(), id);
+
+  // if it doesn't have a write time, it can't be skippable
+  if(it == m_ResourceRefTimes.end() || it->id != id)
+    return false;
+
+  // if it's never been skipped or it was reset, it's also not skippable
+  if(it->firstSkipTime == 0.0)
+    return false;
+
+  return m_ResourcesUpdateTimer.GetMilliseconds() - it->firstSkipTime >= SKIP_RESOURCE_AGE;
+}
+
+template <typename Configuration>
+inline bool ResourceManager<Configuration>::IsResourcePostponed(ResourceId id)
+{
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
+  return m_PostponedResourceIDs.find(id) != m_PostponedResourceIDs.end();
+}
+
+template <typename Configuration>
+inline bool ResourceManager<Configuration>::IsResourceSkipped(ResourceId id)
+{
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
+  return m_SkippedResourceIDs.find(id) != m_SkippedResourceIDs.end();
+}
+
+template <typename Configuration>
+inline bool ResourceManager<Configuration>::ShouldPostpone(ResourceId id)
+{
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
+
+  WrappedResourceType res = GetCurrentResource(id);
+
+  if(!IsResourceTrackedForPersistency(res))
+    return false;
+
+  return HasPersistentAge(id);
+}
+
+template <typename Configuration>
+inline bool ResourceManager<Configuration>::ShouldSkip(ResourceId id)
+{
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
+
+  WrappedResourceType res = GetCurrentResource(id);
+
+  if(!IsResourceTrackedForPersistency(res))
+    return false;
+
+  return HasSkippableAge(id);
+}
+
+template <typename Configuration>
+void ResourceManager<Configuration>::CreateInitialContents(ReadSerialiser &ser)
+{
+  using namespace ResourceManagerInternal;
+
+  std::set<ResourceId> ids;
+
+  rdcarray<WrittenRecord> NeededInitials;
+  SERIALISE_ELEMENT(NeededInitials);
+
+  for(const WrittenRecord &wr : NeededInitials)
+  {
+    ResourceId id = wr.id;
+
+    ids.insert(id);
+
+    // if this resource exists and we don't have initial contents for it serialised, create some for
+    // reset purposes.
+    if(HasLiveResource(id) && m_InitialContents.find(id) == m_InitialContents.end())
+      Create_InitialState(id, GetLiveResource(id), wr.written);
+  }
+
+  // any initial contents that we ended up with which we don't need can be freed now
   for(auto it = m_InitialContents.begin(); it != m_InitialContents.end();)
   {
     ResourceId id = it->first;
 
-    if(neededInitials.find(id) == neededInitials.end())
+    if(ids.find(id) == ids.end())
     {
-      ResourceTypeRelease(it->second.resource);
-      Serialiser::FreeAlignedBuffer(it->second.blob);
+      it->second.Free(this);
       ++it;
       m_InitialContents.erase(id);
     }
@@ -832,53 +1343,69 @@ void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::CreateI
   }
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::ApplyInitialContents()
+template <typename Configuration>
+void ResourceManager<Configuration>::ApplyInitialContents()
 {
   RDCDEBUG("Applying initial contents");
-  uint32_t numContents = 0;
+  rdcarray<ResourceId> resources = InitialContentResources();
+  for(auto it = resources.begin(); it != resources.end(); ++it)
+  {
+    ResourceId id = *it;
+    const InitialContentDataOrChunk &data = m_InitialContents[id];
+    WrappedResourceType live = GetLiveResource(id);
+    Apply_InitialState(live, data.data);
+  }
+  RDCDEBUG("Applied %d", (uint32_t)resources.size());
+}
+
+template <typename Configuration>
+rdcarray<ResourceId> ResourceManager<Configuration>::InitialContentResources()
+{
+  rdcarray<ResourceId> resources;
   for(auto it = m_InitialContents.begin(); it != m_InitialContents.end(); ++it)
   {
     ResourceId id = it->first;
 
     if(HasLiveResource(id))
     {
-      WrappedResourceType live = GetLiveResource(id);
-
-      numContents++;
-
-      Apply_InitialState(live, it->second);
+      resources.push_back(id);
     }
   }
-  RDCDEBUG("Applied %d", numContents);
+  return resources;
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::MarkUnwrittenResources()
+template <typename Configuration>
+void ResourceManager<Configuration>::MarkUnwrittenResources()
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_READLOCK(m_ResourceRecordLock);
 
   for(auto it = m_ResourceRecords.begin(); it != m_ResourceRecords.end(); ++it)
-  {
     it->second->MarkDataUnwritten();
-  }
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::InsertReferencedChunks(
-    Serialiser *fileSer)
+template <typename Configuration>
+void ResourceManager<Configuration>::InsertReferencedChunks(WriteSerialiser &ser)
 {
-  map<int32_t, Chunk *> sortedChunks;
+  std::map<int64_t, Chunk *> sortedChunks;
 
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   RDCDEBUG("%u frame resource records", (uint32_t)m_FrameReferencedResources.size());
 
-  if(RenderDoc::Inst().GetCaptureOptions().RefAllResources)
+  if(RenderDoc::Inst().GetCaptureOptions().refAllResources)
   {
+    SCOPED_READLOCK(m_ResourceRecordLock);
+
+    float num = float(m_ResourceRecords.size());
+    float idx = 0.0f;
+
     for(auto it = m_ResourceRecords.begin(); it != m_ResourceRecords.end(); ++it)
     {
-      if(!SerialisableResource(it->first, it->second))
+      RenderDoc::Inst().SetProgress(CaptureProgress::AddReferencedResources, idx / num);
+      idx += 1.0f;
+
+      if(m_FrameReferencedResources.find(it->first) == m_FrameReferencedResources.end() &&
+         it->second->InternalResource)
         continue;
 
       it->second->Insert(sortedChunks);
@@ -886,8 +1413,14 @@ void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::InsertR
   }
   else
   {
+    float num = float(m_FrameReferencedResources.size());
+    float idx = 0.0f;
+
     for(auto it = m_FrameReferencedResources.begin(); it != m_FrameReferencedResources.end(); ++it)
     {
+      RenderDoc::Inst().SetProgress(CaptureProgress::AddReferencedResources, idx / num);
+      idx += 1.0f;
+
       RecordType *record = GetResourceRecord(it->first);
       if(record)
         record->Insert(sortedChunks);
@@ -897,257 +1430,239 @@ void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::InsertR
   RDCDEBUG("%u frame resource chunks", (uint32_t)sortedChunks.size());
 
   for(auto it = sortedChunks.begin(); it != sortedChunks.end(); it++)
-  {
-    fileSer->Insert(it->second);
-  }
+    it->second->Write(ser);
 
   RDCDEBUG("inserted to serialiser");
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::PrepareInitialContents()
+template <typename Configuration>
+void ResourceManager<Configuration>::PrepareInitialContents()
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   RDCDEBUG("Preparing up to %u potentially dirty resources", (uint32_t)m_DirtyResources.size());
   uint32_t prepared = 0;
+  uint32_t postponed = 0;
+  uint32_t skipped = 0;
+
+  float num = float(m_DirtyResources.size());
+  float idx = 0.0f;
 
   for(auto it = m_DirtyResources.begin(); it != m_DirtyResources.end(); ++it)
   {
     ResourceId id = *it;
 
+    RenderDoc::Inst().SetProgress(CaptureProgress::PrepareInitialStates, idx / num);
+    idx += 1.0f;
+
+    // if somehow this resource has been deleted but is still dirty, we can't prepare it. Resources
+    // deleted prior to beginning the frame capture cannot linger and be needed - we only need to
+    // care about resources deleted after this point (mid-capture)
     if(!HasCurrentResource(id))
       continue;
 
     RecordType *record = GetResourceRecord(id);
     WrappedResourceType res = GetCurrentResource(id);
 
-    if(record == NULL || record->SpecialResource)
+    // don't prepare internal resources, or those without a record
+    if(record == NULL || record->InternalResource)
       continue;
+
+    if(ShouldSkip(id))
+    {
+      m_SkippedResourceIDs.insert(id);
+      skipped++;
+      continue;
+    }
+
+    if(ShouldPostpone(id))
+    {
+      m_PostponedResourceIDs.insert(id);
+      // Set empty contents here, it'll be prepared on serialization.
+      SetInitialContents(id, InitialContentData());
+      postponed++;
+      continue;
+    }
 
     prepared++;
 
-#if VERBOSE_DIRTY_RESOURCES
-    RDCDEBUG("Prepare Resource %llu", id);
+#if ENABLED(VERBOSE_DIRTY_RESOURCES)
+    RDCDEBUG("Prepare Resource %s", ToStr(id).c_str());
 #endif
 
     Prepare_InitialState(res);
   }
 
-  RDCDEBUG("Prepared %u dirty resources", prepared);
-
-  prepared = 0;
-
-  for(auto it = m_CurrentResourceMap.begin(); it != m_CurrentResourceMap.end(); ++it)
-  {
-    if(it->second == (WrappedResourceType)RecordType::NullResource)
-      continue;
-
-    if(Force_InitialState(it->second, true))
-    {
-      prepared++;
-      Prepare_InitialState(it->second);
-    }
-  }
-
-  RDCDEBUG("Force-prepared %u dirty resources", prepared);
+  RDCDEBUG("Prepared %u dirty resources, postponed %u, skipped %u", prepared, postponed, skipped);
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::InsertInitialContentsChunks(
-    Serialiser *fileSerialiser)
+template <typename Configuration>
+void ResourceManager<Configuration>::InsertInitialContentsChunks(WriteSerialiser &ser)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   uint32_t dirty = 0;
   uint32_t skipped = 0;
 
-  RDCDEBUG("Checking %u possibly dirty resources", (uint32_t)m_DirtyResources.size());
+  RDCDEBUG("Checking %u resources with initial contents", (uint32_t)m_InitialContents.size());
 
-  for(auto it = m_DirtyResources.begin(); it != m_DirtyResources.end(); ++it)
+  float num = float(m_InitialContents.size());
+  float idx = 0.0f;
+
+  for(auto it = m_InitialContents.begin(); it != m_InitialContents.end(); ++it)
   {
-    ResourceId id = *it;
+    ResourceId id = it->first;
+
+    RenderDoc::Inst().SetProgress(CaptureProgress::SerialiseInitialStates, idx / num);
+    idx += 1.0f;
 
     if(m_FrameReferencedResources.find(id) == m_FrameReferencedResources.end() &&
-       !RenderDoc::Inst().GetCaptureOptions().RefAllResources)
+       !RenderDoc::Inst().GetCaptureOptions().refAllResources)
     {
-#if VERBOSE_DIRTY_RESOURCES
-      RDCDEBUG("Dirty tesource %llu is GPU dirty but not referenced - skipping", id);
+#if ENABLED(VERBOSE_DIRTY_RESOURCES)
+      RDCDEBUG("Dirty resource %s is GPU dirty but not referenced - skipping", ToStr(id).c_str());
 #endif
       skipped++;
       continue;
     }
 
-    WrappedResourceType res = (WrappedResourceType)RecordType::NullResource;
-    bool isAlive = HasCurrentResource(id);
-
-    if(!AllowDeletedResource_InitialState() && !isAlive)
-    {
-#if VERBOSE_DIRTY_RESOURCES
-      RDCDEBUG("Resource %llu no longer exists - skipping", id);
-#endif
-      continue;
-    }
-
-    if(isAlive)
-      res = GetCurrentResource(id);
-
     RecordType *record = GetResourceRecord(id);
 
     if(record == NULL)
     {
-#if VERBOSE_DIRTY_RESOURCES
-      RDCDEBUG("Resource %llu has no resource record - skipping", id);
+#if ENABLED(VERBOSE_DIRTY_RESOURCES)
+      RDCDEBUG("Resource %s has no resource record - skipping", ToStr(id).c_str());
 #endif
       continue;
     }
 
-    if(record->SpecialResource)
+    if(record->InternalResource)
     {
-#if VERBOSE_DIRTY_RESOURCES
-      RDCDEBUG("Resource %llu is special - skipping", id);
+#if ENABLED(VERBOSE_DIRTY_RESOURCES)
+      RDCDEBUG("Resource %s is special - skipping", ToStr(id).c_str());
 #endif
       continue;
     }
 
-#if VERBOSE_DIRTY_RESOURCES
-    RDCDEBUG("Serialising dirty Resource %llu", id);
+#if ENABLED(VERBOSE_DIRTY_RESOURCES)
+    RDCDEBUG("Serialising dirty Resource %s", ToStr(id).c_str());
 #endif
+
+    // Load postponed resource if needed.
+    Prepare_InitialStateIfPostponed(id, false);
 
     dirty++;
 
-    if(!Need_InitialStateChunk(res))
+    if(!Need_InitialStateChunk(id, it->second.data))
     {
-      // just need to grab data, don't create chunk
-      Serialise_InitialState(id, res);
+      // this was handled in ApplyInitialContentsNonChunks(), do nothing as there's no point copying
+      // the data again (it's already been serialised).
       continue;
     }
 
-    auto preparedChunk = m_InitialChunks.find(id);
-    if(preparedChunk != m_InitialChunks.end())
+    if(it->second.chunk)
     {
-      fileSerialiser->Insert(preparedChunk->second);
-      m_InitialChunks.erase(preparedChunk);
+      it->second.chunk->Write(ser);
     }
     else
     {
-      ScopedContext scope(m_pSerialiser, "Initial Contents", "Initial Contents", INITIAL_CONTENTS,
-                          false);
+      uint64_t size = GetSize_InitialState(id, it->second.data);
 
-      Serialise_InitialState(id, res);
+      SCOPED_SERIALISE_CHUNK(SystemChunk::InitialContents, size);
 
-      fileSerialiser->Insert(scope.Get(true));
+      Serialise_InitialState(ser, id, record, &it->second.data);
     }
+
+    // Reset back to empty contents, unloading the actual resource.
+    SetInitialContents(id, InitialContentData());
   }
 
-  RDCDEBUG("Serialised %u dirty resources, skipped %u unreferenced", dirty, skipped);
+  RDCDEBUG("Serialised %u resources, skipped %u unreferenced", dirty, skipped);
+}
 
-  dirty = 0;
+template <typename Configuration>
+void ResourceManager<Configuration>::ApplyInitialContentsNonChunks(WriteSerialiser &ser)
+{
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
-  for(auto it = m_CurrentResourceMap.begin(); it != m_CurrentResourceMap.end(); ++it)
+  for(auto it = m_InitialContents.begin(); it != m_InitialContents.end(); ++it)
   {
-    if(it->second == (WrappedResourceType)RecordType::NullResource)
+    ResourceId id = it->first;
+
+    if(m_FrameReferencedResources.find(id) == m_FrameReferencedResources.end() &&
+       !RenderDoc::Inst().GetCaptureOptions().refAllResources)
+    {
+      continue;
+    }
+
+    RecordType *record = GetResourceRecord(id);
+
+    if(!record || record->InternalResource)
       continue;
 
-    if(Force_InitialState(it->second, false))
-    {
-      dirty++;
-
-      auto preparedChunk = m_InitialChunks.find(it->first);
-      if(preparedChunk != m_InitialChunks.end())
-      {
-        fileSerialiser->Insert(preparedChunk->second);
-        m_InitialChunks.erase(preparedChunk);
-      }
-      else
-      {
-        ScopedContext scope(m_pSerialiser, "Initial Contents", "Initial Contents", INITIAL_CONTENTS,
-                            false);
-
-        Serialise_InitialState(it->first, it->second);
-
-        fileSerialiser->Insert(scope.Get(true));
-      }
-    }
+    if(!Need_InitialStateChunk(id, it->second.data))
+      Serialise_InitialState(ser, id, record, &it->second.data);
   }
-
-  RDCDEBUG("Force-serialised %u dirty resources", dirty);
-
-  // delete/cleanup any chunks that weren't used (maybe the resource was not
-  // referenced).
-  for(auto it = m_InitialChunks.begin(); it != m_InitialChunks.end(); ++it)
-    delete it->second;
-
-  m_InitialChunks.clear();
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::ReleaseInFrameResources()
+template <typename Configuration>
+void ResourceManager<Configuration>::ClearReferencedResources()
 {
-  SCOPED_LOCK(m_Lock);
-
-  // clean up last frame's temporaries - we needed to keep them around so they were valid for
-  // pipeline inspection etc after replaying the last log.
-  for(auto it = m_InframeResourceMap.begin(); it != m_InframeResourceMap.end(); ++it)
-  {
-    ResourceTypeRelease(it->second);
-  }
-
-  m_InframeResourceMap.clear();
-}
-
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::ClearReferencedResources()
-{
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   for(auto it = m_FrameReferencedResources.begin(); it != m_FrameReferencedResources.end(); ++it)
   {
     RecordType *record = GetResourceRecord(it->first);
 
     if(record)
+    {
+      if(IncludesWrite(it->second))
+        MarkDirtyResource(it->first);
       record->Delete(this);
+    }
   }
 
   m_FrameReferencedResources.clear();
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::ReplaceResource(
-    ResourceId from, ResourceId to)
+template <typename Configuration>
+void ResourceManager<Configuration>::ReplaceResource(ResourceId from, ResourceId to)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   if(HasLiveResource(to))
+  {
     m_Replacements[from] = to;
+    m_Replaced[to] = from;
+  }
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-bool ResourceManager<WrappedResourceType, RealResourceType, RecordType>::HasReplacement(ResourceId from)
+template <typename Configuration>
+bool ResourceManager<Configuration>::HasReplacement(ResourceId from)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   return m_Replacements.find(from) != m_Replacements.end();
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::RemoveReplacement(ResourceId id)
+template <typename Configuration>
+void ResourceManager<Configuration>::RemoveReplacement(ResourceId id)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   auto it = m_Replacements.find(id);
 
   if(it == m_Replacements.end())
     return;
 
+  m_Replaced.erase(it->second);
   m_Replacements.erase(it);
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-RecordType *ResourceManager<WrappedResourceType, RealResourceType, RecordType>::GetResourceRecord(
-    ResourceId id)
+template <typename Configuration>
+typename Configuration::RecordType *ResourceManager<Configuration>::GetResourceRecord(ResourceId id)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_READLOCK(m_ResourceRecordLock);
 
   auto it = m_ResourceRecords.find(id);
 
@@ -1157,10 +1672,10 @@ RecordType *ResourceManager<WrappedResourceType, RealResourceType, RecordType>::
   return it->second;
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-bool ResourceManager<WrappedResourceType, RealResourceType, RecordType>::HasResourceRecord(ResourceId id)
+template <typename Configuration>
+bool ResourceManager<Configuration>::HasResourceRecord(ResourceId id)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_READLOCK(m_ResourceRecordLock);
 
   auto it = m_ResourceRecords.find(id);
 
@@ -1170,40 +1685,36 @@ bool ResourceManager<WrappedResourceType, RealResourceType, RecordType>::HasReso
   return true;
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-RecordType *ResourceManager<WrappedResourceType, RealResourceType, RecordType>::AddResourceRecord(
-    ResourceId id)
+template <typename Configuration>
+typename Configuration::RecordType *ResourceManager<Configuration>::AddResourceRecord(ResourceId id)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_WRITELOCK(m_ResourceRecordLock);
 
   RDCASSERT(m_ResourceRecords.find(id) == m_ResourceRecords.end(), id);
 
   return (m_ResourceRecords[id] = new RecordType(id));
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::RemoveResourceRecord(
-    ResourceId id)
+template <typename Configuration>
+void ResourceManager<Configuration>::RemoveResourceRecord(ResourceId id)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_WRITELOCK(m_ResourceRecordLock);
 
   RDCASSERT(m_ResourceRecords.find(id) != m_ResourceRecords.end(), id);
 
   m_ResourceRecords.erase(id);
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::DestroyResourceRecord(
-    ResourceRecord *record)
+template <typename Configuration>
+void ResourceManager<Configuration>::DestroyResourceRecord(ResourceRecord *record)
 {
   delete(RecordType *)record;
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-bool ResourceManager<WrappedResourceType, RealResourceType, RecordType>::AddWrapper(
-    WrappedResourceType wrap, RealResourceType real)
+template <typename Configuration>
+bool ResourceManager<Configuration>::AddWrapper(WrappedResourceType wrap, RealResourceType real)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   bool ret = true;
 
@@ -1225,11 +1736,10 @@ bool ResourceManager<WrappedResourceType, RealResourceType, RecordType>::AddWrap
   return ret;
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::RemoveWrapper(
-    RealResourceType real)
+template <typename Configuration>
+void ResourceManager<Configuration>::RemoveWrapper(RealResourceType real)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   if(real == (RealResourceType)RecordType::NullResource || !HasWrapper(real))
   {
@@ -1241,10 +1751,10 @@ void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::RemoveW
   m_WrapperMap.erase(m_WrapperMap.find(real));
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-bool ResourceManager<WrappedResourceType, RealResourceType, RecordType>::HasWrapper(RealResourceType real)
+template <typename Configuration>
+bool ResourceManager<Configuration>::HasWrapper(RealResourceType real)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   if(real == (RealResourceType)RecordType::NullResource)
     return false;
@@ -1252,11 +1762,11 @@ bool ResourceManager<WrappedResourceType, RealResourceType, RecordType>::HasWrap
   return (m_WrapperMap.find(real) != m_WrapperMap.end());
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-WrappedResourceType ResourceManager<WrappedResourceType, RealResourceType, RecordType>::GetWrapper(
+template <typename Configuration>
+typename Configuration::WrappedResourceType ResourceManager<Configuration>::GetWrapper(
     RealResourceType real)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   if(real == (RealResourceType)RecordType::NullResource)
     return (WrappedResourceType)RecordType::NullResource;
@@ -1271,11 +1781,10 @@ WrappedResourceType ResourceManager<WrappedResourceType, RealResourceType, Recor
   return m_WrapperMap[real];
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::AddLiveResource(
-    ResourceId origid, WrappedResourceType livePtr)
+template <typename Configuration>
+void ResourceManager<Configuration>::AddLiveResource(ResourceId origid, WrappedResourceType livePtr)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   if(origid == ResourceId() || livePtr == (WrappedResourceType)RecordType::NullResource)
   {
@@ -1285,42 +1794,33 @@ void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::AddLive
   m_OriginalIDs[GetID(livePtr)] = origid;
   m_LiveIDs[origid] = GetID(livePtr);
 
-  if(m_InFrame && m_InframeResourceMap.find(origid) != m_InframeResourceMap.end())
+  if(m_LiveResourceMap.find(origid) != m_LiveResourceMap.end())
   {
-    ResourceTypeRelease(m_InframeResourceMap[origid]);
-    m_InframeResourceMap.erase(origid);
-  }
-  else if(!m_InFrame && m_LiveResourceMap.find(origid) != m_LiveResourceMap.end())
-  {
-    RDCERR("Releasing live resource for duplicate creation: %llu", origid);
+    RDCERR("Releasing live resource for duplicate creation: %s", ToStr(origid).c_str());
     ResourceTypeRelease(m_LiveResourceMap[origid]);
     m_LiveResourceMap.erase(origid);
   }
 
-  if(m_InFrame)
-    m_InframeResourceMap[origid] = livePtr;
-  else
-    m_LiveResourceMap[origid] = livePtr;
+  m_LiveResourceMap[origid] = livePtr;
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-bool ResourceManager<WrappedResourceType, RealResourceType, RecordType>::HasLiveResource(ResourceId origid)
+template <typename Configuration>
+bool ResourceManager<Configuration>::HasLiveResource(ResourceId origid)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   if(origid == ResourceId())
     return false;
 
   return (m_Replacements.find(origid) != m_Replacements.end() ||
-          m_InframeResourceMap.find(origid) != m_InframeResourceMap.end() ||
           m_LiveResourceMap.find(origid) != m_LiveResourceMap.end());
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-WrappedResourceType ResourceManager<WrappedResourceType, RealResourceType, RecordType>::GetLiveResource(
+template <typename Configuration>
+typename Configuration::WrappedResourceType ResourceManager<Configuration>::GetLiveResource(
     ResourceId origid)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   if(origid == ResourceId())
     return (WrappedResourceType)RecordType::NullResource;
@@ -1330,77 +1830,75 @@ WrappedResourceType ResourceManager<WrappedResourceType, RealResourceType, Recor
   if(m_Replacements.find(origid) != m_Replacements.end())
     return GetLiveResource(m_Replacements[origid]);
 
-  if(m_InframeResourceMap.find(origid) != m_InframeResourceMap.end())
-    return m_InframeResourceMap[origid];
-
   if(m_LiveResourceMap.find(origid) != m_LiveResourceMap.end())
     return m_LiveResourceMap[origid];
 
   return (WrappedResourceType)RecordType::NullResource;
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::EraseLiveResource(
-    ResourceId origid)
+template <typename Configuration>
+void ResourceManager<Configuration>::EraseLiveResource(ResourceId origid)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   RDCASSERT(HasLiveResource(origid), origid);
 
-  if(m_InframeResourceMap.find(origid) != m_InframeResourceMap.end())
-  {
-    m_InframeResourceMap.erase(origid);
-  }
-  else
-  {
-    m_LiveResourceMap.erase(origid);
-  }
+  m_LiveResourceMap.erase(origid);
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::AddCurrentResource(
-    ResourceId id, WrappedResourceType res)
+template <typename Configuration>
+void ResourceManager<Configuration>::AddCurrentResource(ResourceId id, WrappedResourceType res)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
-  RDCASSERT(m_CurrentResourceMap.find(id) == m_CurrentResourceMap.end(), id);
   m_CurrentResourceMap[id] = res;
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-bool ResourceManager<WrappedResourceType, RealResourceType, RecordType>::HasCurrentResource(ResourceId id)
+template <typename Configuration>
+bool ResourceManager<Configuration>::HasCurrentResource(ResourceId id)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
   return m_CurrentResourceMap.find(id) != m_CurrentResourceMap.end();
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-WrappedResourceType ResourceManager<WrappedResourceType, RealResourceType,
-                                    RecordType>::GetCurrentResource(ResourceId id)
+template <typename Configuration>
+typename Configuration::WrappedResourceType ResourceManager<Configuration>::GetCurrentResource(
+    ResourceId id)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
+
+  if(id == ResourceId())
+    return (WrappedResourceType)RecordType::NullResource;
 
   if(m_Replacements.find(id) != m_Replacements.end())
     return GetCurrentResource(m_Replacements[id]);
 
-  RDCASSERT(m_CurrentResourceMap.find(id) != m_CurrentResourceMap.end(), id);
   return m_CurrentResourceMap[id];
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-void ResourceManager<WrappedResourceType, RealResourceType, RecordType>::ReleaseCurrentResource(
-    ResourceId id)
+template <typename Configuration>
+void ResourceManager<Configuration>::ReleaseCurrentResource(ResourceId id)
 {
-  SCOPED_LOCK(m_Lock);
+  SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
-  RDCASSERT(m_CurrentResourceMap.find(id) != m_CurrentResourceMap.end(), id);
+  // We potentially need to prepare this resource on Active Capture,
+  // if it was postponed, but is about to go away.
+  if(IsActiveCapturing(m_State))
+  {
+    Prepare_InitialStateIfPostponed(id, true);
+  }
+
   m_CurrentResourceMap.erase(id);
+  m_DirtyResources.erase(id);
+
+  auto it = std::lower_bound(m_ResourceRefTimes.begin(), m_ResourceRefTimes.end(), id);
+  if(it != m_ResourceRefTimes.end())
+    m_ResourceRefTimes.erase(it - m_ResourceRefTimes.begin());
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-ResourceId ResourceManager<WrappedResourceType, RealResourceType, RecordType>::GetOriginalID(
-    ResourceId id)
+template <typename Configuration>
+ResourceId ResourceManager<Configuration>::GetOriginalID(ResourceId id)
 {
   if(id == ResourceId())
     return id;
@@ -1409,11 +1907,28 @@ ResourceId ResourceManager<WrappedResourceType, RealResourceType, RecordType>::G
   return m_OriginalIDs[id];
 }
 
-template <typename WrappedResourceType, typename RealResourceType, typename RecordType>
-ResourceId ResourceManager<WrappedResourceType, RealResourceType, RecordType>::GetLiveID(ResourceId id)
+template <typename Configuration>
+ResourceId ResourceManager<Configuration>::GetUnreplacedOriginalID(ResourceId id)
 {
   if(id == ResourceId())
     return id;
+
+  if(m_Replaced.find(id) != m_Replaced.end())
+    return m_Replaced[id];
+
+  RDCASSERT(m_OriginalIDs.find(id) != m_OriginalIDs.end(), id);
+  return m_OriginalIDs[id];
+}
+
+template <typename Configuration>
+ResourceId ResourceManager<Configuration>::GetLiveID(ResourceId id)
+{
+  if(id == ResourceId())
+    return id;
+
+  auto it = m_Replacements.find(id);
+  if(it != m_Replacements.end())
+    return it->second;
 
   RDCASSERT(m_LiveIDs.find(id) != m_LiveIDs.end(), id);
   return m_LiveIDs[id];

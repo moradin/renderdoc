@@ -8,29 +8,13 @@ RenderDoc wouldn't have been possible without both the tools and libraries that 
 
 The following libraries and components are incorporated into RenderDoc, listed here in no particular order. Thanks go out to the developers and contributors behind each of these libraries who generously donated their work to other free projects!
 
-* `TreeView with Columns <http://www.codeproject.com/Articles/23746/TreeView-with-Columns>`_ - Copyright 2008 by jkristia, distributed under the `CPOL license <http://www.codeproject.com/info/cpol10.aspx>`_.
-
-  An invaluable control filling a much needed niche in .NET winforms.
-
-* `DockPanel <http://dockpanelsuite.com/>`_ - Copyright 2007 Weifen Luo, distributed under the MIT license.
-
-  A mature and stable library that adds the docking and flexibility of RenderDoc's UI.
-
-* `famfamfam Silk Icon set <http://www.famfamfam.com/lab/icons/silk/>`_ - Authored by Mark James, distributed under Creative Commons Attribution 2.5.
-
-  Lending an air of professionalism and artistic quality to the UI, the Silk icon set is used throughout RenderDoc.
-
-* `Scintilla.NET <http://scintillanet.codeplex.com/>`_ - ScintillaNET Copyright 2002-2006 Garrett Serack, `Scintilla <http://www.scintilla.org/>`_ Copyright 1998-2006 Neil Hodgson, distributed under the MIT license.
-
-  Scintilla and the wrapper Scintilla.NET provide a powerful text editor for the shader viewers.
-
 * `Google Breakpad <https://chromium.googlesource.com/breakpad/breakpad/>`_ - Copyright 2006 Google Inc, distributed under the New BSD License (3 Clause).
 
-  provides a rock-solid crash handling and reporting base that help keep RenderDoc stable.
+  Crash handling and report preparation system.
 
 * `miniz <https://code.google.com/p/miniz/>`_ - Released to the Public Domain by Rich Geldreich.
 
-  Public domain zip library is used to compress the crash reports for sending.
+  Used for zip read/write in several places.
 
 * `ILM's half implementation <https://github.com/openexr/openexr/tree/master/IlmBase/Half>`_ - Copyright 2002 Industrial Light & Magic, a division of Lucas Digital Ltd. LLC, distributed under BSD license.
 
@@ -38,11 +22,11 @@ The following libraries and components are incorporated into RenderDoc, listed h
 
 * `jpeg-compressor <https://code.google.com/p/jpeg-compressor/>`_ - Released to the Public Domain by Rich Geldreich.
 
-  Used to compress screenshots into jpg format for thumbnail previews.
+  Used for jpg reading and writing.
 
-* `lz4 <https://github.com/Cyan4973/lz4>`_ - Copyright 2013 Yann Collet, distributed under the New BSD License (3 Clause).
+* `lz4 <https://github.com/lz4/lz4>`_ - Copyright 2013 Yann Collet, distributed under the BSD 2-Clause license.
 
-  compresses large data transfers (textures and buffers) when going across network connections as well as in the capture files themselves.
+  Used for fast compression where speed is more important than compression ratio.
 
 * `stb <https://github.com/nothings/stb>`_ - Released to the Public Domain by Sean Barrett.
 
@@ -51,10 +35,6 @@ The following libraries and components are incorporated into RenderDoc, listed h
 * `Source Code Pro <https://github.com/adobe-fonts/source-code-pro>`_ - Copyright 2010, 2012 Adobe Systems Incorporated, distributed under the SIL Open Font License 1.1.
 
   Font used for the in-program overlay.
-
-* `IronPython <http://ironpython.net/>`_ - Copyright IronPython Team, distributed under the Apache 2.0 license.
-
-  Used for the Python shell/integration in the UI.
 
 * `tinyexr <https://github.com/syoyo/tinyexr>`_ - Copyright 2014 Syoyo Fujita, distributed under the New BSD License (3 Clause).
 
@@ -80,10 +60,84 @@ The following libraries and components are incorporated into RenderDoc, listed h
 
   Used for hooking some libraries loaded with DEEPBIND on linux.
 
+* `tinyfiledialogs <https://sourceforge.net/projects/tinyfiledialogs/>`_ - Copyright (c) 2014 - 2016 Guillaume Vareille, distributed under the zlib license.
+
+  Used to display message boxes cross-platform from the non-UI core code.
+
+* `AMD GPUPerfAPI <https://github.com/GPUOpen-Tools/GPA>`_ - Copyright (c) 2016-2018 Advanced Micro Devices, Inc., distributed under the MIT license.
+
+  Provides hardware-specific counters over and above what individual hardware-agnostic graphics APIs are able to provide.
+
+* `Farm-Fresh Web Icons <http://www.fatcow.com/free-icons>`_ - Copyright (c) 2009-2014 FatCow Web Hosting, distributed under Creative Commons Attribution 3.0 License.
+
+  Providing higher-resolution icons than the famfamfam Silk set, these icons allow scaling to those using high-DPI displays.
+
+* `AMD Radeon GPU Analyzer <https://github.com/GPUOpen-Tools/RGA>`_ - Copyright (c) 2015-2018 Advanced Micro Devices, Inc., distributed under the MIT license.
+
+  Provides the ability to disassemble shaders from any API representation into compiled GCN ISA for lower level analysis.
+
+* `Catch <https://github.com/philsquared/Catch>`_ - Copyright (c) 2012 Two Blue Cubes Ltd., distributed under the Boost Software License.
+
+  Implements unit testing during development.
+
+* `zstd <https://github.com/facebook/zstd>`_ - Copyright (c) 2016-present, Facebook, Inc., distributed under the BSD License.
+
+  Compresses capture files at a higher rate of compression off-line (not at capture time).
+
+* `pugixml <https://pugixml.org/>`_ - Copyright (c) 2006-2017 Arseny Kapoulkine, distributed under the MIT License.
+
+  Used for converting capture files to and from xml.
+
+* `AOSP <https://source.android.com/>`_ - Copyright (c) 2006-2016, The Android Open Source Project, distributed under the Apache 2.0 License.
+
+  Used to simplify Android workflows by distributing some tools from the android SDK, as well as patching android manifest files to enable debugging.
+
+* `interceptor-lib <https://github.com/google/gapid>`_ - Copyright (c) 2017, Google Inc., distributed under the Apache 2.0 License.
+
+  Taken from the GAPID project, used to inject hooks into android library functions if LLVM is available at build-time.
+
+* `LLVM <http://llvm.org/>`_ - Copyright (c) 2003-2017 University of Illinois at Urbana-Champaign, distributed under the University of Illinois/NCSA Open Source License.
+
+  Used to support interceptor-lib to inject hooks into android library functions.
+
+* `OpenSSL <https://www.openssl.org/>`_ - Copyright (c) 1998-2018 The OpenSSL Project. Copyright (C) 1995-1998 Eric Young. Distributed under the double license of the OpenSSL and SSLeay licenses.
+
+  Used to connect securely to RenderDoc's servers for update checks and bug reports.
+
+* `Microsoft PDB Information <https://github.com/Microsoft/microsoft-pdb/>`_ - Copyright (c) 2015 Microsoft Corporation. Distributed under the MIT License.
+
+  Used to recover debug information from DXBC shaders on D3D11/D3D12.
+
+* `Compressonator <https://github.com/GPUOpen-Tools/compressonator/>`_ - Copyright (c) 2018 Advanced Micro Devices, Inc. Copyright (c) 2004-2006 ATI Technologies Inc. Distributed under the MIT License.
+
+  Used to provide shell thumbnail previews for block compressed DDS files.
+
+* `nvapi open source SDK <http://download.nvidia.com/XFree86/nvapi-open-source-sdk/>`_ - Copyright (c) 2019, NVIDIA CORPORATION. Distributed under the MIT License.
+
+  Used to intercept nvapi calls on D3D11/D3D12.
+
+* `half.hpp <http://half.sourceforge.net/>`_ - Copyright (c) 2012-2019 Christian Rau. Distributed under the MIT License.
+
+  Used to emulate half-precision operations in shader debugging.
+
+* `Superluminal <https://superluminal.eu/>`_ - Copyright (c) 2019-2020 Superluminal. Distributed under the BSD License.
+
+  Used to emit profiling events in development builds.
+
+* `AGS <https://github.com/GPUOpen-LibrariesAndSDKs/AGS_SDK/>`_ - Copyright (c) 2020 Advanced Micro Devices, Inc. Distributed under the MIT License.
+
+  Used to intercept and test AGS calls on D3D11/D3D12.
+
+* `md5 hashing <http://openwall.info/wiki/people/solar/software/public-domain-source-code/md5>`_ - Released to the Public Domain by Alexander Peslyak.
+
+  Used for calculating DXBC container hash.
+
 Thanks
 ------
 
-There have been many people who have helped in the creation of RenderDoc. Whether testing, feedback or contributing artwork and design critique everyone listed here and many more besides have been invaluable in taking RenderDoc from an idea on paper to its current state. Greets fly out to the following people, listed in no particular order.
+Screenshots in this documentation are from `Sascha Willems' Vulkan demos <https://github.com/SaschaWillems/Vulkan>`_.
+
+There have been many people who have helped in the creation of RenderDoc. Whether testing, providing feedback, or contributing artwork and design critique everyone listed here and many more besides have been invaluable in taking RenderDoc from an idea on paper to its current state. Greets fly out to the following people, listed in no particular order.
 
 * Chris Bunner, Charlie Cole, James Chilvers, Andrew Khan, Benjamin Hill, Jake Turner, Alex Weighell and the rest of the Crytek UK R&D team.
 * Colin Bonstead, Marco Corbetta, Pascal Eggert, Marcel Hatam, Sascha Hoba, Theodor Mader, Mathieu Pinard, Chris Raine, Nicolas Schulz, Tiago Sousa, Sean Tracy, Carsten Wenzel, and everyone else at the rest of the Crytek Studios.
@@ -120,6 +174,20 @@ There have been many people who have helped in the creation of RenderDoc. Whethe
 * Ian Elliot
 * Callan McInally
 * Gordon Selley
+* Cody Northrop
+* Dominik Baumeister
+* Adrian Bucur
+* Peter Gal
+* Janos Pantos
+* Marton Tamas
+* Nat Duca
+* Ben Clayton
+* Aliya Pazylbekova
+* Benson Joeris
+* Haiyu Zhen
+* Alex Kharlamov
+* Steve Karolewics
+* Kevin McCullough
 
 Contributors
 ------------
@@ -128,7 +196,9 @@ The following list highlights notable open source contributions. Many other peop
 
 * Michael Vance - Implemented a sophisticated frame statistics system for D3D11 around binding and draw API calls.
 * Matthäus G. Chajdas - Converted this documentation from sandcastle to sphinx.
-* Michael Rennie - Added support for Android platform capture.
+* Michael Rennie, Peter Gal, and Janos Pantos at Samsung - Added support for Android platform capture as well as Vulkan and OpenGL ES support.
 * Adrian Bucur - Added custom SPIR-V disassembler support.
 * James Fulop - Updated the vertex picking algorithm.
 * Balazs Torok - Implemented the RenderDoc in-application overlay for D3D9.
+* Steve Karolewics - Implemented DXBC shader debugging support for D3D12.
+* Aliya Pazylbekova - Implemented pixel history support for Vulkan.

@@ -394,6 +394,10 @@ public:
     return others;
   }
 
+  void set_rest(const std::vector<std::string> &rest) {
+    others = rest;
+  }
+
   bool parse(const std::vector<std::string> &args, bool processed_arg0 = false){
     int argc=static_cast<int>(args.size());
     std::vector<const char*> argv(argc);
@@ -401,7 +405,7 @@ public:
     for (int i=0; i<argc; i++)
       argv[i]=args[i].c_str();
 
-    return parse(argc, &argv[0], processed_arg0);
+    return parse(argc, argv.data(), processed_arg0);
   }
 
   bool parse(int argc, const char * const argv[], bool processed_arg0 = false){
@@ -443,7 +447,13 @@ public:
         else{
           std::string name(argv[i]+2);
           if (options.count(name)==0){
-            errors.push_back("undefined option: --"+name);
+            if (stop){
+              found_others=true;
+              others.push_back(argv[i]);
+            }
+            else{
+              errors.push_back("undefined option: --"+name);
+            }
             continue;
           }
           if (options[name]->has_value()){
@@ -467,7 +477,13 @@ public:
         for (int j=2; argv[i][j]; j++){
           last=argv[i][j];
           if (lookup.count(argv[i][j-1])==0){
-            errors.push_back(std::string("undefined short option: -")+argv[i][j-1]);
+            if (stop){
+              found_others=true;
+              others.push_back(argv[i]);
+            }
+            else{
+              errors.push_back(std::string("undefined short option: -")+argv[i][j-1]);
+            }
             continue;
           }
           if (lookup[argv[i][j-1]]==""){
@@ -478,7 +494,13 @@ public:
         }
 
         if (lookup.count(last)==0){
-          errors.push_back(std::string("undefined short option: -")+last);
+          if (stop){
+            found_others=true;
+            others.push_back(argv[i]);
+          }
+          else{
+            errors.push_back(std::string("undefined short option: -")+last);
+          }
           continue;
         }
         if (lookup[last]==""){

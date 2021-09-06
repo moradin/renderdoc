@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -25,15 +25,20 @@
 
 #pragma once
 
+#include "api/replay/stringise.h"
 #include "common/common.h"
 #include "common/wrapped_pool.h"
-#include "driver/dx/official/dxgi1_5.h"
+#include "driver/dx/official/dxgi1_6.h"
+#include "driver/dx/official/dxgidebug.h"
 
 MIDL_INTERFACE("6f15aaf2-d208-4e89-9ab4-489535d34f9c") ID3D11Texture2D;
+MIDL_INTERFACE("51218251-1E33-4617-9CCB-4D3A4367E7BB") ID3D11Texture2D1;
 MIDL_INTERFACE("dc8e63f3-d12b-4952-b47b-5e45026a862d") ID3D11Resource;
 MIDL_INTERFACE("db6f6ddb-ac77-4e88-8253-819df9bbf140") ID3D11Device;
 MIDL_INTERFACE("696442be-a72e-4059-bc79-5b5c98040fad") ID3D12Resource;
+MIDL_INTERFACE("9D5E227A-4430-4161-88B3-3ECA6BB16E19") ID3D12Resource1;
 MIDL_INTERFACE("189819f1-1db6-4b57-be54-1821339b85f7") ID3D12Device;
+MIDL_INTERFACE("9B7E4E00-342C-4106-A19F-4F2704F689F0") ID3D11Multithread;
 
 class RefCountDXGIObject : public IDXGIObject
 {
@@ -43,8 +48,9 @@ class RefCountDXGIObject : public IDXGIObject
 public:
   RefCountDXGIObject(IDXGIObject *real) : m_pReal(real), m_iRefcount(1) {}
   virtual ~RefCountDXGIObject() {}
-  static bool HandleWrap(REFIID riid, void **ppvObject);
-  static HRESULT WrapQueryInterface(IUnknown *real, REFIID riid, void **ppvObject);
+  static bool HandleWrap(const char *ifaceName, REFIID riid, void **ppvObject);
+  static HRESULT WrapQueryInterface(IUnknown *real, const char *ifaceName, REFIID riid,
+                                    void **ppvObject);
 
   //////////////////////////////
   // implement IUnknown
@@ -53,14 +59,27 @@ public:
       /* [annotation][iid_is][out] */
       __RPC__deref_out void **ppvObject)
   {
+    return QueryInterface("IUnknown", riid, ppvObject);
+  }
+
+  // optional overload that's useful for passing down the name of the current interface to put in
+  // any 'unknown interface' query logs.
+  HRESULT STDMETHODCALLTYPE QueryInterface(const char *ifaceName, REFIID riid, void **ppvObject)
+  {
     if(riid == __uuidof(IUnknown))
     {
       AddRef();
       *ppvObject = (IUnknown *)(IDXGIObject *)this;
       return S_OK;
     }
+    else if(riid == __uuidof(IDXGIObject))
+    {
+      AddRef();
+      *ppvObject = (IDXGIObject *)this;
+      return S_OK;
+    }
 
-    return WrapQueryInterface(m_pReal, riid, ppvObject);
+    return WrapQueryInterface(m_pReal, ifaceName, riid, ppvObject);
   }
 
   ULONG STDMETHODCALLTYPE AddRef()
@@ -107,30 +126,6 @@ public:
       /* [retval][out] */ void **ppParent);
 };
 
-#define IMPLEMENT_IDXGIOBJECT_WITH_REFCOUNTDXGIOBJECT                                      \
-  ULONG STDMETHODCALLTYPE AddRef() { return RefCountDXGIObject::AddRef(); }                \
-  ULONG STDMETHODCALLTYPE Release() { return RefCountDXGIObject::Release(); }              \
-  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject)                  \
-  {                                                                                        \
-    return RefCountDXGIObject::QueryInterface(riid, ppvObject);                            \
-  }                                                                                        \
-  HRESULT STDMETHODCALLTYPE SetPrivateData(REFIID Name, UINT DataSize, const void *pData)  \
-  {                                                                                        \
-    return RefCountDXGIObject::SetPrivateData(Name, DataSize, pData);                      \
-  }                                                                                        \
-  HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFIID Name, const IUnknown *pUnknown) \
-  {                                                                                        \
-    return RefCountDXGIObject::SetPrivateDataInterface(Name, pUnknown);                    \
-  }                                                                                        \
-  HRESULT STDMETHODCALLTYPE GetPrivateData(REFIID Name, UINT *pDataSize, void *pData)      \
-  {                                                                                        \
-    return RefCountDXGIObject::GetPrivateData(Name, pDataSize, pData);                     \
-  }                                                                                        \
-  HRESULT STDMETHODCALLTYPE GetParent(REFIID riid, void **ppvObject)                       \
-  {                                                                                        \
-    return RefCountDXGIObject::GetParent(riid, ppvObject);                                 \
-  }
-
 #define IMPLEMENT_IDXGIOBJECT_WITH_REFCOUNTDXGIOBJECT_CUSTOMQUERY                          \
   ULONG STDMETHODCALLTYPE AddRef() { return RefCountDXGIObject::AddRef(); }                \
   ULONG STDMETHODCALLTYPE Release() { return RefCountDXGIObject::Release(); }              \
@@ -151,7 +146,21 @@ public:
     return RefCountDXGIObject::GetParent(riid, ppvObject);                                 \
   }
 
-class WrappedIDXGISwapChain4;
+struct ID3DDevice;
+
+struct IDXGISwapper
+{
+  virtual ID3DDevice *GetD3DDevice() = 0;
+  virtual int GetNumBackbuffers() = 0;
+  virtual IUnknown **GetBackbuffers() = 0;
+  virtual int GetLastPresentedBuffer() = 0;
+  virtual UINT GetWidth() = 0;
+  virtual UINT GetHeight() = 0;
+  virtual DXGI_FORMAT GetFormat() = 0;
+  virtual HWND GetHWND() = 0;
+};
+
+struct IFrameCapturer;
 
 struct ID3DDevice
 {
@@ -160,6 +169,9 @@ struct ID3DDevice
   virtual ULONG STDMETHODCALLTYPE Release() = 0;
   virtual HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) = 0;
 
+  virtual void *GetFrameCapturerDevice() = 0;
+  virtual IFrameCapturer *GetFrameCapturer() = 0;
+
   virtual IUnknown *GetRealIUnknown() = 0;
 
   virtual IID GetBackbufferUUID() = 0;
@@ -167,16 +179,18 @@ struct ID3DDevice
   virtual bool IsDeviceUUID(REFIID guid) = 0;
   virtual IUnknown *GetDeviceInterface(REFIID guid) = 0;
 
-  virtual void FirstFrame(WrappedIDXGISwapChain4 *swapChain) = 0;
+  virtual void FirstFrame(IDXGISwapper *swapper) = 0;
 
   virtual void NewSwapchainBuffer(IUnknown *backbuffer) = 0;
-  virtual void ReleaseSwapchainResources(WrappedIDXGISwapChain4 *swapChain, UINT QueueCount,
+  virtual void ReleaseSwapchainResources(IDXGISwapper *swapper, UINT QueueCount,
                                          IUnknown *const *ppPresentQueue,
                                          IUnknown **unwrappedQueues) = 0;
-  virtual IUnknown *WrapSwapchainBuffer(WrappedIDXGISwapChain4 *swap, DXGI_SWAP_CHAIN_DESC *swapDesc,
+  virtual IUnknown *WrapSwapchainBuffer(IDXGISwapper *swapper, DXGI_FORMAT bufferFormat,
                                         UINT buffer, IUnknown *realSurface) = 0;
 
-  virtual HRESULT Present(WrappedIDXGISwapChain4 *swapChain, UINT SyncInterval, UINT Flags) = 0;
+  virtual IDXGIResource *WrapExternalDXGIResource(IDXGIResource *res) = 0;
+
+  virtual HRESULT Present(IDXGISwapper *swapper, UINT SyncInterval, UINT Flags) = 0;
 };
 
 typedef ID3DDevice *(*D3DDeviceCallback)(IUnknown *dev);
@@ -204,6 +218,7 @@ public:
     m_pDevice->Release();
   }
 
+  NestedType *GetWrapped() { return m_pWrapped; }
   //////////////////////////////
   // Implement IUnknown
   ULONG STDMETHODCALLTYPE AddRef() { return RefCountDXGIObject::AddRef(); }
@@ -211,7 +226,7 @@ public:
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject)
   {
     // ensure the real object has this interface
-    void *outObj;
+    void *outObj = NULL;
     HRESULT hr = m_pWrapped->QueryInterface(riid, &outObj);
 
     IUnknown *unk = (IUnknown *)outObj;
@@ -540,7 +555,7 @@ public:
   }
 };
 
-class WrappedIDXGISwapChain4 : public IDXGISwapChain4, public RefCountDXGIObject
+class WrappedIDXGISwapChain4 : public IDXGISwapChain4, public RefCountDXGIObject, public IDXGISwapper
 {
   IDXGISwapChain *m_pReal;
   IDXGISwapChain1 *m_pReal1;
@@ -548,19 +563,38 @@ class WrappedIDXGISwapChain4 : public IDXGISwapChain4, public RefCountDXGIObject
   IDXGISwapChain3 *m_pReal3;
   IDXGISwapChain4 *m_pReal4;
   ID3DDevice *m_pDevice;
-  unsigned int m_iRefcount;
 
-  static std::vector<D3DDeviceCallback> m_D3DCallbacks;
+  static rdcarray<D3DDeviceCallback> m_D3DCallbacks;
 
   HWND m_Wnd;
 
   static const int MAX_NUM_BACKBUFFERS = 8;
 
   IUnknown *m_pBackBuffers[MAX_NUM_BACKBUFFERS];
+  int32_t m_LastPresentedBuffer = -1;
 
   void ReleaseBuffersForResize(UINT QueueCount, IUnknown *const *ppPresentQueue,
                                IUnknown **unwrappedQueues);
   void WrapBuffersAfterResize();
+
+  void TickLastPresentedBuffer()
+  {
+    DXGI_SWAP_CHAIN_DESC desc = {};
+
+    m_pReal->GetDesc(&desc);
+
+    if(desc.SwapEffect == DXGI_SWAP_EFFECT_DISCARD)
+    {
+      // discard always presents from 0
+      m_LastPresentedBuffer = 0;
+    }
+    else
+    {
+      // other modes use each buffer in turn
+      m_LastPresentedBuffer++;
+      m_LastPresentedBuffer %= desc.BufferCount;
+    }
+  }
 
 public:
   WrappedIDXGISwapChain4(IDXGISwapChain *real, HWND wnd, ID3DDevice *device);
@@ -568,7 +602,8 @@ public:
 
   static void RegisterD3DDeviceCallback(D3DDeviceCallback callback)
   {
-    m_D3DCallbacks.push_back(callback);
+    if(!m_D3DCallbacks.contains(callback))
+      m_D3DCallbacks.push_back(callback);
   }
 
   static ID3DDevice *GetD3DDevice(IUnknown *dev)
@@ -586,8 +621,48 @@ public:
   ID3DDevice *GetD3DDevice() { return m_pDevice; }
   int GetNumBackbuffers() { return MAX_NUM_BACKBUFFERS; }
   IUnknown **GetBackbuffers() { return m_pBackBuffers; }
+  int GetLastPresentedBuffer() { return RDCMAX(m_LastPresentedBuffer, 0); }
   IMPLEMENT_IDXGIOBJECT_WITH_REFCOUNTDXGIOBJECT_CUSTOMQUERY;
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject);
+
+  HWND GetHWND()
+  {
+    DXGI_SWAP_CHAIN_DESC desc = {};
+
+    m_pReal->GetDesc(&desc);
+
+    if(desc.OutputWindow != NULL)
+      return desc.OutputWindow;
+
+    return m_Wnd;
+  }
+
+  UINT GetWidth()
+  {
+    DXGI_SWAP_CHAIN_DESC desc = {};
+
+    m_pReal->GetDesc(&desc);
+
+    return desc.BufferDesc.Width;
+  }
+
+  UINT GetHeight()
+  {
+    DXGI_SWAP_CHAIN_DESC desc = {};
+
+    m_pReal->GetDesc(&desc);
+
+    return desc.BufferDesc.Height;
+  }
+
+  DXGI_FORMAT GetFormat()
+  {
+    DXGI_SWAP_CHAIN_DESC desc = {};
+
+    m_pReal->GetDesc(&desc);
+
+    return desc.BufferDesc.Format;
+  }
 
   //////////////////////////////
   // implement IDXGIDeviceSubObject
@@ -635,10 +710,7 @@ public:
     return m_pReal->ResizeTarget(pNewTargetParameters);
   }
 
-  virtual HRESULT STDMETHODCALLTYPE GetContainingOutput(IDXGIOutput **ppOutput)
-  {
-    return m_pReal->GetContainingOutput(ppOutput);
-  }
+  virtual HRESULT STDMETHODCALLTYPE GetContainingOutput(IDXGIOutput **ppOutput);
 
   virtual HRESULT STDMETHODCALLTYPE GetFrameStatistics(
       /* [out] */ DXGI_FRAME_STATISTICS *pStats)
@@ -659,21 +731,21 @@ public:
       /* [annotation][out] */
       _Out_ DXGI_SWAP_CHAIN_DESC1 *pDesc)
   {
-    return m_pReal2->GetDesc1(pDesc);
+    return m_pReal1->GetDesc1(pDesc);
   }
 
   virtual HRESULT STDMETHODCALLTYPE GetFullscreenDesc(
       /* [annotation][out] */
       _Out_ DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pDesc)
   {
-    return m_pReal2->GetFullscreenDesc(pDesc);
+    return m_pReal1->GetFullscreenDesc(pDesc);
   }
 
   virtual HRESULT STDMETHODCALLTYPE GetHwnd(
       /* [annotation][out] */
       _Out_ HWND *pHwnd)
   {
-    return m_pReal2->GetHwnd(pHwnd);
+    return m_pReal1->GetHwnd(pHwnd);
   }
 
   virtual HRESULT STDMETHODCALLTYPE GetCoreWindow(
@@ -682,7 +754,7 @@ public:
       /* [annotation][out] */
       _Out_ void **ppUnk)
   {
-    return m_pReal2->GetCoreWindow(refiid, ppUnk);
+    return m_pReal1->GetCoreWindow(refiid, ppUnk);
   }
 
   virtual HRESULT STDMETHODCALLTYPE Present1(
@@ -693,42 +765,39 @@ public:
 
   virtual BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported(void)
   {
-    return m_pReal2->IsTemporaryMonoSupported();
+    return m_pReal1->IsTemporaryMonoSupported();
   }
 
   virtual HRESULT STDMETHODCALLTYPE GetRestrictToOutput(
       /* [annotation][out] */
-      _Out_ IDXGIOutput **ppRestrictToOutput)
-  {
-    return m_pReal2->GetRestrictToOutput(ppRestrictToOutput);
-  }
+      _Out_ IDXGIOutput **ppRestrictToOutput);
 
   virtual HRESULT STDMETHODCALLTYPE SetBackgroundColor(
       /* [annotation][in] */
       _In_ const DXGI_RGBA *pColor)
   {
-    return m_pReal2->SetBackgroundColor(pColor);
+    return m_pReal1->SetBackgroundColor(pColor);
   }
 
   virtual HRESULT STDMETHODCALLTYPE GetBackgroundColor(
       /* [annotation][out] */
       _Out_ DXGI_RGBA *pColor)
   {
-    return m_pReal2->GetBackgroundColor(pColor);
+    return m_pReal1->GetBackgroundColor(pColor);
   }
 
   virtual HRESULT STDMETHODCALLTYPE SetRotation(
       /* [annotation][in] */
       _In_ DXGI_MODE_ROTATION Rotation)
   {
-    return m_pReal2->SetRotation(Rotation);
+    return m_pReal1->SetRotation(Rotation);
   }
 
   virtual HRESULT STDMETHODCALLTYPE GetRotation(
       /* [annotation][out] */
       _Out_ DXGI_MODE_ROTATION *pRotation)
   {
-    return m_pReal2->GetRotation(pRotation);
+    return m_pReal1->GetRotation(pRotation);
   }
 
   //////////////////////////////
@@ -832,17 +901,295 @@ public:
   }
 };
 
-class WrappedIDXGIAdapter3 : public IDXGIAdapter3, public RefCountDXGIObject
+class WrappedIDXGIOutputDuplication : public IDXGIOutputDuplication, public RefCountDXGIObject
+{
+  ID3DDevice *m_Device;
+  IDXGIOutputDuplication *m_pReal;
+
+public:
+  IMPLEMENT_IDXGIOBJECT_WITH_REFCOUNTDXGIOBJECT_CUSTOMQUERY;
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject);
+
+  WrappedIDXGIOutputDuplication(ID3DDevice *device, IDXGIOutputDuplication *real);
+  ~WrappedIDXGIOutputDuplication();
+
+  IDXGIOutputDuplication *GetReal() { return m_pReal; }
+  //////////////////////////////
+  // implement IDXGIOutputDuplication
+
+  virtual void STDMETHODCALLTYPE GetDesc(
+      /* [annotation][out] */
+      _Out_ DXGI_OUTDUPL_DESC *pDesc)
+  {
+    return m_pReal->GetDesc(pDesc);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE AcquireNextFrame(
+      /* [annotation][in] */
+      _In_ UINT TimeoutInMilliseconds,
+      /* [annotation][out] */
+      _Out_ DXGI_OUTDUPL_FRAME_INFO *pFrameInfo,
+      /* [annotation][out] */
+      _COM_Outptr_ IDXGIResource **ppDesktopResource);
+
+  virtual HRESULT STDMETHODCALLTYPE GetFrameDirtyRects(
+      /* [annotation][in] */
+      _In_ UINT DirtyRectsBufferSize,
+      /* [annotation][out] */
+      _Out_writes_bytes_to_(DirtyRectsBufferSize, *pDirtyRectsBufferSizeRequired)
+          RECT *pDirtyRectsBuffer,
+      /* [annotation][out] */
+      _Out_ UINT *pDirtyRectsBufferSizeRequired)
+  {
+    return m_pReal->GetFrameDirtyRects(DirtyRectsBufferSize, pDirtyRectsBuffer,
+                                       pDirtyRectsBufferSizeRequired);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE GetFrameMoveRects(
+      /* [annotation][in] */
+      _In_ UINT MoveRectsBufferSize,
+      /* [annotation][out] */
+      _Out_writes_bytes_to_(MoveRectsBufferSize, *pMoveRectsBufferSizeRequired)
+          DXGI_OUTDUPL_MOVE_RECT *pMoveRectBuffer,
+      /* [annotation][out] */
+      _Out_ UINT *pMoveRectsBufferSizeRequired)
+  {
+    return m_pReal->GetFrameMoveRects(MoveRectsBufferSize, pMoveRectBuffer,
+                                      pMoveRectsBufferSizeRequired);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE GetFramePointerShape(
+      /* [annotation][in] */
+      _In_ UINT PointerShapeBufferSize,
+      /* [annotation][out] */
+      _Out_writes_bytes_to_(PointerShapeBufferSize,
+                            *pPointerShapeBufferSizeRequired) void *pPointerShapeBuffer,
+      /* [annotation][out] */
+      _Out_ UINT *pPointerShapeBufferSizeRequired,
+      /* [annotation][out] */
+      _Out_ DXGI_OUTDUPL_POINTER_SHAPE_INFO *pPointerShapeInfo)
+  {
+    return m_pReal->GetFramePointerShape(PointerShapeBufferSize, pPointerShapeBuffer,
+                                         pPointerShapeBufferSizeRequired, pPointerShapeInfo);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE MapDesktopSurface(
+      /* [annotation][out] */
+      _Out_ DXGI_MAPPED_RECT *pLockedRect)
+  {
+    return m_pReal->MapDesktopSurface(pLockedRect);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE UnMapDesktopSurface(void)
+  {
+    return m_pReal->UnMapDesktopSurface();
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE ReleaseFrame(void) { return m_pReal->ReleaseFrame(); }
+};
+
+class WrappedIDXGIOutput6 : public IDXGIOutput6, public RefCountDXGIObject
+{
+  RefCountDXGIObject *m_Owner;
+  IDXGIOutput *m_pReal;
+  IDXGIOutput1 *m_pReal1;
+  IDXGIOutput2 *m_pReal2;
+  IDXGIOutput3 *m_pReal3;
+  IDXGIOutput4 *m_pReal4;
+  IDXGIOutput5 *m_pReal5;
+  IDXGIOutput6 *m_pReal6;
+
+public:
+  IMPLEMENT_IDXGIOBJECT_WITH_REFCOUNTDXGIOBJECT_CUSTOMQUERY;
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject);
+
+  WrappedIDXGIOutput6(RefCountDXGIObject *owner, IDXGIOutput *real);
+  ~WrappedIDXGIOutput6();
+
+  IDXGIOutput *GetReal() { return m_pReal; }
+  //////////////////////////////
+  // implement IDXGIOutput
+
+  virtual HRESULT STDMETHODCALLTYPE GetDesc(
+      /* [annotation][out] */
+      _Out_ DXGI_OUTPUT_DESC *pDesc)
+  {
+    return m_pReal->GetDesc(pDesc);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE GetDisplayModeList(
+      /* [in] */ DXGI_FORMAT EnumFormat,
+      /* [in] */ UINT Flags,
+      /* [annotation][out][in] */
+      _Inout_ UINT *pNumModes,
+      /* [annotation][out] */
+      _Out_writes_to_opt_(*pNumModes, *pNumModes) DXGI_MODE_DESC *pDesc)
+  {
+    return m_pReal->GetDisplayModeList(EnumFormat, Flags, pNumModes, pDesc);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE FindClosestMatchingMode(
+      /* [annotation][in] */
+      _In_ const DXGI_MODE_DESC *pModeToMatch,
+      /* [annotation][out] */
+      _Out_ DXGI_MODE_DESC *pClosestMatch,
+      /* [annotation][in] */
+      _In_opt_ IUnknown *pConcernedDevice);
+
+  virtual HRESULT STDMETHODCALLTYPE WaitForVBlank(void) { return m_pReal->WaitForVBlank(); }
+  virtual HRESULT STDMETHODCALLTYPE TakeOwnership(
+      /* [annotation][in] */
+      _In_ IUnknown *pDevice, BOOL Exclusive);
+
+  virtual void STDMETHODCALLTYPE ReleaseOwnership(void) { return m_pReal->ReleaseOwnership(); }
+  virtual HRESULT STDMETHODCALLTYPE GetGammaControlCapabilities(
+      /* [annotation][out] */
+      _Out_ DXGI_GAMMA_CONTROL_CAPABILITIES *pGammaCaps)
+  {
+    return m_pReal->GetGammaControlCapabilities(pGammaCaps);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE SetGammaControl(
+      /* [annotation][in] */
+      _In_ const DXGI_GAMMA_CONTROL *pArray)
+  {
+    return m_pReal->SetGammaControl(pArray);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE GetGammaControl(
+      /* [annotation][out] */
+      _Out_ DXGI_GAMMA_CONTROL *pArray)
+  {
+    return m_pReal->GetGammaControl(pArray);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE SetDisplaySurface(
+      /* [annotation][in] */
+      _In_ IDXGISurface *pScanoutSurface)
+  {
+    return m_pReal->SetDisplaySurface(pScanoutSurface);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE GetDisplaySurfaceData(
+      /* [annotation][in] */
+      _In_ IDXGISurface *pDestination)
+  {
+    return m_pReal->GetDisplaySurfaceData(pDestination);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE GetFrameStatistics(
+      /* [annotation][out] */
+      _Out_ DXGI_FRAME_STATISTICS *pStats)
+  {
+    return m_pReal->GetFrameStatistics(pStats);
+  }
+
+  //////////////////////////////
+  // implement IDXGIOutput1
+
+  virtual HRESULT STDMETHODCALLTYPE GetDisplayModeList1(
+      /* [in] */ DXGI_FORMAT EnumFormat,
+      /* [in] */ UINT Flags,
+      /* [annotation][out][in] */
+      _Inout_ UINT *pNumModes,
+      /* [annotation][out] */
+      _Out_writes_to_opt_(*pNumModes, *pNumModes) DXGI_MODE_DESC1 *pDesc)
+  {
+    return m_pReal1->GetDisplayModeList1(EnumFormat, Flags, pNumModes, pDesc);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE FindClosestMatchingMode1(
+      /* [annotation][in] */
+      _In_ const DXGI_MODE_DESC1 *pModeToMatch,
+      /* [annotation][out] */
+      _Out_ DXGI_MODE_DESC1 *pClosestMatch,
+      /* [annotation][in] */
+      _In_opt_ IUnknown *pConcernedDevice);
+
+  virtual HRESULT STDMETHODCALLTYPE GetDisplaySurfaceData1(
+      /* [annotation][in] */
+      _In_ IDXGIResource *pDestination);
+
+  virtual HRESULT STDMETHODCALLTYPE DuplicateOutput(
+      /* [annotation][in] */
+      _In_ IUnknown *pDevice,
+      /* [annotation][out] */
+      _COM_Outptr_ IDXGIOutputDuplication **ppOutputDuplication);
+
+  //////////////////////////////
+  // implement IDXGIOutput2
+
+  virtual BOOL STDMETHODCALLTYPE SupportsOverlays(void) { return m_pReal2->SupportsOverlays(); }
+  //////////////////////////////
+  // implement IDXGIOutput3
+
+  virtual HRESULT STDMETHODCALLTYPE CheckOverlaySupport(
+      /* [annotation][in] */
+      _In_ DXGI_FORMAT EnumFormat,
+      /* [annotation][out] */
+      _In_ IUnknown *pConcernedDevice,
+      /* [annotation][out] */
+      _Out_ UINT *pFlags);
+
+  //////////////////////////////
+  // implement IDXGIOutput4
+
+  virtual HRESULT STDMETHODCALLTYPE CheckOverlayColorSpaceSupport(
+      /* [annotation][in] */
+      _In_ DXGI_FORMAT Format,
+      /* [annotation][in] */
+      _In_ DXGI_COLOR_SPACE_TYPE ColorSpace,
+      /* [annotation][in] */
+      _In_ IUnknown *pConcernedDevice,
+      /* [annotation][out] */
+      _Out_ UINT *pFlags)
+  {
+    return m_pReal4->CheckOverlayColorSpaceSupport(Format, ColorSpace, pConcernedDevice, pFlags);
+  }
+
+  //////////////////////////////
+  // implement IDXGIOutput5
+
+  virtual HRESULT STDMETHODCALLTYPE DuplicateOutput1(
+      /* [annotation][in] */
+      _In_ IUnknown *pDevice,
+      /* [in] */ UINT Flags,
+      /* [annotation][in] */
+      _In_ UINT SupportedFormatsCount,
+      /* [annotation][in] */
+      _In_reads_(SupportedFormatsCount) const DXGI_FORMAT *pSupportedFormats,
+      /* [annotation][out] */
+      _COM_Outptr_ IDXGIOutputDuplication **ppOutputDuplication);
+
+  //////////////////////////////
+  // implement IDXGIOutput6
+
+  virtual HRESULT STDMETHODCALLTYPE GetDesc1(
+      /* [annotation][out] */
+      _Out_ DXGI_OUTPUT_DESC1 *pDesc)
+  {
+    return m_pReal6->GetDesc1(pDesc);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE CheckHardwareCompositionSupport(
+      /* [annotation][out] */
+      _Out_ UINT *pFlags)
+  {
+    return m_pReal6->CheckHardwareCompositionSupport(pFlags);
+  }
+};
+
+class WrappedIDXGIAdapter4 : public IDXGIAdapter4, public RefCountDXGIObject
 {
   IDXGIAdapter *m_pReal;
   IDXGIAdapter1 *m_pReal1;
   IDXGIAdapter2 *m_pReal2;
   IDXGIAdapter3 *m_pReal3;
-  unsigned int m_iRefcount;
+  IDXGIAdapter4 *m_pReal4;
 
 public:
-  WrappedIDXGIAdapter3(IDXGIAdapter *real);
-  virtual ~WrappedIDXGIAdapter3();
+  WrappedIDXGIAdapter4(IDXGIAdapter *real);
+  virtual ~WrappedIDXGIAdapter4();
 
   IMPLEMENT_IDXGIOBJECT_WITH_REFCOUNTDXGIOBJECT_CUSTOMQUERY;
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject);
@@ -855,7 +1202,12 @@ public:
       /* [annotation][out][in] */
       __out IDXGIOutput **ppOutput)
   {
-    return m_pReal->EnumOutputs(Output, ppOutput);
+    HRESULT ret = m_pReal->EnumOutputs(Output, ppOutput);
+
+    if(SUCCEEDED(ret) && ppOutput && *ppOutput)
+      *ppOutput = (IDXGIOutput *)(new WrappedIDXGIOutput6(this, *ppOutput));
+
+    return ret;
   }
 
   virtual HRESULT STDMETHODCALLTYPE GetDesc(
@@ -949,6 +1301,16 @@ public:
   {
     return m_pReal3->UnregisterVideoMemoryBudgetChangeNotification(dwCookie);
   }
+
+  //////////////////////////////
+  // implement IDXGIAdapter4
+
+  virtual HRESULT STDMETHODCALLTYPE GetDesc3(
+      /* [annotation][out] */
+      _Out_ DXGI_ADAPTER_DESC3 *pDesc)
+  {
+    return m_pReal4->GetDesc3(pDesc);
+  }
 };
 
 class WrappedIDXGIDevice4 : public IDXGIDevice4, public RefCountDXGIObject
@@ -964,8 +1326,7 @@ public:
   WrappedIDXGIDevice4(IDXGIDevice *real, ID3DDevice *d3d);
   virtual ~WrappedIDXGIDevice4();
 
-  static const int AllocPoolCount = 4;
-  ALLOCATE_WITH_WRAPPED_POOL(WrappedIDXGIDevice4, AllocPoolCount);
+  ALLOCATE_WITH_WRAPPED_POOL(WrappedIDXGIDevice4);
 
   IMPLEMENT_IDXGIOBJECT_WITH_REFCOUNTDXGIOBJECT_CUSTOMQUERY;
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject);
@@ -980,7 +1341,7 @@ public:
   {
     HRESULT ret = m_pReal->GetAdapter(pAdapter);
     if(SUCCEEDED(ret))
-      *pAdapter = (IDXGIAdapter *)(new WrappedIDXGIAdapter3(*pAdapter));
+      *pAdapter = (IDXGIAdapter *)(new WrappedIDXGIAdapter4(*pAdapter));
     return ret;
   }
 
@@ -1045,10 +1406,7 @@ public:
       /* [annotation][size_is][in] */
       _In_reads_(NumResources) IDXGIResource *const *ppResources,
       /* [annotation][in] */
-      _In_ DXGI_OFFER_RESOURCE_PRIORITY Priority)
-  {
-    return m_pReal2->OfferResources(NumResources, ppResources, Priority);
-  }
+      _In_ DXGI_OFFER_RESOURCE_PRIORITY Priority);
 
   virtual HRESULT STDMETHODCALLTYPE ReclaimResources(
       /* [annotation][in] */
@@ -1056,10 +1414,7 @@ public:
       /* [annotation][size_is][in] */
       _In_reads_(NumResources) IDXGIResource *const *ppResources,
       /* [annotation][size_is][out] */
-      _Out_writes_all_opt_(NumResources) BOOL *pDiscarded)
-  {
-    return m_pReal2->ReclaimResources(NumResources, ppResources, pDiscarded);
-  }
+      _Out_writes_all_opt_(NumResources) BOOL *pDiscarded);
 
   virtual HRESULT STDMETHODCALLTYPE EnqueueSetEvent(
       /* [annotation][in] */
@@ -1083,10 +1438,7 @@ public:
       /* [annotation][in] */
       _In_ DXGI_OFFER_RESOURCE_PRIORITY Priority,
       /* [annotation][in] */
-      _In_ UINT Flags)
-  {
-    return m_pReal4->OfferResources1(NumResources, ppResources, Priority, Flags);
-  }
+      _In_ UINT Flags);
 
   virtual HRESULT STDMETHODCALLTYPE ReclaimResources1(
       /* [annotation][in] */
@@ -1094,13 +1446,10 @@ public:
       /* [annotation][size_is][in] */
       _In_reads_(NumResources) IDXGIResource *const *ppResources,
       /* [annotation][size_is][out] */
-      _Out_writes_all_(NumResources) DXGI_RECLAIM_RESOURCE_RESULTS *pResults)
-  {
-    return m_pReal4->ReclaimResources1(NumResources, ppResources, pResults);
-  }
+      _Out_writes_all_(NumResources) DXGI_RECLAIM_RESOURCE_RESULTS *pResults);
 };
 
-class WrappedIDXGIFactory5 : public IDXGIFactory5, public RefCountDXGIObject
+class WrappedIDXGIFactory : public IDXGIFactory7, public RefCountDXGIObject
 {
   IDXGIFactory *m_pReal;
   IDXGIFactory1 *m_pReal1;
@@ -1108,11 +1457,12 @@ class WrappedIDXGIFactory5 : public IDXGIFactory5, public RefCountDXGIObject
   IDXGIFactory3 *m_pReal3;
   IDXGIFactory4 *m_pReal4;
   IDXGIFactory5 *m_pReal5;
-  unsigned int m_iRefcount;
+  IDXGIFactory6 *m_pReal6;
+  IDXGIFactory7 *m_pReal7;
 
 public:
-  WrappedIDXGIFactory5(IDXGIFactory *real);
-  virtual ~WrappedIDXGIFactory5();
+  WrappedIDXGIFactory(IDXGIFactory *real);
+  virtual ~WrappedIDXGIFactory();
 
   IMPLEMENT_IDXGIOBJECT_WITH_REFCOUNTDXGIOBJECT_CUSTOMQUERY;
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject);
@@ -1127,7 +1477,7 @@ public:
   {
     HRESULT ret = m_pReal->EnumAdapters(Adapter, ppAdapter);
     if(SUCCEEDED(ret))
-      *ppAdapter = (IDXGIAdapter *)(new WrappedIDXGIAdapter3(*ppAdapter));
+      *ppAdapter = (IDXGIAdapter *)(new WrappedIDXGIAdapter4(*ppAdapter));
     return ret;
   }
 
@@ -1158,7 +1508,7 @@ public:
   {
     HRESULT ret = m_pReal->CreateSoftwareAdapter(Module, ppAdapter);
     if(SUCCEEDED(ret))
-      *ppAdapter = (IDXGIAdapter *)(new WrappedIDXGIAdapter3(*ppAdapter));
+      *ppAdapter = (IDXGIAdapter *)(new WrappedIDXGIAdapter4(*ppAdapter));
     return ret;
   }
 
@@ -1170,9 +1520,18 @@ public:
       /* [annotation][out] */
       __out IDXGIAdapter1 **ppAdapter)
   {
-    HRESULT ret = m_pReal1->EnumAdapters1(Adapter, ppAdapter);
+    IDXGIFactory1 *factory = m_pReal1;
+    if(m_pReal1 == NULL)
+    {
+      // see comment in RefCountDXGIObject::HandleWrap for IDXGIFactory
+      RDCWARN("Calling EnumAdapters1 with no IDXGIFactory1 - assuming weird internal call");
+      factory = (IDXGIFactory1 *)m_pReal;
+    }
+
+    HRESULT ret = factory->EnumAdapters1(Adapter, ppAdapter);
+
     if(SUCCEEDED(ret))
-      *ppAdapter = (IDXGIAdapter1 *)(new WrappedIDXGIAdapter3(*ppAdapter));
+      *ppAdapter = (IDXGIAdapter1 *)(new WrappedIDXGIAdapter4(*ppAdapter));
     return ret;
   }
 
@@ -1291,6 +1650,42 @@ public:
   //////////////////////////////
   // implement IDXGIFactory4
 
+  void WrapAdapter(REFIID riid, void **ppvAdapter)
+  {
+    if(ppvAdapter == NULL || *ppvAdapter == NULL)
+      return;
+
+    if(riid == __uuidof(IDXGIAdapter4))
+    {
+      IDXGIAdapter4 *adapter = (IDXGIAdapter4 *)*ppvAdapter;
+      *ppvAdapter = (IDXGIAdapter4 *)(new WrappedIDXGIAdapter4(adapter));
+    }
+    else if(riid == __uuidof(IDXGIAdapter3))
+    {
+      IDXGIAdapter3 *adapter = (IDXGIAdapter3 *)*ppvAdapter;
+      *ppvAdapter = (IDXGIAdapter3 *)(new WrappedIDXGIAdapter4(adapter));
+    }
+    else if(riid == __uuidof(IDXGIAdapter2))
+    {
+      IDXGIAdapter2 *adapter = (IDXGIAdapter2 *)*ppvAdapter;
+      *ppvAdapter = (IDXGIAdapter2 *)(new WrappedIDXGIAdapter4(adapter));
+    }
+    else if(riid == __uuidof(IDXGIAdapter1))
+    {
+      IDXGIAdapter1 *adapter = (IDXGIAdapter1 *)*ppvAdapter;
+      *ppvAdapter = (IDXGIAdapter1 *)(new WrappedIDXGIAdapter4(adapter));
+    }
+    else if(riid == __uuidof(IDXGIAdapter))
+    {
+      IDXGIAdapter *adapter = (IDXGIAdapter *)*ppvAdapter;
+      *ppvAdapter = (IDXGIAdapter *)(new WrappedIDXGIAdapter4(adapter));
+    }
+    else
+    {
+      RefCountDXGIObject::HandleWrap("IDXGIAdapter", riid, ppvAdapter);
+    }
+  }
+
   virtual HRESULT STDMETHODCALLTYPE EnumAdapterByLuid(
       /* [annotation] */
       _In_ LUID AdapterLuid,
@@ -1300,29 +1695,8 @@ public:
       _COM_Outptr_ void **ppvAdapter)
   {
     HRESULT ret = m_pReal4->EnumAdapterByLuid(AdapterLuid, riid, ppvAdapter);
-    if(SUCCEEDED(ret) && ppvAdapter && *ppvAdapter)
-    {
-      if(riid == __uuidof(IDXGIAdapter3))
-      {
-        IDXGIAdapter3 *adapter = (IDXGIAdapter3 *)*ppvAdapter;
-        *ppvAdapter = (IDXGIAdapter3 *)(new WrappedIDXGIAdapter3(adapter));
-      }
-      else if(riid == __uuidof(IDXGIAdapter2))
-      {
-        IDXGIAdapter2 *adapter = (IDXGIAdapter2 *)*ppvAdapter;
-        *ppvAdapter = (IDXGIAdapter2 *)(new WrappedIDXGIAdapter3(adapter));
-      }
-      else if(riid == __uuidof(IDXGIAdapter1))
-      {
-        IDXGIAdapter1 *adapter = (IDXGIAdapter1 *)*ppvAdapter;
-        *ppvAdapter = (IDXGIAdapter1 *)(new WrappedIDXGIAdapter3(adapter));
-      }
-      else
-      {
-        IDXGIAdapter *adapter = (IDXGIAdapter *)*ppvAdapter;
-        *ppvAdapter = (IDXGIAdapter *)(new WrappedIDXGIAdapter3(adapter));
-      }
-    }
+    if(SUCCEEDED(ret))
+      WrapAdapter(riid, ppvAdapter);
     return ret;
   }
 
@@ -1333,29 +1707,8 @@ public:
       _COM_Outptr_ void **ppvAdapter)
   {
     HRESULT ret = m_pReal4->EnumWarpAdapter(riid, ppvAdapter);
-    if(SUCCEEDED(ret) && ppvAdapter && *ppvAdapter)
-    {
-      if(riid == __uuidof(IDXGIAdapter3))
-      {
-        IDXGIAdapter3 *adapter = (IDXGIAdapter3 *)*ppvAdapter;
-        *ppvAdapter = (IDXGIAdapter3 *)(new WrappedIDXGIAdapter3(adapter));
-      }
-      else if(riid == __uuidof(IDXGIAdapter2))
-      {
-        IDXGIAdapter2 *adapter = (IDXGIAdapter2 *)*ppvAdapter;
-        *ppvAdapter = (IDXGIAdapter2 *)(new WrappedIDXGIAdapter3(adapter));
-      }
-      else if(riid == __uuidof(IDXGIAdapter1))
-      {
-        IDXGIAdapter1 *adapter = (IDXGIAdapter1 *)*ppvAdapter;
-        *ppvAdapter = (IDXGIAdapter1 *)(new WrappedIDXGIAdapter3(adapter));
-      }
-      else
-      {
-        IDXGIAdapter *adapter = (IDXGIAdapter *)*ppvAdapter;
-        *ppvAdapter = (IDXGIAdapter *)(new WrappedIDXGIAdapter3(adapter));
-      }
-    }
+    if(SUCCEEDED(ret))
+      WrapAdapter(riid, ppvAdapter);
     return ret;
   }
 
@@ -1369,5 +1722,43 @@ public:
                       UINT FeatureSupportDataSize)
   {
     return m_pReal5->CheckFeatureSupport(Feature, pFeatureSupportData, FeatureSupportDataSize);
+  }
+
+  //////////////////////////////
+  // implement IDXGIFactory6
+
+  virtual HRESULT STDMETHODCALLTYPE EnumAdapterByGpuPreference(
+      /* [annotation] */
+      _In_ UINT Adapter,
+      /* [annotation] */
+      _In_ DXGI_GPU_PREFERENCE GpuPreference,
+      /* [annotation] */
+      _In_ REFIID riid,
+      /* [annotation] */
+      _COM_Outptr_ void **ppvAdapter)
+  {
+    HRESULT ret = m_pReal6->EnumAdapterByGpuPreference(Adapter, GpuPreference, riid, ppvAdapter);
+    if(SUCCEEDED(ret))
+      WrapAdapter(riid, ppvAdapter);
+    return ret;
+  }
+
+  //////////////////////////////
+  // implement IDXGIFactory7
+
+  virtual HRESULT STDMETHODCALLTYPE RegisterAdaptersChangedEvent(
+      /* [annotation][in] */
+      _In_ HANDLE hEvent,
+      /* [annotation][out] */
+      _Out_ DWORD *pdwCookie)
+  {
+    return m_pReal7->RegisterAdaptersChangedEvent(hEvent, pdwCookie);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE UnregisterAdaptersChangedEvent(
+      /* [annotation][in] */
+      _In_ DWORD dwCookie)
+  {
+    return m_pReal7->UnregisterAdaptersChangedEvent(dwCookie);
   }
 };

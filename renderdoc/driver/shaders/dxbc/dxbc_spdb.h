@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -27,21 +27,17 @@
 
 #include <guiddef.h>
 #include <map>
-#include <string>
-#include <utility>
-#include <vector>
-#include "dxbc_disassemble.h"
-
-using std::vector;
-using std::pair;
-using std::string;
-using std::map;
+#include "api/replay/rdcarray.h"
+#include "api/replay/rdcstr.h"
+#include "dxbc_bytecode.h"
 
 namespace DXBC
 {
 class PageMapping
 {
 public:
+  PageMapping() = default;
+
   PageMapping(const byte **pages, uint32_t PageSize, uint32_t *indices, uint32_t numIndices)
   {
     direct = NULL;
@@ -67,7 +63,7 @@ public:
 
 private:
   const byte *direct;
-  vector<byte> contiguous;
+  bytebuf contiguous;
 };
 
 struct FileHeaderPage
@@ -95,6 +91,33 @@ struct GuidPageHeader
   GUID Guid;
   uint32_t StringBytes;
   char Strings[1];
+};
+
+struct OffsetLength
+{
+  uint32_t offset;
+  uint32_t byteLength;
+};
+
+struct TPIHash
+{
+  uint16_t streamNumber;
+  uint16_t pad;
+  uint32_t hashSize;
+  uint32_t numBucket;
+  OffsetLength hashVals;
+  OffsetLength tiOffs;
+  OffsetLength hashAdj;
+};
+
+struct TPIHeader
+{
+  uint32_t version;
+  uint32_t headerSize;
+  uint32_t typeMin;
+  uint32_t typeMax;
+  uint32_t dataSize;
+  TPIHash hash;
 };
 
 struct DBIHeader
@@ -148,8 +171,8 @@ struct DBIModule
   int32_t niCompiler;
 
   // invalid when this is read in-place!
-  string moduleName;
-  string objectName;
+  rdcstr moduleName;
+  rdcstr objectName;
 };
 
 struct CompilandDetails
@@ -165,146 +188,116 @@ struct CompilandDetails
   } FrontendVersion, BackendVersion;
 
   // invalid when this is read in-place!
-  string CompilerSig;
+  rdcstr CompilerSig;
 };
 
-struct LineNumbersHeader
+struct FileChecksum
 {
-  uint32_t offset;
-  uint16_t sec;
-  uint16_t flags;
-  uint32_t cod;
+  uint32_t nameIndex;
+  uint8_t hashLength;
+  uint8_t hashType;
+  uint8_t hashData[1];
 };
-
-struct FileLineNumbers
-{
-  uint32_t fileIdx;    // index = byte offset in hash chunk
-  uint32_t numLines;
-  uint32_t size;
-};
-
-#pragma pack(push, 1)
-struct ProcHeader
-{
-  uint32_t Parent;
-  uint32_t End;
-  uint32_t Next;
-  uint32_t Length;
-  uint32_t DebugStart;
-  uint32_t DebugEnd;
-  uint32_t Type;
-  uint32_t Offset;
-  byte Unknown[3];
-};
-#pragma pack(pop)
 
 struct InstructionLocation
 {
-  InstructionLocation() : funcEnd(false), offset(0), line(0), colStart(0), colEnd(0) {}
-  bool funcEnd;
-  uint32_t offset;
-  uint32_t line;
-  uint32_t colStart;
-  uint32_t colEnd;
+  bool statement = true;
+  uint32_t offsetStart = 0;
+  uint32_t offsetEnd = 0;
+  uint32_t lineStart = 0;
+  uint32_t lineEnd = 0;
+  uint32_t colStart = 0;
+  uint32_t colEnd = 0;
 };
 
-struct FuncCallLineNumbers
+struct Inlinee
 {
+  uint32_t id;
+  uint64_t ptr;
+  uint64_t parentPtr;
   uint32_t fileOffs;
   uint32_t baseLineNum;
-  vector<InstructionLocation> locations;
+  rdcarray<InstructionLocation> locations;
 };
 
 struct Function
 {
-  uint8_t unkA;
-  uint32_t unkB;
-  uint16_t unkC;
-  uint16_t unkD;
-  uint16_t unkE;
-  string funcName;
-  vector<int8_t> things;
+  uint32_t type = 0;
+  rdcstr name;
 };
-
-enum FuncCallBytestreamOpcodes
-{
-  EndStream = 0x0,
-
-  SetByteOffset = 0x1,
-  // 0x2
-  AdvanceBytes = 0x3,
-
-  FunctionEndNoAdvance = 0x4,
-  // 0x5
-  AdvanceLines = 0x6,
-
-  PrologueEnd = 0x7,
-  EpilogueBegin = 0x8,
-
-  ColumnStart = 0x9,
-  // 0xa
-
-  AdvanceBytesAndLines = 0xb,
-  EndOfFunction = 0xc,
-
-  ColumnEnd = 0xd,
-};
-
-#pragma pack(push, 1)
-struct RegisterVariableAssign
-{
-  uint32_t func;
-  uint16_t unkflags;
-  char name[1];
-};
-#pragma pack(pop)
-
-#pragma pack(push, 1)
-struct RegisterVariableAssignComponent
-{
-  uint16_t type;
-  OperandType Type() { return (OperandType)type; }
-  uint16_t unkA;
-  uint16_t srcComp;
-  uint16_t unkB;
-  uint32_t instrOffset;
-  uint16_t unkC;
-  uint16_t unkD;
-  uint16_t destComp;
-  uint16_t unkE;    // destComp for len == 24
-};
-#pragma pack(pop)
 
 struct PDBStream
 {
   uint32_t byteLength;
-  vector<uint32_t> pageIndices;
+  rdcarray<uint32_t> pageIndices;
 };
 
-class SPDBChunk : public DXBCDebugChunk
+struct LocalRange
+{
+  uint32_t startRange;
+  uint32_t endRange;
+
+  bool operator==(const LocalRange &o) const
+  {
+    return startRange == o.startRange && endRange == o.endRange;
+  }
+};
+
+struct LocalMapping
+{
+  bool operator<(const LocalMapping &o) const { return range.startRange < o.range.startRange; }
+  LocalRange range;
+  uint8_t regFirstComp;
+  uint32_t varFirstComp;
+  uint32_t varOffset;
+  uint32_t numComps;
+  rdcarray<LocalRange> gaps;
+
+  ShaderConstantDescriptor var;
+
+  // stored here so that we don't need to have the register mapping at the time we parse the SPDB
+  // chunk
+  DXBCBytecode::OperandType regType;
+  uint32_t regIndex;
+};
+
+class SPDBChunk : public IDebugInfo
 {
 public:
-  SPDBChunk(void *data);
+  SPDBChunk(byte *data, uint32_t length);
+  SPDBChunk(const SPDBChunk &) = delete;
+  SPDBChunk &operator=(const SPDBChunk &o) = delete;
 
-  string GetCompilerSig() const { return m_CompilandDetails.CompilerSig; }
-  string GetEntryFunction() const { return m_Entry; }
-  string GetShaderProfile() const { return m_Profile; }
-  uint32_t GetShaderCompileFlags() const { return m_ShaderFlags; }
-  void GetFileLine(size_t instruction, uintptr_t offset, int32_t &fileIdx, int32_t &lineNum) const;
+  rdcstr GetCompilerSig() const { return m_CompilerSig; }
+  rdcstr GetEntryFunction() const { return m_Entry; }
+  rdcstr GetShaderProfile() const { return m_Profile; }
+  ShaderCompileFlags GetShaderCompileFlags() const { return EncodeFlags(m_ShaderFlags, m_Profile); }
+  void GetLineInfo(size_t instruction, uintptr_t offset, LineColumnInfo &lineInfo) const;
+  void GetCallstack(size_t instruction, uintptr_t offset, rdcarray<rdcstr> &callstack) const;
+
+  bool HasSourceMapping() const;
+  void GetLocals(const DXBC::DXBCContainer *dxbc, size_t instruction, uintptr_t offset,
+                 rdcarray<SourceVariableMapping> &locals) const;
 
 private:
-  SPDBChunk(const SPDBChunk &);
-  SPDBChunk &operator=(const SPDBChunk &o);
-
   bool m_HasDebugInfo;
 
-  CompilandDetails m_CompilandDetails;
+  rdcstr m_CompilerSig;
 
-  string m_Entry;
-  string m_Profile;
+  rdcstr m_Entry;
+  rdcstr m_Profile;
 
   uint32_t m_ShaderFlags;
 
-  map<uint32_t, pair<int32_t, uint32_t> > m_LineNumbers;
+  rdcarray<LocalMapping> m_Locals;
+
+  struct InstInfo
+  {
+    LineColumnInfo lineInfo;
+    rdcarray<rdcstr> callstack;
+  };
+
+  std::map<uint32_t, Function> m_Functions;
+  std::map<uint32_t, InstInfo> m_InstructionInfo;
 };
 };

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,17 +29,24 @@ class RDListWidget : public QListWidget
 {
 private:
   Q_OBJECT
+  Q_PROPERTY(bool customCopyPasteHandler READ customCopyPasteHandler WRITE setCustomCopyPasteHandler)
 public:
   explicit RDListWidget(QWidget *parent = 0);
   ~RDListWidget();
 
+  bool customCopyPasteHandler() { return m_customCopyPaste; }
+  void setCustomCopyPasteHandler(bool custom) { m_customCopyPaste = custom; }
 signals:
   void mouseClicked(QMouseEvent *event);
   void mouseDoubleClicked(QMouseEvent *event);
+  void keyPress(QKeyEvent *event);
 
 public slots:
 
 protected:
   void mousePressEvent(QMouseEvent *event) override;
   void mouseDoubleClickEvent(QMouseEvent *event) override;
+  void keyPressEvent(QKeyEvent *event) override;
+
+  bool m_customCopyPaste = false;
 };

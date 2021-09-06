@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -31,79 +31,6 @@
 #include "quat.h"
 #include "vec.h"
 
-// colour ramp from http://www.ncl.ucar.edu/Document/Graphics/ColorTables/GMT_wysiwyg.shtml
-const Vec4f overdrawRamp[128] = {
-    Vec4f(0.000000f, 0.000000f, 0.000000f, 0.0f), Vec4f(0.250980f, 0.000000f, 0.250980f, 1.0f),
-    Vec4f(0.250980f, 0.000000f, 0.752941f, 1.0f), Vec4f(0.000000f, 0.250980f, 1.000000f, 1.0f),
-    Vec4f(0.000000f, 0.501961f, 1.000000f, 1.0f), Vec4f(0.000000f, 0.627451f, 1.000000f, 1.0f),
-    Vec4f(0.250980f, 0.752941f, 1.000000f, 1.0f), Vec4f(0.250980f, 0.878431f, 1.000000f, 1.0f),
-    Vec4f(0.250980f, 1.000000f, 1.000000f, 1.0f), Vec4f(0.250980f, 1.000000f, 0.752941f, 1.0f),
-    Vec4f(0.250980f, 1.000000f, 0.250980f, 1.0f), Vec4f(0.501961f, 1.000000f, 0.250980f, 1.0f),
-    Vec4f(0.752941f, 1.000000f, 0.250980f, 1.0f), Vec4f(1.000000f, 1.000000f, 0.250980f, 1.0f),
-    Vec4f(1.000000f, 0.878431f, 0.250980f, 1.0f), Vec4f(1.000000f, 0.627451f, 0.250980f, 1.0f),
-    Vec4f(1.000000f, 0.376471f, 0.250980f, 1.0f), Vec4f(1.000000f, 0.125490f, 0.250980f, 1.0f),
-    Vec4f(1.000000f, 0.376471f, 0.752941f, 1.0f), Vec4f(1.000000f, 0.627451f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.878431f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.878600f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.878700f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.878800f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.878900f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.879000f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.879100f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.879200f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.879300f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.879400f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.879500f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.879600f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.879700f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.879800f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.879900f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.880000f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.880100f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.880200f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.880300f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.880400f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.880500f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.880600f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.880700f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.880800f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.880900f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.881000f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.881100f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.881200f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.881300f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.881400f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.881500f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.881600f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.881700f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.881800f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.881900f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.882000f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.882100f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.882200f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.882300f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.882400f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.882500f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.882600f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.882700f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.882800f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.882900f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.883000f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.883100f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.883200f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.883300f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.883400f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.883500f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.883600f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.883700f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.883800f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.883900f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.884000f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.884100f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.884200f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.884300f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.884400f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.884500f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.884600f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.884700f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.884800f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.884900f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.885000f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.885100f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.885200f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.885300f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.885400f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.885500f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.885600f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.885700f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.885800f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.885900f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.886000f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.886100f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.886200f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.886300f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.886400f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.886500f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.886600f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.886700f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.886800f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.886900f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.887000f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.887100f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.887200f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.887300f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.887400f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.887500f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.887600f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.887700f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.887800f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.887900f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.888000f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.888100f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.888200f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.888300f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.888400f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.888500f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.888600f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.888700f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.888800f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.888900f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.889000f, 1.000000f, 1.0f),
-    Vec4f(1.000000f, 0.889100f, 1.000000f, 1.0f), Vec4f(1.000000f, 0.889200f, 1.000000f, 1.0f),
-};
-
-static inline size_t matIdx(const size_t x, const size_t y)
-{
-  return x + y * 4;
-}
-
 Matrix4f Matrix4f::Mul(const Matrix4f &o) const
 {
   Matrix4f m;
@@ -128,6 +55,24 @@ Matrix4f Matrix4f::Transpose() const
       m[matIdx(x, y)] = (*this)[matIdx(y, x)];
 
   return m;
+}
+
+float Matrix4f::Determinant() const
+{
+  float a0 = (*this)[0] * (*this)[5] - (*this)[1] * (*this)[4];
+  float a1 = (*this)[0] * (*this)[6] - (*this)[2] * (*this)[4];
+  float a2 = (*this)[0] * (*this)[7] - (*this)[3] * (*this)[4];
+  float a3 = (*this)[1] * (*this)[6] - (*this)[2] * (*this)[5];
+  float a4 = (*this)[1] * (*this)[7] - (*this)[3] * (*this)[5];
+  float a5 = (*this)[2] * (*this)[7] - (*this)[3] * (*this)[6];
+  float b0 = (*this)[8] * (*this)[13] - (*this)[9] * (*this)[12];
+  float b1 = (*this)[8] * (*this)[14] - (*this)[10] * (*this)[12];
+  float b2 = (*this)[8] * (*this)[15] - (*this)[11] * (*this)[12];
+  float b3 = (*this)[9] * (*this)[14] - (*this)[10] * (*this)[13];
+  float b4 = (*this)[9] * (*this)[15] - (*this)[11] * (*this)[13];
+  float b5 = (*this)[10] * (*this)[15] - (*this)[11] * (*this)[14];
+
+  return a0 * b5 - a1 * b4 + a2 * b3 + a3 * b2 - a4 * b1 + a5 * b0;
 }
 
 Matrix4f Matrix4f::Inverse() const
@@ -188,7 +133,7 @@ Matrix4f Matrix4f::Inverse() const
   }
 
   // no inverse
-  return Matrix4f::Identity();
+  return Matrix4f::Zero();
 }
 
 Vec3f Matrix4f::Transform(const Vec3f &v, const float w) const
@@ -288,7 +233,7 @@ Matrix4f Matrix4f::RotationXYZ(const Vec3f &rot)
   return R.GetMatrix();
 }
 
-Matrix4f Matrix4f::Orthographic(const float near, const float far)
+Matrix4f Matrix4f::Orthographic(const float Near, const float Far)
 {
   float L = -10.0f;
   float R = 10.0f;
@@ -296,10 +241,10 @@ Matrix4f Matrix4f::Orthographic(const float near, const float far)
   float T = 10.0f;
   float B = -10.0f;
 
-  float N = -fabsf(far - near) * 0.5f;
-  float F = fabsf(far - near) * 0.5f;
+  float N = -fabsf(Far - Near) * 0.5f;
+  float F = fabsf(Far - Near) * 0.5f;
 
-  if(far < near)
+  if(Far < Near)
   {
     float tmp = F;
     F = N;
@@ -341,4 +286,78 @@ Matrix4f Matrix4f::ReversePerspective(const float degfov, const float N, const f
   };
 
   return Matrix4f(persp);
+}
+
+Matrix3f Matrix3f::Transpose() const
+{
+  Matrix3f m;
+  for(size_t x = 0; x < 3; x++)
+    for(size_t y = 0; y < 3; y++)
+      m[matIdx(x, y)] = (*this)[matIdx(y, x)];
+
+  return m;
+}
+
+float Matrix3f::Determinant() const
+{
+  return f[0] * (f[4] * f[8] - f[5] * f[7]) - f[1] * (f[3] * f[8] - f[5] * f[6]) +
+         f[2] * (f[3] * f[7] - f[4] * f[6]);
+}
+
+Matrix3f Matrix3f::Inverse() const
+{
+  float det = Determinant();
+  Matrix3f m = {};
+  if(fabsf(det) > FLT_EPSILON)
+  {
+    m[0] = Matrix2f(f[matIdx(1, 1)], f[matIdx(2, 1)], f[matIdx(1, 2)], f[matIdx(2, 2)]).Determinant();
+    m[1] = Matrix2f(f[matIdx(1, 0)], f[matIdx(2, 0)], f[matIdx(1, 2)], f[matIdx(2, 2)]).Determinant();
+    m[2] = Matrix2f(f[matIdx(1, 0)], f[matIdx(2, 0)], f[matIdx(1, 1)], f[matIdx(2, 1)]).Determinant();
+
+    m[3] = Matrix2f(f[matIdx(0, 1)], f[matIdx(2, 1)], f[matIdx(0, 2)], f[matIdx(2, 2)]).Determinant();
+    m[4] = Matrix2f(f[matIdx(0, 0)], f[matIdx(2, 0)], f[matIdx(0, 2)], f[matIdx(2, 2)]).Determinant();
+    m[5] = Matrix2f(f[matIdx(0, 0)], f[matIdx(2, 0)], f[matIdx(0, 1)], f[matIdx(2, 1)]).Determinant();
+
+    m[6] = Matrix2f(f[matIdx(0, 1)], f[matIdx(1, 1)], f[matIdx(0, 2)], f[matIdx(1, 2)]).Determinant();
+    m[7] = Matrix2f(f[matIdx(0, 0)], f[matIdx(1, 0)], f[matIdx(0, 2)], f[matIdx(1, 2)]).Determinant();
+    m[8] = Matrix2f(f[matIdx(0, 0)], f[matIdx(1, 0)], f[matIdx(0, 1)], f[matIdx(1, 1)]).Determinant();
+
+    float invdet = 1.0f / Determinant();
+
+    for(size_t i = 0; i < 9; i++)
+    {
+      m[i] *= invdet;
+      if(i & 1)
+        m[i] *= -1.0f;
+    }
+  }
+  return m;
+}
+
+Matrix2f Matrix2f::Transpose() const
+{
+  Matrix2f m = *this;
+  m[1] = f[2];
+  m[2] = f[1];
+  return m;
+}
+
+float Matrix2f::Determinant() const
+{
+  return f[0] * f[3] - f[1] * f[2];
+}
+
+Matrix2f Matrix2f::Inverse() const
+{
+  float det = Determinant();
+  Matrix2f m = {};
+  if(fabsf(det) > FLT_EPSILON)
+  {
+    float invdet = 1.0f / Determinant();
+    m[0] = invdet * f[3];
+    m[1] = invdet * -f[1];
+    m[2] = invdet * -f[2];
+    m[3] = invdet * f[0];
+  }
+  return m;
 }

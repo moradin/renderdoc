@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,8 +29,8 @@
 #include "vk_hookset_defs.h"
 #include "vk_resources.h"
 
-static VkLayerDispatchTableExtended replayDeviceTable;
-static VkLayerInstanceDispatchTableExtended replayInstanceTable;
+static VkDevDispatchTable replayDeviceTable;
+static VkInstDispatchTable replayInstanceTable;
 
 static bool replay = false;
 
@@ -47,14 +47,14 @@ void InitReplayTables(void *vulkanModule)
       (CONCAT(PFN_vk, name))Process::GetFunctionAddress(vulkanModule, STRINGIZE(CONCAT(vk, name)))
 
   {
-    VkLayerDispatchTableExtended &table = replayDeviceTable;
+    VkDevDispatchTable &table = replayDeviceTable;
     memset(&table, 0, sizeof(table));
     HookInit(GetDeviceProcAddr);
     HookInitVulkanDevice();
   }
 
   {
-    VkLayerInstanceDispatchTableExtended &table = replayInstanceTable;
+    VkInstDispatchTable &table = replayInstanceTable;
     memset(&table, 0, sizeof(table));
     HookInit(GetInstanceProcAddr);
     HookInit(EnumerateInstanceExtensionProperties);
@@ -67,58 +67,46 @@ void InitReplayTables(void *vulkanModule)
   table->func =           \
       (CONCAT(PFN_vk, func))table->GetInstanceProcAddr(instance, STRINGIZE(CONCAT(vk, func)))
 
-void InitInstanceReplayTables(VkInstance instance)
+void InitInstanceExtensionTables(VkInstance instance, InstanceDeviceInfo *info)
 {
-  VkLayerInstanceDispatchTable *table = GetInstanceDispatchTable(instance);
+  VkInstDispatchTable *table = GetInstanceDispatchTable(instance);
   RDCASSERT(table);
-
-  // we know we'll only have one instance, so this is safe
-
-  InstanceGPA(EnumerateDeviceExtensionProperties);
-  InstanceGPA(EnumerateDeviceLayerProperties);
-
-  InstanceGPA(GetPhysicalDeviceSurfaceCapabilitiesKHR);
-  InstanceGPA(GetPhysicalDeviceSurfaceFormatsKHR);
-  InstanceGPA(GetPhysicalDeviceSurfacePresentModesKHR);
-  InstanceGPA(GetPhysicalDeviceSurfaceSupportKHR);
-  InstanceGPA(CreateDebugReportCallbackEXT);
-  InstanceGPA(DestroyDebugReportCallbackEXT);
-  InstanceGPA(DebugReportMessageEXT);
-
-#ifdef VK_USE_PLATFORM_WIN32_KHR
-  InstanceGPA(CreateWin32SurfaceKHR);
-#endif
-
-#ifdef VK_USE_PLATFORM_ANDROID_KHR
-  InstanceGPA(CreateAndroidSurfaceKHR);
-#endif
-
-#ifdef VK_USE_PLATFORM_XCB_KHR
-  InstanceGPA(CreateXcbSurfaceKHR);
-#endif
-
-#ifdef VK_USE_PLATFORM_XLIB_KHR
-  InstanceGPA(CreateXlibSurfaceKHR);
-#endif
-
-  InstanceGPA(DestroySurfaceKHR);
-}
-
-void InitInstanceExtensionTables(VkInstance instance)
-{
-  VkLayerInstanceDispatchTableExtended *table = GetInstanceDispatchTable(instance);
-  RDCASSERT(table);
-
-  InstanceDeviceInfo *info = GetRecord(instance)->instDevInfo;
 
   instance = Unwrap(instance);
 
+#undef DeclExt
+#define DeclExt(name) \
+  bool name = false;  \
+  (void)name;
+
+#undef CheckExt
+#define CheckExt(name, ver) name = info->ext_##name;
+
 #undef HookInitExtension
-#define HookInitExtension(ext, func) \
-  if(info->ext)                      \
-  {                                  \
-    InstanceGPA(func);               \
+#define HookInitExtension(cond, func) \
+  if(cond)                            \
+  {                                   \
+    InstanceGPA(func);                \
   }
+
+#undef HookInitPromotedExtension
+#define HookInitPromotedExtension(cond, func, suffix) \
+  if(cond)                                            \
+  {                                                   \
+    InstanceGPA(func);                                \
+    InstanceGPA(CONCAT(func, suffix));                \
+    if(table->func == NULL)                           \
+      table->func = table->CONCAT(func, suffix);      \
+    if(table->CONCAT(func, suffix) == NULL)           \
+      table->CONCAT(func, suffix) = table->func;      \
+  }
+
+  DeclExts();
+
+  CheckInstanceExts();
+
+  InstanceGPA(EnumerateDeviceExtensionProperties);
+  InstanceGPA(EnumerateDeviceLayerProperties);
 
   HookInitVulkanInstanceExts();
 }
@@ -128,32 +116,36 @@ void InitInstanceExtensionTables(VkInstance instance)
 #define DeviceGPA(func) \
   table->func = (CONCAT(PFN_vk, func))table->GetDeviceProcAddr(device, STRINGIZE(CONCAT(vk, func)));
 
-void InitDeviceReplayTables(VkDevice device)
+void InitDeviceExtensionTables(VkDevice device, InstanceDeviceInfo *info)
 {
-  VkLayerDispatchTable *table = GetDeviceDispatchTable(device);
+  VkDevDispatchTable *table = GetDeviceDispatchTable(device);
   RDCASSERT(table);
-
-  // MULTIDEVICE each device will need a replay table
-
-  DeviceGPA(CreateSwapchainKHR) DeviceGPA(DestroySwapchainKHR) DeviceGPA(GetSwapchainImagesKHR)
-      DeviceGPA(AcquireNextImageKHR) DeviceGPA(QueuePresentKHR)
-}
-
-void InitDeviceExtensionTables(VkDevice device)
-{
-  VkLayerDispatchTableExtended *table = GetDeviceDispatchTable(device);
-  RDCASSERT(table);
-
-  InstanceDeviceInfo *info = GetRecord(device)->instDevInfo;
 
   device = Unwrap(device);
 
 #undef HookInitExtension
-#define HookInitExtension(ext, func) \
-  if(info->ext)                      \
-  {                                  \
-    DeviceGPA(func);                 \
+#define HookInitExtension(cond, func) \
+  if(cond)                            \
+  {                                   \
+    DeviceGPA(func);                  \
   }
+
+#undef HookInitPromotedExtension
+#define HookInitPromotedExtension(cond, func, suffix) \
+  if(cond)                                            \
+  {                                                   \
+    DeviceGPA(func);                                  \
+    DeviceGPA(CONCAT(func, suffix));                  \
+    if(table->func == NULL)                           \
+      table->func = table->CONCAT(func, suffix);      \
+    if(table->CONCAT(func, suffix) == NULL)           \
+      table->CONCAT(func, suffix) = table->func;      \
+  }
+
+  DeclExts();
+
+  CheckInstanceExts();
+  CheckDeviceExts();
 
   HookInitVulkanDeviceExts();
 }
@@ -161,14 +153,14 @@ void InitDeviceExtensionTables(VkDevice device)
 #undef DeviceGPA
 
 static Threading::CriticalSection devlock;
-std::map<void *, VkLayerDispatchTableExtended> devlookup;
+std::map<void *, VkDevDispatchTable> devlookup;
 
 static Threading::CriticalSection instlock;
-std::map<void *, VkLayerInstanceDispatchTableExtended> instlookup;
+std::map<void *, VkInstDispatchTable> instlookup;
 
 static void *GetKey(void *obj)
 {
-  VkLayerDispatchTable **tablePtr = (VkLayerDispatchTable **)obj;
+  VkDevDispatchTable **tablePtr = (VkDevDispatchTable **)obj;
   return (void *)*tablePtr;
 }
 
@@ -176,7 +168,7 @@ void InitDeviceTable(VkDevice dev, PFN_vkGetDeviceProcAddr gpa)
 {
   void *key = GetKey(dev);
 
-  VkLayerDispatchTableExtended *table = NULL;
+  VkDevDispatchTable *table = NULL;
 
   {
     SCOPED_LOCK(devlock);
@@ -199,7 +191,7 @@ void InitInstanceTable(VkInstance inst, PFN_vkGetInstanceProcAddr gpa)
 {
   void *key = GetKey(inst);
 
-  VkLayerInstanceDispatchTableExtended *table = NULL;
+  VkInstDispatchTable *table = NULL;
 
   {
     SCOPED_LOCK(instlock);
@@ -223,7 +215,7 @@ void InitInstanceTable(VkInstance inst, PFN_vkGetInstanceProcAddr gpa)
   HookInit(EnumerateDeviceLayerProperties);
 }
 
-VkLayerDispatchTableExtended *GetDeviceDispatchTable(void *device)
+VkDevDispatchTable *GetDeviceDispatchTable(void *device)
 {
   if(replay)
     return &replayDeviceTable;
@@ -242,7 +234,7 @@ VkLayerDispatchTableExtended *GetDeviceDispatchTable(void *device)
   }
 }
 
-VkLayerInstanceDispatchTableExtended *GetInstanceDispatchTable(void *instance)
+VkInstDispatchTable *GetInstanceDispatchTable(void *instance)
 {
   if(replay)
     return &replayInstanceTable;

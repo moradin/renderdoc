@@ -6,28 +6,28 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>270</width>
-    <height>939</height>
+    <width>578</width>
+    <height>1025</height>
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Capture Executable</string>
+   <string>Launch Application</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <property name="spacing">
     <number>4</number>
    </property>
    <property name="leftMargin">
-    <number>6</number>
+    <number>3</number>
    </property>
    <property name="topMargin">
-    <number>6</number>
+    <number>3</number>
    </property>
    <property name="rightMargin">
-    <number>6</number>
+    <number>3</number>
    </property>
    <property name="bottomMargin">
-    <number>6</number>
+    <number>3</number>
    </property>
    <item>
     <widget class="QGroupBox" name="exeGroup">
@@ -51,23 +51,23 @@
        <number>4</number>
       </property>
       <item row="0" column="2">
-       <widget class="QLineEdit" name="exePath">
+       <widget class="RDLineEdit" name="exePath">
         <property name="minimumSize">
          <size>
           <width>0</width>
           <height>20</height>
          </size>
         </property>
-        <property name="maximumSize">
-         <size>
-          <width>16777215</width>
-          <height>20</height>
-         </size>
+        <property name="toolTip">
+         <string>Browse for an executable file</string>
         </property>
        </widget>
       </item>
       <item row="0" column="3">
        <widget class="QToolButton" name="exePathBrowse">
+        <property name="toolTip">
+         <string>Browse for an executable file</string>
+        </property>
         <property name="text">
          <string>...</string>
         </property>
@@ -75,6 +75,9 @@
       </item>
       <item row="1" column="0">
        <widget class="QLabel" name="workDirLabel">
+        <property name="toolTip">
+         <string>Browse for a working directory</string>
+        </property>
         <property name="text">
          <string>Working Directory</string>
         </property>
@@ -82,6 +85,9 @@
       </item>
       <item row="1" column="3">
        <widget class="QToolButton" name="workDirBrowse">
+        <property name="toolTip">
+         <string>Browse for a working directory</string>
+        </property>
         <property name="text">
          <string>...</string>
         </property>
@@ -89,6 +95,9 @@
       </item>
       <item row="2" column="0">
        <widget class="QLabel" name="cmdLineLabel">
+        <property name="toolTip">
+         <string>The command-line that will be passed to the executable on launch</string>
+        </property>
         <property name="text">
          <string>Command-line Arguments</string>
         </property>
@@ -96,6 +105,9 @@
       </item>
       <item row="3" column="0">
        <widget class="QLabel" name="envVarLabel">
+        <property name="toolTip">
+         <string>The environment variables for the executable</string>
+        </property>
         <property name="text">
          <string>Environment Variables</string>
         </property>
@@ -103,6 +115,9 @@
       </item>
       <item row="3" column="3">
        <widget class="QToolButton" name="envVarEdit">
+        <property name="toolTip">
+         <string>The environment variables for the executable</string>
+        </property>
         <property name="text">
          <string>...</string>
         </property>
@@ -110,50 +125,44 @@
       </item>
       <item row="0" column="0">
        <widget class="QLabel" name="exePathLabel">
+        <property name="toolTip">
+         <string>Browse for an executable file</string>
+        </property>
         <property name="text">
          <string>Executable Path</string>
         </property>
        </widget>
       </item>
       <item row="1" column="2">
-       <widget class="QLineEdit" name="workDirPath">
+       <widget class="RDLineEdit" name="workDirPath">
         <property name="minimumSize">
          <size>
           <width>0</width>
           <height>20</height>
          </size>
         </property>
-        <property name="maximumSize">
-         <size>
-          <width>16777215</width>
-          <height>20</height>
-         </size>
+        <property name="toolTip">
+         <string>Browse for a working directory</string>
         </property>
        </widget>
       </item>
       <item row="2" column="2" colspan="2">
-       <widget class="QLineEdit" name="cmdline">
+       <widget class="RDLineEdit" name="cmdline">
         <property name="minimumSize">
          <size>
           <width>0</width>
           <height>20</height>
          </size>
         </property>
-        <property name="maximumSize">
-         <size>
-          <width>16777215</width>
-          <height>20</height>
-         </size>
+        <property name="toolTip">
+         <string>The command-line that will be passed to the executable on launch</string>
         </property>
        </widget>
       </item>
       <item row="3" column="2">
        <widget class="QLineEdit" name="envVar">
-        <property name="maximumSize">
-         <size>
-          <width>16777215</width>
-          <height>20</height>
-         </size>
+        <property name="toolTip">
+         <string>The environment variables for the executable</string>
         </property>
         <property name="readOnly">
          <bool>true</bool>
@@ -233,7 +242,7 @@
          </font>
         </property>
         <property name="text">
-         <string>NOTE: Injecting only works when the process has not used the target API</string>
+         <string>NOTE: Injection must happen &lt;b&gt;immediately&lt;/b&gt; after the process starts, before any graphics API has been initialized.</string>
         </property>
         <property name="wordWrap">
          <bool>true</bool>
@@ -264,9 +273,6 @@
         <property name="editTriggers">
          <set>QAbstractItemView::NoEditTriggers</set>
         </property>
-        <property name="alternatingRowColors">
-         <bool>true</bool>
-        </property>
         <property name="indentation">
          <number>0</number>
         </property>
@@ -285,81 +291,59 @@
     </widget>
    </item>
    <item>
-    <widget class="QToolButton" name="vulkanLayerWarn">
-     <property name="sizePolicy">
-      <sizepolicy hsizetype="MinimumExpanding" vsizetype="Fixed">
-       <horstretch>0</horstretch>
-       <verstretch>0</verstretch>
-      </sizepolicy>
-     </property>
-     <property name="minimumSize">
-      <size>
-       <width>0</width>
-       <height>36</height>
-      </size>
-     </property>
-     <property name="palette">
-      <palette>
-       <active>
-        <colorrole role="Button">
-         <brush brushstyle="SolidPattern">
-          <color alpha="255">
-           <red>255</red>
-           <green>255</green>
-           <blue>220</blue>
-          </color>
-         </brush>
-        </colorrole>
-       </active>
-       <inactive>
-        <colorrole role="Button">
-         <brush brushstyle="SolidPattern">
-          <color alpha="255">
-           <red>255</red>
-           <green>255</green>
-           <blue>220</blue>
-          </color>
-         </brush>
-        </colorrole>
-       </inactive>
-       <disabled>
-        <colorrole role="Button">
-         <brush brushstyle="SolidPattern">
-          <color alpha="255">
-           <red>255</red>
-           <green>255</green>
-           <blue>220</blue>
-          </color>
-         </brush>
-        </colorrole>
-       </disabled>
-      </palette>
-     </property>
+    <widget class="RDLabel" name="vulkanLayerWarn">
      <property name="cursor">
       <cursorShape>PointingHandCursor</cursorShape>
      </property>
-     <property name="autoFillBackground">
-      <bool>true</bool>
+     <property name="frameShape">
+      <enum>QFrame::Box</enum>
      </property>
      <property name="text">
-      <string>Warning: Vulkan capture is not configured.
-Click here to set up Vulkan capture.</string>
+      <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;table&gt;&lt;tr&gt;&lt;td valign=&quot;middle&quot;&gt;&lt;img width=&quot;16&quot; src=&quot;:/information.png&quot;/&gt;&lt;/td&gt;&lt;td&gt;&lt;p&gt;Warning: Vulkan capture is not configured.&lt;br/&gt;Click here to set up Vulkan capture.&lt;/p&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;&lt;/body&gt;&lt;/html&gt;</string>
      </property>
-     <property name="icon">
-      <iconset resource="../../resources.qrc">
-       <normaloff>:/Resources/information.png</normaloff>:/Resources/information.png</iconset>
+     <property name="textFormat">
+      <enum>Qt::RichText</enum>
      </property>
-     <property name="popupMode">
-      <enum>QToolButton::DelayedPopup</enum>
+     <property name="margin">
+      <number>3</number>
      </property>
-     <property name="toolButtonStyle">
-      <enum>Qt::ToolButtonTextBesideIcon</enum>
+    </widget>
+   </item>
+   <item>
+    <widget class="RDLabel" name="androidScan">
+     <property name="cursor">
+      <cursorShape>PointingHandCursor</cursorShape>
      </property>
-     <property name="autoRaise">
-      <bool>true</bool>
+     <property name="frameShape">
+      <enum>QFrame::Box</enum>
      </property>
-     <property name="arrowType">
-      <enum>Qt::NoArrow</enum>
+     <property name="text">
+      <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;table&gt;&lt;tr&gt;&lt;td valign=&quot;middle&quot;&gt;&lt;img width=&quot;16&quot; src=&quot;:/information.png&quot;/&gt;&lt;/td&gt;&lt;td valign=&quot;middle&quot;&gt;&lt;p&gt;Scanning Android application for RenderDoc support...&lt;br/&gt;&lt;/p&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;&lt;/body&gt;&lt;/html&gt;</string>
+     </property>
+     <property name="textFormat">
+      <enum>Qt::RichText</enum>
+     </property>
+     <property name="margin">
+      <number>3</number>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="RDLabel" name="androidWarn">
+     <property name="cursor">
+      <cursorShape>PointingHandCursor</cursorShape>
+     </property>
+     <property name="frameShape">
+      <enum>QFrame::Box</enum>
+     </property>
+     <property name="text">
+      <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;table&gt;&lt;tr&gt;&lt;td valign=&quot;middle&quot;&gt;&lt;img width=&quot;16&quot; src=&quot;:/information.png&quot;/&gt;&lt;/td&gt;&lt;td&gt;&lt;p&gt;Warning: Android application not set up for RenderDoc capture.&lt;br/&gt;Click here for ways to fix this.&lt;/p&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;&lt;/body&gt;&lt;/html&gt;</string>
+     </property>
+     <property name="textFormat">
+      <enum>Qt::RichText</enum>
+     </property>
+     <property name="margin">
+      <number>3</number>
      </property>
     </widget>
    </item>
@@ -377,17 +361,8 @@ Click here to set up Vulkan capture.</string>
      <layout class="QVBoxLayout" name="verticalLayout_2">
       <item>
        <widget class="QCheckBox" name="AllowFullscreen">
-        <property name="minimumSize">
-         <size>
-          <width>150</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="maximumSize">
-         <size>
-          <width>150</width>
-          <height>16777215</height>
-         </size>
+        <property name="toolTip">
+         <string>Allows the application to switch to full-screen mode</string>
         </property>
         <property name="text">
          <string>Allow Fullscreen</string>
@@ -396,17 +371,8 @@ Click here to set up Vulkan capture.</string>
       </item>
       <item>
        <widget class="QCheckBox" name="AllowVSync">
-        <property name="minimumSize">
-         <size>
-          <width>150</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="maximumSize">
-         <size>
-          <width>150</width>
-          <height>16777215</height>
-         </size>
+        <property name="toolTip">
+         <string>Allows the application to enable v-sync</string>
         </property>
         <property name="text">
          <string>Allow VSync</string>
@@ -420,18 +386,6 @@ Click here to set up Vulkan capture.</string>
           <horstretch>0</horstretch>
           <verstretch>0</verstretch>
          </sizepolicy>
-        </property>
-        <property name="minimumSize">
-         <size>
-          <width>150</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="maximumSize">
-         <size>
-          <width>150</width>
-          <height>16777215</height>
-         </size>
         </property>
         <property name="frameShape">
          <enum>QFrame::NoFrame</enum>
@@ -469,6 +423,9 @@ Click here to set up Vulkan capture.</string>
              <height>0</height>
             </size>
            </property>
+           <property name="toolTip">
+            <string>Pauses for N seconds after launching the process, to allow a debugger to attach</string>
+           </property>
            <property name="suffix">
             <string comment="seconds"> secs</string>
            </property>
@@ -491,6 +448,9 @@ Click here to set up Vulkan capture.</string>
              <verstretch>0</verstretch>
             </sizepolicy>
            </property>
+           <property name="toolTip">
+            <string>Pauses for N seconds after launching the process, to allow a debugger to attach</string>
+           </property>
            <property name="text">
             <string>Debugger Delay</string>
            </property>
@@ -501,17 +461,8 @@ Click here to set up Vulkan capture.</string>
       </item>
       <item>
        <widget class="QCheckBox" name="CaptureCallstacks">
-        <property name="minimumSize">
-         <size>
-          <width>150</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="maximumSize">
-         <size>
-          <width>150</width>
-          <height>16777215</height>
-         </size>
+        <property name="toolTip">
+         <string>Collect a callstack on every API call</string>
         </property>
         <property name="text">
          <string>Collect Callstacks</string>
@@ -519,37 +470,19 @@ Click here to set up Vulkan capture.</string>
        </widget>
       </item>
       <item>
-       <widget class="QCheckBox" name="CaptureCallstacksOnlyDraws">
-        <property name="minimumSize">
-         <size>
-          <width>150</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="maximumSize">
-         <size>
-          <width>150</width>
-          <height>16777215</height>
-         </size>
+       <widget class="QCheckBox" name="CaptureCallstacksOnlyActions">
+        <property name="toolTip">
+         <string>Only collect callstacks on actions (draws, dispatches, clears, copies, etc)</string>
         </property>
         <property name="text">
-         <string>Only Drawcall stacks</string>
+         <string>Only Action stacks</string>
         </property>
        </widget>
       </item>
       <item>
        <widget class="QCheckBox" name="APIValidation">
-        <property name="minimumSize">
-         <size>
-          <width>150</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="maximumSize">
-         <size>
-          <width>150</width>
-          <height>16777215</height>
-         </size>
+        <property name="toolTip">
+         <string>Initialise the graphics API with built-in validation enabled - allows capturing and reading of errors and warnings generated by the API's own debugging system</string>
         </property>
         <property name="text">
          <string>Enable API Validation</string>
@@ -558,55 +491,18 @@ Click here to set up Vulkan capture.</string>
       </item>
       <item>
        <widget class="QCheckBox" name="HookIntoChildren">
-        <property name="minimumSize">
-         <size>
-          <width>150</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="maximumSize">
-         <size>
-          <width>150</width>
-          <height>16777215</height>
-         </size>
+        <property name="toolTip">
+         <string>Hook into child processes - useful with launchers or similar intermediate processes</string>
         </property>
         <property name="text">
-         <string>Hook into Children</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QCheckBox" name="SaveAllInitials">
-        <property name="minimumSize">
-         <size>
-          <width>150</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="maximumSize">
-         <size>
-          <width>150</width>
-          <height>16777215</height>
-         </size>
-        </property>
-        <property name="text">
-         <string>Save all Initials</string>
+         <string>Capture Child Processes</string>
         </property>
        </widget>
       </item>
       <item>
        <widget class="QCheckBox" name="RefAllResources">
-        <property name="minimumSize">
-         <size>
-          <width>150</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="maximumSize">
-         <size>
-          <width>150</width>
-          <height>16777215</height>
-         </size>
+        <property name="toolTip">
+         <string>Consider all resources to be included, even if unused in the capture frame</string>
         </property>
         <property name="text">
          <string>Ref all Resources</string>
@@ -615,17 +511,8 @@ Click here to set up Vulkan capture.</string>
       </item>
       <item>
        <widget class="QCheckBox" name="CaptureAllCmdLists">
-        <property name="minimumSize">
-         <size>
-          <width>150</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="maximumSize">
-         <size>
-          <width>150</width>
-          <height>16777215</height>
-         </size>
+        <property name="toolTip">
+         <string>When enabled, all deferred command lists will be saved even while idling. This has an overhead but ensures if you hold onto a list it will be captured.</string>
         </property>
         <property name="text">
          <string>Capture all Cmd Lists</string>
@@ -633,37 +520,19 @@ Click here to set up Vulkan capture.</string>
        </widget>
       </item>
       <item>
-       <widget class="QCheckBox" name="VerifyMapWrites">
-        <property name="minimumSize">
-         <size>
-          <width>150</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="maximumSize">
-         <size>
-          <width>150</width>
-          <height>16777215</height>
-         </size>
+       <widget class="QCheckBox" name="VerifyBufferAccess">
+        <property name="toolTip">
+         <string>When enabled, verify some buffer access on OpenGL and D3D11. This initialises buffers with undefined contents on creation to 0xdddddddd instead of 0x0, and verifies that Map() bounds are not overrun.</string>
         </property>
         <property name="text">
-         <string>Verify Map() Writes</string>
+         <string>Verify Buffer Access</string>
         </property>
        </widget>
       </item>
       <item>
        <widget class="QCheckBox" name="AutoStart">
-        <property name="minimumSize">
-         <size>
-          <width>150</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="maximumSize">
-         <size>
-          <width>150</width>
-          <height>16777215</height>
-         </size>
+        <property name="toolTip">
+         <string>If these capture settings are saved &amp; run, auto start the capture instantly on load</string>
         </property>
         <property name="text">
          <string>Auto Start</string>
@@ -708,6 +577,44 @@ Click here to set up Vulkan capture.</string>
         </property>
         <property name="decimals">
          <number>0</number>
+        </property>
+        <property name="minimum">
+         <double>0.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>4294967296.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="numFramesLabel">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="text">
+         <string># Frames:</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QDoubleSpinBox" name="numFrames">
+        <property name="minimumSize">
+         <size>
+          <width>45</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="decimals">
+         <number>0</number>
+        </property>
+        <property name="minimum">
+         <double>1.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>10.000000000000000</double>
         </property>
        </widget>
       </item>
@@ -829,14 +736,11 @@ Click here to set up Vulkan capture.</string>
      <layout class="QHBoxLayout" name="horizontalLayout">
       <item>
        <widget class="QPushButton" name="saveSettings">
-        <property name="maximumSize">
-         <size>
-          <width>50</width>
-          <height>16777215</height>
-         </size>
+        <property name="toolTip">
+         <string>Save these capture settings to file to load later</string>
         </property>
         <property name="text">
-         <string>Save</string>
+         <string>Save Settings</string>
         </property>
        </widget>
       </item>
@@ -848,14 +752,27 @@ Click here to set up Vulkan capture.</string>
           <verstretch>0</verstretch>
          </sizepolicy>
         </property>
-        <property name="maximumSize">
-         <size>
-          <width>50</width>
-          <height>16777215</height>
-         </size>
+        <property name="toolTip">
+         <string>Load a saved set of capture settings</string>
         </property>
         <property name="text">
-         <string>Load</string>
+         <string>Load Settings</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="loadLastCapture">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="toolTip">
+         <string>Load the most recently used capture settings</string>
+        </property>
+        <property name="text">
+         <string>Load Last Settings</string>
         </property>
        </widget>
       </item>
@@ -876,28 +793,12 @@ Click here to set up Vulkan capture.</string>
        </spacer>
       </item>
       <item>
-       <widget class="QPushButton" name="capture">
-        <property name="maximumSize">
-         <size>
-          <width>60</width>
-          <height>16777215</height>
-         </size>
+       <widget class="QPushButton" name="launch">
+        <property name="toolTip">
+         <string>Launch the selected program with RenderDoc enabled for capture</string>
         </property>
         <property name="text">
-         <string>Capture</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QPushButton" name="close">
-        <property name="maximumSize">
-         <size>
-          <width>50</width>
-          <height>16777215</height>
-         </size>
-        </property>
-        <property name="text">
-         <string>Close</string>
+         <string>Launch</string>
         </property>
        </widget>
       </item>
@@ -919,8 +820,18 @@ Click here to set up Vulkan capture.</string>
    </item>
   </layout>
  </widget>
- <resources>
-  <include location="../../resources.qrc"/>
- </resources>
+ <customwidgets>
+  <customwidget>
+   <class>RDLabel</class>
+   <extends>QLabel</extends>
+   <header>Widgets/Extended/RDLabel.h</header>
+  </customwidget>
+  <customwidget>
+   <class>RDLineEdit</class>
+   <extends>QLineEdit</extends>
+   <header>Widgets/Extended/RDLineEdit.h</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
  <connections/>
 </ui>

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -27,23 +27,31 @@
 
 #include "common/common.h"
 #include "core/core.h"
-#include "driver/d3d11/d3d11_manager.h"
+#include "d3d11_manager.h"
 
-class Serialiser;
 class WrappedID3D11Device;
 class WrappedID3D11DeviceContext;
 class D3D11ResourceManager;
 
 struct D3D11RenderState
 {
-  D3D11RenderState(Serialiser *ser);
+  enum EmptyInit
+  {
+    Empty
+  };
+  D3D11RenderState(EmptyInit);
   D3D11RenderState(WrappedID3D11DeviceContext *context);
   D3D11RenderState(const D3D11RenderState &other);
   ~D3D11RenderState();
 
-  D3D11RenderState &operator=(const D3D11RenderState &other);
+  // we don't allow operator = since we want to preserve some properties.
+  // Instead use CopyState() which copies all of the state contained without
+  // modifying the device pointer or immediate pipeline flag.
+  D3D11RenderState &operator=(const D3D11RenderState &other) = delete;
 
-  void ApplyState(WrappedID3D11DeviceContext *context);
+  void CopyState(const D3D11RenderState &other);
+
+  void ApplyState(WrappedID3D11DeviceContext *context) const;
   void Clear();
 
   ///////////////////////////////////////////////////////////////////////////////
@@ -56,95 +64,6 @@ struct D3D11RenderState
   // need to be aware of depth-stencil as a special case, DSV can be flagged read-only
   // of depth, stencil or both to allow read binds of that component at the same time.
 
-  struct ResourceRange
-  {
-    ResourceRange(ID3D11Buffer *res)
-    {
-      resource = res;
-      minMip = minSlice = 0;
-      maxMip = maxSlice = ~0U;
-      fullRange = true;
-    }
-
-    ResourceRange(ID3D11Texture2D *res)
-    {
-      resource = res;
-      minMip = minSlice = 0;
-      maxMip = maxSlice = ~0U;
-      fullRange = true;
-    }
-
-    // construct a range for a specific mip/slice. Used for easily checking if
-    // a view includes this mip/slice
-    ResourceRange(ID3D11Resource *res, UINT mip, UINT slice)
-    {
-      resource = res;
-      minMip = mip;
-      maxMip = mip;
-      minSlice = slice;
-      maxSlice = slice;
-      fullRange = false;
-    }
-
-    // initialises the range with the contents of the view
-    ResourceRange(ID3D11ShaderResourceView *srv);
-    ResourceRange(ID3D11UnorderedAccessView *uav);
-    ResourceRange(ID3D11RenderTargetView *rtv);
-    ResourceRange(ID3D11DepthStencilView *dsv);
-
-    bool Intersects(const ResourceRange &range) const
-    {
-      if(resource != range.resource)
-        return false;
-
-      // we are the same resource, but maybe we refer to disjoint
-      // ranges of the subresources. Do an early-out check though
-      // if either of the ranges refers to the whole resource
-      if(fullRange || range.fullRange)
-        return true;
-
-      // do we refer to the same mip anywhere
-      if(minMip <= range.maxMip && range.minMip <= maxMip)
-      {
-        // and the same slice? (for resources without slices, this will just be
-        // 0 - ~0U so definitely true
-        if(minSlice <= range.maxSlice && range.minSlice <= maxSlice)
-          return true;
-      }
-
-      // if not, then we don't intersect
-      return false;
-    }
-
-  private:
-    ResourceRange();
-
-    void SetMaxes(UINT numMips, UINT numSlices)
-    {
-      if(numMips == ~0U)
-        maxMip = ~0U;
-      else
-        maxMip = minMip + numMips - 1;
-
-      if(numSlices == ~0U)
-        maxSlice = ~0U;
-      else
-        maxSlice = minSlice + numSlices - 1;
-
-      // save this bool for faster intersection tests. Note that full range could also
-      // be true if maxMip == 12 or something, but since this is just a conservative
-      // early out we are only concerned with a common case.
-      fullRange = (minMip == 0 && minSlice == 0 && maxMip == ~0U && maxSlice == ~0U);
-    }
-
-    IUnknown *resource;
-    UINT minMip;
-    UINT minSlice;
-    UINT maxMip;
-    UINT maxSlice;
-    bool fullRange;
-  };
-
   // the below functions are only called with ResourceRange, which is only constructable for
   // views (where it takes the resource and visible subresources from the view parameters)
   // or directly for a resource. Thus, they are never called with a view directly, or any other
@@ -152,276 +71,102 @@ struct D3D11RenderState
 
   // is any part of this range bound for a writing part of the pipeline? if so, read binds will bind
   // NULL
-  bool IsBoundIUnknownForWrite(const ResourceRange &range, bool readDepthOnly, bool readStencilOnly);
+  bool IsRangeBoundForWrite(const ResourceRange &range);
 
   // this range was bound for writing - find any overlapping read binds and set them to NULL
-  void UnbindIUnknownForRead(const ResourceRange &range, bool allowDepthOnly, bool allowStencilOnly);
+  void UnbindRangeForRead(const ResourceRange &range);
 
   // just for utility, not used below
-  void UnbindIUnknownForWrite(const ResourceRange &range);
+  void UnbindRangeForWrite(const ResourceRange &range);
 
   // define template but only implement for specific types, so we can more easily reason
   // about what types are passing through these functions
   template <typename T>
   bool IsBoundForWrite(T *resource);
 
-  template <>
-  bool IsBoundForWrite(ID3D11InputLayout *resource)
-  {
-    return false;
-  }
-
-  template <>
-  bool IsBoundForWrite(ID3D11ClassInstance *resource)
-  {
-    return false;
-  }
-
-  template <>
-  bool IsBoundForWrite(ID3D11DeviceChild *shader)
-  {
-    return false;
-  }
-
-  template <>
-  bool IsBoundForWrite(ID3D11SamplerState *resource)
-  {
-    return false;
-  }
-
-  template <>
-  bool IsBoundForWrite(ID3D11BlendState *state)
-  {
-    return false;
-  }
-
-  template <>
-  bool IsBoundForWrite(ID3D11RasterizerState *state)
-  {
-    return false;
-  }
-
-  template <>
-  bool IsBoundForWrite(ID3D11DepthStencilState *state)
-  {
-    return false;
-  }
-
-  template <>
-  bool IsBoundForWrite(ID3D11Buffer *buffer)
-  {
-    if(buffer == NULL)
-      return false;
-
-    return IsBoundIUnknownForWrite(ResourceRange(buffer), false, false);
-  }
-
-  template <>
-  bool IsBoundForWrite(ID3D11ShaderResourceView *srv)
-  {
-    if(srv == NULL)
-      return false;
-
-    ID3D11Resource *res = NULL;
-    srv->GetResource(&res);
-
-    D3D11_SHADER_RESOURCE_VIEW_DESC srvd;
-    srv->GetDesc(&srvd);
-
-    bool readDepthOnly = false;
-    bool readStencilOnly = false;
-
-    D3D11_RESOURCE_DIMENSION dim;
-    res->GetType(&dim);
-
-    if(dim == D3D11_RESOURCE_DIMENSION_TEXTURE1D)
-    {
-      D3D11_TEXTURE1D_DESC d;
-      ((ID3D11Texture1D *)res)->GetDesc(&d);
-
-      if(d.Format == DXGI_FORMAT_R24G8_TYPELESS || d.Format == DXGI_FORMAT_R32G8X24_TYPELESS)
-      {
-        d.Format = srvd.Format;
-      }
-
-      if(d.Format == DXGI_FORMAT_X32_TYPELESS_G8X24_UINT ||
-         d.Format == DXGI_FORMAT_X24_TYPELESS_G8_UINT)
-      {
-        readStencilOnly = true;
-      }
-      if(d.Format == DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS ||
-         d.Format == DXGI_FORMAT_R24_UNORM_X8_TYPELESS)
-      {
-        readDepthOnly = true;
-      }
-    }
-    else if(dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D)
-    {
-      D3D11_TEXTURE2D_DESC d;
-      ((ID3D11Texture2D *)res)->GetDesc(&d);
-
-      if(d.Format == DXGI_FORMAT_R24G8_TYPELESS || d.Format == DXGI_FORMAT_R32G8X24_TYPELESS)
-      {
-        d.Format = srvd.Format;
-      }
-
-      if(d.Format == DXGI_FORMAT_X32_TYPELESS_G8X24_UINT ||
-         d.Format == DXGI_FORMAT_X24_TYPELESS_G8_UINT)
-      {
-        readStencilOnly = true;
-      }
-      if(d.Format == DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS ||
-         d.Format == DXGI_FORMAT_R24_UNORM_X8_TYPELESS)
-      {
-        readDepthOnly = true;
-      }
-    }
-
-    SAFE_RELEASE(res);
-
-    return IsBoundIUnknownForWrite(ResourceRange(srv), readDepthOnly, readStencilOnly);
-  }
-
   // same as IsBoundForWrite above
   template <typename T>
   void UnbindForRead(T *resource);
 
-  template <>
-  void UnbindForRead(ID3D11Buffer *buffer)
-  {
-    if(buffer == NULL)
-      return;
-    UnbindIUnknownForRead(ResourceRange(buffer), false, false);
-  }
-
-  template <>
-  void UnbindForRead(ID3D11RenderTargetView *rtv)
-  {
-    if(rtv == NULL)
-      return;
-
-    UnbindIUnknownForRead(ResourceRange(rtv), false, false);
-  }
-
-  template <>
-  void UnbindForRead(ID3D11DepthStencilView *dsv)
-  {
-    if(dsv == NULL)
-      return;
-
-    D3D11_DEPTH_STENCIL_VIEW_DESC desc;
-    dsv->GetDesc(&desc);
-
-    if(desc.Flags == (D3D11_DSV_READ_ONLY_DEPTH | D3D11_DSV_READ_ONLY_STENCIL))
-    {
-      // don't need to.
-    }
-    else if(desc.Flags == D3D11_DSV_READ_ONLY_DEPTH)
-    {
-      UnbindIUnknownForRead(ResourceRange(dsv), true, false);
-    }
-    else if(desc.Flags == D3D11_DSV_READ_ONLY_STENCIL)
-    {
-      UnbindIUnknownForRead(ResourceRange(dsv), false, true);
-    }
-    else
-    {
-      UnbindIUnknownForRead(ResourceRange(dsv), false, false);
-    }
-  }
-
-  template <>
-  void UnbindForRead(ID3D11UnorderedAccessView *uav)
-  {
-    if(uav == NULL)
-      return;
-
-    UnbindIUnknownForRead(ResourceRange(uav), false, false);
-  }
+  template <typename T>
+  void UnbindForWrite(T *resource);
 
   /////////////////////////////////////////////////////////////////////////
   // Utility functions to swap resources around, removing and adding refs
 
-  void TakeRef(ID3D11DeviceChild *p);
-  void ReleaseRef(ID3D11DeviceChild *p);
+  template <typename T>
+  void ChangeRefRead(T *&stateItem, T *newItem)
+  {
+    // don't do anything for redundant changes. This prevents the object from bouncing off refcount
+    // 0 during the changeover if it's only bound once, has no external refcount.
+    if(stateItem == newItem)
+      return;
+
+    // release the old item, which may destroy it but we won't use it again as we know is not the
+    // same as the new item.
+    IntRelease(stateItem);
+
+    // assign the new item, but don't ref it yet
+    stateItem = newItem;
+
+    // if the item is bound for writing anywhere, we instead bind NULL
+    if(IsBoundForWrite(newItem))
+    {
+      // RDCDEBUG("Resource was bound for write, forcing to NULL");
+      stateItem = NULL;
+    }
+
+    // finally we take the ref on the new item
+    IntAddRef(stateItem);
+  }
 
   template <typename T>
   void ChangeRefRead(T **stateArray, T *const *newArray, size_t offset, size_t num)
   {
+    // we don't really care if some objects temporarily hit 0 ext and int refcounts while changing
+    // hands. Consider the case:
+    //
+    // previous: [0] = A [1] = B
+    // bind: [0] = B [1] = A
+    //
+    // after processing slot 0, B has two refs (leftover [1] and updated [0]) and A has no refs. If
+    // A also has no external references this may look like it can be deleted, but all that will
+    // happen is the death will be reported to the device. By the time the device actually processes
+    // it the object will have an intref again.
     for(size_t i = 0; i < num; i++)
-    {
-      T *old = stateArray[offset + i];
-      ReleaseRef(old);
+      ChangeRefRead(stateArray[offset + i], newArray[i]);
+  }
 
-      if(newArray[i] == NULL)
-      {
-        stateArray[offset + i] = newArray[i];
-      }
-      else
-      {
-        if(IsBoundForWrite(newArray[i]))
-        {
-          // RDCDEBUG("Resource %d was bound for write, forcing to NULL", offset+i);
-          stateArray[offset + i] = NULL;
-        }
-        else
-        {
-          stateArray[offset + i] = newArray[i];
-        }
-      }
-      TakeRef(stateArray[offset + i]);
+  template <typename T>
+  void ChangeRefWrite(T *&stateItem, T *newItem)
+  {
+    // don't do anything for redundant changes
+    if(stateItem == newItem)
+      return;
+
+    // release the old item, which may destroy it but we won't use it again as we know is not the
+    // same as the new item. We NULL it out so that it doesn't get unbound again below
+    IntRelease(stateItem);
+    stateItem = NULL;
+
+    // if we're not binding NULL, then unbind any other conflicting uses
+    if(newItem)
+    {
+      UnbindForRead(newItem);
+      // when binding something for write, all other write slots are NULL'd too
+      UnbindForWrite(newItem);
     }
+
+    // now bind the new item and ref it
+    stateItem = newItem;
+    IntAddRef(stateItem);
   }
 
   template <typename T>
   void ChangeRefWrite(T **stateArray, T *const *newArray, size_t offset, size_t num)
   {
     for(size_t i = 0; i < num; i++)
-    {
-      T *old = stateArray[offset + i];
-      ReleaseRef(old);
-
-      if(newArray[i])
-        UnbindForRead(newArray[i]);
-      stateArray[offset + i] = newArray[i];
-      TakeRef(stateArray[offset + i]);
-    }
-  }
-
-  template <typename T>
-  void ChangeRefRead(T *&stateItem, T *newItem)
-  {
-    ReleaseRef(stateItem);
-    stateItem = newItem;
-
-    if(newItem == NULL)
-    {
-      stateItem = newItem;
-    }
-    else
-    {
-      if(IsBoundForWrite(newItem))
-      {
-        // RDCDEBUG("Resource was bound for write, forcing to NULL");
-        stateItem = NULL;
-      }
-      else
-      {
-        stateItem = newItem;
-      }
-    }
-
-    TakeRef(newItem);
-  }
-
-  template <typename T>
-  void ChangeRefWrite(T *&stateItem, T *newItem)
-  {
-    ReleaseRef(stateItem);
-    stateItem = newItem;
-    if(newItem)
-      UnbindForRead(newItem);
-    TakeRef(newItem);
+      ChangeRefWrite(stateArray[offset + i], newArray[i]);
   }
 
   template <typename T>
@@ -442,9 +187,11 @@ struct D3D11RenderState
   // that might not be obvious/intended.
 
   // validate an output merger combination of render targets and depth view
-  bool ValidOutputMerger(ID3D11RenderTargetView **RTs, ID3D11DepthStencilView *depth);
+  bool ValidOutputMerger(ID3D11RenderTargetView *const RTs[], UINT NumRTs,
+                         ID3D11DepthStencilView *depth, ID3D11UnorderedAccessView *const uavs[],
+                         UINT NumUAVs);
 
-  struct inputassembler
+  struct InputAssembler
   {
     ID3D11InputLayout *Layout;
     D3D11_PRIMITIVE_TOPOLOGY Topo;
@@ -458,9 +205,9 @@ struct D3D11RenderState
     bool Used_VB(WrappedID3D11Device *device, uint32_t slot) const;
   } IA;
 
-  struct shader
+  struct Shader
   {
-    ID3D11DeviceChild *Shader;
+    ID3D11DeviceChild *Object;
     ID3D11Buffer *ConstantBuffers[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
     UINT CBOffsets[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
     UINT CBCounts[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
@@ -476,13 +223,13 @@ struct D3D11RenderState
 
   ID3D11UnorderedAccessView *CSUAVs[D3D11_1_UAV_SLOT_COUNT];
 
-  struct streamout
+  struct StreamOut
   {
     ID3D11Buffer *Buffers[D3D11_SO_BUFFER_SLOT_COUNT];
     UINT Offsets[D3D11_SO_BUFFER_SLOT_COUNT];
   } SO;
 
-  struct rasterizer
+  struct Rasterizer
   {
     UINT NumViews, NumScissors;
     D3D11_VIEWPORT Viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
@@ -490,7 +237,7 @@ struct D3D11RenderState
     ID3D11RasterizerState *State;
   } RS;
 
-  struct outmerger
+  struct OutputMerger
   {
     ID3D11DepthStencilState *DepthStencilState;
     UINT StencRef;
@@ -507,8 +254,10 @@ struct D3D11RenderState
     ID3D11UnorderedAccessView *UAVs[D3D11_1_UAV_SLOT_COUNT];
   } OM;
 
-  void SetSerialiser(Serialiser *ser) { m_pSerialiser = ser; }
-  void Serialise(LogState state, WrappedID3D11Device *device);
+  ID3D11Predicate *Predicate;
+  BOOL PredicateValue;
+
+  bool PredicationWouldPass();
 
   void SetImmediatePipeline(WrappedID3D11Device *device)
   {
@@ -517,17 +266,24 @@ struct D3D11RenderState
   }
   void SetDevice(WrappedID3D11Device *device) { m_pDevice = device; }
   void MarkReferenced(WrappedID3D11DeviceContext *ctx, bool initial) const;
-  void MarkDirty(WrappedID3D11DeviceContext *ctx) const;
 
 private:
+  template <class SerialiserType>
+  friend void DoSerialise(SerialiserType &ser, D3D11RenderState &el);
+
   void AddRefs();
   void ReleaseRefs();
 
-  Serialiser *GetSerialiser() { return m_pSerialiser; }
-  Serialiser *m_pSerialiser;
   bool m_ImmediatePipeline;
   WrappedID3D11Device *m_pDevice;
 };
+
+DECLARE_REFLECTION_STRUCT(D3D11RenderState::InputAssembler);
+DECLARE_REFLECTION_STRUCT(D3D11RenderState::Shader);
+DECLARE_REFLECTION_STRUCT(D3D11RenderState::StreamOut);
+DECLARE_REFLECTION_STRUCT(D3D11RenderState::Rasterizer);
+DECLARE_REFLECTION_STRUCT(D3D11RenderState::OutputMerger);
+DECLARE_REFLECTION_STRUCT(D3D11RenderState);
 
 struct D3D11RenderStateTracker
 {
@@ -535,7 +291,62 @@ public:
   D3D11RenderStateTracker(WrappedID3D11DeviceContext *ctx);
   ~D3D11RenderStateTracker();
 
+  const D3D11RenderState &State() { return m_RS; }
 private:
   D3D11RenderState m_RS;
   WrappedID3D11DeviceContext *m_pContext;
 };
+
+template <>
+bool D3D11RenderState::IsBoundForWrite(ID3D11InputLayout *resource);
+
+template <>
+bool D3D11RenderState::IsBoundForWrite(ID3D11Predicate *resource);
+
+template <>
+bool D3D11RenderState::IsBoundForWrite(ID3D11ClassInstance *resource);
+
+template <>
+bool D3D11RenderState::IsBoundForWrite(ID3D11DeviceChild *shader);
+
+template <>
+bool D3D11RenderState::IsBoundForWrite(ID3D11SamplerState *resource);
+
+template <>
+bool D3D11RenderState::IsBoundForWrite(ID3D11BlendState *state);
+
+template <>
+bool D3D11RenderState::IsBoundForWrite(ID3D11RasterizerState *state);
+
+template <>
+bool D3D11RenderState::IsBoundForWrite(ID3D11DepthStencilState *state);
+
+template <>
+bool D3D11RenderState::IsBoundForWrite(ID3D11Buffer *buffer);
+
+template <>
+bool D3D11RenderState::IsBoundForWrite(ID3D11ShaderResourceView *srv);
+
+template <>
+void D3D11RenderState::UnbindForRead(ID3D11Buffer *buffer);
+
+template <>
+void D3D11RenderState::UnbindForRead(ID3D11RenderTargetView *rtv);
+
+template <>
+void D3D11RenderState::UnbindForRead(ID3D11DepthStencilView *dsv);
+
+template <>
+void D3D11RenderState::UnbindForRead(ID3D11UnorderedAccessView *uav);
+
+template <>
+void D3D11RenderState::UnbindForWrite(ID3D11Buffer *buffer);
+
+template <>
+void D3D11RenderState::UnbindForWrite(ID3D11RenderTargetView *rtv);
+
+template <>
+void D3D11RenderState::UnbindForWrite(ID3D11DepthStencilView *dsv);
+
+template <>
+void D3D11RenderState::UnbindForWrite(ID3D11UnorderedAccessView *uav);

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -54,8 +54,6 @@ protected:
   void mousePressEvent(QMouseEvent *e) override;
   void mouseReleaseEvent(QMouseEvent *e) override;
   void mouseMoveEvent(QMouseEvent *e) override;
-  void enterEvent(QEvent *e) override;
-  void leaveEvent(QEvent *e) override;
   void paintEvent(QPaintEvent *e) override;
 
 private:
@@ -80,7 +78,7 @@ private:
     None,
     White,
     Black,
-  } m_DragMode;
+  } m_DragMode = DraggingMode::None;
 
   QVector<uint32_t> m_HistogramData;
   float m_HistogramMin = 0.0f;

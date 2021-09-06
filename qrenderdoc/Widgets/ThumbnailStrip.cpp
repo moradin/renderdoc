@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -77,6 +77,9 @@ void ThumbnailStrip::showEvent(QShowEvent *event)
 
 void ThumbnailStrip::refreshLayout()
 {
+  if(updatesEnabled())
+    setUpdatesEnabled(false);
+
   QRect avail = geometry();
   avail.adjust(6, 6, -6, -6);
 
@@ -97,9 +100,7 @@ void ThumbnailStrip::refreshLayout()
     ui->scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
     delete layout;
-    layout = new QHBoxLayout(ui->scrollAreaWidgetContents);
-    for(ResourcePreview *w : m_Thumbnails)
-      layout->addWidget(w);
+    layout = new QHBoxLayout();
     layout->setSpacing(6);
     layout->setContentsMargins(6, 6, 6, 6);
     layout->setAlignment(Qt::AlignTop);
@@ -119,9 +120,9 @@ void ThumbnailStrip::refreshLayout()
 
       QScrollBar *hs = ui->scrollArea->horizontalScrollBar();
 
-      avail.setHeight(avail.height() - hs->geometry().height());
+      avail.setHeight(qMax(1, avail.height() - hs->geometry().height()));
 
-      aspectWidth = (int)((float)avail.height() * 1.3f);
+      aspectWidth = qMax(1, (int)((float)avail.height() * 1.3f));
 
       int totalWidth = numActive * (aspectWidth + 20);
       hs->setEnabled(totalWidth > avail.width());
@@ -139,9 +140,7 @@ void ThumbnailStrip::refreshLayout()
     ui->scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
     delete layout;
-    layout = new QVBoxLayout(ui->scrollAreaWidgetContents);
-    for(ResourcePreview *w : m_Thumbnails)
-      layout->addWidget(w);
+    layout = new QVBoxLayout();
     layout->setSpacing(6);
     layout->setContentsMargins(6, 6, 6, 6);
     layout->setAlignment(Qt::AlignTop);
@@ -161,9 +160,9 @@ void ThumbnailStrip::refreshLayout()
 
       QScrollBar *vs = ui->scrollArea->verticalScrollBar();
 
-      avail.setWidth(avail.width() - vs->geometry().width());
+      avail.setWidth(qMax(1, avail.width() - vs->geometry().width()));
 
-      aspectHeight = (int)((float)avail.width() / 1.3f);
+      aspectHeight = qMax(1, (int)((float)avail.width() / 1.3f));
 
       int totalHeight = numActive * (aspectHeight + 6);
       vs->setEnabled(totalHeight > avail.height());
@@ -172,4 +171,15 @@ void ThumbnailStrip::refreshLayout()
         c->setSize(QSize(avail.width(), aspectHeight));
     }
   }
+
+  for(ResourcePreview *w : m_Thumbnails)
+    layout->addWidget(w);
+
+  for(ResourcePreview *w : m_Thumbnails)
+    if(w->isActive())
+      w->show();
+
+  ui->scrollAreaWidgetContents->setLayout(layout);
+
+  setUpdatesEnabled(true);
 }

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,7 +23,10 @@
  ******************************************************************************/
 
 #include <unistd.h>
+#include "common/common.h"
+#include "common/formatting.h"
 #include "os/os_specific.h"
+#include "strings/string_utils.h"
 
 extern char **environ;
 
@@ -36,7 +39,7 @@ int GetIdentPort(pid_t childPid)
 {
   int ret = 0;
 
-  string procfile = StringFormat::Fmt("/proc/%d/net/tcp", (int)childPid);
+  rdcstr procfile = StringFormat::Fmt("/proc/%d/net/unix", (int)childPid);
 
   // try for a little while for the /proc entry to appear
   for(int retry = 0; retry < 10; retry++)
@@ -44,7 +47,7 @@ int GetIdentPort(pid_t childPid)
     // back-off for each retry
     usleep(1000 + 500 * retry);
 
-    FILE *f = FileIO::fopen(procfile.c_str(), "r");
+    FILE *f = FileIO::fopen(procfile, FileIO::ReadText);
 
     if(f == NULL)
     {
@@ -60,14 +63,22 @@ int GetIdentPort(pid_t childPid)
       line[sz - 1] = 0;
       fgets(line, sz - 1, f);
 
-      int socketnum = 0, hexip = 0, hexport = 0;
-      int num = sscanf(line, " %d: %x:%x", &socketnum, &hexip, &hexport);
+      int port = 0;
+      char *startpos = strstr(line, "@renderdoc_");
 
-      // find open listen socket on 0.0.0.0:port
-      if(num == 3 && hexip == 0 && hexport >= RenderDoc_FirstTargetControlPort &&
-         hexport <= RenderDoc_LastTargetControlPort)
+      if(startpos == NULL)
       {
-        ret = hexport;
+        // This is not the line we are looking for, continue the processing.
+        continue;
+      }
+
+      int num = sscanf(startpos, "@renderdoc_%d", &port);
+
+      // find open listen abstract socket on 'renderdoc_<port>'
+      if(num == 1 && port >= RenderDoc_FirstTargetControlPort &&
+         port <= RenderDoc_LastTargetControlPort)
+      {
+        ret = port;
         break;
       }
     }
@@ -75,7 +86,29 @@ int GetIdentPort(pid_t childPid)
     FileIO::fclose(f);
   }
 
+  if(ret == 0)
+  {
+    RDCWARN(
+        "Couldn't locate renderdoc target control listening port between @renderdoc_%u and "
+        "@renderdoc_%u in %s",
+        (uint32_t)RenderDoc_FirstTargetControlPort, (uint32_t)RenderDoc_LastTargetControlPort,
+        procfile.c_str());
+  }
+
   return ret;
+}
+
+void StopAtMainInChild()
+{
+}
+
+bool StopChildAtMain(pid_t childPid)
+{
+  return false;
+}
+
+void ResumeProcess(pid_t childPid, uint32_t delay)
+{
 }
 
 // because OSUtility::DebuggerPresent is called often we want it to be
@@ -86,7 +119,7 @@ bool debuggerPresent = false;
 
 void CacheDebuggerPresent()
 {
-  FILE *f = FileIO::fopen("/proc/self/status", "r");
+  FILE *f = FileIO::fopen("/proc/self/status", FileIO::ReadText);
   int ret = 0;
 
   if(f == NULL)
@@ -120,4 +153,46 @@ void CacheDebuggerPresent()
 bool OSUtility::DebuggerPresent()
 {
   return debuggerPresent;
+}
+
+rdcstr Process::GetEnvVariable(const rdcstr &name)
+{
+  // we fake environment variables with properties
+  Process::ProcessResult result;
+  Process::LaunchProcess("getprop", ".",
+                         StringFormat::Fmt("debug.rdoc.%s variable_is_not_set", name.c_str()), true,
+                         &result);
+
+  rdcstr settingsOutput;
+
+  settingsOutput = result.strStdout.trimmed();
+
+  if(settingsOutput == "variable_is_not_set")
+    return rdcstr();
+
+  return settingsOutput;
+}
+
+uint64_t Process::GetMemoryUsage()
+{
+  FILE *f = FileIO::fopen("/proc/self/statm", FileIO::ReadText);
+
+  if(f == NULL)
+  {
+    RDCWARN("Couldn't open /proc/self/statm");
+    return 0;
+  }
+
+  char line[512] = {};
+  fgets(line, 511, f);
+
+  FileIO::fclose(f);
+
+  uint32_t vmPages = 0;
+  int num = sscanf(line, "%u", &vmPages);
+
+  if(num == 1 && vmPages > 0)
+    return vmPages * (uint64_t)sysconf(_SC_PAGESIZE);
+
+  return 0;
 }

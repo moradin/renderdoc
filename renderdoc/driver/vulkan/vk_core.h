@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,86 +24,160 @@
 
 #pragma once
 
-#include <vector>
 #include "common/timing.h"
-#include "replay/replay_driver.h"
 #include "serialise/serialiser.h"
 #include "vk_common.h"
 #include "vk_info.h"
 #include "vk_manager.h"
-#include "vk_replay.h"
 #include "vk_state.h"
 
-using std::vector;
-using std::list;
+class VulkanShaderCache;
+class VulkanDebugManager;
+class VulkanResourceManager;
+class VulkanTextRenderer;
+class VulkanReplay;
 
-struct VkInitParams : public RDCInitParams
+struct VkInitParams
 {
-  VkInitParams();
-  ReplayCreateStatus Serialise();
-
   void Set(const VkInstanceCreateInfo *pCreateInfo, ResourceId inst);
 
-  static const uint32_t VK_SERIALISE_VERSION = 0x0000005;
+  rdcstr AppName, EngineName;
+  uint32_t AppVersion = 0, EngineVersion = 0;
+  VkPackedVersion APIVersion;
 
-  // version number internal to vulkan stream
-  uint32_t SerialiseVersion;
-
-  string AppName, EngineName;
-  uint32_t AppVersion, EngineVersion, APIVersion;
-
-  vector<string> Layers;
-  vector<string> Extensions;
+  rdcarray<rdcstr> Layers;
+  rdcarray<rdcstr> Extensions;
   ResourceId InstanceID;
+
+  // remember to update this function if you add more members
+  uint64_t GetSerialiseSize();
+
+  // check if a frame capture section version is supported
+  static const uint64_t CurrentVersion = 0x13;
+  static bool IsSupportedVersion(uint64_t ver);
 };
 
-struct VulkanDrawcallTreeNode
+DECLARE_REFLECTION_STRUCT(VkInitParams);
+
+enum class VkIndirectPatchType
 {
-  VulkanDrawcallTreeNode() {}
-  explicit VulkanDrawcallTreeNode(const FetchDrawcall &d) : draw(d) {}
-  FetchDrawcall draw;
-  vector<VulkanDrawcallTreeNode> children;
+  NoPatch,
+  DispatchIndirect,
+  DrawIndirect,
+  DrawIndexedIndirect,
+  DrawIndirectCount,
+  DrawIndexedIndirectCount,
+  DrawIndirectByteCount,
+};
 
-  vector<pair<ResourceId, EventUsage> > resourceUsage;
+enum class EventFlags : uint32_t
+{
+  NoFlags = 0x0,
+  VertexRWUsage = 1 << uint32_t(ShaderStage::Vertex),
+  TessControlRWUsage = 1 << uint32_t(ShaderStage::Tess_Control),
+  TessEvalRWUsage = 1 << uint32_t(ShaderStage::Tess_Eval),
+  GeometryRWUsage = 1 << uint32_t(ShaderStage::Geometry),
+};
 
-  vector<ResourceId> executedCmds;
+BITMASK_OPERATORS(EventFlags);
 
-  VulkanDrawcallTreeNode &operator=(const FetchDrawcall &d)
+constexpr inline EventFlags PipeStageRWEventFlags(ShaderStage stage)
+{
+  return EventFlags(1 << uint32_t(stage));
+}
+
+inline EventFlags PipeRWUsageEventFlags(ResourceUsage usage)
+{
+  if(usage >= ResourceUsage::VS_RWResource && usage <= ResourceUsage::GS_RWResource)
+    return PipeStageRWEventFlags(
+        ShaderStage(uint32_t(usage) - uint32_t(ResourceUsage::VS_RWResource)));
+  return EventFlags::NoFlags;
+}
+
+struct VkIndirectRecordData
+{
+  VkBufferMemoryBarrier paramsBarrier, countBarrier;
+
+  struct
   {
-    *this = VulkanDrawcallTreeNode(d);
+    VkBuffer src, dst;
+    VkBufferCopy copy;
+  } paramsCopy, countCopy;
+};
+
+struct VkIndirectPatchData
+{
+  VkIndirectPatchType type = VkIndirectPatchType::NoPatch;
+  MemoryAllocation alloc;
+  VkBuffer buf;
+  uint32_t count;
+  uint32_t stride;
+  uint32_t vertexoffset;
+
+  ResourceId commandBuffer;
+};
+
+struct VulkanActionTreeNode
+{
+  VulkanActionTreeNode() {}
+  explicit VulkanActionTreeNode(const ActionDescription &a) : action(a) {}
+  ActionDescription action;
+  rdcarray<VulkanActionTreeNode> children;
+
+  VkIndirectPatchData indirectPatch;
+
+  rdcarray<rdcpair<ResourceId, EventUsage>> resourceUsage;
+
+  rdcarray<ResourceId> executedCmds;
+
+  VulkanActionTreeNode &operator=(const ActionDescription &a)
+  {
+    *this = VulkanActionTreeNode(a);
     return *this;
   }
 
-  void InsertAndUpdateIDs(const VulkanDrawcallTreeNode &child, uint32_t baseEventID,
-                          uint32_t baseDrawID)
+  void InsertAndUpdateIDs(const VulkanActionTreeNode &child, uint32_t baseEventID, uint32_t baseDrawID)
   {
+    resourceUsage.reserve(child.resourceUsage.size());
     for(size_t i = 0; i < child.resourceUsage.size(); i++)
     {
       resourceUsage.push_back(child.resourceUsage[i]);
-      resourceUsage.back().second.eventID += baseEventID;
+      resourceUsage.back().second.eventId += baseEventID;
     }
 
+    children.reserve(child.children.size());
     for(size_t i = 0; i < child.children.size(); i++)
     {
       children.push_back(child.children[i]);
-      children.back().draw.eventID += baseEventID;
-      children.back().draw.drawcallID += baseDrawID;
-
-      for(int32_t e = 0; e < children.back().draw.events.count; e++)
-        children.back().draw.events[e].eventID += baseEventID;
+      children.back().UpdateIDs(baseEventID, baseDrawID);
     }
   }
 
-  vector<FetchDrawcall> Bake()
+  void UpdateIDs(uint32_t baseEventID, uint32_t baseDrawID)
   {
-    vector<FetchDrawcall> ret;
+    action.eventId += baseEventID;
+    action.actionId += baseDrawID;
+
+    for(APIEvent &ev : action.events)
+      ev.eventId += baseEventID;
+
+    for(size_t i = 0; i < resourceUsage.size(); i++)
+      resourceUsage[i].second.eventId += baseEventID;
+
+    for(size_t i = 0; i < children.size(); i++)
+      children[i].UpdateIDs(baseEventID, baseDrawID);
+  }
+
+  rdcarray<ActionDescription> Bake()
+  {
+    rdcarray<ActionDescription> ret;
     if(children.empty())
       return ret;
 
     ret.resize(children.size());
     for(size_t i = 0; i < children.size(); i++)
     {
-      ret[i] = children[i].draw;
+      ret[i] = children[i].action;
       ret[i].children = children[i].Bake();
     }
 
@@ -111,14 +185,18 @@ struct VulkanDrawcallTreeNode
   }
 };
 
-// use locally cached serialiser, per-thread
-#undef GET_SERIALISER
-#define GET_SERIALISER localSerialiser
+#define SERIALISE_TIME_CALL(...)                                                                \
+  {                                                                                             \
+    WriteSerialiser &ser = GetThreadSerialiser();                                               \
+    ser.ChunkMetadata().timestampMicro = Timing::GetTick();                                     \
+    __VA_ARGS__;                                                                                \
+    ser.ChunkMetadata().durationMicro = Timing::GetTick() - ser.ChunkMetadata().timestampMicro; \
+  }
 
 // must be at the start of any function that serialises
-#define CACHE_THREAD_SERIALISER() Serialiser *localSerialiser = GetThreadSerialiser();
+#define CACHE_THREAD_SERIALISER() WriteSerialiser &ser = GetThreadSerialiser();
 
-struct VulkanDrawcallCallback
+struct VulkanActionCallback
 {
   // the three callbacks are used to allow the callback implementor to either
   // do a modified draw before or after the real thing.
@@ -144,16 +222,33 @@ struct VulkanDrawcallCallback
   virtual bool PostDispatch(uint32_t eid, VkCommandBuffer cmd) = 0;
   virtual void PostRedispatch(uint32_t eid, VkCommandBuffer cmd) = 0;
 
-  // should we re-record all command buffers? this needs to be true if the range
-  // being replayed is larger than one command buffer (which usually means the
-  // whole frame).
-  virtual bool RecordAllCmds() = 0;
+  // finally, these are for copy/blit/resolve/clear/etc
+  virtual void PreMisc(uint32_t eid, ActionFlags flags, VkCommandBuffer cmd) = 0;
+  virtual bool PostMisc(uint32_t eid, ActionFlags flags, VkCommandBuffer cmd) = 0;
+  virtual void PostRemisc(uint32_t eid, ActionFlags flags, VkCommandBuffer cmd) = 0;
+
+  // called immediately before the command buffer is ended
+  virtual void PreEndCommandBuffer(VkCommandBuffer cmd) = 0;
 
   // if a command buffer is recorded once and submitted N > 1 times, then the same
   // drawcall will have several EIDs that refer to it. We'll only do the full
   // callbacks above for the first EID, then call this function for the others
   // to indicate that they are the same.
   virtual void AliasEvent(uint32_t primary, uint32_t alias) = 0;
+
+  // Returns true if vkCmdExecuteCommands should be called separately for every
+  // command buffer in pCommandBuffers.
+  virtual bool SplitSecondary() = 0;
+
+  // called before vkCmdExecuteCommands with a range for the draws inside the
+  // secondary command buffer.
+  virtual void PreCmdExecute(uint32_t baseEid, uint32_t secondaryFirst, uint32_t secondaryLast,
+                             VkCommandBuffer cmd) = 0;
+
+  // called after vkCmdExecuteCommands with a range for the action inside the
+  // seocndary command buffer.
+  virtual void PostCmdExecute(uint32_t baseEid, uint32_t secondaryFirst, uint32_t secondaryLast,
+                              VkCommandBuffer cmd) = 0;
 };
 
 class WrappedVulkan : public IFrameCapturer
@@ -161,13 +256,15 @@ class WrappedVulkan : public IFrameCapturer
 private:
   friend class VulkanReplay;
   friend class VulkanDebugManager;
+  friend struct VulkanRenderState;
+  friend class VulkanShaderCache;
 
   struct ScopedDebugMessageSink
   {
     ScopedDebugMessageSink(WrappedVulkan *driver);
     ~ScopedDebugMessageSink();
 
-    vector<DebugMessage> msgs;
+    rdcarray<DebugMessage> msgs;
     WrappedVulkan *m_pDriver;
   };
 
@@ -181,45 +278,56 @@ private:
 
   // the messages retrieved for the current event (filled in Serialise_vk...() and read in
   // AddEvent())
-  vector<DebugMessage> m_EventMessages;
+  rdcarray<DebugMessage> m_EventMessages;
 
   // list of all debug messages by EID in the frame
-  vector<DebugMessage> m_DebugMessages;
-  void Serialise_DebugMessages(Serialiser *localSerialiser, bool isDrawcall);
-  vector<DebugMessage> GetDebugMessages();
+  rdcarray<DebugMessage> m_DebugMessages;
+  template <typename SerialiserType>
+  void Serialise_DebugMessages(SerialiserType &ser);
+
+  void ProcessDebugMessage(DebugMessage &DebugMessages);
+  rdcarray<DebugMessage> GetDebugMessages();
   void AddDebugMessage(DebugMessage msg);
-  void AddDebugMessage(DebugMessageCategory c, DebugMessageSeverity sv, DebugMessageSource src,
-                       std::string d);
 
-  enum
-  {
-    eInitialContents_ClearColorImage = 1,
-    eInitialContents_ClearDepthStencilImage,
-    eInitialContents_Sparse,
-  };
+  ReplayStatus m_FatalError = ReplayStatus::Succeeded;
+  CaptureState m_State;
+  bool m_AppControlledCapture = false;
 
-  Serialiser *m_pSerialiser;
-  LogState m_State;
-  bool m_AppControlledCapture;
+  int32_t m_ReuseEnabled = 1;
+
+  PerformanceTimer m_CaptureTimer;
+
+  bool m_MarkedActive = false;
+  uint32_t m_SubmitCounter = 0;
 
   uint64_t threadSerialiserTLSSlot;
 
   Threading::CriticalSection m_ThreadSerialisersLock;
-  vector<Serialiser *> m_ThreadSerialisers;
+  rdcarray<WriteSerialiser *> m_ThreadSerialisers;
 
   uint64_t tempMemoryTLSSlot;
   struct TempMem
   {
-    TempMem() : memory(NULL), size(0) {}
+    TempMem() : memory(NULL), cur(NULL), size(0) {}
     byte *memory;
+    byte *cur;
     size_t size;
   };
   Threading::CriticalSection m_ThreadTempMemLock;
-  vector<TempMem *> m_ThreadTempMem;
+  rdcarray<TempMem *> m_ThreadTempMem;
 
-  VulkanReplay m_Replay;
+  VulkanReplay *m_Replay;
+  ReplayOptions m_ReplayOptions;
 
   VkInitParams m_InitParams;
+  uint64_t m_SectionVersion;
+
+  StreamReader *m_FrameReader = NULL;
+
+  std::set<rdcstr> m_StringDB;
+
+  Threading::CriticalSection m_CapDescriptorsLock;
+  std::set<VkDescriptorSet> m_CapDescriptors;
 
   VkResourceRecord *m_FrameCaptureRecord;
   Chunk *m_HeaderChunk;
@@ -231,89 +339,168 @@ private:
   // by queue submit order anyway, so it's OK to lose the record
   // order).
   Threading::CriticalSection m_CmdBufferRecordsLock;
-  vector<VkResourceRecord *> m_CmdBufferRecords;
+  rdcarray<VkResourceRecord *> m_CmdBufferRecords;
 
-  VulkanResourceManager *m_ResourceManager;
-  VulkanDebugManager *m_DebugManager;
+  VulkanResourceManager *m_ResourceManager = NULL;
+  VulkanDebugManager *m_DebugManager = NULL;
+  VulkanShaderCache *m_ShaderCache = NULL;
+  VulkanTextRenderer *m_TextRenderer = NULL;
 
-  Threading::CriticalSection m_CapTransitionLock;
+  Threading::RWLock m_CapTransitionLock;
 
-  VulkanDrawcallCallback *m_DrawcallCallback;
+  VulkanActionCallback *m_ActionCallback;
+  void *m_SubmitChain;
 
-  // util function to handle fetching the right eventID, calling any
+  uint64_t m_TimeBase = 0;
+  double m_TimeFrequency = 1.0f;
+  SDFile *m_StructuredFile;
+  SDFile *m_StoredStructuredData;
+
+  void AddResource(ResourceId id, ResourceType type, const char *defaultNamePrefix);
+  void DerivedResource(ResourceId parentLive, ResourceId child);
+  template <typename VulkanType>
+  void DerivedResource(VulkanType parent, ResourceId child)
+  {
+    DerivedResource(GetResID(parent), child);
+  }
+  void AddResourceCurChunk(ResourceDescription &descr);
+  void AddResourceCurChunk(ResourceId id);
+
+  // util function to handle fetching the right eventId, calling any
   // aliases then calling PreDraw/PreDispatch.
-  uint32_t HandlePreCallback(VkCommandBuffer commandBuffer, bool dispatch = false,
-                             uint32_t multiDrawOffset = 0);
+  uint32_t HandlePreCallback(VkCommandBuffer commandBuffer,
+                             ActionFlags type = ActionFlags::Drawcall, uint32_t multiDrawOffset = 0);
 
-  vector<WindowingSystem> m_SupportedWindowSystems;
+  rdcarray<WindowingSystem> m_SupportedWindowSystems;
 
-  uint32_t m_FrameCounter;
+  uint32_t m_FrameCounter = 0;
 
-  vector<FetchFrameInfo> m_CapturedFrames;
-  FetchFrameRecord m_FrameRecord;
-  vector<FetchDrawcall *> m_Drawcalls;
+  rdcarray<FrameDescription> m_CapturedFrames;
+  rdcarray<ActionDescription *> m_Actions;
 
   struct PhysicalDeviceData
   {
-    PhysicalDeviceData() : readbackMemIndex(0), uploadMemIndex(0), GPULocalMemIndex(0)
-    {
-      fakeMemProps = NULL;
-      memIdxMap = NULL;
-      RDCEraseEl(features);
-      RDCEraseEl(props);
-      RDCEraseEl(memProps);
-      RDCEraseEl(fmtprops);
-    }
-
-    uint32_t GetMemoryIndex(uint32_t resourceRequiredBitmask, uint32_t allocRequiredProps,
-                            uint32_t allocUndesiredProps);
+    uint32_t GetMemoryIndex(uint32_t resourceCompatibleBitmask, uint32_t allocRequiredProps,
+                            uint32_t allocPreferredProps);
 
     // store the three most common memory indices:
     //  - memory for copying into and reading back from the GPU
     //  - memory for copying into and uploading to the GPU
     //  - memory for sitting on the GPU and never being CPU accessed
-    uint32_t readbackMemIndex;
-    uint32_t uploadMemIndex;
-    uint32_t GPULocalMemIndex;
+    uint32_t readbackMemIndex = 0;
+    uint32_t uploadMemIndex = 0;
+    uint32_t GPULocalMemIndex = 0;
 
-    VkPhysicalDeviceMemoryProperties *fakeMemProps;
-    uint32_t *memIdxMap;
+    VkPhysicalDeviceFeatures availFeatures = {};
+    VkPhysicalDeviceFeatures enabledFeatures = {};
+    VkPhysicalDeviceProperties props = {};
+    VkPhysicalDeviceMemoryProperties memProps = {};
+    std::map<VkFormat, VkFormatProperties> fmtProps = {};
+    VkDriverInfo driverInfo = VkDriverInfo(props);
 
-    VkPhysicalDeviceFeatures features;
-    VkPhysicalDeviceProperties props;
-    VkPhysicalDeviceMemoryProperties memProps;
-    VkFormatProperties fmtprops[VK_FORMAT_RANGE_SIZE];
+    VkPhysicalDevicePerformanceQueryFeaturesKHR performanceQueryFeatures = {};
+
+    uint32_t queueCount = 0;
+    VkQueueFamilyProperties queueProps[16] = {};
   };
+
+  bool m_SeparateDepthStencil = false;
+  bool m_NULLDescriptorsAllowed = false;
+  bool m_ExtendedDynState = false;
 
   PFN_vkSetDeviceLoaderData m_SetDeviceLoaderData;
 
-  VkInstance m_Instance;                        // the instance corresponding to this WrappedVulkan
-  VkDebugReportCallbackEXT m_DbgMsgCallback;    // the instance's dbg msg callback handle
-  VkPhysicalDevice m_PhysicalDevice;            // the physical device we created m_Device with
-  VkDevice m_Device;                            // the device used for our own command buffer work
-  PhysicalDeviceData
-      m_PhysicalDeviceData;    // the data about the physical device used for the above device;
-  uint32_t
-      m_QueueFamilyIdx;    // the family index that we've selected in CreateDevice for our queue
-  VkQueue m_Queue;         // the queue used for our own command buffer work
+  InstanceDeviceInfo m_EnabledExtensions;
 
-  // the physical devices
-  vector<VkPhysicalDevice> m_PhysicalDevices;
+  // the instance corresponding to this WrappedVulkan
+  VkInstance m_Instance;
+  // the instance's dbg msg callback handle
+  VkDebugReportCallbackEXT m_DbgReportCallback;
+  VkDebugUtilsMessengerEXT m_DbgUtilsCallback;
+  // the physical device we created m_Device with
+  VkPhysicalDevice m_PhysicalDevice;
+  // the device used for our own command buffer work
+  VkDevice m_Device;
+  // the data about the physical device used for the above device
+  PhysicalDeviceData m_PhysicalDeviceData;
+  // the family index that we've selected in CreateDevice for our queue. During replay, this is an
+  // index in the replay-time queues, not the capture-time queues (i.e. after remapping)
+  uint32_t m_QueueFamilyIdx;
+  // the queue used for our own command buffer work
+  VkQueue m_Queue;
+  // the last queue that submitted something during replay, to allow correct sync between
+  // submissions
+  VkQueue m_PrevQueue;
 
-  // the single queue family supported for each physical device
-  vector<pair<uint32_t, VkQueueFamilyProperties> > m_SupportedQueueFamilies;
+  // the physical devices. At capture time this is trivial, just the enumerated devices.
+  // At replay time this is re-ordered from the real list to try and match
+  rdcarray<VkPhysicalDevice> m_PhysicalDevices;
 
-  // the supported queue family for the created device
-  uint32_t m_SupportedQueueFamily;
+  // replay only, information we need for remapping. The original vector keeps information about the
+  // physical devices used at capture time, and the replay vector contains the real unmodified list
+  // of physical devices at replay time.
+  rdcarray<PhysicalDeviceData> m_OriginalPhysicalDevices;
+  rdcarray<VkPhysicalDevice> m_ReplayPhysicalDevices;
+  rdcarray<bool> m_ReplayPhysicalDevicesUsed;
 
   // the queue families (an array of count for each) for the created device
-  vector<VkQueue *> m_QueueFamilies;
+  rdcarray<VkQueue *> m_QueueFamilies;
+  rdcarray<uint32_t> m_QueueFamilyCounts;
+  rdcarray<uint32_t> m_QueueFamilyIndices;
 
-  vector<uint32_t *> m_MemIdxMaps;
-  void RemapMemoryIndices(VkPhysicalDeviceMemoryProperties *memProps, uint32_t **memIdxMap);
+  ImageBarrierSequence m_setupImageBarriers;
+  ImageBarrierSequence m_cleanupImageBarriers;
+
+  // a small amount of helper code during capture for handling resources on different queues in init
+  // states
+  struct ExternalQueue
+  {
+    VkQueue queue = VK_NULL_HANDLE;
+    VkCommandPool pool = VK_NULL_HANDLE;
+
+    struct
+    {
+      VkCommandBuffer acquire = VK_NULL_HANDLE;
+      VkCommandBuffer release = VK_NULL_HANDLE;
+      VkSemaphore fromext = VK_NULL_HANDLE;
+      VkSemaphore toext = VK_NULL_HANDLE;
+      VkFence fence = VK_NULL_HANDLE;
+    } ring[4];
+    uint32_t ringIndex = 0;
+    uint32_t GetNextIdx()
+    {
+      uint32_t ret = ringIndex;
+      ringIndex = (ringIndex + 1) % ARRAY_COUNT(ring);
+      return ret;
+    }
+  };
+  rdcarray<ExternalQueue> m_ExternalQueues;
+
+  VkCommandBuffer GetExtQueueCmd(uint32_t queueFamilyIdx) const;
+  void SubmitAndFlushExtQueue(uint32_t queueFamilyIdx);
+
+  void SubmitAndFlushImageStateBarriers(ImageBarrierSequence &barriers);
+  void InlineSetupImageBarriers(VkCommandBuffer cmd, ImageBarrierSequence &batches);
+  void InlineCleanupImageBarriers(VkCommandBuffer cmd, ImageBarrierSequence &batches);
+
+  struct QueueRemap
+  {
+    uint32_t family;
+    uint32_t index;
+  };
+
+  // for each queue family in the original captured physical device, we have a remapping vector.
+  // Each element in the vector is an available queue in that family, and the uint64 is packed as
+  // (targetQueueFamily << 32) | (targetQueueIndex)
+  rdcarray<QueueRemap> m_QueueRemapping[16];
 
   void WrapAndProcessCreatedSwapchain(VkDevice device, const VkSwapchainCreateInfoKHR *pCreateInfo,
                                       VkSwapchainKHR *pSwapChain);
+
+  GPUBuffer m_IndirectBuffer;
+  size_t m_IndirectBufferSize = 0;
+  VkCommandBuffer m_IndirectCommandBuffer = VK_NULL_HANDLE;
+  bool m_IndirectDraw = false;
 
   struct
   {
@@ -331,84 +518,103 @@ private:
 
     VkCommandPool cmdpool;    // the command pool used for allocating our own command buffers
 
-    vector<VkCommandBuffer> freecmds;
+    rdcarray<VkCommandBuffer> freecmds;
     // -> GetNextCmd() ->
-    vector<VkCommandBuffer> pendingcmds;
+    rdcarray<VkCommandBuffer> pendingcmds;
     // -> SubmitCmds() ->
-    vector<VkCommandBuffer> submittedcmds;
+    rdcarray<VkCommandBuffer> submittedcmds;
     // -> FlushQ() ------back to freecmds------^
 
-    vector<VkSemaphore> freesems;
+    rdcarray<VkSemaphore> freesems;
     // -> GetNextSemaphore() ->
-    vector<VkSemaphore> pendingsems;
+    rdcarray<VkSemaphore> pendingsems;
     // -> SubmitSemaphores() ->
-    vector<VkSemaphore> submittedsems;
+    rdcarray<VkSemaphore> submittedsems;
     // -> FlushQ() ----back to freesems-------^
   } m_InternalCmds;
 
-  vector<VkDeviceMemory> m_CleanupMems;
-  vector<VkEvent> m_CleanupEvents;
+  static const int initialStateMaxBatch = 100;
+  int initStateCurBatch = 0;
+  VkCommandBuffer initStateCurCmd = VK_NULL_HANDLE;
 
-  const VkPhysicalDeviceFeatures &GetDeviceFeatures() { return m_PhysicalDeviceData.features; }
-  const VkPhysicalDeviceProperties &GetDeviceProps() { return m_PhysicalDeviceData.props; }
-  VkDriverInfo GetDriverVersion() { return VkDriverInfo(m_PhysicalDeviceData.props); }
-  const VkFormatProperties &GetFormatProperties(VkFormat f)
+  // Internal lumped/pooled memory allocations
+
+  // Each memory scope gets a separate vector of allocation objects. The vector contains the list of
+  // all 'base' allocations. The offset is used to indicate the current offset, and the size is the
+  // total size, thus the free space can be determined with size - offset.
+  rdcarray<MemoryAllocation> m_MemoryBlocks[arraydim<MemoryScope>()];
+
+  // Per memory scope, the size of the next allocation. This allows us to balance number of memory
+  // allocation objects with size by incrementally allocating larger blocks.
+  VkDeviceSize m_MemoryBlockSize[arraydim<MemoryScope>()] = {};
+
+  void FreeAllMemory(MemoryScope scope);
+  void FreeMemoryAllocation(MemoryAllocation alloc);
+
+  // internal implementation - call one of the functions above
+  MemoryAllocation AllocateMemoryForResource(bool buffer, VkMemoryRequirements mrq,
+                                             MemoryScope scope, MemoryType type);
+
+  rdcarray<VkEvent> m_CleanupEvents;
+  rdcarray<VkEvent> m_PersistentEvents;
+
+  // reset queries must be restored to a valid state on next replay to ensure any query pool
+  // results copies that refer to previous frames have valid data. We initialised all of the
+  // query pool at creation time, but any queries that are reset might not be recorded within
+  // the frame - certainly not if we're doing partial replays. So we record all queries that are
+  // reset to re-initialise them.
+  struct ResetQuery
   {
-    return m_PhysicalDeviceData.fmtprops[f];
-  }
+    VkQueryPool pool;
+    uint32_t firstQuery;
+    uint32_t queryCount;
+  };
+  rdcarray<ResetQuery> m_ResetQueries;
 
-  uint32_t GetReadbackMemoryIndex(uint32_t resourceRequiredBitmask);
-  uint32_t GetUploadMemoryIndex(uint32_t resourceRequiredBitmask);
-  uint32_t GetGPULocalMemoryIndex(uint32_t resourceRequiredBitmask);
+  const VkFormatProperties &GetFormatProperties(VkFormat f);
 
   struct BakedCmdBufferInfo
   {
     BakedCmdBufferInfo()
-        : draw(NULL),
+        : action(NULL),
           eventCount(0),
           curEventID(0),
-          drawCount(0),
+          actionCount(0),
           level(VK_COMMAND_BUFFER_LEVEL_PRIMARY),
-          beginFlags(0)
+          beginFlags(0),
+          markerCount(0)
+
     {
     }
-    ~BakedCmdBufferInfo() { SAFE_DELETE(draw); }
-    vector<FetchAPIEvent> curEvents;
-    vector<DebugMessage> debugMessages;
-    list<VulkanDrawcallTreeNode *> drawStack;
+    ~BakedCmdBufferInfo() { SAFE_DELETE(action); }
+    rdcarray<APIEvent> curEvents;
+    rdcarray<DebugMessage> debugMessages;
+    rdcarray<VulkanActionTreeNode *> actionStack;
+
+    rdcarray<VkIndirectRecordData> indirectCopies;
+
+    uint32_t beginChunk = 0;
+    uint32_t endChunk = 0;
 
     VkCommandBufferLevel level;
     VkCommandBufferUsageFlags beginFlags;
 
-    vector<pair<ResourceId, EventUsage> > resourceUsage;
+    bool inheritConditionalRendering = false;
 
-    struct CmdBufferState
-    {
-      CmdBufferState() : idxWidth(0), subpass(0) {}
-      ResourceId pipeline;
+    int markerCount;
 
-      struct DescriptorAndOffsets
-      {
-        ResourceId descSet;
-        vector<uint32_t> offsets;
-      };
-      vector<DescriptorAndOffsets> graphicsDescSets, computeDescSets;
+    rdcarray<rdcpair<ResourceId, EventUsage>> resourceUsage;
 
-      uint32_t idxWidth;
-      ResourceId ibuffer;
-      vector<ResourceId> vbuffers;
+    VulkanRenderState state;
 
-      ResourceId renderPass;
-      ResourceId framebuffer;
-      uint32_t subpass;
-    } state;
+    rdcflatmap<ResourceId, ImageState> imageStates;
 
-    vector<pair<ResourceId, ImageRegionState> > imgbarriers;
+    ResourceId pushDescriptorID[2][64];
 
-    VulkanDrawcallTreeNode *draw;    // the root draw to copy from when submitting
+    VulkanActionTreeNode *action;    // the root action to copy from when submitting
     uint32_t eventCount;             // how many events are in this cmd buffer, for quick skipping
     uint32_t curEventID;             // current event ID while reading or executing
-    uint32_t drawCount;              // similar to above
+    uint32_t actionCount;            // similar to above
   };
 
   // on replay, the current command buffer for the last chunk we
@@ -416,23 +622,23 @@ private:
   ResourceId m_LastCmdBufferID;
 
   // this is a list of uint64_t file offset -> uint32_t EIDs of where each
-  // drawcall is used. E.g. the drawcall at offset 873954 is EID 50. If a
+  // action is used. E.g. the action at offset 873954 is EID 50. If a
   // command buffer is submitted more than once, there may be more than
-  // one entry here - the drawcall will be aliased among several EIDs, with
+  // one entry here - the action will be aliased among several EIDs, with
   // the first one being the 'primary'
-  struct DrawcallUse
+  struct ActionUse
   {
-    DrawcallUse(uint64_t offs, uint32_t eid) : fileOffset(offs), eventID(eid) {}
+    ActionUse(uint64_t offs, uint32_t eid) : fileOffset(offs), eventId(eid) {}
     uint64_t fileOffset;
-    uint32_t eventID;
-    bool operator<(const DrawcallUse &o) const
+    uint32_t eventId;
+    bool operator<(const ActionUse &o) const
     {
       if(fileOffset != o.fileOffset)
         return fileOffset < o.fileOffset;
-      return eventID < o.eventID;
+      return eventId < o.eventId;
     }
   };
-  vector<DrawcallUse> m_DrawcallUses;
+  rdcarray<ActionUse> m_ActionUses;
 
   enum PartialReplayIndex
   {
@@ -441,123 +647,183 @@ private:
     ePartialNum
   };
 
+  struct Submission
+  {
+    Submission(uint32_t eid) : baseEvent(eid), rebased(false) {}
+    uint32_t baseEvent = 0;
+    bool rebased = false;
+  };
+
+  // by definition, when replaying we must have N completely submitted command buffers, and at most
+  // two partially-submitted command buffers. One primary, that we're part-way through, and then
+  // if we're part-way through a vkCmdExecuteCommandBuffers inside that primary then there's one
+  // secondary.
   struct PartialReplayData
   {
     PartialReplayData() { Reset(); }
     void Reset()
     {
-      resultPartialCmdPool = VK_NULL_HANDLE;
-      resultPartialCmdBuffer = VK_NULL_HANDLE;
-      partialDevice = VK_NULL_HANDLE;
-      outsideCmdBuffer = VK_NULL_HANDLE;
       partialParent = ResourceId();
       baseEvent = 0;
       renderPassActive = false;
     }
 
-    // if we're doing a partial replay, by definition only one command
-    // buffer will be partial at any one time. While replaying through
-    // the command buffer chunks, the partial command buffer will be
-    // created as a temporary new command buffer and when it comes to
-    // the queue that should submit it, it can submit this instead.
-    VkCommandPool resultPartialCmdPool;
-    VkCommandBuffer resultPartialCmdBuffer;
-    VkDevice partialDevice;    // device for above cmd buffer
+    // this records where in the frame a command buffer was submitted, so that we know if our replay
+    // range ends in one of these ranges we need to construct a partial command buffer for future
+    // replaying. Note that we always have the complete command buffer around - it's the bakeID
+    // itself.
+    // Since we only ever record a bakeID once the key is unique - note that the same command buffer
+    // could be recorded multiple times a frame, so the parent command buffer ID (the one recorded
+    // in vkCmd chunks) is NOT unique.
+    // However, a single baked command list can be submitted multiple times - so we have to have a
+    // list of base events
+    // Note in the case of secondary command buffers we mark when these are rebased to 'absolute'
+    // event IDs, since they could be submitted multiple times in the frame and we don't want to
+    // rebase all of them each time.
+    // Map from bakeID -> vector<Submission>
+    std::map<ResourceId, rdcarray<Submission>> cmdBufferSubmits;
 
-    // if we're replaying just a single draw or a particular command
-    // buffer subsection of command events, we don't go through the
-    // whole original command buffers to set up the partial replay,
-    // so we just set this command buffer
-    VkCommandBuffer outsideCmdBuffer;
-
-    // this records where in the frame a command buffer was submitted,
-    // so that we know if our replay range ends in one of these ranges
-    // we need to construct a partial command buffer for future
-    // replaying. Note that we always have the complete command buffer
-    // around - it's the bakeID itself.
-    // Since we only ever record a bakeID once the key is unique - note
-    // that the same command buffer could be recorded multiple times
-    // a frame, so the parent command buffer ID (the one recorded in
-    // vkCmd chunks) is NOT unique.
-    // However, a single baked command list can be submitted multiple
-    // times - so we have to have a list of base events
-    // Map from bakeID -> vector<baseEventID>
-    map<ResourceId, vector<uint32_t> > cmdBufferSubmits;
-
-    // This is just the ResourceId of the original parent command buffer
-    // and it's baked id.
-    // If we are in the middle of a partial replay - allows fast checking
-    // in all vkCmd chunks, with the iteration through the above list
-    // only in vkBegin.
-    // partialParent gets reset to ResourceId() in the vkEnd so that
-    // other baked command buffers from the same parent don't pick it up
-    // Also reset each overall replay
+    // identifies the baked ID of the command buffer that's actually partial at each level.
     ResourceId partialParent;
 
-    // If a partial replay is detected, this records the base of the
-    // range. This both allows easily and uniquely identifying it in the
-    // queuesubmit, but also allows the recording to 'rebase' the last
-    // event ID by subtracting this, to know how far to record
+    // the base even of the submission that's partial, as defined above in partialParent
     uint32_t baseEvent;
 
-    // If we're doing a partial record this bool tells us when we
-    // reach the vkEndCommandBuffer that we also need to end a render
-    // pass.
+    // whether a renderpass is currently active in the partial recording - as with baseEvent, only
+    // valid for the command buffer referred to by partialParent.
     bool renderPassActive;
   } m_Partial[ePartialNum];
 
-  map<ResourceId, VkCommandBuffer> m_RerecordCmds;
+  // if we're replaying just a single action or a particular command
+  // buffer subsection of command events, we don't go through the
+  // whole original command buffers to set up the partial replay,
+  // so we just set this command buffer
+  VkCommandBuffer m_OutsideCmdBuffer = VK_NULL_HANDLE;
+
+  // stores the currently re-recording command buffer for any original command buffer ID (not bake
+  // ID). This allows a quick check to see if an original command should be recorded, and also to
+  // fetch the command buffer to record into.
+  std::map<ResourceId, VkCommandBuffer> m_RerecordCmds;
+
+  // we store the list here, since we need to keep all command buffers until the whole replay is
+  // finished, but if a command buffer is re-recorded multiple times it would be overwritten in the
+  // above map
+  rdcarray<rdcpair<VkCommandPool, VkCommandBuffer>> m_RerecordCmdList;
 
   // There is only a state while currently partially replaying, it's
   // undefined/empty otherwise.
   // All IDs are original IDs, not live.
   VulkanRenderState m_RenderState;
 
-  bool ShouldRerecordCmd(ResourceId cmdid);
   bool InRerecordRange(ResourceId cmdid);
+  bool HasRerecordCmdBuf(ResourceId cmdid);
+  bool ShouldUpdateRenderState(ResourceId cmdid, bool forcePrimary = false);
   VkCommandBuffer RerecordCmdBuf(ResourceId cmdid, PartialReplayIndex partialType = ePartialNum);
+
+  ResourceId GetPartialCommandBuffer();
 
   // this info is stored in the record on capture, but we
   // need it on replay too
   struct DescriptorSetInfo
   {
-    ~DescriptorSetInfo()
-    {
-      for(size_t i = 0; i < currentBindings.size(); i++)
-        delete[] currentBindings[i];
-      currentBindings.clear();
-    }
+    DescriptorSetInfo(bool p = false) : push(p) {}
+    DescriptorSetInfo(const DescriptorSetInfo &) = delete;
+    DescriptorSetInfo &operator=(const DescriptorSetInfo &) = delete;
+    ~DescriptorSetInfo() { clear(); }
     ResourceId layout;
-    vector<DescriptorSetSlot *> currentBindings;
+    BindingStorage data;
+    bool push;
+
+    void clear()
+    {
+      layout = ResourceId();
+      data.clear();
+    }
   };
 
   // capture-side data
 
   ResourceId m_LastSwap;
 
+  // hold onto device address resources (buffers and memories) so that if one is destroyed
+  // mid-capture we can hold onto it until the capture is complete.
+  struct
+  {
+    rdcarray<VkDeviceMemory> DeadMemories;
+    rdcarray<VkBuffer> DeadBuffers;
+    rdcarray<ResourceId> IDs;
+  } m_DeviceAddressResources;
+
   // holds the current list of coherent mapped memory. Locked against concurrent use
-  vector<VkResourceRecord *> m_CoherentMaps;
+  rdcarray<VkResourceRecord *> m_CoherentMaps;
   Threading::CriticalSection m_CoherentMapsLock;
 
-  // used both on capture and replay side to track image layouts. Only locked
+  rdcarray<VkResourceRecord *> m_ForcedReferences;
+  Threading::CriticalSection m_ForcedReferencesLock;
+
+  int64_t m_QueueCounter = 0;
+
+  rdcarray<VkResourceRecord *> GetForcedReferences()
+  {
+    rdcarray<VkResourceRecord *> ret;
+
+    {
+      SCOPED_LOCK(m_ForcedReferencesLock);
+      ret = m_ForcedReferences;
+    }
+
+    return ret;
+  }
+
+  bool IsForcedReference(VkResourceRecord *record)
+  {
+    bool ret = false;
+
+    {
+      SCOPED_LOCK(m_ForcedReferencesLock);
+      ret = (m_ForcedReferences.indexOf(record) != -1);
+    }
+
+    return ret;
+  }
+
+  void AddForcedReference(VkResourceRecord *record)
+  {
+    SCOPED_LOCK(m_ForcedReferencesLock);
+    m_ForcedReferences.push_back(record);
+  }
+
+  // used on replay side to track the queue family of command buffers and pools
+  std::map<ResourceId, uint32_t> m_commandQueueFamilies;
+
+  // used both on capture and replay side to track image state. Only locked
   // in capture
-  map<ResourceId, ImageLayouts> m_ImageLayouts;
-  Threading::CriticalSection m_ImageLayoutsLock;
+  std::map<ResourceId, LockingImageState> m_ImageStates;
+  Threading::CriticalSection m_ImageStatesLock;
 
   // find swapchain for an image
-  map<RENDERDOC_WindowHandle, VkSwapchainKHR> m_SwapLookup;
+  std::map<RENDERDOC_WindowHandle, VkSwapchainKHR> m_SwapLookup;
   Threading::CriticalSection m_SwapLookupLock;
 
   // below are replay-side data only, doesn't have to be thread protected
 
   // current descriptor set contents
-  map<ResourceId, DescriptorSetInfo> m_DescriptorSetState;
-  // data for a baked command buffer - its drawcalls and events, ready to submit
-  map<ResourceId, BakedCmdBufferInfo> m_BakedCmdBufferInfo;
+  std::map<ResourceId, DescriptorSetInfo> m_DescriptorSetState;
+  // data for a baked command buffer - its actions and events, ready to submit
+  std::map<ResourceId, BakedCmdBufferInfo> m_BakedCmdBufferInfo;
   // immutable creation data
   VulkanCreationInfo m_CreationInfo;
 
-  map<ResourceId, vector<EventUsage> > m_ResourceUses;
+  std::map<ResourceId, rdcarray<EventUsage>> m_ResourceUses;
+  std::map<uint32_t, EventFlags> m_EventFlags;
+
+  bytebuf m_MaskedMapData;
+
+  // on replay we may need to allocate several bits of temporary memory, so the single-region
+  // doesn't work as well. We're not quite as performance-sensitive so we allocate 4MB per thread
+  // and use it in a ring-buffer fashion. This allows multiple allocations to live at once as long
+  // as we don't need it all in one stack.
+  byte *GetRingTempMemory(size_t s);
 
   // returns thread-local temporary memory
   byte *GetTempMemory(size_t s);
@@ -567,123 +833,240 @@ private:
     return (T *)GetTempMemory(sizeof(T) * arraycount);
   }
 
-  Serialiser *GetThreadSerialiser();
-  Serialiser *GetMainSerialiser() { return m_pSerialiser; }
-  void Serialise_CaptureScope(uint64_t offset);
+  template <class T>
+  T *UnwrapArray(const T *wrapped, uint32_t count)
+  {
+    T *ret = GetTempArray<T>(count);
+    for(uint32_t i = 0; i < count; i++)
+      ret[i] = wrapped ? Unwrap(wrapped[i]) : VK_NULL_HANDLE;
+    return ret;
+  }
+
+  // specialised for each info structure we want to unwrap, where it's used
+  template <class T>
+  T UnwrapInfo(const T *info);
+  template <class T>
+  T *UnwrapInfos(const T *infos, uint32_t count);
+
+  void PatchAttachment(VkFramebufferAttachmentImageInfo *att, VkFormat imgFormat,
+                       VkSampleCountFlagBits samples);
+  void PatchImageViewUsage(VkImageViewUsageCreateInfo *usage, VkFormat imgFormat,
+                           VkSampleCountFlagBits samples);
+
+  VkIndirectPatchData FetchIndirectData(VkIndirectPatchType type, VkCommandBuffer commandBuffer,
+                                        VkBuffer dataBuffer, VkDeviceSize dataOffset, uint32_t count,
+                                        uint32_t stride = 0, VkBuffer counterBuffer = VK_NULL_HANDLE,
+                                        VkDeviceSize counterOffset = 0);
+  void ExecuteIndirectReadback(VkCommandBuffer commandBuffer,
+                               const VkIndirectRecordData &indirectcopy);
+
+  WriteSerialiser &GetThreadSerialiser();
+  template <typename SerialiserType>
+  bool Serialise_CaptureScope(SerialiserType &ser);
   bool HasSuccessfulCapture();
-  bool Serialise_BeginCaptureFrame(bool applyInitialState);
+
+  template <typename SerialiserType>
+  bool Serialise_BeginCaptureFrame(SerialiserType &ser);
   void EndCaptureFrame(VkImage presentImage);
 
-  void FirstFrame(VkSwapchainKHR swap);
+  void FirstFrame();
 
-  std::vector<VkImageMemoryBarrier> GetImplicitRenderPassBarriers(uint32_t subpass = 0);
-  string MakeRenderPassOpString(bool store);
-  void MakeSubpassLoadRP(VkRenderPassCreateInfo &info, const VkRenderPassCreateInfo *origInfo,
-                         uint32_t s);
+  bool CheckMemoryRequirements(const char *resourceName, ResourceId memId,
+                               VkDeviceSize memoryOffset, VkMemoryRequirements mrq, bool external);
+
+  void AddImplicitResolveResourceUsage(uint32_t subpass = 0);
+  rdcarray<VkImageMemoryBarrier> GetImplicitRenderPassBarriers(uint32_t subpass = 0);
+  rdcstr MakeRenderPassOpString(bool store);
 
   bool IsDrawInRenderPass();
 
+  RDCDriver GetFrameCaptureDriver() { return RDCDriver::Vulkan; }
   void StartFrameCapture(void *dev, void *wnd);
   bool EndFrameCapture(void *dev, void *wnd);
+  bool DiscardFrameCapture(void *dev, void *wnd);
 
-  bool Serialise_SetShaderDebugPath(Serialiser *localSerialiser, VkDevice device,
-                                    VkDebugMarkerObjectTagInfoEXT *pTagInfo);
+  void AdvanceFrame();
+  void Present(void *dev, void *wnd);
+
+  void HandleFrameMarkers(const char *marker, VkCommandBuffer commandBuffer);
+  void HandleFrameMarkers(const char *marker, VkQueue queue);
+
+  template <typename SerialiserType>
+  bool Serialise_SetShaderDebugPath(SerialiserType &ser, VkShaderModule ShaderObject,
+                                    rdcstr DebugPath);
 
   // replay
 
-  bool Prepare_SparseInitialState(WrappedVkBuffer *buf);
-  bool Prepare_SparseInitialState(WrappedVkImage *im);
-  bool Serialise_SparseBufferInitialState(ResourceId id,
-                                          VulkanResourceManager::InitialContentData contents);
-  bool Serialise_SparseImageInitialState(ResourceId id,
-                                         VulkanResourceManager::InitialContentData contents);
-  bool Apply_SparseInitialState(WrappedVkBuffer *buf,
-                                VulkanResourceManager::InitialContentData contents);
-  bool Apply_SparseInitialState(WrappedVkImage *im,
-                                VulkanResourceManager::InitialContentData contents);
+  ResourceDescription &GetResourceDesc(ResourceId id);
 
   void ApplyInitialContents();
 
-  vector<FetchAPIEvent> m_RootEvents, m_Events;
-  bool m_AddedDrawcall;
+  rdcarray<APIEvent> m_RootEvents, m_Events;
+  bool m_AddedAction;
 
   uint64_t m_CurChunkOffset;
-  uint32_t m_RootEventID, m_RootDrawcallID;
+  SDChunkMetaData m_ChunkMetadata;
+  uint32_t m_RootEventID, m_RootActionID;
   uint32_t m_FirstEventID, m_LastEventID;
+  VulkanChunk m_LastChunk;
 
-  VulkanDrawcallTreeNode m_ParentDrawcall;
+  ResourceId m_LastPresentedImage;
+
+  std::set<ResourceId> m_SparseBindResources;
+
+  ReplayStatus m_FailedReplayStatus = ReplayStatus::APIReplayFailed;
+
+  VulkanActionTreeNode m_ParentAction;
+
+  bool m_LayersEnabled[VkCheckLayer_Max] = {};
 
   // in vk_<platform>.cpp
-  bool AddRequiredExtensions(bool instance, vector<string> &extensionList,
-                             const std::set<string> &supportedExtensions);
+  void AddRequiredExtensions(bool instance, rdcarray<rdcstr> &extensionList,
+                             const std::set<rdcstr> &supportedExtensions);
 
-  void InsertDrawsAndRefreshIDs(vector<VulkanDrawcallTreeNode> &cmdBufNodes);
+  bool PatchIndirectDraw(size_t drawIndex, uint32_t paramStride, VkIndirectPatchType type,
+                         ActionDescription &action, byte *&argptr, byte *argend);
+  void InsertActionsAndRefreshIDs(BakedCmdBufferInfo &cmdBufInfo);
+  void CaptureQueueSubmit(VkQueue queue, const rdcarray<VkCommandBuffer> &commandBuffers,
+                          VkFence fence);
+  void ReplayQueueSubmit(VkQueue queue, VkSubmitInfo2KHR submitInfo, rdcstr basename);
+  void InternalFlushMemoryRange(VkDevice device, const VkMappedMemoryRange &memRange,
+                                bool internalFlush, bool capframe);
 
-  list<VulkanDrawcallTreeNode *> m_DrawcallStack;
+  void DoSubmit(VkQueue queue, VkSubmitInfo2KHR submitInfo);
 
-  list<VulkanDrawcallTreeNode *> &GetDrawcallStack()
+  rdcarray<VulkanActionTreeNode *> m_ActionStack;
+
+  rdcarray<VulkanActionTreeNode *> &GetActionStack()
   {
     if(m_LastCmdBufferID != ResourceId())
-      return m_BakedCmdBufferInfo[m_LastCmdBufferID].drawStack;
+      return m_BakedCmdBufferInfo[m_LastCmdBufferID].actionStack;
 
-    return m_DrawcallStack;
+    return m_ActionStack;
   }
 
-  void ProcessChunk(uint64_t offset, VulkanChunkType context);
-  void ContextReplayLog(LogState readType, uint32_t startEventID, uint32_t endEventID, bool partial);
-  void ContextProcessChunk(uint64_t offset, VulkanChunkType chunk);
-  void AddDrawcall(const FetchDrawcall &d, bool hasEvents);
-  void AddEvent(string description);
+  bool ProcessChunk(ReadSerialiser &ser, VulkanChunk chunk);
+  ReplayStatus ContextReplayLog(CaptureState readType, uint32_t startEventID, uint32_t endEventID,
+                                bool partial);
+  bool ContextProcessChunk(ReadSerialiser &ser, VulkanChunk chunk);
+  void AddAction(const ActionDescription &a);
+  void AddEvent();
 
-  void AddUsage(VulkanDrawcallTreeNode &drawNode, vector<DebugMessage> &debugMessages);
+  void AddUsage(VulkanActionTreeNode &actionNode, rdcarray<DebugMessage> &debugMessages);
+  void AddFramebufferUsage(VulkanActionTreeNode &actionNode, ResourceId renderPass,
+                           ResourceId framebuffer, uint32_t subpass,
+                           const rdcarray<ResourceId> &fbattachments);
+  void AddFramebufferUsageAllChildren(VulkanActionTreeNode &actionNode, ResourceId renderPass,
+                                      ResourceId framebuffer, uint32_t subpass,
+                                      const rdcarray<ResourceId> &fbattachments);
 
   // no copy semantics
   WrappedVulkan(const WrappedVulkan &);
   WrappedVulkan &operator=(const WrappedVulkan &);
 
-  VkBool32 DebugCallback(VkDebugReportFlagsEXT flags, VkDebugReportObjectTypeEXT objectType,
-                         uint64_t object, size_t location, int32_t messageCode,
-                         const char *pLayerPrefix, const char *pMessage);
+  VkBool32 DebugCallback(MessageSeverity severity, MessageCategory category, int messageCode,
+                         const char *pMessageId, const char *pMessage);
 
-  static VkBool32 VKAPI_PTR DebugCallbackStatic(VkDebugReportFlagsEXT flags,
-                                                VkDebugReportObjectTypeEXT objectType,
-                                                uint64_t object, size_t location,
-                                                int32_t messageCode, const char *pLayerPrefix,
-                                                const char *pMessage, void *pUserData)
-  {
-    return ((WrappedVulkan *)pUserData)
-        ->DebugCallback(flags, objectType, object, location, messageCode, pLayerPrefix, pMessage);
-  }
+  static VkBool32 VKAPI_PTR DebugUtilsCallbackStatic(
+      VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+      VkDebugUtilsMessageTypeFlagsEXT messageTypes,
+      const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData, void *pUserData);
+
+  static VkBool32 VKAPI_PTR DebugReportCallbackStatic(VkDebugReportFlagsEXT flags,
+                                                      VkDebugReportObjectTypeEXT objectType,
+                                                      uint64_t object, size_t location,
+                                                      int32_t messageCode, const char *pLayerPrefix,
+                                                      const char *pMessage, void *pUserData);
+  void AddFrameTerminator(uint64_t queueMarkerTag);
+
+  VkResourceRecord *RegisterSurface(WindowingSystem system, void *handle);
 
 public:
-  WrappedVulkan(const char *logFilename);
+  WrappedVulkan();
   virtual ~WrappedVulkan();
 
-  ResourceId GetContextResourceID() { return m_FrameCaptureRecord->GetResourceID(); }
-  static const char *GetChunkName(uint32_t idx);
+  APIProperties APIProps;
+
+  const InstanceDeviceInfo &GetExtensions(VkResourceRecord *record) const
+  {
+    return record ? *record->instDevInfo : m_EnabledExtensions;
+  }
+
+  bool IsCmdPrimary()
+  {
+    RDCASSERT(m_LastCmdBufferID != ResourceId());
+    auto it = m_BakedCmdBufferInfo.find(m_LastCmdBufferID);
+    RDCASSERT(it != m_BakedCmdBufferInfo.end());
+    return it->second.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  }
+
+  VulkanRenderState &GetCmdRenderState()
+  {
+    RDCASSERT(m_LastCmdBufferID != ResourceId());
+    auto it = m_BakedCmdBufferInfo.find(m_LastCmdBufferID);
+    RDCASSERT(it != m_BakedCmdBufferInfo.end());
+    return it->second.state;
+  }
+
+  static rdcstr GetChunkName(uint32_t idx);
   VulkanResourceManager *GetResourceManager() { return m_ResourceManager; }
   VulkanDebugManager *GetDebugManager() { return m_DebugManager; }
-  LogState GetState() { return m_State; }
-  VulkanReplay *GetReplay() { return &m_Replay; }
+  VulkanShaderCache *GetShaderCache() { return m_ShaderCache; }
+  CaptureState GetState() { return m_State; }
+  VulkanReplay *GetReplay() { return m_Replay; }
   // replay interface
   bool Prepare_InitialState(WrappedVkRes *res);
-  bool Serialise_InitialState(ResourceId resid, WrappedVkRes *res);
+  uint64_t GetSize_InitialState(ResourceId id, const VkInitialContents &initial);
+  template <typename SerialiserType>
+  bool Serialise_InitialState(SerialiserType &ser, ResourceId id, VkResourceRecord *record,
+                              const VkInitialContents *initial);
   void Create_InitialState(ResourceId id, WrappedVkRes *live, bool hasData);
-  void Apply_InitialState(WrappedVkRes *live, VulkanResourceManager::InitialContentData initial);
+  void Apply_InitialState(WrappedVkRes *live, const VkInitialContents &initial);
 
+  void RemapQueueFamilyIndices(uint32_t &srcQueueFamily, uint32_t &dstQueueFamily);
+  uint32_t GetQueueFamilyIndex() const { return m_QueueFamilyIdx; }
   bool ReleaseResource(WrappedVkRes *res);
 
-  ReplayCreateStatus Initialise(VkInitParams &params);
+  void AddDebugMessage(MessageCategory c, MessageSeverity sv, MessageSource src, rdcstr d);
+
+  ReplayStatus Initialise(VkInitParams &params, uint64_t sectionVersion, const ReplayOptions &opts);
+  uint64_t GetLogVersion() { return m_SectionVersion; }
+  void SetStructuredExport(uint64_t sectionVersion)
+  {
+    m_SectionVersion = sectionVersion;
+    m_State = CaptureState::StructuredExport;
+  }
   void Shutdown();
   void ReplayLog(uint32_t startEventID, uint32_t endEventID, ReplayLogType replayType);
-  void ReadLogInitialisation();
+  void ReplayDraw(VkCommandBuffer cmd, const ActionDescription &action);
+  ReplayStatus ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers);
 
-  FetchFrameRecord &GetFrameRecord() { return m_FrameRecord; }
-  FetchAPIEvent GetEvent(uint32_t eventID);
-  uint32_t GetMaxEID() { return m_Events.back().eventID; }
-  const FetchDrawcall *GetDrawcall(uint32_t eventID);
+  SDFile *GetStructuredFile() { return m_StructuredFile; }
+  void DetachStructuredFile() { m_StoredStructuredData = m_StructuredFile = NULL; }
+  const APIEvent &GetEvent(uint32_t eventId);
+  uint32_t GetMaxEID() { return m_Events.back().eventId; }
+  const ActionDescription *GetAction(uint32_t eventId);
 
-  vector<EventUsage> GetUsage(ResourceId id) { return m_ResourceUses[id]; }
+  ResourceId GetDescLayoutForDescSet(ResourceId descSet)
+  {
+    return m_DescriptorSetState[descSet].layout;
+  }
+  const BindingStorage &GetCurrentDescSetBindingStorage(ResourceId descSet)
+  {
+    return m_DescriptorSetState[descSet].data;
+  }
+
+  uint32_t GetReadbackMemoryIndex(uint32_t resourceCompatibleBitmask);
+  uint32_t GetUploadMemoryIndex(uint32_t resourceCompatibleBitmask);
+  uint32_t GetGPULocalMemoryIndex(uint32_t resourceCompatibleBitmask);
+
+  MemoryAllocation AllocateMemoryForResource(VkImage im, MemoryScope scope, MemoryType type);
+  MemoryAllocation AllocateMemoryForResource(VkBuffer buf, MemoryScope scope, MemoryType type);
+
+  void ChooseMemoryIndices();
+
+  EventFlags GetEventFlags(uint32_t eid) { return m_EventFlags[eid]; }
+  rdcarray<EventUsage> GetUsage(ResourceId id) { return m_ResourceUses[id]; }
   // return the pre-selected device and queue
   VkDevice GetDev()
   {
@@ -707,17 +1090,77 @@ public:
     return m_PhysicalDevice;
   }
   VkCommandBuffer GetNextCmd();
-  void SubmitCmds();
+  VkCommandBuffer GetInitStateCmd();
+  void CloseInitStateCmd();
+  void RemovePendingCommandBuffer(VkCommandBuffer cmd);
+  void AddPendingCommandBuffer(VkCommandBuffer cmd);
+  void AddFreeCommandBuffer(VkCommandBuffer cmd);
+  void SubmitCmds(VkSemaphore *unwrappedWaitSemaphores = NULL,
+                  VkPipelineStageFlags *waitStageMask = NULL, uint32_t waitSemaphoreCount = 0);
   VkSemaphore GetNextSemaphore();
   void SubmitSemaphores();
   void FlushQ();
 
+  bool SelectGraphicsComputeQueue(const rdcarray<VkQueueFamilyProperties> &queueProps,
+                                  VkDeviceCreateInfo &createInfo, uint32_t &queueFamilyIndex);
+
+  ReplayStatus FatalErrorCheck() { return m_FatalError; }
+  bool HasFatalError() { return m_FatalError != ReplayStatus::Succeeded; }
+  inline void CheckVkResult(VkResult vkr)
+  {
+    if(vkr == VK_SUCCESS)
+      return;
+    CheckErrorVkResult(vkr);
+  }
+  void CheckErrorVkResult(VkResult vkr);
+
+  bool SeparateDepthStencil() const { return m_SeparateDepthStencil; }
+  bool NULLDescriptorsAllowed() const { return m_NULLDescriptorsAllowed; }
+  bool ExtendedDynamicState() const { return m_ExtendedDynState; }
   VulkanRenderState &GetRenderState() { return m_RenderState; }
-  void SetDrawcallCB(VulkanDrawcallCallback *cb) { m_DrawcallCallback = cb; }
-  VkResult FilterDeviceExtensionProperties(VkPhysicalDevice physDev, uint32_t *pPropertyCount,
+  void SetActionCB(VulkanActionCallback *cb) { m_ActionCallback = cb; }
+  void SetSubmitChain(void *submitChain) { m_SubmitChain = submitChain; }
+  static bool IsSupportedExtension(const char *extName);
+  static void FilterToSupportedExtensions(rdcarray<VkExtensionProperties> &exts,
+                                          rdcarray<VkExtensionProperties> &filtered);
+  VkResult FilterDeviceExtensionProperties(VkPhysicalDevice physDev, const char *pLayerName,
+                                           uint32_t *pPropertyCount,
                                            VkExtensionProperties *pProperties);
-  static VkResult GetProvidedExtensionProperties(uint32_t *pPropertyCount,
-                                                 VkExtensionProperties *pProperties);
+  static VkResult FilterInstanceExtensionProperties(
+      const VkEnumerateInstanceExtensionPropertiesChain *pChain, const char *pLayerName,
+      uint32_t *pPropertyCount, VkExtensionProperties *pProperties);
+  static VkResult GetProvidedDeviceExtensionProperties(uint32_t *pPropertyCount,
+                                                       VkExtensionProperties *pProperties);
+  static VkResult GetProvidedInstanceExtensionProperties(uint32_t *pPropertyCount,
+                                                         VkExtensionProperties *pProperties);
+
+  const VkPhysicalDeviceFeatures &GetDeviceEnabledFeatures()
+  {
+    return m_PhysicalDeviceData.enabledFeatures;
+  }
+  const VkPhysicalDeviceFeatures &GetDeviceAvailableFeatures()
+  {
+    return m_PhysicalDeviceData.availFeatures;
+  }
+  const VkPhysicalDeviceProperties &GetDeviceProps() { return m_PhysicalDeviceData.props; }
+  const VkPhysicalDevicePerformanceQueryFeaturesKHR &GetPhysicalDevicePerformanceQueryFeatures()
+  {
+    return m_PhysicalDeviceData.performanceQueryFeatures;
+  }
+  VkDriverInfo GetDriverInfo() { return m_PhysicalDeviceData.driverInfo; }
+  uint32_t FindCommandQueueFamily(ResourceId cmdId);
+  void InsertCommandQueueFamily(ResourceId cmdId, uint32_t queueFamilyIndex);
+  LockedImageStateRef FindImageState(ResourceId id);
+  LockedConstImageStateRef FindConstImageState(ResourceId id);
+  LockedImageStateRef InsertImageState(VkImage wrappedHandle, ResourceId id, const ImageInfo &info,
+                                       FrameRefType refType, bool *inserted = NULL);
+  bool EraseImageState(ResourceId id);
+  void UpdateImageStates(const rdcflatmap<ResourceId, ImageState> &dstStates);
+
+  inline ImageTransitionInfo GetImageTransitionInfo() const
+  {
+    return ImageTransitionInfo(m_State, m_QueueFamilyIdx, SeparateDepthStencil());
+  }
 
   // Device initialization
 
@@ -1012,6 +1455,9 @@ public:
                                 VkDescriptorPool descriptorPool, uint32_t descriptorSetCount,
                                 const VkDescriptorSet *pDescriptorSets);
 
+  void ReplayDescriptorSetWrite(VkDevice device, const VkWriteDescriptorSet &writeDesc);
+  void ReplayDescriptorSetCopy(VkDevice device, const VkCopyDescriptorSet &copyDesc);
+
   IMPLEMENT_FUNCTION_SERIALISED(void, vkUpdateDescriptorSets, VkDevice device,
                                 uint32_t descriptorWriteCount,
                                 const VkWriteDescriptorSet *pDescriptorWrites,
@@ -1260,18 +1706,18 @@ public:
   // VK_EXT_debug_marker functions
 
   IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkDebugMarkerSetObjectTagEXT, VkDevice device,
-                                VkDebugMarkerObjectTagInfoEXT *pTagInfo);
+                                const VkDebugMarkerObjectTagInfoEXT *pTagInfo);
 
   IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkDebugMarkerSetObjectNameEXT, VkDevice device,
-                                VkDebugMarkerObjectNameInfoEXT *pNameInfo);
+                                const VkDebugMarkerObjectNameInfoEXT *pNameInfo);
 
   IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdDebugMarkerBeginEXT, VkCommandBuffer commandBuffer,
-                                VkDebugMarkerMarkerInfoEXT *pMarker);
+                                const VkDebugMarkerMarkerInfoEXT *pMarker);
 
   IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdDebugMarkerEndEXT, VkCommandBuffer commandBuffer);
 
   IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdDebugMarkerInsertEXT, VkCommandBuffer commandBuffer,
-                                VkDebugMarkerMarkerInfoEXT *pMarker);
+                                const VkDebugMarkerMarkerInfoEXT *pMarker);
 
   // Windowing extension functions
 
@@ -1316,21 +1762,67 @@ public:
                            const VkAllocationCallbacks *pAllocator);
 
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
+  // VK_KHR_win32_surface
   VkResult vkCreateWin32SurfaceKHR(VkInstance instance,
                                    const VkWin32SurfaceCreateInfoKHR *pCreateInfo,
                                    const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface);
 
   VkBool32 vkGetPhysicalDeviceWin32PresentationSupportKHR(VkPhysicalDevice physicalDevice,
                                                           uint32_t queueFamilyIndex);
+
+  // VK_NV_external_memory_win32
+  VkResult vkGetMemoryWin32HandleNV(VkDevice device, VkDeviceMemory memory,
+                                    VkExternalMemoryHandleTypeFlagsNV handleType, HANDLE *pHandle);
+
+  // VK_KHR_external_memory_win32
+  VkResult vkGetMemoryWin32HandleKHR(VkDevice device,
+                                     const VkMemoryGetWin32HandleInfoKHR *pGetWin32HandleInfo,
+                                     HANDLE *pHandle);
+  VkResult vkGetMemoryWin32HandlePropertiesKHR(
+      VkDevice device, VkExternalMemoryHandleTypeFlagBits handleType, HANDLE handle,
+      VkMemoryWin32HandlePropertiesKHR *pMemoryWin32HandleProperties);
+
+  // VK_KHR_external_semaphore_win32
+  VkResult vkImportSemaphoreWin32HandleKHR(
+      VkDevice device, const VkImportSemaphoreWin32HandleInfoKHR *pImportSemaphoreWin32HandleInfo);
+  VkResult vkGetSemaphoreWin32HandleKHR(VkDevice device,
+                                        const VkSemaphoreGetWin32HandleInfoKHR *pGetWin32HandleInfo,
+                                        HANDLE *pHandle);
+
+  // VK_KHR_external_fence_win32
+  VkResult vkImportFenceWin32HandleKHR(
+      VkDevice device, const VkImportFenceWin32HandleInfoKHR *pImportFenceWin32HandleInfo);
+  VkResult vkGetFenceWin32HandleKHR(VkDevice device,
+                                    const VkFenceGetWin32HandleInfoKHR *pGetWin32HandleInfo,
+                                    HANDLE *pHandle);
 #endif
 
 #if defined(VK_USE_PLATFORM_ANDROID_KHR)
+  // VK_KHR_android_surface
   VkResult vkCreateAndroidSurfaceKHR(VkInstance instance,
                                      const VkAndroidSurfaceCreateInfoKHR *pCreateInfo,
                                      const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface);
+
+  // VK_ANDROID_external_memory_android_hardware_buffer
+  VkResult vkGetAndroidHardwareBufferPropertiesANDROID(
+      VkDevice device, const struct AHardwareBuffer *buffer,
+      VkAndroidHardwareBufferPropertiesANDROID *pProperties);
+
+  // VK_ANDROID_external_memory_android_hardware_buffer
+  VkResult vkGetMemoryAndroidHardwareBufferANDROID(
+      VkDevice device, const VkMemoryGetAndroidHardwareBufferInfoANDROID *pInfo,
+      struct AHardwareBuffer **pBuffer);
+#endif
+
+#if defined(VK_USE_PLATFORM_MACOS_MVK)
+  // VK_MVK_macos_surface
+  VkResult vkCreateMacOSSurfaceMVK(VkInstance instance,
+                                   const VkMacOSSurfaceCreateInfoMVK *pCreateInfo,
+                                   const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface);
 #endif
 
 #if defined(VK_USE_PLATFORM_XCB_KHR)
+  // VK_KHR_xcb_surface
   VkResult vkCreateXcbSurfaceKHR(VkInstance instance, const VkXcbSurfaceCreateInfoKHR *pCreateInfo,
                                  const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface);
 
@@ -1341,12 +1833,38 @@ public:
 #endif
 
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
+  // VK_KHR_xlib_surface
   VkResult vkCreateXlibSurfaceKHR(VkInstance instance, const VkXlibSurfaceCreateInfoKHR *pCreateInfo,
                                   const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface);
 
   VkBool32 vkGetPhysicalDeviceXlibPresentationSupportKHR(VkPhysicalDevice physicalDevice,
                                                          uint32_t queueFamilyIndex, Display *dpy,
                                                          VisualID visualID);
+
+  // VK_EXT_acquire_xlib_display
+  VkResult vkAcquireXlibDisplayEXT(VkPhysicalDevice physicalDevice, Display *dpy,
+                                   VkDisplayKHR display);
+  VkResult vkGetRandROutputDisplayEXT(VkPhysicalDevice physicalDevice, Display *dpy,
+                                      RROutput rrOutput, VkDisplayKHR *pDisplay);
+
+#endif
+
+#if defined(VK_USE_PLATFORM_GGP)
+  VkResult vkCreateStreamDescriptorSurfaceGGP(VkInstance instance,
+                                              const VkStreamDescriptorSurfaceCreateInfoGGP *pCreateInfo,
+                                              const VkAllocationCallbacks *pAllocator,
+                                              VkSurfaceKHR *pSurface);
+#endif
+
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+  // VK_KHR_wayland_surface
+  VkResult vkCreateWaylandSurfaceKHR(VkInstance instance,
+                                     const VkWaylandSurfaceCreateInfoKHR *pCreateInfo,
+                                     const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface);
+
+  VkBool32 vkGetPhysicalDeviceWaylandPresentationSupportKHR(VkPhysicalDevice physicalDevice,
+                                                            uint32_t queueFamilyIndex,
+                                                            struct wl_display *display);
 #endif
 
   // VK_KHR_display and VK_KHR_display_swapchain. These have no library or include dependencies so
@@ -1384,4 +1902,551 @@ public:
                                        const VkSwapchainCreateInfoKHR *pCreateInfos,
                                        const VkAllocationCallbacks *pAllocator,
                                        VkSwapchainKHR *pSwapchains);
+
+  // VK_NV_external_memory_capabilities
+  VkResult vkGetPhysicalDeviceExternalImageFormatPropertiesNV(
+      VkPhysicalDevice physicalDevice, VkFormat format, VkImageType type, VkImageTiling tiling,
+      VkImageUsageFlags usage, VkImageCreateFlags flags,
+      VkExternalMemoryHandleTypeFlagsNV externalHandleType,
+      VkExternalImageFormatPropertiesNV *pExternalImageFormatProperties);
+
+  // VK_KHR_maintenance1
+  void vkTrimCommandPool(VkDevice device, VkCommandPool commandPool, VkCommandPoolTrimFlags flags);
+
+  // VK_KHR_get_physical_device_properties2
+  void vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
+                                    VkPhysicalDeviceFeatures2 *pFeatures);
+  void vkGetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
+                                      VkPhysicalDeviceProperties2 *pProperties);
+  void vkGetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice, VkFormat format,
+                                            VkFormatProperties2 *pFormatProperties);
+  VkResult vkGetPhysicalDeviceImageFormatProperties2(
+      VkPhysicalDevice physicalDevice, const VkPhysicalDeviceImageFormatInfo2 *pImageFormatInfo,
+      VkImageFormatProperties2 *pImageFormatProperties);
+  void vkGetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice, uint32_t *pCount,
+                                                 VkQueueFamilyProperties2 *pQueueFamilyProperties);
+  void vkGetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
+                                            VkPhysicalDeviceMemoryProperties2 *pMemoryProperties);
+  void vkGetPhysicalDeviceSparseImageFormatProperties2(
+      VkPhysicalDevice physicalDevice, const VkPhysicalDeviceSparseImageFormatInfo2 *pFormatInfo,
+      uint32_t *pPropertyCount, VkSparseImageFormatProperties2 *pProperties);
+
+  // VK_EXT_display_surface_counter
+  VkResult vkGetPhysicalDeviceSurfaceCapabilities2EXT(VkPhysicalDevice physicalDevice,
+                                                      VkSurfaceKHR surface,
+                                                      VkSurfaceCapabilities2EXT *pSurfaceCapabilities);
+
+  // VK_EXT_display_control
+  VkResult vkDisplayPowerControlEXT(VkDevice device, VkDisplayKHR display,
+                                    const VkDisplayPowerInfoEXT *pDisplayPowerInfo);
+  VkResult vkRegisterDeviceEventEXT(VkDevice device, const VkDeviceEventInfoEXT *pDeviceEventInfo,
+                                    const VkAllocationCallbacks *pAllocator, VkFence *pFence);
+  VkResult vkRegisterDisplayEventEXT(VkDevice device, VkDisplayKHR display,
+                                     const VkDisplayEventInfoEXT *pDisplayEventInfo,
+                                     const VkAllocationCallbacks *pAllocator, VkFence *pFence);
+  VkResult vkGetSwapchainCounterEXT(VkDevice device, VkSwapchainKHR swapchain,
+                                    VkSurfaceCounterFlagBitsEXT counter, uint64_t *pCounterValue);
+
+  // VK_EXT_direct_mode_display
+  VkResult vkReleaseDisplayEXT(VkPhysicalDevice physicalDevice, VkDisplayKHR display);
+
+  // VK_KHR_external_memory_capabilities
+  void vkGetPhysicalDeviceExternalBufferProperties(
+      VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalBufferInfo *pExternalBufferInfo,
+      VkExternalBufferProperties *pExternalBufferProperties);
+
+  // VK_KHR_external_memory_fd
+  VkResult vkGetMemoryFdKHR(VkDevice device, const VkMemoryGetFdInfoKHR *pGetFdInfo, int *pFd);
+  VkResult vkGetMemoryFdPropertiesKHR(VkDevice device, VkExternalMemoryHandleTypeFlagBits handleType,
+                                      int fd, VkMemoryFdPropertiesKHR *pMemoryFdProperties);
+
+  // VK_KHR_external_semaphore_capabilities
+  void vkGetPhysicalDeviceExternalSemaphoreProperties(
+      VkPhysicalDevice physicalDevice,
+      const VkPhysicalDeviceExternalSemaphoreInfo *pExternalSemaphoreInfo,
+      VkExternalSemaphoreProperties *pExternalSemaphoreProperties);
+
+  // VK_KHR_external_semaphore_fd
+  VkResult vkImportSemaphoreFdKHR(VkDevice device,
+                                  const VkImportSemaphoreFdInfoKHR *pImportSemaphoreFdInfo);
+  VkResult vkGetSemaphoreFdKHR(VkDevice device, const VkSemaphoreGetFdInfoKHR *pGetFdInfo, int *pFd);
+
+  // VK_KHR_external_fence_capabilities
+  void vkGetPhysicalDeviceExternalFenceProperties(
+      VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalFenceInfo *pExternalFenceInfo,
+      VkExternalFenceProperties *pExternalFenceProperties);
+
+  // VK_KHR_external_fence_fd
+  VkResult vkImportFenceFdKHR(VkDevice device, const VkImportFenceFdInfoKHR *pImportFenceFdInfo);
+  VkResult vkGetFenceFdKHR(VkDevice device, const VkFenceGetFdInfoKHR *pGetFdInfo, int *pFd);
+
+  // VK_KHR_get_memory_requirements2
+  void vkGetImageMemoryRequirements2(VkDevice device, const VkImageMemoryRequirementsInfo2 *pInfo,
+                                     VkMemoryRequirements2 *pMemoryRequirements);
+  void vkGetBufferMemoryRequirements2(VkDevice device, const VkBufferMemoryRequirementsInfo2 *pInfo,
+                                      VkMemoryRequirements2 *pMemoryRequirements);
+  void vkGetImageSparseMemoryRequirements2(VkDevice device,
+                                           const VkImageSparseMemoryRequirementsInfo2 *pInfo,
+                                           uint32_t *pSparseMemoryRequirementCount,
+                                           VkSparseImageMemoryRequirements2 *pSparseMemoryRequirements);
+
+  // VK_AMD_shader_info
+  VkResult vkGetShaderInfoAMD(VkDevice device, VkPipeline pipeline, VkShaderStageFlagBits shaderStage,
+                              VkShaderInfoTypeAMD infoType, size_t *pInfoSize, void *pInfo);
+
+  // VK_KHR_push_descriptor
+  void ApplyPushDescriptorWrites(VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout,
+                                 uint32_t set, uint32_t descriptorWriteCount,
+                                 const VkWriteDescriptorSet *pDescriptorWrites);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdPushDescriptorSetKHR, VkCommandBuffer commandBuffer,
+                                VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout,
+                                uint32_t set, uint32_t descriptorWriteCount,
+                                const VkWriteDescriptorSet *pDescriptorWrites);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdPushDescriptorSetWithTemplateKHR,
+                                VkCommandBuffer commandBuffer,
+                                VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+                                VkPipelineLayout layout, uint32_t set, const void *pData);
+
+  // VK_KHR_descriptor_update_template
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkCreateDescriptorUpdateTemplate, VkDevice device,
+                                const VkDescriptorUpdateTemplateCreateInfo *pCreateInfo,
+                                const VkAllocationCallbacks *pAllocator,
+                                VkDescriptorUpdateTemplate *pDescriptorUpdateTemplate);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkDestroyDescriptorUpdateTemplate, VkDevice device,
+                                VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+                                const VkAllocationCallbacks *pAllocator);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkUpdateDescriptorSetWithTemplate, VkDevice device,
+                                VkDescriptorSet descriptorSet,
+                                VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+                                const void *pData);
+
+  // VK_KHR_bind_memory2
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkBindBufferMemory2, VkDevice device,
+                                uint32_t bindInfoCount, const VkBindBufferMemoryInfo *pBindInfos);
+
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkBindImageMemory2, VkDevice device,
+                                uint32_t bindInfoCount, const VkBindImageMemoryInfo *pBindInfos);
+
+  // VK_KHR_maintenance3
+  void vkGetDescriptorSetLayoutSupport(VkDevice device,
+                                       const VkDescriptorSetLayoutCreateInfo *pCreateInfo,
+                                       VkDescriptorSetLayoutSupport *pSupport);
+
+  // VK_AMD_buffer_marker
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdWriteBufferMarkerAMD, VkCommandBuffer commandBuffer,
+                                VkPipelineStageFlagBits pipelineStage, VkBuffer dstBuffer,
+                                VkDeviceSize dstOffset, uint32_t marker);
+  // VK_KHR_synchronization2 interaction
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdWriteBufferMarker2AMD, VkCommandBuffer commandBuffer,
+                                VkPipelineStageFlags2KHR stage, VkBuffer dstBuffer,
+                                VkDeviceSize dstOffset, uint32_t marker);
+
+  // VK_EXT_debug_utils
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkSetDebugUtilsObjectNameEXT, VkDevice device,
+                                const VkDebugUtilsObjectNameInfoEXT *pNameInfo);
+
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkSetDebugUtilsObjectTagEXT, VkDevice device,
+                                const VkDebugUtilsObjectTagInfoEXT *pTagInfo);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkQueueBeginDebugUtilsLabelEXT, VkQueue queue,
+                                const VkDebugUtilsLabelEXT *pLabelInfo);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkQueueEndDebugUtilsLabelEXT, VkQueue queue);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkQueueInsertDebugUtilsLabelEXT, VkQueue queue,
+                                const VkDebugUtilsLabelEXT *pLabelInfo);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdBeginDebugUtilsLabelEXT, VkCommandBuffer commandBuffer,
+                                const VkDebugUtilsLabelEXT *pLabelInfo);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdEndDebugUtilsLabelEXT, VkCommandBuffer commandBuffer);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdInsertDebugUtilsLabelEXT, VkCommandBuffer commandBuffer,
+                                const VkDebugUtilsLabelEXT *pLabelInfo);
+
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkCreateDebugUtilsMessengerEXT, VkInstance instance,
+                                const VkDebugUtilsMessengerCreateInfoEXT *pCreateInfo,
+                                const VkAllocationCallbacks *pAllocator,
+                                VkDebugUtilsMessengerEXT *pMessenger);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkDestroyDebugUtilsMessengerEXT, VkInstance instance,
+                                VkDebugUtilsMessengerEXT messenger,
+                                const VkAllocationCallbacks *pAllocator);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkSubmitDebugUtilsMessageEXT, VkInstance instance,
+                                VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+                                VkDebugUtilsMessageTypeFlagsEXT messageTypes,
+                                const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData);
+
+  // VK_KHR_sampler_ycbcr_conversion
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkCreateSamplerYcbcrConversion, VkDevice device,
+                                const VkSamplerYcbcrConversionCreateInfo *pCreateInfo,
+                                const VkAllocationCallbacks *pAllocator,
+                                VkSamplerYcbcrConversion *pYcbcrConversion);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkDestroySamplerYcbcrConversion, VkDevice device,
+                                VkSamplerYcbcrConversion ycbcrConversion,
+                                const VkAllocationCallbacks *pAllocator);
+
+  // VK_KHR_device_group_creation
+  VkResult vkEnumeratePhysicalDeviceGroups(
+      VkInstance instance, uint32_t *pPhysicalDeviceGroupCount,
+      VkPhysicalDeviceGroupProperties *pPhysicalDeviceGroupProperties);
+
+  // VK_KHR_device_group
+  void vkGetDeviceGroupPeerMemoryFeatures(VkDevice device, uint32_t heapIndex,
+                                          uint32_t localDeviceIndex, uint32_t remoteDeviceIndex,
+                                          VkPeerMemoryFeatureFlags *pPeerMemoryFeatures);
+  VkResult vkGetDeviceGroupPresentCapabilitiesKHR(
+      VkDevice device, VkDeviceGroupPresentCapabilitiesKHR *pDeviceGroupPresentCapabilities);
+  VkResult vkGetDeviceGroupSurfacePresentModesKHR(VkDevice device, VkSurfaceKHR surface,
+                                                  VkDeviceGroupPresentModeFlagsKHR *pModes);
+  VkResult vkGetPhysicalDevicePresentRectanglesKHR(VkPhysicalDevice physicalDevice,
+                                                   VkSurfaceKHR surface, uint32_t *pRectCount,
+                                                   VkRect2D *pRects);
+  VkResult vkAcquireNextImage2KHR(VkDevice device, const VkAcquireNextImageInfoKHR *pAcquireInfo,
+                                  uint32_t *pImageIndex);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetDeviceMask, VkCommandBuffer commandBuffer,
+                                uint32_t deviceMask);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdDispatchBase, VkCommandBuffer commandBuffer,
+                                uint32_t baseGroupX, uint32_t baseGroupY, uint32_t baseGroupZ,
+                                uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ);
+
+  // Vulkan 1.1
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkGetDeviceQueue2, VkDevice device,
+                                const VkDeviceQueueInfo2 *pQueueInfo, VkQueue *pQueue);
+
+  // VK_KHR_get_surface_capabilities2
+
+  VkResult vkGetPhysicalDeviceSurfaceCapabilities2KHR(
+      VkPhysicalDevice physicalDevice, const VkPhysicalDeviceSurfaceInfo2KHR *pSurfaceInfo,
+      VkSurfaceCapabilities2KHR *pSurfaceCapabilities);
+
+  VkResult vkGetPhysicalDeviceSurfaceFormats2KHR(VkPhysicalDevice physicalDevice,
+                                                 const VkPhysicalDeviceSurfaceInfo2KHR *pSurfaceInfo,
+                                                 uint32_t *pSurfaceFormatCount,
+                                                 VkSurfaceFormat2KHR *pSurfaceFormats);
+
+  // VK_KHR_get_display_properties2
+  VkResult vkGetPhysicalDeviceDisplayProperties2KHR(VkPhysicalDevice physicalDevice,
+                                                    uint32_t *pPropertyCount,
+                                                    VkDisplayProperties2KHR *pProperties);
+
+  VkResult vkGetPhysicalDeviceDisplayPlaneProperties2KHR(VkPhysicalDevice physicalDevice,
+                                                         uint32_t *pPropertyCount,
+                                                         VkDisplayPlaneProperties2KHR *pProperties);
+
+  VkResult vkGetDisplayModeProperties2KHR(VkPhysicalDevice physicalDevice, VkDisplayKHR display,
+                                          uint32_t *pPropertyCount,
+                                          VkDisplayModeProperties2KHR *pProperties);
+
+  VkResult vkGetDisplayPlaneCapabilities2KHR(VkPhysicalDevice physicalDevice,
+                                             const VkDisplayPlaneInfo2KHR *pDisplayPlaneInfo,
+                                             VkDisplayPlaneCapabilities2KHR *pCapabilities);
+
+  // VK_KHR_draw_indirect_count
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdDrawIndirectCount, VkCommandBuffer commandBuffer,
+                                VkBuffer buffer, VkDeviceSize offset, VkBuffer countBuffer,
+                                VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
+                                uint32_t stride);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdDrawIndexedIndirectCount, VkCommandBuffer commandBuffer,
+                                VkBuffer buffer, VkDeviceSize offset, VkBuffer countBuffer,
+                                VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
+                                uint32_t stride);
+
+  // VK_EXT_validation_cache
+  VkResult vkCreateValidationCacheEXT(VkDevice device,
+                                      const VkValidationCacheCreateInfoEXT *pCreateInfo,
+                                      const VkAllocationCallbacks *pAllocator,
+                                      VkValidationCacheEXT *pValidationCache);
+
+  void vkDestroyValidationCacheEXT(VkDevice device, VkValidationCacheEXT validationCache,
+                                   const VkAllocationCallbacks *pAllocator);
+
+  VkResult vkMergeValidationCachesEXT(VkDevice device, VkValidationCacheEXT dstCache,
+                                      uint32_t srcCacheCount, const VkValidationCacheEXT *pSrcCaches);
+
+  VkResult vkGetValidationCacheDataEXT(VkDevice device, VkValidationCacheEXT validationCache,
+                                       size_t *pDataSize, void *pData);
+
+  // VK_KHR_shared_presentable_image
+  VkResult vkGetSwapchainStatusKHR(VkDevice device, VkSwapchainKHR swapchain);
+
+  // VK_KHR_create_renderpass2
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkCreateRenderPass2, VkDevice device,
+                                const VkRenderPassCreateInfo2 *pCreateInfo,
+                                const VkAllocationCallbacks *pAllocator, VkRenderPass *pRenderPass);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdBeginRenderPass2, VkCommandBuffer commandBuffer,
+                                const VkRenderPassBeginInfo *pRenderPassBegin,
+                                const VkSubpassBeginInfo *pSubpassBeginInfo);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdNextSubpass2, VkCommandBuffer commandBuffer,
+                                const VkSubpassBeginInfo *pSubpassBeginInfo,
+                                const VkSubpassEndInfo *pSubpassEndInfo);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdEndRenderPass2, VkCommandBuffer commandBuffer,
+                                const VkSubpassEndInfo *pSubpassEndInfo);
+
+  // VK_EXT_transform_feedback
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdBindTransformFeedbackBuffersEXT,
+                                VkCommandBuffer commandBuffer, uint32_t firstBinding,
+                                uint32_t bindingCount, const VkBuffer *pBuffers,
+                                const VkDeviceSize *pOffsets, const VkDeviceSize *pSizes);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdBeginTransformFeedbackEXT, VkCommandBuffer commandBuffer,
+                                uint32_t firstBuffer, uint32_t bufferCount,
+                                const VkBuffer *pCounterBuffers,
+                                const VkDeviceSize *pCounterBufferOffsets);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdEndTransformFeedbackEXT, VkCommandBuffer commandBuffer,
+                                uint32_t firstBuffer, uint32_t bufferCount,
+                                const VkBuffer *pCounterBuffers,
+                                const VkDeviceSize *pCounterBufferOffsets);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdBeginQueryIndexedEXT, VkCommandBuffer commandBuffer,
+                                VkQueryPool queryPool, uint32_t query, VkQueryControlFlags flags,
+                                uint32_t index);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdEndQueryIndexedEXT, VkCommandBuffer commandBuffer,
+                                VkQueryPool queryPool, uint32_t query, uint32_t index);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdDrawIndirectByteCountEXT, VkCommandBuffer commandBuffer,
+                                uint32_t instanceCount, uint32_t firstInstance,
+                                VkBuffer counterBuffer, VkDeviceSize counterBufferOffset,
+                                uint32_t counterOffset, uint32_t vertexStride);
+
+  // VK_EXT_conditional_rendering
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdBeginConditionalRenderingEXT,
+                                VkCommandBuffer commandBuffer,
+                                const VkConditionalRenderingBeginInfoEXT *pConditionalRenderingBegin);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdEndConditionalRenderingEXT, VkCommandBuffer commandBuffer);
+
+  // VK_EXT_sample_locations
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetSampleLocationsEXT, VkCommandBuffer commandBuffer,
+                                const VkSampleLocationsInfoEXT *pSampleLocationsInfo);
+  void vkGetPhysicalDeviceMultisamplePropertiesEXT(VkPhysicalDevice physicalDevice,
+                                                   VkSampleCountFlagBits samples,
+                                                   VkMultisamplePropertiesEXT *pMultisampleProperties);
+
+  // VK_EXT_discard_rectangles
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetDiscardRectangleEXT, VkCommandBuffer commandBuffer,
+                                uint32_t firstDiscardRectangle, uint32_t discardRectangleCount,
+                                const VkRect2D *pDiscardRectangles);
+
+  // VK_EXT_calibrated_timestamps
+
+  VkResult vkGetPhysicalDeviceCalibrateableTimeDomainsEXT(VkPhysicalDevice physicalDevice,
+                                                          uint32_t *pTimeDomainCount,
+                                                          VkTimeDomainEXT *pTimeDomains);
+  VkResult vkGetCalibratedTimestampsEXT(VkDevice device, uint32_t timestampCount,
+                                        const VkCalibratedTimestampInfoEXT *pTimestampInfos,
+                                        uint64_t *pTimestamps, uint64_t *pMaxDeviation);
+
+  // VK_EXT_host_query_reset
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkResetQueryPool, VkDevice device, VkQueryPool queryPool,
+                                uint32_t firstQuery, uint32_t queryCount);
+
+  // VK_EXT_buffer_device_address
+  VkDeviceAddress vkGetBufferDeviceAddressEXT(VkDevice device,
+                                              const VkBufferDeviceAddressInfoEXT *pInfo);
+
+  // VK_EXT_hdr_metadata
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkSetHdrMetadataEXT, VkDevice device, uint32_t swapchainCount,
+                                const VkSwapchainKHR *pSwapchains, const VkHdrMetadataEXT *pMetadata);
+
+  // VK_AMD_display_native_hdr
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkSetLocalDimmingAMD, VkDevice device,
+                                VkSwapchainKHR swapChain, VkBool32 localDimmingEnable);
+
+  // VK_EXT_full_screen_exclusive
+
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkGetDeviceGroupSurfacePresentModes2EXT, VkDevice device,
+                                const VkPhysicalDeviceSurfaceInfo2KHR *pSurfaceInfo,
+                                VkDeviceGroupPresentModeFlagsKHR *pModes);
+
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkGetPhysicalDeviceSurfacePresentModes2EXT,
+                                VkPhysicalDevice physicalDevice,
+                                const VkPhysicalDeviceSurfaceInfo2KHR *pSurfaceInfo,
+                                uint32_t *pPresentModeCount, VkPresentModeKHR *pPresentModes);
+
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkAcquireFullScreenExclusiveModeEXT, VkDevice device,
+                                VkSwapchainKHR swapchain);
+
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkReleaseFullScreenExclusiveModeEXT, VkDevice device,
+                                VkSwapchainKHR swapchain);
+
+  // VK_EXT_headless_surface
+
+  VkResult vkCreateHeadlessSurfaceEXT(VkInstance instance,
+                                      const VkHeadlessSurfaceCreateInfoEXT *pCreateInfo,
+                                      const VkAllocationCallbacks *pAllocator,
+                                      VkSurfaceKHR *pSurface);
+
+  // VK_KHR_pipeline_executable_properties
+
+  VkResult vkGetPipelineExecutablePropertiesKHR(VkDevice device,
+                                                const VkPipelineInfoKHR *pPipelineInfo,
+                                                uint32_t *pExecutableCount,
+                                                VkPipelineExecutablePropertiesKHR *pProperties);
+  VkResult vkGetPipelineExecutableStatisticsKHR(VkDevice device,
+                                                const VkPipelineExecutableInfoKHR *pExecutableInfo,
+                                                uint32_t *pStatisticCount,
+                                                VkPipelineExecutableStatisticKHR *pStatistics);
+  VkResult vkGetPipelineExecutableInternalRepresentationsKHR(
+      VkDevice device, const VkPipelineExecutableInfoKHR *pExecutableInfo,
+      uint32_t *pInternalRepresentationCount,
+      VkPipelineExecutableInternalRepresentationKHR *pInternalRepresentations);
+
+  // VK_EXT_line_rasterization
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetLineStippleEXT, VkCommandBuffer commandBuffer,
+                                uint32_t lineStippleFactor, uint16_t lineStipplePattern);
+
+  // VK_GOOGLE_display_timing
+
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkGetRefreshCycleDurationGOOGLE, VkDevice device,
+                                VkSwapchainKHR swapchain,
+                                VkRefreshCycleDurationGOOGLE *pDisplayTimingProperties);
+
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkGetPastPresentationTimingGOOGLE, VkDevice device,
+                                VkSwapchainKHR swapchain, uint32_t *pPresentationTimingCount,
+                                VkPastPresentationTimingGOOGLE *pPresentationTimings);
+
+#if defined(VK_USE_PLATFORM_METAL_EXT)
+  // VK_EXT_metal_surface
+  VkResult vkCreateMetalSurfaceEXT(VkInstance instance,
+                                   const VkMetalSurfaceCreateInfoEXT *pCreateInfo,
+                                   const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface);
+#endif
+
+  // VK_KHR_timeline_semaphore
+
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkGetSemaphoreCounterValue, VkDevice device,
+                                VkSemaphore semaphore, uint64_t *pValue);
+
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkWaitSemaphores, VkDevice device,
+                                const VkSemaphoreWaitInfo *pWaitInfo, uint64_t timeout);
+
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkSignalSemaphore, VkDevice device,
+                                const VkSemaphoreSignalInfo *pSignalInfo);
+
+  // VK_KHR_performance_query
+
+  VkResult vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR(
+      VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex, uint32_t *pCounterCount,
+      VkPerformanceCounterKHR *pCounters, VkPerformanceCounterDescriptionKHR *pCounterDescriptions);
+  void vkGetPhysicalDeviceQueueFamilyPerformanceQueryPassesKHR(
+      VkPhysicalDevice physicalDevice,
+      const VkQueryPoolPerformanceCreateInfoKHR *pPerformanceQueryCreateInfo, uint32_t *pNumPasses);
+  VkResult vkAcquireProfilingLockKHR(VkDevice device, const VkAcquireProfilingLockInfoKHR *pInfo);
+  void vkReleaseProfilingLockKHR(VkDevice device);
+
+  // VK_KHR_buffer_device_address
+
+  VkDeviceAddress vkGetBufferDeviceAddress(VkDevice device, VkBufferDeviceAddressInfo *pInfo);
+  uint64_t vkGetBufferOpaqueCaptureAddress(VkDevice device, VkBufferDeviceAddressInfo *pInfo);
+  uint64_t vkGetDeviceMemoryOpaqueCaptureAddress(VkDevice device,
+                                                 VkDeviceMemoryOpaqueCaptureAddressInfo *pInfo);
+
+  // VK_EXT_tooling_info
+
+  VkResult vkGetPhysicalDeviceToolPropertiesEXT(VkPhysicalDevice physicalDevice, uint32_t *pToolCount,
+                                                VkPhysicalDeviceToolPropertiesEXT *pToolProperties);
+
+  // VK_EXT_private_data
+
+  VkResult vkCreatePrivateDataSlotEXT(VkDevice device,
+                                      const VkPrivateDataSlotCreateInfoEXT *pCreateInfo,
+                                      const VkAllocationCallbacks *pAllocator,
+                                      VkPrivateDataSlotEXT *pPrivateDataSlot);
+
+  void vkDestroyPrivateDataSlotEXT(VkDevice device, VkPrivateDataSlotEXT privateDataSlot,
+                                   const VkAllocationCallbacks *pAllocator);
+
+  VkResult vkSetPrivateDataEXT(VkDevice device, VkObjectType objectType, uint64_t objectHandle,
+                               VkPrivateDataSlotEXT privateDataSlot, uint64_t data);
+
+  void vkGetPrivateDataEXT(VkDevice device, VkObjectType objectType, uint64_t objectHandle,
+                           VkPrivateDataSlotEXT privateDataSlot, uint64_t *pData);
+
+  // VK_EXT_extended_dynamic_state
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetCullModeEXT, VkCommandBuffer commandBuffer,
+                                VkCullModeFlags cullMode);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetFrontFaceEXT, VkCommandBuffer commandBuffer,
+                                VkFrontFace frontFace);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetPrimitiveTopologyEXT, VkCommandBuffer commandBuffer,
+                                VkPrimitiveTopology primitiveTopology);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetViewportWithCountEXT, VkCommandBuffer commandBuffer,
+                                uint32_t viewportCount, const VkViewport *pViewports);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetScissorWithCountEXT, VkCommandBuffer commandBuffer,
+                                uint32_t scissorCount, const VkRect2D *pScissors);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdBindVertexBuffers2EXT, VkCommandBuffer commandBuffer,
+                                uint32_t firstBinding, uint32_t bindingCount,
+                                const VkBuffer *pBuffers, const VkDeviceSize *pOffsets,
+                                const VkDeviceSize *pSizes, const VkDeviceSize *pStrides);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetDepthTestEnableEXT, VkCommandBuffer commandBuffer,
+                                VkBool32 depthTestEnable);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetDepthWriteEnableEXT, VkCommandBuffer commandBuffer,
+                                VkBool32 depthWriteEnable);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetDepthCompareOpEXT, VkCommandBuffer commandBuffer,
+                                VkCompareOp depthCompareOp);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetDepthBoundsTestEnableEXT,
+                                VkCommandBuffer commandBuffer, VkBool32 depthBoundsTestEnable);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetStencilTestEnableEXT, VkCommandBuffer commandBuffer,
+                                VkBool32 stencilTestEnable);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetStencilOpEXT, VkCommandBuffer commandBuffer,
+                                VkStencilFaceFlags faceMask, VkStencilOp failOp, VkStencilOp passOp,
+                                VkStencilOp depthFailOp, VkCompareOp compareOp);
+
+  // VK_KHR_copy_commands2
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdCopyBuffer2KHR, VkCommandBuffer commandBuffer,
+                                const VkCopyBufferInfo2KHR *pCopyBufferInfo);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdCopyImage2KHR, VkCommandBuffer commandBuffer,
+                                const VkCopyImageInfo2KHR *pCopyImageInfo);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdCopyBufferToImage2KHR, VkCommandBuffer commandBuffer,
+                                const VkCopyBufferToImageInfo2KHR *pCopyBufferToImageInfo);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdCopyImageToBuffer2KHR, VkCommandBuffer commandBuffer,
+                                const VkCopyImageToBufferInfo2KHR *pCopyImageToBufferInfo);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdBlitImage2KHR, VkCommandBuffer commandBuffer,
+                                const VkBlitImageInfo2KHR *pBlitImageInfo);
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdResolveImage2KHR, VkCommandBuffer commandBuffer,
+                                const VkResolveImageInfo2KHR *pResolveImageInfo);
+
+  // VK_KHR_synchronization2
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdSetEvent2KHR, VkCommandBuffer commandBuffer,
+                                VkEvent event, const VkDependencyInfoKHR *pDependencyInfo);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdResetEvent2KHR, VkCommandBuffer commandBuffer,
+                                VkEvent event, VkPipelineStageFlags2KHR stageMask);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdWaitEvents2KHR, VkCommandBuffer commandBuffer,
+                                uint32_t eventCount, const VkEvent *pEvents,
+                                const VkDependencyInfoKHR *pDependencyInfos);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdPipelineBarrier2KHR, VkCommandBuffer commandBuffer,
+                                const VkDependencyInfoKHR *pDependencyInfo);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, vkCmdWriteTimestamp2KHR, VkCommandBuffer commandBuffer,
+                                VkPipelineStageFlags2KHR stage, VkQueryPool queryPool,
+                                uint32_t query);
+
+  IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkQueueSubmit2KHR, VkQueue queue, uint32_t submitCount,
+                                const VkSubmitInfo2KHR *pSubmits, VkFence fence);
 };

@@ -3,11 +3,20 @@ set(sources
     gl_common.h
     gl_counters.cpp
     gl_debug.cpp
+    gl_postvs.cpp
+    gl_overlay.cpp
+    gl_outputwindow.cpp
+    gl_rendermesh.cpp
+    gl_rendertexture.cpp
+    gl_rendertext.cpp
+    gl_msaa_array_conv.cpp
     gl_driver.cpp
     gl_driver.h
     gl_enum.h
-    gl_hookset_defs.h
-    gl_hookset.h
+    gl_dispatch_table_defs.h
+    gl_dispatch_table.h
+    gl_initstate.h
+    gl_initstate.cpp
     gl_manager.cpp
     gl_manager.h
     gl_renderstate.cpp
@@ -16,12 +25,15 @@ set(sources
     gl_replay.h
     gl_resources.cpp
     gl_resources.h
+    gl_program_iterate.cpp
     gl_shader_refl.cpp
     gl_shader_refl.h
+    gl_stringise.cpp
+    official/gl32.h
+    official/gl3platform.h
     official/glcorearb.h
     official/glext.h
-    official/glxext.h
-    official/wglext.h
+    official/khrplatform.h
     wrappers/gl_buffer_funcs.cpp
     wrappers/gl_debug_funcs.cpp
     wrappers/gl_draw_funcs.cpp
@@ -36,18 +48,38 @@ set(sources
     wrappers/gl_texture_funcs.cpp
     wrappers/gl_uniform_funcs.cpp)
 
-if(ANDROID)
+# Common hooking code for any GL/GLES on any platform
+list(APPEND sources gl_hooks.cpp)
+
+if(APPLE)
     list(APPEND sources
-        gl_replay_android.cpp
-        gl_hooks_android.cpp)
-elseif(APPLE)
-    list(APPEND sources
-        gl_replay_apple.cpp
-        gl_hooks_apple.cpp)
-elseif(UNIX)
-    list(APPEND sources
-        gl_replay_linux.cpp
-        gl_hooks_linux.cpp)
+        apple_gl_hook_defs.h
+        cgl_dispatch_table.h
+        cgl_platform_helpers.mm
+        cgl_platform.cpp
+        cgl_hooks.cpp)
+else()
+    if(ENABLE_GL)
+        list(APPEND sources
+            official/glxext.h
+            glx_dispatch_table.h
+            glx_platform.cpp
+            glx_hooks.cpp
+            glx_fake_vk_hooks.cpp)
+    endif()
+    if(ENABLE_GLES)
+        list(APPEND sources
+            official/glesext.h)
+    endif()
+    if(ENABLE_EGL)
+        list(APPEND sources
+            official/egl.h
+            official/eglext.h
+            official/eglplatform.h
+            egl_dispatch_table.h
+            egl_platform.cpp
+            egl_hooks.cpp)
+    endif()
 endif()
 
 add_library(rdoc_gl OBJECT ${sources})

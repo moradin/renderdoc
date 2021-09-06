@@ -1,29 +1,30 @@
 /******************************************************************************
-* The MIT License (MIT)
-*
-* Copyright (c) 2016 Baldur Karlsson
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-* THE SOFTWARE.
-******************************************************************************/
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2019-2021 Baldur Karlsson
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ ******************************************************************************/
 
 #include "d3d9_device.h"
 #include "core/core.h"
+#include "driver/dxgi/dxgi_common.h"
 #include "serialise/serialiser.h"
 #include "d3d9_debug.h"
 #include "d3d9_swapchain.h"
@@ -35,7 +36,6 @@ WrappedD3DDevice9::WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrap
       m_RefCounter(1),
       m_SoftRefCounter(0),
       m_Alive(true),
-      m_FrameCounter(0),
       m_DebugManager(NULL),
       m_D3D(wrappedD3D),
       m_SwapChains(device->GetNumberOfSwapChains()),
@@ -47,6 +47,7 @@ WrappedD3DDevice9::WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrap
   if(RenderDoc::Inst().IsReplayApp())
   {
     m_State = READING;
+	m_Wnd = NULL;
   }
   else
   {
@@ -240,8 +241,7 @@ HRESULT WrappedD3DDevice9::QueryInterface(REFIID riid, void **ppvObject)
   }
   else
   {
-    string guid = ToStr::Get(riid);
-    RDCWARN("Querying IDirect3DDevice9 for interface: %s", guid.c_str());
+    WarnUnknownGUID("IDirect3DDevice9", riid);
   }
 
   return m_Device->QueryInterface(riid, ppvObject);
@@ -258,6 +258,12 @@ void WrappedD3DDevice9::StartFrameCapture(void *dev, void *wnd)
 }
 
 bool WrappedD3DDevice9::EndFrameCapture(void *dev, void *wnd)
+{
+  RDCERR("Capture not supported on D3D9");
+  return false;
+}
+
+bool WrappedD3DDevice9::DiscardFrameCapture(void *dev, void *wnd)
 {
   RDCERR("Capture not supported on D3D9");
   return false;
@@ -385,7 +391,66 @@ HRESULT __stdcall WrappedD3DDevice9::Present(CONST RECT *pSourceRect, CONST RECT
 {
   RenderOverlay(hDestWindowOverride);
 
-  return m_Device->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+/*
+  IDirect3DSwapChain9 *swapChain = NULL;
+  m_device->GetSwapChain(0, &swapChain);
+  D3DPRESENT_PARAMETERS presentParams = {};
+  if(swapChain)
+    swapChain->GetPresentParameters(&presentParams);
+
+  HWND wnd = presentParams.hDeviceWindow;
+  if(hDestWindowOverride != NULL)
+    wnd = hDestWindowOverride;
+
+  bool activeWindow = RenderDoc::Inst().IsActiveWindow((IDirect3DDevice9 *)this, wnd);
+
+  m_FrameCounter++;
+
+  // if (m_State == WRITING_IDLE)
+  if(wnd != NULL)
+  {
+    uint32_t overlay = RenderDoc::Inst().GetOverlayBits();
+
+    if(overlay & eRENDERDOC_Overlay_Enabled)
+    {
+      HRESULT res = S_OK;
+      res = m_device->BeginScene();
+      IDirect3DStateBlock9 *stateBlock;
+      m_device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
+
+      IDirect3DSurface9 *backBuffer;
+      res |= m_device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+      res |= m_device->SetRenderTarget(0, backBuffer);
+
+      D3DSURFACE_DESC bbDesc;
+      backBuffer->GetDesc(&bbDesc);
+
+      //
+      D3DVIEWPORT9 viewport = {0, 0, bbDesc.Width, bbDesc.Height, 0.f, 1.f};
+      res |= m_device->SetViewport(&viewport);
+
+      GetDebugManager()->SetOutputDimensions(bbDesc.Width, bbDesc.Height);
+      GetDebugManager()->SetOutputWindow(presentParams.hDeviceWindow);
+
+      int flags = activeWindow ? RenderDoc::eOverlay_ActiveWindow : 0;
+      flags |= RenderDoc::eOverlay_CaptureDisabled;
+
+      rdcstr overlayText = RenderDoc::Inst().GetOverlayText(RDCDriver::D3D9, m_FrameCounter, flags);
+
+      overlayText += "Captures not supported with D3D9\n";
+
+      GetDebugManager()->RenderText(0.0f, 0.0f, overlayText);
+
+      stateBlock->Apply();
+      res |= m_device->EndScene();
+    }
+  }
+
+*/
+
+  RenderDoc::Inst().AddActiveDriver(RDCDriver::D3D9, true);
+
+  return m_device->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetBackBuffer(UINT iSwapChain, UINT iBackBuffer,

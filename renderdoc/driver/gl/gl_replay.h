@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -30,46 +30,51 @@
 #include "replay/replay_driver.h"
 #include "gl_common.h"
 
-using std::pair;
-using std::map;
-
+class AMDCounters;
+class ARMCounters;
+class IntelGlCounters;
 class WrappedOpenGL;
-struct CounterContext;
-struct DrawcallTreeNode;
+struct GLCounterContext;
 
 struct GLPostVSData
 {
+  struct InstData
+  {
+    uint32_t numVerts = 0;
+    uint32_t bufOffset = 0;
+  };
+
   struct StageData
   {
-    GLuint buf;
-    PrimitiveTopology topo;
+    GLuint buf = 0;
+    Topology topo = Topology::Unknown;
 
-    uint32_t numVerts;
-    uint32_t vertStride;
-    uint32_t instStride;
+    uint32_t vertStride = 0;
 
-    bool useIndices;
-    GLuint idxBuf;
-    uint32_t idxByteWidth;
+    // simple case - uniform
+    uint32_t numVerts = 0;
+    uint32_t instStride = 0;
 
-    bool hasPosOut;
+    // complex case - expansion per instance
+    rdcarray<InstData> instData;
 
-    float nearPlane;
-    float farPlane;
+    bool useIndices = false;
+    GLuint idxBuf = 0;
+    uint32_t idxByteWidth = 0;
+
+    bool flipY = false;
+
+    bool hasPosOut = false;
+
+    float nearPlane = 0.0f;
+    float farPlane = 0.0f;
   } vsin, vsout, gsout;
-
-  GLPostVSData()
-  {
-    RDCEraseEl(vsin);
-    RDCEraseEl(vsout);
-    RDCEraseEl(gsout);
-  }
 
   const StageData &GetStage(MeshDataStage type)
   {
-    if(type == eMeshDataStage_VSOut)
+    if(type == MeshDataStage::VSOut)
       return vsout;
-    else if(type == eMeshDataStage_GSOut)
+    else if(type == MeshDataStage::GSOut)
       return gsout;
     else
       RDCERR("Unexpected mesh data stage!");
@@ -78,179 +83,214 @@ struct GLPostVSData
   }
 };
 
+struct CompleteCacheKey
+{
+  GLuint tex;
+  GLuint samp;
+
+  bool operator<(const CompleteCacheKey &o) const
+  {
+    if(tex != o.tex)
+      return tex < o.tex;
+    return samp < o.samp;
+  }
+};
+
+enum TexDisplayFlags
+{
+  eTexDisplay_None = 0x0,
+  eTexDisplay_BlendAlpha = 0x1,
+  eTexDisplay_MipShift = 0x2,
+  eTexDisplay_RemapFloat = 0x4,
+  eTexDisplay_RemapUInt = 0x8,
+  eTexDisplay_RemapSInt = 0x10,
+};
+
 class GLReplay : public IReplayDriver
 {
 public:
-  GLReplay();
-
+  GLReplay(WrappedOpenGL *d);
+  virtual ~GLReplay() {}
   void SetProxy(bool p) { m_Proxy = p; }
   bool IsRemoteProxy() { return m_Proxy; }
   void Shutdown();
 
-  void SetDriver(WrappedOpenGL *d) { m_pDriver = d; }
+  ReplayStatus FatalErrorCheck();
+  IReplayDriver *MakeDummyDriver();
+
+  DriverInformation GetDriverInfo() { return m_DriverInfo; }
+  rdcarray<GPUDevice> GetAvailableGPUs();
   APIProperties GetAPIProperties();
 
-  vector<ResourceId> GetBuffers();
-  FetchBuffer GetBuffer(ResourceId id);
+  ResourceDescription &GetResourceDesc(ResourceId id);
+  rdcarray<ResourceDescription> GetResources();
 
-  vector<ResourceId> GetTextures();
-  FetchTexture GetTexture(ResourceId id);
-  ShaderReflection *GetShader(ResourceId shader, string entryPoint);
+  rdcarray<BufferDescription> GetBuffers();
+  BufferDescription GetBuffer(ResourceId id);
 
-  vector<DebugMessage> GetDebugMessages();
+  rdcarray<TextureDescription> GetTextures();
+  TextureDescription GetTexture(ResourceId id);
 
-  vector<EventUsage> GetUsage(ResourceId id);
+  rdcarray<ShaderEntryPoint> GetShaderEntryPoints(ResourceId shader);
+  ShaderReflection *GetShader(ResourceId pipeline, ResourceId shader, ShaderEntryPoint entry);
 
-  FetchFrameRecord GetFrameRecord();
+  rdcarray<rdcstr> GetDisassemblyTargets(bool withPipeline);
+  rdcstr DisassembleShader(ResourceId pipeline, const ShaderReflection *refl, const rdcstr &target);
 
-  void SavePipelineState();
-  D3D11PipelineState GetD3D11PipelineState() { return D3D11PipelineState(); }
-  D3D12PipelineState GetD3D12PipelineState() { return D3D12PipelineState(); }
-  GLPipelineState GetGLPipelineState() { return m_CurPipelineState; }
-  VulkanPipelineState GetVulkanPipelineState() { return VulkanPipelineState(); }
+  rdcarray<DebugMessage> GetDebugMessages();
+
+  rdcarray<EventUsage> GetUsage(ResourceId id);
+
+  FrameRecord &WriteFrameRecord() { return m_FrameRecord; }
+  FrameRecord GetFrameRecord() { return m_FrameRecord; }
+  void SetPipelineStates(D3D11Pipe::State *d3d11, D3D12Pipe::State *d3d12, GLPipe::State *gl,
+                         VKPipe::State *vk)
+  {
+    m_GLPipelineState = gl;
+  }
+  void SavePipelineState(uint32_t eventId);
   void FreeTargetResource(ResourceId id);
 
-  void ReadLogInitialisation();
+  ReplayStatus ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers);
   void ReplayLog(uint32_t endEventID, ReplayLogType replayType);
+  SDFile *GetStructuredFile();
 
-  vector<uint32_t> GetPassEvents(uint32_t eventID);
+  rdcarray<uint32_t> GetPassEvents(uint32_t eventId);
 
-  vector<WindowingSystem> GetSupportedWindowSystems()
-  {
-    vector<WindowingSystem> ret;
-    // only Xlib supported for GLX. We can't report XCB here since we need
-    // the Display, and that can't be obtained from XCB. The application is
-    // free to use XCB internally but it would have to create a hybrid and
-    // initialise XCB out of Xlib, to be able to provide the display and
-    // drawable to us.
-    ret.push_back(eWindowingSystem_Xlib);
-    return ret;
-  }
+  rdcarray<WindowingSystem> GetSupportedWindowSystems();
 
-  uint64_t MakeOutputWindow(WindowingSystem system, void *data, bool depth);
+  AMDRGPControl *GetRGPControl() { return NULL; }
+  uint64_t MakeOutputWindow(WindowingData window, bool depth);
   void DestroyOutputWindow(uint64_t id);
   bool CheckResizeOutputWindow(uint64_t id);
   void GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h);
-  void ClearOutputWindowColour(uint64_t id, float col[4]);
+  void SetOutputWindowDimensions(uint64_t id, int32_t w, int32_t h);
+  void GetOutputWindowData(uint64_t id, bytebuf &retData);
+  void ClearOutputWindowColor(uint64_t id, FloatVector col);
   void ClearOutputWindowDepth(uint64_t id, float depth, uint8_t stencil);
   void BindOutputWindow(uint64_t id, bool depth);
   bool IsOutputWindowVisible(uint64_t id);
   void FlipOutputWindow(uint64_t id);
 
-  void InitPostVSBuffers(uint32_t eventID);
-  void InitPostVSBuffers(const vector<uint32_t> &passEvents);
+  void InitPostVSBuffers(uint32_t eventId);
+  void InitPostVSBuffers(const rdcarray<uint32_t> &passEvents);
 
   ResourceId GetLiveID(ResourceId id);
 
-  bool GetMinMax(ResourceId texid, uint32_t sliceFace, uint32_t mip, uint32_t sample,
-                 FormatComponentType typeHint, float *minval, float *maxval);
-  bool GetHistogram(ResourceId texid, uint32_t sliceFace, uint32_t mip, uint32_t sample,
-                    FormatComponentType typeHint, float minval, float maxval, bool channels[4],
-                    vector<uint32_t> &histogram);
+  void PickPixel(ResourceId texture, uint32_t x, uint32_t y, const Subresource &sub,
+                 CompType typeCast, float pixel[4]);
+  bool GetMinMax(ResourceId texid, const Subresource &sub, CompType typeCast, float *minval,
+                 float *maxval);
+  bool GetHistogram(ResourceId texid, const Subresource &sub, CompType typeCast, float minval,
+                    float maxval, const rdcfixedarray<bool, 4> &channels,
+                    rdcarray<uint32_t> &histogram);
 
-  MeshFormat GetPostVSBuffers(uint32_t eventID, uint32_t instID, MeshDataStage stage);
+  MeshFormat GetPostVSBuffers(uint32_t eventId, uint32_t instID, uint32_t viewID,
+                              MeshDataStage stage);
 
-  void GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, vector<byte> &ret);
-  byte *GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
-                       const GetTextureDataParams &params, size_t &dataSize);
+  void GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, bytebuf &ret);
+  void GetTextureData(ResourceId tex, const Subresource &sub, const GetTextureDataParams &params,
+                      bytebuf &data);
 
   void ReplaceResource(ResourceId from, ResourceId to);
   void RemoveReplacement(ResourceId id);
 
-  vector<uint32_t> EnumerateCounters();
-  void DescribeCounter(uint32_t counterID, CounterDescription &desc);
-  vector<CounterResult> FetchCounters(const vector<uint32_t> &counters);
+  rdcarray<GPUCounter> EnumerateCounters();
+  CounterDescription DescribeCounter(GPUCounter counterID);
+  rdcarray<CounterResult> FetchCounters(const rdcarray<GPUCounter> &counters);
 
-  void RenderMesh(uint32_t eventID, const vector<MeshFormat> &secondaryDraws, const MeshDisplay &cfg);
+  void RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondaryDraws,
+                  const MeshDisplay &cfg);
 
-  void BuildTargetShader(string source, string entry, const uint32_t compileFlags,
-                         ShaderStageType type, ResourceId *id, string *errors);
-  void BuildCustomShader(string source, string entry, const uint32_t compileFlags,
-                         ShaderStageType type, ResourceId *id, string *errors);
+  rdcarray<ShaderEncoding> GetCustomShaderEncodings() { return {ShaderEncoding::GLSL}; }
+  rdcarray<ShaderEncoding> GetTargetShaderEncodings() { return {ShaderEncoding::GLSL}; }
+  void BuildTargetShader(ShaderEncoding sourceEncoding, const bytebuf &source, const rdcstr &entry,
+                         const ShaderCompileFlags &compileFlags, ShaderStage type, ResourceId &id,
+                         rdcstr &errors);
+  void SetCustomShaderIncludes(const rdcarray<rdcstr> &directories);
+  void BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &source, const rdcstr &entry,
+                         const ShaderCompileFlags &compileFlags, ShaderStage type, ResourceId &id,
+                         rdcstr &errors);
   void FreeCustomShader(ResourceId id);
 
-  enum TexDisplayFlags
-  {
-    eTexDisplay_BlendAlpha = 0x1,
-    eTexDisplay_MipShift = 0x2,
-  };
-
   bool RenderTexture(TextureDisplay cfg);
-  bool RenderTextureInternal(TextureDisplay cfg, int flags);
+  bool RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flags);
 
-  void RenderCheckerboard(Vec3f light, Vec3f dark);
+  void RenderCheckerboard(FloatVector dark, FloatVector light);
 
   void RenderHighlightBox(float w, float h, float scale);
 
-  void FillCBufferVariables(ResourceId shader, string entryPoint, uint32_t cbufSlot,
-                            vector<ShaderVariable> &outvars, const vector<byte> &data);
+  void FillCBufferVariables(ResourceId pipeline, ResourceId shader, rdcstr entryPoint,
+                            uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
+                            const bytebuf &data);
 
-  vector<PixelModification> PixelHistory(vector<EventUsage> events, ResourceId target, uint32_t x,
-                                         uint32_t y, uint32_t slice, uint32_t mip,
-                                         uint32_t sampleIdx, FormatComponentType typeHint);
-  ShaderDebugTrace DebugVertex(uint32_t eventID, uint32_t vertid, uint32_t instid, uint32_t idx,
-                               uint32_t instOffset, uint32_t vertOffset);
-  ShaderDebugTrace DebugPixel(uint32_t eventID, uint32_t x, uint32_t y, uint32_t sample,
-                              uint32_t primitive);
-  ShaderDebugTrace DebugThread(uint32_t eventID, uint32_t groupid[3], uint32_t threadid[3]);
-  void PickPixel(ResourceId texture, uint32_t x, uint32_t y, uint32_t sliceFace, uint32_t mip,
-                 uint32_t sample, FormatComponentType typeHint, float pixel[4]);
-  uint32_t PickVertex(uint32_t eventID, const MeshDisplay &cfg, uint32_t x, uint32_t y);
+  rdcarray<PixelModification> PixelHistory(rdcarray<EventUsage> events, ResourceId target, uint32_t x,
+                                           uint32_t y, const Subresource &sub, CompType typeCast);
+  ShaderDebugTrace *DebugVertex(uint32_t eventId, uint32_t vertid, uint32_t instid, uint32_t idx,
+                                uint32_t view);
+  ShaderDebugTrace *DebugPixel(uint32_t eventId, uint32_t x, uint32_t y, uint32_t sample,
+                               uint32_t primitive);
+  ShaderDebugTrace *DebugThread(uint32_t eventId, const rdcfixedarray<uint32_t, 3> &groupid,
+                                const rdcfixedarray<uint32_t, 3> &threadid);
+  rdcarray<ShaderDebugState> ContinueDebug(ShaderDebugger *debugger);
+  void FreeDebugger(ShaderDebugger *debugger);
+  uint32_t PickVertex(uint32_t eventId, int32_t width, int32_t height, const MeshDisplay &cfg,
+                      uint32_t x, uint32_t y);
 
-  ResourceId RenderOverlay(ResourceId id, FormatComponentType typeHint, TextureDisplayOverlay overlay,
-                           uint32_t eventID, const vector<uint32_t> &passEvents);
-  ResourceId ApplyCustomShader(ResourceId shader, ResourceId texid, uint32_t mip, uint32_t arrayIdx,
-                               uint32_t sampleIdx, FormatComponentType typeHint);
+  ResourceId RenderOverlay(ResourceId texid, FloatVector clearCol, DebugOverlay overlay,
+                           uint32_t eventId, const rdcarray<uint32_t> &passEvents);
 
-  ResourceId CreateProxyTexture(const FetchTexture &templateTex);
-  void SetProxyTextureData(ResourceId texid, uint32_t arrayIdx, uint32_t mip, byte *data,
-                           size_t dataSize);
-  bool IsTextureSupported(const ResourceFormat &format);
+  void BindFramebufferTexture(RenderOutputSubresource &sub, GLenum texBindingEnum, GLint numSamples);
 
-  ResourceId CreateProxyBuffer(const FetchBuffer &templateBuf);
+  ResourceId ApplyCustomShader(ResourceId shader, ResourceId texid, const Subresource &sub,
+                               CompType typeCast);
+
+  ResourceId CreateProxyTexture(const TextureDescription &templateTex);
+  void SetProxyTextureData(ResourceId texid, const Subresource &sub, byte *data, size_t dataSize);
+  bool IsTextureSupported(const TextureDescription &tex);
+  bool NeedRemapForFetch(const ResourceFormat &format);
+
+  ResourceId CreateProxyBuffer(const BufferDescription &templateBuf);
   void SetProxyBufferData(ResourceId bufid, byte *data, size_t dataSize);
 
-  bool IsRenderOutput(ResourceId id);
-
+  RenderOutputSubresource GetRenderOutputSubresource(ResourceId id);
+  bool IsRenderOutput(ResourceId id) { return GetRenderOutputSubresource(id).mip != ~0U; }
   void FileChanged() {}
-  void InitCallstackResolver();
-  bool HasCallstacks();
-  Callstack::StackResolver *GetCallstackResolver();
-
-  // called before any context is created, to init any counters
-  static void PreContextInitCounters();
-  // called after any context is destroyed, to do corresponding shutdown of counters
-  static void PostContextShutdownCounters();
-
   void SetReplayData(GLWindowingData data);
 
   bool IsReplayContext(void *ctx) { return m_ReplayCtx.ctx == NULL || ctx == m_ReplayCtx.ctx; }
+  bool HasDebugContext() { return m_DebugCtx != NULL; }
+  void FillWithDiscardPattern(DiscardType type, GLuint framebuffer, GLsizei numAttachments,
+                              const GLenum *attachments, GLint x, GLint y, GLsizei width,
+                              GLsizei height);
+  void FillWithDiscardPattern(DiscardType type, ResourceId id, GLuint mip, GLint xoffset = 0,
+                              GLint yoffset = 0, GLint zoffset = 0, GLsizei width = 65536,
+                              GLsizei height = 65536, GLsizei depth = 65536);
+
 private:
-  void FillCBufferValue(WrappedOpenGL &gl, GLuint prog, bool bufferBacked, bool rowMajor,
-                        uint32_t offs, uint32_t matStride, const vector<byte> &data,
-                        ShaderVariable &outVar);
-  void FillCBufferVariables(WrappedOpenGL &gl, GLuint prog, bool bufferBacked, string prefix,
-                            const rdctype::array<ShaderConstant> &variables,
-                            vector<ShaderVariable> &outvars, const vector<byte> &data);
+  void OpenGLFillCBufferVariables(ResourceId shader, GLuint prog, bool bufferBacked, rdcstr prefix,
+                                  const rdcarray<ShaderConstant> &variables,
+                                  rdcarray<ShaderVariable> &outvars, const bytebuf &data);
+
+  bool GetMinMax(ResourceId texid, const Subresource &sub, CompType typeCast, bool stencil,
+                 float *minval, float *maxval);
 
   void CreateCustomShaderTex(uint32_t w, uint32_t h);
-  void SetupOverlayPipeline(GLuint Program, GLuint Pipeline, GLuint fragProgram);
-
-  void CopyArrayToTex2DMS(GLuint destMS, GLuint srcArray, GLint width, GLint height,
-                          GLint arraySize, GLint samples, GLenum intFormat);
-  void CopyTex2DMSToArray(GLuint destArray, GLuint srcMS, GLint width, GLint height,
-                          GLint arraySize, GLint samples, GLenum intFormat);
+  bool CreateOverlayProgram(GLuint Program, GLuint Pipeline, GLuint fragShader,
+                            GLuint fragShaderSPIRV);
 
   struct OutputWindow : public GLWindowingData
   {
+    OutputWindow(const GLWindowingData &data) : GLWindowingData(data) {}
+    OutputWindow() {}
     struct
     {
       // used to blit from defined FBO (VAOs not shared)
-      GLuint emptyVAO;
+      GLuint emptyVAO = 0;
 
       // textures for the below FBO. Resize with the window
-      GLuint backbuffer;
-      GLuint depthstencil;
+      GLuint backbuffer = 0;
+      GLuint depthstencil = 0;
 
       // this FBO is on the debug GL context, not the window's GL context
       // when rendering a texture or mesh etc, we render onto this FBO on
@@ -258,19 +298,41 @@ private:
       // on the window's GL context.
       // This is so we don't have to re-create any non-shared resource we
       // need for debug rendering on the window's GL context.
-      GLuint windowFBO;
+      GLuint windowFBO = 0;
 
       // this FBO is the same as the above, but on the replay context,
       // for any cases where we need to use the replay context (like
-      // re-rendering a draw).
-      GLuint replayFBO;
+      // re-rendering an action).
+      GLuint replayFBO = 0;
 
       // read FBO for blit to window
-      GLuint readFBO;
+      GLuint readFBO = 0;
     } BlitData;
 
-    int width, height;
+    WindowingSystem system = WindowingSystem::Headless;
+    int width = 1, height = 1;
   };
+
+  enum class TextureSamplerMode
+  {
+    Point,
+    PointNoMip,
+    Linear,
+  };
+
+  struct TextureSamplerState
+  {
+    GLenum minFilter = eGL_NEAREST;
+    GLenum magFilter = eGL_NEAREST;
+    GLenum wrapS = eGL_CLAMP_TO_EDGE;
+    GLenum wrapT = eGL_CLAMP_TO_EDGE;
+    GLenum wrapR = eGL_CLAMP_TO_EDGE;
+    GLenum compareMode = eGL_NONE;
+  };
+
+  // sets the desired parameters, and returns the previous ones ready to restore
+  TextureSamplerState SetSamplerParams(GLenum target, GLuint texname, TextureSamplerMode mode);
+  void RestoreSamplerParams(GLenum target, GLuint texname, TextureSamplerState state);
 
   // any objects that are shared between contexts, we just initialise
   // once
@@ -278,21 +340,21 @@ private:
   {
     float outWidth, outHeight;
 
+    int glslVersion;
+
     // min/max data
     GLuint minmaxTileResult;          // tile result buffer
     GLuint minmaxResult;              // Vec4f[2] final result buffer
     GLuint histogramBuf;              // uint32_t * num buckets buffer
     GLuint minmaxResultProgram[3];    // float/uint/sint tile result -> final result program
-    GLuint minmaxTileProgram[64];     // RESTYPE indexed (see debuguniforms.h, 1d/2d/3d etc |
+    GLuint minmaxTileProgram[64];     // RESTYPE indexed (see glsl_ubos.h, 1d/2d/3d etc |
                                       // uint/sint) src tex -> tile result buf program
-    GLuint histogramProgram[64];      // RESTYPE indexed (see debuguniforms.h, 1d/2d/3d etc |
+    GLuint histogramProgram[64];      // RESTYPE indexed (see glsl_ubos.h, 1d/2d/3d etc |
                                       // uint/sint) src tex -> histogram result buf program
 
-    GLuint outlineQuadProg;
-
-    GLuint texDisplayPipe;
-    GLuint texDisplayVSProg;
+    GLuint texDisplayVertexShader;
     GLuint texDisplayProg[3];    // float/uint/sint
+    GLuint texRemapProg[3];      // float/uint/sint
 
     GLuint customFBO;
     GLuint customTex;
@@ -305,20 +367,14 @@ private:
     uint32_t pickIBSize, pickVBSize;
     GLuint pickResultBuf;
 
-    GLuint MS2Array, Array2MS;
-
-    GLuint pointSampler;
-    GLuint pointNoMipSampler;
-    GLuint linearSampler;
-
-    GLuint genericUBO;
-
     GLuint checkerProg;
 
-    GLuint fixedcolFSProg;
+    GLuint fixedcolFragShader;
+    GLuint fixedcolFragShaderSPIRV;
 
-    GLuint meshProg;
-    GLuint meshgsProg;
+    // 0 = both floats, 1 = position doubles, 2 = secondary doubles, 3 = both doubles
+    GLuint meshProg[4];
+    GLuint meshgsProg[4];
     GLuint trisizeProg;
 
     GLuint meshVAO;
@@ -330,64 +386,61 @@ private:
     GLuint triHighlightBuffer;
 
     GLuint feedbackObj;
-    GLuint feedbackQuery;
+    rdcarray<GLuint> feedbackQueries;
     GLuint feedbackBuffer;
+    uint64_t feedbackBufferSize = 32 * 1024 * 1024;
 
     GLuint pickPixelTex;
     GLuint pickPixelFBO;
 
-    GLuint quadoverdrawFSProg;
-    GLuint quadoverdrawResolveProg;
-    bool quadoverdraw420;
+    GLuint dummyTexBuffer;
+    GLuint dummyTexBufferStore;
 
+    GLuint quadoverdrawFragShader;
+    GLuint quadoverdrawFragShaderSPIRV;
+    GLuint quadoverdrawResolveProg;
+
+    GLuint discardProg[3][4];
+    GLuint discardPatternBuffer;
+
+    ResourceId overlayTexId;
     GLuint overlayTex;
     GLuint overlayFBO;
-    GLuint overlayPipe;
-    GLint overlayTexWidth, overlayTexHeight;
+    GLuint overlayProg;
+    GLint overlayTexWidth = 0, overlayTexHeight = 0, overlayTexSamples = 0, overlayTexMips = 0,
+          overlayTexSlices = 0;
 
     GLuint UBOs[3];
-
-    GLuint readFBO;
 
     GLuint emptyVAO;
   } DebugData;
 
-  FloatVector InterpretVertex(byte *data, uint32_t vert, const MeshDisplay &cfg, byte *end,
-                              bool useidx, bool &valid);
+  bool m_Degraded;
 
-  // simple cache for when we need buffer data for highlighting
-  // vertices, typical use will be lots of vertices in the same
-  // mesh, not jumping back and forth much between meshes.
-  struct HighlightCache
-  {
-    HighlightCache() : EID(0), buf(), offs(0), stage(eMeshDataStage_Unknown), useidx(false) {}
-    uint32_t EID;
-    ResourceId buf;
-    uint64_t offs;
-    MeshDataStage stage;
-    bool useidx;
+  HighlightCache m_HighlightCache;
 
-    vector<byte> data;
-    vector<uint32_t> indices;
-  } m_HighlightCache;
+  std::map<GLenum, bytebuf> m_DiscardPatterns;
 
-  // eventID -> data
-  map<uint32_t, GLPostVSData> m_PostVSData;
+  // eventId -> data
+  std::map<uint32_t, GLPostVSData> m_PostVSData;
+
+  void ClearPostVSCache();
+
+  // cache the previous data returned
+  ResourceId m_GetTexturePrevID;
+  byte *m_GetTexturePrevData[16];
+
+  GLuint CreateMeshProgram(GLuint vs, GLuint fs, GLuint gs = 0);
+  void ConfigureTexDisplayProgramBindings(GLuint program);
+  void BindUBO(GLuint program, const char *name, GLuint binding);
 
   void InitDebugData();
   void DeleteDebugData();
 
-  // called after the context is created, to init any counters
-  void PostContextInitCounters();
-  // called before the context is destroyed, to shutdown any counters
-  void PreContextShutdownCounters();
+  void CheckGLSLVersion(const char *sl, int &glslVersion);
 
-  void FillTimers(CounterContext &ctx, const DrawcallTreeNode &drawnode);
-
-  GLuint CreateShaderProgram(const vector<string> &vs, const vector<string> &fs,
-                             const vector<string> &gs);
-  GLuint CreateShaderProgram(const vector<string> &vs, const vector<string> &fs);
-  GLuint CreateCShaderProgram(const vector<string> &cs);
+  void FillTimers(GLCounterContext &ctx, const ActionDescription &actionnode,
+                  const rdcarray<GPUCounter> &counters);
 
   void InitOutputWindow(OutputWindow &outwin);
   void CreateOutputWindowBackbuffer(OutputWindow &outwin, bool depth);
@@ -401,15 +454,48 @@ private:
   void CloseReplayContext();
 
   uint64_t m_OutputWindowID;
-  map<uint64_t, OutputWindow> m_OutputWindows;
+  std::map<uint64_t, OutputWindow> m_OutputWindows;
 
   bool m_Proxy;
 
   void CacheTexture(ResourceId id);
 
-  map<ResourceId, FetchTexture> m_CachedTextures;
+  std::map<ResourceId, TextureDescription> m_CachedTextures;
 
   WrappedOpenGL *m_pDriver;
 
-  GLPipelineState m_CurPipelineState;
+  rdcarray<ResourceDescription> m_Resources;
+  std::map<ResourceId, size_t> m_ResourceIdx;
+
+  GLPipe::State *m_GLPipelineState = NULL;
+
+  FrameRecord m_FrameRecord;
+
+  DriverInformation m_DriverInfo;
+
+  std::map<CompleteCacheKey, rdcstr> m_CompleteCache;
+
+  // AMD counter instance
+  AMDCounters *m_pAMDCounters = NULL;
+
+  void FillTimersAMD(uint32_t *eventStartID, uint32_t *sampleIndex, rdcarray<uint32_t> *eventIDs,
+                     const ActionDescription &actionnode);
+
+  rdcarray<CounterResult> FetchCountersAMD(const rdcarray<GPUCounter> &counters);
+
+  // Intel counter instance
+  IntelGlCounters *m_pIntelCounters = NULL;
+
+  void FillTimersIntel(uint32_t *eventStartID, uint32_t *sampleIndex, rdcarray<uint32_t> *eventIDs,
+                       const ActionDescription &actionnode);
+
+  rdcarray<CounterResult> FetchCountersIntel(const rdcarray<GPUCounter> &counters);
+
+  // ARM counter instance
+  ARMCounters *m_pARMCounters = NULL;
+
+  void FillTimersARM(uint32_t *eventStartID, uint32_t *sampleIndex, rdcarray<uint32_t> *eventIDs,
+                     const ActionDescription &actionnode);
+
+  rdcarray<CounterResult> FetchCountersARM(const rdcarray<GPUCounter> &counters);
 };

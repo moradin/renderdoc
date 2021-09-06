@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,6 +25,7 @@
 #pragma once
 
 #include <QFrame>
+#include "renderdoc_replay.h"
 
 namespace Ui
 {
@@ -32,14 +33,14 @@ class ResourcePreview;
 }
 
 struct IReplayOutput;
-class CaptureContext;
+struct ICaptureContext;
 
 class ResourcePreview : public QFrame
 {
   Q_OBJECT
 
 public:
-  explicit ResourcePreview(CaptureContext *c, IReplayOutput *output, QWidget *parent = 0);
+  explicit ResourcePreview(ICaptureContext &c, IReplayOutput *output, QWidget *parent = 0);
   ~ResourcePreview();
 
 signals:
@@ -53,15 +54,13 @@ public:
   void clickEvent(QMouseEvent *e);
   void doubleClickEvent(QMouseEvent *e);
 
-  WId thumbWinId();
+  WindowingData GetWidgetWindowingData();
 
   void setActive(bool b)
   {
     m_Active = b;
-    if(b)
-      show();
-    else
-      hide();
+    // we unconditionally hide the preview, the thumbnail strip will show it
+    hide();
   }
   bool isActive() { return m_Active; }
   void setSize(QSize s);
@@ -72,4 +71,5 @@ private:
   Ui::ResourcePreview *ui;
 
   bool m_Active;
+  bool m_Selected = false;
 };

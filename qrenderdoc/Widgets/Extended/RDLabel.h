@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,6 +24,7 @@
 
 #pragma once
 #include <QLabel>
+#include <QVariant>
 
 class RDLabel : public QLabel
 {
@@ -33,15 +34,40 @@ public:
   explicit RDLabel(QWidget *parent = 0);
   ~RDLabel();
 
+  QSize sizeHint() const override;
+  QSize minimumSizeHint() const override;
+
+  void setText(const QString &text);
+  QString text() const;
+
+  void setMinimumSizeHint(const QSize &sz);
+  void setPreserveAspectRatio(bool preserve) { m_preserveRatio = preserve; }
+  bool preserveAspectRatio() { return m_preserveRatio; }
 signals:
   void clicked(QMouseEvent *event);
   void doubleClicked(QMouseEvent *event);
   void mouseMoved(QMouseEvent *event);
+  void leave();
+  void styleChanged(QEvent *event);
 
 public slots:
 
 protected:
   void mousePressEvent(QMouseEvent *event) override;
+  void mouseReleaseEvent(QMouseEvent *event) override;
   void mouseMoveEvent(QMouseEvent *event) override;
   void mouseDoubleClickEvent(QMouseEvent *event) override;
+  void leaveEvent(QEvent *event) override;
+  void resizeEvent(QResizeEvent *event) override;
+  void changeEvent(QEvent *event) override;
+  void paintEvent(QPaintEvent *event) override;
+
+  void modifySizeHint(QSize &sz) const;
+
+  bool m_preserveRatio = false;
+  bool m_hover = false;
+
+  QSize m_minSizeHint;
+
+  QVariant m_variant;
 };

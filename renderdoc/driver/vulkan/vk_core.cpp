@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,173 +23,36 @@
  ******************************************************************************/
 
 #include "vk_core.h"
+#include <ctype.h>
+#include <algorithm>
+#include "core/settings.h"
+#include "driver/ihv/amd/amd_rgp.h"
+#include "driver/shaders/spirv/spirv_compile.h"
 #include "jpeg-compressor/jpge.h"
 #include "maths/formatpacking.h"
-#include "serialise/string_utils.h"
+#include "serialise/rdcfile.h"
+#include "strings/string_utils.h"
 #include "vk_debug.h"
+#include "vk_replay.h"
 
-const char *VkChunkNames[] = {
-    "WrappedVulkan::Initialisation",
-    "vkCreateInstance",
-    "vkEnumeratePhysicalDevices",
-    "vkCreateDevice",
-    "vkGetDeviceQueue",
+#include "stb/stb_image_write.h"
 
-    "vkAllocMemory",
-    "vkUnmapMemory",
-    "vkFlushMappedMemoryRanges",
-    "vkFreeMemory",
+RDOC_EXTERN_CONFIG(bool, Vulkan_Debug_VerboseCommandRecording);
 
-    "vkCreateCommandPool",
-    "vkResetCommandPool",
-
-    "vkCreateCommandBuffer",
-    "vkCreateFramebuffer",
-    "vkCreateRenderPass",
-    "vkCreateDescriptorPool",
-    "vkCreateDescriptorSetLayout",
-    "vkCreateBuffer",
-    "vkCreateBufferView",
-    "vkCreateImage",
-    "vkCreateImageView",
-    "vkCreateDepthTargetView",
-    "vkCreateSampler",
-    "vkCreateShaderModule",
-    "vkCreatePipelineLayout",
-    "vkCreatePipelineCache",
-    "vkCreateGraphicsPipelines",
-    "vkCreateComputePipelines",
-    "vkGetSwapchainImagesKHR",
-
-    "vkCreateSemaphore",
-    "vkCreateFence",
-    "vkGetFenceStatus",
-    "vkResetFences",
-    "vkWaitForFences",
-
-    "vkCreateEvent",
-    "vkGetEventStatus",
-    "vkSetEvent",
-    "vkResetEvent",
-
-    "vkCreateQueryPool",
-
-    "vkAllocDescriptorSets",
-    "vkUpdateDescriptorSets",
-
-    "vkBeginCommandBuffer",
-    "vkEndCommandBuffer",
-
-    "vkQueueWaitIdle",
-    "vkDeviceWaitIdle",
-
-    "vkQueueSubmit",
-    "vkBindBufferMemory",
-    "vkBindImageMemory",
-
-    "vkQueueBindSparse",
-
-    "vkCmdBeginRenderPass",
-    "vkCmdNextSubpass",
-    "vkCmdExecuteCommands",
-    "vkCmdEndRenderPass",
-
-    "vkCmdBindPipeline",
-
-    "vkCmdSetViewport",
-    "vkCmdSetScissor",
-    "vkCmdSetLineWidth",
-    "vkCmdSetDepthBias",
-    "vkCmdSetBlendConstants",
-    "vkCmdSetDepthBounds",
-    "vkCmdSetStencilCompareMask",
-    "vkCmdSetStencilWriteMask",
-    "vkCmdSetStencilReference",
-
-    "vkCmdBindDescriptorSet",
-    "vkCmdBindVertexBuffers",
-    "vkCmdBindIndexBuffer",
-    "vkCmdCopyBufferToImage",
-    "vkCmdCopyImageToBuffer",
-    "vkCmdCopyBuffer",
-    "vkCmdCopyImage",
-    "vkCmdBlitImage",
-    "vkCmdResolveImage",
-    "vkCmdUpdateBuffer",
-    "vkCmdFillBuffer",
-    "vkCmdPushConstants",
-
-    "vkCmdClearColorImage",
-    "vkCmdClearDepthStencilImage",
-    "vkCmdClearAttachments",
-    "vkCmdPipelineBarrier",
-
-    "vkCmdWriteTimestamp",
-    "vkCmdCopyQueryPoolResults",
-    "vkCmdBeginQuery",
-    "vkCmdEndQuery",
-    "vkCmdResetQueryPool",
-
-    "vkCmdSetEvent",
-    "vkCmdResetEvent",
-    "vkCmdWaitEvents",
-
-    "vkCmdDraw",
-    "vkCmdDrawIndirect",
-    "vkCmdDrawIndexed",
-    "vkCmdDrawIndexedIndirect",
-    "vkCmdDispatch",
-    "vkCmdDispatchIndirect",
-
-    "vkCmdDebugMarkerBeginEXT",
-    "vkCmdDebugMarkerInsertEXT",
-    "vkCmdDebugMarkerEndEXT",
-
-    "vkDebugMarkerSetObjectNameEXT",
-    "vkDebugMarkerSetObjectTagEXT",
-
-    "vkCreateSwapchainKHR",
-
-    "Debug Messages",
-
-    "Capture",
-    "BeginCapture",
-    "EndCapture",
-};
-
-VkInitParams::VkInitParams()
+uint64_t VkInitParams::GetSerialiseSize()
 {
-  SerialiseVersion = VK_SERIALISE_VERSION;
-  AppVersion = 0;
-  EngineVersion = 0;
-  APIVersion = 0;
-}
+  // misc bytes and fixed integer members
+  size_t ret = 128;
 
-ReplayCreateStatus VkInitParams::Serialise()
-{
-  Serialiser *localSerialiser = GetSerialiser();
+  ret += AppName.size() + EngineName.size();
 
-  SERIALISE_ELEMENT(uint32_t, ver, VK_SERIALISE_VERSION);
-  SerialiseVersion = ver;
+  for(const rdcstr &s : Layers)
+    ret += 8 + s.size();
 
-  if(ver != VK_SERIALISE_VERSION)
-  {
-    RDCERR("Incompatible Vulkan serialise version, expected %d got %d", VK_SERIALISE_VERSION, ver);
-    return eReplayCreate_APIIncompatibleVersion;
-  }
+  for(const rdcstr &s : Extensions)
+    ret += 8 + s.size();
 
-  localSerialiser->Serialise("AppName", AppName);
-  localSerialiser->Serialise("EngineName", EngineName);
-  localSerialiser->Serialise("AppVersion", AppVersion);
-  localSerialiser->Serialise("EngineVersion", EngineVersion);
-  localSerialiser->Serialise("APIVersion", APIVersion);
-
-  localSerialiser->Serialise("Layers", Layers);
-  localSerialiser->Serialise("Extensions", Extensions);
-
-  localSerialiser->Serialise("InstanceID", InstanceID);
-
-  return eReplayCreate_Success;
+  return (uint64_t)ret;
 }
 
 void VkInitParams::Set(const VkInstanceCreateInfo *pCreateInfo, ResourceId inst)
@@ -233,76 +96,61 @@ void VkInitParams::Set(const VkInstanceCreateInfo *pCreateInfo, ResourceId inst)
   InstanceID = inst;
 }
 
-WrappedVulkan::WrappedVulkan(const char *logFilename) : m_RenderState(&m_CreationInfo)
+WrappedVulkan::WrappedVulkan()
 {
-#if ENABLED(RDOC_RELEASE)
-  const bool debugSerialiser = false;
-#else
-  const bool debugSerialiser = true;
-#endif
+  if(RenderDoc::Inst().GetCrashHandler())
+    RenderDoc::Inst().GetCrashHandler()->RegisterMemoryRegion(this, sizeof(WrappedVulkan));
 
   if(RenderDoc::Inst().IsReplayApp())
   {
-    m_State = READING;
-    if(logFilename)
-    {
-      m_pSerialiser = new Serialiser(logFilename, Serialiser::READING, debugSerialiser);
-    }
-    else
-    {
-      byte dummy[4];
-      m_pSerialiser = new Serialiser(4, dummy, false);
-    }
+    if(VkMarkerRegion::vk == NULL)
+      VkMarkerRegion::vk = this;
+
+    m_State = CaptureState::LoadingReplaying;
   }
   else
   {
-    m_State = WRITING_IDLE;
-    m_pSerialiser = new Serialiser(NULL, Serialiser::WRITING, debugSerialiser);
+    m_State = CaptureState::BackgroundCapturing;
   }
 
-  InitSPIRVCompiler();
-  RenderDoc::Inst().RegisterShutdownFunction(&ShutdownSPIRVCompiler);
+  m_StructuredFile = m_StoredStructuredData = new SDFile;
 
-  m_Replay.SetDriver(this);
+  m_SectionVersion = VkInitParams::CurrentVersion;
 
-  m_FrameCounter = 0;
+  rdcspv::Init();
+  RenderDoc::Inst().RegisterShutdownFunction(&rdcspv::Shutdown);
 
-  m_AppControlledCapture = false;
+  m_Replay = new VulkanReplay(this);
 
   threadSerialiserTLSSlot = Threading::AllocateTLSSlot();
   tempMemoryTLSSlot = Threading::AllocateTLSSlot();
   debugMessageSinkTLSSlot = Threading::AllocateTLSSlot();
 
   m_RootEventID = 1;
-  m_RootDrawcallID = 1;
+  m_RootActionID = 1;
   m_FirstEventID = 0;
   m_LastEventID = ~0U;
 
-  m_DrawcallCallback = NULL;
+  m_ActionCallback = NULL;
+  m_SubmitChain = NULL;
 
   m_CurChunkOffset = 0;
-  m_AddedDrawcall = false;
+  m_AddedAction = false;
 
   m_LastCmdBufferID = ResourceId();
 
-  m_DrawcallStack.push_back(&m_ParentDrawcall);
+  m_ActionStack.push_back(&m_ParentAction);
 
   m_SetDeviceLoaderData = NULL;
 
-  m_ResourceManager = new VulkanResourceManager(m_State, m_pSerialiser, this);
-
-  m_DebugManager = NULL;
-
-  m_pSerialiser->SetUserData(m_ResourceManager);
-  m_RenderState.m_ResourceManager = GetResourceManager();
+  m_ResourceManager = new VulkanResourceManager(m_State, this);
 
   m_Instance = VK_NULL_HANDLE;
   m_PhysicalDevice = VK_NULL_HANDLE;
   m_Device = VK_NULL_HANDLE;
   m_Queue = VK_NULL_HANDLE;
   m_QueueFamilyIdx = 0;
-  m_SupportedQueueFamily = 0;
-  m_DbgMsgCallback = VK_NULL_HANDLE;
+  m_DbgReportCallback = VK_NULL_HANDLE;
 
   m_HeaderChunk = NULL;
 
@@ -311,7 +159,7 @@ WrappedVulkan::WrappedVulkan(const char *logFilename) : m_RenderState(&m_Creatio
     m_FrameCaptureRecord = GetResourceManager()->AddResourceRecord(ResourceIDGen::GetNewUniqueID());
     m_FrameCaptureRecord->DataInSerialiser = false;
     m_FrameCaptureRecord->Length = 0;
-    m_FrameCaptureRecord->SpecialResource = true;
+    m_FrameCaptureRecord->InternalResource = true;
   }
   else
   {
@@ -319,14 +167,6 @@ WrappedVulkan::WrappedVulkan(const char *logFilename) : m_RenderState(&m_Creatio
 
     ResourceIDGen::SetReplayResourceIDs();
   }
-
-  m_pSerialiser->SetChunkNameLookup(&GetChunkName);
-
-  //////////////////////////////////////////////////////////////////////////
-  // Compile time asserts
-
-  RDCCOMPILE_ASSERT(ARRAY_COUNT(VkChunkNames) == NUM_VULKAN_CHUNKS - FIRST_CHUNK_ID,
-                    "Not right number of chunk names");
 }
 
 WrappedVulkan::~WrappedVulkan()
@@ -339,16 +179,18 @@ WrappedVulkan::~WrappedVulkan()
     m_FrameCaptureRecord = NULL;
   }
 
+  if(VkMarkerRegion::vk == this)
+    VkMarkerRegion::vk = NULL;
+
+  SAFE_DELETE(m_StoredStructuredData);
+
   // in case the application leaked some objects, avoid crashing trying
   // to release them ourselves by clearing the resource manager.
   // In a well-behaved application, this should be a no-op.
   m_ResourceManager->ClearWithoutReleasing();
   SAFE_DELETE(m_ResourceManager);
 
-  SAFE_DELETE(m_pSerialiser);
-
-  for(size_t i = 0; i < m_MemIdxMaps.size(); i++)
-    delete[] m_MemIdxMaps[i];
+  SAFE_DELETE(m_FrameReader);
 
   for(size_t i = 0; i < m_ThreadSerialisers.size(); i++)
     delete m_ThreadSerialisers[i];
@@ -358,6 +200,54 @@ WrappedVulkan::~WrappedVulkan()
     delete[] m_ThreadTempMem[i]->memory;
     delete m_ThreadTempMem[i];
   }
+
+  delete m_Replay;
+}
+
+VkCommandBuffer WrappedVulkan::GetInitStateCmd()
+{
+  if(initStateCurBatch >= initialStateMaxBatch)
+  {
+    CloseInitStateCmd();
+  }
+
+  if(initStateCurCmd == VK_NULL_HANDLE)
+  {
+    initStateCurCmd = GetNextCmd();
+
+    if(initStateCurCmd == VK_NULL_HANDLE)
+      return VK_NULL_HANDLE;
+
+    VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                          VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+
+    VkResult vkr = ObjDisp(initStateCurCmd)->BeginCommandBuffer(Unwrap(initStateCurCmd), &beginInfo);
+    CheckVkResult(vkr);
+
+    if(IsReplayMode(m_State))
+    {
+      VkMarkerRegion::Begin("!!!!RenderDoc Internal: ApplyInitialContents batched list",
+                            initStateCurCmd);
+    }
+  }
+
+  initStateCurBatch++;
+
+  return initStateCurCmd;
+}
+
+void WrappedVulkan::CloseInitStateCmd()
+{
+  if(initStateCurCmd == VK_NULL_HANDLE)
+    return;
+
+  VkMarkerRegion::End(initStateCurCmd);
+
+  VkResult vkr = ObjDisp(initStateCurCmd)->EndCommandBuffer(Unwrap(initStateCurCmd));
+  CheckVkResult(vkr);
+
+  initStateCurCmd = VK_NULL_HANDLE;
+  initStateCurBatch = 0;
 }
 
 VkCommandBuffer WrappedVulkan::GetNextCmd()
@@ -373,19 +263,30 @@ VkCommandBuffer WrappedVulkan::GetNextCmd()
   }
   else
   {
-    VkCommandBufferAllocateInfo cmdInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL,
-                                           Unwrap(m_InternalCmds.cmdpool),
-                                           VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
+    VkCommandBufferAllocateInfo cmdInfo = {
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        NULL,
+        Unwrap(m_InternalCmds.cmdpool),
+        VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        1,
+    };
     VkResult vkr = ObjDisp(m_Device)->AllocateCommandBuffers(Unwrap(m_Device), &cmdInfo, &ret);
 
-    if(m_SetDeviceLoaderData)
-      m_SetDeviceLoaderData(m_Device, ret);
+    CheckVkResult(vkr);
+    if(vkr == VK_SUCCESS)
+    {
+      if(m_SetDeviceLoaderData)
+        m_SetDeviceLoaderData(m_Device, ret);
+      else
+        SetDispatchTableOverMagicNumber(m_Device, ret);
+
+      GetResourceManager()->WrapResource(Unwrap(m_Device), ret);
+    }
     else
-      SetDispatchTableOverMagicNumber(m_Device, ret);
-
-    RDCASSERTEQUAL(vkr, VK_SUCCESS);
-
-    GetResourceManager()->WrapResource(Unwrap(m_Device), ret);
+    {
+      ret = VK_NULL_HANDLE;
+      m_FailedReplayStatus = ReplayStatus::APIInitFailed;
+    }
   }
 
   m_InternalCmds.pendingcmds.push_back(ret);
@@ -393,44 +294,65 @@ VkCommandBuffer WrappedVulkan::GetNextCmd()
   return ret;
 }
 
-void WrappedVulkan::SubmitCmds()
+void WrappedVulkan::RemovePendingCommandBuffer(VkCommandBuffer cmd)
 {
+  m_InternalCmds.pendingcmds.removeOne(cmd);
+}
+
+void WrappedVulkan::AddPendingCommandBuffer(VkCommandBuffer cmd)
+{
+  m_InternalCmds.pendingcmds.push_back(cmd);
+}
+
+void WrappedVulkan::AddFreeCommandBuffer(VkCommandBuffer cmd)
+{
+  m_InternalCmds.freecmds.push_back(cmd);
+}
+
+void WrappedVulkan::SubmitCmds(VkSemaphore *unwrappedWaitSemaphores,
+                               VkPipelineStageFlags *waitStageMask, uint32_t waitSemaphoreCount)
+{
+  RENDERDOC_PROFILEFUNCTION();
+  if(HasFatalError())
+    return;
+
   // nothing to do
   if(m_InternalCmds.pendingcmds.empty())
     return;
 
-  vector<VkCommandBuffer> cmds = m_InternalCmds.pendingcmds;
+  rdcarray<VkCommandBuffer> cmds = m_InternalCmds.pendingcmds;
   for(size_t i = 0; i < cmds.size(); i++)
     cmds[i] = Unwrap(cmds[i]);
 
   VkSubmitInfo submitInfo = {
       VK_STRUCTURE_TYPE_SUBMIT_INFO,
-      NULL,
-      0,
-      NULL,
-      NULL,    // wait semaphores
+      m_SubmitChain,
+      waitSemaphoreCount,
+      unwrappedWaitSemaphores,
+      waitStageMask,
       (uint32_t)cmds.size(),
       &cmds[0],    // command buffers
       0,
       NULL,    // signal semaphores
   };
 
-  // we might have work to do (e.g. debug manager creation command buffer) but
-  // no queue, if the device is destroyed immediately. In this case we can just
-  // skip the submit
-  if(m_Queue != VK_NULL_HANDLE)
+  // we might have work to do (e.g. debug manager creation command buffer) but no queue, if the
+  // device is destroyed immediately. In this case we can just skip the submit. We don't mark these
+  // command buffers as submitted in case we're capturing an early frame - we can't lose these so we
+  // just defer them until later.
+  if(m_Queue == VK_NULL_HANDLE)
+    return;
+
   {
     VkResult vkr = ObjDisp(m_Queue)->QueueSubmit(Unwrap(m_Queue), 1, &submitInfo, VK_NULL_HANDLE);
-    RDCASSERTEQUAL(vkr, VK_SUCCESS);
+    CheckVkResult(vkr);
   }
 
 #if ENABLED(SINGLE_FLUSH_VALIDATE)
   FlushQ();
 #endif
 
-  m_InternalCmds.submittedcmds.insert(m_InternalCmds.submittedcmds.end(),
-                                      m_InternalCmds.pendingcmds.begin(),
-                                      m_InternalCmds.pendingcmds.end());
+  m_InternalCmds.submittedcmds.append(m_InternalCmds.pendingcmds);
   m_InternalCmds.pendingcmds.clear();
 }
 
@@ -449,7 +371,7 @@ VkSemaphore WrappedVulkan::GetNextSemaphore()
   {
     VkSemaphoreCreateInfo semInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkResult vkr = ObjDisp(m_Device)->CreateSemaphore(Unwrap(m_Device), &semInfo, NULL, &ret);
-    RDCASSERTEQUAL(vkr, VK_SUCCESS);
+    CheckVkResult(vkr);
 
     GetResourceManager()->WrapResource(Unwrap(m_Device), ret);
   }
@@ -467,14 +389,17 @@ void WrappedVulkan::SubmitSemaphores()
 
   // no actual submission, just mark them as 'done with' so they will be
   // recycled on next flush
-  m_InternalCmds.submittedsems.insert(m_InternalCmds.submittedsems.end(),
-                                      m_InternalCmds.pendingsems.begin(),
-                                      m_InternalCmds.pendingsems.end());
+  m_InternalCmds.submittedsems.append(m_InternalCmds.pendingsems);
   m_InternalCmds.pendingsems.clear();
 }
 
 void WrappedVulkan::FlushQ()
 {
+  RENDERDOC_PROFILEFUNCTION();
+
+  if(HasFatalError())
+    return;
+
   // VKTODOLOW could do away with the need for this function by keeping
   // commands until N presents later, or something, or checking on fences.
   // If we do so, then check each use for FlushQ to see if it needs a
@@ -484,83 +409,253 @@ void WrappedVulkan::FlushQ()
   // see comment in SubmitQ()
   if(m_Queue != VK_NULL_HANDLE)
   {
-    ObjDisp(m_Queue)->QueueWaitIdle(Unwrap(m_Queue));
+    VkResult vkr = ObjDisp(m_Queue)->QueueWaitIdle(Unwrap(m_Queue));
+    CheckVkResult(vkr);
   }
 
 #if ENABLED(SINGLE_FLUSH_VALIDATE)
+  if(m_Device != VK_NULL_HANDLE)
   {
-    ObjDisp(m_Queue)->DeviceWaitIdle(Unwrap(m_Device));
-    VkResult vkr = ObjDisp(m_Queue)->DeviceWaitIdle(Unwrap(m_Device));
-    RDCASSERTEQUAL(vkr, VK_SUCCESS);
+    ObjDisp(m_Device)->DeviceWaitIdle(Unwrap(m_Device));
+    VkResult vkr = ObjDisp(m_Device)->DeviceWaitIdle(Unwrap(m_Device));
+    CheckVkResult(vkr);
   }
 #endif
 
   if(!m_InternalCmds.submittedcmds.empty())
   {
-    m_InternalCmds.freecmds.insert(m_InternalCmds.freecmds.end(),
-                                   m_InternalCmds.submittedcmds.begin(),
-                                   m_InternalCmds.submittedcmds.end());
+    m_InternalCmds.freecmds.append(m_InternalCmds.submittedcmds);
     m_InternalCmds.submittedcmds.clear();
+  }
+
+  if(!m_InternalCmds.submittedsems.empty())
+  {
+    m_InternalCmds.freesems.append(m_InternalCmds.submittedsems);
+    m_InternalCmds.submittedsems.clear();
   }
 }
 
-uint32_t WrappedVulkan::HandlePreCallback(VkCommandBuffer commandBuffer, bool dispatch,
+VkCommandBuffer WrappedVulkan::GetExtQueueCmd(uint32_t queueFamilyIdx) const
+{
+  if(queueFamilyIdx >= m_ExternalQueues.size())
+  {
+    RDCERR("Unsupported queue family %u", queueFamilyIdx);
+    return VK_NULL_HANDLE;
+  }
+
+  VkCommandBuffer buf = m_ExternalQueues[queueFamilyIdx].ring[0].acquire;
+
+  ObjDisp(buf)->ResetCommandBuffer(Unwrap(buf), 0);
+
+  return buf;
+}
+
+void WrappedVulkan::SubmitAndFlushExtQueue(uint32_t queueFamilyIdx)
+{
+  if(HasFatalError())
+    return;
+
+  if(queueFamilyIdx >= m_ExternalQueues.size())
+  {
+    RDCERR("Unsupported queue family %u", queueFamilyIdx);
+    return;
+  }
+
+  VkCommandBuffer buf = Unwrap(m_ExternalQueues[queueFamilyIdx].ring[0].acquire);
+
+  VkSubmitInfo submitInfo = {
+      VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      m_SubmitChain,
+      0,
+      NULL,
+      NULL,    // wait semaphores
+      1,
+      &buf,    // command buffers
+      0,
+      NULL,    // signal semaphores
+  };
+
+  VkQueue q = m_ExternalQueues[queueFamilyIdx].queue;
+
+  VkResult vkr = ObjDisp(q)->QueueSubmit(Unwrap(q), 1, &submitInfo, VK_NULL_HANDLE);
+  CheckVkResult(vkr);
+
+  ObjDisp(q)->QueueWaitIdle(Unwrap(q));
+}
+
+void WrappedVulkan::SubmitAndFlushImageStateBarriers(ImageBarrierSequence &barriers)
+{
+  if(HasFatalError())
+    return;
+
+  if(barriers.empty())
+    return;
+
+  VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                        VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+  VkFence queueFamilyFences[ImageBarrierSequence::MAX_QUEUE_FAMILY_COUNT] = {
+      VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+  rdcarray<VkFence> submittedFences;
+  rdcarray<VkImageMemoryBarrier> batch;
+  VkResult vkr;
+  for(uint32_t batchIndex = 0; batchIndex < ImageBarrierSequence::MAX_BATCH_COUNT; ++batchIndex)
+  {
+    for(uint32_t queueFamilyIndex = 0;
+        queueFamilyIndex < ImageBarrierSequence::MAX_QUEUE_FAMILY_COUNT; ++queueFamilyIndex)
+    {
+      barriers.ExtractUnwrappedBatch(batchIndex, queueFamilyIndex, batch);
+      if(batch.empty())
+        continue;
+
+      VkCommandBuffer cmd = GetExtQueueCmd(queueFamilyIndex);
+      VkQueue queue = m_ExternalQueues[queueFamilyIndex].queue;
+
+      VkCommandBuffer unwrappedCmd = Unwrap(cmd);
+
+      VkSubmitInfo submitInfo = {
+          VK_STRUCTURE_TYPE_SUBMIT_INFO,
+          NULL,
+          0,
+          NULL,
+          NULL,    // wait semaphores
+          1,
+          &unwrappedCmd,    // command buffers
+          0,
+          NULL,    // signal semaphores
+      };
+
+#if ENABLED(SINGLE_FLUSH_VALIDATE)
+      for(auto it = batch.begin(); it != batch.end(); ++it)
+      {
+        vkr = ObjDisp(cmd)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
+        CheckVkResult(vkr);
+
+        DoPipelineBarrier(cmd, 1, it);
+        vkr = ObjDisp(cmd)->EndCommandBuffer(Unwrap(cmd));
+        CheckVkResult(vkr);
+
+        vkr = ObjDisp(queue)->QueueSubmit(Unwrap(queue), 1, &submitInfo, VK_NULL_HANDLE);
+        CheckVkResult(vkr);
+
+        vkr = ObjDisp(queue)->QueueWaitIdle(Unwrap(queue));
+        CheckVkResult(vkr);
+      }
+#else
+      vkr = ObjDisp(cmd)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
+      CheckVkResult(vkr);
+
+      DoPipelineBarrier(cmd, (uint32_t)batch.size(), batch.data());
+
+      vkr = ObjDisp(cmd)->EndCommandBuffer(Unwrap(cmd));
+      CheckVkResult(vkr);
+
+      VkFence &fence = queueFamilyFences[queueFamilyIndex];
+      if(fence == VK_NULL_HANDLE)
+      {
+        VkFenceCreateInfo fenceInfo = {
+            /* sType = */ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            /* pNext = */ NULL,
+            /* flags = */ 0,
+        };
+        vkr = ObjDisp(m_Device)->CreateFence(Unwrap(m_Device), &fenceInfo, NULL, &fence);
+        CheckVkResult(vkr);
+      }
+
+      vkr = ObjDisp(queue)->QueueSubmit(Unwrap(queue), 1, &submitInfo, fence);
+      CheckVkResult(vkr);
+      submittedFences.push_back(fence);
+#endif
+      batch.clear();
+    }
+    if(!submittedFences.empty())
+    {
+      vkr = ObjDisp(m_Device)->WaitForFences(Unwrap(m_Device), (uint32_t)submittedFences.size(),
+                                             submittedFences.data(), VK_TRUE, 1000000000);
+      CheckVkResult(vkr);
+      vkr = ObjDisp(m_Device)->ResetFences(Unwrap(m_Device), (uint32_t)submittedFences.size(),
+                                           submittedFences.data());
+      CheckVkResult(vkr);
+      submittedFences.clear();
+    }
+  }
+  for(uint32_t queueFamilyIndex = 0;
+      queueFamilyIndex < ImageBarrierSequence::MAX_QUEUE_FAMILY_COUNT; ++queueFamilyIndex)
+  {
+    if(queueFamilyFences[queueFamilyIndex] != VK_NULL_HANDLE)
+      ObjDisp(m_Device)->DestroyFence(Unwrap(m_Device), queueFamilyFences[queueFamilyIndex], NULL);
+  }
+}
+
+void WrappedVulkan::InlineSetupImageBarriers(VkCommandBuffer cmd, ImageBarrierSequence &barriers)
+{
+  rdcarray<VkImageMemoryBarrier> batch;
+  barriers.ExtractLastUnwrappedBatchForQueue(m_QueueFamilyIdx, batch);
+  if(!batch.empty())
+    DoPipelineBarrier(cmd, (uint32_t)batch.size(), batch.data());
+}
+
+void WrappedVulkan::InlineCleanupImageBarriers(VkCommandBuffer cmd, ImageBarrierSequence &barriers)
+{
+  rdcarray<VkImageMemoryBarrier> batch;
+  barriers.ExtractFirstUnwrappedBatchForQueue(m_QueueFamilyIdx, batch);
+  if(!batch.empty())
+    DoPipelineBarrier(cmd, (uint32_t)batch.size(), batch.data());
+}
+
+uint32_t WrappedVulkan::HandlePreCallback(VkCommandBuffer commandBuffer, ActionFlags type,
                                           uint32_t multiDrawOffset)
 {
-  if(!m_DrawcallCallback)
+  if(!m_ActionCallback)
     return 0;
 
-  // look up the EID this drawcall came from
-  DrawcallUse use(m_CurChunkOffset, 0);
-  auto it = std::lower_bound(m_DrawcallUses.begin(), m_DrawcallUses.end(), use);
-  RDCASSERT(it != m_DrawcallUses.end());
+  // look up the EID this action came from
+  ActionUse use(m_CurChunkOffset, 0);
+  auto it = std::lower_bound(m_ActionUses.begin(), m_ActionUses.end(), use);
 
-  uint32_t eventID = it->eventID;
+  if(it == m_ActionUses.end())
+  {
+    RDCERR("Couldn't find action use entry for %llu", m_CurChunkOffset);
+    return 0;
+  }
 
-  RDCASSERT(eventID != 0);
+  uint32_t eventId = it->eventId;
 
-  // handle all aliases of this drawcall as long as it's not a multidraw
-  const FetchDrawcall *draw = GetDrawcall(eventID);
+  RDCASSERT(eventId != 0);
 
-  if(draw == NULL || (draw->flags & eDraw_MultiDraw) == 0)
+  // handle all aliases of this action as long as it's not a multidraw
+  const ActionDescription *action = GetAction(eventId);
+
+  if(action == NULL || !(action->flags & ActionFlags::MultiAction))
   {
     ++it;
-    while(it != m_DrawcallUses.end() && it->fileOffset == m_CurChunkOffset)
+    while(it != m_ActionUses.end() && it->fileOffset == m_CurChunkOffset)
     {
-      m_DrawcallCallback->AliasEvent(eventID, it->eventID);
+      m_ActionCallback->AliasEvent(eventId, it->eventId);
       ++it;
     }
   }
 
-  eventID += multiDrawOffset;
+  eventId += multiDrawOffset;
 
-  if(dispatch)
-    m_DrawcallCallback->PreDispatch(eventID, commandBuffer);
+  if(type == ActionFlags::Drawcall)
+    m_ActionCallback->PreDraw(eventId, commandBuffer);
+  else if(type == ActionFlags::Dispatch)
+    m_ActionCallback->PreDispatch(eventId, commandBuffer);
   else
-    m_DrawcallCallback->PreDraw(eventID, commandBuffer);
+    m_ActionCallback->PreMisc(eventId, type, commandBuffer);
 
-  return eventID;
+  return eventId;
 }
 
-const char *WrappedVulkan::GetChunkName(uint32_t idx)
+rdcstr WrappedVulkan::GetChunkName(uint32_t idx)
 {
-  if(idx == CREATE_PARAMS)
-    return "Create Params";
-  if(idx == THUMBNAIL_DATA)
-    return "Thumbnail Data";
-  if(idx == DRIVER_INIT_PARAMS)
-    return "Driver Init Params";
-  if(idx == INITIAL_CONTENTS)
-    return "Initial Contents";
-  if(idx < FIRST_CHUNK_ID || idx >= NUM_VULKAN_CHUNKS)
-    return "<unknown>";
-  return VkChunkNames[idx - FIRST_CHUNK_ID];
-}
+  if((SystemChunk)idx == SystemChunk::DriverInit)
+    return "vkCreateInstance"_lit;
 
-template <>
-string ToStrHelper<false, VulkanChunkType>::Get(const VulkanChunkType &el)
-{
-  return WrappedVulkan::GetChunkName(el);
+  if((SystemChunk)idx < SystemChunk::FirstDriverChunk)
+    return ToStr((SystemChunk)idx);
+
+  return ToStr((VulkanChunk)idx);
 }
 
 WrappedVulkan::ScopedDebugMessageSink::ScopedDebugMessageSink(WrappedVulkan *driver)
@@ -584,8 +679,40 @@ void WrappedVulkan::SetDebugMessageSink(WrappedVulkan::ScopedDebugMessageSink *s
   Threading::SetTLSValue(debugMessageSinkTLSSlot, (void *)sink);
 }
 
+byte *WrappedVulkan::GetRingTempMemory(size_t s)
+{
+  TempMem *mem = (TempMem *)Threading::GetTLSValue(tempMemoryTLSSlot);
+
+  if(!mem || mem->size < s)
+  {
+    if(mem && mem->size < s)
+      RDCWARN("More than %zu bytes needed to unwrap!", mem->size);
+
+    mem = new TempMem();
+    mem->size = AlignUp(s, size_t(4 * 1024 * 1024));
+    mem->memory = mem->cur = new byte[mem->size];
+
+    SCOPED_LOCK(m_ThreadTempMemLock);
+    m_ThreadTempMem.push_back(mem);
+
+    Threading::SetTLSValue(tempMemoryTLSSlot, (void *)mem);
+  }
+
+  // if we'd wrap, go back to the start
+  if(mem->cur + s >= mem->memory + mem->size)
+    mem->cur = mem->memory;
+
+  // save the return value and update the cur pointer
+  byte *ret = mem->cur;
+  mem->cur = AlignUpPtr(mem->cur + s, 16);
+  return ret;
+}
+
 byte *WrappedVulkan::GetTempMemory(size_t s)
 {
+  if(IsReplayMode(m_State))
+    return GetRingTempMemory(s);
+
   TempMem *mem = (TempMem *)Threading::GetTLSValue(tempMemoryTLSSlot);
   if(mem && mem->size >= s)
     return mem->memory;
@@ -616,24 +743,24 @@ byte *WrappedVulkan::GetTempMemory(size_t s)
   return newmem->memory;
 }
 
-Serialiser *WrappedVulkan::GetThreadSerialiser()
+WriteSerialiser &WrappedVulkan::GetThreadSerialiser()
 {
-  Serialiser *ser = (Serialiser *)Threading::GetTLSValue(threadSerialiserTLSSlot);
+  WriteSerialiser *ser = (WriteSerialiser *)Threading::GetTLSValue(threadSerialiserTLSSlot);
   if(ser)
-    return ser;
+    return *ser;
 
-// slow path, but rare
+  // slow path, but rare
+  ser = new WriteSerialiser(new StreamWriter(1024), Ownership::Stream);
 
-#if ENABLED(RDOC_RELEASE)
-  const bool debugSerialiser = false;
-#else
-  const bool debugSerialiser = true;
-#endif
+  uint32_t flags = WriteSerialiser::ChunkDuration | WriteSerialiser::ChunkTimestamp |
+                   WriteSerialiser::ChunkThreadID;
 
-  ser = new Serialiser(NULL, Serialiser::WRITING, debugSerialiser);
-  ser->SetUserData(m_ResourceManager);
+  if(RenderDoc::Inst().GetCaptureOptions().captureCallstacks)
+    flags |= WriteSerialiser::ChunkCallstack;
 
-  ser->SetChunkNameLookup(&GetChunkName);
+  ser->SetChunkMetadataRecording(flags);
+  ser->SetUserData(GetResourceManager());
+  ser->SetVersion(VkInitParams::CurrentVersion);
 
   Threading::SetTLSValue(threadSerialiserTLSSlot, (void *)ser);
 
@@ -642,7 +769,7 @@ Serialiser *WrappedVulkan::GetThreadSerialiser()
     m_ThreadSerialisers.push_back(ser);
   }
 
-  return ser;
+  return *ser;
 }
 
 static VkResult FillPropertyCountAndList(const VkExtensionProperties *src, uint32_t numExts,
@@ -662,7 +789,8 @@ static VkResult FillPropertyCountAndList(const VkExtensionProperties *src, uint3
     *dstCount = RDCMIN(numExts, dstSpace);
 
     // copy as much as there's space for, up to how many there are
-    memcpy(dstProps, src, sizeof(VkExtensionProperties) * RDCMIN(numExts, dstSpace));
+    if(src)
+      memcpy(dstProps, src, sizeof(VkExtensionProperties) * RDCMIN(numExts, dstSpace));
 
     // if there was enough space, return success, else incomplete
     if(dstSpace >= numExts)
@@ -682,70 +810,617 @@ bool operator<(const VkExtensionProperties &a, const VkExtensionProperties &b)
   return strcmp(a.extensionName, b.extensionName) < 0;
 }
 
-// this is the list of extensions we provide - regardless of whether the ICD supports them
-static const VkExtensionProperties renderdocProvidedExtensions[] = {
-    {VK_EXT_DEBUG_MARKER_EXTENSION_NAME, VK_EXT_DEBUG_MARKER_SPEC_VERSION},
-};
-
-VkResult WrappedVulkan::FilterDeviceExtensionProperties(VkPhysicalDevice physDev,
-                                                        uint32_t *pPropertyCount,
-                                                        VkExtensionProperties *pProperties)
-{
-  VkResult vkr;
-
-  // first fetch the list of extensions ourselves
-  uint32_t numExts;
-  vkr = ObjDisp(physDev)->EnumerateDeviceExtensionProperties(Unwrap(physDev), NULL, &numExts, NULL);
-
-  if(vkr != VK_SUCCESS)
-    return vkr;
-
-  vector<VkExtensionProperties> exts(numExts);
-  vkr = ObjDisp(physDev)->EnumerateDeviceExtensionProperties(Unwrap(physDev), NULL, &numExts,
-                                                             &exts[0]);
-
-  if(vkr != VK_SUCCESS)
-    return vkr;
-
-  // filter the list of extensions to only the ones we support. Note it's important that
-  // this list is kept sorted according to the above sort operator!
-  const VkExtensionProperties supportedExtensions[] = {
-      {
-          VK_EXT_DEBUG_REPORT_EXTENSION_NAME, VK_EXT_DEBUG_REPORT_SPEC_VERSION,
-      },
-      {
-          VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME,
-          VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_SPEC_VERSION,
-      },
-      {
-          VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_SURFACE_SPEC_VERSION,
-      },
-      {
-          VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_SWAPCHAIN_SPEC_VERSION,
-      },
-#ifdef VK_KHR_win32_surface
-      {
-          VK_KHR_WIN32_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_SPEC_VERSION,
-      },
+// This list must be kept sorted according to the above sort operator!
+static const VkExtensionProperties supportedExtensions[] = {
+    {
+        VK_AMD_BUFFER_MARKER_EXTENSION_NAME, VK_AMD_BUFFER_MARKER_SPEC_VERSION,
+    },
+    {
+        VK_AMD_DEVICE_COHERENT_MEMORY_EXTENSION_NAME, VK_AMD_DEVICE_COHERENT_MEMORY_SPEC_VERSION,
+    },
+    {
+        VK_AMD_DISPLAY_NATIVE_HDR_EXTENSION_NAME, VK_AMD_DISPLAY_NATIVE_HDR_SPEC_VERSION,
+    },
+    {
+        VK_AMD_GCN_SHADER_EXTENSION_NAME, VK_AMD_GCN_SHADER_SPEC_VERSION,
+    },
+    {
+        VK_AMD_GPU_SHADER_HALF_FLOAT_EXTENSION_NAME, VK_AMD_GPU_SHADER_HALF_FLOAT_SPEC_VERSION,
+    },
+    {
+        VK_AMD_GPU_SHADER_INT16_EXTENSION_NAME, VK_AMD_GPU_SHADER_INT16_SPEC_VERSION,
+    },
+    {
+        VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME, VK_AMD_MIXED_ATTACHMENT_SAMPLES_SPEC_VERSION,
+    },
+    {
+        VK_AMD_NEGATIVE_VIEWPORT_HEIGHT_EXTENSION_NAME, VK_AMD_NEGATIVE_VIEWPORT_HEIGHT_SPEC_VERSION,
+    },
+    {
+        VK_AMD_SHADER_BALLOT_EXTENSION_NAME, VK_AMD_SHADER_BALLOT_SPEC_VERSION,
+    },
+    {
+        VK_AMD_SHADER_CORE_PROPERTIES_EXTENSION_NAME, VK_AMD_SHADER_CORE_PROPERTIES_SPEC_VERSION,
+    },
+    {
+        VK_AMD_SHADER_EXPLICIT_VERTEX_PARAMETER_EXTENSION_NAME,
+        VK_AMD_SHADER_EXPLICIT_VERTEX_PARAMETER_SPEC_VERSION,
+    },
+    {
+        VK_AMD_SHADER_FRAGMENT_MASK_EXTENSION_NAME, VK_AMD_SHADER_FRAGMENT_MASK_SPEC_VERSION,
+    },
+    {
+        VK_AMD_SHADER_IMAGE_LOAD_STORE_LOD_EXTENSION_NAME,
+        VK_AMD_SHADER_IMAGE_LOAD_STORE_LOD_SPEC_VERSION,
+    },
+    {
+        VK_AMD_SHADER_TRINARY_MINMAX_EXTENSION_NAME, VK_AMD_SHADER_TRINARY_MINMAX_SPEC_VERSION,
+    },
+    {
+        VK_AMD_TEXTURE_GATHER_BIAS_LOD_EXTENSION_NAME, VK_AMD_TEXTURE_GATHER_BIAS_LOD_SPEC_VERSION,
+    },
+#ifdef VK_ANDROID_external_memory_android_hardware_buffer
+    {
+        VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME,
+        VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_SPEC_VERSION,
+    },
 #endif
+#ifdef VK_EXT_acquire_xlib_display
+    {
+        VK_EXT_ACQUIRE_XLIB_DISPLAY_EXTENSION_NAME, VK_EXT_ACQUIRE_XLIB_DISPLAY_SPEC_VERSION,
+    },
+#endif
+    {
+        VK_EXT_ASTC_DECODE_MODE_EXTENSION_NAME, VK_EXT_ASTC_DECODE_MODE_SPEC_VERSION,
+    },
+    {
+        VK_EXT_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME, VK_EXT_BUFFER_DEVICE_ADDRESS_SPEC_VERSION,
+    },
+    {
+        VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME, VK_EXT_CALIBRATED_TIMESTAMPS_SPEC_VERSION,
+    },
+    {
+        VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME, VK_EXT_CONDITIONAL_RENDERING_SPEC_VERSION,
+    },
+    {
+        VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME,
+        VK_EXT_CONSERVATIVE_RASTERIZATION_SPEC_VERSION,
+    },
+    {
+        VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME, VK_EXT_CUSTOM_BORDER_COLOR_SPEC_VERSION,
+    },
+    {
+        VK_EXT_DEBUG_MARKER_EXTENSION_NAME, VK_EXT_DEBUG_MARKER_SPEC_VERSION,
+    },
+    {
+        VK_EXT_DEBUG_REPORT_EXTENSION_NAME, VK_EXT_DEBUG_REPORT_SPEC_VERSION,
+    },
+    {
+        VK_EXT_DEBUG_UTILS_EXTENSION_NAME, VK_EXT_DEBUG_UTILS_SPEC_VERSION,
+    },
+    {
+        VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_ENABLE_SPEC_VERSION,
+    },
+    {
+        VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME, VK_EXT_DEPTH_RANGE_UNRESTRICTED_SPEC_VERSION,
+    },
+    {
+        VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME, VK_EXT_DESCRIPTOR_INDEXING_SPEC_VERSION,
+    },
+    {
+        VK_EXT_DIRECT_MODE_DISPLAY_EXTENSION_NAME, VK_EXT_DIRECT_MODE_DISPLAY_SPEC_VERSION,
+    },
+    {
+        VK_EXT_DISCARD_RECTANGLES_EXTENSION_NAME, VK_EXT_DISCARD_RECTANGLES_SPEC_VERSION,
+    },
+    {
+        VK_EXT_DISPLAY_CONTROL_EXTENSION_NAME, VK_EXT_DISPLAY_CONTROL_SPEC_VERSION,
+    },
+    {
+        VK_EXT_DISPLAY_SURFACE_COUNTER_EXTENSION_NAME, VK_EXT_DISPLAY_SURFACE_COUNTER_SPEC_VERSION,
+    },
+    {
+        VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, VK_EXT_EXTENDED_DYNAMIC_STATE_SPEC_VERSION,
+    },
+    {
+        VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_SPEC_VERSION,
+    },
+    {
+        VK_EXT_FILTER_CUBIC_EXTENSION_NAME, VK_EXT_FILTER_CUBIC_SPEC_VERSION,
+    },
+    {
+        VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME, VK_EXT_FRAGMENT_DENSITY_MAP_SPEC_VERSION,
+    },
+    {
+        VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME, VK_EXT_FRAGMENT_SHADER_INTERLOCK_SPEC_VERSION,
+    },
+#ifdef VK_EXT_full_screen_exclusive
+    {
+        VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME, VK_EXT_FULL_SCREEN_EXCLUSIVE_SPEC_VERSION,
+    },
+#endif
+    {
+        VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME, VK_EXT_GLOBAL_PRIORITY_SPEC_VERSION,
+    },
+    {
+        VK_EXT_HDR_METADATA_EXTENSION_NAME, VK_EXT_HDR_METADATA_SPEC_VERSION,
+    },
+    {
+        VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME, VK_EXT_HEADLESS_SURFACE_SPEC_VERSION,
+    },
+    {
+        VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME, VK_EXT_HOST_QUERY_RESET_SPEC_VERSION,
+    },
+    {
+        VK_EXT_IMAGE_ROBUSTNESS_EXTENSION_NAME, VK_EXT_IMAGE_ROBUSTNESS_SPEC_VERSION,
+    },
+    {
+        VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME, VK_EXT_INDEX_TYPE_UINT8_SPEC_VERSION,
+    },
+    {
+        VK_EXT_INLINE_UNIFORM_BLOCK_EXTENSION_NAME, VK_EXT_INLINE_UNIFORM_BLOCK_SPEC_VERSION,
+    },
+    {
+        VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME, VK_EXT_LINE_RASTERIZATION_SPEC_VERSION,
+    },
+    {
+        VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, VK_EXT_MEMORY_BUDGET_SPEC_VERSION,
+    },
+    {
+        VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME, VK_EXT_MEMORY_PRIORITY_SPEC_VERSION,
+    },
+#ifdef VK_EXT_metal_surface
+    {
+        VK_EXT_METAL_SURFACE_EXTENSION_NAME, VK_EXT_METAL_SURFACE_SPEC_VERSION,
+    },
+#endif
+    {
+        VK_EXT_PCI_BUS_INFO_EXTENSION_NAME, VK_EXT_PCI_BUS_INFO_SPEC_VERSION,
+    },
+    {
+        VK_EXT_PIPELINE_CREATION_CACHE_CONTROL_EXTENSION_NAME,
+        VK_EXT_PIPELINE_CREATION_CACHE_CONTROL_SPEC_VERSION,
+    },
+    {
+        VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME,
+        VK_EXT_PIPELINE_CREATION_FEEDBACK_SPEC_VERSION,
+    },
+    {
+        VK_EXT_POST_DEPTH_COVERAGE_EXTENSION_NAME, VK_EXT_POST_DEPTH_COVERAGE_SPEC_VERSION,
+    },
+    {
+        VK_EXT_PRIVATE_DATA_EXTENSION_NAME, VK_EXT_PRIVATE_DATA_SPEC_VERSION,
+    },
+    {
+        VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME, VK_EXT_QUEUE_FAMILY_FOREIGN_SPEC_VERSION,
+    },
+    {
+        VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, VK_EXT_ROBUSTNESS_2_SPEC_VERSION,
+    },
+    {
+        VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME, VK_EXT_SAMPLE_LOCATIONS_SPEC_VERSION,
+    },
+    {
+        VK_EXT_SAMPLER_FILTER_MINMAX_EXTENSION_NAME, VK_EXT_SAMPLER_FILTER_MINMAX_SPEC_VERSION,
+    },
+    {
+        VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME, VK_EXT_SCALAR_BLOCK_LAYOUT_SPEC_VERSION,
+    },
+    {
+        VK_EXT_SEPARATE_STENCIL_USAGE_EXTENSION_NAME, VK_EXT_SEPARATE_STENCIL_USAGE_SPEC_VERSION,
+    },
+    {
+        VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, VK_EXT_SHADER_ATOMIC_FLOAT_SPEC_VERSION,
+    },
+    {
+        VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME,
+        VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_SPEC_VERSION,
+    },
+    {
+        VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME, VK_EXT_SHADER_IMAGE_ATOMIC_INT64_SPEC_VERSION,
+    },
+    {
+        VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME, VK_EXT_SHADER_STENCIL_EXPORT_SPEC_VERSION,
+    },
+    {
+        VK_EXT_SHADER_SUBGROUP_BALLOT_EXTENSION_NAME, VK_EXT_SHADER_SUBGROUP_BALLOT_SPEC_VERSION,
+    },
+    {
+        VK_EXT_SHADER_SUBGROUP_VOTE_EXTENSION_NAME, VK_EXT_SHADER_SUBGROUP_VOTE_SPEC_VERSION,
+    },
+    {
+        VK_EXT_SHADER_VIEWPORT_INDEX_LAYER_EXTENSION_NAME,
+        VK_EXT_SHADER_VIEWPORT_INDEX_LAYER_SPEC_VERSION,
+    },
+    {
+        VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME, VK_EXT_SUBGROUP_SIZE_CONTROL_SPEC_VERSION,
+    },
+    {
+        VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME, VK_EXT_SWAPCHAIN_COLOR_SPACE_SPEC_VERSION,
+    },
+    {
+        VK_EXT_TEXEL_BUFFER_ALIGNMENT_EXTENSION_NAME, VK_EXT_TEXEL_BUFFER_ALIGNMENT_SPEC_VERSION,
+    },
+    {
+        VK_EXT_TOOLING_INFO_EXTENSION_NAME, VK_EXT_TOOLING_INFO_SPEC_VERSION,
+    },
+    {
+        VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME, VK_EXT_TRANSFORM_FEEDBACK_SPEC_VERSION,
+    },
+    {
+        VK_EXT_VALIDATION_CACHE_EXTENSION_NAME, VK_EXT_VALIDATION_CACHE_SPEC_VERSION,
+    },
+    {
+        VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, VK_EXT_VALIDATION_FEATURES_SPEC_VERSION,
+    },
+    {
+        VK_EXT_VALIDATION_FLAGS_EXTENSION_NAME, VK_EXT_VALIDATION_FLAGS_SPEC_VERSION,
+    },
+    {
+        VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_SPEC_VERSION,
+    },
+    {
+        VK_EXT_YCBCR_IMAGE_ARRAYS_EXTENSION_NAME, VK_EXT_YCBCR_IMAGE_ARRAYS_SPEC_VERSION,
+    },
+#ifdef VK_GGP_frame_token
+    {
+        VK_GGP_FRAME_TOKEN_EXTENSION_NAME, VK_GGP_FRAME_TOKEN_SPEC_VERSION,
+    },
+#endif
+#ifdef VK_GGP_stream_descriptor_surface
+    {
+        VK_GGP_STREAM_DESCRIPTOR_SURFACE_EXTENSION_NAME, VK_GGP_STREAM_DESCRIPTOR_SURFACE_SPEC_VERSION,
+    },
+#endif
+    {
+        VK_GOOGLE_DECORATE_STRING_EXTENSION_NAME, VK_GOOGLE_DECORATE_STRING_SPEC_VERSION,
+    },
+    {
+        VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME, VK_GOOGLE_DISPLAY_TIMING_SPEC_VERSION,
+    },
+    {
+        VK_GOOGLE_HLSL_FUNCTIONALITY1_EXTENSION_NAME, VK_GOOGLE_HLSL_FUNCTIONALITY1_SPEC_VERSION,
+    },
+    {
+        VK_GOOGLE_USER_TYPE_EXTENSION_NAME, VK_GOOGLE_USER_TYPE_SPEC_VERSION,
+    },
+    {
+        VK_IMG_FILTER_CUBIC_EXTENSION_NAME, VK_IMG_FILTER_CUBIC_SPEC_VERSION,
+    },
+    {
+        VK_IMG_FORMAT_PVRTC_EXTENSION_NAME, VK_IMG_FORMAT_PVRTC_SPEC_VERSION,
+    },
+    {
+        VK_KHR_16BIT_STORAGE_EXTENSION_NAME, VK_KHR_16BIT_STORAGE_SPEC_VERSION,
+    },
+    {
+        VK_KHR_8BIT_STORAGE_EXTENSION_NAME, VK_KHR_8BIT_STORAGE_SPEC_VERSION,
+    },
+#ifdef VK_KHR_android_surface
+    {
+        VK_KHR_ANDROID_SURFACE_EXTENSION_NAME, VK_KHR_ANDROID_SURFACE_SPEC_VERSION,
+    },
+#endif
+    {
+        VK_KHR_BIND_MEMORY_2_EXTENSION_NAME, VK_KHR_BIND_MEMORY_2_SPEC_VERSION,
+    },
+    {
+        VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME, VK_KHR_BUFFER_DEVICE_ADDRESS_SPEC_VERSION,
+    },
+    {
+        VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME, VK_KHR_COPY_COMMANDS_2_SPEC_VERSION,
+    },
+    {
+        VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME, VK_KHR_CREATE_RENDERPASS_2_SPEC_VERSION,
+    },
+    {
+        VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME, VK_KHR_DEDICATED_ALLOCATION_SPEC_VERSION,
+    },
+    {
+        VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME, VK_KHR_DEPTH_STENCIL_RESOLVE_SPEC_VERSION,
+    },
+    {
+        VK_KHR_DESCRIPTOR_UPDATE_TEMPLATE_EXTENSION_NAME,
+        VK_KHR_DESCRIPTOR_UPDATE_TEMPLATE_SPEC_VERSION,
+    },
+    {
+        VK_KHR_DEVICE_GROUP_EXTENSION_NAME, VK_KHR_DEVICE_GROUP_SPEC_VERSION,
+    },
+    {
+        VK_KHR_DEVICE_GROUP_CREATION_EXTENSION_NAME, VK_KHR_DEVICE_GROUP_CREATION_SPEC_VERSION,
+    },
+#ifdef VK_KHR_display
+    {
+        VK_KHR_DISPLAY_EXTENSION_NAME, VK_KHR_DISPLAY_SPEC_VERSION,
+    },
+#endif
+#ifdef VK_KHR_display_swapchain
+    {
+        VK_KHR_DISPLAY_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DISPLAY_SWAPCHAIN_SPEC_VERSION,
+    },
+#endif
+    {
+        VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME, VK_KHR_DRAW_INDIRECT_COUNT_SPEC_VERSION,
+    },
+    {
+        VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME, VK_KHR_DRIVER_PROPERTIES_SPEC_VERSION,
+    },
+    {
+        VK_KHR_EXTERNAL_FENCE_EXTENSION_NAME, VK_KHR_EXTERNAL_FENCE_SPEC_VERSION,
+    },
+    {
+        VK_KHR_EXTERNAL_FENCE_CAPABILITIES_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_FENCE_CAPABILITIES_SPEC_VERSION,
+    },
+    {
+        VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME, VK_KHR_EXTERNAL_FENCE_FD_SPEC_VERSION,
+    },
+#ifdef VK_KHR_external_fence_win32
+    {
+        VK_KHR_EXTERNAL_FENCE_WIN32_EXTENSION_NAME, VK_KHR_EXTERNAL_FENCE_WIN32_SPEC_VERSION,
+    },
+#endif
+    {
+        VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME, VK_KHR_EXTERNAL_MEMORY_SPEC_VERSION,
+    },
+    {
+        VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_SPEC_VERSION,
+    },
+    {
+        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, VK_KHR_EXTERNAL_MEMORY_FD_SPEC_VERSION,
+    },
+#ifdef VK_KHR_external_memory_win32
+    {
+        VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME, VK_KHR_EXTERNAL_MEMORY_WIN32_SPEC_VERSION,
+    },
+#endif
+    {
+        VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME, VK_KHR_EXTERNAL_SEMAPHORE_SPEC_VERSION,
+    },
+    {
+        VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_SPEC_VERSION,
+    },
+    {
+        VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME, VK_KHR_EXTERNAL_SEMAPHORE_FD_SPEC_VERSION,
+    },
+#ifdef VK_KHR_external_semaphore_win32
+    {
+        VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME, VK_KHR_EXTERNAL_SEMAPHORE_WIN32_SPEC_VERSION,
+    },
+#endif
+    {
+        VK_KHR_GET_DISPLAY_PROPERTIES_2_EXTENSION_NAME, VK_KHR_GET_DISPLAY_PROPERTIES_2_SPEC_VERSION,
+    },
+    {
+        VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME, VK_KHR_GET_MEMORY_REQUIREMENTS_2_SPEC_VERSION,
+    },
+    {
+        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_SPEC_VERSION,
+    },
+    {
+        VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
+        VK_KHR_GET_SURFACE_CAPABILITIES_2_SPEC_VERSION,
+    },
+    {
+        VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME, VK_KHR_IMAGE_FORMAT_LIST_SPEC_VERSION,
+    },
+    {
+        VK_KHR_IMAGELESS_FRAMEBUFFER_EXTENSION_NAME, VK_KHR_IMAGELESS_FRAMEBUFFER_SPEC_VERSION,
+    },
+    {
+        VK_KHR_INCREMENTAL_PRESENT_EXTENSION_NAME, VK_KHR_INCREMENTAL_PRESENT_SPEC_VERSION,
+    },
+    {
+        VK_KHR_MAINTENANCE1_EXTENSION_NAME, VK_KHR_MAINTENANCE1_SPEC_VERSION,
+    },
+    {
+        VK_KHR_MAINTENANCE2_EXTENSION_NAME, VK_KHR_MAINTENANCE2_SPEC_VERSION,
+    },
+    {
+        VK_KHR_MAINTENANCE3_EXTENSION_NAME, VK_KHR_MAINTENANCE3_SPEC_VERSION,
+    },
+    {
+        VK_KHR_MULTIVIEW_EXTENSION_NAME, VK_KHR_MULTIVIEW_SPEC_VERSION,
+    },
+    {
+        VK_KHR_PERFORMANCE_QUERY_EXTENSION_NAME, VK_KHR_PERFORMANCE_QUERY_SPEC_VERSION,
+    },
+    {
+        VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME,
+        VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_SPEC_VERSION,
+    },
+    {
+        VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_SPEC_VERSION,
+    },
+    {
+        VK_KHR_RELAXED_BLOCK_LAYOUT_EXTENSION_NAME, VK_KHR_RELAXED_BLOCK_LAYOUT_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME,
+        VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME, VK_KHR_SAMPLER_YCBCR_CONVERSION_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SEPARATE_DEPTH_STENCIL_LAYOUTS_EXTENSION_NAME,
+        VK_KHR_SEPARATE_DEPTH_STENCIL_LAYOUTS_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME, VK_KHR_SHADER_ATOMIC_INT64_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SHADER_CLOCK_EXTENSION_NAME, VK_KHR_SHADER_CLOCK_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME, VK_KHR_SHADER_DRAW_PARAMETERS_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME, VK_KHR_SHADER_FLOAT16_INT8_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME, VK_KHR_SHADER_FLOAT_CONTROLS_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME, VK_KHR_SHADER_NON_SEMANTIC_INFO_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SHADER_SUBGROUP_EXTENDED_TYPES_EXTENSION_NAME,
+        VK_KHR_SHADER_SUBGROUP_EXTENDED_TYPES_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SHADER_TERMINATE_INVOCATION_EXTENSION_NAME,
+        VK_KHR_SHADER_TERMINATE_INVOCATION_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SHARED_PRESENTABLE_IMAGE_EXTENSION_NAME, VK_KHR_SHARED_PRESENTABLE_IMAGE_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SPIRV_1_4_EXTENSION_NAME, VK_KHR_SPIRV_1_4_SPEC_VERSION,
+    },
+    {
+        VK_KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION_NAME,
+        VK_KHR_STORAGE_BUFFER_STORAGE_CLASS_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_SURFACE_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SURFACE_PROTECTED_CAPABILITIES_EXTENSION_NAME,
+        VK_KHR_SURFACE_PROTECTED_CAPABILITIES_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_SWAPCHAIN_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME, VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_SPEC_VERSION,
+    },
+    {
+        VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, VK_KHR_SYNCHRONIZATION_2_SPEC_VERSION,
+    },
+    {
+        VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME, VK_KHR_TIMELINE_SEMAPHORE_SPEC_VERSION,
+    },
+    {
+        VK_KHR_UNIFORM_BUFFER_STANDARD_LAYOUT_EXTENSION_NAME,
+        VK_KHR_UNIFORM_BUFFER_STANDARD_LAYOUT_SPEC_VERSION,
+    },
+    {
+        VK_KHR_VARIABLE_POINTERS_EXTENSION_NAME, VK_KHR_VARIABLE_POINTERS_SPEC_VERSION,
+    },
+    {
+        VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME, VK_KHR_VULKAN_MEMORY_MODEL_SPEC_VERSION,
+    },
+#ifdef VK_KHR_wayland_surface
+    {
+        VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME, VK_KHR_WAYLAND_SURFACE_SPEC_VERSION,
+    },
+#endif
+#ifdef VK_KHR_win32_keyed_mutex
+    {
+        VK_KHR_WIN32_KEYED_MUTEX_EXTENSION_NAME, VK_KHR_WIN32_KEYED_MUTEX_SPEC_VERSION,
+    },
+#endif
+#ifdef VK_KHR_win32_surface
+    {
+        VK_KHR_WIN32_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_SPEC_VERSION,
+    },
+#endif
+    {
+        VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME,
+        VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_SPEC_VERSION,
+    },
 #ifdef VK_KHR_xcb_surface
-      {
-          VK_KHR_XCB_SURFACE_EXTENSION_NAME, VK_KHR_XCB_SURFACE_SPEC_VERSION,
-      },
+    {
+        VK_KHR_XCB_SURFACE_EXTENSION_NAME, VK_KHR_XCB_SURFACE_SPEC_VERSION,
+    },
 #endif
 #ifdef VK_KHR_xlib_surface
-      {
-          VK_KHR_XLIB_SURFACE_EXTENSION_NAME, VK_KHR_XLIB_SURFACE_SPEC_VERSION,
-      },
+    {
+        VK_KHR_XLIB_SURFACE_EXTENSION_NAME, VK_KHR_XLIB_SURFACE_SPEC_VERSION,
+    },
 #endif
-  };
+    {
+        VK_KHR_ZERO_INITIALIZE_WORKGROUP_MEMORY_EXTENSION_NAME,
+        VK_KHR_ZERO_INITIALIZE_WORKGROUP_MEMORY_SPEC_VERSION,
+    },
+#ifdef VK_MVK_macos_surface
+    {
+        VK_MVK_MACOS_SURFACE_EXTENSION_NAME, VK_MVK_MACOS_SURFACE_SPEC_VERSION,
+    },
+#endif
+    {
+        VK_NV_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME, VK_NV_COMPUTE_SHADER_DERIVATIVES_SPEC_VERSION,
+    },
+    {
+        VK_NV_DEDICATED_ALLOCATION_EXTENSION_NAME, VK_NV_DEDICATED_ALLOCATION_SPEC_VERSION,
+    },
+    {
+        VK_NV_EXTERNAL_MEMORY_EXTENSION_NAME, VK_NV_EXTERNAL_MEMORY_SPEC_VERSION,
+    },
+    {
+        VK_NV_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
+        VK_NV_EXTERNAL_MEMORY_CAPABILITIES_SPEC_VERSION,
+    },
+#ifdef VK_NV_external_memory_win32
+    {
+        VK_NV_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME, VK_NV_EXTERNAL_MEMORY_WIN32_SPEC_VERSION,
+    },
+#endif
+    {
+        VK_NV_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME,
+        VK_NV_FRAGMENT_SHADER_BARYCENTRIC_SPEC_VERSION,
+    },
+    {
+        VK_NV_GEOMETRY_SHADER_PASSTHROUGH_EXTENSION_NAME,
+        VK_NV_GEOMETRY_SHADER_PASSTHROUGH_SPEC_VERSION,
+    },
+    {
+        VK_NV_SAMPLE_MASK_OVERRIDE_COVERAGE_EXTENSION_NAME,
+        VK_NV_SAMPLE_MASK_OVERRIDE_COVERAGE_SPEC_VERSION,
+    },
+    {
+        VK_NV_SHADER_IMAGE_FOOTPRINT_EXTENSION_NAME, VK_NV_SHADER_IMAGE_FOOTPRINT_SPEC_VERSION,
+    },
+    {
+        VK_NV_SHADER_SUBGROUP_PARTITIONED_EXTENSION_NAME,
+        VK_NV_SHADER_SUBGROUP_PARTITIONED_SPEC_VERSION,
+    },
+    {
+        VK_NV_VIEWPORT_ARRAY2_EXTENSION_NAME, VK_NV_VIEWPORT_ARRAY2_SPEC_VERSION,
+    },
+#ifdef VK_NV_win32_keyed_mutex
+    {
+        VK_NV_WIN32_KEYED_MUTEX_EXTENSION_NAME, VK_NV_WIN32_KEYED_MUTEX_SPEC_VERSION,
+    },
+#endif
+};
 
-  // sort the reported extensions
-  std::sort(exts.begin(), exts.end());
+// this is the list of extensions we provide - regardless of whether the ICD supports them
+static const VkExtensionProperties renderdocProvidedDeviceExtensions[] = {
+    {VK_EXT_DEBUG_MARKER_EXTENSION_NAME, VK_EXT_DEBUG_MARKER_SPEC_VERSION},
+    {VK_EXT_TOOLING_INFO_EXTENSION_NAME, VK_EXT_TOOLING_INFO_SPEC_VERSION},
+};
 
-  std::vector<VkExtensionProperties> filtered;
-  filtered.reserve(exts.size());
+static const VkExtensionProperties renderdocProvidedInstanceExtensions[] = {
+    {VK_EXT_DEBUG_UTILS_EXTENSION_NAME, VK_EXT_DEBUG_UTILS_SPEC_VERSION},
+};
 
+bool WrappedVulkan::IsSupportedExtension(const char *extName)
+{
+  for(size_t i = 0; i < ARRAY_COUNT(supportedExtensions); i++)
+    if(!strcmp(supportedExtensions[i].extensionName, extName))
+      return true;
+
+  return false;
+}
+
+void WrappedVulkan::FilterToSupportedExtensions(rdcarray<VkExtensionProperties> &exts,
+                                                rdcarray<VkExtensionProperties> &filtered)
+{
   // now we can step through both lists with two pointers,
   // instead of doing an O(N*M) lookup searching through each
   // supported extension for each reported extension.
@@ -756,8 +1431,8 @@ VkResult WrappedVulkan::FilterDeviceExtensionProperties(VkPhysicalDevice physDev
     // if neither is less than the other, the extensions are equal
     if(nameCompare == 0)
     {
-      // warn on spec version mismatch, but allow it.
-      if(supportedExtensions[i].specVersion != it->specVersion)
+      // warn on spec version mismatch if it's newer than ours, but allow it.
+      if(supportedExtensions[i].specVersion < it->specVersion)
         RDCWARN(
             "Spec versions of %s are different between supported extension (%d) and reported (%d)!",
             it->extensionName, supportedExtensions[i].specVersion, it->specVersion);
@@ -777,208 +1452,366 @@ VkResult WrappedVulkan::FilterDeviceExtensionProperties(VkPhysicalDevice physDev
       ++i;
     }
   }
+}
 
-  // now we can add extensions that we provide ourselves (note this isn't sorted, but we
-  // don't have to sort the results, the sorting was just so we could filter optimally).
-  filtered.insert(filtered.end(), &renderdocProvidedExtensions[0],
-                  &renderdocProvidedExtensions[0] + ARRAY_COUNT(renderdocProvidedExtensions));
+static bool filterWarned = false;
+
+VkResult WrappedVulkan::FilterDeviceExtensionProperties(VkPhysicalDevice physDev,
+                                                        const char *pLayerName,
+                                                        uint32_t *pPropertyCount,
+                                                        VkExtensionProperties *pProperties)
+{
+  VkResult vkr;
+
+  // first fetch the list of extensions ourselves
+  uint32_t numExts;
+  vkr = ObjDisp(physDev)->EnumerateDeviceExtensionProperties(Unwrap(physDev), pLayerName, &numExts,
+                                                             NULL);
+
+  if(vkr != VK_SUCCESS)
+    return vkr;
+
+  rdcarray<VkExtensionProperties> exts(numExts);
+  vkr = ObjDisp(physDev)->EnumerateDeviceExtensionProperties(Unwrap(physDev), pLayerName, &numExts,
+                                                             &exts[0]);
+
+  if(vkr != VK_SUCCESS)
+    return vkr;
+
+  // filter the list of extensions to only the ones we support.
+
+  // sort the reported extensions
+  std::sort(exts.begin(), exts.end());
+
+  rdcarray<VkExtensionProperties> filtered;
+  filtered.reserve(exts.size());
+  FilterToSupportedExtensions(exts, filtered);
+
+  if(pLayerName == NULL)
+  {
+    InstanceDeviceInfo *instDevInfo = GetRecord(m_Instance)->instDevInfo;
+
+    // extensions with conditional support
+    filtered.removeIf([instDevInfo, physDev](const VkExtensionProperties &ext) {
+      if(!strcmp(ext.extensionName, VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME))
+      {
+        // require GPDP2
+        if(instDevInfo->ext_KHR_get_physical_device_properties2)
+        {
+          VkPhysicalDeviceFragmentDensityMapFeaturesEXT fragmentDensityFeatures = {
+              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_DENSITY_MAP_FEATURES_EXT};
+          VkPhysicalDeviceFeatures2 base = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+          base.pNext = &fragmentDensityFeatures;
+          ObjDisp(physDev)->GetPhysicalDeviceFeatures2(Unwrap(physDev), &base);
+
+          if(fragmentDensityFeatures.fragmentDensityMapNonSubsampledImages)
+          {
+            // supported, don't remove
+            return false;
+          }
+          else if(!filterWarned)
+          {
+            RDCWARN(
+                "VkPhysicalDeviceFragmentDensityMapFeaturesEXT."
+                "fragmentDensityMapNonSubsampledImages is "
+                "false, can't support capture of VK_EXT_fragment_density_map");
+          }
+        }
+
+        // if it wasn't supported, remove the extension
+        return true;
+      }
+
+      if(!strcmp(ext.extensionName, VK_EXT_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME))
+      {
+        // require GPDP2
+        if(instDevInfo->ext_KHR_get_physical_device_properties2)
+        {
+          VkPhysicalDeviceBufferDeviceAddressFeaturesEXT bufaddr = {
+              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES_EXT};
+          VkPhysicalDeviceFeatures2 base = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+          base.pNext = &bufaddr;
+          ObjDisp(physDev)->GetPhysicalDeviceFeatures2(Unwrap(physDev), &base);
+
+          if(bufaddr.bufferDeviceAddressCaptureReplay)
+          {
+            // supported, don't remove
+            return false;
+          }
+          else if(!filterWarned)
+          {
+            RDCWARN(
+                "VkPhysicalDeviceBufferDeviceAddressFeaturesEXT.bufferDeviceAddressCaptureReplay "
+                "is false, can't support capture of VK_EXT_buffer_device_address");
+          }
+        }
+
+        // if it wasn't supported, remove the extension
+        return true;
+      }
+
+      if(!strcmp(ext.extensionName, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME))
+      {
+        // require GPDP2
+        if(instDevInfo->ext_KHR_get_physical_device_properties2)
+        {
+          VkPhysicalDeviceBufferDeviceAddressFeatures bufaddr = {
+              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
+          VkPhysicalDeviceFeatures2 base = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+          base.pNext = &bufaddr;
+          ObjDisp(physDev)->GetPhysicalDeviceFeatures2(Unwrap(physDev), &base);
+
+          if(bufaddr.bufferDeviceAddressCaptureReplay)
+          {
+            // supported, don't remove
+            return false;
+          }
+          else if(!filterWarned)
+          {
+            RDCWARN(
+                "VkPhysicalDeviceBufferDeviceAddressFeaturesKHR.bufferDeviceAddressCaptureReplay "
+                "is false, can't support capture of VK_KHR_buffer_device_address");
+          }
+        }
+
+        // if it wasn't supported, remove the extension
+        return true;
+      }
+
+      // not an extension with conditional support, don't remove
+      return false;
+    });
+
+    // now we can add extensions that we provide ourselves (note this isn't sorted, but we
+    // don't have to sort the results, the sorting was just so we could filter optimally).
+    filtered.append(&renderdocProvidedDeviceExtensions[0],
+                    ARRAY_COUNT(renderdocProvidedDeviceExtensions));
+  }
+
+  filterWarned = true;
 
   return FillPropertyCountAndList(&filtered[0], (uint32_t)filtered.size(), pPropertyCount,
                                   pProperties);
 }
 
-VkResult WrappedVulkan::GetProvidedExtensionProperties(uint32_t *pPropertyCount,
-                                                       VkExtensionProperties *pProperties)
+VkResult WrappedVulkan::FilterInstanceExtensionProperties(
+    const VkEnumerateInstanceExtensionPropertiesChain *pChain, const char *pLayerName,
+    uint32_t *pPropertyCount, VkExtensionProperties *pProperties)
 {
-  return FillPropertyCountAndList(renderdocProvidedExtensions,
-                                  (uint32_t)ARRAY_COUNT(renderdocProvidedExtensions),
+  VkResult vkr;
+
+  // first fetch the list of extensions ourselves
+  uint32_t numExts;
+  vkr = pChain->CallDown(pLayerName, &numExts, NULL);
+
+  if(vkr != VK_SUCCESS)
+    return vkr;
+
+  rdcarray<VkExtensionProperties> exts(numExts);
+  vkr = pChain->CallDown(pLayerName, &numExts, &exts[0]);
+
+  if(vkr != VK_SUCCESS)
+    return vkr;
+
+  // filter the list of extensions to only the ones we support.
+
+  // sort the reported extensions
+  std::sort(exts.begin(), exts.end());
+
+  rdcarray<VkExtensionProperties> filtered;
+  filtered.reserve(exts.size());
+
+  FilterToSupportedExtensions(exts, filtered);
+
+  if(pLayerName == NULL)
+  {
+    // now we can add extensions that we provide ourselves (note this isn't sorted, but we
+    // don't have to sort the results, the sorting was just so we could filter optimally).
+    filtered.append(&renderdocProvidedInstanceExtensions[0],
+                    ARRAY_COUNT(renderdocProvidedInstanceExtensions));
+  }
+
+  return FillPropertyCountAndList(&filtered[0], (uint32_t)filtered.size(), pPropertyCount,
+                                  pProperties);
+}
+
+VkResult WrappedVulkan::GetProvidedDeviceExtensionProperties(uint32_t *pPropertyCount,
+                                                             VkExtensionProperties *pProperties)
+{
+  return FillPropertyCountAndList(renderdocProvidedDeviceExtensions,
+                                  (uint32_t)ARRAY_COUNT(renderdocProvidedDeviceExtensions),
                                   pPropertyCount, pProperties);
 }
 
-void WrappedVulkan::Serialise_CaptureScope(uint64_t offset)
+VkResult WrappedVulkan::GetProvidedInstanceExtensionProperties(uint32_t *pPropertyCount,
+                                                               VkExtensionProperties *pProperties)
 {
-  uint32_t FrameNumber = m_FrameCounter;
-  // must use main serialiser here to match resource manager below
-  GetMainSerialiser()->Serialise("FrameNumber", FrameNumber);
+  return FillPropertyCountAndList(NULL, 0, pPropertyCount, pProperties);
+}
 
-  if(m_State >= WRITING)
-  {
-    GetResourceManager()->Serialise_InitialContentsNeeded();
-  }
-  else
-  {
-    m_FrameRecord.frameInfo.fileOffset = offset;
-    m_FrameRecord.frameInfo.firstEvent = 1;    // m_pImmediateContext->GetEventID();
-    m_FrameRecord.frameInfo.frameNumber = FrameNumber;
-    RDCEraseEl(m_FrameRecord.frameInfo.stats);
+template <typename SerialiserType>
+bool WrappedVulkan::Serialise_CaptureScope(SerialiserType &ser)
+{
+  SERIALISE_ELEMENT_LOCAL(frameNumber, m_CapturedFrames.back().frameNumber);
 
-    GetResourceManager()->CreateInitialContents();
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
+  {
+    GetReplay()->WriteFrameRecord().frameInfo.frameNumber = frameNumber;
+    RDCEraseEl(GetReplay()->WriteFrameRecord().frameInfo.stats);
   }
+
+  return true;
 }
 
 void WrappedVulkan::EndCaptureFrame(VkImage presentImage)
 {
-  // must use main serialiser here to match resource manager
-  Serialiser *localSerialiser = GetMainSerialiser();
+  CACHE_THREAD_SERIALISER();
+  ser.SetActionChunk();
+  SCOPED_SERIALISE_CHUNK(SystemChunk::CaptureEnd);
 
-  SCOPED_SERIALISE_CONTEXT(CONTEXT_CAPTURE_FOOTER);
-
-  SERIALISE_ELEMENT(ResourceId, bbid, GetResID(presentImage));
-
-  bool HasCallstack = RenderDoc::Inst().GetCaptureOptions().CaptureCallstacks != 0;
-  localSerialiser->Serialise("HasCallstack", HasCallstack);
-
-  if(HasCallstack)
-  {
-    Callstack::Stackwalk *call = Callstack::Collect();
-
-    RDCASSERT(call->NumLevels() < 0xff);
-
-    size_t numLevels = call->NumLevels();
-    uint64_t *stack = (uint64_t *)call->GetAddrs();
-
-    localSerialiser->SerialisePODArray("callstack", stack, numLevels);
-
-    delete call;
-  }
+  SERIALISE_ELEMENT_LOCAL(PresentedImage, GetResID(presentImage)).TypedAs("VkImage"_lit);
 
   m_FrameCaptureRecord->AddChunk(scope.Get());
 }
 
-void WrappedVulkan::FirstFrame(VkSwapchainKHR swap)
+void WrappedVulkan::FirstFrame()
 {
-  SwapchainInfo *swapdesc = GetRecord(swap)->swapInfo;
-
   // if we have to capture the first frame, begin capturing immediately
-  if(m_State == WRITING_IDLE && RenderDoc::Inst().ShouldTriggerCapture(0))
+  if(IsBackgroundCapturing(m_State) && RenderDoc::Inst().ShouldTriggerCapture(0))
   {
-    RenderDoc::Inst().StartFrameCapture(LayerDisp(m_Instance), swapdesc ? swapdesc->wndHandle : NULL);
+    RenderDoc::Inst().StartFrameCapture(LayerDisp(m_Instance), NULL);
 
     m_AppControlledCapture = false;
+    m_CapturedFrames.back().frameNumber = 0;
   }
 }
 
-bool WrappedVulkan::Serialise_BeginCaptureFrame(bool applyInitialState)
+template <typename SerialiserType>
+bool WrappedVulkan::Serialise_BeginCaptureFrame(SerialiserType &ser)
 {
-  if(m_State < WRITING && !applyInitialState)
+  SCOPED_LOCK(m_ImageStatesLock);
+
+  for(auto it = m_ImageStates.begin(); it != m_ImageStates.end(); ++it)
   {
-    m_pSerialiser->SkipCurrentChunk();
-    return true;
+    it->second.LockWrite()->FixupStorageReferences();
   }
 
-  vector<VkImageMemoryBarrier> imgBarriers;
+  GetResourceManager()->SerialiseImageStates(ser, m_ImageStates);
 
-  {
-    SCOPED_LOCK(m_ImageLayoutsLock);    // not needed on replay, but harmless also
-    GetResourceManager()->SerialiseImageStates(m_ImageLayouts, imgBarriers);
-  }
-
-  if(applyInitialState && !imgBarriers.empty())
-  {
-    VkPipelineStageFlags src_stages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-    VkPipelineStageFlags dest_stages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-
-    if(!imgBarriers.empty())
-    {
-      for(size_t i = 0; i < imgBarriers.size(); i++)
-      {
-        imgBarriers[i].srcAccessMask = MakeAccessMask(imgBarriers[i].oldLayout);
-        imgBarriers[i].dstAccessMask = MakeAccessMask(imgBarriers[i].newLayout);
-      }
-
-      VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
-                                            VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-
-#if ENABLED(SINGLE_FLUSH_VALIDATE)
-      for(size_t i = 0; i < imgBarriers.size(); i++)
-      {
-        VkCommandBuffer cmd = GetNextCmd();
-
-        VkResult vkr = ObjDisp(cmd)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
-
-        ObjDisp(cmd)->CmdPipelineBarrier(Unwrap(cmd), src_stages, dest_stages, false, 0, NULL, 0,
-                                         NULL, 1, &imgBarriers[i]);
-
-        vkr = ObjDisp(cmd)->EndCommandBuffer(Unwrap(cmd));
-        RDCASSERTEQUAL(vkr, VK_SUCCESS);
-
-        SubmitCmds();
-      }
-#else
-      VkCommandBuffer cmd = GetNextCmd();
-
-      VkResult vkr = ObjDisp(cmd)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
-
-      ObjDisp(cmd)->CmdPipelineBarrier(Unwrap(cmd), src_stages, dest_stages, false, 0, NULL, 0,
-                                       NULL, (uint32_t)imgBarriers.size(), &imgBarriers[0]);
-
-      vkr = ObjDisp(cmd)->EndCommandBuffer(Unwrap(cmd));
-      RDCASSERTEQUAL(vkr, VK_SUCCESS);
-
-      SubmitCmds();
-#endif
-    }
-    // don't need to flush here
-  }
+  SERIALISE_CHECK_READ_ERRORS();
 
   return true;
 }
 
 void WrappedVulkan::StartFrameCapture(void *dev, void *wnd)
 {
-  if(m_State != WRITING_IDLE)
+  if(!IsBackgroundCapturing(m_State))
     return;
 
-  RenderDoc::Inst().SetCurrentDriver(RDC_Vulkan);
+  RDCLOG("Starting capture");
+
+  Atomic::Dec32(&m_ReuseEnabled);
+
+  m_CaptureTimer.Restart();
+
+  GetResourceManager()->ResetCaptureStartTime();
 
   m_AppControlledCapture = true;
 
-  m_FrameCounter = RDCMAX(1 + (uint32_t)m_CapturedFrames.size(), m_FrameCounter);
+  m_SubmitCounter = 0;
 
-  FetchFrameInfo frame;
-  frame.frameNumber = m_FrameCounter + 1;
+  FrameDescription frame;
+  frame.frameNumber = ~0U;
   frame.captureTime = Timing::GetUnixTimestamp();
-  RDCEraseEl(frame.stats);
   m_CapturedFrames.push_back(frame);
 
   GetResourceManager()->ClearReferencedResources();
-
-  GetResourceManager()->MarkResourceFrameReferenced(GetResID(m_Instance), eFrameRef_Read);
-  GetResourceManager()->MarkResourceFrameReferenced(GetResID(m_Device), eFrameRef_Read);
-  GetResourceManager()->MarkResourceFrameReferenced(GetResID(m_Queue), eFrameRef_Read);
+  GetResourceManager()->ClearReferencedMemory();
 
   // need to do all this atomically so that no other commands
   // will check to see if they need to markdirty or markpendingdirty
   // and go into the frame record.
   {
-    SCOPED_LOCK(m_CapTransitionLock);
+    SCOPED_WRITELOCK(m_CapTransitionLock);
+
+    // wait for all work to finish and apply a memory barrier to ensure all memory is visible
+    for(size_t i = 0; i < m_QueueFamilies.size(); i++)
+    {
+      for(uint32_t q = 0; q < m_QueueFamilyCounts[i]; q++)
+      {
+        if(m_QueueFamilies[i][q] != VK_NULL_HANDLE)
+          ObjDisp(m_QueueFamilies[i][q])->QueueWaitIdle(Unwrap(m_QueueFamilies[i][q]));
+      }
+    }
+
+    {
+      VkMemoryBarrier memBarrier = {
+          VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_ALL_WRITE_BITS, VK_ACCESS_ALL_READ_BITS,
+      };
+
+      VkCommandBuffer cmd = GetNextCmd();
+
+      VkResult vkr = VK_SUCCESS;
+
+      VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                            VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+
+      vkr = ObjDisp(cmd)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
+      CheckVkResult(vkr);
+
+      DoPipelineBarrier(cmd, 1, &memBarrier);
+
+      vkr = ObjDisp(cmd)->EndCommandBuffer(Unwrap(cmd));
+      CheckVkResult(vkr);
+    }
+
     GetResourceManager()->PrepareInitialContents();
+    SubmitAndFlushImageStateBarriers(m_setupImageBarriers);
+    SubmitCmds();
+    FlushQ();
+    SubmitAndFlushImageStateBarriers(m_cleanupImageBarriers);
+
+    {
+      SCOPED_LOCK(m_CapDescriptorsLock);
+      m_CapDescriptors.clear();
+    }
 
     RDCDEBUG("Attempting capture");
     m_FrameCaptureRecord->DeleteChunks();
-
     {
-      // must use main serialiser here to match resource manager
-      Serialiser *localSerialiser = GetMainSerialiser();
-
-      SCOPED_SERIALISE_CONTEXT(CONTEXT_CAPTURE_HEADER);
-
-      Serialise_BeginCaptureFrame(false);
-
-      // need to hold onto this as it must come right after the capture chunk,
-      // before any command buffers
-      m_HeaderChunk = scope.Get();
+      SCOPED_LOCK(m_ImageStatesLock);
+      for(auto it = m_ImageStates.begin(); it != m_ImageStates.end(); ++it)
+      {
+        it->second.LockWrite()->BeginCapture();
+      }
     }
 
-    m_State = WRITING_CAPFRAME;
+    m_State = CaptureState::ActiveCapturing;
   }
 
-  RDCLOG("Starting capture, frame %u", m_FrameCounter);
+  GetResourceManager()->MarkResourceFrameReferenced(GetResID(m_Instance), eFrameRef_Read);
+  GetResourceManager()->MarkResourceFrameReferenced(GetResID(m_Device), eFrameRef_Read);
+  GetResourceManager()->MarkResourceFrameReferenced(GetResID(m_Queue), eFrameRef_Read);
+
+  rdcarray<VkResourceRecord *> forced = GetForcedReferences();
+
+  // Note we force read-before-write because this resource is implicitly untracked so we have no
+  // way of knowing how it's used
+  for(auto it = forced.begin(); it != forced.end(); ++it)
+  {
+    // reference the buffer
+    GetResourceManager()->MarkResourceFrameReferenced((*it)->GetResourceID(), eFrameRef_Read);
+    // and its backing memory
+    GetResourceManager()->MarkMemoryFrameReferenced((*it)->baseResource, (*it)->memOffset,
+                                                    (*it)->memSize, eFrameRef_ReadBeforeWrite);
+  }
 }
 
 bool WrappedVulkan::EndFrameCapture(void *dev, void *wnd)
 {
-  if(m_State != WRITING_CAPFRAME)
+  if(!IsActiveCapturing(m_State))
     return true;
 
   VkSwapchainKHR swap = VK_NULL_HANDLE;
@@ -999,9 +1832,10 @@ bool WrappedVulkan::EndFrameCapture(void *dev, void *wnd)
     }
   }
 
-  RDCLOG("Finished capture, Frame %u", m_FrameCounter);
+  RDCLOG("Finished capture, Frame %u", m_CapturedFrames.back().frameNumber);
 
   VkImage backbuffer = VK_NULL_HANDLE;
+  const PresentInfo *presentInfo = NULL;
   VkResourceRecord *swaprecord = NULL;
 
   if(swap != VK_NULL_HANDLE)
@@ -1013,7 +1847,8 @@ bool WrappedVulkan::EndFrameCapture(void *dev, void *wnd)
 
     const SwapchainInfo &swapInfo = *swaprecord->swapInfo;
 
-    backbuffer = swapInfo.images[swapInfo.lastPresent].im;
+    presentInfo = &swapInfo.lastPresent;
+    backbuffer = swapInfo.images[presentInfo->imageIndex].im;
 
     // mark all images referenced as well
     for(size_t i = 0; i < swapInfo.images.size(); i++)
@@ -1032,7 +1867,8 @@ bool WrappedVulkan::EndFrameCapture(void *dev, void *wnd)
 
       const SwapchainInfo &swapInfo = *swaprecord->swapInfo;
 
-      backbuffer = swapInfo.images[swapInfo.lastPresent].im;
+      presentInfo = &swapInfo.lastPresent;
+      backbuffer = swapInfo.images[presentInfo->imageIndex].im;
 
       // mark all images referenced as well
       for(size_t i = 0; i < swapInfo.images.size(); i++)
@@ -1041,12 +1877,15 @@ bool WrappedVulkan::EndFrameCapture(void *dev, void *wnd)
     }
   }
 
+  rdcarray<VkDeviceMemory> DeadMemories;
+  rdcarray<VkBuffer> DeadBuffers;
+
   // transition back to IDLE atomically
   {
-    SCOPED_LOCK(m_CapTransitionLock);
+    SCOPED_WRITELOCK(m_CapTransitionLock);
     EndCaptureFrame(backbuffer);
 
-    m_State = WRITING_IDLE;
+    m_State = CaptureState::BackgroundCapturing;
 
     // m_SuccessfulCapture = false;
 
@@ -1056,89 +1895,85 @@ bool WrappedVulkan::EndFrameCapture(void *dev, void *wnd)
       SCOPED_LOCK(m_CoherentMapsLock);
       for(auto it = m_CoherentMaps.begin(); it != m_CoherentMaps.end(); ++it)
       {
-        Serialiser::FreeAlignedBuffer((*it)->memMapState->refData);
+        FreeAlignedBuffer((*it)->memMapState->refData);
         (*it)->memMapState->refData = NULL;
         (*it)->memMapState->needRefData = false;
       }
     }
+
+    DeadMemories.swap(m_DeviceAddressResources.DeadMemories);
+    DeadBuffers.swap(m_DeviceAddressResources.DeadBuffers);
   }
 
-  byte *thpixels = NULL;
-  uint32_t thwidth = 0;
-  uint32_t thheight = 0;
+  for(VkDeviceMemory m : DeadMemories)
+    vkFreeMemory(m_Device, m, NULL);
+
+  for(VkBuffer b : DeadBuffers)
+    vkDestroyBuffer(m_Device, b, NULL);
 
   // gather backbuffer screenshot
   const uint32_t maxSize = 2048;
+  RenderDoc::FramePixels fp;
 
-  if(swap != VK_NULL_HANDLE)
+  if(swaprecord != NULL)
   {
     VkDevice device = GetDev();
     VkCommandBuffer cmd = GetNextCmd();
 
-    const VkLayerDispatchTable *vt = ObjDisp(device);
+    const VkDevDispatchTable *vt = ObjDisp(device);
 
     vt->DeviceWaitIdle(Unwrap(device));
 
     const SwapchainInfo &swapInfo = *swaprecord->swapInfo;
 
-    // since these objects are very short lived (only this scope), we
-    // don't wrap them.
-    VkImage readbackIm = VK_NULL_HANDLE;
-    VkDeviceMemory readbackMem = VK_NULL_HANDLE;
+    // since this happens during capture, we don't want to start serialising extra buffer creates,
+    // so we manually create & then just wrap.
+    VkBuffer readbackBuf = VK_NULL_HANDLE;
 
     VkResult vkr = VK_SUCCESS;
 
-    // create identical image
-    VkImageCreateInfo imInfo = {
-        VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        NULL,
-        0,
-        VK_IMAGE_TYPE_2D,
-        swapInfo.format,
-        {swapInfo.extent.width, swapInfo.extent.height, 1},
-        1,
-        1,
-        VK_SAMPLE_COUNT_1_BIT,
-        VK_IMAGE_TILING_LINEAR,
-        VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-        VK_SHARING_MODE_EXCLUSIVE,
-        0,
-        NULL,
-        VK_IMAGE_LAYOUT_UNDEFINED,
+    // create readback buffer
+    VkBufferCreateInfo bufInfo = {
+        VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0,
+        GetByteSize(swapInfo.imageInfo.extent.width, swapInfo.imageInfo.extent.height, 1,
+                    swapInfo.imageInfo.format, 0),
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
     };
-    vt->CreateImage(Unwrap(device), &imInfo, NULL, &readbackIm);
-    RDCASSERTEQUAL(vkr, VK_SUCCESS);
+    vt->CreateBuffer(Unwrap(device), &bufInfo, NULL, &readbackBuf);
+    CheckVkResult(vkr);
 
-    VkMemoryRequirements mrq = {0};
-    vt->GetImageMemoryRequirements(Unwrap(device), readbackIm, &mrq);
+    GetResourceManager()->WrapResource(Unwrap(device), readbackBuf);
 
-    VkImageSubresource subr = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
-    VkSubresourceLayout layout = {0};
-    vt->GetImageSubresourceLayout(Unwrap(device), readbackIm, &subr, &layout);
+    MemoryAllocation readbackMem =
+        AllocateMemoryForResource(readbackBuf, MemoryScope::InitialContents, MemoryType::Readback);
 
-    // allocate readback memory
-    VkMemoryAllocateInfo allocInfo = {
-        VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mrq.size,
-        GetReadbackMemoryIndex(mrq.memoryTypeBits),
-    };
-
-    vkr = vt->AllocateMemory(Unwrap(device), &allocInfo, NULL, &readbackMem);
-    RDCASSERTEQUAL(vkr, VK_SUCCESS);
-    vkr = vt->BindImageMemory(Unwrap(device), readbackIm, readbackMem, 0);
-    RDCASSERTEQUAL(vkr, VK_SUCCESS);
+    vkr = vt->BindBufferMemory(Unwrap(device), Unwrap(readbackBuf), Unwrap(readbackMem.mem),
+                               readbackMem.offs);
+    CheckVkResult(vkr);
 
     VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
                                           VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
 
     // do image copy
     vkr = vt->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
-    RDCASSERTEQUAL(vkr, VK_SUCCESS);
+    CheckVkResult(vkr);
 
-    VkImageCopy cpy = {
-        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},           {0, 0, 0},
-        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},           {0, 0, 0},
-        {imInfo.extent.width, imInfo.extent.height, 1},
+    uint32_t rowPitch =
+        GetByteSize(swapInfo.imageInfo.extent.width, 1, 1, swapInfo.imageInfo.format, 0);
+
+    VkBufferImageCopy cpy = {
+        0,
+        0,
+        0,
+        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        {
+            0, 0, 0,
+        },
+        {swapInfo.imageInfo.extent.width, swapInfo.imageInfo.extent.height, 1},
     };
+
+    VkResourceRecord *queueRecord = GetRecord(swapInfo.lastPresent.presentQueue);
+    uint32_t swapQueueIndex = queueRecord->queueFamilyIndex;
 
     VkImageMemoryBarrier bbBarrier = {
         VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -1147,243 +1982,315 @@ bool WrappedVulkan::EndFrameCapture(void *dev, void *wnd)
         VK_ACCESS_TRANSFER_READ_BIT,
         VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        0,
-        0,    // MULTIDEVICE - need to actually pick the right queue family here maybe?
+        swapQueueIndex,
+        m_QueueFamilyIdx,
         Unwrap(backbuffer),
-        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
 
-    VkImageMemoryBarrier readBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                        NULL,
-                                        0,
-                                        VK_ACCESS_TRANSFER_WRITE_BIT,
-                                        VK_IMAGE_LAYOUT_UNDEFINED,
-                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                        VK_QUEUE_FAMILY_IGNORED,
-                                        VK_QUEUE_FAMILY_IGNORED,
-                                        readbackIm,    // was never wrapped
-                                        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    if(swapInfo.shared)
+      bbBarrier.oldLayout = VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR;
 
     DoPipelineBarrier(cmd, 1, &bbBarrier);
-    DoPipelineBarrier(cmd, 1, &readBarrier);
 
-    vt->CmdCopyImage(Unwrap(cmd), Unwrap(backbuffer), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                     readbackIm, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy);
+    if(swapQueueIndex != m_QueueFamilyIdx)
+    {
+      VkCommandBuffer extQCmd = GetExtQueueCmd(swapQueueIndex);
+
+      vkr = vt->BeginCommandBuffer(Unwrap(extQCmd), &beginInfo);
+      CheckVkResult(vkr);
+
+      DoPipelineBarrier(extQCmd, 1, &bbBarrier);
+
+      ObjDisp(extQCmd)->EndCommandBuffer(Unwrap(extQCmd));
+
+      SubmitAndFlushExtQueue(swapQueueIndex);
+    }
+
+    vt->CmdCopyImageToBuffer(Unwrap(cmd), Unwrap(backbuffer), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             Unwrap(readbackBuf), 1, &cpy);
 
     // barrier to switch backbuffer back to present layout
     std::swap(bbBarrier.oldLayout, bbBarrier.newLayout);
     std::swap(bbBarrier.srcAccessMask, bbBarrier.dstAccessMask);
+    std::swap(bbBarrier.srcQueueFamilyIndex, bbBarrier.dstQueueFamilyIndex);
 
-    readBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    readBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-    readBarrier.oldLayout = readBarrier.newLayout;
-    readBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkBufferMemoryBarrier bufBarrier = {
+        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        NULL,
+        VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_HOST_READ_BIT,
+        VK_QUEUE_FAMILY_IGNORED,
+        VK_QUEUE_FAMILY_IGNORED,
+        Unwrap(readbackBuf),
+        0,
+        bufInfo.size,
+    };
 
     DoPipelineBarrier(cmd, 1, &bbBarrier);
-    DoPipelineBarrier(cmd, 1, &readBarrier);
+    DoPipelineBarrier(cmd, 1, &bufBarrier);
 
     vkr = vt->EndCommandBuffer(Unwrap(cmd));
-    RDCASSERTEQUAL(vkr, VK_SUCCESS);
+    CheckVkResult(vkr);
 
     SubmitCmds();
     FlushQ();    // need to wait so we can readback
 
+    if(swapQueueIndex != m_QueueFamilyIdx)
+    {
+      VkCommandBuffer extQCmd = GetExtQueueCmd(swapQueueIndex);
+
+      vkr = vt->BeginCommandBuffer(Unwrap(extQCmd), &beginInfo);
+      CheckVkResult(vkr);
+
+      DoPipelineBarrier(extQCmd, 1, &bbBarrier);
+
+      ObjDisp(extQCmd)->EndCommandBuffer(Unwrap(extQCmd));
+
+      SubmitAndFlushExtQueue(swapQueueIndex);
+    }
+
     // map memory and readback
     byte *pData = NULL;
-    vkr = vt->MapMemory(Unwrap(device), readbackMem, 0, VK_WHOLE_SIZE, 0, (void **)&pData);
-    RDCASSERTEQUAL(vkr, VK_SUCCESS);
-
+    vkr = vt->MapMemory(Unwrap(device), Unwrap(readbackMem.mem), readbackMem.offs, readbackMem.size,
+                        0, (void **)&pData);
+    CheckVkResult(vkr);
     RDCASSERT(pData != NULL);
 
-    // point sample info into raw buffer
-    {
-      ResourceFormat fmt = MakeResourceFormat(imInfo.format);
+    fp.len = (uint32_t)readbackMem.size;
+    fp.data = new uint8_t[fp.len];
+    memcpy(fp.data, pData, fp.len);
 
-      byte *data = (byte *)pData;
+    VkMappedMemoryRange range = {
+        VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+        NULL,
+        Unwrap(readbackMem.mem),
+        readbackMem.offs,
+        readbackMem.size,
+    };
 
-      data += layout.offset;
+    vkr = vt->InvalidateMappedMemoryRanges(Unwrap(device), 1, &range);
+    CheckVkResult(vkr);
 
-      float widthf = float(imInfo.extent.width);
-      float heightf = float(imInfo.extent.height);
-
-      float aspect = widthf / heightf;
-
-      thwidth = RDCMIN(maxSize, imInfo.extent.width);
-      thwidth &= ~0x7;    // align down to multiple of 8
-      thheight = uint32_t(float(thwidth) / aspect);
-
-      thpixels = new byte[3 * thwidth * thheight];
-
-      uint32_t stride = fmt.compByteWidth * fmt.compCount;
-
-      bool buf1010102 = false;
-      bool bufBGRA = (fmt.bgraOrder != false);
-
-      if(fmt.special && fmt.specialFormat == eSpecial_R10G10B10A2)
-      {
-        stride = 4;
-        buf1010102 = true;
-      }
-
-      byte *dst = thpixels;
-
-      for(uint32_t y = 0; y < thheight; y++)
-      {
-        for(uint32_t x = 0; x < thwidth; x++)
-        {
-          float xf = float(x) / float(thwidth);
-          float yf = float(y) / float(thheight);
-
-          byte *src =
-              &data[stride * uint32_t(xf * widthf) + layout.rowPitch * uint32_t(yf * heightf)];
-
-          if(buf1010102)
-          {
-            uint32_t *src1010102 = (uint32_t *)src;
-            Vec4f unorm = ConvertFromR10G10B10A2(*src1010102);
-            dst[0] = (byte)(unorm.x * 255.0f);
-            dst[1] = (byte)(unorm.y * 255.0f);
-            dst[2] = (byte)(unorm.z * 255.0f);
-          }
-          else if(bufBGRA)
-          {
-            dst[0] = src[2];
-            dst[1] = src[1];
-            dst[2] = src[0];
-          }
-          else if(fmt.compByteWidth == 2)    // R16G16B16A16 backbuffer
-          {
-            uint16_t *src16 = (uint16_t *)src;
-
-            float linearR = RDCCLAMP(ConvertFromHalf(src16[0]), 0.0f, 1.0f);
-            float linearG = RDCCLAMP(ConvertFromHalf(src16[1]), 0.0f, 1.0f);
-            float linearB = RDCCLAMP(ConvertFromHalf(src16[2]), 0.0f, 1.0f);
-
-            if(linearR < 0.0031308f)
-              dst[0] = byte(255.0f * (12.92f * linearR));
-            else
-              dst[0] = byte(255.0f * (1.055f * powf(linearR, 1.0f / 2.4f) - 0.055f));
-
-            if(linearG < 0.0031308f)
-              dst[1] = byte(255.0f * (12.92f * linearG));
-            else
-              dst[1] = byte(255.0f * (1.055f * powf(linearG, 1.0f / 2.4f) - 0.055f));
-
-            if(linearB < 0.0031308f)
-              dst[2] = byte(255.0f * (12.92f * linearB));
-            else
-              dst[2] = byte(255.0f * (1.055f * powf(linearB, 1.0f / 2.4f) - 0.055f));
-          }
-          else
-          {
-            dst[0] = src[0];
-            dst[1] = src[1];
-            dst[2] = src[2];
-          }
-
-          dst += 3;
-        }
-      }
-    }
-
-    vt->UnmapMemory(Unwrap(device), readbackMem);
+    vt->UnmapMemory(Unwrap(device), Unwrap(readbackMem.mem));
 
     // delete all
-    vt->DestroyImage(Unwrap(device), readbackIm, NULL);
-    vt->FreeMemory(Unwrap(device), readbackMem, NULL);
-  }
+    vt->DestroyBuffer(Unwrap(device), Unwrap(readbackBuf), NULL);
+    GetResourceManager()->ReleaseWrappedResource(readbackBuf);
 
-  byte *jpgbuf = NULL;
-  int len = thwidth * thheight;
-
-  if(wnd)
-  {
-    jpgbuf = new byte[len];
-
-    jpge::params p;
-    p.m_quality = 80;
-
-    bool success =
-        jpge::compress_image_to_jpeg_file_in_memory(jpgbuf, len, thwidth, thheight, 3, thpixels, p);
-
-    if(!success)
+    ResourceFormat fmt = MakeResourceFormat(swapInfo.imageInfo.format);
+    fp.width = swapInfo.imageInfo.extent.width;
+    fp.height = swapInfo.imageInfo.extent.height;
+    fp.pitch = rowPitch;
+    fp.stride = fmt.compByteWidth * fmt.compCount;
+    fp.bpc = fmt.compByteWidth;
+    fp.bgra = fmt.BGRAOrder();
+    fp.max_width = maxSize;
+    fp.pitch_requirement = 8;
+    switch(fmt.type)
     {
-      RDCERR("Failed to compress to jpg");
-      SAFE_DELETE_ARRAY(jpgbuf);
-      thwidth = 0;
-      thheight = 0;
+      case ResourceFormatType::R10G10B10A2:
+        fp.stride = 4;
+        fp.buf1010102 = true;
+        break;
+      case ResourceFormatType::R5G6B5:
+        fp.stride = 2;
+        fp.buf565 = true;
+        break;
+      case ResourceFormatType::R5G5B5A1:
+        fp.stride = 2;
+        fp.buf5551 = true;
+        break;
+      default: break;
     }
   }
 
-  Serialiser *m_pFileSerialiser = RenderDoc::Inst().OpenWriteSerialiser(
-      m_FrameCounter, &m_InitParams, jpgbuf, len, thwidth, thheight);
+  RDCFile *rdc =
+      RenderDoc::Inst().CreateRDC(RDCDriver::Vulkan, m_CapturedFrames.back().frameNumber, fp);
 
+  StreamWriter *captureWriter = NULL;
+
+  if(rdc)
   {
-    CACHE_THREAD_SERIALISER();
+    SectionProperties props;
 
-    SCOPED_SERIALISE_CONTEXT(DEVICE_INIT);
+    // Compress with LZ4 so that it's fast
+    props.flags = SectionFlags::LZ4Compressed;
+    props.version = m_SectionVersion;
+    props.type = SectionType::FrameCapture;
 
-    m_pFileSerialiser->Insert(scope.Get(true));
+    captureWriter = rdc->WriteSection(props);
+  }
+  else
+  {
+    captureWriter = new StreamWriter(StreamWriter::InvalidStream);
   }
 
-  RDCDEBUG("Inserting Resource Serialisers");
-
-  GetResourceManager()->InsertReferencedChunks(m_pFileSerialiser);
-
-  GetResourceManager()->InsertInitialContentsChunks(m_pFileSerialiser);
-
-  RDCDEBUG("Creating Capture Scope");
+  uint64_t captureSectionSize = 0;
 
   {
-    Serialiser *localSerialiser = GetMainSerialiser();
+    WriteSerialiser ser(captureWriter, Ownership::Stream);
 
-    SCOPED_SERIALISE_CONTEXT(CAPTURE_SCOPE);
+    ser.SetChunkMetadataRecording(GetThreadSerialiser().GetChunkMetadataRecording());
 
-    Serialise_CaptureScope(0);
+    ser.SetUserData(GetResourceManager());
 
-    m_pFileSerialiser->Insert(scope.Get(true));
-
-    m_pFileSerialiser->Insert(m_HeaderChunk);
-  }
-
-  // don't need to lock access to m_CmdBufferRecords as we are no longer
-  // in capframe (the transition is thread-protected) so nothing will be
-  // pushed to the vector
-
-  {
-    RDCDEBUG("Flushing %u command buffer records to file serialiser",
-             (uint32_t)m_CmdBufferRecords.size());
-
-    map<int32_t, Chunk *> recordlist;
-
-    // ensure all command buffer records within the frame evne if recorded before, but
-    // otherwise order must be preserved (vs. queue submits and desc set updates)
-    for(size_t i = 0; i < m_CmdBufferRecords.size(); i++)
     {
-      m_CmdBufferRecords[i]->Insert(recordlist);
+      SCOPED_SERIALISE_CHUNK(SystemChunk::DriverInit, m_InitParams.GetSerialiseSize());
 
-      RDCDEBUG("Adding %u chunks to file serialiser from command buffer %llu",
-               (uint32_t)recordlist.size(), m_CmdBufferRecords[i]->GetResourceID());
+      SERIALISE_ELEMENT(m_InitParams);
     }
 
-    m_FrameCaptureRecord->Insert(recordlist);
+    RDCDEBUG("Inserting Resource Serialisers");
 
-    RDCDEBUG("Flushing %u chunks to file serialiser from context record",
-             (uint32_t)recordlist.size());
+    GetResourceManager()->InsertReferencedChunks(ser);
 
-    for(auto it = recordlist.begin(); it != recordlist.end(); ++it)
-      m_pFileSerialiser->Insert(it->second);
+    GetResourceManager()->InsertInitialContentsChunks(ser);
 
-    RDCDEBUG("Done");
+    RDCDEBUG("Creating Capture Scope");
+
+    GetResourceManager()->Serialise_InitialContentsNeeded(ser);
+    GetResourceManager()->InsertDeviceMemoryRefs(ser);
+
+    {
+      SCOPED_SERIALISE_CHUNK(SystemChunk::CaptureScope, 16);
+
+      Serialise_CaptureScope(ser);
+    }
+
+    {
+      WriteSerialiser &captureBeginSer = GetThreadSerialiser();
+      ScopedChunk scope(captureBeginSer, SystemChunk::CaptureBegin);
+
+      Serialise_BeginCaptureFrame(captureBeginSer);
+
+      m_HeaderChunk = scope.Get();
+    }
+    m_HeaderChunk->Write(ser);
+
+    // don't need to lock access to m_CmdBufferRecords as we are no longer
+    // in capframe (the transition is thread-protected) so nothing will be
+    // pushed to the vector
+
+    {
+      RDCDEBUG("Flushing %u command buffer records to file serialiser",
+               (uint32_t)m_CmdBufferRecords.size());
+
+      std::map<int64_t, Chunk *> recordlist;
+
+      // ensure all command buffer records within the frame evne if recorded before, but
+      // otherwise order must be preserved (vs. queue submits and desc set updates)
+      for(size_t i = 0; i < m_CmdBufferRecords.size(); i++)
+      {
+        if(Vulkan_Debug_VerboseCommandRecording())
+        {
+          RDCLOG("Adding chunks from command buffer %s",
+                 ToStr(m_CmdBufferRecords[i]->GetResourceID()).c_str());
+        }
+        else
+        {
+          RDCDEBUG("Adding chunks from command buffer %s",
+                   ToStr(m_CmdBufferRecords[i]->GetResourceID()).c_str());
+        }
+
+        size_t prevSize = recordlist.size();
+        (void)prevSize;
+
+        m_CmdBufferRecords[i]->Insert(recordlist);
+
+        RDCDEBUG("Added %zu chunks to file serialiser", recordlist.size() - prevSize);
+      }
+
+      m_FrameCaptureRecord->Insert(recordlist);
+
+      RDCDEBUG("Flushing %u chunks to file serialiser from context record",
+               (uint32_t)recordlist.size());
+
+      float num = float(recordlist.size());
+      float idx = 0.0f;
+
+      for(auto it = recordlist.begin(); it != recordlist.end(); ++it)
+      {
+        RenderDoc::Inst().SetProgress(CaptureProgress::SerialiseFrameContents, idx / num);
+        idx += 1.0f;
+        it->second->Write(ser);
+      }
+
+      RDCDEBUG("Done");
+    }
+
+    captureSectionSize = captureWriter->GetOffset();
   }
 
-  m_pFileSerialiser->FlushToDisk();
+  RDCLOG("Captured Vulkan frame with %f MB capture section in %f seconds",
+         double(captureSectionSize) / (1024.0 * 1024.0), m_CaptureTimer.GetMilliseconds() / 1000.0);
 
-  RenderDoc::Inst().SuccessfullyWrittenLog(m_FrameCounter);
+  RenderDoc::Inst().FinishCaptureWriting(rdc, m_CapturedFrames.back().frameNumber);
 
-  SAFE_DELETE(m_pFileSerialiser);
-  SAFE_DELETE(m_HeaderChunk);
+  m_HeaderChunk->Delete();
+  m_HeaderChunk = NULL;
 
-  m_State = WRITING_IDLE;
+  m_State = CaptureState::BackgroundCapturing;
+
+  // delete cmd buffers now - had to keep them alive until after serialiser flush.
+  for(size_t i = 0; i < m_CmdBufferRecords.size(); i++)
+    m_CmdBufferRecords[i]->Delete(GetResourceManager());
+
+  m_CmdBufferRecords.clear();
+
+  Atomic::Inc32(&m_ReuseEnabled);
+
+  GetResourceManager()->ResetLastWriteTimes();
+
+  GetResourceManager()->MarkUnwrittenResources();
+
+  GetResourceManager()->ClearReferencedMemory();
+
+  GetResourceManager()->ClearReferencedResources();
+
+  GetResourceManager()->FreeInitialContents();
+
+  FreeAllMemory(MemoryScope::InitialContents);
+
+  return true;
+}
+
+bool WrappedVulkan::DiscardFrameCapture(void *dev, void *wnd)
+{
+  if(!IsActiveCapturing(m_State))
+    return true;
+
+  RDCLOG("Discarding frame capture.");
+
+  RenderDoc::Inst().FinishCaptureWriting(NULL, m_CapturedFrames.back().frameNumber);
+
+  m_CapturedFrames.pop_back();
+
+  // transition back to IDLE atomically
+  {
+    SCOPED_WRITELOCK(m_CapTransitionLock);
+
+    m_State = CaptureState::BackgroundCapturing;
+
+    // m_SuccessfulCapture = false;
+
+    ObjDisp(GetDev())->DeviceWaitIdle(Unwrap(GetDev()));
+
+    {
+      SCOPED_LOCK(m_CoherentMapsLock);
+      for(auto it = m_CoherentMaps.begin(); it != m_CoherentMaps.end(); ++it)
+      {
+        FreeAlignedBuffer((*it)->memMapState->refData);
+        (*it)->memMapState->refData = NULL;
+        (*it)->memMapState->needRefData = false;
+      }
+    }
+  }
+
+  Atomic::Inc32(&m_ReuseEnabled);
+
+  m_HeaderChunk->Delete();
+  m_HeaderChunk = NULL;
 
   // delete cmd buffers now - had to keep them alive until after serialiser flush.
   for(size_t i = 0; i < m_CmdBufferRecords.size(); i++)
@@ -1397,39 +2304,153 @@ bool WrappedVulkan::EndFrameCapture(void *dev, void *wnd)
 
   GetResourceManager()->FreeInitialContents();
 
-  GetResourceManager()->FlushPendingDirty();
+  FreeAllMemory(MemoryScope::InitialContents);
 
   return true;
 }
 
-void WrappedVulkan::ReadLogInitialisation()
+void WrappedVulkan::AdvanceFrame()
 {
-  uint64_t lastFrame = 0;
-  uint64_t firstFrame = 0;
+  if(IsBackgroundCapturing(m_State))
+    RenderDoc::Inst().Tick();
 
-  m_pSerialiser->SetDebugText(true);
+  m_FrameCounter++;    // first present becomes frame #1, this function is at the end of the frame
+}
 
-  m_pSerialiser->Rewind();
+void WrappedVulkan::Present(void *dev, void *wnd)
+{
+  bool activeWindow = wnd == NULL || RenderDoc::Inst().IsActiveWindow(dev, wnd);
 
-  while(!m_pSerialiser->AtEnd())
+  RenderDoc::Inst().AddActiveDriver(RDCDriver::Vulkan, true);
+
+  if(!activeWindow)
+    return;
+
+  if(IsActiveCapturing(m_State) && !m_AppControlledCapture)
+    RenderDoc::Inst().EndFrameCapture(dev, wnd);
+
+  if(RenderDoc::Inst().ShouldTriggerCapture(m_FrameCounter) && IsBackgroundCapturing(m_State))
   {
-    m_pSerialiser->SkipToChunk(CAPTURE_SCOPE);
+    RenderDoc::Inst().StartFrameCapture(dev, wnd);
 
-    // found a capture chunk
-    if(!m_pSerialiser->AtEnd())
-    {
-      lastFrame = m_pSerialiser->GetOffset();
-      if(firstFrame == 0)
-        firstFrame = m_pSerialiser->GetOffset();
+    m_AppControlledCapture = false;
+    m_CapturedFrames.back().frameNumber = m_FrameCounter;
+  }
+}
 
-      // skip this chunk
-      m_pSerialiser->PushContext(NULL, NULL, CAPTURE_SCOPE, false);
-      m_pSerialiser->SkipCurrentChunk();
-      m_pSerialiser->PopContext(CAPTURE_SCOPE);
-    }
+void WrappedVulkan::HandleFrameMarkers(const char *marker, VkCommandBuffer commandBuffer)
+{
+  if(!marker)
+    return;
+
+  if(strstr(marker, "vr-marker,frame_end,type,application") != NULL)
+  {
+    VkResourceRecord *record = GetRecord(commandBuffer);
+    record->bakedCommands->cmdInfo->present = true;
+  }
+  if(strstr(marker, "capture-marker,begin_capture") != NULL)
+  {
+    VkResourceRecord *record = GetRecord(commandBuffer);
+    record->bakedCommands->cmdInfo->beginCapture = true;
+  }
+  if(strstr(marker, "capture-marker,end_capture") != NULL)
+  {
+    VkResourceRecord *record = GetRecord(commandBuffer);
+    record->bakedCommands->cmdInfo->endCapture = true;
+  }
+}
+
+void WrappedVulkan::HandleFrameMarkers(const char *marker, VkQueue queue)
+{
+  if(!marker)
+    return;
+
+  if(strstr(marker, "capture-marker,begin_capture") != NULL)
+  {
+    RenderDoc::Inst().StartFrameCapture(LayerDisp(m_Instance), NULL);
+  }
+  if(strstr(marker, "capture-marker,end_capture") != NULL)
+  {
+    RenderDoc::Inst().EndFrameCapture(LayerDisp(m_Instance), NULL);
+  }
+}
+
+ResourceDescription &WrappedVulkan::GetResourceDesc(ResourceId id)
+{
+  return GetReplay()->GetResourceDesc(id);
+}
+
+void WrappedVulkan::AddResource(ResourceId id, ResourceType type, const char *defaultNamePrefix)
+{
+  ResourceDescription &descr = GetReplay()->GetResourceDesc(id);
+
+  uint64_t num;
+  memcpy(&num, &id, sizeof(uint64_t));
+  descr.name = defaultNamePrefix + (" " + ToStr(num));
+  descr.autogeneratedName = true;
+  descr.type = type;
+  AddResourceCurChunk(descr);
+}
+
+void WrappedVulkan::DerivedResource(ResourceId parentLive, ResourceId child)
+{
+  ResourceId parentId = GetResourceManager()->GetOriginalID(parentLive);
+
+  GetReplay()->GetResourceDesc(parentId).derivedResources.push_back(child);
+  GetReplay()->GetResourceDesc(child).parentResources.push_back(parentId);
+}
+
+void WrappedVulkan::AddResourceCurChunk(ResourceDescription &descr)
+{
+  descr.initialisationChunks.push_back((uint32_t)m_StructuredFile->chunks.size() - 1);
+}
+
+void WrappedVulkan::AddResourceCurChunk(ResourceId id)
+{
+  AddResourceCurChunk(GetReplay()->GetResourceDesc(id));
+}
+
+ReplayStatus WrappedVulkan::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers)
+{
+  int sectionIdx = rdc->SectionIndex(SectionType::FrameCapture);
+
+  GetResourceManager()->SetState(m_State);
+
+  if(sectionIdx < 0)
+    return ReplayStatus::FileCorrupted;
+
+  StreamReader *reader = rdc->ReadSection(sectionIdx);
+
+  if(IsStructuredExporting(m_State))
+  {
+    // when structured exporting don't do any timebase conversion
+    m_TimeBase = 0;
+    m_TimeFrequency = 1.0;
+  }
+  else
+  {
+    m_TimeBase = rdc->GetTimestampBase();
+    m_TimeFrequency = rdc->GetTimestampFrequency();
   }
 
-  m_pSerialiser->Rewind();
+  if(reader->IsErrored())
+  {
+    delete reader;
+    return ReplayStatus::FileIOFailed;
+  }
+
+  ReadSerialiser ser(reader, Ownership::Stream);
+
+  ser.SetStringDatabase(&m_StringDB);
+  ser.SetUserData(GetResourceManager());
+
+  ser.ConfigureStructuredExport(&GetChunkName, storeStructuredBuffers, m_TimeBase, m_TimeFrequency);
+
+  m_StructuredFile = &ser.GetStructuredFile();
+
+  m_StoredStructuredData->version = m_StructuredFile->version = m_SectionVersion;
+
+  ser.SetVersion(m_SectionVersion);
 
   int chunkIdx = 0;
 
@@ -1441,53 +2462,107 @@ void WrappedVulkan::ReadLogInitialisation()
     double total;
   };
 
-  map<VulkanChunkType, chunkinfo> chunkInfos;
+  std::map<VulkanChunk, chunkinfo> chunkInfos;
 
   SCOPED_TIMER("chunk initialisation");
+
+  uint64_t frameDataSize = 0;
+
+  ScopedDebugMessageSink *sink = NULL;
+  if(m_ReplayOptions.apiValidation)
+    sink = new ScopedDebugMessageSink(this);
 
   for(;;)
   {
     PerformanceTimer timer;
 
-    uint64_t offset = m_pSerialiser->GetOffset();
+    uint64_t offsetStart = reader->GetOffset();
 
-    VulkanChunkType context = (VulkanChunkType)m_pSerialiser->PushContext(NULL, NULL, 1, false);
-
-    if(context == CAPTURE_SCOPE)
-    {
-      // immediately read rest of log into memory
-      m_pSerialiser->SetPersistentBlock(offset);
-    }
+    VulkanChunk context = ser.ReadChunk<VulkanChunk>();
 
     chunkIdx++;
 
-    ProcessChunk(offset, context);
+    if(reader->IsErrored())
+    {
+      SAFE_DELETE(sink);
+      return ReplayStatus::APIDataCorrupted;
+    }
 
-    m_pSerialiser->PopContext(context);
+    bool success = ProcessChunk(ser, context);
 
-    RenderDoc::Inst().SetProgress(
-        FileInitialRead, float(m_pSerialiser->GetOffset()) / float(m_pSerialiser->GetSize()));
+    ser.EndChunk();
 
-    if(context == CAPTURE_SCOPE)
-      ContextReplayLog(READING, 0, 0, false);
+    if(reader->IsErrored())
+    {
+      SAFE_DELETE(sink);
+      return ReplayStatus::APIDataCorrupted;
+    }
 
-    uint64_t offset2 = m_pSerialiser->GetOffset();
+    // if there wasn't a serialisation error, but the chunk didn't succeed, then it's an API replay
+    // failure.
+    if(!success)
+    {
+      SAFE_DELETE(sink);
+      return m_FailedReplayStatus;
+    }
+
+    uint64_t offsetEnd = reader->GetOffset();
+
+    // only set progress after we've initialised the debug manager, to prevent progress jumping
+    // backwards.
+    if(m_DebugManager || IsStructuredExporting(m_State))
+    {
+      RenderDoc::Inst().SetProgress(LoadProgress::FileInitialRead,
+                                    float(offsetEnd) / float(reader->GetSize()));
+    }
+
+    if((SystemChunk)context == SystemChunk::CaptureScope)
+    {
+      GetReplay()->WriteFrameRecord().frameInfo.fileOffset = offsetStart;
+
+      // read the remaining data into memory and pass to immediate context
+      frameDataSize = reader->GetSize() - reader->GetOffset();
+
+      if(m_Queue == VK_NULL_HANDLE && m_Device != VK_NULL_HANDLE && m_QueueFamilyIdx != ~0U)
+      {
+        if(m_ExternalQueues[m_QueueFamilyIdx].queue != VK_NULL_HANDLE)
+        {
+          m_Queue = m_ExternalQueues[m_QueueFamilyIdx].queue;
+        }
+        else
+        {
+          ObjDisp(m_Device)->GetDeviceQueue(Unwrap(m_Device), m_QueueFamilyIdx, 0, &m_Queue);
+
+          GetResourceManager()->WrapResource(Unwrap(m_Device), m_Queue);
+          GetResourceManager()->AddLiveResource(ResourceIDGen::GetNewUniqueID(), m_Queue);
+
+          m_ExternalQueues[m_QueueFamilyIdx].queue = m_Queue;
+        }
+      }
+
+      m_FrameReader = new StreamReader(reader, frameDataSize);
+
+      for(auto it = m_CreationInfo.m_Memory.begin(); it != m_CreationInfo.m_Memory.end(); ++it)
+        it->second.SimplifyBindings();
+
+      ReplayStatus status = ContextReplayLog(m_State, 0, 0, false);
+
+      if(status != ReplayStatus::Succeeded)
+      {
+        SAFE_DELETE(sink);
+        return status;
+      }
+    }
 
     chunkInfos[context].total += timer.GetMilliseconds();
-    chunkInfos[context].totalsize += offset2 - offset;
+    chunkInfos[context].totalsize += offsetEnd - offsetStart;
     chunkInfos[context].count++;
 
-    if(context == CAPTURE_SCOPE)
-    {
-      if(m_pSerialiser->GetOffset() > lastFrame)
-        break;
-    }
-
-    if(m_pSerialiser->AtEnd())
-    {
+    if((SystemChunk)context == SystemChunk::CaptureScope || reader->IsErrored() || reader->AtEnd())
       break;
-    }
   }
+
+  SAFE_DELETE(sink);
 
 #if ENABLED(RDOC_DEVEL)
   for(auto it = chunkInfos.begin(); it != chunkInfos.end(); ++it)
@@ -1498,62 +2573,128 @@ void WrappedVulkan::ReadLogInitialisation()
         "% 5d chunks - Time: %9.3fms total/%9.3fms avg - Size: %8.3fMB total/%7.3fMB avg - %s (%u)",
         it->second.count, it->second.total, it->second.total / dcount,
         double(it->second.totalsize) / (1024.0 * 1024.0),
-        double(it->second.totalsize) / (dcount * 1024.0 * 1024.0), GetChunkName(it->first),
-        uint32_t(it->first));
+        double(it->second.totalsize) / (dcount * 1024.0 * 1024.0),
+        GetChunkName((uint32_t)it->first).c_str(), uint32_t(it->first));
   }
 #endif
 
-  m_FrameRecord.frameInfo.uncompressedFileSize = m_pSerialiser->GetSize();
-  m_FrameRecord.frameInfo.compressedFileSize = m_pSerialiser->GetFileSize();
-  m_FrameRecord.frameInfo.persistentSize = m_pSerialiser->GetSize() - firstFrame;
-  m_FrameRecord.frameInfo.initDataSize = chunkInfos[(VulkanChunkType)INITIAL_CONTENTS].totalsize;
+  // steal the structured data for ourselves
+  m_StructuredFile->Swap(*m_StoredStructuredData);
+
+  // and in future use this file.
+  m_StructuredFile = m_StoredStructuredData;
+
+  GetReplay()->WriteFrameRecord().frameInfo.uncompressedFileSize =
+      rdc->GetSectionProperties(sectionIdx).uncompressedSize;
+  GetReplay()->WriteFrameRecord().frameInfo.compressedFileSize =
+      rdc->GetSectionProperties(sectionIdx).compressedSize;
+  GetReplay()->WriteFrameRecord().frameInfo.persistentSize = frameDataSize;
+  GetReplay()->WriteFrameRecord().frameInfo.initDataSize =
+      chunkInfos[(VulkanChunk)SystemChunk::InitialContents].totalsize;
 
   RDCDEBUG("Allocating %llu persistant bytes of memory for the log.",
-           m_pSerialiser->GetSize() - firstFrame);
-
-  m_pSerialiser->SetDebugText(false);
+           GetReplay()->WriteFrameRecord().frameInfo.persistentSize);
 
   // ensure the capture at least created a device and fetched a queue.
-  RDCASSERT(m_Device != VK_NULL_HANDLE && m_Queue != VK_NULL_HANDLE &&
-            m_InternalCmds.cmdpool != VK_NULL_HANDLE);
+  if(!IsStructuredExporting(m_State))
+  {
+    RDCASSERT(m_Device != VK_NULL_HANDLE && m_Queue != VK_NULL_HANDLE &&
+              m_InternalCmds.cmdpool != VK_NULL_HANDLE);
+
+    // create indirect action buffer
+    m_IndirectBufferSize = AlignUp(m_IndirectBufferSize + 63, (size_t)64);
+
+    m_IndirectBuffer.Create(this, GetDev(), m_IndirectBufferSize * 2, 1,
+                            GPUBuffer::eGPUBufferGPULocal | GPUBuffer::eGPUBufferIndirectBuffer);
+
+    m_IndirectCommandBuffer = GetNextCmd();
+
+    // steal the command buffer out of the pending commands - we'll manage its lifetime ourselves
+    m_InternalCmds.pendingcmds.pop_back();
+  }
+
+  FreeAllMemory(MemoryScope::IndirectReadback);
+
+  return ReplayStatus::Succeeded;
 }
 
-void WrappedVulkan::ContextReplayLog(LogState readType, uint32_t startEventID, uint32_t endEventID,
-                                     bool partial)
+ReplayStatus WrappedVulkan::ContextReplayLog(CaptureState readType, uint32_t startEventID,
+                                             uint32_t endEventID, bool partial)
 {
-  m_State = readType;
+  m_FrameReader->SetOffset(0);
 
-  VulkanChunkType header = (VulkanChunkType)m_pSerialiser->PushContext(NULL, NULL, 1, false);
-  RDCASSERTEQUAL(header, CONTEXT_CAPTURE_HEADER);
+  ReadSerialiser ser(m_FrameReader, Ownership::Nothing);
 
-  Serialise_BeginCaptureFrame(!partial);
+  ser.SetStringDatabase(&m_StringDB);
+  ser.SetUserData(GetResourceManager());
+  ser.SetVersion(m_SectionVersion);
 
-  ObjDisp(GetDev())->DeviceWaitIdle(Unwrap(GetDev()));
+  SDFile *prevFile = m_StructuredFile;
+
+  if(IsLoading(m_State) || IsStructuredExporting(m_State))
+  {
+    ser.ConfigureStructuredExport(&GetChunkName, IsStructuredExporting(m_State), m_TimeBase,
+                                  m_TimeFrequency);
+
+    ser.GetStructuredFile().Swap(*m_StructuredFile);
+
+    m_StructuredFile = &ser.GetStructuredFile();
+  }
+
+  SystemChunk header = ser.ReadChunk<SystemChunk>();
+  RDCASSERTEQUAL(header, SystemChunk::CaptureBegin);
+
+  if(partial)
+  {
+    ser.SkipCurrentChunk();
+  }
+  else
+  {
+#if ENABLED(RDOC_RELEASE)
+    if(IsLoading(m_State))
+      Serialise_BeginCaptureFrame(ser);
+    else
+      ser.SkipCurrentChunk();
+#else
+    Serialise_BeginCaptureFrame(ser);
+
+    if(IsLoading(m_State))
+    {
+      AddResourceCurChunk(m_InitParams.InstanceID);
+    }
+#endif
+  }
+
+  ser.EndChunk();
+
+  if(!IsStructuredExporting(m_State))
+    ObjDisp(GetDev())->DeviceWaitIdle(Unwrap(GetDev()));
 
   // apply initial contents here so that images are in the right layout
   // (not undefined)
-  if(readType == READING)
+  if(IsLoading(m_State))
   {
+    // temporarily disable the debug message sink, to ignore messages from initial contents apply
+    ScopedDebugMessageSink *sink = GetDebugMessageSink();
+    SetDebugMessageSink(NULL);
+
     ApplyInitialContents();
 
-    SubmitCmds();
-    FlushQ();
+    SetDebugMessageSink(sink);
   }
-
-  m_pSerialiser->PopContext(header);
 
   m_RootEvents.clear();
 
-  if(m_State == EXECUTING)
+  if(IsActiveReplaying(m_State))
   {
-    FetchAPIEvent ev = GetEvent(startEventID);
-    m_RootEventID = ev.eventID;
+    APIEvent ev = GetEvent(startEventID);
+    m_RootEventID = ev.eventId;
 
     // if not partial, we need to be sure to replay
     // past the command buffer records, so can't
     // skip to the file offset of the first event
     if(partial)
-      m_pSerialiser->SetOffset(ev.fileOffset);
+      ser.GetReader()->SetOffset(ev.fileOffset);
 
     m_FirstEventID = startEventID;
     m_LastEventID = endEventID;
@@ -1564,41 +2705,63 @@ void WrappedVulkan::ContextReplayLog(LogState readType, uint32_t startEventID, u
     if(startEventID == endEventID && m_RootEventID != m_FirstEventID)
       m_FirstEventID = m_LastEventID = m_RootEventID;
   }
-  else if(m_State == READING)
+  else
   {
     m_RootEventID = 1;
-    m_RootDrawcallID = 1;
+    m_RootActionID = 1;
     m_FirstEventID = 0;
     m_LastEventID = ~0U;
   }
 
+  if(!partial && !IsStructuredExporting(m_State))
+    AddFrameTerminator(AMDRGPControl::GetBeginTag());
+
+  uint64_t startOffset = ser.GetReader()->GetOffset();
+
   for(;;)
   {
-    if(m_State == EXECUTING && m_RootEventID > endEventID)
+    if(IsActiveReplaying(m_State) && m_RootEventID > endEventID)
     {
       // we can just break out if we've done all the events desired.
       // note that the command buffer events aren't 'real' and we just blaze through them
       break;
     }
 
-    uint64_t offset = m_pSerialiser->GetOffset();
+    m_CurChunkOffset = ser.GetReader()->GetOffset();
 
-    VulkanChunkType context = (VulkanChunkType)m_pSerialiser->PushContext(NULL, NULL, 1, false);
+    VulkanChunk chunktype = ser.ReadChunk<VulkanChunk>();
+
+    if(ser.GetReader()->IsErrored())
+      return ReplayStatus::APIDataCorrupted;
+
+    m_ChunkMetadata = ser.ChunkMetadata();
 
     m_LastCmdBufferID = ResourceId();
 
-    ContextProcessChunk(offset, context);
+    bool success = ContextProcessChunk(ser, chunktype);
 
-    RenderDoc::Inst().SetProgress(FileInitialRead, float(offset) / float(m_pSerialiser->GetSize()));
+    ser.EndChunk();
 
-    // for now just abort after capture scope. Really we'd need to support multiple frames
-    // but for now this will do.
-    if(context == CONTEXT_CAPTURE_FOOTER)
+    if(ser.GetReader()->IsErrored())
+      return ReplayStatus::APIDataCorrupted;
+
+    // if there wasn't a serialisation error, but the chunk didn't succeed, then it's an API replay
+    // failure.
+    if(!success)
+      return m_FailedReplayStatus;
+
+    RenderDoc::Inst().SetProgress(
+        LoadProgress::FrameEventsRead,
+        float(m_CurChunkOffset - startOffset) / float(ser.GetReader()->GetSize()));
+
+    if((SystemChunk)chunktype == SystemChunk::CaptureEnd || ser.GetReader()->AtEnd())
       break;
 
     // break out if we were only executing one event
-    if(m_State == EXECUTING && startEventID == endEventID)
+    if(IsActiveReplaying(m_State) && startEventID == endEventID)
       break;
+
+    m_LastChunk = chunktype;
 
     // increment root event ID either if we didn't just replay a cmd
     // buffer event, OR if we are doing a frame sub-section replay,
@@ -1610,68 +2773,108 @@ void WrappedVulkan::ContextReplayLog(LogState readType, uint32_t startEventID, u
       m_RootEventID++;
 
       if(startEventID > 1)
-        m_pSerialiser->SetOffset(GetEvent(m_RootEventID).fileOffset);
+        ser.GetReader()->SetOffset(GetEvent(m_RootEventID).fileOffset);
     }
     else
     {
       // these events are completely omitted, so don't increment the curEventID
-      if(context != BEGIN_CMD_BUFFER && context != END_CMD_BUFFER)
+      if(chunktype != VulkanChunk::vkBeginCommandBuffer &&
+         chunktype != VulkanChunk::vkEndCommandBuffer)
         m_BakedCmdBufferInfo[m_LastCmdBufferID].curEventID++;
     }
   }
 
-  if(m_State == READING)
+  if(!partial && !IsStructuredExporting(m_State))
+    AddFrameTerminator(AMDRGPControl::GetEndTag());
+
+  // Save the current render state in the partial command buffer.
+  m_RenderState = m_BakedCmdBufferInfo[GetPartialCommandBuffer()].state;
+
+  // swap the structure back now that we've accumulated the frame as well.
+  if(IsLoading(m_State) || IsStructuredExporting(m_State))
+    ser.GetStructuredFile().Swap(*prevFile);
+
+  m_StructuredFile = prevFile;
+
+  if(IsLoading(m_State))
   {
-    GetFrameRecord().drawcallList = m_ParentDrawcall.Bake();
+    GetReplay()->WriteFrameRecord().actionList = m_ParentAction.Bake();
 
-    SetupDrawcallPointers(&m_Drawcalls, GetFrameRecord().drawcallList, NULL, NULL);
+    SetupActionPointers(m_Actions, GetReplay()->WriteFrameRecord().actionList);
 
-    struct SortEID
-    {
-      bool operator()(const FetchAPIEvent &a, const FetchAPIEvent &b)
-      {
-        return a.eventID < b.eventID;
-      }
-    };
-
-    std::sort(m_Events.begin(), m_Events.end(), SortEID());
-    m_ParentDrawcall.children.clear();
+    m_ParentAction.children.clear();
   }
 
-  ObjDisp(GetDev())->DeviceWaitIdle(Unwrap(GetDev()));
+  if(!IsStructuredExporting(m_State))
+  {
+    ObjDisp(GetDev())->DeviceWaitIdle(Unwrap(GetDev()));
 
-  // destroy any events we created for waiting on
-  for(size_t i = 0; i < m_CleanupEvents.size(); i++)
-    ObjDisp(GetDev())->DestroyEvent(Unwrap(GetDev()), m_CleanupEvents[i], NULL);
+    // destroy any events we created for waiting on
+    for(size_t i = 0; i < m_CleanupEvents.size(); i++)
+      ObjDisp(GetDev())->DestroyEvent(Unwrap(GetDev()), m_CleanupEvents[i], NULL);
+
+    for(const rdcpair<VkCommandPool, VkCommandBuffer> &rerecord : m_RerecordCmdList)
+      vkFreeCommandBuffers(GetDev(), rerecord.first, 1, &rerecord.second);
+  }
+
+  // submit the indirect preparation command buffer, if we need to
+  if(m_IndirectDraw)
+  {
+    VkSubmitInfo submitInfo = {
+        VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        m_SubmitChain,
+        0,
+        NULL,
+        NULL,    // wait semaphores
+        1,
+        UnwrapPtr(m_IndirectCommandBuffer),    // command buffers
+        0,
+        NULL,    // signal semaphores
+    };
+
+    VkResult vkr = ObjDisp(m_Queue)->QueueSubmit(Unwrap(m_Queue), 1, &submitInfo, VK_NULL_HANDLE);
+    CheckVkResult(vkr);
+  }
+
+  m_IndirectDraw = false;
 
   m_CleanupEvents.clear();
 
-  for(int p = 0; p < ePartialNum; p++)
-  {
-    if(m_Partial[p].resultPartialCmdBuffer != VK_NULL_HANDLE)
-    {
-      // deliberately call our own function, so this is destroyed as a wrapped object
-      vkFreeCommandBuffers(m_Partial[p].partialDevice, m_Partial[p].resultPartialCmdPool, 1,
-                           &m_Partial[p].resultPartialCmdBuffer);
-      m_Partial[p].resultPartialCmdBuffer = VK_NULL_HANDLE;
-    }
-  }
-
-  for(auto it = m_RerecordCmds.begin(); it != m_RerecordCmds.end(); ++it)
-  {
-    VkCommandBuffer cmd = it->second;
-
-    // same as above (these are created in an identical way)
-    vkFreeCommandBuffers(GetDev(), m_InternalCmds.cmdpool, 1, &cmd);
-  }
-
   m_RerecordCmds.clear();
+  m_RerecordCmdList.clear();
 
-  m_State = READING;
+  return ReplayStatus::Succeeded;
 }
 
 void WrappedVulkan::ApplyInitialContents()
 {
+  RENDERDOC_PROFILEFUNCTION();
+  if(HasFatalError())
+    return;
+
+  VkMarkerRegion region("ApplyInitialContents");
+
+  initStateCurBatch = 0;
+  initStateCurCmd = VK_NULL_HANDLE;
+
+  // check that we have all external queues necessary
+  for(size_t i = 0; i < m_ExternalQueues.size(); i++)
+  {
+    // if we created a pool (so this is a queue family we're using) but
+    // didn't get a queue at all, fetch our own queue for this family
+    if(m_ExternalQueues[i].queue != VK_NULL_HANDLE || m_ExternalQueues[i].pool == VK_NULL_HANDLE)
+      continue;
+
+    VkQueue queue;
+
+    ObjDisp(m_Device)->GetDeviceQueue(Unwrap(m_Device), (uint32_t)i, 0, &queue);
+
+    GetResourceManager()->WrapResource(Unwrap(m_Device), queue);
+    GetResourceManager()->AddLiveResource(ResourceIDGen::GetNewUniqueID(), queue);
+
+    m_ExternalQueues[i].queue = queue;
+  }
+
   // add a global memory barrier to ensure all writes have finished and are synchronised
   // add memory barrier to ensure this copy completes before any subsequent work
   // this is a very blunt instrument but it ensures we don't get random artifacts around
@@ -1682,18 +2885,21 @@ void WrappedVulkan::ApplyInitialContents()
 
   VkCommandBuffer cmd = GetNextCmd();
 
+  if(cmd == VK_NULL_HANDLE)
+    return;
+
   VkResult vkr = VK_SUCCESS;
 
   VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
                                         VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
 
   vkr = ObjDisp(cmd)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
-  RDCASSERTEQUAL(vkr, VK_SUCCESS);
+  CheckVkResult(vkr);
 
   DoPipelineBarrier(cmd, 1, &memBarrier);
 
   vkr = ObjDisp(cmd)->EndCommandBuffer(Unwrap(cmd));
-  RDCASSERTEQUAL(vkr, VK_SUCCESS);
+  CheckVkResult(vkr);
 
   // sync all GPU work so we can also apply descriptor set initial contents
   SubmitCmds();
@@ -1702,453 +2908,704 @@ void WrappedVulkan::ApplyInitialContents()
   // actually apply the initial contents here
   GetResourceManager()->ApplyInitialContents();
 
+  // close the final command buffer
+  if(initStateCurCmd != VK_NULL_HANDLE)
+  {
+    CloseInitStateCmd();
+  }
+
+  initStateCurBatch = 0;
+  initStateCurCmd = VK_NULL_HANDLE;
+
+  for(auto it = m_ImageStates.begin(); it != m_ImageStates.end(); ++it)
+  {
+    if(GetResourceManager()->HasCurrentResource(it->first))
+    {
+      it->second.LockWrite()->ResetToOldState(m_cleanupImageBarriers, GetImageTransitionInfo());
+    }
+    else
+    {
+      it = m_ImageStates.erase(it);
+      --it;
+    }
+  }
+
   // likewise again to make sure the initial states are all applied
   cmd = GetNextCmd();
 
   vkr = ObjDisp(cmd)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
-  RDCASSERTEQUAL(vkr, VK_SUCCESS);
+  CheckVkResult(vkr);
 
   DoPipelineBarrier(cmd, 1, &memBarrier);
 
   vkr = ObjDisp(cmd)->EndCommandBuffer(Unwrap(cmd));
-  RDCASSERTEQUAL(vkr, VK_SUCCESS);
+  CheckVkResult(vkr);
 
-#if ENABLED(SINGLE_FLUSH_VALIDATE)
+  SubmitAndFlushImageStateBarriers(m_setupImageBarriers);
   SubmitCmds();
-#endif
-}
+  FlushQ();
+  SubmitAndFlushImageStateBarriers(m_cleanupImageBarriers);
 
-void WrappedVulkan::ContextProcessChunk(uint64_t offset, VulkanChunkType chunk)
-{
-  m_CurChunkOffset = offset;
-
-  m_AddedDrawcall = false;
-
-  ProcessChunk(offset, chunk);
-
-  m_pSerialiser->PopContext(chunk);
-
-  if(m_State == READING && chunk == SET_MARKER)
+  // reset any queries to a valid copy-able state if they need to be copied.
+  if(!m_ResetQueries.empty())
   {
-    // no push/pop necessary
-  }
-  else if(m_State == READING && (chunk == BEGIN_CMD_BUFFER || chunk == END_CMD_BUFFER ||
-                                 chunk == BEGIN_EVENT || chunk == END_EVENT))
-  {
-    // don't add these events - they will be handled when inserted in-line into queue submit
-  }
-  else if(m_State == READING)
-  {
-    if(!m_AddedDrawcall)
-      AddEvent(m_pSerialiser->GetDebugStr());
-  }
+    // sort all pools together
+    std::sort(m_ResetQueries.begin(), m_ResetQueries.end(),
+              [](const ResetQuery &a, const ResetQuery &b) { return a.pool < b.pool; });
 
-  m_AddedDrawcall = false;
-}
+    cmd = GetNextCmd();
 
-void WrappedVulkan::ProcessChunk(uint64_t offset, VulkanChunkType context)
-{
-  switch(context)
-  {
-    case DEVICE_INIT: { break;
+    if(cmd == VK_NULL_HANDLE)
+      return;
+
+    vkr = ObjDisp(cmd)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
+    CheckVkResult(vkr);
+
+    uint32_t i = 0;
+    for(const ResetQuery &r : m_ResetQueries)
+    {
+      ObjDisp(cmd)->CmdResetQueryPool(Unwrap(cmd), Unwrap(r.pool), r.firstQuery, r.queryCount);
+
+      for(uint32_t q = 0; q < r.queryCount; q++)
+      {
+        // Timestamps are easy - we can do these without needing to render
+        if(m_CreationInfo.m_QueryPool[GetResID(r.pool)].queryType == VK_QUERY_TYPE_TIMESTAMP)
+        {
+          ObjDisp(cmd)->CmdWriteTimestamp(Unwrap(cmd), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                          Unwrap(r.pool), r.firstQuery + q);
+        }
+        else
+        {
+          ObjDisp(cmd)->CmdBeginQuery(Unwrap(cmd), Unwrap(r.pool), r.firstQuery + q, 0);
+          ObjDisp(cmd)->CmdEndQuery(Unwrap(cmd), Unwrap(r.pool), r.firstQuery + q);
+        }
+
+        i++;
+
+        // split the command buffer and flush if the number of queries is massive
+        if(i > 0 && (i % (128 * 1024)) == 0)
+        {
+          vkr = ObjDisp(cmd)->EndCommandBuffer(Unwrap(cmd));
+          CheckVkResult(vkr);
+
+          SubmitCmds();
+          FlushQ();
+
+          cmd = GetNextCmd();
+
+          if(cmd == VK_NULL_HANDLE)
+            return;
+
+          vkr = ObjDisp(cmd)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
+          CheckVkResult(vkr);
+        }
+      }
     }
-    case ENUM_PHYSICALS:
-      Serialise_vkEnumeratePhysicalDevices(GetMainSerialiser(), NULL, NULL, NULL);
-      break;
-    case CREATE_DEVICE:
-      Serialise_vkCreateDevice(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case GET_DEVICE_QUEUE:
-      Serialise_vkGetDeviceQueue(GetMainSerialiser(), VK_NULL_HANDLE, 0, 0, NULL);
-      break;
 
-    case ALLOC_MEM:
-      Serialise_vkAllocateMemory(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case UNMAP_MEM:
-      Serialise_vkUnmapMemory(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE);
-      break;
-    case FLUSH_MEM:
-      Serialise_vkFlushMappedMemoryRanges(GetMainSerialiser(), VK_NULL_HANDLE, 0, NULL);
-      break;
-    case FREE_MEM: RDCERR("vkFreeMemory should not be serialised directly"); break;
-    case CREATE_CMD_POOL:
-      Serialise_vkCreateCommandPool(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case CREATE_CMD_BUFFER:
-      RDCERR("vkCreateCommandBuffer should not be serialised directly");
-      break;
-    case CREATE_FRAMEBUFFER:
-      Serialise_vkCreateFramebuffer(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case CREATE_RENDERPASS:
-      Serialise_vkCreateRenderPass(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case CREATE_DESCRIPTOR_POOL:
-      Serialise_vkCreateDescriptorPool(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case CREATE_DESCRIPTOR_SET_LAYOUT:
-      Serialise_vkCreateDescriptorSetLayout(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case CREATE_BUFFER:
-      Serialise_vkCreateBuffer(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case CREATE_BUFFER_VIEW:
-      Serialise_vkCreateBufferView(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case CREATE_IMAGE:
-      Serialise_vkCreateImage(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case CREATE_IMAGE_VIEW:
-      Serialise_vkCreateImageView(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case CREATE_SAMPLER:
-      Serialise_vkCreateSampler(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case CREATE_SHADER_MODULE:
-      Serialise_vkCreateShaderModule(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case CREATE_PIPE_LAYOUT:
-      Serialise_vkCreatePipelineLayout(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case CREATE_PIPE_CACHE:
-      Serialise_vkCreatePipelineCache(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case CREATE_GRAPHICS_PIPE:
-      Serialise_vkCreateGraphicsPipelines(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
-                                          NULL, NULL, NULL);
-      break;
-    case CREATE_COMPUTE_PIPE:
-      Serialise_vkCreateComputePipelines(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
-                                         NULL, NULL, NULL);
-      break;
-    case GET_SWAPCHAIN_IMAGE:
-      Serialise_vkGetSwapchainImagesKHR(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE, NULL,
-                                        NULL);
-      break;
+    vkr = ObjDisp(cmd)->EndCommandBuffer(Unwrap(cmd));
+    CheckVkResult(vkr);
 
-    case CREATE_SEMAPHORE:
-      Serialise_vkCreateSemaphore(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case CREATE_FENCE:
-      Serialise_vkCreateFence(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case GET_FENCE_STATUS:
-      Serialise_vkGetFenceStatus(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE);
-      break;
-    case RESET_FENCE: Serialise_vkResetFences(GetMainSerialiser(), VK_NULL_HANDLE, 0, NULL); break;
-    case WAIT_FENCES:
-      Serialise_vkWaitForFences(GetMainSerialiser(), VK_NULL_HANDLE, 0, NULL, VK_FALSE, 0);
-      break;
+    m_ResetQueries.clear();
 
-    case CREATE_EVENT:
-      Serialise_vkCreateEvent(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
-    case GET_EVENT_STATUS:
-      Serialise_vkGetEventStatus(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE);
-      break;
-    case SET_EVENT:
-      Serialise_vkSetEvent(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE);
-      break;
-    case RESET_EVENT:
-      Serialise_vkResetEvent(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE);
-      break;
+    SubmitCmds();
+    FlushQ();
+  }
+}
 
-    case CREATE_QUERY_POOL:
-      Serialise_vkCreateQueryPool(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
+bool WrappedVulkan::ContextProcessChunk(ReadSerialiser &ser, VulkanChunk chunk)
+{
+  m_AddedAction = false;
 
-    case ALLOC_DESC_SET:
-      Serialise_vkAllocateDescriptorSets(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL);
-      break;
-    case UPDATE_DESC_SET:
-      Serialise_vkUpdateDescriptorSets(GetMainSerialiser(), VK_NULL_HANDLE, 0, NULL, 0, NULL);
-      break;
+  bool success = ProcessChunk(ser, chunk);
 
-    case BEGIN_CMD_BUFFER:
-      Serialise_vkBeginCommandBuffer(GetMainSerialiser(), VK_NULL_HANDLE, NULL);
-      break;
-    case END_CMD_BUFFER: Serialise_vkEndCommandBuffer(GetMainSerialiser(), VK_NULL_HANDLE); break;
+  if(!success)
+    return false;
 
-    case QUEUE_WAIT_IDLE: Serialise_vkQueueWaitIdle(GetMainSerialiser(), VK_NULL_HANDLE); break;
-    case DEVICE_WAIT_IDLE: Serialise_vkDeviceWaitIdle(GetMainSerialiser(), VK_NULL_HANDLE); break;
+  if(IsLoading(m_State))
+  {
+    if(chunk == VulkanChunk::vkBeginCommandBuffer || chunk == VulkanChunk::vkEndCommandBuffer)
+    {
+      // don't add these events - they will be handled when inserted in-line into queue submit
+    }
+    else if(chunk == VulkanChunk::vkQueueEndDebugUtilsLabelEXT)
+    {
+      // also ignore, this just pops the action stack
+    }
+    else
+    {
+      if(!m_AddedAction)
+        AddEvent();
+    }
+  }
 
-    case QUEUE_SUBMIT:
-      Serialise_vkQueueSubmit(GetMainSerialiser(), VK_NULL_HANDLE, 0, NULL, VK_NULL_HANDLE);
-      break;
-    case BIND_BUFFER_MEM:
-      Serialise_vkBindBufferMemory(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                   VK_NULL_HANDLE, 0);
-      break;
-    case BIND_IMAGE_MEM:
-      Serialise_vkBindImageMemory(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                  VK_NULL_HANDLE, 0);
-      break;
+  m_AddedAction = false;
 
-    case BIND_SPARSE:
-      Serialise_vkQueueBindSparse(GetMainSerialiser(), VK_NULL_HANDLE, 0, NULL, VK_NULL_HANDLE);
-      break;
+  return true;
+}
 
-    case BEGIN_RENDERPASS:
-      Serialise_vkCmdBeginRenderPass(GetMainSerialiser(), VK_NULL_HANDLE, NULL,
-                                     VK_SUBPASS_CONTENTS_MAX_ENUM);
-      break;
-    case NEXT_SUBPASS:
-      Serialise_vkCmdNextSubpass(GetMainSerialiser(), VK_NULL_HANDLE, VK_SUBPASS_CONTENTS_MAX_ENUM);
-      break;
-    case EXEC_CMDS:
-      Serialise_vkCmdExecuteCommands(GetMainSerialiser(), VK_NULL_HANDLE, 0, NULL);
-      break;
-    case END_RENDERPASS: Serialise_vkCmdEndRenderPass(GetMainSerialiser(), VK_NULL_HANDLE); break;
+bool WrappedVulkan::ProcessChunk(ReadSerialiser &ser, VulkanChunk chunk)
+{
+  switch(chunk)
+  {
+    case VulkanChunk::vkEnumeratePhysicalDevices:
+      return Serialise_vkEnumeratePhysicalDevices(ser, NULL, NULL, NULL);
+    case VulkanChunk::vkCreateDevice:
+      return Serialise_vkCreateDevice(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkGetDeviceQueue:
+      return Serialise_vkGetDeviceQueue(ser, VK_NULL_HANDLE, 0, 0, NULL);
 
-    case BIND_PIPELINE:
-      Serialise_vkCmdBindPipeline(GetMainSerialiser(), VK_NULL_HANDLE,
-                                  VK_PIPELINE_BIND_POINT_MAX_ENUM, VK_NULL_HANDLE);
-      break;
-    case SET_VP: Serialise_vkCmdSetViewport(GetMainSerialiser(), VK_NULL_HANDLE, 0, 0, NULL); break;
-    case SET_SCISSOR:
-      Serialise_vkCmdSetScissor(GetMainSerialiser(), VK_NULL_HANDLE, 0, 0, NULL);
-      break;
-    case SET_LINE_WIDTH: Serialise_vkCmdSetLineWidth(GetMainSerialiser(), VK_NULL_HANDLE, 0); break;
-    case SET_DEPTH_BIAS:
-      Serialise_vkCmdSetDepthBias(GetMainSerialiser(), VK_NULL_HANDLE, 0.0f, 0.0f, 0.0f);
-      break;
-    case SET_BLEND_CONST:
-      Serialise_vkCmdSetBlendConstants(GetMainSerialiser(), VK_NULL_HANDLE, NULL);
-      break;
-    case SET_DEPTH_BOUNDS:
-      Serialise_vkCmdSetDepthBounds(GetMainSerialiser(), VK_NULL_HANDLE, 0.0f, 0.0f);
-      break;
-    case SET_STENCIL_COMP_MASK:
-      Serialise_vkCmdSetStencilCompareMask(GetMainSerialiser(), VK_NULL_HANDLE, 0, 0);
-      break;
-    case SET_STENCIL_WRITE_MASK:
-      Serialise_vkCmdSetStencilWriteMask(GetMainSerialiser(), VK_NULL_HANDLE, 0, 0);
-      break;
-    case SET_STENCIL_REF:
-      Serialise_vkCmdSetStencilReference(GetMainSerialiser(), VK_NULL_HANDLE, 0, 0);
-      break;
-    case BIND_DESCRIPTOR_SET:
-      Serialise_vkCmdBindDescriptorSets(GetMainSerialiser(), VK_NULL_HANDLE,
-                                        VK_PIPELINE_BIND_POINT_MAX_ENUM, VK_NULL_HANDLE, 0, 0, NULL,
-                                        0, NULL);
-      break;
-    case BIND_INDEX_BUFFER:
-      Serialise_vkCmdBindIndexBuffer(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
-                                     VK_INDEX_TYPE_MAX_ENUM);
-      break;
-    case BIND_VERTEX_BUFFERS:
-      Serialise_vkCmdBindVertexBuffers(GetMainSerialiser(), VK_NULL_HANDLE, 0, 0, NULL, NULL);
-      break;
-    case COPY_BUF2IMG:
-      Serialise_vkCmdCopyBufferToImage(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                       VK_NULL_HANDLE, VK_IMAGE_LAYOUT_MAX_ENUM, 0, NULL);
-      break;
-    case COPY_IMG2BUF:
-      Serialise_vkCmdCopyImageToBuffer(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                       VK_IMAGE_LAYOUT_MAX_ENUM, VK_NULL_HANDLE, 0, NULL);
-      break;
-    case COPY_IMG:
-      Serialise_vkCmdCopyImage(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE,
-                               VK_IMAGE_LAYOUT_MAX_ENUM, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_MAX_ENUM,
-                               0, NULL);
-      break;
-    case BLIT_IMG:
-      Serialise_vkCmdBlitImage(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE,
-                               VK_IMAGE_LAYOUT_MAX_ENUM, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_MAX_ENUM,
-                               0, NULL, VK_FILTER_MAX_ENUM);
-      break;
-    case RESOLVE_IMG:
-      Serialise_vkCmdResolveImage(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                  VK_IMAGE_LAYOUT_MAX_ENUM, VK_NULL_HANDLE,
-                                  VK_IMAGE_LAYOUT_MAX_ENUM, 0, NULL);
-      break;
-    case COPY_BUF:
-      Serialise_vkCmdCopyBuffer(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                0, NULL);
-      break;
-    case UPDATE_BUF:
-      Serialise_vkCmdUpdateBuffer(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0, NULL);
-      break;
-    case FILL_BUF:
-      Serialise_vkCmdFillBuffer(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0, 0);
-      break;
-    case PUSH_CONST:
-      Serialise_vkCmdPushConstants(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                   VK_SHADER_STAGE_ALL, 0, 0, NULL);
-      break;
-    case CLEAR_COLOR:
-      Serialise_vkCmdClearColorImage(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                     VK_IMAGE_LAYOUT_MAX_ENUM, NULL, 0, NULL);
-      break;
-    case CLEAR_DEPTHSTENCIL:
-      Serialise_vkCmdClearDepthStencilImage(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE,
+    case VulkanChunk::vkAllocateMemory:
+      return Serialise_vkAllocateMemory(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkUnmapMemory:
+      return Serialise_vkUnmapMemory(ser, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    case VulkanChunk::vkFlushMappedMemoryRanges:
+    case VulkanChunk::CoherentMapWrite:
+      return Serialise_vkFlushMappedMemoryRanges(ser, VK_NULL_HANDLE, 0, NULL);
+    case VulkanChunk::vkCreateCommandPool:
+      return Serialise_vkCreateCommandPool(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkAllocateCommandBuffers:
+      return Serialise_vkAllocateCommandBuffers(ser, VK_NULL_HANDLE, NULL, NULL);
+    case VulkanChunk::vkCreateFramebuffer:
+      return Serialise_vkCreateFramebuffer(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkCreateRenderPass:
+      return Serialise_vkCreateRenderPass(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkCreateDescriptorPool:
+      return Serialise_vkCreateDescriptorPool(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkCreateDescriptorSetLayout:
+      return Serialise_vkCreateDescriptorSetLayout(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkCreateBuffer:
+      return Serialise_vkCreateBuffer(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkCreateBufferView:
+      return Serialise_vkCreateBufferView(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkCreateImage:
+      return Serialise_vkCreateImage(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkCreateImageView:
+      return Serialise_vkCreateImageView(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkCreateSampler:
+      return Serialise_vkCreateSampler(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkCreateShaderModule:
+      return Serialise_vkCreateShaderModule(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkCreatePipelineLayout:
+      return Serialise_vkCreatePipelineLayout(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkCreatePipelineCache:
+      return Serialise_vkCreatePipelineCache(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkCreateGraphicsPipelines:
+      return Serialise_vkCreateGraphicsPipelines(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, NULL, NULL,
+                                                 NULL);
+    case VulkanChunk::vkCreateComputePipelines:
+      return Serialise_vkCreateComputePipelines(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, NULL, NULL,
+                                                NULL);
+    case VulkanChunk::vkGetSwapchainImagesKHR:
+      return Serialise_vkGetSwapchainImagesKHR(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, NULL, NULL);
+
+    case VulkanChunk::vkCreateSemaphore:
+      return Serialise_vkCreateSemaphore(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkCreateFence:
+    // these chunks re-use serialisation from vkCreateFence, but have separate chunks for user
+    // identification
+    case VulkanChunk::vkRegisterDeviceEventEXT:
+    case VulkanChunk::vkRegisterDisplayEventEXT:
+      return Serialise_vkCreateFence(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkGetFenceStatus:
+      return Serialise_vkGetFenceStatus(ser, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    case VulkanChunk::vkResetFences: return Serialise_vkResetFences(ser, VK_NULL_HANDLE, 0, NULL);
+    case VulkanChunk::vkWaitForFences:
+      return Serialise_vkWaitForFences(ser, VK_NULL_HANDLE, 0, NULL, VK_FALSE, 0);
+
+    case VulkanChunk::vkCreateEvent:
+      return Serialise_vkCreateEvent(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkGetEventStatus:
+      return Serialise_vkGetEventStatus(ser, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    case VulkanChunk::vkSetEvent: return Serialise_vkSetEvent(ser, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    case VulkanChunk::vkResetEvent:
+      return Serialise_vkResetEvent(ser, VK_NULL_HANDLE, VK_NULL_HANDLE);
+
+    case VulkanChunk::vkCreateQueryPool:
+      return Serialise_vkCreateQueryPool(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+
+    case VulkanChunk::vkAllocateDescriptorSets:
+      return Serialise_vkAllocateDescriptorSets(ser, VK_NULL_HANDLE, NULL, NULL);
+    case VulkanChunk::vkUpdateDescriptorSets:
+      return Serialise_vkUpdateDescriptorSets(ser, VK_NULL_HANDLE, 0, NULL, 0, NULL);
+
+    case VulkanChunk::vkBeginCommandBuffer:
+      return Serialise_vkBeginCommandBuffer(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkEndCommandBuffer: return Serialise_vkEndCommandBuffer(ser, VK_NULL_HANDLE);
+
+    case VulkanChunk::vkQueueWaitIdle: return Serialise_vkQueueWaitIdle(ser, VK_NULL_HANDLE);
+    case VulkanChunk::vkDeviceWaitIdle: return Serialise_vkDeviceWaitIdle(ser, VK_NULL_HANDLE);
+
+    case VulkanChunk::vkQueueSubmit:
+      return Serialise_vkQueueSubmit(ser, VK_NULL_HANDLE, 0, NULL, VK_NULL_HANDLE);
+    case VulkanChunk::vkBindBufferMemory:
+      return Serialise_vkBindBufferMemory(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, 0);
+    case VulkanChunk::vkBindImageMemory:
+      return Serialise_vkBindImageMemory(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, 0);
+
+    case VulkanChunk::vkQueueBindSparse:
+      return Serialise_vkQueueBindSparse(ser, VK_NULL_HANDLE, 0, NULL, VK_NULL_HANDLE);
+
+    case VulkanChunk::vkCmdBeginRenderPass:
+      return Serialise_vkCmdBeginRenderPass(ser, VK_NULL_HANDLE, NULL, VK_SUBPASS_CONTENTS_MAX_ENUM);
+    case VulkanChunk::vkCmdNextSubpass:
+      return Serialise_vkCmdNextSubpass(ser, VK_NULL_HANDLE, VK_SUBPASS_CONTENTS_MAX_ENUM);
+    case VulkanChunk::vkCmdExecuteCommands:
+      return Serialise_vkCmdExecuteCommands(ser, VK_NULL_HANDLE, 0, NULL);
+    case VulkanChunk::vkCmdEndRenderPass: return Serialise_vkCmdEndRenderPass(ser, VK_NULL_HANDLE);
+
+    case VulkanChunk::vkCmdBindPipeline:
+      return Serialise_vkCmdBindPipeline(ser, VK_NULL_HANDLE, VK_PIPELINE_BIND_POINT_MAX_ENUM,
+                                         VK_NULL_HANDLE);
+    case VulkanChunk::vkCmdSetViewport:
+      return Serialise_vkCmdSetViewport(ser, VK_NULL_HANDLE, 0, 0, NULL);
+    case VulkanChunk::vkCmdSetScissor:
+      return Serialise_vkCmdSetScissor(ser, VK_NULL_HANDLE, 0, 0, NULL);
+    case VulkanChunk::vkCmdSetLineWidth: return Serialise_vkCmdSetLineWidth(ser, VK_NULL_HANDLE, 0);
+    case VulkanChunk::vkCmdSetDepthBias:
+      return Serialise_vkCmdSetDepthBias(ser, VK_NULL_HANDLE, 0.0f, 0.0f, 0.0f);
+    case VulkanChunk::vkCmdSetBlendConstants:
+      return Serialise_vkCmdSetBlendConstants(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkCmdSetDepthBounds:
+      return Serialise_vkCmdSetDepthBounds(ser, VK_NULL_HANDLE, 0.0f, 0.0f);
+    case VulkanChunk::vkCmdSetStencilCompareMask:
+      return Serialise_vkCmdSetStencilCompareMask(ser, VK_NULL_HANDLE, 0, 0);
+    case VulkanChunk::vkCmdSetStencilWriteMask:
+      return Serialise_vkCmdSetStencilWriteMask(ser, VK_NULL_HANDLE, 0, 0);
+    case VulkanChunk::vkCmdSetStencilReference:
+      return Serialise_vkCmdSetStencilReference(ser, VK_NULL_HANDLE, 0, 0);
+    case VulkanChunk::vkCmdBindDescriptorSets:
+      return Serialise_vkCmdBindDescriptorSets(ser, VK_NULL_HANDLE, VK_PIPELINE_BIND_POINT_MAX_ENUM,
+                                               VK_NULL_HANDLE, 0, 0, NULL, 0, NULL);
+    case VulkanChunk::vkCmdBindIndexBuffer:
+      return Serialise_vkCmdBindIndexBuffer(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
+                                            VK_INDEX_TYPE_MAX_ENUM);
+    case VulkanChunk::vkCmdBindVertexBuffers:
+      return Serialise_vkCmdBindVertexBuffers(ser, VK_NULL_HANDLE, 0, 0, NULL, NULL);
+    case VulkanChunk::vkCmdCopyBufferToImage:
+      return Serialise_vkCmdCopyBufferToImage(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                              VK_IMAGE_LAYOUT_MAX_ENUM, 0, NULL);
+    case VulkanChunk::vkCmdCopyImageToBuffer:
+      return Serialise_vkCmdCopyImageToBuffer(ser, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                              VK_IMAGE_LAYOUT_MAX_ENUM, VK_NULL_HANDLE, 0, NULL);
+    case VulkanChunk::vkCmdCopyImage:
+      return Serialise_vkCmdCopyImage(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_MAX_ENUM,
+                                      VK_NULL_HANDLE, VK_IMAGE_LAYOUT_MAX_ENUM, 0, NULL);
+    case VulkanChunk::vkCmdBlitImage:
+      return Serialise_vkCmdBlitImage(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_MAX_ENUM,
+                                      VK_NULL_HANDLE, VK_IMAGE_LAYOUT_MAX_ENUM, 0, NULL,
+                                      VK_FILTER_MAX_ENUM);
+    case VulkanChunk::vkCmdResolveImage:
+      return Serialise_vkCmdResolveImage(ser, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                         VK_IMAGE_LAYOUT_MAX_ENUM, VK_NULL_HANDLE,
+                                         VK_IMAGE_LAYOUT_MAX_ENUM, 0, NULL);
+    case VulkanChunk::vkCmdCopyBuffer:
+      return Serialise_vkCmdCopyBuffer(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, NULL);
+    case VulkanChunk::vkCmdUpdateBuffer:
+      return Serialise_vkCmdUpdateBuffer(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0, NULL);
+    case VulkanChunk::vkCmdFillBuffer:
+      return Serialise_vkCmdFillBuffer(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0, 0);
+    case VulkanChunk::vkCmdPushConstants:
+      return Serialise_vkCmdPushConstants(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_SHADER_STAGE_ALL,
+                                          0, 0, NULL);
+    case VulkanChunk::vkCmdClearColorImage:
+      return Serialise_vkCmdClearColorImage(ser, VK_NULL_HANDLE, VK_NULL_HANDLE,
                                             VK_IMAGE_LAYOUT_MAX_ENUM, NULL, 0, NULL);
-      break;
-    case CLEAR_ATTACH:
-      Serialise_vkCmdClearAttachments(GetMainSerialiser(), VK_NULL_HANDLE, 0, NULL, 0, NULL);
-      break;
-    case PIPELINE_BARRIER:
-      Serialise_vkCmdPipelineBarrier(GetMainSerialiser(), VK_NULL_HANDLE, 0, 0, VK_FALSE, 0, NULL,
-                                     0, NULL, 0, NULL);
-      break;
-    case WRITE_TIMESTAMP:
-      Serialise_vkCmdWriteTimestamp(GetMainSerialiser(), VK_NULL_HANDLE,
-                                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_NULL_HANDLE, 0);
-      break;
-    case COPY_QUERY_RESULTS:
-      Serialise_vkCmdCopyQueryPoolResults(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0,
-                                          VK_NULL_HANDLE, 0, 0, 0);
-      break;
-    case BEGIN_QUERY:
-      Serialise_vkCmdBeginQuery(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
-      break;
-    case END_QUERY:
-      Serialise_vkCmdEndQuery(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE, 0);
-      break;
-    case RESET_QUERY_POOL:
-      Serialise_vkCmdResetQueryPool(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
-      break;
+    case VulkanChunk::vkCmdClearDepthStencilImage:
+      return Serialise_vkCmdClearDepthStencilImage(ser, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                                   VK_IMAGE_LAYOUT_MAX_ENUM, NULL, 0, NULL);
+    case VulkanChunk::vkCmdClearAttachments:
+      return Serialise_vkCmdClearAttachments(ser, VK_NULL_HANDLE, 0, NULL, 0, NULL);
+    case VulkanChunk::vkCmdPipelineBarrier:
+      return Serialise_vkCmdPipelineBarrier(ser, VK_NULL_HANDLE, 0, 0, VK_FALSE, 0, NULL, 0, NULL,
+                                            0, NULL);
+    case VulkanChunk::vkCmdWriteTimestamp:
+      return Serialise_vkCmdWriteTimestamp(ser, VK_NULL_HANDLE, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                           VK_NULL_HANDLE, 0);
+    case VulkanChunk::vkCmdCopyQueryPoolResults:
+      return Serialise_vkCmdCopyQueryPoolResults(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0,
+                                                 VK_NULL_HANDLE, 0, 0, 0);
+    case VulkanChunk::vkCmdBeginQuery:
+      return Serialise_vkCmdBeginQuery(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
+    case VulkanChunk::vkCmdEndQuery:
+      return Serialise_vkCmdEndQuery(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0);
+    case VulkanChunk::vkCmdResetQueryPool:
+      return Serialise_vkCmdResetQueryPool(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
 
-    case CMD_SET_EVENT:
-      Serialise_vkCmdSetEvent(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE,
-                              VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-      break;
-    case CMD_RESET_EVENT:
-      Serialise_vkCmdResetEvent(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-      break;
-    case CMD_WAIT_EVENTS:
-      Serialise_vkCmdWaitEvents(GetMainSerialiser(), VK_NULL_HANDLE, 0, NULL,
-                                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, NULL, 0, NULL, 0, NULL);
-      break;
+    case VulkanChunk::vkCmdSetEvent:
+      return Serialise_vkCmdSetEvent(ser, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    case VulkanChunk::vkCmdResetEvent:
+      return Serialise_vkCmdResetEvent(ser, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                       VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    case VulkanChunk::vkCmdWaitEvents:
+      return Serialise_vkCmdWaitEvents(
+          ser, VK_NULL_HANDLE, 0, NULL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, NULL, 0, NULL, 0, NULL);
 
-    case DRAW: Serialise_vkCmdDraw(GetMainSerialiser(), VK_NULL_HANDLE, 0, 0, 0, 0); break;
-    case DRAW_INDIRECT:
-      Serialise_vkCmdDrawIndirect(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0, 0);
-      break;
-    case DRAW_INDEXED:
-      Serialise_vkCmdDrawIndexed(GetMainSerialiser(), VK_NULL_HANDLE, 0, 0, 0, 0, 0);
-      break;
-    case DRAW_INDEXED_INDIRECT:
-      Serialise_vkCmdDrawIndexedIndirect(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0,
-                                         0);
-      break;
-    case DISPATCH: Serialise_vkCmdDispatch(GetMainSerialiser(), VK_NULL_HANDLE, 0, 0, 0); break;
-    case DISPATCH_INDIRECT:
-      Serialise_vkCmdDispatchIndirect(GetMainSerialiser(), VK_NULL_HANDLE, VK_NULL_HANDLE, 0);
-      break;
+    case VulkanChunk::vkCmdDraw: return Serialise_vkCmdDraw(ser, VK_NULL_HANDLE, 0, 0, 0, 0);
+    case VulkanChunk::vkCmdDrawIndirect:
+      return Serialise_vkCmdDrawIndirect(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0, 0);
+    case VulkanChunk::vkCmdDrawIndexed:
+      return Serialise_vkCmdDrawIndexed(ser, VK_NULL_HANDLE, 0, 0, 0, 0, 0);
+    case VulkanChunk::vkCmdDrawIndexedIndirect:
+      return Serialise_vkCmdDrawIndexedIndirect(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0, 0);
+    case VulkanChunk::vkCmdDispatch: return Serialise_vkCmdDispatch(ser, VK_NULL_HANDLE, 0, 0, 0);
+    case VulkanChunk::vkCmdDispatchIndirect:
+      return Serialise_vkCmdDispatchIndirect(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0);
 
-    case BEGIN_EVENT:
-      Serialise_vkCmdDebugMarkerBeginEXT(GetMainSerialiser(), VK_NULL_HANDLE, NULL);
-      break;
-    case SET_MARKER:
-      Serialise_vkCmdDebugMarkerInsertEXT(GetMainSerialiser(), VK_NULL_HANDLE, NULL);
-      break;
-    case END_EVENT: Serialise_vkCmdDebugMarkerEndEXT(GetMainSerialiser(), VK_NULL_HANDLE); break;
-    case SET_NAME:
-      Serialise_vkDebugMarkerSetObjectNameEXT(GetMainSerialiser(), VK_NULL_HANDLE, NULL);
-      break;
-    case SET_SHADER_DEBUG_PATH:
-      Serialise_SetShaderDebugPath(GetMainSerialiser(), VK_NULL_HANDLE, NULL);
-      break;
+    case VulkanChunk::vkCmdDebugMarkerBeginEXT:
+      return Serialise_vkCmdDebugMarkerBeginEXT(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkCmdDebugMarkerInsertEXT:
+      return Serialise_vkCmdDebugMarkerInsertEXT(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkCmdDebugMarkerEndEXT:
+      return Serialise_vkCmdDebugMarkerEndEXT(ser, VK_NULL_HANDLE);
+    case VulkanChunk::vkDebugMarkerSetObjectNameEXT:
+      return Serialise_vkDebugMarkerSetObjectNameEXT(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::SetShaderDebugPath:
+      return Serialise_SetShaderDebugPath(ser, VK_NULL_HANDLE, rdcstr());
 
-    case CREATE_SWAP_BUFFER:
-      Serialise_vkCreateSwapchainKHR(GetMainSerialiser(), VK_NULL_HANDLE, NULL, NULL, NULL);
-      break;
+    case VulkanChunk::vkCreateSwapchainKHR:
+      return Serialise_vkCreateSwapchainKHR(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
 
-    case CAPTURE_SCOPE: Serialise_CaptureScope(offset); break;
-    case CONTEXT_CAPTURE_FOOTER:
+    case VulkanChunk::vkCmdIndirectSubCommand:
+      // this is a fake chunk generated at runtime as part of indirect draws.
+      // Just in case it gets exported and imported, completely ignore it.
+      return true;
+
+    case VulkanChunk::vkCmdPushDescriptorSetKHR:
+      return Serialise_vkCmdPushDescriptorSetKHR(
+          ser, VK_NULL_HANDLE, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_NULL_HANDLE, 0, 0, NULL);
+
+    case VulkanChunk::vkCmdPushDescriptorSetWithTemplateKHR:
+      return Serialise_vkCmdPushDescriptorSetWithTemplateKHR(ser, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                                             VK_NULL_HANDLE, 0, NULL);
+
+    case VulkanChunk::vkCreateDescriptorUpdateTemplate:
+      return Serialise_vkCreateDescriptorUpdateTemplate(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkUpdateDescriptorSetWithTemplate:
+      return Serialise_vkUpdateDescriptorSetWithTemplate(ser, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                                         VK_NULL_HANDLE, NULL);
+
+    case VulkanChunk::vkBindBufferMemory2:
+      return Serialise_vkBindBufferMemory2(ser, VK_NULL_HANDLE, 0, NULL);
+    case VulkanChunk::vkBindImageMemory2:
+      return Serialise_vkBindImageMemory2(ser, VK_NULL_HANDLE, 0, NULL);
+
+    case VulkanChunk::vkCmdWriteBufferMarkerAMD:
+      return Serialise_vkCmdWriteBufferMarkerAMD(
+          ser, VK_NULL_HANDLE, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_NULL_HANDLE, 0, 0);
+
+    case VulkanChunk::vkSetDebugUtilsObjectNameEXT:
+      return Serialise_vkSetDebugUtilsObjectNameEXT(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkQueueBeginDebugUtilsLabelEXT:
+      return Serialise_vkQueueBeginDebugUtilsLabelEXT(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkQueueEndDebugUtilsLabelEXT:
+      return Serialise_vkQueueEndDebugUtilsLabelEXT(ser, VK_NULL_HANDLE);
+    case VulkanChunk::vkQueueInsertDebugUtilsLabelEXT:
+      return Serialise_vkQueueInsertDebugUtilsLabelEXT(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkCmdBeginDebugUtilsLabelEXT:
+      return Serialise_vkCmdBeginDebugUtilsLabelEXT(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkCmdEndDebugUtilsLabelEXT:
+      return Serialise_vkCmdEndDebugUtilsLabelEXT(ser, VK_NULL_HANDLE);
+    case VulkanChunk::vkCmdInsertDebugUtilsLabelEXT:
+      return Serialise_vkCmdInsertDebugUtilsLabelEXT(ser, VK_NULL_HANDLE, NULL);
+
+    case VulkanChunk::vkCreateSamplerYcbcrConversion:
+      return Serialise_vkCreateSamplerYcbcrConversion(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+
+    case VulkanChunk::vkCmdSetDeviceMask:
+      return Serialise_vkCmdSetDeviceMask(ser, VK_NULL_HANDLE, 0);
+    case VulkanChunk::vkCmdDispatchBase:
+      return Serialise_vkCmdDispatchBase(ser, VK_NULL_HANDLE, 0, 0, 0, 0, 0, 0);
+
+    case VulkanChunk::vkGetDeviceQueue2:
+      return Serialise_vkGetDeviceQueue2(ser, VK_NULL_HANDLE, NULL, NULL);
+
+    case VulkanChunk::vkCmdDrawIndirectCount:
+      return Serialise_vkCmdDrawIndirectCount(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
+                                              VK_NULL_HANDLE, 0, 0, 0);
+    case VulkanChunk::vkCmdDrawIndexedIndirectCount:
+      return Serialise_vkCmdDrawIndexedIndirectCount(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
+                                                     VK_NULL_HANDLE, 0, 0, 0);
+
+    case VulkanChunk::vkCreateRenderPass2:
+      return Serialise_vkCreateRenderPass2(ser, VK_NULL_HANDLE, NULL, NULL, NULL);
+    case VulkanChunk::vkCmdBeginRenderPass2:
+      return Serialise_vkCmdBeginRenderPass2(ser, VK_NULL_HANDLE, NULL, NULL);
+    case VulkanChunk::vkCmdNextSubpass2:
+      return Serialise_vkCmdNextSubpass2(ser, VK_NULL_HANDLE, NULL, NULL);
+    case VulkanChunk::vkCmdEndRenderPass2:
+      return Serialise_vkCmdEndRenderPass2(ser, VK_NULL_HANDLE, NULL);
+
+    case VulkanChunk::vkCmdBindTransformFeedbackBuffersEXT:
+      return Serialise_vkCmdBindTransformFeedbackBuffersEXT(ser, VK_NULL_HANDLE, 0, 0, NULL, NULL,
+                                                            NULL);
+    case VulkanChunk::vkCmdBeginTransformFeedbackEXT:
+      return Serialise_vkCmdBeginTransformFeedbackEXT(ser, VK_NULL_HANDLE, 0, 0, NULL, NULL);
+    case VulkanChunk::vkCmdEndTransformFeedbackEXT:
+      return Serialise_vkCmdEndTransformFeedbackEXT(ser, VK_NULL_HANDLE, 0, 0, NULL, NULL);
+    case VulkanChunk::vkCmdBeginQueryIndexedEXT:
+      return Serialise_vkCmdBeginQueryIndexedEXT(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0, 0);
+    case VulkanChunk::vkCmdEndQueryIndexedEXT:
+      return Serialise_vkCmdEndQueryIndexedEXT(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
+    case VulkanChunk::vkCmdDrawIndirectByteCountEXT:
+      return Serialise_vkCmdDrawIndirectByteCountEXT(ser, VK_NULL_HANDLE, 0, 0, VK_NULL_HANDLE, 0,
+                                                     0, 0);
+    case VulkanChunk::vkCmdBeginConditionalRenderingEXT:
+      return Serialise_vkCmdBeginConditionalRenderingEXT(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkCmdEndConditionalRenderingEXT:
+      return Serialise_vkCmdEndConditionalRenderingEXT(ser, VK_NULL_HANDLE);
+    case VulkanChunk::vkCmdSetSampleLocationsEXT:
+      return Serialise_vkCmdSetSampleLocationsEXT(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkCmdSetDiscardRectangleEXT:
+      return Serialise_vkCmdSetDiscardRectangleEXT(ser, VK_NULL_HANDLE, 0, 0, NULL);
+    case VulkanChunk::DeviceMemoryRefs:
     {
-      Serialiser *localSerialiser = GetMainSerialiser();
-
-      SERIALISE_ELEMENT(ResourceId, bbid, ResourceId());
-
-      bool HasCallstack = false;
-      localSerialiser->Serialise("HasCallstack", HasCallstack);
-
-      if(HasCallstack)
-      {
-        size_t numLevels = 0;
-        uint64_t *stack = NULL;
-
-        localSerialiser->SerialisePODArray("callstack", stack, numLevels);
-
-        localSerialiser->SetCallstack(stack, numLevels);
-
-        SAFE_DELETE_ARRAY(stack);
-      }
-
-      if(m_State == READING)
-      {
-        AddEvent("vkQueuePresentKHR()");
-
-        FetchDrawcall draw;
-        draw.name = "vkQueuePresentKHR()";
-        draw.flags |= eDraw_Present;
-
-        draw.copyDestination = bbid;
-
-        AddDrawcall(draw, true);
-      }
-      break;
+      rdcarray<MemRefInterval> data;
+      return GetResourceManager()->Serialise_DeviceMemoryRefs(ser, data);
     }
-    default:
+    case VulkanChunk::vkResetQueryPool:
+      return Serialise_vkResetQueryPool(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
+    case VulkanChunk::vkCmdSetLineStippleEXT:
+      return Serialise_vkCmdSetLineStippleEXT(ser, VK_NULL_HANDLE, 0, 0);
+    case VulkanChunk::ImageRefs:
     {
-      // ignore system chunks
-      if((int)context == (int)INITIAL_CONTENTS)
-        Serialise_InitialState(ResourceId(), NULL);
-      else if((int)context < (int)FIRST_CHUNK_ID)
-        m_pSerialiser->SkipCurrentChunk();
-      else
-        RDCERR("Unrecognised Chunk type %d", context);
-      break;
+      SCOPED_LOCK(m_ImageStatesLock);
+      return GetResourceManager()->Serialise_ImageRefs(ser, m_ImageStates);
+    }
+    case VulkanChunk::vkGetSemaphoreCounterValue:
+      return Serialise_vkGetSemaphoreCounterValue(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkWaitSemaphores:
+      return Serialise_vkWaitSemaphores(ser, VK_NULL_HANDLE, NULL, 0);
+    case VulkanChunk::vkSignalSemaphore:
+      return Serialise_vkSignalSemaphore(ser, VK_NULL_HANDLE, NULL);
+
+    case VulkanChunk::vkQueuePresentKHR:
+      return Serialise_vkQueuePresentKHR(ser, VK_NULL_HANDLE, NULL);
+
+    case VulkanChunk::vkCmdSetCullModeEXT:
+      return Serialise_vkCmdSetCullModeEXT(ser, VK_NULL_HANDLE, VK_CULL_MODE_FLAG_BITS_MAX_ENUM);
+    case VulkanChunk::vkCmdSetFrontFaceEXT:
+      return Serialise_vkCmdSetFrontFaceEXT(ser, VK_NULL_HANDLE, VK_FRONT_FACE_MAX_ENUM);
+    case VulkanChunk::vkCmdSetPrimitiveTopologyEXT:
+      return Serialise_vkCmdSetPrimitiveTopologyEXT(ser, VK_NULL_HANDLE,
+                                                    VK_PRIMITIVE_TOPOLOGY_MAX_ENUM);
+    case VulkanChunk::vkCmdSetViewportWithCountEXT:
+      return Serialise_vkCmdSetViewportWithCountEXT(ser, VK_NULL_HANDLE, 0, NULL);
+    case VulkanChunk::vkCmdSetScissorWithCountEXT:
+      return Serialise_vkCmdSetScissorWithCountEXT(ser, VK_NULL_HANDLE, 0, NULL);
+    case VulkanChunk::vkCmdBindVertexBuffers2EXT:
+      return Serialise_vkCmdBindVertexBuffers2EXT(ser, VK_NULL_HANDLE, 0, 0, NULL, NULL, NULL, NULL);
+    case VulkanChunk::vkCmdSetDepthTestEnableEXT:
+      return Serialise_vkCmdSetDepthTestEnableEXT(ser, VK_NULL_HANDLE, VK_FALSE);
+    case VulkanChunk::vkCmdSetDepthWriteEnableEXT:
+      return Serialise_vkCmdSetDepthWriteEnableEXT(ser, VK_NULL_HANDLE, VK_FALSE);
+    case VulkanChunk::vkCmdSetDepthCompareOpEXT:
+      return Serialise_vkCmdSetDepthCompareOpEXT(ser, VK_NULL_HANDLE, VK_COMPARE_OP_MAX_ENUM);
+    case VulkanChunk::vkCmdSetDepthBoundsTestEnableEXT:
+      return Serialise_vkCmdSetDepthBoundsTestEnableEXT(ser, VK_NULL_HANDLE, VK_FALSE);
+    case VulkanChunk::vkCmdSetStencilTestEnableEXT:
+      return Serialise_vkCmdSetStencilTestEnableEXT(ser, VK_NULL_HANDLE, VK_FALSE);
+    case VulkanChunk::vkCmdSetStencilOpEXT:
+      return Serialise_vkCmdSetStencilOpEXT(ser, VK_NULL_HANDLE, VK_STENCIL_FACE_FLAG_BITS_MAX_ENUM,
+                                            VK_STENCIL_OP_MAX_ENUM, VK_STENCIL_OP_MAX_ENUM,
+                                            VK_STENCIL_OP_MAX_ENUM, VK_COMPARE_OP_MAX_ENUM);
+
+    case VulkanChunk::vkCmdCopyBuffer2KHR:
+      return Serialise_vkCmdCopyBuffer2KHR(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkCmdCopyImage2KHR:
+      return Serialise_vkCmdCopyImage2KHR(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkCmdCopyBufferToImage2KHR:
+      return Serialise_vkCmdCopyBufferToImage2KHR(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkCmdCopyImageToBuffer2KHR:
+      return Serialise_vkCmdCopyImageToBuffer2KHR(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkCmdBlitImage2KHR:
+      return Serialise_vkCmdBlitImage2KHR(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkCmdResolveImage2KHR:
+      return Serialise_vkCmdResolveImage2KHR(ser, VK_NULL_HANDLE, NULL);
+
+    case VulkanChunk::vkCmdSetEvent2KHR:
+      return Serialise_vkCmdSetEvent2KHR(ser, VK_NULL_HANDLE, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkCmdResetEvent2KHR:
+      return Serialise_vkCmdResetEvent2KHR(ser, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                           VK_PIPELINE_STAGE_2_NONE_KHR);
+    case VulkanChunk::vkCmdWaitEvents2KHR:
+      return Serialise_vkCmdWaitEvents2KHR(ser, VK_NULL_HANDLE, 0, NULL, NULL);
+    case VulkanChunk::vkCmdPipelineBarrier2KHR:
+      return Serialise_vkCmdPipelineBarrier2KHR(ser, VK_NULL_HANDLE, NULL);
+    case VulkanChunk::vkCmdWriteTimestamp2KHR:
+      return Serialise_vkCmdWriteTimestamp2KHR(ser, VK_NULL_HANDLE, VK_PIPELINE_STAGE_2_NONE_KHR,
+                                               VK_NULL_HANDLE, 0);
+    case VulkanChunk::vkQueueSubmit2KHR:
+      return Serialise_vkQueueSubmit2KHR(ser, VK_NULL_HANDLE, 1, NULL, VK_NULL_HANDLE);
+    case VulkanChunk::vkCmdWriteBufferMarker2AMD:
+      return Serialise_vkCmdWriteBufferMarker2AMD(ser, VK_NULL_HANDLE, VK_PIPELINE_STAGE_2_NONE_KHR,
+                                                  VK_NULL_HANDLE, 0, 0);
+
+    // chunks that are reserved but not yet serialised
+    case VulkanChunk::vkResetCommandPool:
+    case VulkanChunk::vkCreateDepthTargetView:
+      RDCERR("Unexpected Chunk type %s", ToStr(chunk).c_str());
+
+    // no explicit default so that we have compiler warnings if a chunk isn't explicitly handled.
+    case VulkanChunk::Max: break;
+  }
+
+  {
+    SystemChunk system = (SystemChunk)chunk;
+    if(system == SystemChunk::DriverInit)
+    {
+      VkInitParams InitParams;
+      SERIALISE_ELEMENT(InitParams);
+
+      SERIALISE_CHECK_READ_ERRORS();
+
+      AddResourceCurChunk(InitParams.InstanceID);
+    }
+    else if(system == SystemChunk::InitialContentsList)
+    {
+      GetResourceManager()->CreateInitialContents(ser);
+
+      if(initStateCurCmd != VK_NULL_HANDLE)
+      {
+        CloseInitStateCmd();
+        SubmitAndFlushImageStateBarriers(m_setupImageBarriers);
+        SubmitCmds();
+        FlushQ();
+        SubmitAndFlushImageStateBarriers(m_cleanupImageBarriers);
+      }
+
+      SERIALISE_CHECK_READ_ERRORS();
+    }
+    else if(system == SystemChunk::InitialContents)
+    {
+      return Serialise_InitialState(ser, ResourceId(), NULL, NULL);
+    }
+    else if(system == SystemChunk::CaptureScope)
+    {
+      return Serialise_CaptureScope(ser);
+    }
+    else if(system == SystemChunk::CaptureEnd)
+    {
+      SERIALISE_ELEMENT_LOCAL(PresentedImage, ResourceId()).TypedAs("VkImage"_lit);
+
+      SERIALISE_CHECK_READ_ERRORS();
+
+      if(PresentedImage != ResourceId())
+        m_LastPresentedImage = PresentedImage;
+
+      if(IsLoading(m_State) && m_LastChunk != VulkanChunk::vkQueuePresentKHR)
+      {
+        AddEvent();
+
+        ActionDescription action;
+        action.customName = "End of Capture";
+        action.flags |= ActionFlags::Present;
+
+        action.copyDestination = m_LastPresentedImage;
+
+        AddAction(action);
+      }
+
+      return true;
+    }
+    else if(system < SystemChunk::FirstDriverChunk)
+    {
+      RDCERR("Unexpected system chunk in capture data: %u", system);
+      ser.SkipCurrentChunk();
+
+      SERIALISE_CHECK_READ_ERRORS();
+    }
+    else
+    {
+      RDCERR("Unrecognised Chunk type %d", chunk);
+      return false;
     }
   }
+
+  return true;
+}
+
+void WrappedVulkan::AddFrameTerminator(uint64_t queueMarkerTag)
+{
+  if(HasFatalError())
+    return;
+
+  VkCommandBuffer cmdBuffer = GetNextCmd();
+  VkResult vkr = VK_SUCCESS;
+
+  if(cmdBuffer == VK_NULL_HANDLE)
+    return;
+
+  VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                        VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+
+  vkr = ObjDisp(cmdBuffer)->BeginCommandBuffer(Unwrap(cmdBuffer), &beginInfo);
+  CheckVkResult(vkr);
+
+  vkr = ObjDisp(cmdBuffer)->EndCommandBuffer(Unwrap(cmdBuffer));
+  CheckVkResult(vkr);
+
+  VkDebugMarkerObjectTagInfoEXT tagInfo = {VK_STRUCTURE_TYPE_DEBUG_MARKER_OBJECT_TAG_INFO_EXT, NULL};
+  tagInfo.objectType = VK_DEBUG_REPORT_OBJECT_TYPE_COMMAND_BUFFER_EXT;
+  tagInfo.object = uint64_t(Unwrap(cmdBuffer));
+  tagInfo.tagName = queueMarkerTag;
+  tagInfo.tagSize = 0;
+  tagInfo.pTag = NULL;
+
+  // check for presence of the queue marker extension
+  if(ObjDisp(m_Device)->DebugMarkerSetObjectTagEXT)
+  {
+    vkr = ObjDisp(m_Device)->DebugMarkerSetObjectTagEXT(Unwrap(m_Device), &tagInfo);
+  }
+
+  SubmitCmds();
+}
+
+VkResourceRecord *WrappedVulkan::RegisterSurface(WindowingSystem system, void *handle)
+{
+  Keyboard::AddInputWindow(system, handle);
+
+  RenderDoc::Inst().AddFrameCapturer(LayerDisp(m_Instance), handle, this);
+
+  return (VkResourceRecord *)new PackedWindowHandle(system, handle);
 }
 
 void WrappedVulkan::ReplayLog(uint32_t startEventID, uint32_t endEventID, ReplayLogType replayType)
 {
-  uint64_t offs = m_FrameRecord.frameInfo.fileOffset;
-
-  m_pSerialiser->SetOffset(offs);
-
   bool partial = true;
 
   if(startEventID == 0 && (replayType == eReplay_WithoutDraw || replayType == eReplay_Full))
   {
-    startEventID = m_FrameRecord.frameInfo.firstEvent;
+    startEventID = 1;
     partial = false;
   }
 
-  VulkanChunkType header = (VulkanChunkType)m_pSerialiser->PushContext(NULL, NULL, 1, false);
-
-  RDCASSERTEQUAL(header, CAPTURE_SCOPE);
-
-  m_pSerialiser->SkipCurrentChunk();
-
-  m_pSerialiser->PopContext(header);
-
   if(!partial)
   {
+    VkMarkerRegion::Begin("!!!!RenderDoc Internal: ApplyInitialContents");
     ApplyInitialContents();
-
-    SubmitCmds();
-    FlushQ();
-
-    GetResourceManager()->ReleaseInFrameResources();
+    VkMarkerRegion::End();
   }
+
+  m_State = CaptureState::ActiveReplaying;
+
+  VkMarkerRegion::Set(StringFormat::Fmt("!!!!RenderDoc Internal: RenderDoc Replay %d (%d): %u->%u",
+                                        (int)replayType, (int)partial, startEventID, endEventID));
 
   {
     if(!partial)
     {
-      RDCASSERT(m_Partial[Primary].resultPartialCmdBuffer == VK_NULL_HANDLE);
-      RDCASSERT(m_Partial[Secondary].resultPartialCmdBuffer == VK_NULL_HANDLE);
       m_Partial[Primary].Reset();
       m_Partial[Secondary].Reset();
-      m_RenderState = VulkanRenderState(&m_CreationInfo);
-      m_RenderState.m_ResourceManager = GetResourceManager();
+      m_RenderState = VulkanRenderState();
+      for(auto it = m_BakedCmdBufferInfo.begin(); it != m_BakedCmdBufferInfo.end(); it++)
+        it->second.state = VulkanRenderState();
+    }
+    else
+    {
+      // Copy the state in case m_RenderState was modified externally for the partial replay.
+      m_BakedCmdBufferInfo[GetPartialCommandBuffer()].state = m_RenderState;
     }
 
     VkResult vkr = VK_SUCCESS;
@@ -2157,80 +3614,98 @@ void WrappedVulkan::ReplayLog(uint32_t startEventID, uint32_t endEventID, Replay
 
     // we'll need our own command buffer if we're replaying just a subsection
     // of events within a single command buffer record - always if it's only
-    // one drawcall, or if start event ID is > 0 we assume the outside code
+    // one action, or if start event ID is > 0 we assume the outside code
     // has chosen a subsection that lies within a command buffer
     if(partial)
     {
-      m_State = EXECUTING;
+      VkCommandBuffer cmd = m_OutsideCmdBuffer = GetNextCmd();
 
-      VkCommandBuffer cmd = m_Partial[Primary].outsideCmdBuffer = GetNextCmd();
+      if(cmd == VK_NULL_HANDLE)
+        return;
+
+      // we'll explicitly submit this when we're ready
+      RemovePendingCommandBuffer(cmd);
 
       VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
                                             VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
 
       vkr = ObjDisp(cmd)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
-      RDCASSERTEQUAL(vkr, VK_SUCCESS);
+      CheckVkResult(vkr);
 
       rpWasActive = m_Partial[Primary].renderPassActive;
 
       if(m_Partial[Primary].renderPassActive)
       {
-        // first apply implicit transitions to the right subpass
-        std::vector<VkImageMemoryBarrier> imgBarriers = GetImplicitRenderPassBarriers();
+        const ActionDescription *action = GetAction(endEventID);
 
-        // don't transition from undefined, or contents will be discarded, instead transition from
-        // the current state.
-        for(size_t i = 0; i < imgBarriers.size(); i++)
+        bool rpUnneeded = false;
+
+        // if we're only replaying an action, and it's not an draw or dispatch, don't try and bind
+        // all the replay state as we don't know if it will be valid.
+        if(replayType == eReplay_OnlyDraw)
         {
-          if(imgBarriers[i].oldLayout == VK_IMAGE_LAYOUT_UNDEFINED)
+          if(!action)
           {
-            // TODO find overlapping range and transition that instead
-            imgBarriers[i].oldLayout =
-                m_ImageLayouts[GetResourceManager()->GetNonDispWrapper(imgBarriers[i].image)->id]
-                    .subresourceStates[0]
-                    .newLayout;
+            rpUnneeded = true;
+          }
+          else if(!(action->flags & (ActionFlags::Drawcall | ActionFlags::Dispatch)))
+          {
+            rpUnneeded = true;
           }
         }
 
-        GetResourceManager()->RecordBarriers(m_BakedCmdBufferInfo[GetResID(cmd)].imgbarriers,
-                                             m_ImageLayouts, (uint32_t)imgBarriers.size(),
-                                             &imgBarriers[0]);
-
-        ObjDisp(cmd)->CmdPipelineBarrier(Unwrap(cmd), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, false, 0, NULL, 0, NULL,
-                                         (uint32_t)imgBarriers.size(), &imgBarriers[0]);
+        // if we have an indirect action with one action, the subcommand will have an event which
+        // isn't a ActionDescription and selecting it will still replay that indirect action. We
+        // need to detect this case and ensure we prepare the RP. This doesn't happen for
+        // multi-action indirects because there each subcommand has an actual ActionDescription
+        if(rpUnneeded)
+        {
+          APIEvent ev = GetEvent(endEventID);
+          if(m_StructuredFile->chunks[ev.chunkIndex]->metadata.chunkID ==
+             (uint32_t)VulkanChunk::vkCmdIndirectSubCommand)
+            rpUnneeded = false;
+        }
 
         // if a render pass was active, begin it and set up the partial replay state
-        m_RenderState.BeginRenderPassAndApplyState(cmd);
+        m_RenderState.BeginRenderPassAndApplyState(
+            this, cmd, rpUnneeded ? VulkanRenderState::BindNone : VulkanRenderState::BindGraphics);
       }
-      else if(m_RenderState.compute.pipeline != ResourceId())
+      else
       {
-        // if we had a compute pipeline, need to bind that
-        m_RenderState.BindPipeline(cmd);
+        // even outside of render passes, we need to restore the state
+        m_RenderState.BindPipeline(this, cmd, VulkanRenderState::BindInitial, false);
       }
     }
 
+    ReplayStatus status = ReplayStatus::Succeeded;
+
     if(replayType == eReplay_Full)
-    {
-      ContextReplayLog(EXECUTING, startEventID, endEventID, partial);
-    }
+      status = ContextReplayLog(m_State, startEventID, endEventID, partial);
     else if(replayType == eReplay_WithoutDraw)
-    {
-      ContextReplayLog(EXECUTING, startEventID, RDCMAX(1U, endEventID) - 1, partial);
-    }
+      status = ContextReplayLog(m_State, startEventID, RDCMAX(1U, endEventID) - 1, partial);
     else if(replayType == eReplay_OnlyDraw)
-    {
-      ContextReplayLog(EXECUTING, endEventID, endEventID, partial);
-    }
+      status = ContextReplayLog(m_State, endEventID, endEventID, partial);
     else
       RDCFATAL("Unexpected replay type");
 
-    if(m_Partial[Primary].outsideCmdBuffer != VK_NULL_HANDLE)
+    RDCASSERTEQUAL(status, ReplayStatus::Succeeded);
+
+    if(m_OutsideCmdBuffer != VK_NULL_HANDLE)
     {
-      VkCommandBuffer cmd = m_Partial[Primary].outsideCmdBuffer;
+      VkCommandBuffer cmd = m_OutsideCmdBuffer;
+
+      // end any active XFB
+      if(!m_RenderState.xfbcounters.empty())
+        m_RenderState.EndTransformFeedback(this, cmd);
+
+      // end any active conditional rendering
+      if(m_RenderState.IsConditionalRenderingEnabled())
+        m_RenderState.EndConditionalRendering(cmd);
 
       // check if the render pass is active - it could have become active
-      // even if it wasn't before (if the above event was a CmdBeginRenderPass)
+      // even if it wasn't before (if the above event was a CmdBeginRenderPass).
+      // If we began our own custom single-action loadrp, and it was ended by a CmdEndRenderPass,
+      // we need to reverse the virtual transitions we did above, as it won't happen otherwise
       if(m_Partial[Primary].renderPassActive)
         m_RenderState.EndRenderPass(cmd);
 
@@ -2241,112 +3716,181 @@ void WrappedVulkan::ReplayLog(uint32_t startEventID, uint32_t endEventID, Replay
 
       ObjDisp(cmd)->EndCommandBuffer(Unwrap(cmd));
 
+      AddPendingCommandBuffer(cmd);
+
       SubmitCmds();
 
-      m_Partial[Primary].outsideCmdBuffer = VK_NULL_HANDLE;
+      m_OutsideCmdBuffer = VK_NULL_HANDLE;
     }
 
 #if ENABLED(SINGLE_FLUSH_VALIDATE)
+    SubmitAndFlushImageStateBarriers(m_setupImageBarriers);
     SubmitCmds();
+    FlushQ();
+    SubmitAndFlushImageStateBarriers(m_cleanupImageBarriers);
 #endif
   }
+
+  VkMarkerRegion::Set("!!!!RenderDoc Internal: Done replay");
 }
 
-void WrappedVulkan::Serialise_DebugMessages(Serialiser *localSerialiser, bool isDrawcall)
+template <typename SerialiserType>
+void WrappedVulkan::Serialise_DebugMessages(SerialiserType &ser)
 {
-  SCOPED_SERIALISE_CONTEXT(DEBUG_MESSAGES);
+  rdcarray<DebugMessage> DebugMessages;
 
-  vector<DebugMessage> debugMessages;
-
-  if(m_State >= WRITING)
+  if(ser.IsWriting())
   {
     ScopedDebugMessageSink *sink = GetDebugMessageSink();
     if(sink)
-      debugMessages.swap(sink->msgs);
+      DebugMessages.swap(sink->msgs);
+
+    for(DebugMessage &msg : DebugMessages)
+      ProcessDebugMessage(msg);
   }
 
-  SERIALISE_ELEMENT(
-      bool, HasCallstack,
-      isDrawcall &&RenderDoc::Inst().GetCaptureOptions().CaptureCallstacksOnlyDraws != 0);
+  SERIALISE_ELEMENT(DebugMessages);
 
-  if(HasCallstack)
+  // if we're using debug messages from replay, discard any from the capture
+  if(ser.IsReading() && IsLoading(m_State) && m_ReplayOptions.apiValidation)
+    DebugMessages.clear();
+
+  // hide empty sets of messages.
+  if(ser.IsReading() && DebugMessages.empty())
+    ser.Hidden();
+
+  if(ser.IsReading() && IsLoading(m_State))
   {
-    if(m_State >= WRITING)
-    {
-      Callstack::Stackwalk *call = Callstack::Collect();
-
-      RDCASSERT(call->NumLevels() < 0xff);
-
-      size_t numLevels = call->NumLevels();
-      uint64_t *stack = (uint64_t *)call->GetAddrs();
-
-      localSerialiser->SerialisePODArray("callstack", stack, numLevels);
-
-      delete call;
-    }
-    else
-    {
-      size_t numLevels = 0;
-      uint64_t *stack = NULL;
-
-      localSerialiser->SerialisePODArray("callstack", stack, numLevels);
-
-      localSerialiser->SetCallstack(stack, numLevels);
-
-      SAFE_DELETE_ARRAY(stack);
-    }
+    for(const DebugMessage &msg : DebugMessages)
+      AddDebugMessage(msg);
   }
+}
 
-  SERIALISE_ELEMENT(uint32_t, NumMessages, (uint32_t)debugMessages.size());
+template void WrappedVulkan::Serialise_DebugMessages(WriteSerialiser &ser);
+template void WrappedVulkan::Serialise_DebugMessages(ReadSerialiser &ser);
 
-  for(uint32_t i = 0; i < NumMessages; i++)
+void WrappedVulkan::ProcessDebugMessage(DebugMessage &msg)
+{
+  // if we have the unique objects layer we can assume all objects have a unique ID, and replace
+  // any text that looks like an object reference (0xHEX[NAME]).
+  if(m_LayersEnabled[VkCheckLayer_unique_objects])
   {
-    ScopedContext msgscope(m_pSerialiser, "DebugMessage", "DebugMessage", 0, false);
-
-    string desc;
-    if(m_State >= WRITING)
-      desc = debugMessages[i].description.elems;
-
-    SERIALISE_ELEMENT(uint32_t, Category, debugMessages[i].category);
-    SERIALISE_ELEMENT(uint32_t, Source, debugMessages[i].source);
-    SERIALISE_ELEMENT(uint32_t, Severity, debugMessages[i].severity);
-    SERIALISE_ELEMENT(uint32_t, ID, debugMessages[i].messageID);
-    SERIALISE_ELEMENT(string, Description, desc);
-
-    if(m_State == READING)
+    if(strstr(msg.description.c_str(), "0x"))
     {
-      DebugMessage msg;
-      msg.source = (DebugMessageSource)Source;
-      msg.category = (DebugMessageCategory)Category;
-      msg.severity = (DebugMessageSeverity)Severity;
-      msg.messageID = ID;
-      msg.description = Description;
+      rdcstr desc = msg.description;
 
-      m_EventMessages.push_back(msg);
+      int32_t offs = desc.find("0x");
+      while(offs >= 0)
+      {
+        // if we're on a word boundary
+        if(offs == 0 || !isalnum(desc[offs - 1]))
+        {
+          size_t end = offs + 2;
+
+          uint64_t val = 0;
+
+          // consume all hex chars
+          while(end < desc.length())
+          {
+            if(desc[end] >= '0' && desc[end] <= '9')
+            {
+              val <<= 4;
+              val += (desc[end] - '0');
+              end++;
+            }
+            else if(desc[end] >= 'A' && desc[end] <= 'F')
+            {
+              val <<= 4;
+              val += (desc[end] - 'A') + 0xA;
+              end++;
+            }
+            else if(desc[end] >= 'a' && desc[end] <= 'f')
+            {
+              val <<= 4;
+              val += (desc[end] - 'a') + 0xA;
+              end++;
+            }
+            else
+            {
+              break;
+            }
+          }
+
+          bool do_replace = false;
+
+          // we now expect a [NAME]. Look for matched set of []s
+          if(desc[end] == '[')
+          {
+            int depth = 1;
+            end++;
+
+            while(end < desc.length() && depth)
+            {
+              if(desc[end] == '[')
+                depth++;
+              else if(desc[end] == ']')
+                depth--;
+
+              end++;
+            }
+
+            do_replace = true;
+          }
+          // if we didn't see a trailing [], look for a preceeding handle =
+          else if(offs >= 9 && desc.substr(offs - 9, 9) == "handle = ")
+          {
+            do_replace = true;
+          }
+
+          if(do_replace)
+          {
+            // unique objects layer implies this is a unique search so we don't have to worry
+            // about type aliases
+            ResourceId id = GetResourceManager()->GetFirstIDForHandle(val);
+
+            if(id != ResourceId())
+            {
+              rdcstr idstr = ToStr(id);
+
+              desc.erase(offs, end - offs);
+
+              desc.insert(offs, idstr.c_str());
+
+              offs = desc.find("0x", offs + idstr.count());
+              continue;
+            }
+          }
+        }
+
+        offs = desc.find("0x", offs + 1);
+      }
+
+      msg.description = desc;
     }
   }
 }
 
-vector<DebugMessage> WrappedVulkan::GetDebugMessages()
+rdcarray<DebugMessage> WrappedVulkan::GetDebugMessages()
 {
-  vector<DebugMessage> ret;
+  rdcarray<DebugMessage> ret;
   ret.swap(m_DebugMessages);
   return ret;
 }
 
-void WrappedVulkan::AddDebugMessage(DebugMessageCategory c, DebugMessageSeverity sv,
-                                    DebugMessageSource src, std::string d)
+void WrappedVulkan::AddDebugMessage(MessageCategory c, MessageSeverity sv, MessageSource src, rdcstr d)
 {
   DebugMessage msg;
-  msg.eventID = 0;
-  if(m_State == EXECUTING)
+  msg.eventId = 0;
+  if(IsActiveReplaying(m_State))
   {
-    // look up the EID this drawcall came from
-    DrawcallUse use(m_CurChunkOffset, 0);
-    auto it = std::lower_bound(m_DrawcallUses.begin(), m_DrawcallUses.end(), use);
-    RDCASSERT(it != m_DrawcallUses.end());
+    // look up the EID this action came from
+    ActionUse use(m_CurChunkOffset, 0);
+    auto it = std::lower_bound(m_ActionUses.begin(), m_ActionUses.end(), use);
 
-    msg.eventID = it->eventID;
+    if(it != m_ActionUses.end())
+      msg.eventId = it->eventId;
+    else
+      RDCERR("Couldn't locate action use for current chunk offset %llu", m_CurChunkOffset);
   }
   msg.messageID = 0;
   msg.source = src;
@@ -2358,38 +3902,36 @@ void WrappedVulkan::AddDebugMessage(DebugMessageCategory c, DebugMessageSeverity
 
 void WrappedVulkan::AddDebugMessage(DebugMessage msg)
 {
-  if(m_State == READING)
+  if(IsLoading(m_State))
     m_EventMessages.push_back(msg);
   else
     m_DebugMessages.push_back(msg);
 }
 
-VkBool32 WrappedVulkan::DebugCallback(VkDebugReportFlagsEXT flags,
-                                      VkDebugReportObjectTypeEXT objectType, uint64_t object,
-                                      size_t location, int32_t messageCode,
-                                      const char *pLayerPrefix, const char *pMessage)
+void WrappedVulkan::CheckErrorVkResult(VkResult vkr)
 {
-  bool isDS = false, isMEM = false, isSC = false, isOBJ = false, isSWAP = false, isDL = false,
-       isIMG = false, isPARAM = false;
+  if(vkr == VK_SUCCESS || m_FatalError == ReplayStatus::Succeeded)
+    return;
 
-  if(!strcmp(pLayerPrefix, "DS"))
-    isDS = true;
-  else if(!strcmp(pLayerPrefix, "MEM"))
-    isMEM = true;
-  else if(!strcmp(pLayerPrefix, "SC"))
-    isSC = true;
-  else if(!strcmp(pLayerPrefix, "OBJTRACK"))
-    isOBJ = true;
-  else if(!strcmp(pLayerPrefix, "SWAP_CHAIN") || !strcmp(pLayerPrefix, "Swapchain"))
-    isSWAP = true;
-  else if(!strcmp(pLayerPrefix, "DL"))
-    isDL = true;
-  else if(!strcmp(pLayerPrefix, "Image"))
-    isIMG = true;
-  else if(!strcmp(pLayerPrefix, "PARAMCHECK"))
-    isPARAM = true;
+  if(vkr == VK_ERROR_INITIALIZATION_FAILED || vkr == VK_ERROR_DEVICE_LOST || vkr == VK_ERROR_UNKNOWN)
+  {
+    RDCLOG("Logging device lost fatal error for %s", ToStr(vkr).c_str());
+    m_FailedReplayStatus = m_FatalError = ReplayStatus::ReplayDeviceLost;
+  }
+  else if(vkr == VK_ERROR_OUT_OF_HOST_MEMORY || vkr == VK_ERROR_OUT_OF_DEVICE_MEMORY)
+  {
+    RDCLOG("Logging out of memory fatal error for %s", ToStr(vkr).c_str());
+    m_FailedReplayStatus = m_FatalError = ReplayStatus::ReplayOutOfMemory;
+  }
+  else
+  {
+    RDCLOG("Ignoring return code %s", ToStr(vkr).c_str());
+  }
+}
 
-  if(m_State >= WRITING)
+VkBool32 WrappedVulkan::DebugCallback(MessageSeverity severity, MessageCategory category,
+                                      int messageCode, const char *pMessageId, const char *pMessage)
+{
   {
     ScopedDebugMessageSink *sink = GetDebugMessageSink();
 
@@ -2397,94 +3939,173 @@ VkBool32 WrappedVulkan::DebugCallback(VkDebugReportFlagsEXT flags,
     {
       DebugMessage msg;
 
-      msg.eventID = 0;
-      msg.category = eDbgCategory_Miscellaneous;
+      msg.eventId = 0;
+      msg.category = category;
       msg.description = pMessage;
-      msg.severity = eDbgSeverity_Low;
+      msg.severity = severity;
       msg.messageID = messageCode;
-      msg.source = eDbgSource_API;
+      msg.source = MessageSource::API;
 
-      if(flags & VK_DEBUG_REPORT_INFORMATION_BIT_EXT)
-        msg.severity = eDbgSeverity_Info;
-      else if(flags & VK_DEBUG_REPORT_DEBUG_BIT_EXT)
-        msg.severity = eDbgSeverity_Low;
-      else if(flags & VK_DEBUG_REPORT_WARNING_BIT_EXT)
-        msg.severity = eDbgSeverity_Medium;
-      else if(flags & VK_DEBUG_REPORT_ERROR_BIT_EXT)
-        msg.severity = eDbgSeverity_High;
+      // during replay we can get an eventId to correspond to this message.
+      if(IsActiveReplaying(m_State))
+      {
+        // look up the EID this action came from
+        ActionUse use(m_CurChunkOffset, 0);
+        auto it = std::lower_bound(m_ActionUses.begin(), m_ActionUses.end(), use);
 
-      if(flags & VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT)
-        msg.category = eDbgCategory_Performance;
-      else if(isDS)
-        msg.category = eDbgCategory_Execution;
-      else if(isMEM)
-        msg.category = eDbgCategory_Resource_Manipulation;
-      else if(isSC)
-        msg.category = eDbgCategory_Shaders;
-      else if(isOBJ)
-        msg.category = eDbgCategory_State_Setting;
-      else if(isSWAP)
-        msg.category = eDbgCategory_Miscellaneous;
-      else if(isDL)
-        msg.category = eDbgCategory_Portability;
-      else if(isIMG)
-        msg.category = eDbgCategory_State_Creation;
-      else if(isPARAM)
-        msg.category = eDbgCategory_Miscellaneous;
+        if(it != m_ActionUses.end())
+          msg.eventId = it->eventId;
+      }
 
-      if(isIMG || isPARAM)
-        msg.source = eDbgSource_IncorrectAPIUse;
-
-      sink->msgs.push_back(msg);
+      // function calls are replayed after the call to Serialise_DebugMessages() so we don't have a
+      // sync point to gather together all the messages from the sink. But instead we can just push
+      // them directly into the list since we're linearised
+      if(IsReplayMode(m_State))
+      {
+        ProcessDebugMessage(msg);
+        AddDebugMessage(msg);
+      }
+      else
+      {
+        sink->msgs.push_back(msg);
+      }
     }
   }
 
   {
-    // All access mask/barrier messages.
-    // These are just too spammy/false positive/unreliable to keep
-    if(isDS && messageCode == 10)
-      return false;
-
     // ignore perf warnings
-    if(flags & VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT)
+    if(category == MessageCategory::Performance)
       return false;
 
-    // Ignore shader checker layer entirely
-    if(isSC)
+    // "fragment shader writes to output location X with no matching attachment"
+    // Not an error, this is defined as with all APIs to drop the output.
+    if(strstr(pMessageId, "UNASSIGNED-CoreValidation-Shader-OutputNotConsumed"))
       return false;
 
-    // Memory is aliased between image and buffer
-    // ignore memory aliasing warning - we make use of the memory in disjoint ways
-    // and copy image data over separately, so our use is safe
-    // no location set for this one, so ignore by code (maybe too coarse)
-    if(isMEM && messageCode == 3)
+    // "Non-linear image is aliased with linear buffer"
+    // Not an error, the validation layers complain at our whole-mem bufs
+    if(strstr(pMessageId, "InvalidAliasing") || strstr(pMessage, "InvalidAliasing"))
       return false;
 
-    RDCWARN("[%s:%u/%d] %s", pLayerPrefix, (uint32_t)location, messageCode, pMessage);
+    // "vkCreateSwapchainKHR() called with imageExtent, which is outside the bounds returned by
+    // vkGetPhysicalDeviceSurfaceCapabilitiesKHR(): currentExtent"
+    // This is quite racey, the currentExtent can change in between us checking it and the valiation
+    // layers checking it. We handle out of date, so this is likely fine.
+    if(strstr(pMessageId, "VUID-VkSwapchainCreateInfoKHR-imageExtent"))
+      return false;
+
+    // "Missing extension required by the device extension VK_KHR_driver_properties:
+    // VK_KHR_get_physical_device_properties2. The Vulkan spec states: All required extensions for
+    // each extension in the VkDeviceCreateInfo::ppEnabledExtensionNames list must also be present
+    // in that list."
+    // During capture we can't enable instance extensions so it's impossible for us to enable gpdp2,
+    // but we still want to use driver properties and in practice it's safe.
+    if(strstr(pMessage, "VK_KHR_get_physical_device_properties2") &&
+       strstr(pMessage, "VK_KHR_driver_properties"))
+      return false;
+
+    RDCWARN("[%s] %s", pMessageId, pMessage);
   }
 
   return false;
 }
 
-bool WrappedVulkan::ShouldRerecordCmd(ResourceId cmdid)
+VkBool32 VKAPI_PTR WrappedVulkan::DebugReportCallbackStatic(VkDebugReportFlagsEXT flags,
+                                                            VkDebugReportObjectTypeEXT objectType,
+                                                            uint64_t object, size_t location,
+                                                            int32_t messageCode,
+                                                            const char *pLayerPrefix,
+                                                            const char *pMessage, void *pUserData)
 {
-  if(m_Partial[Primary].outsideCmdBuffer != VK_NULL_HANDLE)
-    return true;
+  MessageSeverity severity = MessageSeverity::Low;
 
-  if(m_DrawcallCallback && m_DrawcallCallback->RecordAllCmds())
-    return true;
+  if(flags & VK_DEBUG_REPORT_ERROR_BIT_EXT)
+    severity = MessageSeverity::High;
+  else if(flags & VK_DEBUG_REPORT_WARNING_BIT_EXT)
+    severity = MessageSeverity::Medium;
+  else if(flags & VK_DEBUG_REPORT_DEBUG_BIT_EXT)
+    severity = MessageSeverity::Low;
+  else if(flags & VK_DEBUG_REPORT_INFORMATION_BIT_EXT)
+    severity = MessageSeverity::Info;
 
-  return cmdid == m_Partial[Primary].partialParent || cmdid == m_Partial[Secondary].partialParent;
+  MessageCategory category = MessageCategory::Miscellaneous;
+
+  if(flags & VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT)
+    category = MessageCategory::Performance;
+
+  return ((WrappedVulkan *)pUserData)
+      ->DebugCallback(severity, category, messageCode, pLayerPrefix, pMessage);
+}
+
+VkBool32 VKAPI_PTR WrappedVulkan::DebugUtilsCallbackStatic(
+    VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT messageTypes,
+    const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData, void *pUserData)
+{
+  MessageSeverity severity = MessageSeverity::Low;
+
+  if(messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+    severity = MessageSeverity::High;
+  else if(messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+    severity = MessageSeverity::Medium;
+  else if(messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT)
+    severity = MessageSeverity::Low;
+  else if(messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT)
+    severity = MessageSeverity::Info;
+
+  MessageCategory category = MessageCategory::Miscellaneous;
+
+  if(messageTypes & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)
+    category = MessageCategory::Performance;
+
+  rdcstr msgid;
+
+  const char *pMessageId = pCallbackData->pMessageIdName;
+  int messageCode = pCallbackData->messageIdNumber;
+
+  if(messageCode == 0 && pMessageId && !strncmp(pMessageId, "VUID", 4))
+  {
+    const char *c = pMessageId + strlen(pMessageId) - 1;
+    int mult = 1;
+
+    while(c > pMessageId && *c >= '0' && *c <= '9')
+    {
+      messageCode += mult * int(*c - '0');
+      mult *= 10;
+      c--;
+    }
+  }
+
+  if(!pMessageId)
+  {
+    msgid = StringFormat::Fmt("%d", pCallbackData->messageIdNumber);
+    pMessageId = msgid.c_str();
+  }
+
+  return ((WrappedVulkan *)pUserData)
+      ->DebugCallback(severity, category, messageCode, pMessageId, pCallbackData->pMessage);
+}
+
+const VkFormatProperties &WrappedVulkan::GetFormatProperties(VkFormat f)
+{
+  if(m_PhysicalDeviceData.fmtProps.find(f) == m_PhysicalDeviceData.fmtProps.end())
+  {
+    ObjDisp(m_PhysicalDevice)
+        ->GetPhysicalDeviceFormatProperties(Unwrap(m_PhysicalDevice), f,
+                                            &m_PhysicalDeviceData.fmtProps[f]);
+  }
+  return m_PhysicalDeviceData.fmtProps[f];
 }
 
 bool WrappedVulkan::InRerecordRange(ResourceId cmdid)
 {
-  if(m_Partial[Primary].outsideCmdBuffer != VK_NULL_HANDLE)
+  // if we have an outside command buffer, assume the range is valid and we're replaying all events
+  // onto it.
+  if(m_OutsideCmdBuffer != VK_NULL_HANDLE)
     return true;
 
-  if(m_DrawcallCallback && m_DrawcallCallback->RecordAllCmds())
-    return true;
-
+  // if not, check if we're one of the actual partial command buffers and check to see if we're in
+  // the range for their partial replay.
   for(int p = 0; p < ePartialNum; p++)
   {
     if(cmdid == m_Partial[p].partialParent)
@@ -2494,199 +4115,253 @@ bool WrappedVulkan::InRerecordRange(ResourceId cmdid)
     }
   }
 
-  return false;
+  // otherwise just check if we have a re-record command buffer for this, as then we're doing a full
+  // re-record and replay of the command buffer
+  return m_RerecordCmds.find(cmdid) != m_RerecordCmds.end();
+}
+
+bool WrappedVulkan::HasRerecordCmdBuf(ResourceId cmdid)
+{
+  if(m_OutsideCmdBuffer != VK_NULL_HANDLE)
+    return true;
+
+  return m_RerecordCmds.find(cmdid) != m_RerecordCmds.end();
+}
+
+bool WrappedVulkan::ShouldUpdateRenderState(ResourceId cmdid, bool forcePrimary)
+{
+  if(m_OutsideCmdBuffer != VK_NULL_HANDLE)
+    return true;
+
+  // if forcePrimary is set we're tracking renderpass activity that only happens in the primary
+  // command buffer. So even if a secondary is partial, we still want to check it.
+  if(forcePrimary)
+    return m_Partial[Primary].partialParent == cmdid;
+
+  // otherwise, if a secondary command buffer is partial we want to *ignore* any state setting
+  // happening in the primary buffer as fortunately no state is inherited (so we don't need to
+  // worry about any state before the execute) and any state setting recorded afterwards would
+  // incorrectly override what we have.
+  if(m_Partial[Secondary].partialParent != ResourceId())
+    return cmdid == m_Partial[Secondary].partialParent;
+
+  return cmdid == m_Partial[Primary].partialParent;
 }
 
 VkCommandBuffer WrappedVulkan::RerecordCmdBuf(ResourceId cmdid, PartialReplayIndex partialType)
 {
-  if(m_Partial[Primary].outsideCmdBuffer != VK_NULL_HANDLE)
-    return m_Partial[Primary].outsideCmdBuffer;
+  if(m_OutsideCmdBuffer != VK_NULL_HANDLE)
+    return m_OutsideCmdBuffer;
 
-  if(m_DrawcallCallback && m_DrawcallCallback->RecordAllCmds())
+  auto it = m_RerecordCmds.find(cmdid);
+
+  if(it == m_RerecordCmds.end())
   {
-    auto it = m_RerecordCmds.find(cmdid);
-
-    RDCASSERT(it != m_RerecordCmds.end());
-
-    return it->second;
+    RDCERR("Didn't generate re-record command for %s", ToStr(cmdid).c_str());
+    return NULL;
   }
 
-  if(partialType != ePartialNum)
-    return m_Partial[partialType].resultPartialCmdBuffer;
-
-  for(int p = 0; p < ePartialNum; p++)
-    if(cmdid == m_Partial[p].partialParent)
-      return m_Partial[p].resultPartialCmdBuffer;
-
-  RDCERR("Calling re-record for invalid command buffer id");
-
-  return VK_NULL_HANDLE;
+  return it->second;
 }
 
-void WrappedVulkan::AddDrawcall(const FetchDrawcall &d, bool hasEvents)
+ResourceId WrappedVulkan::GetPartialCommandBuffer()
 {
-  m_AddedDrawcall = true;
+  if(m_Partial[Secondary].partialParent != ResourceId())
+    return m_Partial[Secondary].partialParent;
+  return m_Partial[Primary].partialParent;
+}
 
-  FetchDrawcall draw = d;
-  draw.eventID = m_LastCmdBufferID != ResourceId()
-                     ? m_BakedCmdBufferInfo[m_LastCmdBufferID].curEventID
-                     : m_RootEventID;
-  draw.drawcallID = m_LastCmdBufferID != ResourceId()
-                        ? m_BakedCmdBufferInfo[m_LastCmdBufferID].drawCount
-                        : m_RootDrawcallID;
+void WrappedVulkan::AddAction(const ActionDescription &a)
+{
+  m_AddedAction = true;
+
+  ActionDescription action = a;
+  action.eventId = m_LastCmdBufferID != ResourceId()
+                       ? m_BakedCmdBufferInfo[m_LastCmdBufferID].curEventID
+                       : m_RootEventID;
+  action.actionId = m_LastCmdBufferID != ResourceId()
+                        ? m_BakedCmdBufferInfo[m_LastCmdBufferID].actionCount
+                        : m_RootActionID;
 
   for(int i = 0; i < 8; i++)
-    draw.outputs[i] = ResourceId();
+    action.outputs[i] = ResourceId();
 
-  draw.depthOut = ResourceId();
-
-  draw.indexByteWidth = 0;
-  draw.topology = eTopology_Unknown;
+  action.depthOut = ResourceId();
 
   if(m_LastCmdBufferID != ResourceId())
   {
-    ResourceId pipe = m_BakedCmdBufferInfo[m_LastCmdBufferID].state.pipeline;
-    if(pipe != ResourceId())
-      draw.topology = MakePrimitiveTopology(m_CreationInfo.m_Pipeline[pipe].topology,
-                                            m_CreationInfo.m_Pipeline[pipe].patchControlPoints);
-
-    draw.indexByteWidth = m_BakedCmdBufferInfo[m_LastCmdBufferID].state.idxWidth;
-
-    ResourceId fb = m_BakedCmdBufferInfo[m_LastCmdBufferID].state.framebuffer;
+    ResourceId fb = m_BakedCmdBufferInfo[m_LastCmdBufferID].state.GetFramebuffer();
     ResourceId rp = m_BakedCmdBufferInfo[m_LastCmdBufferID].state.renderPass;
     uint32_t sp = m_BakedCmdBufferInfo[m_LastCmdBufferID].state.subpass;
 
     if(fb != ResourceId() && rp != ResourceId())
     {
-      vector<VulkanCreationInfo::Framebuffer::Attachment> &atts =
-          m_CreationInfo.m_Framebuffer[fb].attachments;
+      const rdcarray<ResourceId> &atts =
+          m_BakedCmdBufferInfo[m_LastCmdBufferID].state.GetFramebufferAttachments();
 
       RDCASSERT(sp < m_CreationInfo.m_RenderPass[rp].subpasses.size());
 
-      vector<uint32_t> &colAtt = m_CreationInfo.m_RenderPass[rp].subpasses[sp].colorAttachments;
+      rdcarray<uint32_t> &colAtt = m_CreationInfo.m_RenderPass[rp].subpasses[sp].colorAttachments;
       int32_t dsAtt = m_CreationInfo.m_RenderPass[rp].subpasses[sp].depthstencilAttachment;
 
-      RDCASSERT(colAtt.size() < 8);
+      RDCASSERT(colAtt.size() <= ARRAY_COUNT(action.outputs));
 
-      for(int i = 0; i < 8 && i < (int)colAtt.size(); i++)
+      for(size_t i = 0; i < ARRAY_COUNT(action.outputs) && i < colAtt.size(); i++)
       {
         if(colAtt[i] == VK_ATTACHMENT_UNUSED)
           continue;
 
         RDCASSERT(colAtt[i] < atts.size());
-        draw.outputs[i] = atts[colAtt[i]].view;
+        action.outputs[i] =
+            GetResourceManager()->GetOriginalID(m_CreationInfo.m_ImageView[atts[colAtt[i]]].image);
       }
 
       if(dsAtt != -1)
       {
         RDCASSERT(dsAtt < (int32_t)atts.size());
-        draw.depthOut = atts[dsAtt].view;
+        action.depthOut =
+            GetResourceManager()->GetOriginalID(m_CreationInfo.m_ImageView[atts[dsAtt]].image);
       }
     }
   }
 
-  if(m_LastCmdBufferID != ResourceId())
-    m_BakedCmdBufferInfo[m_LastCmdBufferID].drawCount++;
-  else
-    m_RootDrawcallID++;
-
-  if(hasEvents)
+  // markers don't increment action ID
+  ActionFlags MarkerMask = ActionFlags::SetMarker | ActionFlags::PushMarker |
+                           ActionFlags::PopMarker | ActionFlags::PassBoundary;
+  if(!(action.flags & MarkerMask))
   {
-    vector<FetchAPIEvent> &srcEvents = m_LastCmdBufferID != ResourceId()
-                                           ? m_BakedCmdBufferInfo[m_LastCmdBufferID].curEvents
-                                           : m_RootEvents;
-
-    draw.events = srcEvents;
-    srcEvents.clear();
+    if(m_LastCmdBufferID != ResourceId())
+      m_BakedCmdBufferInfo[m_LastCmdBufferID].actionCount++;
+    else
+      m_RootActionID++;
   }
 
-  // should have at least the root drawcall here, push this drawcall
+  action.events.swap(m_LastCmdBufferID != ResourceId()
+                         ? m_BakedCmdBufferInfo[m_LastCmdBufferID].curEvents
+                         : m_RootEvents);
+
+  // should have at least the root action here, push this action
   // onto the back's children list.
-  if(!GetDrawcallStack().empty())
+  if(!GetActionStack().empty())
   {
-    VulkanDrawcallTreeNode node(draw);
+    VulkanActionTreeNode node(action);
 
     node.resourceUsage.swap(m_BakedCmdBufferInfo[m_LastCmdBufferID].resourceUsage);
 
     if(m_LastCmdBufferID != ResourceId())
       AddUsage(node, m_BakedCmdBufferInfo[m_LastCmdBufferID].debugMessages);
 
-    node.children.insert(node.children.begin(), draw.children.elems,
-                         draw.children.elems + draw.children.count);
-    GetDrawcallStack().back()->children.push_back(node);
+    node.children.reserve(action.children.size());
+    for(const ActionDescription &child : action.children)
+      node.children.push_back(VulkanActionTreeNode(child));
+    GetActionStack().back()->children.push_back(node);
   }
   else
-    RDCERR("Somehow lost drawcall stack!");
+    RDCERR("Somehow lost action stack!");
 }
 
-void WrappedVulkan::AddUsage(VulkanDrawcallTreeNode &drawNode, vector<DebugMessage> &debugMessages)
+void WrappedVulkan::AddUsage(VulkanActionTreeNode &actionNode, rdcarray<DebugMessage> &debugMessages)
 {
-  FetchDrawcall &d = drawNode.draw;
+  ActionDescription &action = actionNode.action;
 
-  const BakedCmdBufferInfo::CmdBufferState &state = m_BakedCmdBufferInfo[m_LastCmdBufferID].state;
+  const VulkanRenderState &state = m_BakedCmdBufferInfo[m_LastCmdBufferID].state;
   VulkanCreationInfo &c = m_CreationInfo;
-  uint32_t e = d.eventID;
+  uint32_t eid = action.eventId;
 
-  if((d.flags & (eDraw_Drawcall | eDraw_Dispatch)) == 0)
+  ActionFlags DrawMask = ActionFlags::Drawcall | ActionFlags::Dispatch;
+  if(!(action.flags & DrawMask))
     return;
 
   //////////////////////////////
   // Vertex input
 
-  if(d.flags & eDraw_UseIBuffer && state.ibuffer != ResourceId())
-    drawNode.resourceUsage.push_back(std::make_pair(state.ibuffer, EventUsage(e, eUsage_IndexBuffer)));
+  if(action.flags & ActionFlags::Indexed && state.ibuffer.buf != ResourceId())
+    actionNode.resourceUsage.push_back(
+        make_rdcpair(state.ibuffer.buf, EventUsage(eid, ResourceUsage::IndexBuffer)));
 
   for(size_t i = 0; i < state.vbuffers.size(); i++)
-    drawNode.resourceUsage.push_back(
-        std::make_pair(state.vbuffers[i], EventUsage(e, eUsage_VertexBuffer)));
+  {
+    if(state.vbuffers[i].buf != ResourceId())
+    {
+      actionNode.resourceUsage.push_back(
+          make_rdcpair(state.vbuffers[i].buf, EventUsage(eid, ResourceUsage::VertexBuffer)));
+    }
+  }
+
+  for(uint32_t i = state.firstxfbcounter;
+      i < state.firstxfbcounter + state.xfbcounters.size() && i < state.xfbbuffers.size(); i++)
+  {
+    if(state.xfbbuffers[i].buf != ResourceId())
+    {
+      actionNode.resourceUsage.push_back(
+          make_rdcpair(state.xfbbuffers[i].buf, EventUsage(eid, ResourceUsage::StreamOut)));
+    }
+  }
 
   //////////////////////////////
   // Shaders
 
-  for(int shad = 0; shad < 6; shad++)
+  static bool hugeRangeWarned = false;
+
+  int shaderStart = 0;
+  int shaderEnd = 0;
+  if(action.flags & ActionFlags::Dispatch)
   {
-    VulkanCreationInfo::Pipeline::Shader &sh = c.m_Pipeline[state.pipeline].shaders[shad];
+    shaderStart = 5;
+    shaderEnd = 6;
+  }
+  else if(action.flags & ActionFlags::Drawcall)
+  {
+    shaderStart = 0;
+    shaderEnd = 5;
+  }
+
+  for(int shad = shaderStart; shad < shaderEnd; shad++)
+  {
+    bool compute = (shad == 5);
+    ResourceId pipe = (compute ? state.compute.pipeline : state.graphics.pipeline);
+    VulkanCreationInfo::Pipeline::Shader &sh = c.m_Pipeline[pipe].shaders[shad];
     if(sh.module == ResourceId())
       continue;
 
-    ResourceId origPipe = GetResourceManager()->GetOriginalID(state.pipeline);
+    ResourceId origPipe = GetResourceManager()->GetOriginalID(pipe);
     ResourceId origShad = GetResourceManager()->GetOriginalID(sh.module);
 
     // 5 is the compute shader's index (VS, TCS, TES, GS, FS, CS)
-    const vector<BakedCmdBufferInfo::CmdBufferState::DescriptorAndOffsets> &descSets =
-        (shad == 5 ? state.computeDescSets : state.graphicsDescSets);
+    const rdcarray<VulkanStatePipeline::DescriptorAndOffsets> &descSets =
+        (compute ? state.compute.descSets : state.graphics.descSets);
 
     RDCASSERT(sh.mapping);
 
     struct ResUsageType
     {
-      ResUsageType(rdctype::array<BindpointMap> &a, ResourceUsage u) : bindmap(a), usage(u) {}
-      rdctype::array<BindpointMap> &bindmap;
+      ResUsageType(rdcarray<Bindpoint> &a, ResourceUsage u) : bindmap(a), usage(u) {}
+      rdcarray<Bindpoint> &bindmap;
       ResourceUsage usage;
     };
 
     ResUsageType types[] = {
-        ResUsageType(sh.mapping->ReadOnlyResources, eUsage_VS_Resource),
-        ResUsageType(sh.mapping->ReadWriteResources, eUsage_VS_RWResource),
-        ResUsageType(sh.mapping->ConstantBlocks, eUsage_VS_Constants),
+        ResUsageType(sh.mapping->readOnlyResources, ResourceUsage::VS_Resource),
+        ResUsageType(sh.mapping->readWriteResources, ResourceUsage::VS_RWResource),
+        ResUsageType(sh.mapping->constantBlocks, ResourceUsage::VS_Constants),
     };
 
     DebugMessage msg;
-    msg.eventID = e;
-    msg.category = eDbgCategory_Execution;
+    msg.eventId = eid;
+    msg.category = MessageCategory::Execution;
     msg.messageID = 0;
-    msg.source = eDbgSource_IncorrectAPIUse;
-    msg.severity = eDbgSeverity_High;
+    msg.source = MessageSource::IncorrectAPIUse;
+    msg.severity = MessageSeverity::High;
 
     for(size_t t = 0; t < ARRAY_COUNT(types); t++)
     {
-      for(int32_t i = 0; i < types[t].bindmap.count; i++)
+      for(size_t i = 0; i < types[t].bindmap.size(); i++)
       {
         if(!types[t].bindmap[i].used)
           continue;
 
         // ignore push constants
-        if(t == 2 && !sh.refl->ConstantBlocks[i].bufferBacked)
+        if(t == 2 && !sh.refl->constantBlocks[i].bufferBacked)
           continue;
 
         int32_t bindset = types[t].bindmap[i].bindset;
@@ -2703,7 +4378,6 @@ void WrappedVulkan::AddUsage(VulkanDrawcallTreeNode &drawNode, vector<DebugMessa
         DescriptorSetInfo &descset = m_DescriptorSetState[descSets[bindset].descSet];
         DescSetLayout &layout = c.m_DescSetLayout[descset.layout];
 
-        ResourceId origId = GetResourceManager()->GetOriginalID(descSets[bindset].descSet);
         ResourceId layoutId = GetResourceManager()->GetOriginalID(descset.layout);
 
         if(layout.bindings.empty())
@@ -2732,9 +4406,13 @@ void WrappedVulkan::AddUsage(VulkanDrawcallTreeNode &drawNode, vector<DebugMessa
         if(layout.bindings[bind].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER)
           continue;
 
-        ResourceUsage usage = ResourceUsage(types[t].usage + shad);
+        // no object to mark for usage with inline blocks
+        if(layout.bindings[bind].descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT)
+          continue;
 
-        if(bind >= (int32_t)descset.currentBindings.size())
+        ResourceUsage usage = ResourceUsage(uint32_t(types[t].usage) + shad);
+
+        if(bind >= (int32_t)descset.data.binds.size())
         {
           msg.description = StringFormat::Fmt(
               "Shader referenced a bind %i in descriptor set %i that does not exist. Mismatched "
@@ -2744,9 +4422,24 @@ void WrappedVulkan::AddUsage(VulkanDrawcallTreeNode &drawNode, vector<DebugMessa
           continue;
         }
 
-        for(uint32_t a = 0; a < layout.bindings[bind].descriptorCount; a++)
+        uint32_t descriptorCount = layout.bindings[bind].descriptorCount;
+        if(layout.bindings[bind].variableSize)
+          descriptorCount = descset.data.variableDescriptorCount;
+
+        if(descriptorCount > 1000)
         {
-          DescriptorSetSlot &slot = descset.currentBindings[bind][a];
+          if(!hugeRangeWarned)
+            RDCWARN("Skipping large, most likely 'bindless', descriptor range");
+          hugeRangeWarned = true;
+          continue;
+        }
+
+        for(uint32_t a = 0; a < descriptorCount; a++)
+        {
+          if(!descset.data.binds[bind])
+            continue;
+
+          DescriptorSetSlot &slot = descset.data.binds[bind][a];
 
           ResourceId id;
 
@@ -2755,27 +4448,27 @@ void WrappedVulkan::AddUsage(VulkanDrawcallTreeNode &drawNode, vector<DebugMessa
             case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
             case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
             case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-              if(slot.imageInfo.imageView != VK_NULL_HANDLE)
-                id = c.m_ImageView[GetResourceManager()->GetNonDispWrapper(slot.imageInfo.imageView)->id]
-                         .image;
+              if(slot.imageInfo.imageView != ResourceId())
+                id = c.m_ImageView[slot.imageInfo.imageView].image;
               break;
             case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
             case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-              if(slot.texelBufferView != VK_NULL_HANDLE)
-                id = c.m_BufferView[GetResourceManager()->GetNonDispWrapper(slot.texelBufferView)->id]
-                         .buffer;
+              if(slot.texelBufferView != ResourceId())
+                id = c.m_BufferView[slot.texelBufferView].buffer;
               break;
             case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
             case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
             case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
             case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
-              if(slot.bufferInfo.buffer != VK_NULL_HANDLE)
-                id = GetResourceManager()->GetNonDispWrapper(slot.bufferInfo.buffer)->id;
+              if(slot.bufferInfo.buffer != ResourceId())
+                id = slot.bufferInfo.buffer;
               break;
+            case VK_DESCRIPTOR_TYPE_MAX_ENUM: break;
             default: RDCERR("Unexpected type %d", layout.bindings[bind].descriptorType); break;
           }
 
-          drawNode.resourceUsage.push_back(std::make_pair(id, EventUsage(e, usage)));
+          if(id != ResourceId())
+            actionNode.resourceUsage.push_back(make_rdcpair(id, EventUsage(eid, usage)));
         }
       }
     }
@@ -2784,99 +4477,340 @@ void WrappedVulkan::AddUsage(VulkanDrawcallTreeNode &drawNode, vector<DebugMessa
   //////////////////////////////
   // Framebuffer/renderpass
 
-  if(state.renderPass != ResourceId() && state.framebuffer != ResourceId())
+  AddFramebufferUsage(actionNode, state.renderPass, state.GetFramebuffer(), state.subpass,
+                      state.GetFramebufferAttachments());
+}
+
+void WrappedVulkan::AddFramebufferUsage(VulkanActionTreeNode &actionNode, ResourceId renderPass,
+                                        ResourceId framebuffer, uint32_t subpass,
+                                        const rdcarray<ResourceId> &fbattachments)
+{
+  VulkanCreationInfo &c = m_CreationInfo;
+  uint32_t e = actionNode.action.eventId;
+
+  if(renderPass != ResourceId() && framebuffer != ResourceId())
   {
-    VulkanCreationInfo::RenderPass &rp = c.m_RenderPass[state.renderPass];
-    VulkanCreationInfo::Framebuffer &fb = c.m_Framebuffer[state.framebuffer];
+    const VulkanCreationInfo::RenderPass &rp = c.m_RenderPass[renderPass];
 
-    RDCASSERT(state.subpass < rp.subpasses.size());
-
-    for(size_t i = 0; i < rp.subpasses[state.subpass].inputAttachments.size(); i++)
+    if(subpass >= rp.subpasses.size())
     {
-      uint32_t att = rp.subpasses[state.subpass].inputAttachments[i];
-      if(att == VK_ATTACHMENT_UNUSED)
-        continue;
-      drawNode.resourceUsage.push_back(
-          std::make_pair(c.m_ImageView[fb.attachments[att].view].image,
-                         EventUsage(e, eUsage_InputTarget, fb.attachments[att].view)));
+      RDCERR("Invalid subpass index %u, only %u subpasses exist in this renderpass", subpass,
+             (uint32_t)rp.subpasses.size());
     }
-
-    for(size_t i = 0; i < rp.subpasses[state.subpass].colorAttachments.size(); i++)
+    else
     {
-      uint32_t att = rp.subpasses[state.subpass].colorAttachments[i];
-      if(att == VK_ATTACHMENT_UNUSED)
-        continue;
-      drawNode.resourceUsage.push_back(
-          std::make_pair(c.m_ImageView[fb.attachments[att].view].image,
-                         EventUsage(e, eUsage_ColourTarget, fb.attachments[att].view)));
-    }
+      const VulkanCreationInfo::RenderPass::Subpass &sub = rp.subpasses[subpass];
 
-    if(rp.subpasses[state.subpass].depthstencilAttachment >= 0)
-    {
-      int32_t att = rp.subpasses[state.subpass].depthstencilAttachment;
-      drawNode.resourceUsage.push_back(
-          std::make_pair(c.m_ImageView[fb.attachments[att].view].image,
-                         EventUsage(e, eUsage_DepthStencilTarget, fb.attachments[att].view)));
+      for(size_t i = 0; i < sub.inputAttachments.size(); i++)
+      {
+        uint32_t att = sub.inputAttachments[i];
+        if(att == VK_ATTACHMENT_UNUSED)
+          continue;
+        actionNode.resourceUsage.push_back(
+            make_rdcpair(c.m_ImageView[fbattachments[att]].image,
+                         EventUsage(e, ResourceUsage::InputTarget, fbattachments[att])));
+      }
+
+      for(size_t i = 0; i < sub.colorAttachments.size(); i++)
+      {
+        uint32_t att = sub.colorAttachments[i];
+        if(att == VK_ATTACHMENT_UNUSED)
+          continue;
+        actionNode.resourceUsage.push_back(
+            make_rdcpair(c.m_ImageView[fbattachments[att]].image,
+                         EventUsage(e, ResourceUsage::ColorTarget, fbattachments[att])));
+      }
+
+      if(sub.depthstencilAttachment >= 0)
+      {
+        int32_t att = sub.depthstencilAttachment;
+        actionNode.resourceUsage.push_back(
+            make_rdcpair(c.m_ImageView[fbattachments[att]].image,
+                         EventUsage(e, ResourceUsage::DepthStencilTarget, fbattachments[att])));
+      }
     }
   }
 }
 
-void WrappedVulkan::AddEvent(string description)
+void WrappedVulkan::AddFramebufferUsageAllChildren(VulkanActionTreeNode &actionNode,
+                                                   ResourceId renderPass, ResourceId framebuffer,
+                                                   uint32_t subpass,
+                                                   const rdcarray<ResourceId> &fbattachments)
 {
-  FetchAPIEvent apievent;
+  for(VulkanActionTreeNode &c : actionNode.children)
+    AddFramebufferUsageAllChildren(c, renderPass, framebuffer, subpass, fbattachments);
 
-  apievent.context = ResourceId();
+  AddFramebufferUsage(actionNode, renderPass, framebuffer, subpass, fbattachments);
+}
+
+void WrappedVulkan::AddEvent()
+{
+  APIEvent apievent;
+
   apievent.fileOffset = m_CurChunkOffset;
-  apievent.eventID = m_LastCmdBufferID != ResourceId()
+  apievent.eventId = m_LastCmdBufferID != ResourceId()
                          ? m_BakedCmdBufferInfo[m_LastCmdBufferID].curEventID
                          : m_RootEventID;
 
-  apievent.eventDesc = description;
-
-  Callstack::Stackwalk *stack = m_pSerialiser->GetLastCallstack();
-  if(stack)
-  {
-    create_array(apievent.callstack, stack->NumLevels());
-    memcpy(apievent.callstack.elems, stack->GetAddrs(), sizeof(uint64_t) * stack->NumLevels());
-  }
+  apievent.chunkIndex = uint32_t(m_StructuredFile->chunks.size() - 1);
 
   for(size_t i = 0; i < m_EventMessages.size(); i++)
-    m_EventMessages[i].eventID = apievent.eventID;
+    m_EventMessages[i].eventId = apievent.eventId;
 
   if(m_LastCmdBufferID != ResourceId())
   {
     m_BakedCmdBufferInfo[m_LastCmdBufferID].curEvents.push_back(apievent);
-
-    vector<DebugMessage> &msgs = m_BakedCmdBufferInfo[m_LastCmdBufferID].debugMessages;
-
-    msgs.insert(msgs.end(), m_EventMessages.begin(), m_EventMessages.end());
+    m_BakedCmdBufferInfo[m_LastCmdBufferID].debugMessages.append(m_EventMessages);
   }
   else
   {
     m_RootEvents.push_back(apievent);
-    m_Events.push_back(apievent);
+    m_Events.resize(apievent.eventId + 1);
+    m_Events[apievent.eventId] = apievent;
 
-    m_DebugMessages.insert(m_DebugMessages.end(), m_EventMessages.begin(), m_EventMessages.end());
+    m_DebugMessages.append(m_EventMessages);
   }
 
   m_EventMessages.clear();
 }
 
-FetchAPIEvent WrappedVulkan::GetEvent(uint32_t eventID)
+const APIEvent &WrappedVulkan::GetEvent(uint32_t eventId)
 {
-  for(size_t i = m_Events.size() - 1; i > 0; i--)
-  {
-    if(m_Events[i].eventID <= eventID)
-      return m_Events[i];
-  }
+  // start at where the requested eventId would be
+  size_t idx = eventId;
 
-  return m_Events[0];
+  // find the next valid event (some may be skipped)
+  while(idx < m_Events.size() - 1 && m_Events[idx].eventId == 0)
+    idx++;
+
+  return m_Events[RDCMIN(idx, m_Events.size() - 1)];
 }
 
-const FetchDrawcall *WrappedVulkan::GetDrawcall(uint32_t eventID)
+const ActionDescription *WrappedVulkan::GetAction(uint32_t eventId)
 {
-  if(eventID >= m_Drawcalls.size())
+  if(eventId >= m_Actions.size())
     return NULL;
 
-  return m_Drawcalls[eventID];
+  return m_Actions[eventId];
 }
+
+uint32_t WrappedVulkan::FindCommandQueueFamily(ResourceId cmdId)
+{
+  auto it = m_commandQueueFamilies.find(cmdId);
+  if(it == m_commandQueueFamilies.end())
+  {
+    RDCERR("Unknown queue family for %s", ToStr(cmdId).c_str());
+    return m_QueueFamilyIdx;
+  }
+  return it->second;
+}
+
+void WrappedVulkan::InsertCommandQueueFamily(ResourceId cmdId, uint32_t queueFamilyIndex)
+{
+  m_commandQueueFamilies[cmdId] = queueFamilyIndex;
+}
+LockedImageStateRef WrappedVulkan::FindImageState(ResourceId id)
+{
+  SCOPED_LOCK(m_ImageStatesLock);
+  auto it = m_ImageStates.find(id);
+  if(it != m_ImageStates.end())
+    return it->second.LockWrite();
+  else
+    return LockedImageStateRef();
+}
+
+LockedConstImageStateRef WrappedVulkan::FindConstImageState(ResourceId id)
+{
+  SCOPED_LOCK(m_ImageStatesLock);
+  auto it = m_ImageStates.find(id);
+  if(it != m_ImageStates.end())
+    return it->second.LockRead();
+  else
+    return LockedConstImageStateRef();
+}
+
+LockedImageStateRef WrappedVulkan::InsertImageState(VkImage wrappedHandle, ResourceId id,
+                                                    const ImageInfo &info, FrameRefType refType,
+                                                    bool *inserted)
+{
+  SCOPED_LOCK(m_ImageStatesLock);
+  auto it = m_ImageStates.find(id);
+  if(it != m_ImageStates.end())
+  {
+    if(inserted != NULL)
+      *inserted = false;
+    return it->second.LockWrite();
+  }
+  else
+  {
+    if(inserted != NULL)
+      *inserted = true;
+    it = m_ImageStates.insert({id, LockingImageState(wrappedHandle, info, refType)}).first;
+    return it->second.LockWrite();
+  }
+}
+
+bool WrappedVulkan::EraseImageState(ResourceId id)
+{
+  SCOPED_LOCK(m_ImageStatesLock);
+  auto it = m_ImageStates.find(id);
+  if(it != m_ImageStates.end())
+  {
+    m_ImageStates.erase(it);
+    return true;
+  }
+  return false;
+}
+
+void WrappedVulkan::UpdateImageStates(const rdcflatmap<ResourceId, ImageState> &dstStates)
+{
+  // this function expects the number of updates to be orders of magnitude fewer than the number of
+  // existing images. If there are a small number of images in total then it doesn't matter much,
+  // and if there are a large number of images then it's better to do repeated map lookups rather
+  // than spend time iterating linearly across the map for a sparse set of updates.
+  SCOPED_LOCK(m_ImageStatesLock);
+  auto dstIt = dstStates.begin();
+  ImageTransitionInfo info = GetImageTransitionInfo();
+  while(dstIt != dstStates.end())
+  {
+    // find the entry. This is expected because images are only not in the map if we've never seen
+    // them before, a rare case.
+    auto it = m_ImageStates.find(dstIt->first);
+
+    // insert the initial state if needed.
+    if(it == m_ImageStates.end())
+    {
+      it = m_ImageStates
+               .insert({dstIt->first,
+                        LockingImageState(dstIt->second.wrappedHandle, dstIt->second.GetImageInfo(),
+                                          info.GetDefaultRefType())})
+               .first;
+      dstIt->second.InitialState(*it->second.LockWrite());
+    }
+
+    // merge in the info into the entry.
+    it->second.LockWrite()->Merge(dstIt->second, info);
+    ++dstIt;
+  }
+}
+
+void WrappedVulkan::ReplayDraw(VkCommandBuffer cmd, const ActionDescription &action)
+{
+  // if this isn't a multidraw (or it's the first action in a multidraw, it's fairly easy
+  if(action.drawIndex == 0)
+  {
+    if(action.flags & ActionFlags::Indexed)
+      ObjDisp(cmd)->CmdDrawIndexed(Unwrap(cmd), action.numIndices, action.numInstances,
+                                   action.indexOffset, action.baseVertex, action.instanceOffset);
+    else
+      ObjDisp(cmd)->CmdDraw(Unwrap(cmd), action.numIndices, action.numInstances,
+                            action.vertexOffset, action.instanceOffset);
+  }
+  else
+  {
+    // otherwise it's a bit more complex, we need to set up a multidraw with the first N draws nop'd
+    // out and the parameters added into the last one
+
+    VkMarkerRegion::Begin(StringFormat::Fmt("ReplayDraw(drawIndex=%u)", action.drawIndex), cmd);
+
+    bytebuf params;
+
+    if(action.flags & ActionFlags::Indexed)
+    {
+      VkDrawIndexedIndirectCommand drawParams;
+      drawParams.indexCount = action.numIndices;
+      drawParams.instanceCount = action.numInstances;
+      drawParams.firstIndex = action.indexOffset;
+      drawParams.vertexOffset = action.baseVertex;
+      drawParams.firstInstance = action.instanceOffset;
+
+      params.resize(sizeof(drawParams));
+      memcpy(params.data(), &drawParams, sizeof(drawParams));
+    }
+    else
+    {
+      VkDrawIndirectCommand drawParams;
+
+      drawParams.vertexCount = action.numIndices;
+      drawParams.instanceCount = action.numInstances;
+      drawParams.firstVertex = action.vertexOffset;
+      drawParams.firstInstance = action.instanceOffset;
+
+      params.resize(sizeof(drawParams));
+      memcpy(params.data(), &drawParams, sizeof(drawParams));
+    }
+
+    // ensure the custom buffer is large enough
+    VkDeviceSize bufLength = params.size() * (action.drawIndex + 1);
+
+    RDCASSERT(bufLength <= m_IndirectBufferSize, bufLength, m_IndirectBufferSize);
+
+    VkBufferMemoryBarrier bufBarrier = {
+        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        NULL,
+        VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
+        VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_QUEUE_FAMILY_IGNORED,
+        VK_QUEUE_FAMILY_IGNORED,
+        Unwrap(m_IndirectBuffer.buf),
+        m_IndirectBufferSize,
+        m_IndirectBufferSize,
+    };
+
+    // wait for any previous indirect draws to complete before filling/transferring
+    DoPipelineBarrier(cmd, 1, &bufBarrier);
+
+    // initialise to 0 so all other draws don't draw anything
+    ObjDisp(cmd)->CmdFillBuffer(Unwrap(cmd), Unwrap(m_IndirectBuffer.buf), m_IndirectBufferSize,
+                                m_IndirectBufferSize, 0);
+
+    // wait for fill to complete before update
+    bufBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    bufBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+    DoPipelineBarrier(cmd, 1, &bufBarrier);
+
+    // upload the parameters for the draw we want
+    ObjDisp(cmd)->CmdUpdateBuffer(Unwrap(cmd), Unwrap(m_IndirectBuffer.buf),
+                                  m_IndirectBufferSize + params.size() * action.drawIndex,
+                                  params.size(), params.data());
+
+    // finally wait for copy to complete before drawing from it
+    bufBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    bufBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+
+    DoPipelineBarrier(cmd, 1, &bufBarrier);
+
+    if(action.flags & ActionFlags::Indexed)
+      ObjDisp(cmd)->CmdDrawIndexedIndirect(Unwrap(cmd), Unwrap(m_IndirectBuffer.buf),
+                                           m_IndirectBufferSize, action.drawIndex + 1,
+                                           (uint32_t)params.size());
+    else
+      ObjDisp(cmd)->CmdDrawIndirect(Unwrap(cmd), Unwrap(m_IndirectBuffer.buf), m_IndirectBufferSize,
+                                    action.drawIndex + 1, (uint32_t)params.size());
+
+    VkMarkerRegion::End(cmd);
+  }
+}
+
+#if ENABLED(ENABLE_UNIT_TESTS)
+
+#undef None
+#undef Always
+
+#include "catch/catch.hpp"
+
+TEST_CASE("Validate supported extensions list", "[vulkan]")
+{
+  rdcarray<VkExtensionProperties> unsorted(&supportedExtensions[0], ARRAY_COUNT(supportedExtensions));
+  rdcarray<VkExtensionProperties> sorted = unsorted;
+
+  std::sort(sorted.begin(), sorted.end());
+
+  for(size_t i = 0; i < unsorted.size(); i++)
+  {
+    CHECK(rdcstr(unsorted[i].extensionName) == rdcstr(sorted[i].extensionName));
+  }
+}
+
+#endif

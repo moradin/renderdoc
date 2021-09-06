@@ -1,3 +1,4 @@
+// clang-format off
 /****************************************************************************
 **
 ** Copyright (C) 2015 The Qt Company Ltd.
@@ -43,13 +44,13 @@
 #include "FlowLayout.h"
 
 FlowLayout::FlowLayout(QWidget *parent, int margin, int hSpacing, int vSpacing)
-    : QLayout(parent), m_hSpace(hSpacing), m_vSpace(vSpacing)
+    : QLayout(parent), m_hSpace(hSpacing), m_vSpace(vSpacing), m_fixedGrid(false)
 {
     setContentsMargins(margin, margin, margin, margin);
 }
 
 FlowLayout::FlowLayout(int margin, int hSpacing, int vSpacing)
-    : m_hSpace(hSpacing), m_vSpace(vSpacing)
+    : m_hSpace(hSpacing), m_vSpace(vSpacing), m_fixedGrid(false)
 {
     setContentsMargins(margin, margin, margin, margin);
 }
@@ -84,6 +85,16 @@ int FlowLayout::verticalSpacing() const
     }
 }
 
+bool FlowLayout::fixedGrid() const
+{
+  return m_fixedGrid;
+}
+
+void FlowLayout::setFixedGrid(bool fixedgrid)
+{
+  m_fixedGrid = fixedgrid;
+}
+
 int FlowLayout::count() const
 {
     return itemList.size();
@@ -114,19 +125,29 @@ bool FlowLayout::hasHeightForWidth() const
 
 int FlowLayout::heightForWidth(int width) const
 {
+    if(m_prevRect.isEmpty())
+        return minimumSize().height();
     int height = doLayout(QRect(0, 0, width, 0), true);
     return height;
 }
 
 void FlowLayout::setGeometry(const QRect &rect)
 {
+    bool needUpdate = (rect != m_prevRect);
+
     QLayout::setGeometry(rect);
     doLayout(rect, false);
-    update();
+
+    if(needUpdate)
+        update();
+
+    m_prevRect = rect;
 }
 
 QSize FlowLayout::sizeHint() const
 {
+    if(m_prevRect.isEmpty())
+        return minimumSize();
     QSize size = geometry().size();
     size.setHeight(doLayout(geometry().adjusted(0, 0, -10, 0), true));
     return size;
@@ -140,6 +161,19 @@ QSize FlowLayout::minimumSize() const
         size = size.expandedTo(item->minimumSize());
 
     size += QSize(2*margin(), 2*margin());
+
+    if(!m_prevRect.isEmpty())
+    {
+        // we use the previous height as a hint for the minimum size otherwise we'll never request
+        // enough height for multiple rows
+        size.setHeight(qMax(size.height(), heightForWidth(m_prevRect.width())));
+
+        // we use the previous width as a minimum, otherwise if we have a long item which expands
+        // up to a large width in our minimum, other layouts might starve us of enough height
+        // because it will assume we are sized to the minimum.
+        size.setWidth(qMin(size.width(), m_prevRect.width()));
+    }
+
     return size;
 }
 
@@ -151,10 +185,20 @@ int FlowLayout::doLayout(const QRect &rect, bool testOnly) const
     int x = effectiveRect.x();
     int y = effectiveRect.y();
     int lineHeight = 0;
-
+    QSize fixedSize;
+    
     QLayoutItem *item;
+    if(m_fixedGrid) {
+      foreach (item, itemList) {
+          fixedSize = fixedSize.expandedTo(item->sizeHint());
+      }
+    }
+
     foreach (item, itemList) {
         QWidget *wid = item->widget();
+
+        QSize size = m_fixedGrid ? fixedSize : item->sizeHint();
+
         int spaceX = horizontalSpacing();
         if (spaceX == -1)
             spaceX = wid->style()->layoutSpacing(
@@ -163,11 +207,11 @@ int FlowLayout::doLayout(const QRect &rect, bool testOnly) const
         if (spaceY == -1)
             spaceY = wid->style()->layoutSpacing(
                 QSizePolicy::PushButton, QSizePolicy::PushButton, Qt::Vertical);
-        int nextX = x + item->sizeHint().width() + spaceX;
+        int nextX = x + size.width() + spaceX;
         if (nextX - spaceX > effectiveRect.right() && lineHeight > 0) {
             x = effectiveRect.x();
             y = y + lineHeight + spaceY;
-            nextX = x + item->sizeHint().width() + spaceX;
+            nextX = x + size.width() + spaceX;
             lineHeight = 0;
         }
 
@@ -175,7 +219,7 @@ int FlowLayout::doLayout(const QRect &rect, bool testOnly) const
             item->setGeometry(QRect(QPoint(x, y), item->sizeHint()));
 
         x = nextX;
-        lineHeight = qMax(lineHeight, item->sizeHint().height());
+        lineHeight = qMax(lineHeight, size.height());
     }
     return y + lineHeight - rect.y() + bottom;
 }

@@ -1,43 +1,14 @@
 How do I view a specific texture?
 =================================
 
-This page documents how to annotate your resources with user-friendly names to make it easier to follow use of them throughout the frame, as well as the functions for finding and following textures by name rather than by usage.
-
-Annotating resources with names
--------------------------------
-
-It is much easier to browse and debug frames when the resources are given meaningful names - along with including :doc:`debugging information in shaders <how_debug_shader>` and marking up the frame with :doc:`hierarchical user-defined regions <../window/event_browser>`.
-
-The way this is done varies by API. In D3D11 the resource is named in this way:
-
-.. highlight:: c++
-.. code:: c++
-
-	// Creating an example resource - a 2D Texture.
-	ID3D11Texture2D *tex2d = NULL;
-	d3dDevice->CreateTexture2D(&descriptor, NULL, &tex2d);
-
-	// Give the buffer a useful name
-	tex2d->SetPrivateData(WKPDID_D3DDebugObjectName, "Example Texture", sizeof("Example Texture"));
-
-In OpenGL this can be done with ``GL_KHR_debug`` - ``glObjectLabel``.
-
-In Vulkan you can enable the ``VK_EXT_debug_marker`` extension, which is provided by RenderDoc, and use the ``vkDebugMarkerSetObjectName`` function.
-
-When this texture is bound to the pipeline it will be listed like so:
-
-.. figure:: ../imgs/Screenshots/NamedTex.png
-
-	Named Texture: The example texture bound with name displayed.
-
-In a similar way any other resource can be named and this will be useful throughout the rest of the analysis.
+This page documents how to open a specific texture by name, without needing to find it via a current resource binding.
 
 Texture list in Texture Viewer
 ------------------------------
 
-.. |page_white_link| image:: ../imgs/icons/page_white_link.png
+.. |page_white_stack| image:: ../imgs/icons/page_white_stack.png
 
-In the texture viewer you can open a filterable list of all textures in the capture. This can be opened with the texture list icon |page_white_link|. When clicked on this will open a sidebar on the texture viewer that lists all textures.
+In the texture viewer you can open a filterable list of all textures in the capture. This can be opened with the texture list icon |page_white_stack|. When clicked on this will open a sidebar on the texture viewer that lists all textures.
 
 .. figure:: ../imgs/Screenshots/TexList.png
 
@@ -70,4 +41,5 @@ Opening a texture from the pipeline state viewer (:doc:`how_object_details`) wil
 See Also
 --------
 
+* :doc:`../how/how_annotate_capture`
 * :doc:`../window/texture_viewer`

@@ -7,6 +7,12 @@
     <Filter Include="3rdparty\glslang">
       <UniqueIdentifier>{e27da9c0-fc84-4bda-a7ed-f0d6a6e1e214}</UniqueIdentifier>
     </Filter>
+    <Filter Include="PCH">
+      <UniqueIdentifier>{88413a79-d32c-4386-9428-47a9ea0d52b5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="JSON-Generated helpers">
+      <UniqueIdentifier>{1b2858fa-eefd-42e7-af56-bfad5e61e8e9}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\..\3rdparty\glslang\OGLCompilersDLL\InitializeDll.cpp">
@@ -19,6 +25,9 @@
       <Filter>3rdparty\glslang</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\3rdparty\glslang\SPIRV\SpvBuilder.cpp">
+      <Filter>3rdparty\glslang</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\3rdparty\glslang\SPIRV\SpvPostProcess.cpp">
       <Filter>3rdparty\glslang</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\3rdparty\glslang\glslang\GenericCodeGen\CodeGen.cpp">
@@ -90,13 +99,7 @@
     <ClCompile Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\preprocessor\PpContext.cpp">
       <Filter>3rdparty\glslang</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\preprocessor\PpMemory.cpp">
-      <Filter>3rdparty\glslang</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\preprocessor\PpScanner.cpp">
-      <Filter>3rdparty\glslang</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\preprocessor\PpSymbols.cpp">
       <Filter>3rdparty\glslang</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\preprocessor\PpTokens.cpp">
@@ -111,24 +114,6 @@
     <ClCompile Include="spirv_compile.cpp" />
     <ClCompile Include="spirv_disassemble.cpp" />
     <ClCompile Include="spirv_common.cpp" />
-    <ClCompile Include="..\..\..\3rdparty\glslang\hlsl\hlslGrammar.cpp">
-      <Filter>3rdparty\glslang</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\..\3rdparty\glslang\hlsl\hlslParseHelper.cpp">
-      <Filter>3rdparty\glslang</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\..\3rdparty\glslang\hlsl\hlslScanContext.cpp">
-      <Filter>3rdparty\glslang</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\..\3rdparty\glslang\hlsl\hlslOpMap.cpp">
-      <Filter>3rdparty\glslang</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\..\3rdparty\glslang\hlsl\hlslParseables.cpp">
-      <Filter>3rdparty\glslang</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\..\3rdparty\glslang\hlsl\hlslTokenStream.cpp">
-      <Filter>3rdparty\glslang</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\3rdparty\glslang\SPIRV\Logger.cpp">
       <Filter>3rdparty\glslang</Filter>
     </ClCompile>
@@ -141,9 +126,26 @@
     <ClCompile Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\ParseContextBase.cpp">
       <Filter>3rdparty\glslang</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\3rdparty\glslang\hlsl\hlslAttributes.cpp">
+    <ClCompile Include="precompiled.cpp">
+      <Filter>PCH</Filter>
+    </ClCompile>
+    <ClCompile Include="spirv_stringise.cpp" />
+    <ClCompile Include="spirv_editor.cpp" />
+    <ClCompile Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\attribute.cpp">
       <Filter>3rdparty\glslang</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\3rdparty\glslang\SPIRV\SpvTools.cpp">
+      <Filter>3rdparty\glslang</Filter>
+    </ClCompile>
+    <ClCompile Include="spirv_gen.cpp">
+      <Filter>JSON-Generated helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="spirv_reflect.cpp" />
+    <ClCompile Include="glslang_compile.cpp" />
+    <ClCompile Include="spirv_processor.cpp" />
+    <ClCompile Include="spirv_debug_setup.cpp" />
+    <ClCompile Include="spirv_debug.cpp" />
+    <ClCompile Include="spirv_debug_glsl450.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\..\3rdparty\glslang\OGLCompilersDLL\InitializeDll.h">
@@ -246,27 +248,6 @@
       <Filter>3rdparty\glslang</Filter>
     </ClInclude>
     <ClInclude Include="spirv_common.h" />
-    <ClInclude Include="..\..\..\3rdparty\glslang\hlsl\hlslGrammar.h">
-      <Filter>3rdparty\glslang</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\3rdparty\glslang\hlsl\hlslParseHelper.h">
-      <Filter>3rdparty\glslang</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\3rdparty\glslang\hlsl\hlslScanContext.h">
-      <Filter>3rdparty\glslang</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\3rdparty\glslang\hlsl\hlslTokens.h">
-      <Filter>3rdparty\glslang</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\3rdparty\glslang\hlsl\hlslOpMap.h">
-      <Filter>3rdparty\glslang</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\3rdparty\glslang\hlsl\hlslParseables.h">
-      <Filter>3rdparty\glslang</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\3rdparty\glslang\hlsl\hlslTokenStream.h">
-      <Filter>3rdparty\glslang</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\Logger.h">
       <Filter>3rdparty\glslang</Filter>
     </ClInclude>
@@ -282,14 +263,42 @@
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\hex_float.h">
       <Filter>3rdparty\glslang</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\3rdparty\glslang\hlsl\hlslAttributes.h">
-      <Filter>3rdparty\glslang</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\bitutils.h">
       <Filter>3rdparty\glslang</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\GLSL.ext.KHR.h">
       <Filter>3rdparty\glslang</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\GLSL.ext.AMD.h">
+      <Filter>3rdparty\glslang</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\GLSL.ext.NV.h">
+      <Filter>3rdparty\glslang</Filter>
+    </ClInclude>
+    <ClInclude Include="precompiled.h">
+      <Filter>PCH</Filter>
+    </ClInclude>
+    <ClInclude Include="spirv_editor.h" />
+    <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\GLSL.ext.EXT.h">
+      <Filter>3rdparty\glslang</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\attribute.h">
+      <Filter>3rdparty\glslang</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\SpvTools.h">
+      <Filter>3rdparty\glslang</Filter>
+    </ClInclude>
+    <ClInclude Include="spirv_gen.h">
+      <Filter>JSON-Generated helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="spirv_compile.h" />
+    <ClInclude Include="glslang_compile.h" />
+    <ClInclude Include="spirv_reflect.h" />
+    <ClInclude Include="spirv_op_helpers.h">
+      <Filter>JSON-Generated helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="spirv_processor.h" />
+    <ClInclude Include="spirv_debug.h" />
+    <ClInclude Include="var_dispatch_helpers.h" />
   </ItemGroup>
 </Project>

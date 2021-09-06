@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,46 +23,61 @@
  ******************************************************************************/
 
 #include "d3d12_device.h"
+#include "driver/dxgi/dxgi_common.h"
+#include "driver/ihv/amd/official/DXExt/AmdExtD3D.h"
+#include "driver/ihv/amd/official/DXExt/AmdExtD3DCommandListMarkerApi.h"
 #include "d3d12_command_list.h"
 #include "d3d12_command_queue.h"
 #include "d3d12_resources.h"
+#include "d3d12_shader_cache.h"
 
-// use locally cached serialiser, per-thread
-#undef GET_SERIALISER
-#define GET_SERIALISER localSerialiser
+static bool UsesExtensionUAV(const D3D12_SHADER_BYTECODE &sh, uint32_t reg, uint32_t space)
+{
+  return sh.BytecodeLength > 0 && sh.pShaderBytecode &&
+         DXBC::DXBCContainer::UsesExtensionUAV(reg, space, sh.pShaderBytecode, sh.BytecodeLength);
+}
 
-// must be at the start of any function that serialises
-#define CACHE_THREAD_SERIALISER() Serialiser *localSerialiser = GetThreadSerialiser();
-
-bool WrappedID3D12Device::Serialise_CreateCommandQueue(Serialiser *localSerialiser,
+template <typename SerialiserType>
+bool WrappedID3D12Device::Serialise_CreateCommandQueue(SerialiserType &ser,
                                                        const D3D12_COMMAND_QUEUE_DESC *pDesc,
                                                        REFIID riid, void **ppCommandQueue)
 {
-  SERIALISE_ELEMENT_PTR(D3D12_COMMAND_QUEUE_DESC, Descriptor, pDesc);
-  SERIALISE_ELEMENT(IID, guid, riid);
-  SERIALISE_ELEMENT(ResourceId, Queue,
-                    ((WrappedID3D12CommandQueue *)*ppCommandQueue)->GetResourceID());
+  SERIALISE_ELEMENT_LOCAL(Descriptor, *pDesc).Named("pDesc"_lit).Important();
+  SERIALISE_ELEMENT_LOCAL(guid, riid).Named("riid"_lit);
+  SERIALISE_ELEMENT_LOCAL(pCommandQueue,
+                          ((WrappedID3D12CommandQueue *)*ppCommandQueue)->GetResourceID())
+      .TypedAs("ID3D12CommandQueue *"_lit);
 
-  if(m_State == READING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
     ID3D12CommandQueue *ret = NULL;
     HRESULT hr = m_pDevice->CreateCommandQueue(&Descriptor, guid, (void **)&ret);
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: 0x%08x", hr);
+      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      return false;
     }
     else
     {
-      ret = new WrappedID3D12CommandQueue(ret, this, m_pSerialiser, m_State);
+      SetObjName(ret, StringFormat::Fmt("Command Queue %s", ToStr(pCommandQueue).c_str()));
 
-      GetResourceManager()->AddLiveResource(Queue, ret);
+      ret = new WrappedID3D12CommandQueue(ret, this, m_State);
+
+      GetResourceManager()->AddLiveResource(pCommandQueue, ret);
+
+      AddResource(pCommandQueue, ResourceType::Queue, "Command Queue");
 
       WrappedID3D12CommandQueue *wrapped = (WrappedID3D12CommandQueue *)ret;
 
       if(Descriptor.Type == D3D12_COMMAND_LIST_TYPE_DIRECT && m_Queue == NULL)
       {
         m_Queue = wrapped;
+        // we hold an extra ref on this during capture to keep it alive, for simplicity match that
+        // behaviour here.
+        m_Queue->AddRef();
         CreateInternalResources();
       }
 
@@ -91,21 +106,21 @@ HRESULT WrappedID3D12Device::CreateCommandQueue(const D3D12_COMMAND_QUEUE_DESC *
     return E_NOINTERFACE;
 
   ID3D12CommandQueue *real = NULL;
-  HRESULT ret = m_pDevice->CreateCommandQueue(pDesc, riid, (void **)&real);
+  HRESULT ret;
+  SERIALISE_TIME_CALL(ret = m_pDevice->CreateCommandQueue(pDesc, riid, (void **)&real));
 
   if(SUCCEEDED(ret))
   {
-    WrappedID3D12CommandQueue *wrapped =
-        new WrappedID3D12CommandQueue(real, this, m_pSerialiser, m_State);
+    WrappedID3D12CommandQueue *wrapped = new WrappedID3D12CommandQueue(real, this, m_State);
 
-    if(m_State >= WRITING)
+    if(IsCaptureMode(m_State))
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(CREATE_COMMAND_QUEUE);
-      Serialise_CreateCommandQueue(localSerialiser, pDesc, riid, (void **)&wrapped);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateCommandQueue);
+      Serialise_CreateCommandQueue(ser, pDesc, riid, (void **)&wrapped);
 
-      m_DeviceRecord->AddChunk(scope.Get());
+      wrapped->GetCreationRecord()->AddChunk(scope.Get());
     }
     else
     {
@@ -115,40 +130,76 @@ HRESULT WrappedID3D12Device::CreateCommandQueue(const D3D12_COMMAND_QUEUE_DESC *
     if(pDesc->Type == D3D12_COMMAND_LIST_TYPE_DIRECT && m_Queue == NULL)
     {
       m_Queue = wrapped;
+      // keep this queue alive even if the application frees it, for our own use
+      m_Queue->AddRef();
+      InternalRef();
       CreateInternalResources();
     }
 
     m_Queues.push_back(wrapped);
 
+    bool capframe = false;
+    {
+      SCOPED_READLOCK(m_CapTransitionLock);
+      capframe = IsActiveCapturing(m_State);
+
+      // while capturing don't allow any queues to be freed, by adding another refcount, since we
+      // gather any commands submitted to them at the end of the capture.
+      if(capframe)
+      {
+        wrapped->AddRef();
+        m_RefQueues.push_back(wrapped);
+      }
+    }
+
+    if(capframe)
+    {
+      GetResourceManager()->MarkResourceFrameReferenced(
+          wrapped->GetCreationRecord()->GetResourceID(), eFrameRef_Read);
+    }
+
     *ppCommandQueue = (ID3D12CommandQueue *)wrapped;
+  }
+  else
+  {
+    CheckHRESULT(ret);
   }
 
   return ret;
 }
 
-bool WrappedID3D12Device::Serialise_CreateCommandAllocator(Serialiser *localSerialiser,
+template <typename SerialiserType>
+bool WrappedID3D12Device::Serialise_CreateCommandAllocator(SerialiserType &ser,
                                                            D3D12_COMMAND_LIST_TYPE type,
                                                            REFIID riid, void **ppCommandAllocator)
 {
-  SERIALISE_ELEMENT(D3D12_COMMAND_LIST_TYPE, ListType, type);
-  SERIALISE_ELEMENT(IID, guid, riid);
-  SERIALISE_ELEMENT(ResourceId, Alloc,
-                    ((WrappedID3D12CommandAllocator *)*ppCommandAllocator)->GetResourceID());
+  SERIALISE_ELEMENT(type).Important();
+  SERIALISE_ELEMENT_LOCAL(guid, riid).Named("riid"_lit);
+  SERIALISE_ELEMENT_LOCAL(pCommandAllocator,
+                          ((WrappedID3D12CommandAllocator *)*ppCommandAllocator)->GetResourceID())
+      .TypedAs("ID3D12CommandAllocator *"_lit);
 
-  if(m_State == READING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
     ID3D12CommandAllocator *ret = NULL;
-    HRESULT hr = m_pDevice->CreateCommandAllocator(ListType, guid, (void **)&ret);
+    HRESULT hr = m_pDevice->CreateCommandAllocator(type, guid, (void **)&ret);
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: 0x%08x", hr);
+      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      return false;
     }
     else
     {
       ret = new WrappedID3D12CommandAllocator(ret, this);
 
-      GetResourceManager()->AddLiveResource(Alloc, ret);
+      m_CommandAllocators.push_back(ret);
+
+      GetResourceManager()->AddLiveResource(pCommandAllocator, ret);
+
+      AddResource(pCommandAllocator, ResourceType::Pool, "Command Allocator");
     }
   }
 
@@ -165,23 +216,29 @@ HRESULT WrappedID3D12Device::CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE type
     return E_NOINTERFACE;
 
   ID3D12CommandAllocator *real = NULL;
-  HRESULT ret = m_pDevice->CreateCommandAllocator(type, riid, (void **)&real);
+  HRESULT ret;
+  SERIALISE_TIME_CALL(ret = m_pDevice->CreateCommandAllocator(type, riid, (void **)&real));
 
   if(SUCCEEDED(ret))
   {
     WrappedID3D12CommandAllocator *wrapped = new WrappedID3D12CommandAllocator(real, this);
 
-    if(m_State >= WRITING)
+    if(IsCaptureMode(m_State))
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(CREATE_COMMAND_ALLOCATOR);
-      Serialise_CreateCommandAllocator(localSerialiser, type, riid, (void **)&wrapped);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateCommandAllocator);
+      Serialise_CreateCommandAllocator(ser, type, riid, (void **)&wrapped);
 
       D3D12ResourceRecord *record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
       record->type = Resource_CommandAllocator;
       record->Length = 0;
       wrapped->SetResourceRecord(record);
+
+      record->cmdInfo = new CmdListRecordingInfo;
+
+      record->cmdInfo->allocPool = new ChunkPagePool(32 * 1024);
+      record->cmdInfo->alloc = new ChunkAllocator(*record->cmdInfo->allocPool);
 
       record->AddChunk(scope.Get());
     }
@@ -192,8 +249,63 @@ HRESULT WrappedID3D12Device::CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE type
 
     *ppCommandAllocator = (ID3D12CommandAllocator *)wrapped;
   }
+  else
+  {
+    CheckHRESULT(ret);
+  }
 
   return ret;
+}
+
+template <typename SerialiserType>
+bool WrappedID3D12Device::Serialise_CreateCommandList(SerialiserType &ser, UINT nodeMask,
+                                                      D3D12_COMMAND_LIST_TYPE type,
+                                                      ID3D12CommandAllocator *pCommandAllocator,
+                                                      ID3D12PipelineState *pInitialState,
+                                                      REFIID riid, void **ppCommandList)
+{
+  SERIALISE_ELEMENT(nodeMask);
+  SERIALISE_ELEMENT(type).Important();
+  SERIALISE_ELEMENT(pCommandAllocator);
+  SERIALISE_ELEMENT(pInitialState);
+  SERIALISE_ELEMENT_LOCAL(guid, riid).Named("riid"_lit);
+  SERIALISE_ELEMENT_LOCAL(pCommandList,
+                          ((WrappedID3D12GraphicsCommandList *)*ppCommandList)->GetResourceID())
+      .TypedAs("ID3D12GraphicsCommandList *"_lit);
+
+  // this chunk is purely for user information and consistency, the command buffer we allocate is
+  // a dummy and is not used for anything.
+
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
+  {
+    nodeMask = 0;
+
+    ID3D12GraphicsCommandList *list = NULL;
+    HRESULT hr = CreateCommandList(nodeMask, type, pCommandAllocator, pInitialState,
+                                   __uuidof(ID3D12GraphicsCommandList), (void **)&list);
+
+    if(FAILED(hr))
+    {
+      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      return false;
+    }
+    else if(list)
+    {
+      // close it immediately, we don't want to tie up the allocator
+      list->Close();
+
+      GetResourceManager()->AddLiveResource(pCommandList, list);
+    }
+
+    AddResource(pCommandList, ResourceType::CommandBuffer, "Command List");
+    DerivedResource(pCommandAllocator, pCommandList);
+    if(pInitialState)
+      DerivedResource(pInitialState, pCommandList);
+  }
+
+  return true;
 }
 
 HRESULT WrappedID3D12Device::CreateCommandList(UINT nodeMask, D3D12_COMMAND_LIST_TYPE type,
@@ -205,51 +317,128 @@ HRESULT WrappedID3D12Device::CreateCommandList(UINT nodeMask, D3D12_COMMAND_LIST
     return m_pDevice->CreateCommandList(nodeMask, type, Unwrap(pCommandAllocator),
                                         Unwrap(pInitialState), riid, NULL);
 
-  if(riid != __uuidof(ID3D12GraphicsCommandList))
+  if(riid != __uuidof(ID3D12GraphicsCommandList) && riid != __uuidof(ID3D12CommandList) &&
+     riid != __uuidof(ID3D12GraphicsCommandList1) && riid != __uuidof(ID3D12GraphicsCommandList2) &&
+     riid != __uuidof(ID3D12GraphicsCommandList3) && riid != __uuidof(ID3D12GraphicsCommandList4) &&
+     riid != __uuidof(ID3D12GraphicsCommandList5) && riid != __uuidof(ID3D12GraphicsCommandList6))
     return E_NOINTERFACE;
 
+  void *realptr = NULL;
+  HRESULT ret;
+  SERIALISE_TIME_CALL(ret = m_pDevice->CreateCommandList(
+                          nodeMask, type, Unwrap(pCommandAllocator), Unwrap(pInitialState),
+                          __uuidof(ID3D12GraphicsCommandList), &realptr));
+
   ID3D12GraphicsCommandList *real = NULL;
-  HRESULT ret = m_pDevice->CreateCommandList(nodeMask, type, Unwrap(pCommandAllocator),
-                                             Unwrap(pInitialState), riid, (void **)&real);
+
+  if(riid == __uuidof(ID3D12CommandList))
+    real = (ID3D12GraphicsCommandList *)(ID3D12CommandList *)realptr;
+  else if(riid == __uuidof(ID3D12GraphicsCommandList))
+    real = (ID3D12GraphicsCommandList *)realptr;
+  else if(riid == __uuidof(ID3D12GraphicsCommandList1))
+    real = (ID3D12GraphicsCommandList1 *)realptr;
+  else if(riid == __uuidof(ID3D12GraphicsCommandList2))
+    real = (ID3D12GraphicsCommandList2 *)realptr;
+  else if(riid == __uuidof(ID3D12GraphicsCommandList3))
+    real = (ID3D12GraphicsCommandList3 *)realptr;
+  else if(riid == __uuidof(ID3D12GraphicsCommandList4))
+    real = (ID3D12GraphicsCommandList4 *)realptr;
+  else if(riid == __uuidof(ID3D12GraphicsCommandList5))
+    real = (ID3D12GraphicsCommandList5 *)realptr;
+  else if(riid == __uuidof(ID3D12GraphicsCommandList6))
+    real = (ID3D12GraphicsCommandList6 *)realptr;
 
   if(SUCCEEDED(ret))
   {
     WrappedID3D12GraphicsCommandList *wrapped =
-        new WrappedID3D12GraphicsCommandList(real, this, m_pSerialiser, m_State);
+        new WrappedID3D12GraphicsCommandList(real, this, m_State);
 
-    if(m_State >= WRITING)
+    if(m_pAMDExtObject)
     {
-      // we just serialise out command allocator creation as a reset, since it's equivalent.
+      IAmdExtD3DCommandListMarker *markers = NULL;
+      m_pAMDExtObject->CreateInterface(real, __uuidof(IAmdExtD3DCommandListMarker),
+                                       (void **)&markers);
+      wrapped->SetAMDMarkerInterface(markers);
+    }
+
+    if(IsCaptureMode(m_State))
+    {
       wrapped->SetInitParams(riid, nodeMask, type);
-      wrapped->Reset(pCommandAllocator, pInitialState);
+      // we just serialise out command allocator creation as a reset, since it's equivalent.
+      wrapped->ResetInternal(pCommandAllocator, pInitialState, true);
+
+      {
+        CACHE_THREAD_SERIALISER();
+
+        SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateCommandList);
+        Serialise_CreateCommandList(ser, nodeMask, type, pCommandAllocator, pInitialState, riid,
+                                    (void **)&wrapped);
+
+        wrapped->GetCreationRecord()->AddChunk(scope.Get());
+      }
+
+      // add parents so these are always in the capture. They won't necessarily be used for replay
+      // but we want them to be available so the creation chunk is fully realised
+      wrapped->GetCreationRecord()->AddParent(GetRecord(pCommandAllocator));
+      if(pInitialState)
+        wrapped->GetCreationRecord()->AddParent(GetRecord(pInitialState));
     }
 
     // during replay, the caller is responsible for calling AddLiveResource as this function
     // can be called from ID3D12GraphicsCommandList::Reset serialising
 
-    *ppCommandList = (ID3D12GraphicsCommandList *)wrapped;
+    if(riid == __uuidof(ID3D12GraphicsCommandList))
+      *ppCommandList = (ID3D12GraphicsCommandList *)wrapped;
+    else if(riid == __uuidof(ID3D12GraphicsCommandList1))
+      *ppCommandList = (ID3D12GraphicsCommandList1 *)wrapped;
+    else if(riid == __uuidof(ID3D12GraphicsCommandList2))
+      *ppCommandList = (ID3D12GraphicsCommandList2 *)wrapped;
+    else if(riid == __uuidof(ID3D12GraphicsCommandList3))
+      *ppCommandList = (ID3D12GraphicsCommandList3 *)wrapped;
+    else if(riid == __uuidof(ID3D12GraphicsCommandList4))
+      *ppCommandList = (ID3D12GraphicsCommandList4 *)wrapped;
+    else if(riid == __uuidof(ID3D12GraphicsCommandList5))
+      *ppCommandList = (ID3D12GraphicsCommandList5 *)wrapped;
+    else if(riid == __uuidof(ID3D12GraphicsCommandList6))
+      *ppCommandList = (ID3D12GraphicsCommandList6 *)wrapped;
+    else if(riid == __uuidof(ID3D12CommandList))
+      *ppCommandList = (ID3D12CommandList *)wrapped;
+    else
+      RDCERR("Unexpected riid! %s", ToStr(riid).c_str());
+  }
+  else
+  {
+    CheckHRESULT(ret);
   }
 
   return ret;
 }
 
+template <typename SerialiserType>
 bool WrappedID3D12Device::Serialise_CreateGraphicsPipelineState(
-    Serialiser *localSerialiser, const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc, REFIID riid,
+    SerialiserType &ser, const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc, REFIID riid,
     void **ppPipelineState)
 {
-  SERIALISE_ELEMENT_PTR(D3D12_GRAPHICS_PIPELINE_STATE_DESC, Descriptor, pDesc);
-  SERIALISE_ELEMENT(IID, guid, riid);
-  SERIALISE_ELEMENT(ResourceId, Pipe,
-                    ((WrappedID3D12PipelineState *)*ppPipelineState)->GetResourceID());
+  SERIALISE_ELEMENT_LOCAL(Descriptor, *pDesc).Named("pDesc"_lit).Important();
+  SERIALISE_ELEMENT_LOCAL(guid, riid).Named("riid"_lit);
+  SERIALISE_ELEMENT_LOCAL(pPipelineState,
+                          ((WrappedID3D12PipelineState *)*ppPipelineState)->GetResourceID())
+      .TypedAs("ID3D12PipelineState *"_lit);
 
-  if(m_State == READING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC unwrappedDesc = Descriptor;
+    unwrappedDesc.pRootSignature = Unwrap(unwrappedDesc.pRootSignature);
+
     ID3D12PipelineState *ret = NULL;
-    HRESULT hr = m_pDevice->CreateGraphicsPipelineState(&Descriptor, guid, (void **)&ret);
+    HRESULT hr = m_pDevice->CreateGraphicsPipelineState(&unwrappedDesc, guid, (void **)&ret);
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: 0x%08x", hr);
+      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      return false;
     }
     else
     {
@@ -257,30 +446,218 @@ bool WrappedID3D12Device::Serialise_CreateGraphicsPipelineState(
 
       WrappedID3D12PipelineState *wrapped = (WrappedID3D12PipelineState *)ret;
 
-      wrapped->graphics = new D3D12_GRAPHICS_PIPELINE_STATE_DESC(Descriptor);
-
-      wrapped->graphics->pRootSignature =
-          (ID3D12RootSignature *)GetResourceManager()->GetWrapper(wrapped->graphics->pRootSignature);
+      wrapped->graphics = new D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC(Descriptor);
 
       D3D12_SHADER_BYTECODE *shaders[] = {
           &wrapped->graphics->VS, &wrapped->graphics->HS, &wrapped->graphics->DS,
           &wrapped->graphics->GS, &wrapped->graphics->PS,
       };
 
+      AddResource(pPipelineState, ResourceType::PipelineState, "Graphics Pipeline State");
+      if(Descriptor.pRootSignature)
+        DerivedResource(Descriptor.pRootSignature, pPipelineState);
+
       for(size_t i = 0; i < ARRAY_COUNT(shaders); i++)
       {
-        if(shaders[i]->BytecodeLength == 0)
+        if(shaders[i]->BytecodeLength == 0 || shaders[i]->pShaderBytecode == NULL)
+        {
           shaders[i]->pShaderBytecode = NULL;
+          shaders[i]->BytecodeLength = 0;
+        }
         else
-          shaders[i]->pShaderBytecode =
-              WrappedID3D12PipelineState::AddShader(*shaders[i], this, wrapped);
+        {
+          WrappedID3D12Shader *entry = WrappedID3D12Shader::AddShader(*shaders[i], this);
+          entry->AddRef();
+
+          shaders[i]->pShaderBytecode = entry;
+
+          if(m_GlobalEXTUAV != ~0U)
+            entry->SetShaderExtSlot(m_GlobalEXTUAV, m_GlobalEXTUAVSpace);
+
+          AddResourceCurChunk(entry->GetResourceID());
+
+          DerivedResource(entry->GetResourceID(), pPipelineState);
+        }
       }
 
-      GetResourceManager()->AddLiveResource(Pipe, ret);
+      if(wrapped->graphics->InputLayout.NumElements)
+      {
+        wrapped->graphics->InputLayout.pInputElementDescs =
+            new D3D12_INPUT_ELEMENT_DESC[wrapped->graphics->InputLayout.NumElements];
+        memcpy((void *)wrapped->graphics->InputLayout.pInputElementDescs,
+               Descriptor.InputLayout.pInputElementDescs,
+               sizeof(D3D12_INPUT_ELEMENT_DESC) * wrapped->graphics->InputLayout.NumElements);
+      }
+      else
+      {
+        wrapped->graphics->InputLayout.pInputElementDescs = NULL;
+      }
+
+      if(wrapped->graphics->StreamOutput.NumEntries)
+      {
+        wrapped->graphics->StreamOutput.pSODeclaration =
+            new D3D12_SO_DECLARATION_ENTRY[wrapped->graphics->StreamOutput.NumEntries];
+        memcpy((void *)wrapped->graphics->StreamOutput.pSODeclaration,
+               Descriptor.StreamOutput.pSODeclaration,
+               sizeof(D3D12_SO_DECLARATION_ENTRY) * wrapped->graphics->StreamOutput.NumEntries);
+
+        if(wrapped->graphics->StreamOutput.NumStrides)
+        {
+          wrapped->graphics->StreamOutput.pBufferStrides =
+              new UINT[wrapped->graphics->StreamOutput.NumStrides];
+          memcpy((void *)wrapped->graphics->StreamOutput.pBufferStrides,
+                 Descriptor.StreamOutput.pBufferStrides,
+                 sizeof(UINT) * wrapped->graphics->StreamOutput.NumStrides);
+        }
+        else
+        {
+          wrapped->graphics->StreamOutput.pBufferStrides = NULL;
+        }
+      }
+      else
+      {
+        wrapped->graphics->StreamOutput.pSODeclaration = NULL;
+        wrapped->graphics->StreamOutput.pBufferStrides = NULL;
+      }
+
+      // if this shader was initialised with nvidia's dynamic UAV, pull in that chunk as one of ours
+      // and unset it (there will be one for each create that actually used vendor extensions)
+      if(m_VendorEXT == GPUVendor::nVidia && m_GlobalEXTUAV != ~0U)
+      {
+        GetResourceDesc(pPipelineState)
+            .initialisationChunks.push_back((uint32_t)m_StructuredFile->chunks.size() - 2);
+        m_GlobalEXTUAV = ~0U;
+      }
+      GetResourceManager()->AddLiveResource(pPipelineState, ret);
     }
   }
 
   return true;
+}
+
+void WrappedID3D12Device::ProcessCreatedGraphicsPSO(ID3D12PipelineState *real,
+                                                    uint32_t vendorExtReg, uint32_t vendorExtSpace,
+                                                    const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc,
+                                                    REFIID riid, void **ppPipelineState)
+{
+  for(const D3D12_SHADER_BYTECODE &sh : {pDesc->VS, pDesc->HS, pDesc->DS, pDesc->GS, pDesc->PS})
+  {
+    if(sh.BytecodeLength > 0 && sh.pShaderBytecode &&
+       DXBC::DXBCContainer::CheckForDXIL(sh.pShaderBytecode, sh.BytecodeLength))
+      m_UsedDXIL = true;
+  }
+
+  WrappedID3D12PipelineState *wrapped = new WrappedID3D12PipelineState(real, this);
+
+  if(IsCaptureMode(m_State))
+  {
+    CACHE_THREAD_SERIALISER();
+
+    Chunk *vendorChunk = NULL;
+    if(m_VendorEXT != GPUVendor::Unknown)
+    {
+      if(UsesExtensionUAV(pDesc->VS, vendorExtReg, vendorExtSpace) ||
+         UsesExtensionUAV(pDesc->HS, vendorExtReg, vendorExtSpace) ||
+         UsesExtensionUAV(pDesc->DS, vendorExtReg, vendorExtSpace) ||
+         UsesExtensionUAV(pDesc->GS, vendorExtReg, vendorExtSpace) ||
+         UsesExtensionUAV(pDesc->PS, vendorExtReg, vendorExtSpace))
+      {
+        // don't set initparams until we've seen at least one shader actually created using the
+        // extensions.
+        m_InitParams.VendorExtensions = m_VendorEXT;
+
+        // if this shader uses the UAV slot registered for vendor extensions, serialise that out
+        // too
+        SCOPED_SERIALISE_CHUNK(D3D12Chunk::SetShaderExtUAV);
+        Serialise_SetShaderExtUAV(ser, m_VendorEXT, vendorExtReg, vendorExtSpace, true);
+        vendorChunk = scope.Get();
+      }
+    }
+
+    SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateGraphicsPipeline);
+    Serialise_CreateGraphicsPipelineState(ser, pDesc, riid, (void **)&wrapped);
+
+    D3D12ResourceRecord *record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
+    record->type = Resource_PipelineState;
+    record->Length = 0;
+    wrapped->SetResourceRecord(record);
+
+    if(pDesc->pRootSignature)
+      record->AddParent(GetRecord(pDesc->pRootSignature));
+
+    if(vendorChunk)
+      record->AddChunk(vendorChunk);
+    record->AddChunk(scope.Get());
+  }
+  else
+  {
+    GetResourceManager()->AddLiveResource(wrapped->GetResourceID(), wrapped);
+
+    wrapped->graphics = new D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC(*pDesc);
+
+    D3D12_SHADER_BYTECODE *shaders[] = {
+        &wrapped->graphics->VS, &wrapped->graphics->HS, &wrapped->graphics->DS,
+        &wrapped->graphics->GS, &wrapped->graphics->PS,
+    };
+
+    for(size_t i = 0; i < ARRAY_COUNT(shaders); i++)
+    {
+      if(shaders[i]->BytecodeLength == 0 || shaders[i]->pShaderBytecode == NULL)
+      {
+        shaders[i]->pShaderBytecode = NULL;
+        shaders[i]->BytecodeLength = 0;
+      }
+      else
+      {
+        WrappedID3D12Shader *sh = WrappedID3D12Shader::AddShader(*shaders[i], this);
+        sh->AddRef();
+        if(m_GlobalEXTUAV != ~0U)
+          sh->SetShaderExtSlot(m_GlobalEXTUAV, m_GlobalEXTUAVSpace);
+        shaders[i]->pShaderBytecode = sh;
+      }
+    }
+
+    if(wrapped->graphics->InputLayout.NumElements)
+    {
+      wrapped->graphics->InputLayout.pInputElementDescs =
+          new D3D12_INPUT_ELEMENT_DESC[wrapped->graphics->InputLayout.NumElements];
+      memcpy((void *)wrapped->graphics->InputLayout.pInputElementDescs,
+             pDesc->InputLayout.pInputElementDescs,
+             sizeof(D3D12_INPUT_ELEMENT_DESC) * wrapped->graphics->InputLayout.NumElements);
+    }
+    else
+    {
+      wrapped->graphics->InputLayout.pInputElementDescs = NULL;
+    }
+
+    if(wrapped->graphics->StreamOutput.NumEntries)
+    {
+      wrapped->graphics->StreamOutput.pSODeclaration =
+          new D3D12_SO_DECLARATION_ENTRY[wrapped->graphics->StreamOutput.NumEntries];
+      memcpy((void *)wrapped->graphics->StreamOutput.pSODeclaration,
+             pDesc->StreamOutput.pSODeclaration,
+             sizeof(D3D12_SO_DECLARATION_ENTRY) * wrapped->graphics->StreamOutput.NumEntries);
+    }
+    else
+    {
+      wrapped->graphics->StreamOutput.pSODeclaration = NULL;
+    }
+
+    if(wrapped->graphics->StreamOutput.NumStrides)
+    {
+      wrapped->graphics->StreamOutput.pBufferStrides =
+          new UINT[wrapped->graphics->StreamOutput.NumStrides];
+      memcpy((void *)wrapped->graphics->StreamOutput.pBufferStrides,
+             pDesc->StreamOutput.pBufferStrides,
+             sizeof(UINT) * wrapped->graphics->StreamOutput.NumStrides);
+    }
+    else
+    {
+      wrapped->graphics->StreamOutput.pBufferStrides = NULL;
+    }
+  }
+
+  *ppPipelineState = (ID3D12PipelineState *)wrapped;
 }
 
 HRESULT WrappedID3D12Device::CreateGraphicsPipelineState(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc,
@@ -296,91 +673,148 @@ HRESULT WrappedID3D12Device::CreateGraphicsPipelineState(const D3D12_GRAPHICS_PI
     return E_NOINTERFACE;
 
   ID3D12PipelineState *real = NULL;
-  HRESULT ret = m_pDevice->CreateGraphicsPipelineState(&unwrappedDesc, riid, (void **)&real);
+  HRESULT ret;
+  SERIALISE_TIME_CALL(
+      ret = m_pDevice->CreateGraphicsPipelineState(&unwrappedDesc, riid, (void **)&real));
 
   if(SUCCEEDED(ret))
   {
-    WrappedID3D12PipelineState *wrapped = new WrappedID3D12PipelineState(real, this);
+    // use implicit register/space
+    uint32_t reg = ~0U, space = ~0U;
+    if(m_VendorEXT != GPUVendor::Unknown)
+      GetShaderExtUAV(reg, space);
 
-    if(m_State >= WRITING)
-    {
-      CACHE_THREAD_SERIALISER();
-
-      SCOPED_SERIALISE_CONTEXT(CREATE_GRAPHICS_PIPE);
-      Serialise_CreateGraphicsPipelineState(localSerialiser, pDesc, riid, (void **)&wrapped);
-
-      D3D12ResourceRecord *record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
-      record->type = Resource_PipelineState;
-      record->Length = 0;
-      wrapped->SetResourceRecord(record);
-
-      record->AddParent(GetRecord(pDesc->pRootSignature));
-
-      record->AddChunk(scope.Get());
-    }
-    else
-    {
-      GetResourceManager()->AddLiveResource(wrapped->GetResourceID(), wrapped);
-
-      wrapped->graphics = new D3D12_GRAPHICS_PIPELINE_STATE_DESC(*pDesc);
-
-      D3D12_SHADER_BYTECODE *shaders[] = {
-          &wrapped->graphics->VS, &wrapped->graphics->HS, &wrapped->graphics->DS,
-          &wrapped->graphics->GS, &wrapped->graphics->PS,
-      };
-
-      for(size_t i = 0; i < ARRAY_COUNT(shaders); i++)
-      {
-        if(shaders[i]->BytecodeLength == 0)
-          shaders[i]->pShaderBytecode = NULL;
-        else
-          shaders[i]->pShaderBytecode =
-              WrappedID3D12PipelineState::AddShader(*shaders[i], this, NULL);
-      }
-    }
-
-    *ppPipelineState = (ID3D12PipelineState *)wrapped;
+    ProcessCreatedGraphicsPSO(real, reg, space, pDesc, riid, ppPipelineState);
+  }
+  else
+  {
+    CheckHRESULT(ret);
   }
 
   return ret;
 }
 
+template <typename SerialiserType>
 bool WrappedID3D12Device::Serialise_CreateComputePipelineState(
-    Serialiser *localSerialiser, const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc, REFIID riid,
+    SerialiserType &ser, const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc, REFIID riid,
     void **ppPipelineState)
 {
-  SERIALISE_ELEMENT_PTR(D3D12_COMPUTE_PIPELINE_STATE_DESC, Descriptor, pDesc);
-  SERIALISE_ELEMENT(IID, guid, riid);
-  SERIALISE_ELEMENT(ResourceId, Pipe,
-                    ((WrappedID3D12PipelineState *)*ppPipelineState)->GetResourceID());
+  SERIALISE_ELEMENT_LOCAL(Descriptor, *pDesc).Named("pDesc"_lit).Important();
+  SERIALISE_ELEMENT_LOCAL(guid, riid).Named("riid"_lit);
+  SERIALISE_ELEMENT_LOCAL(pPipelineState,
+                          ((WrappedID3D12PipelineState *)*ppPipelineState)->GetResourceID())
+      .TypedAs("ID3D12PipelineState *"_lit);
 
-  if(m_State == READING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
+    D3D12_COMPUTE_PIPELINE_STATE_DESC unwrappedDesc = Descriptor;
+    unwrappedDesc.pRootSignature = Unwrap(unwrappedDesc.pRootSignature);
+
     ID3D12PipelineState *ret = NULL;
-    HRESULT hr = m_pDevice->CreateComputePipelineState(&Descriptor, guid, (void **)&ret);
+    HRESULT hr = m_pDevice->CreateComputePipelineState(&unwrappedDesc, guid, (void **)&ret);
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: 0x%08x", hr);
+      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      return false;
     }
     else
     {
       WrappedID3D12PipelineState *wrapped = new WrappedID3D12PipelineState(ret, this);
       ret = wrapped;
 
-      wrapped->compute = new D3D12_COMPUTE_PIPELINE_STATE_DESC(Descriptor);
+      wrapped->compute = new D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC(Descriptor);
 
-      wrapped->compute->pRootSignature =
-          (ID3D12RootSignature *)GetResourceManager()->GetWrapper(wrapped->compute->pRootSignature);
+      WrappedID3D12Shader *entry = WrappedID3D12Shader::AddShader(wrapped->compute->CS, this);
+      entry->AddRef();
 
-      wrapped->compute->CS.pShaderBytecode =
-          WrappedID3D12PipelineState::AddShader(wrapped->compute->CS, this, wrapped);
+      if(m_GlobalEXTUAV != ~0U)
+        entry->SetShaderExtSlot(m_GlobalEXTUAV, m_GlobalEXTUAVSpace);
 
-      GetResourceManager()->AddLiveResource(Pipe, ret);
+      AddResourceCurChunk(entry->GetResourceID());
+
+      AddResource(pPipelineState, ResourceType::PipelineState, "Compute Pipeline State");
+      if(Descriptor.pRootSignature)
+        DerivedResource(Descriptor.pRootSignature, pPipelineState);
+      DerivedResource(entry->GetResourceID(), pPipelineState);
+
+      wrapped->compute->CS.pShaderBytecode = entry;
+
+      // if this shader was initialised with nvidia's dynamic UAV, pull in that chunk as one of ours
+      // and unset it (there will be one for each create that actually used vendor extensions)
+      if(m_VendorEXT == GPUVendor::nVidia && m_GlobalEXTUAV != ~0U)
+      {
+        GetResourceDesc(pPipelineState)
+            .initialisationChunks.push_back((uint32_t)m_StructuredFile->chunks.size() - 2);
+        m_GlobalEXTUAV = ~0U;
+      }
+      GetResourceManager()->AddLiveResource(pPipelineState, ret);
     }
   }
 
   return true;
+}
+
+void WrappedID3D12Device::ProcessCreatedComputePSO(ID3D12PipelineState *real, uint32_t vendorExtReg,
+                                                   uint32_t vendorExtSpace,
+                                                   const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc,
+                                                   REFIID riid, void **ppPipelineState)
+{
+  if(DXBC::DXBCContainer::CheckForDXIL(pDesc->CS.pShaderBytecode, pDesc->CS.BytecodeLength))
+    m_UsedDXIL = true;
+
+  WrappedID3D12PipelineState *wrapped = new WrappedID3D12PipelineState(real, this);
+
+  if(IsCaptureMode(m_State))
+  {
+    CACHE_THREAD_SERIALISER();
+
+    Chunk *vendorChunk = NULL;
+    if(m_VendorEXT != GPUVendor::Unknown)
+    {
+      if(UsesExtensionUAV(pDesc->CS, vendorExtReg, vendorExtSpace))
+      {
+        // don't set initparams until we've seen at least one shader actually created using the
+        // extensions.
+        m_InitParams.VendorExtensions = m_VendorEXT;
+
+        // if this shader uses the UAV slot registered for vendor extensions, serialise that out
+        // too
+        SCOPED_SERIALISE_CHUNK(D3D12Chunk::SetShaderExtUAV);
+        Serialise_SetShaderExtUAV(ser, m_VendorEXT, vendorExtReg, vendorExtSpace, true);
+        vendorChunk = scope.Get();
+      }
+    }
+
+    SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateComputePipeline);
+    Serialise_CreateComputePipelineState(ser, pDesc, riid, (void **)&wrapped);
+
+    D3D12ResourceRecord *record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
+    record->type = Resource_PipelineState;
+    record->Length = 0;
+    wrapped->SetResourceRecord(record);
+
+    if(pDesc->pRootSignature)
+      record->AddParent(GetRecord(pDesc->pRootSignature));
+
+    if(vendorChunk)
+      record->AddChunk(vendorChunk);
+    record->AddChunk(scope.Get());
+  }
+  else
+  {
+    GetResourceManager()->AddLiveResource(wrapped->GetResourceID(), wrapped);
+
+    wrapped->compute = new D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC(*pDesc);
+
+    WrappedID3D12Shader *sh = WrappedID3D12Shader::AddShader(wrapped->compute->CS, this);
+    sh->AddRef();
+    wrapped->compute->CS.pShaderBytecode = sh;
+  }
+
+  *ppPipelineState = (ID3D12PipelineState *)wrapped;
 }
 
 HRESULT WrappedID3D12Device::CreateComputePipelineState(const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc,
@@ -396,66 +830,74 @@ HRESULT WrappedID3D12Device::CreateComputePipelineState(const D3D12_COMPUTE_PIPE
     return E_NOINTERFACE;
 
   ID3D12PipelineState *real = NULL;
-  HRESULT ret = m_pDevice->CreateComputePipelineState(&unwrappedDesc, riid, (void **)&real);
+  HRESULT ret;
+  SERIALISE_TIME_CALL(
+      ret = m_pDevice->CreateComputePipelineState(&unwrappedDesc, riid, (void **)&real));
 
   if(SUCCEEDED(ret))
   {
-    WrappedID3D12PipelineState *wrapped = new WrappedID3D12PipelineState(real, this);
+    // use implicit register/space
+    uint32_t reg = ~0U, space = ~0U;
+    if(m_VendorEXT != GPUVendor::Unknown)
+      GetShaderExtUAV(reg, space);
 
-    if(m_State >= WRITING)
-    {
-      CACHE_THREAD_SERIALISER();
-
-      SCOPED_SERIALISE_CONTEXT(CREATE_COMPUTE_PIPE);
-      Serialise_CreateComputePipelineState(localSerialiser, pDesc, riid, (void **)&wrapped);
-
-      D3D12ResourceRecord *record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
-      record->type = Resource_PipelineState;
-      record->Length = 0;
-      wrapped->SetResourceRecord(record);
-
-      record->AddParent(GetRecord(pDesc->pRootSignature));
-
-      record->AddChunk(scope.Get());
-    }
-    else
-    {
-      GetResourceManager()->AddLiveResource(wrapped->GetResourceID(), wrapped);
-
-      wrapped->compute = new D3D12_COMPUTE_PIPELINE_STATE_DESC(*pDesc);
-
-      wrapped->compute->CS.pShaderBytecode =
-          WrappedID3D12PipelineState::AddShader(wrapped->compute->CS, this, NULL);
-    }
-
-    *ppPipelineState = (ID3D12PipelineState *)wrapped;
+    ProcessCreatedComputePSO(real, reg, space, pDesc, riid, ppPipelineState);
+  }
+  else
+  {
+    CheckHRESULT(ret);
   }
 
   return ret;
 }
 
+template <typename SerialiserType>
 bool WrappedID3D12Device::Serialise_CreateDescriptorHeap(
-    Serialiser *localSerialiser, const D3D12_DESCRIPTOR_HEAP_DESC *pDescriptorHeapDesc, REFIID riid,
+    SerialiserType &ser, const D3D12_DESCRIPTOR_HEAP_DESC *pDescriptorHeapDesc, REFIID riid,
     void **ppvHeap)
 {
-  SERIALISE_ELEMENT_PTR(D3D12_DESCRIPTOR_HEAP_DESC, Descriptor, pDescriptorHeapDesc);
-  SERIALISE_ELEMENT(IID, guid, riid);
-  SERIALISE_ELEMENT(ResourceId, Heap, ((WrappedID3D12DescriptorHeap *)*ppvHeap)->GetResourceID());
+  SERIALISE_ELEMENT_LOCAL(Descriptor, *pDescriptorHeapDesc)
+      .Named("pDescriptorHeapDesc"_lit)
+      .Important();
+  SERIALISE_ELEMENT_LOCAL(guid, riid).Named("riid"_lit);
+  SERIALISE_ELEMENT_LOCAL(pHeap, ((WrappedID3D12DescriptorHeap *)*ppvHeap)->GetResourceID())
+      .TypedAs("ID3D12DescriptorHeap *"_lit);
 
-  if(m_State == READING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
+    D3D12_DESCRIPTOR_HEAP_DESC PatchedDesc = Descriptor;
+
+    // inflate the heap so we can insert our own descriptors at the end
+    // while patching, because DX12 has a stupid limitation to not be able
+    // to set multiple descriptor heaps at once of the same type
+    if(PatchedDesc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
+    {
+      if(m_D3D12Opts.ResourceBindingTier == D3D12_RESOURCE_BINDING_TIER_3 ||
+         PatchedDesc.NumDescriptors + 16 <= 1000000)
+        PatchedDesc.NumDescriptors += 16;
+      else
+        RDCERR(
+            "RenderDoc needs extra descriptors for patching during analysis,"
+            "but heap is already at binding tier limit");
+    }
+
     ID3D12DescriptorHeap *ret = NULL;
-    HRESULT hr = m_pDevice->CreateDescriptorHeap(&Descriptor, guid, (void **)&ret);
+    HRESULT hr = m_pDevice->CreateDescriptorHeap(&PatchedDesc, guid, (void **)&ret);
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: 0x%08x", hr);
+      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      return false;
     }
     else
     {
-      ret = new WrappedID3D12DescriptorHeap(ret, this, Descriptor);
+      ret = new WrappedID3D12DescriptorHeap(ret, this, PatchedDesc, Descriptor.NumDescriptors);
 
-      GetResourceManager()->AddLiveResource(Heap, ret);
+      GetResourceManager()->AddLiveResource(pHeap, ret);
+
+      AddResource(pHeap, ResourceType::ShaderBinding, "Descriptor Heap");
     }
   }
 
@@ -472,19 +914,21 @@ HRESULT WrappedID3D12Device::CreateDescriptorHeap(const D3D12_DESCRIPTOR_HEAP_DE
     return E_NOINTERFACE;
 
   ID3D12DescriptorHeap *real = NULL;
-  HRESULT ret = m_pDevice->CreateDescriptorHeap(pDescriptorHeapDesc, riid, (void **)&real);
+  HRESULT ret;
+  SERIALISE_TIME_CALL(
+      ret = m_pDevice->CreateDescriptorHeap(pDescriptorHeapDesc, riid, (void **)&real));
 
   if(SUCCEEDED(ret))
   {
-    WrappedID3D12DescriptorHeap *wrapped =
-        new WrappedID3D12DescriptorHeap(real, this, *pDescriptorHeapDesc);
+    WrappedID3D12DescriptorHeap *wrapped = new WrappedID3D12DescriptorHeap(
+        real, this, *pDescriptorHeapDesc, pDescriptorHeapDesc->NumDescriptors);
 
-    if(m_State >= WRITING)
+    if(IsCaptureMode(m_State))
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(CREATE_DESCRIPTOR_HEAP);
-      Serialise_CreateDescriptorHeap(localSerialiser, pDescriptorHeapDesc, riid, (void **)&wrapped);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateDescriptorHeap);
+      Serialise_CreateDescriptorHeap(ser, pDescriptorHeapDesc, riid, (void **)&wrapped);
 
       D3D12ResourceRecord *record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
       record->type = Resource_DescriptorHeap;
@@ -493,13 +937,7 @@ HRESULT WrappedID3D12Device::CreateDescriptorHeap(const D3D12_DESCRIPTOR_HEAP_DE
 
       record->AddChunk(scope.Get());
 
-      {
-        SCOPED_LOCK(m_CapTransitionLock);
-        if(m_State != WRITING_CAPFRAME)
-          GetResourceManager()->MarkDirtyResource(wrapped->GetResourceID());
-        else
-          GetResourceManager()->MarkPendingDirty(wrapped->GetResourceID());
-      }
+      GetResourceManager()->MarkDirtyResource(wrapped->GetResourceID());
     }
     else
     {
@@ -508,40 +946,72 @@ HRESULT WrappedID3D12Device::CreateDescriptorHeap(const D3D12_DESCRIPTOR_HEAP_DE
 
     *ppvHeap = (ID3D12DescriptorHeap *)wrapped;
   }
+  else
+  {
+    CheckHRESULT(ret);
+  }
 
   return ret;
 }
 
-bool WrappedID3D12Device::Serialise_CreateRootSignature(Serialiser *localSerialiser, UINT nodeMask,
+template <typename SerialiserType>
+bool WrappedID3D12Device::Serialise_CreateRootSignature(SerialiserType &ser, UINT nodeMask,
                                                         const void *pBlobWithRootSignature,
-                                                        SIZE_T blobLengthInBytes, REFIID riid,
+                                                        SIZE_T blobLengthInBytes_, REFIID riid,
                                                         void **ppvRootSignature)
 {
-  SERIALISE_ELEMENT(UINT, mask, nodeMask);
-  SERIALISE_ELEMENT(uint32_t, blobLen, (uint32_t)blobLengthInBytes);
-  SERIALISE_ELEMENT_BUF(byte *, blobBytes, pBlobWithRootSignature, blobLen);
-  SERIALISE_ELEMENT(IID, guid, riid);
-  SERIALISE_ELEMENT(ResourceId, Sig,
-                    ((WrappedID3D12RootSignature *)*ppvRootSignature)->GetResourceID());
+  SERIALISE_ELEMENT(nodeMask);
+  SERIALISE_ELEMENT_ARRAY(pBlobWithRootSignature, blobLengthInBytes_).Important();
+  SERIALISE_ELEMENT_LOCAL(blobLengthInBytes, uint64_t(blobLengthInBytes_));
+  SERIALISE_ELEMENT_LOCAL(guid, riid).Named("riid"_lit);
+  SERIALISE_ELEMENT_LOCAL(pRootSignature,
+                          ((WrappedID3D12RootSignature *)*ppvRootSignature)->GetResourceID())
+      .TypedAs("ID3D12RootSignature *"_lit);
 
-  if(m_State == READING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
+    nodeMask = 0;
+
     ID3D12RootSignature *ret = NULL;
-    HRESULT hr = m_pDevice->CreateRootSignature(mask, blobBytes, blobLen, guid, (void **)&ret);
+    HRESULT hr = m_pDevice->CreateRootSignature(nodeMask, pBlobWithRootSignature,
+                                                (SIZE_T)blobLengthInBytes, guid, (void **)&ret);
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: 0x%08x", hr);
+      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      return false;
     }
     else
     {
-      ret = new WrappedID3D12RootSignature(ret, this);
+      if(GetResourceManager()->HasWrapper(ret))
+      {
+        ret->Release();
+        ret = (ID3D12RootSignature *)GetResourceManager()->GetWrapper(ret);
+        ret->AddRef();
+
+        GetResourceManager()->AddLiveResource(pRootSignature, ret);
+      }
+      else
+      {
+        ret = new WrappedID3D12RootSignature(ret, this);
+
+        GetResourceManager()->AddLiveResource(pRootSignature, ret);
+      }
 
       WrappedID3D12RootSignature *wrapped = (WrappedID3D12RootSignature *)ret;
 
-      wrapped->sig = D3D12DebugManager::GetRootSig(blobBytes, blobLen);
+      wrapped->sig = GetShaderCache()->GetRootSig(pBlobWithRootSignature, (size_t)blobLengthInBytes);
 
-      GetResourceManager()->AddLiveResource(Sig, ret);
+      {
+        StructuredSerialiser structuriser(ser.GetStructuredFile().chunks.back(), &GetChunkName);
+        structuriser.SetUserData(GetResourceManager());
+
+        structuriser.Serialise("UnpackedSignature"_lit, wrapped->sig);
+      }
+
+      AddResource(pRootSignature, ResourceType::ShaderBinding, "Root Signature");
     }
   }
 
@@ -560,58 +1030,116 @@ HRESULT WrappedID3D12Device::CreateRootSignature(UINT nodeMask, const void *pBlo
     return E_NOINTERFACE;
 
   ID3D12RootSignature *real = NULL;
-  HRESULT ret = m_pDevice->CreateRootSignature(nodeMask, pBlobWithRootSignature, blobLengthInBytes,
-                                               riid, (void **)&real);
+  HRESULT ret;
+  SERIALISE_TIME_CALL(ret = m_pDevice->CreateRootSignature(nodeMask, pBlobWithRootSignature,
+                                                           blobLengthInBytes, riid, (void **)&real));
 
   if(SUCCEEDED(ret))
   {
-    // duplicate signatures can be returned, if Create is called with a previous equivalent blob
-    if(GetResourceManager()->HasWrapper(real))
+    WrappedID3D12RootSignature *wrapped = NULL;
+
     {
-      real->Release();
-      ID3D12RootSignature *existing = (ID3D12RootSignature *)GetResourceManager()->GetWrapper(real);
-      existing->AddRef();
-      *ppvRootSignature = existing;
-      return ret;
+      SCOPED_LOCK(m_WrapDeduplicateLock);
+
+      // duplicate signatures can be returned, if Create is called with a previous equivalent blob
+      if(GetResourceManager()->HasWrapper(real))
+      {
+        real->Release();
+        ID3D12RootSignature *existing = (ID3D12RootSignature *)GetResourceManager()->GetWrapper(real);
+        existing->AddRef();
+        *ppvRootSignature = existing;
+        return ret;
+      }
+
+      wrapped = new WrappedID3D12RootSignature(real, this);
     }
 
-    WrappedID3D12RootSignature *wrapped = new WrappedID3D12RootSignature(real, this);
-
-    if(m_State >= WRITING)
+    if(IsCaptureMode(m_State))
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(CREATE_ROOT_SIG);
-      Serialise_CreateRootSignature(localSerialiser, nodeMask, pBlobWithRootSignature,
-                                    blobLengthInBytes, riid, (void **)&wrapped);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateRootSignature);
+      Serialise_CreateRootSignature(ser, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid,
+                                    (void **)&wrapped);
 
       D3D12ResourceRecord *record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
       record->type = Resource_RootSignature;
       record->Length = 0;
       wrapped->SetResourceRecord(record);
 
-      wrapped->sig = D3D12DebugManager::GetRootSig(pBlobWithRootSignature, blobLengthInBytes);
+      wrapped->sig = GetShaderCache()->GetRootSig(pBlobWithRootSignature, blobLengthInBytes);
+
+      bool forceRefAll = false;
+
+      // force ref-all-resources if the heap is directly indexed because we can't track resource
+      // access
+      if(wrapped->sig.Flags & (D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED |
+                               D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED))
+      {
+        forceRefAll = true;
+        RDCDEBUG("Forcing Ref All Resources due to heap-indexing root signature flags");
+      }
+      else
+      {
+        for(const D3D12RootSignatureParameter &param : wrapped->sig.Parameters)
+        {
+          if(param.ParameterType != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
+            continue;
+
+          for(UINT r = 0; r < param.DescriptorTable.NumDescriptorRanges; r++)
+          {
+            const D3D12_DESCRIPTOR_RANGE1 &range = param.DescriptorTable.pDescriptorRanges[r];
+            if(range.NumDescriptors > 100000)
+            {
+              forceRefAll = true;
+              RDCDEBUG(
+                  "Forcing Ref All Resources due to large root signature range of %u descriptors "
+                  "(space=%u, reg=%u, visibility=%s)",
+                  range.NumDescriptors, range.RegisterSpace, range.BaseShaderRegister,
+                  ToStr(param.ShaderVisibility).c_str());
+              break;
+            }
+          }
+
+          if(forceRefAll)
+            break;
+        }
+      }
+
+      if(forceRefAll)
+      {
+        CaptureOptions opts = RenderDoc::Inst().GetCaptureOptions();
+        opts.refAllResources = true;
+        RenderDoc::Inst().SetCaptureOptions(opts);
+      }
 
       record->AddChunk(scope.Get());
     }
     else
     {
-      GetResourceManager()->AddLiveResource(wrapped->GetResourceID(), wrapped);
+      wrapped->sig = GetShaderCache()->GetRootSig(pBlobWithRootSignature, blobLengthInBytes);
     }
 
     *ppvRootSignature = (ID3D12RootSignature *)wrapped;
+  }
+  else
+  {
+    CheckHRESULT(ret);
   }
 
   return ret;
 }
 
-bool WrappedID3D12Device::Serialise_DynamicDescriptorWrite(Serialiser *localSerialiser,
+template <typename SerialiserType>
+bool WrappedID3D12Device::Serialise_DynamicDescriptorWrite(SerialiserType &ser,
                                                            const DynamicDescriptorWrite *write)
 {
-  SERIALISE_ELEMENT(D3D12Descriptor, desc, write->desc);
-  SERIALISE_ELEMENT(PortableHandle, dst, ToPortableHandle(write->dest));
+  SERIALISE_ELEMENT_LOCAL(desc, write->desc).Important();
+  SERIALISE_ELEMENT_LOCAL(dst, ToPortableHandle(write->dest)).Important();
 
-  if(m_State <= EXECUTING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
     D3D12Descriptor *handle = DescriptorFromPortableHandle(GetResourceManager(), dst);
 
@@ -619,7 +1147,7 @@ bool WrappedID3D12Device::Serialise_DynamicDescriptorWrite(Serialiser *localSeri
     {
       // safe to pass an invalid heap type to Create() as these descriptors will by definition not
       // be undefined
-      RDCASSERT(desc.GetType() != D3D12Descriptor::TypeUndefined);
+      RDCASSERT(desc.GetType() != D3D12DescriptorType::Undefined);
       desc.Create(D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, this, *handle);
     }
   }
@@ -633,41 +1161,38 @@ void WrappedID3D12Device::CreateConstantBufferView(const D3D12_CONSTANT_BUFFER_V
   bool capframe = false;
 
   {
-    SCOPED_LOCK(m_CapTransitionLock);
-    capframe = (m_State == WRITING_CAPFRAME);
+    SCOPED_READLOCK(m_CapTransitionLock);
+    capframe = IsActiveCapturing(m_State);
   }
+
+  SERIALISE_TIME_CALL(m_pDevice->CreateConstantBufferView(pDesc, Unwrap(DestDescriptor)));
 
   // assume descriptors are volatile
   if(capframe)
   {
     DynamicDescriptorWrite write;
-    write.desc.samp.heap = NULL;
-    write.desc.samp.idx = 0;
     write.desc.Init(pDesc);
     write.dest = GetWrapped(DestDescriptor);
     {
       SCOPED_LOCK(m_DynDescLock);
-      m_DynamicDescriptorWrites.push_back(write);
       m_DynamicDescriptorRefs.push_back(write.desc);
     }
 
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(DYN_DESC_WRITE);
-      Serialise_DynamicDescriptorWrite(localSerialiser, &write);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateConstantBufferView);
+      Serialise_DynamicDescriptorWrite(ser, &write);
 
       m_FrameCaptureRecord->AddChunk(scope.Get());
     }
 
-    GetResourceManager()->MarkResourceFrameReferenced(
-        WrappedID3D12Resource::GetResIDFromAddr(pDesc->BufferLocation), eFrameRef_Read);
+    if(pDesc)
+      GetResourceManager()->MarkResourceFrameReferenced(
+          WrappedID3D12Resource::GetResIDFromAddr(pDesc->BufferLocation), eFrameRef_Read);
   }
-  else
-  {
-    GetWrapped(DestDescriptor)->Init(pDesc);
-  }
-  return m_pDevice->CreateConstantBufferView(pDesc, Unwrap(DestDescriptor));
+
+  GetWrapped(DestDescriptor)->Init(pDesc);
 }
 
 void WrappedID3D12Device::CreateShaderResourceView(ID3D12Resource *pResource,
@@ -677,49 +1202,45 @@ void WrappedID3D12Device::CreateShaderResourceView(ID3D12Resource *pResource,
   bool capframe = false;
 
   {
-    SCOPED_LOCK(m_CapTransitionLock);
-    capframe = (m_State == WRITING_CAPFRAME);
+    SCOPED_READLOCK(m_CapTransitionLock);
+    capframe = IsActiveCapturing(m_State);
   }
+
+  SERIALISE_TIME_CALL(
+      m_pDevice->CreateShaderResourceView(Unwrap(pResource), pDesc, Unwrap(DestDescriptor)));
 
   // assume descriptors are volatile
   if(capframe)
   {
     DynamicDescriptorWrite write;
-    write.desc.samp.heap = NULL;
-    write.desc.samp.idx = 0;
     write.desc.Init(pResource, pDesc);
     write.dest = GetWrapped(DestDescriptor);
+    if(pResource && pResource->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
     {
       SCOPED_LOCK(m_DynDescLock);
-      m_DynamicDescriptorWrites.push_back(write);
-      if(pResource && pResource->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
-        m_DynamicDescriptorRefs.push_back(write.desc);
+      m_DynamicDescriptorRefs.push_back(write.desc);
     }
 
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(DYN_DESC_WRITE);
-      Serialise_DynamicDescriptorWrite(localSerialiser, &write);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateShaderResourceView);
+      Serialise_DynamicDescriptorWrite(ser, &write);
 
       m_FrameCaptureRecord->AddChunk(scope.Get());
     }
 
     GetResourceManager()->MarkResourceFrameReferenced(GetResID(pResource), eFrameRef_Read);
   }
-  else
-  {
-    GetWrapped(DestDescriptor)->Init(pResource, pDesc);
-  }
 
-  if(m_State < WRITING && pDesc)
+  GetWrapped(DestDescriptor)->Init(pResource, pDesc);
+
+  if(IsReplayMode(m_State) && pDesc)
   {
     if(pDesc->ViewDimension == D3D12_SRV_DIMENSION_TEXTURECUBE ||
        pDesc->ViewDimension == D3D12_SRV_DIMENSION_TEXTURECUBEARRAY)
       m_Cubemaps.insert(GetResID(pResource));
   }
-
-  return m_pDevice->CreateShaderResourceView(Unwrap(pResource), pDesc, Unwrap(DestDescriptor));
 }
 
 void WrappedID3D12Device::CreateUnorderedAccessView(ID3D12Resource *pResource,
@@ -730,44 +1251,41 @@ void WrappedID3D12Device::CreateUnorderedAccessView(ID3D12Resource *pResource,
   bool capframe = false;
 
   {
-    SCOPED_LOCK(m_CapTransitionLock);
-    capframe = (m_State == WRITING_CAPFRAME);
+    SCOPED_READLOCK(m_CapTransitionLock);
+    capframe = IsActiveCapturing(m_State);
   }
+
+  SERIALISE_TIME_CALL(m_pDevice->CreateUnorderedAccessView(
+      Unwrap(pResource), Unwrap(pCounterResource), pDesc, Unwrap(DestDescriptor)));
 
   // assume descriptors are volatile
   if(capframe)
   {
     DynamicDescriptorWrite write;
-    write.desc.samp.heap = NULL;
-    write.desc.samp.idx = 0;
     write.desc.Init(pResource, pCounterResource, pDesc);
     write.dest = GetWrapped(DestDescriptor);
+    if(pResource && pResource->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
     {
       SCOPED_LOCK(m_DynDescLock);
-      m_DynamicDescriptorWrites.push_back(write);
-      if(pResource && pResource->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
-        m_DynamicDescriptorRefs.push_back(write.desc);
+      m_DynamicDescriptorRefs.push_back(write.desc);
     }
 
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(DYN_DESC_WRITE);
-      Serialise_DynamicDescriptorWrite(localSerialiser, &write);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateUnorderedAccessView);
+      Serialise_DynamicDescriptorWrite(ser, &write);
 
       m_FrameCaptureRecord->AddChunk(scope.Get());
     }
 
-    GetResourceManager()->MarkResourceFrameReferenced(GetResID(pResource), eFrameRef_Write);
+    GetResourceManager()->MarkResourceFrameReferenced(GetResID(pResource), eFrameRef_PartialWrite);
     if(pCounterResource)
-      GetResourceManager()->MarkResourceFrameReferenced(GetResID(pCounterResource), eFrameRef_Write);
+      GetResourceManager()->MarkResourceFrameReferenced(GetResID(pCounterResource),
+                                                        eFrameRef_PartialWrite);
   }
-  else
-  {
-    GetWrapped(DestDescriptor)->Init(pResource, pCounterResource, pDesc);
-  }
-  return m_pDevice->CreateUnorderedAccessView(Unwrap(pResource), Unwrap(pCounterResource), pDesc,
-                                              Unwrap(DestDescriptor));
+
+  GetWrapped(DestDescriptor)->Init(pResource, pCounterResource, pDesc);
 }
 
 void WrappedID3D12Device::CreateRenderTargetView(ID3D12Resource *pResource,
@@ -777,41 +1295,38 @@ void WrappedID3D12Device::CreateRenderTargetView(ID3D12Resource *pResource,
   bool capframe = false;
 
   {
-    SCOPED_LOCK(m_CapTransitionLock);
-    capframe = (m_State == WRITING_CAPFRAME);
+    SCOPED_READLOCK(m_CapTransitionLock);
+    capframe = IsActiveCapturing(m_State);
   }
+
+  SERIALISE_TIME_CALL(
+      m_pDevice->CreateRenderTargetView(Unwrap(pResource), pDesc, Unwrap(DestDescriptor)));
 
   // assume descriptors are volatile
   if(capframe)
   {
     DynamicDescriptorWrite write;
-    write.desc.samp.heap = NULL;
-    write.desc.samp.idx = 0;
     write.desc.Init(pResource, pDesc);
     write.dest = GetWrapped(DestDescriptor);
+    if(pResource && pResource->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
     {
       SCOPED_LOCK(m_DynDescLock);
-      m_DynamicDescriptorWrites.push_back(write);
-      if(pResource && pResource->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
-        m_DynamicDescriptorRefs.push_back(write.desc);
+      m_DynamicDescriptorRefs.push_back(write.desc);
     }
 
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(DYN_DESC_WRITE);
-      Serialise_DynamicDescriptorWrite(localSerialiser, &write);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateRenderTargetView);
+      Serialise_DynamicDescriptorWrite(ser, &write);
 
       m_FrameCaptureRecord->AddChunk(scope.Get());
     }
 
-    GetResourceManager()->MarkResourceFrameReferenced(GetResID(pResource), eFrameRef_Write);
+    GetResourceManager()->MarkResourceFrameReferenced(GetResID(pResource), eFrameRef_PartialWrite);
   }
-  else
-  {
-    GetWrapped(DestDescriptor)->Init(pResource, pDesc);
-  }
-  return m_pDevice->CreateRenderTargetView(Unwrap(pResource), pDesc, Unwrap(DestDescriptor));
+
+  GetWrapped(DestDescriptor)->Init(pResource, pDesc);
 }
 
 void WrappedID3D12Device::CreateDepthStencilView(ID3D12Resource *pResource,
@@ -821,39 +1336,33 @@ void WrappedID3D12Device::CreateDepthStencilView(ID3D12Resource *pResource,
   bool capframe = false;
 
   {
-    SCOPED_LOCK(m_CapTransitionLock);
-    capframe = (m_State == WRITING_CAPFRAME);
+    SCOPED_READLOCK(m_CapTransitionLock);
+    capframe = IsActiveCapturing(m_State);
   }
+
+  SERIALISE_TIME_CALL(
+      m_pDevice->CreateDepthStencilView(Unwrap(pResource), pDesc, Unwrap(DestDescriptor)));
 
   // assume descriptors are volatile
   if(capframe)
   {
     DynamicDescriptorWrite write;
-    write.desc.samp.heap = NULL;
-    write.desc.samp.idx = 0;
     write.desc.Init(pResource, pDesc);
     write.dest = GetWrapped(DestDescriptor);
-    {
-      SCOPED_LOCK(m_DynDescLock);
-      m_DynamicDescriptorWrites.push_back(write);
-    }
 
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(DYN_DESC_WRITE);
-      Serialise_DynamicDescriptorWrite(localSerialiser, &write);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateDepthStencilView);
+      Serialise_DynamicDescriptorWrite(ser, &write);
 
       m_FrameCaptureRecord->AddChunk(scope.Get());
     }
 
-    GetResourceManager()->MarkResourceFrameReferenced(GetResID(pResource), eFrameRef_Write);
+    GetResourceManager()->MarkResourceFrameReferenced(GetResID(pResource), eFrameRef_PartialWrite);
   }
-  else
-  {
-    GetWrapped(DestDescriptor)->Init(pResource, pDesc);
-  }
-  return m_pDevice->CreateDepthStencilView(Unwrap(pResource), pDesc, Unwrap(DestDescriptor));
+
+  GetWrapped(DestDescriptor)->Init(pResource, pDesc);
 }
 
 void WrappedID3D12Device::CreateSampler(const D3D12_SAMPLER_DESC *pDesc,
@@ -862,89 +1371,145 @@ void WrappedID3D12Device::CreateSampler(const D3D12_SAMPLER_DESC *pDesc,
   bool capframe = false;
 
   {
-    SCOPED_LOCK(m_CapTransitionLock);
-    capframe = (m_State == WRITING_CAPFRAME);
+    SCOPED_READLOCK(m_CapTransitionLock);
+    capframe = IsActiveCapturing(m_State);
   }
+
+  SERIALISE_TIME_CALL(m_pDevice->CreateSampler(pDesc, Unwrap(DestDescriptor)));
 
   // assume descriptors are volatile
   if(capframe)
   {
     DynamicDescriptorWrite write;
-    write.desc.samp.heap = NULL;
-    write.desc.samp.idx = 0;
     write.desc.Init(pDesc);
     write.dest = GetWrapped(DestDescriptor);
-    {
-      SCOPED_LOCK(m_DynDescLock);
-      m_DynamicDescriptorWrites.push_back(write);
-    }
 
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(DYN_DESC_WRITE);
-      Serialise_DynamicDescriptorWrite(localSerialiser, &write);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateSampler);
+      Serialise_DynamicDescriptorWrite(ser, &write);
 
       m_FrameCaptureRecord->AddChunk(scope.Get());
     }
   }
-  else
-  {
-    GetWrapped(DestDescriptor)->Init(pDesc);
-  }
-  return m_pDevice->CreateSampler(pDesc, Unwrap(DestDescriptor));
+
+  GetWrapped(DestDescriptor)->Init(pDesc);
 }
 
+template <typename SerialiserType>
 bool WrappedID3D12Device::Serialise_CreateCommittedResource(
-    Serialiser *localSerialiser, const D3D12_HEAP_PROPERTIES *pHeapProperties,
-    D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC *pDesc,
-    D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE *pOptimizedClearValue,
-    REFIID riidResource, void **ppvResource)
+    SerialiserType &ser, const D3D12_HEAP_PROPERTIES *pHeapProperties, D3D12_HEAP_FLAGS HeapFlags,
+    const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialResourceState,
+    const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riidResource, void **ppvResource)
 {
-  SERIALISE_ELEMENT(D3D12_HEAP_PROPERTIES, props, *pHeapProperties);
-  SERIALISE_ELEMENT(D3D12_HEAP_FLAGS, flags, HeapFlags);
-  SERIALISE_ELEMENT(D3D12_RESOURCE_DESC, desc, *pDesc);
-  SERIALISE_ELEMENT(D3D12_RESOURCE_STATES, state, InitialResourceState);
+  SERIALISE_ELEMENT_LOCAL(props, *pHeapProperties).Named("pHeapProperties"_lit);
+  SERIALISE_ELEMENT(HeapFlags);
+  SERIALISE_ELEMENT_LOCAL(desc, *pDesc).Named("pDesc"_lit).Important();
+  SERIALISE_ELEMENT(InitialResourceState);
+  SERIALISE_ELEMENT_OPT(pOptimizedClearValue);
+  SERIALISE_ELEMENT_LOCAL(guid, riidResource).Named("riidResource"_lit);
+  SERIALISE_ELEMENT_LOCAL(pResource, ((WrappedID3D12Resource *)*ppvResource)->GetResourceID())
+      .TypedAs("ID3D12Resource *"_lit);
 
-  SERIALISE_ELEMENT(bool, HasClearValue, pOptimizedClearValue != NULL);
-  SERIALISE_ELEMENT_OPT(D3D12_CLEAR_VALUE, clearVal, *pOptimizedClearValue, HasClearValue);
+  SERIALISE_ELEMENT_LOCAL(gpuAddress,
+                          ((WrappedID3D12Resource *)*ppvResource)->GetGPUVirtualAddressIfBuffer())
+      .Hidden();
 
-  SERIALISE_ELEMENT(IID, guid, riidResource);
-  SERIALISE_ELEMENT(ResourceId, Res, ((WrappedID3D12Resource *)*ppvResource)->GetResourceID());
+  SERIALISE_CHECK_READ_ERRORS();
 
-  SERIALISE_ELEMENT(uint64_t, gpuAddress,
-                    ((WrappedID3D12Resource *)*ppvResource)->GetGPUVirtualAddressIfBuffer());
-
-  if(m_State == READING)
+  if(IsReplayingAndReading())
   {
-    pOptimizedClearValue = HasClearValue ? &clearVal : NULL;
+    if(props.Type == D3D12_HEAP_TYPE_UPLOAD && desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+    {
+      // place large resources in local memory so that initial contents and maps can
+      // be cached and copied on the GPU instead of memcpy'd from the CPU every time.
+      // smaller resources it's better to just leave them as upload and map into them
+      if(desc.Width >= 1024 * 1024)
+      {
+        RDCLOG("Remapping committed resource %s from upload to default for efficient replay",
+               ToStr(pResource).c_str());
+        props.Type = D3D12_HEAP_TYPE_DEFAULT;
+        m_UploadResourceIds.insert(pResource);
+      }
+    }
+
+    APIProps.YUVTextures |= IsYUVFormat(desc.Format);
+
+    // always allow SRVs on replay so we can inspect resources
+    desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
+    // don't create resources non-resident
+    HeapFlags &= ~D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT;
 
     if(desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
     {
       GPUAddressRange range;
       range.start = gpuAddress;
       range.end = gpuAddress + desc.Width;
-      range.id = Res;
+      range.id = pResource;
 
       m_GPUAddresses.AddTo(range);
     }
 
     ID3D12Resource *ret = NULL;
-    HRESULT hr = m_pDevice->CreateCommittedResource(&props, flags, &desc, state,
+    HRESULT hr = m_pDevice->CreateCommittedResource(&props, HeapFlags, &desc, InitialResourceState,
                                                     pOptimizedClearValue, guid, (void **)&ret);
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: 0x%08x", hr);
+      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      return false;
     }
     else
     {
+      SetObjName(ret, StringFormat::Fmt("Committed Resource %s %s", ToStr(desc.Dimension).c_str(),
+                                        ToStr(pResource).c_str()));
+
       ret = new WrappedID3D12Resource(ret, this);
 
-      GetResourceManager()->AddLiveResource(Res, ret);
+      GetResourceManager()->AddLiveResource(pResource, ret);
 
       SubresourceStateVector &states = m_ResourceStates[GetResID(ret)];
-      states.resize(GetNumSubresources(m_pDevice, &desc), state);
+      states.fill(GetNumSubresources(m_pDevice, &desc), InitialResourceState);
+
+      ResourceType type = ResourceType::Texture;
+      const char *prefix = "Texture";
+
+      if(desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+      {
+        type = ResourceType::Buffer;
+        prefix = "Buffer";
+      }
+      else if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D)
+      {
+        prefix = desc.DepthOrArraySize > 1 ? "1D TextureArray" : "1D Texture";
+
+        if(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+          prefix = "1D Render Target";
+        else if(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+          prefix = "1D Depth Target";
+      }
+      else if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+      {
+        prefix = desc.DepthOrArraySize > 1 ? "2D TextureArray" : "2D Texture";
+
+        if(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+          prefix = "2D Render Target";
+        else if(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+          prefix = "2D Depth Target";
+      }
+      else if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+      {
+        prefix = "3D Texture";
+
+        if(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+          prefix = "3D Render Target";
+        else if(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+          prefix = "3D Depth Target";
+      }
+
+      AddResource(pResource, type, prefix);
     }
   }
 
@@ -962,41 +1527,61 @@ HRESULT WrappedID3D12Device::CreateCommittedResource(const D3D12_HEAP_PROPERTIES
     return m_pDevice->CreateCommittedResource(pHeapProperties, HeapFlags, pDesc, InitialResourceState,
                                               pOptimizedClearValue, riidResource, NULL);
 
-  if(riidResource != __uuidof(ID3D12Resource))
+  if(riidResource != __uuidof(ID3D12Resource) && riidResource != __uuidof(ID3D12Resource1) &&
+     riidResource != __uuidof(ID3D12Resource2))
     return E_NOINTERFACE;
 
+  const D3D12_RESOURCE_DESC *pCreateDesc = pDesc;
+  D3D12_RESOURCE_DESC localDesc;
+
+  if(pDesc && pDesc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && pDesc->SampleDesc.Count > 1)
+  {
+    localDesc = *pDesc;
+    // need to be able to create SRVs of MSAA textures to copy out their contents
+    localDesc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+    pCreateDesc = &localDesc;
+  }
+
+  void *realptr = NULL;
+  HRESULT ret;
+  SERIALISE_TIME_CALL(ret = m_pDevice->CreateCommittedResource(
+                          pHeapProperties, HeapFlags, pCreateDesc, InitialResourceState,
+                          pOptimizedClearValue, riidResource, &realptr));
+
   ID3D12Resource *real = NULL;
-  HRESULT ret =
-      m_pDevice->CreateCommittedResource(pHeapProperties, HeapFlags, pDesc, InitialResourceState,
-                                         pOptimizedClearValue, riidResource, (void **)&real);
+  if(riidResource == __uuidof(ID3D12Resource))
+    real = (ID3D12Resource *)realptr;
+  else if(riidResource == __uuidof(ID3D12Resource1))
+    real = (ID3D12Resource1 *)realptr;
+  else if(riidResource == __uuidof(ID3D12Resource2))
+    real = (ID3D12Resource2 *)realptr;
 
   if(SUCCEEDED(ret))
   {
     WrappedID3D12Resource *wrapped = new WrappedID3D12Resource(real, this);
 
-    if(m_State >= WRITING)
+    if(IsCaptureMode(m_State))
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(CREATE_COMMITTED_RESOURCE);
-      Serialise_CreateCommittedResource(localSerialiser, pHeapProperties, HeapFlags, pDesc,
-                                        InitialResourceState, pOptimizedClearValue, riidResource,
-                                        (void **)&wrapped);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateCommittedResource);
+      Serialise_CreateCommittedResource(ser, pHeapProperties, HeapFlags, pDesc, InitialResourceState,
+                                        pOptimizedClearValue, riidResource, (void **)&wrapped);
+
+      if(HeapFlags & D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT)
+        wrapped->Evict();
 
       D3D12ResourceRecord *record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
       record->type = Resource_Resource;
       record->Length = 0;
       wrapped->SetResourceRecord(record);
 
+      record->m_MapsCount = GetNumSubresources(this, pDesc);
+      record->m_Maps = new D3D12ResourceRecord::MapData[record->m_MapsCount];
+
       record->AddChunk(scope.Get());
 
-      {
-        SCOPED_LOCK(m_CapTransitionLock);
-        if(m_State != WRITING_CAPFRAME)
-          GetResourceManager()->MarkDirtyResource(wrapped->GetResourceID());
-        else
-          GetResourceManager()->MarkPendingDirty(wrapped->GetResourceID());
-      }
+      GetResourceManager()->MarkDirtyResource(wrapped->GetResourceID());
     }
     else
     {
@@ -1007,38 +1592,75 @@ HRESULT WrappedID3D12Device::CreateCommittedResource(const D3D12_HEAP_PROPERTIES
       SCOPED_LOCK(m_ResourceStatesLock);
       SubresourceStateVector &states = m_ResourceStates[wrapped->GetResourceID()];
 
-      states.resize(GetNumSubresources(m_pDevice, pDesc), InitialResourceState);
+      states.fill(GetNumSubresources(m_pDevice, pDesc), InitialResourceState);
     }
 
-    *ppvResource = (ID3D12Resource *)wrapped;
+    if(riidResource == __uuidof(ID3D12Resource))
+      *ppvResource = (ID3D12Resource *)wrapped;
+    else if(riidResource == __uuidof(ID3D12Resource1))
+      *ppvResource = (ID3D12Resource1 *)wrapped;
+    else if(riidResource == __uuidof(ID3D12Resource2))
+      *ppvResource = (ID3D12Resource2 *)wrapped;
+
+    // while actively capturing we keep all buffers around to prevent the address lookup from
+    // losing addresses we might need (or the manageable but annoying problem of an address being
+    // re-used)
+    {
+      SCOPED_READLOCK(m_CapTransitionLock);
+      if(IsActiveCapturing(m_State))
+      {
+        wrapped->AddRef();
+        m_RefBuffers.push_back(wrapped);
+      }
+    }
+  }
+  else
+  {
+    CheckHRESULT(ret);
   }
 
   return ret;
 }
 
-bool WrappedID3D12Device::Serialise_CreateHeap(Serialiser *localSerialiser,
-                                               const D3D12_HEAP_DESC *pDesc, REFIID riid,
-                                               void **ppvHeap)
+template <typename SerialiserType>
+bool WrappedID3D12Device::Serialise_CreateHeap(SerialiserType &ser, const D3D12_HEAP_DESC *pDesc,
+                                               REFIID riid, void **ppvHeap)
 {
-  SERIALISE_ELEMENT(D3D12_HEAP_DESC, desc, *pDesc);
-  SERIALISE_ELEMENT(IID, guid, riid);
-  SERIALISE_ELEMENT(ResourceId, Res, ((WrappedID3D12Heap *)*ppvHeap)->GetResourceID());
+  SERIALISE_ELEMENT_LOCAL(Descriptor, *pDesc).Named("pDesc"_lit).Important();
+  SERIALISE_ELEMENT_LOCAL(guid, riid).Named("riid"_lit);
+  SERIALISE_ELEMENT_LOCAL(pHeap, ((WrappedID3D12Heap *)*ppvHeap)->GetResourceID())
+      .TypedAs("ID3D12Heap *"_lit);
 
-  if(m_State == READING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
+    void *realptr = NULL;
+
+    // don't create resources non-resident
+    Descriptor.Flags &= ~D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT;
+
+    HRESULT hr = m_pDevice->CreateHeap(&Descriptor, guid, &realptr);
+
     ID3D12Heap *ret = NULL;
-    HRESULT hr = m_pDevice->CreateHeap(&desc, guid, (void **)&ret);
+    if(guid == __uuidof(ID3D12Heap))
+      ret = (ID3D12Heap *)realptr;
+    else if(guid == __uuidof(ID3D12Heap1))
+      ret = (ID3D12Heap1 *)realptr;
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: 0x%08x", hr);
+      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      return false;
     }
     else
     {
       ret = new WrappedID3D12Heap(ret, this);
 
-      GetResourceManager()->AddLiveResource(Res, ret);
+      GetResourceManager()->AddLiveResource(pHeap, ret);
     }
+
+    AddResource(pHeap, ResourceType::Memory, "Heap");
   }
 
   return true;
@@ -1049,22 +1671,33 @@ HRESULT WrappedID3D12Device::CreateHeap(const D3D12_HEAP_DESC *pDesc, REFIID rii
   if(ppvHeap == NULL)
     return m_pDevice->CreateHeap(pDesc, riid, ppvHeap);
 
-  if(riid != __uuidof(ID3D12Heap))
+  if(riid != __uuidof(ID3D12Heap) && riid != __uuidof(ID3D12Heap1))
     return E_NOINTERFACE;
 
+  void *realptr = NULL;
+  HRESULT ret;
+  SERIALISE_TIME_CALL(ret = m_pDevice->CreateHeap(pDesc, riid, (void **)&realptr));
+
   ID3D12Heap *real = NULL;
-  HRESULT ret = m_pDevice->CreateHeap(pDesc, riid, (void **)&real);
+
+  if(riid == __uuidof(ID3D12Heap))
+    real = (ID3D12Heap *)realptr;
+  else if(riid == __uuidof(ID3D12Heap1))
+    real = (ID3D12Heap1 *)realptr;
 
   if(SUCCEEDED(ret))
   {
     WrappedID3D12Heap *wrapped = new WrappedID3D12Heap(real, this);
 
-    if(m_State >= WRITING)
+    if(IsCaptureMode(m_State))
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(CREATE_HEAP);
-      Serialise_CreateHeap(localSerialiser, pDesc, riid, (void **)&wrapped);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateHeap);
+      Serialise_CreateHeap(ser, pDesc, riid, (void **)&wrapped);
+
+      if(pDesc->Flags & D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT)
+        wrapped->Evict();
 
       D3D12ResourceRecord *record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
       record->type = Resource_Heap;
@@ -1080,61 +1713,121 @@ HRESULT WrappedID3D12Device::CreateHeap(const D3D12_HEAP_DESC *pDesc, REFIID rii
 
     *ppvHeap = (ID3D12Heap *)wrapped;
   }
+  else
+  {
+    CheckHRESULT(ret);
+  }
 
   return ret;
 }
 
+template <typename SerialiserType>
 bool WrappedID3D12Device::Serialise_CreatePlacedResource(
-    Serialiser *localSerialiser, ID3D12Heap *pHeap, UINT64 HeapOffset,
-    const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState,
-    const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riid, void **ppvResource)
+    SerialiserType &ser, ID3D12Heap *pHeap, UINT64 HeapOffset, const D3D12_RESOURCE_DESC *pDesc,
+    D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riid,
+    void **ppvResource)
 {
-  SERIALISE_ELEMENT(ResourceId, Heap, GetResID(pHeap));
-  SERIALISE_ELEMENT(UINT64, Offset, HeapOffset);
-  SERIALISE_ELEMENT(D3D12_RESOURCE_DESC, desc, *pDesc);
-  SERIALISE_ELEMENT(D3D12_RESOURCE_STATES, state, InitialState);
+  SERIALISE_ELEMENT(pHeap).Important();
+  SERIALISE_ELEMENT(HeapOffset);
+  SERIALISE_ELEMENT_LOCAL(Descriptor, *pDesc).Named("pDesc"_lit).Important();
+  SERIALISE_ELEMENT(InitialState);
+  SERIALISE_ELEMENT_OPT(pOptimizedClearValue);
+  SERIALISE_ELEMENT_LOCAL(guid, riid).Named("riid"_lit);
+  SERIALISE_ELEMENT_LOCAL(pResource, ((WrappedID3D12Resource *)*ppvResource)->GetResourceID())
+      .TypedAs("ID3D12Resource *"_lit);
 
-  SERIALISE_ELEMENT(bool, HasClearValue, pOptimizedClearValue != NULL);
-  SERIALISE_ELEMENT_OPT(D3D12_CLEAR_VALUE, clearVal, *pOptimizedClearValue, HasClearValue);
+  SERIALISE_ELEMENT_LOCAL(gpuAddress,
+                          ((WrappedID3D12Resource *)*ppvResource)->GetGPUVirtualAddressIfBuffer())
+      .Hidden();
 
-  SERIALISE_ELEMENT(IID, guid, riid);
-  SERIALISE_ELEMENT(ResourceId, Res, ((WrappedID3D12Resource *)*ppvResource)->GetResourceID());
+  SERIALISE_CHECK_READ_ERRORS();
 
-  SERIALISE_ELEMENT(uint64_t, gpuAddress,
-                    ((WrappedID3D12Resource *)*ppvResource)->GetGPUVirtualAddress());
-
-  if(m_State == READING)
+  if(IsReplayingAndReading())
   {
-    pHeap = GetResourceManager()->GetLiveAs<ID3D12Heap>(Heap);
-    pOptimizedClearValue = HasClearValue ? &clearVal : NULL;
-
-    if(desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+    if(Descriptor.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
     {
       GPUAddressRange range;
       range.start = gpuAddress;
-      range.end = gpuAddress + desc.Width;
-      range.id = Res;
+      range.end = gpuAddress + Descriptor.Width;
+      range.id = pResource;
 
       m_GPUAddresses.AddTo(range);
     }
 
+    APIProps.YUVTextures |= IsYUVFormat(Descriptor.Format);
+
+    // always allow SRVs on replay so we can inspect resources
+    Descriptor.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
+    D3D12_HEAP_DESC heapDesc = pHeap->GetDesc();
+
+    // if the heap was from OpenExistingHeap* then we will have removed the shared flags from it as
+    // it's CPU-visible and impossible to share.
+    // That means any resources placed to it would have had this flag that we then need to remove as
+    // well.
+    if((heapDesc.Flags & D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER) == 0)
+      Descriptor.Flags &= ~D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
+
     ID3D12Resource *ret = NULL;
-    HRESULT hr = m_pDevice->CreatePlacedResource(Unwrap(pHeap), Offset, &desc, state,
+    HRESULT hr = m_pDevice->CreatePlacedResource(Unwrap(pHeap), HeapOffset, &Descriptor, InitialState,
                                                  pOptimizedClearValue, guid, (void **)&ret);
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: 0x%08x", hr);
+      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      return false;
     }
     else
     {
+      SetObjName(ret, StringFormat::Fmt("Placed Resource %s %s", ToStr(Descriptor.Dimension).c_str(),
+                                        ToStr(pResource).c_str()));
+
       ret = new WrappedID3D12Resource(ret, this);
 
-      GetResourceManager()->AddLiveResource(Res, ret);
+      GetResourceManager()->AddLiveResource(pResource, ret);
 
       SubresourceStateVector &states = m_ResourceStates[GetResID(ret)];
-      states.resize(GetNumSubresources(m_pDevice, &desc), state);
+      states.fill(GetNumSubresources(m_pDevice, &Descriptor), InitialState);
     }
+
+    ResourceType type = ResourceType::Texture;
+    const char *prefix = "Texture";
+
+    if(Descriptor.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+    {
+      type = ResourceType::Buffer;
+      prefix = "Buffer";
+    }
+    else if(Descriptor.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D)
+    {
+      prefix = Descriptor.DepthOrArraySize > 1 ? "1D TextureArray" : "1D Texture";
+
+      if(Descriptor.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+        prefix = "1D Render Target";
+      else if(Descriptor.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+        prefix = "1D Depth Target";
+    }
+    else if(Descriptor.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+    {
+      prefix = Descriptor.DepthOrArraySize > 1 ? "2D TextureArray" : "2D Texture";
+
+      if(Descriptor.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+        prefix = "2D Render Target";
+      else if(Descriptor.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+        prefix = "2D Depth Target";
+    }
+    else if(Descriptor.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+    {
+      prefix = "3D Texture";
+
+      if(Descriptor.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+        prefix = "3D Render Target";
+      else if(Descriptor.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+        prefix = "3D Depth Target";
+    }
+
+    AddResource(pResource, type, prefix);
+    DerivedResource(pHeap, pResource);
   }
 
   return true;
@@ -1150,23 +1843,39 @@ HRESULT WrappedID3D12Device::CreatePlacedResource(ID3D12Heap *pHeap, UINT64 Heap
     return m_pDevice->CreatePlacedResource(Unwrap(pHeap), HeapOffset, pDesc, InitialState,
                                            pOptimizedClearValue, riid, NULL);
 
-  if(riid != __uuidof(ID3D12Resource))
+  if(riid != __uuidof(ID3D12Resource) && riid != __uuidof(ID3D12Resource1) &&
+     riid != __uuidof(ID3D12Resource2))
     return E_NOINTERFACE;
 
+  const D3D12_RESOURCE_DESC *pCreateDesc = pDesc;
+  D3D12_RESOURCE_DESC localDesc;
+
+  if(pDesc && pDesc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && pDesc->SampleDesc.Count > 1)
+  {
+    localDesc = *pDesc;
+    // need to be able to create SRVs of MSAA textures to copy out their contents
+    localDesc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+    pCreateDesc = &localDesc;
+  }
+
   ID3D12Resource *real = NULL;
-  HRESULT ret = m_pDevice->CreatePlacedResource(Unwrap(pHeap), HeapOffset, pDesc, InitialState,
-                                                pOptimizedClearValue, riid, (void **)&real);
+  HRESULT ret;
+  SERIALISE_TIME_CALL(ret = m_pDevice->CreatePlacedResource(
+                          Unwrap(pHeap), HeapOffset, pCreateDesc, InitialState,
+                          pOptimizedClearValue, __uuidof(ID3D12Resource), (void **)&real));
 
   if(SUCCEEDED(ret))
   {
     WrappedID3D12Resource *wrapped = new WrappedID3D12Resource(real, this);
 
-    if(m_State >= WRITING)
+    wrapped->SetHeap(pHeap);
+
+    if(IsCaptureMode(m_State))
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(CREATE_PLACED_RESOURCE);
-      Serialise_CreatePlacedResource(localSerialiser, pHeap, HeapOffset, pDesc, InitialState,
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreatePlacedResource);
+      Serialise_CreatePlacedResource(ser, pHeap, HeapOffset, pDesc, InitialState,
                                      pOptimizedClearValue, riid, (void **)&wrapped);
 
       D3D12ResourceRecord *record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
@@ -1174,18 +1883,15 @@ HRESULT WrappedID3D12Device::CreatePlacedResource(ID3D12Heap *pHeap, UINT64 Heap
       record->Length = 0;
       wrapped->SetResourceRecord(record);
 
+      record->m_MapsCount = GetNumSubresources(this, pDesc);
+      record->m_Maps = new D3D12ResourceRecord::MapData[record->m_MapsCount];
+
       RDCASSERT(pHeap);
 
       record->AddParent(GetRecord(pHeap));
       record->AddChunk(scope.Get());
 
-      {
-        SCOPED_LOCK(m_CapTransitionLock);
-        if(m_State != WRITING_CAPFRAME)
-          GetResourceManager()->MarkDirtyResource(wrapped->GetResourceID());
-        else
-          GetResourceManager()->MarkPendingDirty(wrapped->GetResourceID());
-      }
+      GetResourceManager()->MarkDirtyResource(wrapped->GetResourceID());
     }
     else
     {
@@ -1196,13 +1902,138 @@ HRESULT WrappedID3D12Device::CreatePlacedResource(ID3D12Heap *pHeap, UINT64 Heap
       SCOPED_LOCK(m_ResourceStatesLock);
       SubresourceStateVector &states = m_ResourceStates[wrapped->GetResourceID()];
 
-      states.resize(GetNumSubresources(m_pDevice, pDesc), InitialState);
+      states.fill(GetNumSubresources(m_pDevice, pDesc), InitialState);
     }
 
-    *ppvResource = (ID3D12Resource *)wrapped;
+    if(riid == __uuidof(ID3D12Resource))
+      *ppvResource = (ID3D12Resource *)wrapped;
+    else if(riid == __uuidof(ID3D12Resource1))
+      *ppvResource = (ID3D12Resource1 *)wrapped;
+    else if(riid == __uuidof(ID3D12Resource2))
+      *ppvResource = (ID3D12Resource2 *)wrapped;
+
+    // while actively capturing we keep all buffers around to prevent the address lookup from
+    // losing addresses we might need (or the manageable but annoying problem of an address being
+    // re-used)
+    {
+      SCOPED_READLOCK(m_CapTransitionLock);
+      if(IsActiveCapturing(m_State))
+      {
+        wrapped->AddRef();
+        m_RefBuffers.push_back(wrapped);
+      }
+    }
+  }
+  else
+  {
+    CheckHRESULT(ret);
   }
 
   return ret;
+}
+
+template <typename SerialiserType>
+bool WrappedID3D12Device::Serialise_CreateReservedResource(
+    SerialiserType &ser, const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState,
+    const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riid, void **ppvResource)
+{
+  SERIALISE_ELEMENT_LOCAL(Descriptor, *pDesc).Named("pDesc"_lit).Important();
+  SERIALISE_ELEMENT(InitialState);
+  SERIALISE_ELEMENT_OPT(pOptimizedClearValue);
+  SERIALISE_ELEMENT_LOCAL(guid, riid).Named("riid"_lit);
+  SERIALISE_ELEMENT_LOCAL(pResource, ((WrappedID3D12Resource *)*ppvResource)->GetResourceID())
+      .TypedAs("ID3D12Resource *"_lit);
+
+  SERIALISE_ELEMENT_LOCAL(gpuAddress,
+                          ((WrappedID3D12Resource *)*ppvResource)->GetGPUVirtualAddressIfBuffer())
+      .Hidden();
+
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
+  {
+    APIProps.SparseResources = true;
+
+    if(Descriptor.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+    {
+      GPUAddressRange range;
+      range.start = gpuAddress;
+      range.end = gpuAddress + Descriptor.Width;
+      range.id = pResource;
+
+      m_GPUAddresses.AddTo(range);
+    }
+
+    APIProps.YUVTextures |= IsYUVFormat(Descriptor.Format);
+
+    // always allow SRVs on replay so we can inspect resources
+    Descriptor.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
+    ID3D12Resource *ret = NULL;
+    HRESULT hr = m_pDevice->CreateReservedResource(&Descriptor, InitialState, pOptimizedClearValue,
+                                                   guid, (void **)&ret);
+
+    if(FAILED(hr))
+    {
+      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      return false;
+    }
+    else
+    {
+      SetObjName(ret,
+                 StringFormat::Fmt("Reserved Resource %s %s", ToStr(Descriptor.Dimension).c_str(),
+                                   ToStr(pResource).c_str()));
+
+      ret = new WrappedID3D12Resource(ret, this);
+
+      GetResourceManager()->AddLiveResource(pResource, ret);
+
+      SubresourceStateVector &states = m_ResourceStates[GetResID(ret)];
+      states.fill(GetNumSubresources(m_pDevice, &Descriptor), InitialState);
+    }
+
+    m_SparseResources.insert(GetResID(ret));
+
+    ResourceType type = ResourceType::Texture;
+    const char *prefix = "Texture";
+
+    if(Descriptor.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+    {
+      type = ResourceType::Buffer;
+      prefix = "Buffer";
+    }
+    else if(Descriptor.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D)
+    {
+      prefix = Descriptor.DepthOrArraySize > 1 ? "1D TextureArray" : "1D Texture";
+
+      if(Descriptor.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+        prefix = "1D Render Target";
+      else if(Descriptor.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+        prefix = "1D Depth Target";
+    }
+    else if(Descriptor.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+    {
+      prefix = Descriptor.DepthOrArraySize > 1 ? "2D TextureArray" : "2D Texture";
+
+      if(Descriptor.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+        prefix = "2D Render Target";
+      else if(Descriptor.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+        prefix = "2D Depth Target";
+    }
+    else if(Descriptor.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+    {
+      prefix = "3D Texture";
+
+      if(Descriptor.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+        prefix = "3D Render Target";
+      else if(Descriptor.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+        prefix = "3D Depth Target";
+    }
+
+    AddResource(pResource, type, prefix);
+  }
+
+  return true;
 }
 
 HRESULT WrappedID3D12Device::CreateReservedResource(const D3D12_RESOURCE_DESC *pDesc,
@@ -1210,34 +2041,167 @@ HRESULT WrappedID3D12Device::CreateReservedResource(const D3D12_RESOURCE_DESC *p
                                                     const D3D12_CLEAR_VALUE *pOptimizedClearValue,
                                                     REFIID riid, void **ppvResource)
 {
-  D3D12NOTIMP("Tiled Resources");
-  return m_pDevice->CreateReservedResource(pDesc, InitialState, pOptimizedClearValue, riid,
-                                           ppvResource);
+  if(ppvResource == NULL)
+    return m_pDevice->CreateReservedResource(pDesc, InitialState, pOptimizedClearValue, riid, NULL);
+
+  if(riid != __uuidof(ID3D12Resource) && riid != __uuidof(ID3D12Resource1) &&
+     riid != __uuidof(ID3D12Resource2))
+    return E_NOINTERFACE;
+
+  const D3D12_RESOURCE_DESC *pCreateDesc = pDesc;
+  D3D12_RESOURCE_DESC localDesc;
+
+  if(pDesc && pDesc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && pDesc->SampleDesc.Count > 1)
+  {
+    localDesc = *pDesc;
+    // need to be able to create SRVs of MSAA textures to copy out their contents
+    localDesc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+    pCreateDesc = &localDesc;
+  }
+
+  ID3D12Resource *real = NULL;
+  HRESULT ret;
+  SERIALISE_TIME_CALL(
+      ret = m_pDevice->CreateReservedResource(pCreateDesc, InitialState, pOptimizedClearValue,
+                                              __uuidof(ID3D12Resource), (void **)&real));
+
+  if(SUCCEEDED(ret))
+  {
+    WrappedID3D12Resource *wrapped = new WrappedID3D12Resource(real, this);
+
+    if(IsCaptureMode(m_State))
+    {
+      CACHE_THREAD_SERIALISER();
+
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateReservedResource);
+      Serialise_CreateReservedResource(ser, pDesc, InitialState, pOptimizedClearValue, riid,
+                                       (void **)&wrapped);
+
+      D3D12ResourceRecord *record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
+      record->type = Resource_Resource;
+      record->Length = 0;
+      wrapped->SetResourceRecord(record);
+
+      record->m_MapsCount = GetNumSubresources(this, pDesc);
+      record->m_Maps = new D3D12ResourceRecord::MapData[record->m_MapsCount];
+
+      const UINT pageSize = 64 * 1024;
+
+      if(pDesc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+      {
+        record->sparseTable = new Sparse::PageTable;
+        record->sparseTable->Initialise(pDesc->Width, pageSize);
+      }
+      else
+      {
+        D3D12_PACKED_MIP_INFO mipTail = {};
+        D3D12_TILE_SHAPE tileShape = {};
+
+        m_pDevice->GetResourceTiling(wrapped->GetReal(), NULL, &mipTail, &tileShape, NULL, 0, NULL);
+
+        UINT texDepth = 1;
+        UINT texSlices = pDesc->DepthOrArraySize;
+        if(pDesc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+        {
+          texDepth = pDesc->DepthOrArraySize;
+          texSlices = 1;
+        }
+
+        RDCASSERT(mipTail.NumStandardMips + mipTail.NumPackedMips == pDesc->MipLevels,
+                  mipTail.NumStandardMips, mipTail.NumPackedMips, pDesc->MipLevels);
+        record->sparseTable = new Sparse::PageTable;
+        record->sparseTable->Initialise(
+            {(uint32_t)pDesc->Width, pDesc->Height, texDepth}, pDesc->MipLevels, texSlices,
+            pageSize, {tileShape.WidthInTexels, tileShape.HeightInTexels, tileShape.DepthInTexels},
+            mipTail.NumStandardMips, mipTail.StartTileIndexInOverallResource * pageSize,
+            (mipTail.StartTileIndexInOverallResource + mipTail.NumTilesForPackedMips) * pageSize,
+            mipTail.NumTilesForPackedMips * pageSize * texSlices);
+      }
+
+      {
+        SCOPED_LOCK(m_SparseLock);
+        m_SparseResources.insert(wrapped->GetResourceID());
+      }
+
+      record->AddChunk(scope.Get());
+
+      GetResourceManager()->MarkDirtyResource(wrapped->GetResourceID());
+    }
+    else
+    {
+      GetResourceManager()->AddLiveResource(wrapped->GetResourceID(), wrapped);
+    }
+
+    {
+      SCOPED_LOCK(m_ResourceStatesLock);
+      SubresourceStateVector &states = m_ResourceStates[wrapped->GetResourceID()];
+
+      states.fill(GetNumSubresources(m_pDevice, pDesc), InitialState);
+    }
+
+    if(riid == __uuidof(ID3D12Resource))
+      *ppvResource = (ID3D12Resource *)wrapped;
+    else if(riid == __uuidof(ID3D12Resource1))
+      *ppvResource = (ID3D12Resource1 *)wrapped;
+    else if(riid == __uuidof(ID3D12Resource2))
+      *ppvResource = (ID3D12Resource2 *)wrapped;
+
+    // while actively capturing we keep all buffers around to prevent the address lookup from
+    // losing addresses we might need (or the manageable but annoying problem of an address being
+    // re-used)
+    {
+      SCOPED_READLOCK(m_CapTransitionLock);
+      if(IsActiveCapturing(m_State))
+      {
+        wrapped->AddRef();
+        m_RefBuffers.push_back(wrapped);
+      }
+    }
+  }
+  else
+  {
+    CheckHRESULT(ret);
+  }
+
+  return ret;
 }
 
-bool WrappedID3D12Device::Serialise_CreateFence(Serialiser *localSerialiser, UINT64 InitialValue,
+template <typename SerialiserType>
+bool WrappedID3D12Device::Serialise_CreateFence(SerialiserType &ser, UINT64 InitialValue,
                                                 D3D12_FENCE_FLAGS Flags, REFIID riid, void **ppFence)
 {
-  SERIALISE_ELEMENT(UINT64, val, InitialValue);
-  SERIALISE_ELEMENT(D3D12_FENCE_FLAGS, flags, Flags);
-  SERIALISE_ELEMENT(IID, guid, riid);
-  SERIALISE_ELEMENT(ResourceId, Fence, ((WrappedID3D12Fence *)*ppFence)->GetResourceID());
+  SERIALISE_ELEMENT(InitialValue).Important();
+  SERIALISE_ELEMENT(Flags);
+  SERIALISE_ELEMENT_LOCAL(guid, riid).Named("riid"_lit);
+  SERIALISE_ELEMENT_LOCAL(pFence, ((WrappedID3D12Fence *)*ppFence)->GetResourceID())
+      .TypedAs("ID3D12Fence *"_lit);
 
-  if(m_State == READING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
+    void *realptr = NULL;
+    HRESULT hr = m_pDevice->CreateFence(InitialValue, Flags, guid, &realptr);
+
     ID3D12Fence *ret = NULL;
-    HRESULT hr = m_pDevice->CreateFence(val, flags, guid, (void **)&ret);
+    if(guid == __uuidof(ID3D12Fence))
+      ret = (ID3D12Fence *)realptr;
+    else if(guid == __uuidof(ID3D12Fence1))
+      ret = (ID3D12Fence1 *)realptr;
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: 0x%08x", hr);
+      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      return false;
     }
     else
     {
       ret = new WrappedID3D12Fence(ret, this);
 
-      GetResourceManager()->AddLiveResource(Fence, ret);
+      GetResourceManager()->AddLiveResource(pFence, ret);
     }
+
+    AddResource(pFence, ResourceType::Sync, "Fence");
   }
 
   return true;
@@ -1249,25 +2213,33 @@ HRESULT WrappedID3D12Device::CreateFence(UINT64 InitialValue, D3D12_FENCE_FLAGS 
   if(ppFence == NULL)
     return m_pDevice->CreateFence(InitialValue, Flags, riid, NULL);
 
-  if(riid != __uuidof(ID3D12Fence))
+  if(riid != __uuidof(ID3D12Fence) && riid != __uuidof(ID3D12Fence1))
     return E_NOINTERFACE;
 
+  void *realptr = NULL;
+  HRESULT ret;
+  SERIALISE_TIME_CALL(ret = m_pDevice->CreateFence(InitialValue, Flags, riid, &realptr));
+
   ID3D12Fence *real = NULL;
-  HRESULT ret = m_pDevice->CreateFence(InitialValue, Flags, riid, (void **)&real);
+
+  if(riid == __uuidof(ID3D12Fence))
+    real = (ID3D12Fence *)realptr;
+  else if(riid == __uuidof(ID3D12Fence1))
+    real = (ID3D12Fence1 *)realptr;
 
   if(SUCCEEDED(ret))
   {
     WrappedID3D12Fence *wrapped = new WrappedID3D12Fence(real, this);
 
-    if(m_State >= WRITING)
+    if(IsCaptureMode(m_State))
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(CREATE_FENCE);
-      Serialise_CreateFence(localSerialiser, InitialValue, Flags, riid, (void **)&wrapped);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateFence);
+      Serialise_CreateFence(ser, InitialValue, Flags, riid, (void **)&wrapped);
 
       D3D12ResourceRecord *record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
-      record->type = Resource_Resource;
+      record->type = Resource_Fence;
       record->Length = 0;
       wrapped->SetResourceRecord(record);
 
@@ -1278,35 +2250,49 @@ HRESULT WrappedID3D12Device::CreateFence(UINT64 InitialValue, D3D12_FENCE_FLAGS 
       GetResourceManager()->AddLiveResource(wrapped->GetResourceID(), wrapped);
     }
 
-    *ppFence = (ID3D12Fence *)wrapped;
+    if(riid == __uuidof(ID3D12Fence))
+      *ppFence = (ID3D12Fence *)wrapped;
+    else if(riid == __uuidof(ID3D12Fence1))
+      *ppFence = (ID3D12Fence1 *)wrapped;
+  }
+  else
+  {
+    CheckHRESULT(ret);
   }
 
   return ret;
 }
 
-bool WrappedID3D12Device::Serialise_CreateQueryHeap(Serialiser *localSerialiser,
+template <typename SerialiserType>
+bool WrappedID3D12Device::Serialise_CreateQueryHeap(SerialiserType &ser,
                                                     const D3D12_QUERY_HEAP_DESC *pDesc, REFIID riid,
                                                     void **ppvHeap)
 {
-  SERIALISE_ELEMENT(D3D12_QUERY_HEAP_DESC, desc, *pDesc);
-  SERIALISE_ELEMENT(IID, guid, riid);
-  SERIALISE_ELEMENT(ResourceId, QueryHeap, ((WrappedID3D12QueryHeap *)*ppvHeap)->GetResourceID());
+  SERIALISE_ELEMENT_LOCAL(Descriptor, *pDesc).Named("pDesc"_lit).Important();
+  SERIALISE_ELEMENT_LOCAL(guid, riid).Named("riid"_lit);
+  SERIALISE_ELEMENT_LOCAL(pQueryHeap, ((WrappedID3D12QueryHeap *)*ppvHeap)->GetResourceID())
+      .TypedAs("ID3D12QueryHeap *"_lit);
 
-  if(m_State == READING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
     ID3D12QueryHeap *ret = NULL;
-    HRESULT hr = m_pDevice->CreateQueryHeap(&desc, guid, (void **)&ret);
+    HRESULT hr = m_pDevice->CreateQueryHeap(&Descriptor, guid, (void **)&ret);
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: 0x%08x", hr);
+      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      return false;
     }
     else
     {
       ret = new WrappedID3D12QueryHeap(ret, this);
 
-      GetResourceManager()->AddLiveResource(QueryHeap, ret);
+      GetResourceManager()->AddLiveResource(pQueryHeap, ret);
     }
+
+    AddResource(pQueryHeap, ResourceType::Query, "Query Heap");
   }
 
   return true;
@@ -1322,18 +2308,19 @@ HRESULT WrappedID3D12Device::CreateQueryHeap(const D3D12_QUERY_HEAP_DESC *pDesc,
     return E_NOINTERFACE;
 
   ID3D12QueryHeap *real = NULL;
-  HRESULT ret = m_pDevice->CreateQueryHeap(pDesc, riid, (void **)&real);
+  HRESULT ret;
+  SERIALISE_TIME_CALL(ret = m_pDevice->CreateQueryHeap(pDesc, riid, (void **)&real));
 
   if(SUCCEEDED(ret))
   {
     WrappedID3D12QueryHeap *wrapped = new WrappedID3D12QueryHeap(real, this);
 
-    if(m_State >= WRITING)
+    if(IsCaptureMode(m_State))
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(CREATE_QUERY_HEAP);
-      Serialise_CreateQueryHeap(localSerialiser, pDesc, riid, (void **)&wrapped);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateQueryHeap);
+      Serialise_CreateQueryHeap(ser, pDesc, riid, (void **)&wrapped);
 
       D3D12ResourceRecord *record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
       record->type = Resource_QueryHeap;
@@ -1349,65 +2336,73 @@ HRESULT WrappedID3D12Device::CreateQueryHeap(const D3D12_QUERY_HEAP_DESC *pDesc,
 
     *ppvHeap = (ID3D12QueryHeap *)wrapped;
   }
+  else
+  {
+    CheckHRESULT(ret);
+  }
 
   return ret;
 }
 
-bool WrappedID3D12Device::Serialise_CreateCommandSignature(Serialiser *localSerialiser,
+template <typename SerialiserType>
+bool WrappedID3D12Device::Serialise_CreateCommandSignature(SerialiserType &ser,
                                                            const D3D12_COMMAND_SIGNATURE_DESC *pDesc,
                                                            ID3D12RootSignature *pRootSignature,
                                                            REFIID riid, void **ppvCommandSignature)
 {
-  SERIALISE_ELEMENT(D3D12_COMMAND_SIGNATURE_DESC, desc, *pDesc);
-  SERIALISE_ELEMENT(ResourceId, RootSig, GetResID(pRootSignature));
-  SERIALISE_ELEMENT(IID, guid, riid);
-  SERIALISE_ELEMENT(ResourceId, CommandSig,
-                    ((WrappedID3D12CommandSignature *)*ppvCommandSignature)->GetResourceID());
+  SERIALISE_ELEMENT_LOCAL(Descriptor, *pDesc).Named("pDesc"_lit).Important();
+  SERIALISE_ELEMENT(pRootSignature);
+  SERIALISE_ELEMENT_LOCAL(guid, riid).Named("riid"_lit);
+  SERIALISE_ELEMENT_LOCAL(pCommandSignature,
+                          ((WrappedID3D12CommandSignature *)*ppvCommandSignature)->GetResourceID())
+      .TypedAs("ID3D12CommandSignature *"_lit);
 
-  if(m_State == READING)
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
   {
-    pRootSignature = NULL;
-    if(RootSig != ResourceId())
-      pRootSignature = GetResourceManager()->GetLiveAs<ID3D12RootSignature>(RootSig);
-
     ID3D12CommandSignature *ret = NULL;
     HRESULT hr =
-        m_pDevice->CreateCommandSignature(&desc, Unwrap(pRootSignature), guid, (void **)&ret);
+        m_pDevice->CreateCommandSignature(&Descriptor, Unwrap(pRootSignature), guid, (void **)&ret);
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: 0x%08x", hr);
+      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      return false;
     }
     else
     {
       WrappedID3D12CommandSignature *wrapped = new WrappedID3D12CommandSignature(ret, this);
 
-      wrapped->sig.ByteStride = desc.ByteStride;
-      wrapped->sig.arguments.insert(wrapped->sig.arguments.begin(), desc.pArgumentDescs,
-                                    desc.pArgumentDescs + desc.NumArgumentDescs);
+      wrapped->sig.ByteStride = Descriptor.ByteStride;
+      wrapped->sig.arguments.assign(Descriptor.pArgumentDescs, Descriptor.NumArgumentDescs);
 
       wrapped->sig.graphics = true;
-      wrapped->sig.numDraws = 0;
+      wrapped->sig.numActions = 0;
 
       // From MSDN, command signatures are either graphics or compute so just search for dispatches:
-      // "A given command signature is either a draw or a compute command signature. If a command
+      // "A given command signature is either an action or a compute command signature. If a command
       // signature contains a drawing operation, then it is a graphics command signature. Otherwise,
       // the command signature must contain a dispatch operation, and it is a compute command
       // signature."
-      for(uint32_t i = 0; i < desc.NumArgumentDescs; i++)
+      for(uint32_t i = 0; i < Descriptor.NumArgumentDescs; i++)
       {
-        if(desc.pArgumentDescs[i].Type == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH)
+        if(Descriptor.pArgumentDescs[i].Type == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH)
           wrapped->sig.graphics = false;
 
-        if(desc.pArgumentDescs[i].Type == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH ||
-           desc.pArgumentDescs[i].Type == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW ||
-           desc.pArgumentDescs[i].Type == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED)
-          wrapped->sig.numDraws++;
+        if(Descriptor.pArgumentDescs[i].Type == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH ||
+           Descriptor.pArgumentDescs[i].Type == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW ||
+           Descriptor.pArgumentDescs[i].Type == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED)
+          wrapped->sig.numActions++;
       }
 
       ret = wrapped;
 
-      GetResourceManager()->AddLiveResource(CommandSig, ret);
+      GetResourceManager()->AddLiveResource(pCommandSignature, ret);
+
+      AddResource(pCommandSignature, ResourceType::ShaderBinding, "Command Signature");
+      if(pRootSignature)
+        DerivedResource(pRootSignature, pCommandSignature);
     }
   }
 
@@ -1425,30 +2420,36 @@ HRESULT WrappedID3D12Device::CreateCommandSignature(const D3D12_COMMAND_SIGNATUR
     return E_NOINTERFACE;
 
   ID3D12CommandSignature *real = NULL;
-  HRESULT ret =
-      m_pDevice->CreateCommandSignature(pDesc, Unwrap(pRootSignature), riid, (void **)&real);
+  HRESULT ret;
+  SERIALISE_TIME_CALL(
+      ret = m_pDevice->CreateCommandSignature(pDesc, Unwrap(pRootSignature), riid, (void **)&real));
 
   if(SUCCEEDED(ret))
   {
-    if(GetResourceManager()->HasWrapper(real))
+    WrappedID3D12CommandSignature *wrapped = NULL;
+
     {
-      real->Release();
-      ID3D12CommandSignature *existing =
-          (ID3D12CommandSignature *)GetResourceManager()->GetWrapper(real);
-      existing->AddRef();
-      *ppvCommandSignature = existing;
-      return ret;
+      SCOPED_LOCK(m_WrapDeduplicateLock);
+
+      if(GetResourceManager()->HasWrapper(real))
+      {
+        real->Release();
+        ID3D12CommandSignature *existing =
+            (ID3D12CommandSignature *)GetResourceManager()->GetWrapper(real);
+        existing->AddRef();
+        *ppvCommandSignature = existing;
+        return ret;
+      }
+
+      wrapped = new WrappedID3D12CommandSignature(real, this);
     }
 
-    WrappedID3D12CommandSignature *wrapped = new WrappedID3D12CommandSignature(real, this);
-
-    if(m_State >= WRITING)
+    if(IsCaptureMode(m_State))
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(CREATE_COMMAND_SIG);
-      Serialise_CreateCommandSignature(localSerialiser, pDesc, pRootSignature, riid,
-                                       (void **)&wrapped);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreateCommandSignature);
+      Serialise_CreateCommandSignature(ser, pDesc, pRootSignature, riid, (void **)&wrapped);
 
       D3D12ResourceRecord *record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
       record->type = Resource_CommandSignature;
@@ -1466,6 +2467,10 @@ HRESULT WrappedID3D12Device::CreateCommandSignature(const D3D12_COMMAND_SIGNATUR
 
     *ppvCommandSignature = (ID3D12CommandSignature *)wrapped;
   }
+  else
+  {
+    CheckHRESULT(ret);
+  }
 
   return ret;
 }
@@ -1474,30 +2479,22 @@ HRESULT WrappedID3D12Device::CreateSharedHandle(ID3D12DeviceChild *pObject,
                                                 const SECURITY_ATTRIBUTES *pAttributes,
                                                 DWORD Access, LPCWSTR Name, HANDLE *pHandle)
 {
-  D3D12NOTIMP("Shared Handles / API interop");
   return m_pDevice->CreateSharedHandle(Unwrap(pObject), pAttributes, Access, Name, pHandle);
 }
 
+template <typename SerialiserType>
 bool WrappedID3D12Device::Serialise_DynamicDescriptorCopies(
-    Serialiser *localSerialiser, const std::vector<DynamicDescriptorCopy> *copies)
+    SerialiserType &ser, const rdcarray<DynamicDescriptorCopy> &DescriptorCopies)
 {
-  SERIALISE_ELEMENT(uint32_t, numCopies, (uint32_t)copies->size());
+  SERIALISE_ELEMENT(DescriptorCopies);
 
-  const DynamicDescriptorCopy *descCopies = copies ? &(*copies)[0] : NULL;
+  SERIALISE_CHECK_READ_ERRORS();
 
-  // not optimal, but simple for now
-  for(uint32_t i = 0; i < numCopies; i++)
+  if(IsReplayingAndReading())
   {
-    SERIALISE_ELEMENT(PortableHandle, dst, ToPortableHandle(descCopies[i].dst));
-    SERIALISE_ELEMENT(PortableHandle, src, ToPortableHandle(descCopies[i].src));
-    SERIALISE_ELEMENT(D3D12_DESCRIPTOR_HEAP_TYPE, type, descCopies[i].type);
-
-    if(m_State <= EXECUTING)
-    {
-      // do a wrapped copy so that internal tracking is also updated
-      CopyDescriptorsSimple(1, *DescriptorFromPortableHandle(GetResourceManager(), dst),
-                            *DescriptorFromPortableHandle(GetResourceManager(), src), type);
-    }
+    // not optimal, but simple for now. Do a wrapped copy so that internal tracking is also updated
+    for(const DynamicDescriptorCopy &copy : DescriptorCopies)
+      CopyDescriptorsSimple(1, *copy.dst, *copy.src, copy.type);
   }
 
   return true;
@@ -1521,9 +2518,9 @@ void WrappedID3D12Device::CopyDescriptors(
   for(UINT i = 0; i < NumSrcDescriptorRanges; i++)
     srcStarts[i] = Unwrap(pSrcDescriptorRangeStarts[i]);
 
-  m_pDevice->CopyDescriptors(NumDestDescriptorRanges, dstStarts, pDestDescriptorRangeSizes,
-                             NumSrcDescriptorRanges, srcStarts, pSrcDescriptorRangeSizes,
-                             DescriptorHeapsType);
+  SERIALISE_TIME_CALL(m_pDevice->CopyDescriptors(
+      NumDestDescriptorRanges, dstStarts, pDestDescriptorRangeSizes, NumSrcDescriptorRanges,
+      srcStarts, pSrcDescriptorRangeSizes, DescriptorHeapsType));
 
   UINT srcRange = 0, dstRange = 0;
   UINT srcIdx = 0, dstIdx = 0;
@@ -1531,13 +2528,13 @@ void WrappedID3D12Device::CopyDescriptors(
   D3D12Descriptor *src = GetWrapped(pSrcDescriptorRangeStarts[0]);
   D3D12Descriptor *dst = GetWrapped(pDestDescriptorRangeStarts[0]);
 
-  std::vector<DynamicDescriptorCopy> copies;
+  rdcarray<DynamicDescriptorCopy> copies;
 
   bool capframe = false;
 
   {
-    SCOPED_LOCK(m_CapTransitionLock);
-    capframe = (m_State == WRITING_CAPFRAME);
+    SCOPED_READLOCK(m_CapTransitionLock);
+    capframe = IsActiveCapturing(m_State);
   }
 
   for(; srcRange < NumSrcDescriptorRanges && dstRange < NumDestDescriptorRanges;)
@@ -1551,8 +2548,8 @@ void WrappedID3D12Device::CopyDescriptors(
       // assume descriptors are volatile
       if(capframe)
         copies.push_back(DynamicDescriptorCopy(&dst[dstIdx], &src[srcIdx], DescriptorHeapsType));
-      else
-        dst[dstIdx].CopyFrom(src[srcIdx]);
+
+      dst[dstIdx].CopyFrom(src[srcIdx]);
     }
 
     srcIdx++;
@@ -1585,7 +2582,7 @@ void WrappedID3D12Device::CopyDescriptors(
     for(UINT i = 0; i < NumSrcDescriptorRanges; i++)
     {
       D3D12Descriptor *desc = GetWrapped(pSrcDescriptorRangeStarts[i]);
-      GetResourceManager()->MarkResourceFrameReferenced(GetResID(desc->samp.heap), eFrameRef_Read);
+      GetResourceManager()->MarkResourceFrameReferenced(desc->GetHeapResourceId(), eFrameRef_Read);
 
       // make sure we reference the resources in the source descriptors too
       const UINT srcSize = pSrcDescriptorRangeSizes ? pSrcDescriptorRangeSizes[i] : 1;
@@ -1607,12 +2604,11 @@ void WrappedID3D12Device::CopyDescriptors(
     for(UINT i = 0; i < NumDestDescriptorRanges; i++)
     {
       D3D12Descriptor *desc = GetWrapped(pDestDescriptorRangeStarts[i]);
-      GetResourceManager()->MarkResourceFrameReferenced(GetResID(desc->samp.heap), eFrameRef_Read);
+      GetResourceManager()->MarkResourceFrameReferenced(desc->GetHeapResourceId(), eFrameRef_Read);
     }
 
     {
       SCOPED_LOCK(m_DynDescLock);
-      m_DynamicDescriptorCopies.insert(m_DynamicDescriptorCopies.end(), copies.begin(), copies.end());
       for(size_t i = 0; i < copies.size(); i++)
         m_DynamicDescriptorRefs.push_back(*copies[i].src);
     }
@@ -1620,8 +2616,8 @@ void WrappedID3D12Device::CopyDescriptors(
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(DYN_DESC_COPIES);
-      Serialise_DynamicDescriptorCopies(localSerialiser, &copies);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CopyDescriptors);
+      Serialise_DynamicDescriptorCopies(ser, copies);
 
       m_FrameCaptureRecord->AddChunk(scope.Get());
     }
@@ -1633,8 +2629,9 @@ void WrappedID3D12Device::CopyDescriptorsSimple(UINT NumDescriptors,
                                                 D3D12_CPU_DESCRIPTOR_HANDLE SrcDescriptorRangeStart,
                                                 D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapsType)
 {
-  m_pDevice->CopyDescriptorsSimple(NumDescriptors, Unwrap(DestDescriptorRangeStart),
-                                   Unwrap(SrcDescriptorRangeStart), DescriptorHeapsType);
+  SERIALISE_TIME_CALL(
+      m_pDevice->CopyDescriptorsSimple(NumDescriptors, Unwrap(DestDescriptorRangeStart),
+                                       Unwrap(SrcDescriptorRangeStart), DescriptorHeapsType));
 
   D3D12Descriptor *src = GetWrapped(SrcDescriptorRangeStart);
   D3D12Descriptor *dst = GetWrapped(DestDescriptorRangeStart);
@@ -1642,8 +2639,8 @@ void WrappedID3D12Device::CopyDescriptorsSimple(UINT NumDescriptors,
   bool capframe = false;
 
   {
-    SCOPED_LOCK(m_CapTransitionLock);
-    capframe = (m_State == WRITING_CAPFRAME);
+    SCOPED_READLOCK(m_CapTransitionLock);
+    capframe = IsActiveCapturing(m_State);
   }
 
   if(capframe)
@@ -1651,7 +2648,7 @@ void WrappedID3D12Device::CopyDescriptorsSimple(UINT NumDescriptors,
     // reference the heaps
     {
       D3D12Descriptor *desc = GetWrapped(SrcDescriptorRangeStart);
-      GetResourceManager()->MarkResourceFrameReferenced(GetResID(desc->samp.heap), eFrameRef_Read);
+      GetResourceManager()->MarkResourceFrameReferenced(desc->GetHeapResourceId(), eFrameRef_Read);
 
       // make sure we reference the resources in the source descriptors too
       for(UINT d = 0; d < NumDescriptors; d++)
@@ -1671,17 +2668,16 @@ void WrappedID3D12Device::CopyDescriptorsSimple(UINT NumDescriptors,
 
     {
       D3D12Descriptor *desc = GetWrapped(DestDescriptorRangeStart);
-      GetResourceManager()->MarkResourceFrameReferenced(GetResID(desc->samp.heap), eFrameRef_Read);
+      GetResourceManager()->MarkResourceFrameReferenced(desc->GetHeapResourceId(), eFrameRef_Read);
     }
 
-    std::vector<DynamicDescriptorCopy> copies;
+    rdcarray<DynamicDescriptorCopy> copies;
     copies.reserve(NumDescriptors);
     for(UINT i = 0; i < NumDescriptors; i++)
       copies.push_back(DynamicDescriptorCopy(&dst[i], &src[i], DescriptorHeapsType));
 
     {
       SCOPED_LOCK(m_DynDescLock);
-      m_DynamicDescriptorCopies.insert(m_DynamicDescriptorCopies.end(), copies.begin(), copies.end());
       for(size_t i = 0; i < copies.size(); i++)
         m_DynamicDescriptorRefs.push_back(*copies[i].src);
     }
@@ -1689,28 +2685,455 @@ void WrappedID3D12Device::CopyDescriptorsSimple(UINT NumDescriptors,
     {
       CACHE_THREAD_SERIALISER();
 
-      SCOPED_SERIALISE_CONTEXT(DYN_DESC_COPIES);
-      Serialise_DynamicDescriptorCopies(localSerialiser, &copies);
+      SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CopyDescriptorsSimple);
+      Serialise_DynamicDescriptorCopies(ser, copies);
 
       m_FrameCaptureRecord->AddChunk(scope.Get());
     }
   }
+
+  for(UINT i = 0; i < NumDescriptors; i++)
+    dst[i].CopyFrom(src[i]);
+}
+
+template <typename SerialiserType>
+bool WrappedID3D12Device::Serialise_OpenSharedHandle(SerialiserType &ser, HANDLE, REFIID riid,
+                                                     void **ppvObj)
+{
+  SERIALISE_ELEMENT_LOCAL(ResourceRIID, riid).Important();
+
+  SERIALISE_CHECK_READ_ERRORS();
+
+  bool isRes = ResourceRIID == __uuidof(ID3D12Resource) ||
+               ResourceRIID == __uuidof(ID3D12Resource1) ||
+               ResourceRIID == __uuidof(ID3D12Resource2);
+  bool isFence = ResourceRIID == __uuidof(ID3D12Fence) || ResourceRIID == __uuidof(ID3D12Fence1);
+  bool isHeap = ResourceRIID == __uuidof(ID3D12Heap) || ResourceRIID == __uuidof(ID3D12Heap1);
+  if(isFence)
+  {
+    ID3D12Fence *fence = NULL;
+    if(ser.IsWriting())
+    {
+      fence = (ID3D12Fence *)(ID3D12DeviceChild *)*ppvObj;
+      if(ResourceRIID == __uuidof(ID3D12Fence1))
+        fence = (ID3D12Fence1 *)(ID3D12DeviceChild *)*ppvObj;
+    }
+
+    SERIALISE_ELEMENT_LOCAL(resourceId, GetResID(fence));
+
+    UINT64 fakeInitialValue = 0;
+    D3D12_FENCE_FLAGS fakeFlags = D3D12_FENCE_FLAG_NONE;
+
+    // maybe in future this can be determined?
+    SERIALISE_ELEMENT_LOCAL(initialValue, fakeInitialValue);
+    SERIALISE_ELEMENT_LOCAL(flags, fakeFlags);
+
+    if(IsReplayingAndReading())
+    {
+      HRESULT hr;
+      ID3D12Fence *ret;
+      hr = m_pDevice->CreateFence(initialValue, flags, __uuidof(ID3D12Fence), (void **)&ret);
+      if(FAILED(hr))
+      {
+        RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+        return false;
+      }
+      else
+      {
+        ret = new WrappedID3D12Fence(ret, this);
+
+        GetResourceManager()->AddLiveResource(resourceId, ret);
+      }
+
+      AddResource(resourceId, ResourceType::Sync, "Fence");
+    }
+  }
+  else if(isRes)
+  {
+    D3D12_RESOURCE_DESC desc;
+    D3D12_HEAP_PROPERTIES heapProperties;
+    D3D12_HEAP_FLAGS heapFlags;
+
+    ID3D12Resource *res = NULL;
+    if(ser.IsWriting())
+    {
+      res = (ID3D12Resource *)(ID3D12DeviceChild *)*ppvObj;
+      if(ResourceRIID == __uuidof(ID3D12Resource1))
+        res = (ID3D12Resource1 *)(ID3D12DeviceChild *)*ppvObj;
+      else if(ResourceRIID == __uuidof(ID3D12Resource2))
+        res = (ID3D12Resource2 *)(ID3D12DeviceChild *)*ppvObj;
+      desc = res->GetDesc();
+      res->GetHeapProperties(&heapProperties, &heapFlags);
+    }
+
+    SERIALISE_ELEMENT_LOCAL(resourceId, GetResID(res));
+    SERIALISE_ELEMENT(desc);
+    SERIALISE_ELEMENT(heapProperties);
+    SERIALISE_ELEMENT(heapFlags);
+
+    if(IsReplayingAndReading())
+    {
+      D3D12_RESOURCE_STATES InitialResourceState = D3D12_RESOURCE_STATE_COMMON;
+      const D3D12_CLEAR_VALUE *pOptimizedClearValue = NULL;
+
+      // always allow SRVs on replay so we can inspect resources
+      desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
+      // the runtime doesn't like us telling it what DENY heap flags will be set, remove them
+      heapFlags &= ~(D3D12_HEAP_FLAG_DENY_BUFFERS | D3D12_HEAP_FLAG_DENY_NON_RT_DS_TEXTURES |
+                     D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES);
+
+      // don't create resources non-resident
+      heapFlags &= ~D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT;
+
+      HRESULT hr;
+      ID3D12Resource *ret;
+      hr = m_pDevice->CreateCommittedResource(&heapProperties, heapFlags, &desc,
+                                              InitialResourceState, pOptimizedClearValue,
+                                              __uuidof(ID3D12Resource), (void **)&ret);
+      if(FAILED(hr))
+      {
+        RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+        return false;
+      }
+      else
+      {
+        SetObjName(ret, StringFormat::Fmt("Shared Resource %s %s", ToStr(desc.Dimension).c_str(),
+                                          ToStr(resourceId).c_str()));
+
+        ret = new WrappedID3D12Resource(ret, this);
+
+        GetResourceManager()->AddLiveResource(resourceId, ret);
+
+        SubresourceStateVector &states = m_ResourceStates[GetResID(ret)];
+        states.fill(GetNumSubresources(m_pDevice, &desc), InitialResourceState);
+
+        ResourceType type = ResourceType::Texture;
+        const char *prefix = "Texture";
+
+        if(desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+        {
+          type = ResourceType::Buffer;
+          prefix = "Buffer";
+        }
+        else if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D)
+        {
+          prefix = desc.DepthOrArraySize > 1 ? "1D TextureArray" : "1D Texture";
+
+          if(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+            prefix = "1D Render Target";
+          else if(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+            prefix = "1D Depth Target";
+        }
+        else if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+        {
+          prefix = desc.DepthOrArraySize > 1 ? "2D TextureArray" : "2D Texture";
+
+          if(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+            prefix = "2D Render Target";
+          else if(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+            prefix = "2D Depth Target";
+        }
+        else if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+        {
+          prefix = "3D Texture";
+
+          if(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+            prefix = "3D Render Target";
+          else if(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+            prefix = "3D Depth Target";
+        }
+
+        AddResource(resourceId, type, prefix);
+      }
+    }
+  }
+  else if(isHeap)
+  {
+    D3D12_HEAP_DESC desc;
+
+    ID3D12Heap *heap = NULL;
+    if(ser.IsWriting())
+    {
+      heap = (ID3D12Heap *)(ID3D12DeviceChild *)*ppvObj;
+      if(ResourceRIID == __uuidof(ID3D12Heap1))
+        heap = (ID3D12Heap1 *)(ID3D12DeviceChild *)*ppvObj;
+      desc = heap->GetDesc();
+    }
+
+    SERIALISE_ELEMENT_LOCAL(resourceId, GetResID(heap));
+    SERIALISE_ELEMENT(desc);
+
+    if(IsReplayingAndReading())
+    {
+      HRESULT hr;
+      ID3D12Heap *ret;
+      hr = m_pDevice->CreateHeap(&desc, __uuidof(ID3D12Heap), (void **)&ret);
+      if(FAILED(hr))
+      {
+        RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+        return false;
+      }
+      else
+      {
+        ret = new WrappedID3D12Heap(ret, this);
+
+        GetResourceManager()->AddLiveResource(resourceId, ret);
+      }
+
+      AddResource(resourceId, ResourceType::Memory, "Heap");
+    }
+  }
   else
   {
-    for(UINT i = 0; i < NumDescriptors; i++)
-      dst[i].CopyFrom(src[i]);
+    RDCERR("Unknown type of resource being shared");
   }
+
+  return true;
 }
 
 HRESULT WrappedID3D12Device::OpenSharedHandle(HANDLE NTHandle, REFIID riid, void **ppvObj)
 {
-  D3D12NOTIMP("Shared Handles / API interop");
-  return m_pDevice->OpenSharedHandle(NTHandle, riid, ppvObj);
+  if(ppvObj == NULL)
+    return E_INVALIDARG;
+
+  HRESULT hr;
+
+  SERIALISE_TIME_CALL(hr = m_pDevice->OpenSharedHandle(NTHandle, riid, ppvObj));
+
+  if(FAILED(hr))
+  {
+    IUnknown *unk = (IUnknown *)*ppvObj;
+    SAFE_RELEASE(unk);
+    return hr;
+  }
+
+  return OpenSharedHandleInternal(D3D12Chunk::Device_OpenSharedHandle, D3D12_HEAP_FLAG_NONE, riid,
+                                  ppvObj);
+}
+
+HRESULT WrappedID3D12Device::OpenSharedHandleInternal(D3D12Chunk chunkType,
+                                                      D3D12_HEAP_FLAGS HeapFlags, REFIID riid,
+                                                      void **ppvObj)
+{
+  if(IsReplayMode(m_State))
+  {
+    RDCERR("Don't support opening shared handle during replay.");
+    return E_NOTIMPL;
+  }
+
+  bool isDXGIRes = riid == __uuidof(IDXGIResource) || riid == __uuidof(IDXGIResource1);
+  bool isRes = riid == __uuidof(ID3D12Resource) || riid == __uuidof(ID3D12Resource1) ||
+               riid == __uuidof(ID3D12Resource2);
+  bool isFence = riid == __uuidof(ID3D12Fence) || riid == __uuidof(ID3D12Fence1);
+  bool isHeap = riid == __uuidof(ID3D12Heap) || riid == __uuidof(ID3D12Heap1);
+  bool isDeviceChild = riid == __uuidof(ID3D12DeviceChild);
+  bool isIUnknown = riid == __uuidof(IUnknown);
+
+  IID riid_internal = riid;
+  void *ret = *ppvObj;
+
+  if(isIUnknown)
+  {
+    // same as device child but we're even more in the dark. Hope against hope it's a
+    // ID3D12DeviceChild
+    IUnknown *real = (IUnknown *)ret;
+
+    ID3D12DeviceChild *d3d12child = NULL;
+    isDeviceChild =
+        SUCCEEDED(real->QueryInterface(__uuidof(ID3D12DeviceChild), (void **)&d3d12child)) &&
+        d3d12child;
+    SAFE_RELEASE(real);
+
+    if(isDeviceChild)
+    {
+      riid_internal = __uuidof(ID3D12DeviceChild);
+      ret = (void *)d3d12child;
+    }
+    else
+    {
+      SAFE_RELEASE(d3d12child);
+      return E_NOINTERFACE;
+    }
+  }
+
+  if(isDeviceChild)
+  {
+    // In this case we need to find out what the actual underlying type is
+    // Should be one of ID3D12Heap, ID3D12Resource, ID3D12Fence
+    ID3D12DeviceChild *real = (ID3D12DeviceChild *)ret;
+
+    ID3D12Resource *d3d12Res = NULL;
+    ID3D12Fence *d3d12Fence = NULL;
+    ID3D12Heap *d3d12Heap = NULL;
+    isRes = SUCCEEDED(real->QueryInterface(__uuidof(ID3D12Resource), (void **)&d3d12Res)) && d3d12Res;
+    isFence =
+        SUCCEEDED(real->QueryInterface(__uuidof(ID3D12Fence), (void **)&d3d12Fence)) && d3d12Fence;
+    isHeap = SUCCEEDED(real->QueryInterface(__uuidof(ID3D12Heap), (void **)&d3d12Heap)) && d3d12Heap;
+    SAFE_RELEASE(real);
+
+    if(isRes)
+    {
+      riid_internal = __uuidof(ID3D12Resource);
+      ret = (void *)d3d12Res;
+    }
+    else if(isFence)
+    {
+      riid_internal = __uuidof(ID3D12Fence);
+      ret = (void *)d3d12Fence;
+    }
+    else if(isHeap)
+    {
+      riid_internal = __uuidof(ID3D12Heap);
+      ret = (void *)d3d12Heap;
+    }
+    else
+    {
+      SAFE_RELEASE(d3d12Res);
+      SAFE_RELEASE(d3d12Fence);
+      SAFE_RELEASE(d3d12Heap);
+      return E_NOINTERFACE;
+    }
+  }
+
+  if(isDXGIRes || isRes || isFence || isHeap)
+  {
+    HRESULT hr = S_OK;
+
+    if(isDXGIRes)
+    {
+      IDXGIResource *dxgiRes = (IDXGIResource *)ret;
+      if(riid_internal == __uuidof(IDXGIResource1))
+        dxgiRes = (IDXGIResource1 *)ret;
+
+      ID3D12Resource *d3d12Res = NULL;
+      hr = dxgiRes->QueryInterface(__uuidof(ID3D12Resource), (void **)&d3d12Res);
+
+      // if we can't get a d3d11Res then we can't properly wrap this resource,
+      // whatever it is.
+      if(FAILED(hr) || d3d12Res == NULL)
+      {
+        SAFE_RELEASE(d3d12Res);
+        SAFE_RELEASE(dxgiRes);
+        return E_NOINTERFACE;
+      }
+
+      // release this interface
+      SAFE_RELEASE(dxgiRes);
+
+      // and use this one, so it'll be casted back below
+      ret = (void *)d3d12Res;
+      isRes = true;
+    }
+
+    ID3D12DeviceChild *wrappedDeviceChild = NULL;
+    D3D12ResourceRecord *record = NULL;
+
+    if(isFence)
+    {
+      ID3D12Fence *real = (ID3D12Fence *)ret;
+      if(riid_internal == __uuidof(ID3D12Fence1))
+        real = (ID3D12Fence1 *)ret;
+
+      WrappedID3D12Fence *wrapped = new WrappedID3D12Fence(real, this);
+
+      wrappedDeviceChild = wrapped;
+
+      record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
+      record->type = Resource_Fence;
+      record->Length = 0;
+      wrapped->SetResourceRecord(record);
+    }
+    else if(isRes)
+    {
+      ID3D12Resource *real = (ID3D12Resource *)ret;
+      if(riid_internal == __uuidof(ID3D12Resource1))
+        real = (ID3D12Resource1 *)ret;
+      else if(riid_internal == __uuidof(ID3D12Resource2))
+        real = (ID3D12Resource2 *)ret;
+
+      WrappedID3D12Resource *wrapped = new WrappedID3D12Resource(real, this);
+
+      if(HeapFlags & D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT)
+        wrapped->Evict();
+
+      wrappedDeviceChild = wrapped;
+
+      D3D12_RESOURCE_DESC desc = wrapped->GetDesc();
+      D3D12_RESOURCE_STATES InitialResourceState = D3D12_RESOURCE_STATE_COMMON;
+
+      record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
+      record->type = Resource_Resource;
+      record->Length = 0;
+      wrapped->SetResourceRecord(record);
+
+      record->m_MapsCount = GetNumSubresources(this, &desc);
+      record->m_Maps = new D3D12ResourceRecord::MapData[record->m_MapsCount];
+
+      GetResourceManager()->MarkDirtyResource(wrapped->GetResourceID());
+
+      {
+        SCOPED_LOCK(m_ResourceStatesLock);
+        SubresourceStateVector &states = m_ResourceStates[wrapped->GetResourceID()];
+
+        states.fill(GetNumSubresources(m_pDevice, &desc), InitialResourceState);
+      }
+
+      // while actively capturing we keep all buffers around to prevent the address lookup from
+      // losing addresses we might need (or the manageable but annoying problem of an address being
+      // re-used)
+      {
+        SCOPED_READLOCK(m_CapTransitionLock);
+        if(IsActiveCapturing(m_State))
+        {
+          wrapped->AddRef();
+          m_RefBuffers.push_back(wrapped);
+        }
+      }
+    }
+    else if(isHeap)
+    {
+      ID3D12Heap *real = (ID3D12Heap *)ret;
+      if(riid_internal == __uuidof(ID3D12Heap1))
+        real = (ID3D12Heap1 *)ret;
+
+      WrappedID3D12Heap *wrapped = new WrappedID3D12Heap(real, this);
+
+      if(HeapFlags & D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT)
+        wrapped->Evict();
+
+      wrappedDeviceChild = wrapped;
+
+      record = GetResourceManager()->AddResourceRecord(wrapped->GetResourceID());
+      record->type = Resource_Heap;
+      record->Length = 0;
+      wrapped->SetResourceRecord(record);
+    }
+
+    // use queryinterface to get the right interface into ppvObj, then release the reference
+    wrappedDeviceChild->QueryInterface(riid, ppvObj);
+    wrappedDeviceChild->Release();
+
+    CACHE_THREAD_SERIALISER();
+
+    SCOPED_SERIALISE_CHUNK(chunkType);
+    Serialise_OpenSharedHandle(ser, 0, riid_internal, (void **)&wrappedDeviceChild);
+
+    record->AddChunk(scope.Get());
+
+    return S_OK;
+  }
+
+  RDCERR("Unknown OpenSharedResourceInternal GUID: %s", ToStr(riid).c_str());
+
+  IUnknown *unk = (IUnknown *)*ppvObj;
+  SAFE_RELEASE(unk);
+
+  return E_NOINTERFACE;
 }
 
 HRESULT WrappedID3D12Device::OpenSharedHandleByName(LPCWSTR Name, DWORD Access, HANDLE *pNTHandle)
 {
-  D3D12NOTIMP("Shared Handles / API interop");
   return m_pDevice->OpenSharedHandleByName(Name, Access, pNTHandle);
 }
 
@@ -1723,31 +3146,19 @@ HRESULT WrappedID3D12Device::MakeResident(UINT NumObjects, ID3D12Pageable *const
     if(WrappedID3D12DescriptorHeap::IsAlloc(ppObjects[i]))
     {
       WrappedID3D12DescriptorHeap *heap = (WrappedID3D12DescriptorHeap *)ppObjects[i];
-      heap->SetResident(true);
+      heap->MakeResident();
       unwrapped[i] = heap->GetReal();
     }
     else if(WrappedID3D12Resource::IsAlloc(ppObjects[i]))
     {
       WrappedID3D12Resource *res = (WrappedID3D12Resource *)ppObjects[i];
-      res->SetResident(true);
+      res->MakeResident();
       unwrapped[i] = res->GetReal();
     }
     else
     {
       unwrapped[i] = (ID3D12Pageable *)Unwrap((ID3D12DeviceChild *)ppObjects[i]);
     }
-  }
-
-  bool capframe = false;
-
-  {
-    SCOPED_LOCK(m_CapTransitionLock);
-    capframe = (m_State == WRITING_CAPFRAME);
-  }
-
-  if(capframe)
-  {
-    // serialise
   }
 
   return m_pDevice->MakeResident(NumObjects, unwrapped);
@@ -1762,31 +3173,19 @@ HRESULT WrappedID3D12Device::Evict(UINT NumObjects, ID3D12Pageable *const *ppObj
     if(WrappedID3D12DescriptorHeap::IsAlloc(ppObjects[i]))
     {
       WrappedID3D12DescriptorHeap *heap = (WrappedID3D12DescriptorHeap *)ppObjects[i];
-      heap->SetResident(false);
+      heap->Evict();
       unwrapped[i] = heap->GetReal();
     }
     else if(WrappedID3D12Resource::IsAlloc(ppObjects[i]))
     {
       WrappedID3D12Resource *res = (WrappedID3D12Resource *)ppObjects[i];
-      res->SetResident(false);
+      res->Evict();
       unwrapped[i] = res->GetReal();
     }
     else
     {
       unwrapped[i] = (ID3D12Pageable *)Unwrap((ID3D12DeviceChild *)ppObjects[i]);
     }
-  }
-
-  bool capframe = false;
-
-  {
-    SCOPED_LOCK(m_CapTransitionLock);
-    capframe = (m_State == WRITING_CAPFRAME);
-  }
-
-  if(capframe)
-  {
-    // serialise
   }
 
   return m_pDevice->Evict(NumObjects, unwrapped);
@@ -1845,6 +3244,68 @@ HRESULT WrappedID3D12Device::SetStablePowerState(BOOL Enable)
 HRESULT WrappedID3D12Device::CheckFeatureSupport(D3D12_FEATURE Feature, void *pFeatureSupportData,
                                                  UINT FeatureSupportDataSize)
 {
+  if(Feature == D3D12_FEATURE_SHADER_MODEL)
+  {
+    D3D12_FEATURE_DATA_SHADER_MODEL *model = (D3D12_FEATURE_DATA_SHADER_MODEL *)pFeatureSupportData;
+    if(FeatureSupportDataSize != sizeof(D3D12_FEATURE_DATA_SHADER_MODEL))
+      return E_INVALIDARG;
+
+    // clamp SM to what we support
+    model->HighestShaderModel = RDCMIN(model->HighestShaderModel, D3D_SHADER_MODEL_6_6);
+
+    return S_OK;
+  }
+  else if(Feature == D3D12_FEATURE_PROTECTED_RESOURCE_SESSION_SUPPORT)
+  {
+    D3D12_FEATURE_DATA_PROTECTED_RESOURCE_SESSION_SUPPORT *opts =
+        (D3D12_FEATURE_DATA_PROTECTED_RESOURCE_SESSION_SUPPORT *)pFeatureSupportData;
+
+    // declare no support for protected resource sessions. We still wrap it just in case but we
+    // can't capture or replay this properly.
+    opts->Support = D3D12_PROTECTED_RESOURCE_SESSION_SUPPORT_FLAG_NONE;
+
+    return S_OK;
+  }
+  else if(Feature == D3D12_FEATURE_D3D12_OPTIONS5)
+  {
+    HRESULT hr = m_pDevice->CheckFeatureSupport(Feature, pFeatureSupportData, FeatureSupportDataSize);
+
+    if(SUCCEEDED(hr))
+    {
+      D3D12_FEATURE_DATA_D3D12_OPTIONS5 *opts =
+          (D3D12_FEATURE_DATA_D3D12_OPTIONS5 *)pFeatureSupportData;
+      if(FeatureSupportDataSize != sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS5))
+        return E_INVALIDARG;
+
+      // don't support raytracing
+      opts->RaytracingTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
+
+      return S_OK;
+    }
+
+    return hr;
+  }
+  else if(Feature == D3D12_FEATURE_D3D12_OPTIONS7)
+  {
+    HRESULT hr = m_pDevice->CheckFeatureSupport(Feature, pFeatureSupportData, FeatureSupportDataSize);
+
+    if(SUCCEEDED(hr))
+    {
+      D3D12_FEATURE_DATA_D3D12_OPTIONS7 *opts =
+          (D3D12_FEATURE_DATA_D3D12_OPTIONS7 *)pFeatureSupportData;
+      if(FeatureSupportDataSize != sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS7))
+        return E_INVALIDARG;
+
+      // don't support mesh shading or sampler feedback
+      opts->MeshShaderTier = D3D12_MESH_SHADER_TIER_NOT_SUPPORTED;
+      opts->SamplerFeedbackTier = D3D12_SAMPLER_FEEDBACK_TIER_NOT_SUPPORTED;
+
+      return S_OK;
+    }
+
+    return hr;
+  }
+
   return m_pDevice->CheckFeatureSupport(Feature, pFeatureSupportData, FeatureSupportDataSize);
 }
 
@@ -1883,53 +3344,56 @@ void WrappedID3D12Device::GetCopyableFootprints(const D3D12_RESOURCE_DESC *pReso
                                           pTotalBytes);
 }
 
-HRESULT WrappedID3D12Device::CreatePipelineLibrary(_In_reads_(BlobLength) const void *pLibraryBlob,
-                                                   SIZE_T BlobLength, REFIID riid,
-                                                   _COM_Outptr_ void **ppPipelineLibrary)
-{
-// we don't want to ever use pipeline libraries since then we can't get the
-// bytecode and pipeline config. So instead we always return that a blob is
-// non-matching and return a dummy interface that does nothing when stored.
-// This might cause the application to clear its previous cache but that's
-// not the end of the world.
-#ifndef D3D12_ERROR_DRIVER_VERSION_MISMATCH
-#define D3D12_ERROR_DRIVER_VERSION_MISMATCH _HRESULT_TYPEDEF_(0x887E0002L)
-#endif
-
-  if(BlobLength > 0)
-    return D3D12_ERROR_DRIVER_VERSION_MISMATCH;
-
-  RDCASSERT(riid == __uuidof(ID3D12PipelineLibrary));
-
-  *ppPipelineLibrary = (ID3D12PipelineLibrary *)(new WrappedID3D12PipelineLibrary(this));
-
-  return S_OK;
-}
-
-HRESULT WrappedID3D12Device::SetEventOnMultipleFenceCompletion(
-    _In_reads_(NumFences) ID3D12Fence *const *ppFences,
-    _In_reads_(NumFences) const UINT64 *pFenceValues, UINT NumFences,
-    D3D12_MULTIPLE_FENCE_WAIT_FLAGS Flags, HANDLE hEvent)
-{
-  ID3D12Fence **unwrapped = GetTempArray<ID3D12Fence *>(NumFences);
-
-  for(UINT i = 0; i < NumFences; i++)
-    unwrapped[i] = Unwrap(ppFences[i]);
-
-  return m_pDevice1->SetEventOnMultipleFenceCompletion(unwrapped, pFenceValues, NumFences, Flags,
-                                                       hEvent);
-}
-
-HRESULT WrappedID3D12Device::SetResidencyPriority(UINT NumObjects,
-                                                  _In_reads_(NumObjects)
-                                                      ID3D12Pageable *const *ppObjects,
-                                                  _In_reads_(NumObjects)
-                                                      const D3D12_RESIDENCY_PRIORITY *pPriorities)
-{
-  ID3D12Pageable **unwrapped = GetTempArray<ID3D12Pageable *>(NumObjects);
-
-  for(UINT i = 0; i < NumObjects; i++)
-    unwrapped[i] = (ID3D12Pageable *)Unwrap((ID3D12DeviceChild *)ppObjects[i]);
-
-  return m_pDevice1->SetResidencyPriority(NumObjects, unwrapped, pPriorities);
-}
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, CreateCommandQueue,
+                                const D3D12_COMMAND_QUEUE_DESC *pDesc, REFIID riid,
+                                void **ppCommandQueue);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, CreateCommandAllocator,
+                                D3D12_COMMAND_LIST_TYPE type, REFIID riid, void **ppCommandAllocator);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, CreateCommandList, UINT nodeMask,
+                                D3D12_COMMAND_LIST_TYPE type,
+                                ID3D12CommandAllocator *pCommandAllocator,
+                                ID3D12PipelineState *pInitialState, REFIID riid,
+                                void **ppCommandList);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, CreateGraphicsPipelineState,
+                                const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc, REFIID riid,
+                                void **ppPipelineState);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, CreateComputePipelineState,
+                                const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc, REFIID riid,
+                                void **ppPipelineState);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, CreateDescriptorHeap,
+                                const D3D12_DESCRIPTOR_HEAP_DESC *pDescriptorHeapDesc, REFIID riid,
+                                void **ppvHeap);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, CreateRootSignature, UINT nodeMask,
+                                const void *pBlobWithRootSignature, SIZE_T blobLengthInBytes,
+                                REFIID riid, void **ppvRootSignature);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, DynamicDescriptorWrite,
+                                const DynamicDescriptorWrite *write);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, CreateCommittedResource,
+                                const D3D12_HEAP_PROPERTIES *pHeapProperties,
+                                D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC *pDesc,
+                                D3D12_RESOURCE_STATES InitialResourceState,
+                                const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riidResource,
+                                void **ppvResource);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, CreateHeap, const D3D12_HEAP_DESC *pDesc,
+                                REFIID riid, void **ppvHeap);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, CreatePlacedResource, ID3D12Heap *pHeap,
+                                UINT64 HeapOffset, const D3D12_RESOURCE_DESC *pDesc,
+                                D3D12_RESOURCE_STATES InitialState,
+                                const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riid,
+                                void **ppvResource);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, CreateReservedResource,
+                                const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState,
+                                const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riid,
+                                void **ppvResource);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, CreateFence, UINT64 InitialValue,
+                                D3D12_FENCE_FLAGS Flags, REFIID riid, void **ppFence);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, CreateQueryHeap,
+                                const D3D12_QUERY_HEAP_DESC *pDesc, REFIID riid, void **ppvHeap);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, CreateCommandSignature,
+                                const D3D12_COMMAND_SIGNATURE_DESC *pDesc,
+                                ID3D12RootSignature *pRootSignature, REFIID riid,
+                                void **ppvCommandSignature);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, DynamicDescriptorCopies,
+                                const rdcarray<DynamicDescriptorCopy> &DescriptorCopies);
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedID3D12Device, OpenSharedHandle, HANDLE NTHandle,
+                                REFIID riid, void **ppvObj);

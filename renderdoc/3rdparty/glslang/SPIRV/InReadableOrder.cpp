@@ -1,11 +1,11 @@
 //
-//Copyright (C) 2016 Google, Inc.
+// Copyright (C) 2016 Google, Inc.
 //
-//All rights reserved.
+// All rights reserved.
 //
-//Redistribution and use in source and binary forms, with or without
-//modification, are permitted provided that the following conditions
-//are met:
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions
+// are met:
 //
 //    Redistributions of source code must retain the above copyright
 //    notice, this list of conditions and the following disclaimer.
@@ -19,18 +19,18 @@
 //    contributors may be used to endorse or promote products derived
 //    from this software without specific prior written permission.
 //
-//THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-//"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-//LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
-//FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
-//COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
-//INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
-//BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-//LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-//CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
-//LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-//ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-//POSSIBILITY OF SUCH DAMAGE.
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+// FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+// COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+// INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+// BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+// LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+// LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
 
 // The SPIR-V spec requires code blocks to appear in an order satisfying the
 // dominator-tree direction (ie, dominator before the dominated).  This is,
@@ -51,7 +51,7 @@
 #include "spvIR.h"
 
 #include <cassert>
-#include <unordered_map>
+#include <unordered_set>
 
 using spv::Block;
 using spv::Id;
@@ -61,53 +61,71 @@ namespace {
 // Use by calling visit() on the root block.
 class ReadableOrderTraverser {
 public:
-    explicit ReadableOrderTraverser(std::function<void(Block*)> callback) : callback_(callback) {}
+    ReadableOrderTraverser(std::function<void(Block*, spv::ReachReason, Block*)> callback)
+      : callback_(callback) {}
     // Visits the block if it hasn't been visited already and isn't currently
-    // being delayed.  Invokes callback(block), then descends into its
+    // being delayed.  Invokes callback(block, why, header), then descends into its
     // successors.  Delays merge-block and continue-block processing until all
-    // the branches have been completed.
-    void visit(Block* block)
+    // the branches have been completed.  If |block| is an unreachable merge block or
+    // an unreachable continue target, then |header| is the corresponding header block.
+    void visit(Block* block, spv::ReachReason why, Block* header)
     {
         assert(block);
-        if (visited_[block] || delayed_[block])
+        if (why == spv::ReachViaControlFlow) {
+            reachableViaControlFlow_.insert(block);
+        }
+        if (visited_.count(block) || delayed_.count(block))
             return;
-        callback_(block);
-        visited_[block] = true;
+        callback_(block, why, header);
+        visited_.insert(block);
         Block* mergeBlock = nullptr;
         Block* continueBlock = nullptr;
         auto mergeInst = block->getMergeInstruction();
         if (mergeInst) {
             Id mergeId = mergeInst->getIdOperand(0);
             mergeBlock = block->getParent().getParent().getInstruction(mergeId)->getBlock();
-            delayed_[mergeBlock] = true;
+            delayed_.insert(mergeBlock);
             if (mergeInst->getOpCode() == spv::OpLoopMerge) {
                 Id continueId = mergeInst->getIdOperand(1);
                 continueBlock =
                     block->getParent().getParent().getInstruction(continueId)->getBlock();
-                delayed_[continueBlock] = true;
+                delayed_.insert(continueBlock);
             }
         }
-        const auto successors = block->getSuccessors();
-        for (auto it = successors.cbegin(); it != successors.cend(); ++it)
-            visit(*it);
+        if (why == spv::ReachViaControlFlow) {
+            const auto& successors = block->getSuccessors();
+            for (auto it = successors.cbegin(); it != successors.cend(); ++it)
+                visit(*it, why, nullptr);
+        }
         if (continueBlock) {
-            delayed_[continueBlock] = false;
-            visit(continueBlock);
+            const spv::ReachReason continueWhy =
+                (reachableViaControlFlow_.count(continueBlock) > 0)
+                    ? spv::ReachViaControlFlow
+                    : spv::ReachDeadContinue;
+            delayed_.erase(continueBlock);
+            visit(continueBlock, continueWhy, block);
         }
         if (mergeBlock) {
-            delayed_[mergeBlock] = false;
-            visit(mergeBlock);
+            const spv::ReachReason mergeWhy =
+                (reachableViaControlFlow_.count(mergeBlock) > 0)
+                    ? spv::ReachViaControlFlow
+                    : spv::ReachDeadMerge;
+            delayed_.erase(mergeBlock);
+            visit(mergeBlock, mergeWhy, block);
         }
     }
 
 private:
-    std::function<void(Block*)> callback_;
+    std::function<void(Block*, spv::ReachReason, Block*)> callback_;
     // Whether a block has already been visited or is being delayed.
-    std::unordered_map<Block *, bool> visited_, delayed_;
+    std::unordered_set<Block *> visited_, delayed_;
+
+    // The set of blocks that actually are reached via control flow.
+    std::unordered_set<Block *> reachableViaControlFlow_;
 };
 }
 
-void spv::inReadableOrder(Block* root, std::function<void(Block*)> callback)
+void spv::inReadableOrder(Block* root, std::function<void(Block*, spv::ReachReason, Block*)> callback)
 {
-    ReadableOrderTraverser(callback).visit(root);
+    ReadableOrderTraverser(callback).visit(root, spv::ReachViaControlFlow, nullptr);
 }

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -66,6 +66,8 @@
 #define RDOC_LINUX OPTION_OFF
 #define RDOC_APPLE OPTION_OFF
 #define RDOC_POSIX OPTION_OFF
+#define RDOC_GGP OPTION_OFF
+#define RDOC_SWITCH OPTION_OFF
 
 #elif defined(RENDERDOC_PLATFORM_ANDROID)
 
@@ -74,6 +76,8 @@
 #define RDOC_LINUX OPTION_OFF
 #define RDOC_APPLE OPTION_OFF
 #define RDOC_POSIX OPTION_ON
+#define RDOC_GGP OPTION_OFF
+#define RDOC_SWITCH OPTION_OFF
 
 #elif defined(RENDERDOC_PLATFORM_LINUX)
 
@@ -82,6 +86,8 @@
 #define RDOC_LINUX OPTION_ON
 #define RDOC_APPLE OPTION_OFF
 #define RDOC_POSIX OPTION_ON
+#define RDOC_GGP OPTION_OFF
+#define RDOC_SWITCH OPTION_OFF
 
 #elif defined(RENDERDOC_PLATFORM_APPLE)
 
@@ -90,11 +96,40 @@
 #define RDOC_LINUX OPTION_OFF
 #define RDOC_APPLE OPTION_ON
 #define RDOC_POSIX OPTION_ON
+#define RDOC_GGP OPTION_OFF
+#define RDOC_SWITCH OPTION_OFF
+
+#elif defined(RENDERDOC_PLATFORM_GGP)
+
+#define RDOC_WIN32 OPTION_OFF
+#define RDOC_ANDROID OPTION_OFF
+#define RDOC_LINUX OPTION_OFF
+#define RDOC_APPLE OPTION_OFF
+#define RDOC_POSIX OPTION_ON
+#define RDOC_GGP OPTION_ON
+#define RDOC_SWITCH OPTION_OFF
+
+#elif defined(RENDERDOC_PLATFORM_SWITCH)
+
+#define RDOC_WIN32 OPTION_OFF
+#define RDOC_ANDROID OPTION_OFF
+#define RDOC_LINUX OPTION_OFF
+#define RDOC_APPLE OPTION_OFF
+#define RDOC_POSIX OPTION_ON
+#define RDOC_GGP OPTION_OFF
+#define RDOC_SWITCH OPTION_ON
 
 #else
 
 #error "No platform configured in build system"
 
+#endif
+
+// is size_t a real separate type, not just typedef'd to uint32_t or uint64_t (or equivalent)?
+#if defined(RENDERDOC_PLATFORM_APPLE)
+#define RDOC_SIZET_SEP_TYPE OPTION_ON
+#else
+#define RDOC_SIZET_SEP_TYPE OPTION_OFF
 #endif
 
 #if defined(RENDERDOC_WINDOWING_XLIB)
@@ -109,6 +144,12 @@
 #define RDOC_XCB OPTION_OFF
 #endif
 
+#if defined(RENDERDOC_WINDOWING_WAYLAND)
+#define RDOC_WAYLAND OPTION_ON
+#else
+#define RDOC_WAYLAND OPTION_OFF
+#endif
+
 /////////////////////////////////////////////////
 // Global constants
 enum
@@ -116,8 +157,20 @@ enum
   RenderDoc_FirstTargetControlPort = 38920,
   RenderDoc_LastTargetControlPort = RenderDoc_FirstTargetControlPort + 7,
   RenderDoc_RemoteServerPort = 39920,
-  RenderDoc_AndroidPortOffset = 50,
+
+  RenderDoc_ForwardPortBase = 38950,
+  RenderDoc_ForwardTargetControlOffset = 0,
+  RenderDoc_ForwardRemoteServerOffset = 9,
+  RenderDoc_ForwardPortStride = 10,
 };
+
+#define RENDERDOC_VULKAN_LAYER_NAME "VK_LAYER_RENDERDOC_Capture"
+#define RENDERDOC_VULKAN_LAYER_VAR "ENABLE_VULKAN_RENDERDOC_CAPTURE"
+
+#define RENDERDOC_ANDROID_LIBRARY "libVkLayer_GLES_RenderDoc.so"
+
+// This MUST match the package name in the build process that generates per-architecture packages
+#define RENDERDOC_ANDROID_PACKAGE_BASE "org.renderdoc.renderdoccmd"
 
 /////////////////////////////////////////////////
 // Debugging features configuration
@@ -155,7 +208,7 @@ enum
 
 #else
 
-#define OUTPUT_LOG_TO_STDOUT OPTION_ON
+#define OUTPUT_LOG_TO_STDOUT OPTION_OFF
 #define OUTPUT_LOG_TO_STDERR OPTION_OFF
 
 #endif
@@ -171,3 +224,15 @@ enum
 #define FORCE_DEBUG_LOGS OPTION_OFF
 // this strips them completely
 #define STRIP_DEBUG_LOGS OPTION_OFF
+
+// disable unit tests on android
+#if ENABLED(RDOC_ANDROID)
+
+#define ENABLE_UNIT_TESTS OPTION_OFF
+
+#else
+
+// otherwise, enable them in development builds
+#define ENABLE_UNIT_TESTS RDOC_DEVEL
+
+#endif

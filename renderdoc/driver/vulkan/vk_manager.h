@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,23 +24,145 @@
 
 #pragma once
 
-#include <algorithm>
-#include <utility>
 #include "core/resource_manager.h"
 #include "vk_resources.h"
 
-using std::pair;
-
 class WrappedVulkan;
 
-class VulkanResourceManager
-    : public ResourceManager<WrappedVkRes *, TypedRealHandle, VkResourceRecord>
+struct SparseBinding : public VkBindSparseInfo
+{
+  SparseBinding(WrappedVulkan *vk, VkBuffer unwrappedBuffer,
+                const rdcarray<AspectSparseTable> &tables);
+  SparseBinding(WrappedVulkan *vk, VkImage unwrappedImage, const rdcarray<AspectSparseTable> &tables);
+  SparseBinding(const SparseBinding &) = delete;
+
+  bool invalid = false;
+
+  VkSparseBufferMemoryBindInfo bufBind;
+  VkSparseImageMemoryBindInfo imgBind;
+  VkSparseImageOpaqueMemoryBindInfo imgOpaqueBind;
+
+  rdcarray<VkSparseMemoryBind> opaqueBinds;
+  rdcarray<VkSparseImageMemoryBind> imgBinds;
+};
+
+// this struct is copied around and for that reason we explicitly keep it simple and POD. The
+// lifetime of the memory allocated is controlled by the resource manager - when preparing or
+// serialising, we explicitly set the initial contents, then when the whole system is done with them
+// we free them again.
+struct VkInitialContents
+{
+  enum Tag
+  {
+    BufferCopy = 0,
+    ClearColorImage = 1,
+    ClearDepthStencilImage,
+    DescriptorSet,
+    SparseTableOnly,
+  };
+
+  VkInitialContents()
+  {
+    RDCCOMPILE_ASSERT(std::is_standard_layout<VkInitialContents>::value,
+                      "VkInitialContents must be POD");
+    memset(this, 0, sizeof(*this));
+  }
+
+  VkInitialContents(VkResourceType t, Tag tg)
+  {
+    memset(this, 0, sizeof(*this));
+    type = t;
+    tag = tg;
+  }
+
+  VkInitialContents(VkResourceType t, MemoryAllocation m)
+  {
+    memset(this, 0, sizeof(*this));
+    type = t;
+    mem = m;
+  }
+
+  void SnapshotPageTable(const ResourceInfo &resInfo)
+  {
+    SAFE_DELETE(sparseTables);
+
+    sparseTables = new rdcarray<AspectSparseTable>;
+    sparseTables->resize(resInfo.altSparseAspects.size() + 1);
+
+    sparseTables->at(0).aspectMask = resInfo.sparseAspect;
+    sparseTables->at(0).table = resInfo.sparseTable;
+
+    for(size_t a = 0; a < resInfo.altSparseAspects.size(); a++)
+      sparseTables->at(a + 1) = resInfo.altSparseAspects[a];
+  }
+
+  template <typename Configuration>
+  void Free(ResourceManager<Configuration> *rm)
+  {
+    // any of these will be NULL if unused
+    SAFE_DELETE_ARRAY(descriptorSlots);
+    SAFE_DELETE_ARRAY(descriptorWrites);
+    SAFE_DELETE_ARRAY(descriptorInfo);
+    SAFE_DELETE_ARRAY(inlineInfo);
+    FreeAlignedBuffer(inlineData);
+
+    rm->ResourceTypeRelease(GetWrapped(buf));
+    rm->ResourceTypeRelease(GetWrapped(img));
+
+    SAFE_DELETE(sparseTables);
+    SAFE_DELETE(sparseBind);
+
+    // MemoryAllocation is not free'd here
+  }
+
+  // for descriptor heaps, when capturing we save the slots, when replaying we store direct writes
+  DescriptorSetSlot *descriptorSlots;
+  VkWriteDescriptorSet *descriptorWrites;
+  VkDescriptorBufferInfo *descriptorInfo;
+  VkWriteDescriptorSetInlineUniformBlockEXT *inlineInfo;
+  byte *inlineData;
+  size_t inlineByteSize;
+  uint32_t numDescriptors;
+
+  // for plain resources, we store the resource type and memory allocation details of the contents
+  VkResourceType type;
+  VkBuffer buf;
+  VkImage img;
+  MemoryAllocation mem;
+  Tag tag;
+
+  // for sparse resources. The tables pointer is only valid on capture, it is converted to the queue
+  // sparse bind. Similar to the descriptors above
+  rdcarray<AspectSparseTable> *sparseTables;
+  SparseBinding *sparseBind;
+};
+
+struct VulkanResourceManagerConfiguration
+{
+  typedef WrappedVkRes *WrappedResourceType;
+  typedef TypedRealHandle RealResourceType;
+  typedef VkResourceRecord RecordType;
+  typedef VkInitialContents InitialContentData;
+};
+
+struct MemRefInterval
+{
+  ResourceId memory;
+  uint64_t start;
+  FrameRefType refType;
+};
+
+DECLARE_REFLECTION_STRUCT(MemRefInterval);
+
+class VulkanResourceManager : public ResourceManager<VulkanResourceManagerConfiguration>
 {
 public:
-  VulkanResourceManager(LogState s, Serialiser *ser, WrappedVulkan *core)
-      : ResourceManager(s, ser), m_Core(core)
+  VulkanResourceManager(CaptureState &state, WrappedVulkan *core)
+      : ResourceManager(state), m_Core(core)
   {
   }
+  void SetState(CaptureState state) { m_State = state; }
+  CaptureState GetState() { return m_State; }
   ~VulkanResourceManager() {}
   void ClearWithoutReleasing()
   {
@@ -48,14 +170,12 @@ public:
     // be calling Shutdown() after the device that owns them is destroyed. Instead
     // we just have to leak ourselves.
     RDCASSERT(m_LiveResourceMap.empty());
-    RDCASSERT(m_InframeResourceMap.empty());
     RDCASSERT(m_InitialContents.empty());
     RDCASSERT(m_ResourceRecords.empty());
     RDCASSERT(m_CurrentResourceMap.empty());
     RDCASSERT(m_WrapperMap.empty());
 
     m_LiveResourceMap.clear();
-    m_InframeResourceMap.clear();
     m_InitialContents.clear();
     m_ResourceRecords.clear();
     m_CurrentResourceMap.clear();
@@ -73,18 +193,19 @@ public:
   template <typename realtype>
   VkResourceRecord *AddResourceRecord(realtype &obj)
   {
-    typename UnwrapHelper<realtype>::Outer *wrapped = GetWrapped(obj);
+    using WrappedType = typename UnwrapHelper<realtype>::Outer;
+    WrappedType *wrapped = GetWrapped(obj);
     VkResourceRecord *ret = wrapped->record = ResourceManager::AddResourceRecord(wrapped->id);
 
     ret->Resource = (WrappedVkRes *)wrapped;
+    ret->resType = (VkResourceType)WrappedType::TypeEnum;
 
     return ret;
   }
 
-  // easy path for getting the unwrapped handle cast to the
-  // write type. Saves a lot of work casting to either WrappedVkNonDispRes
-  // or WrappedVkDispRes depending on the type, then ->real, then casting
-  // when this is all we want to do in most cases
+  ResourceId GetFirstIDForHandle(uint64_t handle);
+
+  // easy path for getting the wrapped handle cast to the correct type
   template <typename realtype>
   realtype GetLiveHandle(ResourceId origid)
   {
@@ -101,21 +222,39 @@ public:
 
   // handling memory & image layouts
   template <typename SrcBarrierType>
-  void RecordSingleBarrier(vector<pair<ResourceId, ImageRegionState> > &states, ResourceId id,
+  void RecordSingleBarrier(rdcarray<rdcpair<ResourceId, ImageRegionState>> &states, ResourceId id,
                            const SrcBarrierType &t, uint32_t nummips, uint32_t numslices);
 
-  void RecordBarriers(vector<pair<ResourceId, ImageRegionState> > &states,
-                      const map<ResourceId, ImageLayouts> &layouts, uint32_t numBarriers,
+  void RecordBarriers(rdcarray<rdcpair<ResourceId, ImageRegionState>> &states,
+                      const std::map<ResourceId, ImageLayouts> &layouts, uint32_t numBarriers,
                       const VkImageMemoryBarrier *barriers);
 
-  void MergeBarriers(vector<pair<ResourceId, ImageRegionState> > &dststates,
-                     vector<pair<ResourceId, ImageRegionState> > &srcstates);
+  void MergeBarriers(rdcarray<rdcpair<ResourceId, ImageRegionState>> &dststates,
+                     rdcarray<rdcpair<ResourceId, ImageRegionState>> &srcstates);
 
-  void ApplyBarriers(vector<pair<ResourceId, ImageRegionState> > &states,
-                     map<ResourceId, ImageLayouts> &layouts);
+  void ApplyBarriers(uint32_t queueFamilyIndex,
+                     rdcarray<rdcpair<ResourceId, ImageRegionState>> &states,
+                     std::map<ResourceId, ImageLayouts> &layouts);
 
-  void SerialiseImageStates(map<ResourceId, ImageLayouts> &states,
-                            vector<VkImageMemoryBarrier> &barriers);
+  void RecordBarriers(rdcflatmap<ResourceId, ImageState> &states, uint32_t queueFamilyIndex,
+                      uint32_t numBarriers, const VkImageMemoryBarrier *barriers);
+
+  // we "downcast" to VkImageMemoryBarrier since we don't care about access bits or pipeline stages,
+  // only layouts, and to date the VkImageMemoryBarrier can represent everything in
+  // VkImageMemoryBarrier2KHR. This includes new image layouts added (which should only be used if
+  // the extension is supported).
+  void RecordBarriers(rdcflatmap<ResourceId, ImageState> &states, uint32_t queueFamilyIndex,
+                      uint32_t numBarriers, const VkImageMemoryBarrier2KHR *barriers);
+
+  template <typename SerialiserType>
+  void SerialiseImageStates(SerialiserType &ser, std::map<ResourceId, LockingImageState> &states);
+
+  template <typename SerialiserType>
+  bool Serialise_DeviceMemoryRefs(SerialiserType &ser, rdcarray<MemRefInterval> &data);
+
+  bool Serialise_ImageRefs(ReadSerialiser &ser, std::map<ResourceId, LockingImageState> &states);
+
+  void InsertDeviceMemoryRefs(WriteSerialiser &ser);
 
   ResourceId GetID(WrappedVkRes *res)
   {
@@ -134,6 +273,12 @@ public:
     return (WrappedVkNonDispRes *)GetWrapper(ToTypedHandle(real));
   }
 
+  template <typename realtype>
+  WrappedVkDispRes *GetDispWrapper(realtype real)
+  {
+    return (WrappedVkDispRes *)GetWrapper(ToTypedHandle(real));
+  }
+
   template <typename parenttype, typename realtype>
   ResourceId WrapResource(parenttype parentObj, realtype &obj)
   {
@@ -143,16 +288,30 @@ public:
     typename UnwrapHelper<realtype>::Outer *wrapped =
         new typename UnwrapHelper<realtype>::Outer(obj, id);
 
-    SetTableIfDispatchable(m_State >= WRITING, parentObj, m_Core, wrapped);
+    SetTableIfDispatchable(IsCaptureMode(m_State), parentObj, m_Core, wrapped);
 
     AddCurrentResource(id, wrapped);
 
-    if(m_State < WRITING)
+    if(IsReplayMode(m_State))
       AddWrapper(wrapped, ToTypedHandle(obj));
 
     obj = realtype((uint64_t)wrapped);
 
     return id;
+  }
+
+  template <typename realtype>
+  ResourceId WrapReusedResource(VkResourceRecord *record, realtype &obj)
+  {
+    RDCASSERT(obj != VK_NULL_HANDLE);
+
+    typename UnwrapHelper<realtype>::Outer *wrapped =
+        (typename UnwrapHelper<realtype>::Outer *)record->Resource;
+    wrapped->real = ToTypedHandle(obj).real;
+
+    obj = realtype((uint64_t)wrapped);
+
+    return wrapped->id;
   }
 
   template <typename realtype>
@@ -164,7 +323,7 @@ public:
     if(origit != m_OriginalIDs.end())
       EraseLiveResource(origit->second);
 
-    if(m_State < WRITING)
+    if(IsReplayMode(m_State))
       ResourceManager::RemoveWrapper(ToTypedHandle(Unwrap(obj)));
 
     ResourceManager::ReleaseCurrentResource(id);
@@ -177,7 +336,14 @@ public:
       // either allocation or freeing happens, so we only need to
       // lock against concurrent allocs or deletes of children.
 
-      if(record && record->bakedCommands)
+      if(ToTypedHandle(obj).type == eResCommandBuffer && record->cmdInfo &&
+         record->cmdInfo->allocRecord)
+      {
+        record->cmdInfo->allocRecord->Delete(this);
+        record->cmdInfo->allocRecord = NULL;
+      }
+
+      if(record->bakedCommands)
       {
         record->bakedCommands->Delete(this);
         record->bakedCommands = NULL;
@@ -185,18 +351,10 @@ public:
 
       if(record->pool)
       {
-        // here we lock against concurrent alloc/delete
+        // here we lock against concurrent alloc/delete and remove it from our pool so we don't try
+        // and destroy it
         record->pool->LockChunks();
-        for(auto it = record->pool->pooledChildren.begin();
-            it != record->pool->pooledChildren.end(); ++it)
-        {
-          if(*it == record)
-          {
-            // remove it from our pool so we don't try and destroy it
-            record->pool->pooledChildren.erase(it);
-            break;
-          }
-        }
+        record->pool->pooledChildren.removeOne(record);
         record->pool->UnlockChunks();
       }
       else if(record->pooledChildren.size())
@@ -236,29 +394,70 @@ public:
       // ID and if the resource isn't ever referenced elsewhere, it will just be
       // a non-live ID to be ignored.
 
-      if(IsDispatchableRes(GetWrapped(obj)))
-        ((WrappedVkDispRes *)GetWrapped(obj))->id = ResourceId();
+      if(IsDispatchable(obj))
+      {
+        WrappedVkDispRes *res = (WrappedVkDispRes *)GetWrapped(obj);
+        res->id = ResourceId();
+        res->record = NULL;
+      }
       else
-        ((WrappedVkNonDispRes *)GetWrapped(obj))->id = ResourceId();
+      {
+        WrappedVkNonDispRes *res = (WrappedVkNonDispRes *)GetWrapped(obj);
+        res->id = ResourceId();
+        res->record = NULL;
+      }
     }
     delete GetWrapped(obj);
   }
 
   // helper for sparse mappings
-  void MarkSparseMapReferenced(SparseMapping *sparse);
+  void MarkSparseMapReferenced(const ResourceInfo *sparse);
+
+  void SetInternalResource(ResourceId id);
+
+  void MarkMemoryFrameReferenced(ResourceId mem, VkDeviceSize start, VkDeviceSize end,
+                                 FrameRefType refType);
+  void AddMemoryFrameRefs(ResourceId mem);
+  void AddDeviceMemory(ResourceId mem);
+  void RemoveDeviceMemory(ResourceId mem);
+
+  void MergeReferencedMemory(std::unordered_map<ResourceId, MemRefs> &memRefs);
+  void FixupStorageBufferMemory(const std::unordered_set<VkResourceRecord *> &storageBuffers);
+  void ClearReferencedMemory();
+  MemRefs *FindMemRefs(ResourceId mem);
+  ImgRefs *FindImgRefs(ResourceId img);
+
+  inline InitPolicy GetInitPolicy() { return m_InitPolicy; }
+  void SetOptimisationLevel(ReplayOptimisationLevel level)
+  {
+    switch(level)
+    {
+      case ReplayOptimisationLevel::Count:
+        RDCERR("Invalid optimisation level specified");
+        m_InitPolicy = eInitPolicy_NoOpt;
+        break;
+      case ReplayOptimisationLevel::NoOptimisation: m_InitPolicy = eInitPolicy_NoOpt; break;
+      case ReplayOptimisationLevel::Conservative: m_InitPolicy = eInitPolicy_CopyAll; break;
+      case ReplayOptimisationLevel::Balanced: m_InitPolicy = eInitPolicy_ClearUnread; break;
+      case ReplayOptimisationLevel::Fastest: m_InitPolicy = eInitPolicy_Fastest; break;
+    }
+  }
+
+  bool IsResourceTrackedForPersistency(WrappedVkRes *const &res);
 
 private:
-  bool SerialisableResource(ResourceId id, VkResourceRecord *record);
-
   bool ResourceTypeRelease(WrappedVkRes *res);
 
-  bool Force_InitialState(WrappedVkRes *res, bool prepare);
-  bool AllowDeletedResource_InitialState() { return true; }
-  bool Need_InitialStateChunk(WrappedVkRes *res);
   bool Prepare_InitialState(WrappedVkRes *res);
-  bool Serialise_InitialState(ResourceId resid, WrappedVkRes *res);
+  uint64_t GetSize_InitialState(ResourceId id, const VkInitialContents &initial);
+  bool Serialise_InitialState(WriteSerialiser &ser, ResourceId id, VkResourceRecord *record,
+                              const VkInitialContents *initial);
   void Create_InitialState(ResourceId id, WrappedVkRes *live, bool hasData);
-  void Apply_InitialState(WrappedVkRes *live, InitialContentData initial);
+  void Apply_InitialState(WrappedVkRes *live, const VkInitialContents &initial);
+  rdcarray<ResourceId> InitialContentResources();
 
   WrappedVulkan *m_Core;
+  std::unordered_map<ResourceId, MemRefs> m_MemFrameRefs;
+  std::set<ResourceId> m_DeviceMemories;
+  InitPolicy m_InitPolicy = eInitPolicy_CopyAll;
 };

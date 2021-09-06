@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,6 +24,7 @@
 
 #include <time.h>
 #include <unistd.h>
+#include "common/common.h"
 #include "os/os_specific.h"
 
 void CacheDebuggerPresent();
@@ -33,34 +34,39 @@ uint64_t Timing::GetUnixTimestamp()
   return (uint64_t)time(NULL);
 }
 
+time_t Timing::GetUTCTime()
+{
+  return time(NULL);
+}
+
 namespace Atomic
 {
-int32_t Inc32(volatile int32_t *i)
+int32_t Inc32(int32_t *i)
 {
   return __sync_add_and_fetch(i, int32_t(1));
 }
 
-int32_t Dec32(volatile int32_t *i)
+int32_t Dec32(int32_t *i)
 {
   return __sync_add_and_fetch(i, int32_t(-1));
 }
 
-int64_t Inc64(volatile int64_t *i)
+int64_t Inc64(int64_t *i)
 {
   return __sync_add_and_fetch(i, int64_t(1));
 }
 
-int64_t Dec64(volatile int64_t *i)
+int64_t Dec64(int64_t *i)
 {
   return __sync_add_and_fetch(i, int64_t(-1));
 }
 
-int64_t ExchAdd64(volatile int64_t *i, int64_t a)
+int64_t ExchAdd64(int64_t *i, int64_t a)
 {
   return __sync_add_and_fetch(i, int64_t(a));
 }
 
-int32_t CmpExch32(volatile int32_t *dest, int32_t oldVal, int32_t newVal)
+int32_t CmpExch32(int32_t *dest, int32_t oldVal, int32_t newVal)
 {
   return __sync_val_compare_and_swap(dest, oldVal, newVal);
 }
@@ -101,10 +107,59 @@ void CriticalSection::Unlock()
   pthread_mutex_unlock(&m_Data.lock);
 }
 
+template <>
+RWLock::RWLockTemplate()
+{
+  pthread_rwlockattr_init(&m_Data.attr);
+  pthread_rwlock_init(&m_Data.rwlock, &m_Data.attr);
+}
+
+template <>
+RWLock::~RWLockTemplate()
+{
+  pthread_rwlock_destroy(&m_Data.rwlock);
+  pthread_rwlockattr_destroy(&m_Data.attr);
+}
+
+template <>
+void RWLock::WriteLock()
+{
+  pthread_rwlock_wrlock(&m_Data.rwlock);
+}
+
+template <>
+bool RWLock::TryWritelock()
+{
+  return pthread_rwlock_trywrlock(&m_Data.rwlock) == 0;
+}
+
+template <>
+void RWLock::WriteUnlock()
+{
+  pthread_rwlock_unlock(&m_Data.rwlock);
+}
+
+template <>
+void RWLock::ReadLock()
+{
+  pthread_rwlock_rdlock(&m_Data.rwlock);
+}
+
+template <>
+bool RWLock::TryReadlock()
+{
+  return pthread_rwlock_tryrdlock(&m_Data.rwlock) == 0;
+}
+
+template <>
+void RWLock::ReadUnlock()
+{
+  pthread_rwlock_unlock(&m_Data.rwlock);
+}
+
 struct ThreadInitData
 {
-  ThreadEntry entryFunc;
-  void *userData;
+  std::function<void()> entryFunc;
 };
 
 static void *sThreadInit(void *init)
@@ -115,7 +170,7 @@ static void *sThreadInit(void *init)
   ThreadInitData local = *data;
   delete data;
 
-  local.entryFunc(local.userData);
+  local.entryFunc();
 
   return NULL;
 }
@@ -127,11 +182,11 @@ int64_t nextTLSSlot = 0;
 
 struct TLSData
 {
-  vector<void *> data;
+  rdcarray<void *> data;
 };
 
 static CriticalSection *m_TLSListLock = NULL;
-static vector<TLSData *> *m_TLSList = NULL;
+static rdcarray<TLSData *> *m_TLSList = NULL;
 
 void Init()
 {
@@ -140,7 +195,7 @@ void Init()
     RDCFATAL("Can't allocate OS TLS slot");
 
   m_TLSListLock = new CriticalSection();
-  m_TLSList = new vector<TLSData *>();
+  m_TLSList = new rdcarray<TLSData *>();
 
   CacheDebuggerPresent();
 }
@@ -202,13 +257,12 @@ void SetTLSValue(uint64_t slot, void *value)
   slots->data[(size_t)slot - 1] = value;
 }
 
-ThreadHandle CreateThread(ThreadEntry entryFunc, void *userData)
+ThreadHandle CreateThread(std::function<void()> entryFunc)
 {
   pthread_t thread;
 
   ThreadInitData *initData = new ThreadInitData();
   initData->entryFunc = entryFunc;
-  initData->userData = userData;
 
   int res = pthread_create(&thread, NULL, sThreadInit, (void *)initData);
   if(res != 0)
@@ -228,6 +282,10 @@ uint64_t GetCurrentID()
 void JoinThread(ThreadHandle handle)
 {
   pthread_join((pthread_t)handle, NULL);
+}
+void DetachThread(ThreadHandle handle)
+{
+  pthread_detach((pthread_t)handle);
 }
 void CloseThread(ThreadHandle handle)
 {

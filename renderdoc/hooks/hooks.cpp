@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -26,48 +26,35 @@
 #include "hooks.h"
 #include "common/common.h"
 
-LibraryHooks &LibraryHooks::GetInstance()
+static rdcarray<LibraryHook *> &LibList()
 {
-  static LibraryHooks instance;
-  return instance;
+  static rdcarray<LibraryHook *> libs;
+  return libs;
 }
 
-void LibraryHooks::RegisterHook(const char *libName, LibraryHook *hook)
+LibraryHook::LibraryHook()
 {
-  m_Hooks[libName] = hook;
+  LibList().push_back(this);
 }
 
-void LibraryHooks::CreateHooks()
+void LibraryHooks::RegisterHooks()
 {
-  HOOKS_BEGIN();
-  for(auto it = m_Hooks.begin(); it != m_Hooks.end(); ++it)
-  {
-    RDCDEBUG("Hooking %s", it->first);
+  BeginHookRegistration();
 
-    if(!it->second->CreateHooks(it->first))
-      RDCWARN("Couldn't hook into %s", it->first);
-  }
-  HOOKS_END();
+  for(LibraryHook *lib : LibList())
+    lib->RegisterHooks();
+
+  EndHookRegistration();
 }
 
-void LibraryHooks::RemoveHooks()
+void LibraryHooks::RemoveHookCallbacks()
 {
-  if(m_HooksRemoved)
-    return;
-  m_HooksRemoved = true;
-  HOOKS_REMOVE();
-}
-
-void LibraryHooks::EnableHooks(bool enable)
-{
-  RDCDEBUG("%s hooks!", enable ? "Enabling" : "Disabling");
-
-  for(auto it = m_Hooks.begin(); it != m_Hooks.end(); ++it)
-    it->second->EnableHooks(it->first, enable);
+  for(LibraryHook *lib : LibList())
+    lib->RemoveHooks();
 }
 
 void LibraryHooks::OptionsUpdated()
 {
-  for(auto it = m_Hooks.begin(); it != m_Hooks.end(); ++it)
-    it->second->OptionsUpdated(it->first);
+  for(LibraryHook *lib : LibList())
+    lib->OptionsUpdated();
 }

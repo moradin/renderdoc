@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -38,27 +38,27 @@
 //
 // A few more twiddles by hand to get everything playing nicely
 
-#define RDCASSERT_FAILMSG_1(value) failmsg += (STRINGIZE(value) "=") + ToStr::Get(value) + ", ";
-#define RDCASSERT_FAILMSG_2(value, _1)                          \
-  failmsg += (STRINGIZE(value) "=") + ToStr::Get(value) + ", "; \
+#define RDCASSERT_FAILMSG_1(value) failmsg += (STRINGIZE(value) "=") + ToStr(value) + ", ";
+#define RDCASSERT_FAILMSG_2(value, _1)                     \
+  failmsg += (STRINGIZE(value) "=") + ToStr(value) + ", "; \
   RDCASSERT_FAILMSG_1(_1)
-#define RDCASSERT_FAILMSG_3(value, _1, _2)                      \
-  failmsg += (STRINGIZE(value) "=") + ToStr::Get(value) + ", "; \
+#define RDCASSERT_FAILMSG_3(value, _1, _2)                 \
+  failmsg += (STRINGIZE(value) "=") + ToStr(value) + ", "; \
   RDCASSERT_FAILMSG_2(_1, _2)
-#define RDCASSERT_FAILMSG_4(value, _1, _2, _3)                  \
-  failmsg += (STRINGIZE(value) "=") + ToStr::Get(value) + ", "; \
+#define RDCASSERT_FAILMSG_4(value, _1, _2, _3)             \
+  failmsg += (STRINGIZE(value) "=") + ToStr(value) + ", "; \
   RDCASSERT_FAILMSG_3(_1, _2, _3)
-#define RDCASSERT_FAILMSG_5(value, _1, _2, _3, _4)              \
-  failmsg += (STRINGIZE(value) "=") + ToStr::Get(value) + ", "; \
+#define RDCASSERT_FAILMSG_5(value, _1, _2, _3, _4)         \
+  failmsg += (STRINGIZE(value) "=") + ToStr(value) + ", "; \
   RDCASSERT_FAILMSG_4(_1, _2, _3, _4)
-#define RDCASSERT_FAILMSG_6(value, _1, _2, _3, _4, _5)          \
-  failmsg += (STRINGIZE(value) "=") + ToStr::Get(value) + ", "; \
+#define RDCASSERT_FAILMSG_6(value, _1, _2, _3, _4, _5)     \
+  failmsg += (STRINGIZE(value) "=") + ToStr(value) + ", "; \
   RDCASSERT_FAILMSG_5(_1, _2, _3, _4, _5)
-#define RDCASSERT_FAILMSG_7(value, _1, _2, _3, _4, _5, _6)      \
-  failmsg += (STRINGIZE(value) "=") + ToStr::Get(value) + ", "; \
+#define RDCASSERT_FAILMSG_7(value, _1, _2, _3, _4, _5, _6) \
+  failmsg += (STRINGIZE(value) "=") + ToStr(value) + ", "; \
   RDCASSERT_FAILMSG_6(_1, _2, _3, _4, _5, _6)
-#define RDCASSERT_FAILMSG_8(value, _1, _2, _3, _4, _5, _6, _7)  \
-  failmsg += (STRINGIZE(value) "=") + ToStr::Get(value) + ", "; \
+#define RDCASSERT_FAILMSG_8(value, _1, _2, _3, _4, _5, _6, _7) \
+  failmsg += (STRINGIZE(value) "=") + ToStr(value) + ", ";     \
   RDCASSERT_FAILMSG_7(_1, _2, _3, _4, _5, _6, _7)
 
 // this is the terminating clause
@@ -105,25 +105,25 @@
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#define RDCASSERTMSG(msg, ...)                                                            \
-  do                                                                                      \
-  {                                                                                       \
-    if(!(RDCASSERT_IFCOND(__VA_ARGS__)))                                                  \
-    {                                                                                     \
-      const char custommsg[] = msg;                                                       \
-      (void)custommsg;                                                                    \
-      std::string assertmsg = "'" STRINGIZE(RDCASSERT_GETCOND(__VA_ARGS__)) "' ";         \
-      assertmsg += (sizeof(custommsg) > 1) ? msg " " : "";                                \
-      std::string failmsg;                                                                \
-      RDCASSERT_FAILMSG(__VA_ARGS__);                                                     \
-      if(!failmsg.empty())                                                                \
-      {                                                                                   \
-        failmsg.pop_back();                                                               \
-        failmsg.pop_back();                                                               \
-      }                                                                                   \
-      std::string combinedmsg = assertmsg + (failmsg.empty() ? "" : "(" + failmsg + ")"); \
-      rdcassert(combinedmsg.c_str(), __FILE__, __LINE__, __PRETTY_FUNCTION_SIGNATURE__);  \
-      rdclog_flush();                                                                     \
-      RDCBREAK();                                                                         \
-    }                                                                                     \
+#define RDCASSERTMSG(msg, ...)                                                           \
+  do                                                                                     \
+  {                                                                                      \
+    if(!(RDCASSERT_IFCOND(__VA_ARGS__)))                                                 \
+    {                                                                                    \
+      const char custommsg[] = msg;                                                      \
+      (void)custommsg;                                                                   \
+      rdcstr assertmsg = "'" STRINGIZE(RDCASSERT_GETCOND(__VA_ARGS__)) "' ";             \
+      assertmsg += (sizeof(custommsg) > 1) ? msg " " : "";                               \
+      rdcstr failmsg;                                                                    \
+      RDCASSERT_FAILMSG(__VA_ARGS__);                                                    \
+      if(!failmsg.empty())                                                               \
+      {                                                                                  \
+        failmsg.pop_back();                                                              \
+        failmsg.pop_back();                                                              \
+      }                                                                                  \
+      rdcstr combinedmsg = assertmsg + (failmsg.empty() ? "" : "(" + failmsg + ")");     \
+      rdcassert(combinedmsg.c_str(), __FILE__, __LINE__, __PRETTY_FUNCTION_SIGNATURE__); \
+      rdclog_flush();                                                                    \
+      RDCBREAK();                                                                        \
+    }                                                                                    \
   } while((void)0, 0)

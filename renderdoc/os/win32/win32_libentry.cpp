@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -29,29 +29,28 @@
 #include "common/common.h"
 #include "core/core.h"
 #include "hooks/hooks.h"
-#include "serialise/string_utils.h"
+#include "strings/string_utils.h"
 
 static BOOL add_hooks()
 {
   wchar_t curFile[512];
   GetModuleFileNameW(NULL, curFile, 512);
 
-  wstring f = strlower(wstring(curFile));
+  rdcstr f = get_basename(strlower(StringFormat::Wide2UTF8(curFile)));
 
   // bail immediately if we're in a system process. We don't want to hook, log, anything -
   // this instance is being used for a shell extension.
-  if(f.find(L"dllhost.exe") != wstring::npos || f.find(L"explorer.exe") != wstring::npos)
+  if(f == "dllhost.exe" || f == "explorer.exe")
   {
-#ifndef _RELEASE
-    OutputDebugStringA("Hosting " STRINGIZE(RDOC_DLL_FILE) ".dll in shell process\n");
+#if ENABLED(RDOC_RELEASE)
+    OutputDebugStringA(
+        "Detecting shell process! Disabling hooking in dllhost.exe or explorer.exe\n");
 #endif
     return TRUE;
   }
 
-  if(f.find(CONCAT(L, STRINGIZE(RDOC_DLL_FILE)) L"cmd.exe") != wstring::npos ||
-     f.find(CONCAT(L, STRINGIZE(RDOC_DLL_FILE)) L"ui.vshost.exe") != wstring::npos ||
-     f.find(L"q" CONCAT(L, STRINGIZE(RDOC_DLL_FILE)) L".exe") != wstring::npos ||
-     f.find(CONCAT(L, STRINGIZE(RDOC_DLL_FILE)) L"ui.exe") != wstring::npos)
+  // search for an exported symbol with this name, typically renderdoc__replay__marker
+  if(LibraryHooks::Detect(STRINGIZE(RDOC_DLL_FILE) "__replay__marker"))
   {
     RDCDEBUG("Not creating hooks - in replay app");
 
@@ -66,7 +65,7 @@ static BOOL add_hooks()
 
   RDCLOG("Loading into %ls", curFile);
 
-  LibraryHooks::GetInstance().CreateHooks();
+  LibraryHooks::RegisterHooks();
 
   return TRUE;
 }

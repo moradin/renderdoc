@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,6 +23,8 @@
  ******************************************************************************/
 
 #include "d3d11_context.h"
+#include "d3d11_device.h"
+#include "d3d11_resources.h"
 
 /////////////////////////////////
 // implement ID3D11DeviceContext3
@@ -49,4 +51,23 @@ void WrappedID3D11DeviceContext::GetHardwareProtectionState(BOOL *pHwProtectionE
     return;
 
   m_pRealContext3->GetHardwareProtectionState(pHwProtectionEnable);
+}
+
+/////////////////////////////////
+// implement ID3D11DeviceContext4
+
+HRESULT WrappedID3D11DeviceContext::Signal(ID3D11Fence *pFence, UINT64 Value)
+{
+  if(m_pRealContext4 == NULL)
+    return E_NOINTERFACE;
+
+  return m_pRealContext4->Signal(UNWRAP(WrappedID3D11Fence, pFence), Value);
+}
+
+HRESULT WrappedID3D11DeviceContext::Wait(ID3D11Fence *pFence, UINT64 Value)
+{
+  if(m_pRealContext4 == NULL)
+    return E_NOINTERFACE;
+
+  return m_pRealContext4->Wait(UNWRAP(WrappedID3D11Fence, pFence), Value);
 }

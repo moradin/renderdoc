@@ -1,11 +1,13 @@
 //
-//Copyright (C) 2013 LunarG, Inc.
+// Copyright (C) 2013 LunarG, Inc.
+// Copyright (C) 2017 ARM Limited.
+// Copyright (C) 2015-2018 Google, Inc.
 //
-//All rights reserved.
+// All rights reserved.
 //
-//Redistribution and use in source and binary forms, with or without
-//modification, are permitted provided that the following conditions
-//are met:
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions
+// are met:
 //
 //    Redistributions of source code must retain the above copyright
 //    notice, this list of conditions and the following disclaimer.
@@ -19,18 +21,18 @@
 //    contributors may be used to endorse or promote products derived
 //    from this software without specific prior written permission.
 //
-//THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-//"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-//LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
-//FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
-//COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
-//INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
-//BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-//LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-//CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
-//LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-//ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-//POSSIBILITY OF SUCH DAMAGE.
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+// FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+// COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+// INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+// BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+// LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+// LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
 //
 
 //
@@ -48,20 +50,31 @@
 #include "../Include/InfoSink.h"
 
 namespace glslang {
-    
+
 //
 // Link-time error emitter.
 //
 void TIntermediate::error(TInfoSink& infoSink, const char* message)
 {
+#ifndef GLSLANG_WEB
     infoSink.info.prefix(EPrefixError);
     infoSink.info << "Linking " << StageName(language) << " stage: " << message << "\n";
+#endif
 
     ++numErrors;
 }
 
-// TODO: 4.4 offset/align:  "Two blocks linked together in the same program with the same block 
-// name must have the exact same set of members qualified with offset and their integral-constant 
+// Link-time warning.
+void TIntermediate::warn(TInfoSink& infoSink, const char* message)
+{
+#ifndef GLSLANG_WEB
+    infoSink.info.prefix(EPrefixWarning);
+    infoSink.info << "Linking " << StageName(language) << " stage: " << message << "\n";
+#endif
+}
+
+// TODO: 4.4 offset/align:  "Two blocks linked together in the same program with the same block
+// name must have the exact same set of members qualified with offset and their integral-constant
 // expression values must be the same, or a link-time error results."
 
 //
@@ -69,56 +82,106 @@ void TIntermediate::error(TInfoSink& infoSink, const char* message)
 //
 void TIntermediate::merge(TInfoSink& infoSink, TIntermediate& unit)
 {
-    if (source == EShSourceNone)
-        source = unit.source;
+#ifndef GLSLANG_WEB
+    mergeCallGraphs(infoSink, unit);
+    mergeModes(infoSink, unit);
+    mergeTrees(infoSink, unit);
+#endif
+}
 
-    if (source != unit.source)
-        error(infoSink, "can't link compilation units from different source languages");
-
-    if (source == EShSourceHlsl && unit.getNumEntryPoints() > 0) {
+void TIntermediate::mergeCallGraphs(TInfoSink& infoSink, TIntermediate& unit)
+{
+    if (unit.getNumEntryPoints() > 0) {
         if (getNumEntryPoints() > 0)
             error(infoSink, "can't handle multiple entry points per stage");
-        else
-            entryPointName = unit.entryPointName;
+        else {
+            entryPointName = unit.getEntryPointName();
+            entryPointMangledName = unit.getEntryPointMangledName();
+        }
     }
-    numEntryPoints += unit.numEntryPoints;
-    numErrors += unit.numErrors;
-    numPushConstants += unit.numPushConstants;
+    numEntryPoints += unit.getNumEntryPoints();
+
     callGraph.insert(callGraph.end(), unit.callGraph.begin(), unit.callGraph.end());
+}
 
-    if (originUpperLeft != unit.originUpperLeft || pixelCenterInteger != unit.pixelCenterInteger)
-        error(infoSink, "gl_FragCoord redeclarations must match across shaders\n");
+#ifndef GLSLANG_WEB
 
-    if (! earlyFragmentTests)
-        earlyFragmentTests = unit.earlyFragmentTests;
+#define MERGE_MAX(member) member = std::max(member, unit.member)
+#define MERGE_TRUE(member) if (unit.member) member = unit.member;
 
-    if (depthLayout == EldNone)
-        depthLayout = unit.depthLayout;
-    else if (depthLayout != unit.depthLayout)
-        error(infoSink, "Contradictory depth layouts");
+void TIntermediate::mergeModes(TInfoSink& infoSink, TIntermediate& unit)
+{
+    if (language != unit.language)
+        error(infoSink, "stages must match when linking into a single stage");
 
-    blendEquations |= unit.blendEquations;
+    if (getSource() == EShSourceNone)
+        setSource(unit.getSource());
+    if (getSource() != unit.getSource())
+        error(infoSink, "can't link compilation units from different source languages");
 
-    if (inputPrimitive == ElgNone)
-        inputPrimitive = unit.inputPrimitive;
-    else if (inputPrimitive != unit.inputPrimitive)
-        error(infoSink, "Contradictory input layout primitives");
-    
-    if (outputPrimitive == ElgNone)
-        outputPrimitive = unit.outputPrimitive;
-    else if (outputPrimitive != unit.outputPrimitive)
-        error(infoSink, "Contradictory output layout primitives");
-    
+    if (treeRoot == nullptr) {
+        profile = unit.profile;
+        version = unit.version;
+        requestedExtensions = unit.requestedExtensions;
+    } else {
+        if ((isEsProfile()) != (unit.isEsProfile()))
+            error(infoSink, "Cannot cross link ES and desktop profiles");
+        else if (unit.profile == ECompatibilityProfile)
+            profile = ECompatibilityProfile;
+        version = std::max(version, unit.version);
+        requestedExtensions.insert(unit.requestedExtensions.begin(), unit.requestedExtensions.end());
+    }
+
+    MERGE_MAX(spvVersion.spv);
+    MERGE_MAX(spvVersion.vulkanGlsl);
+    MERGE_MAX(spvVersion.vulkan);
+    MERGE_MAX(spvVersion.openGl);
+
+    numErrors += unit.getNumErrors();
+    // Only one push_constant is allowed, mergeLinkerObjects() will ensure the push_constant
+    // is the same for all units.
+    if (numPushConstants > 1 || unit.numPushConstants > 1)
+        error(infoSink, "Only one push_constant block is allowed per stage");
+    numPushConstants = std::min(numPushConstants + unit.numPushConstants, 1);
+
+    if (unit.invocations != TQualifier::layoutNotSet) {
+        if (invocations == TQualifier::layoutNotSet)
+            invocations = unit.invocations;
+        else if (invocations != unit.invocations)
+            error(infoSink, "number of invocations must match between compilation units");
+    }
+
     if (vertices == TQualifier::layoutNotSet)
         vertices = unit.vertices;
     else if (vertices != unit.vertices) {
-        if (language == EShLangGeometry)
+        if (language == EShLangGeometry || language == EShLangMeshNV)
             error(infoSink, "Contradictory layout max_vertices values");
         else if (language == EShLangTessControl)
             error(infoSink, "Contradictory layout vertices values");
         else
             assert(0);
     }
+    if (primitives == TQualifier::layoutNotSet)
+        primitives = unit.primitives;
+    else if (primitives != unit.primitives) {
+        if (language == EShLangMeshNV)
+            error(infoSink, "Contradictory layout max_primitives values");
+        else
+            assert(0);
+    }
+
+    if (inputPrimitive == ElgNone)
+        inputPrimitive = unit.inputPrimitive;
+    else if (inputPrimitive != unit.inputPrimitive)
+        error(infoSink, "Contradictory input layout primitives");
+
+    if (outputPrimitive == ElgNone)
+        outputPrimitive = unit.outputPrimitive;
+    else if (outputPrimitive != unit.outputPrimitive)
+        error(infoSink, "Contradictory output layout primitives");
+
+    if (originUpperLeft != unit.originUpperLeft || pixelCenterInteger != unit.pixelCenterInteger)
+        error(infoSink, "gl_FragCoord redeclarations must match across shaders");
 
     if (vertexSpacing == EvsNone)
         vertexSpacing = unit.vertexSpacing;
@@ -130,61 +193,236 @@ void TIntermediate::merge(TInfoSink& infoSink, TIntermediate& unit)
     else if (vertexOrder != unit.vertexOrder)
         error(infoSink, "Contradictory triangle ordering");
 
-    if (unit.pointMode)
-        pointMode = true;
+    MERGE_TRUE(pointMode);
 
     for (int i = 0; i < 3; ++i) {
-        if (localSize[i] > 1)
+        if (!localSizeNotDefault[i] && unit.localSizeNotDefault[i]) {
             localSize[i] = unit.localSize[i];
+            localSizeNotDefault[i] = true;
+        }
         else if (localSize[i] != unit.localSize[i])
             error(infoSink, "Contradictory local size");
 
-        if (localSizeSpecId[i] != TQualifier::layoutNotSet)
+        if (localSizeSpecId[i] == TQualifier::layoutNotSet)
             localSizeSpecId[i] = unit.localSizeSpecId[i];
         else if (localSizeSpecId[i] != unit.localSizeSpecId[i])
             error(infoSink, "Contradictory local size specialization ids");
     }
 
-    if (unit.xfbMode)
-        xfbMode = true;
+    MERGE_TRUE(earlyFragmentTests);
+    MERGE_TRUE(postDepthCoverage);
+
+    if (depthLayout == EldNone)
+        depthLayout = unit.depthLayout;
+    else if (depthLayout != unit.depthLayout)
+        error(infoSink, "Contradictory depth layouts");
+
+    MERGE_TRUE(depthReplacing);
+    MERGE_TRUE(hlslFunctionality1);
+
+    blendEquations |= unit.blendEquations;
+
+    MERGE_TRUE(xfbMode);
+
     for (size_t b = 0; b < xfbBuffers.size(); ++b) {
         if (xfbBuffers[b].stride == TQualifier::layoutXfbStrideEnd)
             xfbBuffers[b].stride = unit.xfbBuffers[b].stride;
         else if (xfbBuffers[b].stride != unit.xfbBuffers[b].stride)
             error(infoSink, "Contradictory xfb_stride");
         xfbBuffers[b].implicitStride = std::max(xfbBuffers[b].implicitStride, unit.xfbBuffers[b].implicitStride);
-        if (unit.xfbBuffers[b].containsDouble)
-            xfbBuffers[b].containsDouble = true;
+        if (unit.xfbBuffers[b].contains64BitType)
+            xfbBuffers[b].contains64BitType = true;
+        if (unit.xfbBuffers[b].contains32BitType)
+            xfbBuffers[b].contains32BitType = true;
+        if (unit.xfbBuffers[b].contains16BitType)
+            xfbBuffers[b].contains16BitType = true;
         // TODO: 4.4 link: enhanced layouts: compare ranges
     }
 
-    if (unit.treeRoot == 0)
+    MERGE_TRUE(multiStream);
+    MERGE_TRUE(layoutOverrideCoverage);
+    MERGE_TRUE(geoPassthroughEXT);
+
+    for (unsigned int i = 0; i < unit.shiftBinding.size(); ++i) {
+        if (unit.shiftBinding[i] > 0)
+            setShiftBinding((TResourceType)i, unit.shiftBinding[i]);
+    }
+
+    for (unsigned int i = 0; i < unit.shiftBindingForSet.size(); ++i) {
+        for (auto it = unit.shiftBindingForSet[i].begin(); it != unit.shiftBindingForSet[i].end(); ++it)
+            setShiftBindingForSet((TResourceType)i, it->second, it->first);
+    }
+
+    resourceSetBinding.insert(resourceSetBinding.end(), unit.resourceSetBinding.begin(), unit.resourceSetBinding.end());
+
+    MERGE_TRUE(autoMapBindings);
+    MERGE_TRUE(autoMapLocations);
+    MERGE_TRUE(invertY);
+    MERGE_TRUE(flattenUniformArrays);
+    MERGE_TRUE(useUnknownFormat);
+    MERGE_TRUE(hlslOffsets);
+    MERGE_TRUE(useStorageBuffer);
+    MERGE_TRUE(hlslIoMapping);
+
+    // TODO: sourceFile
+    // TODO: sourceText
+    // TODO: processes
+
+    MERGE_TRUE(needToLegalize);
+    MERGE_TRUE(binaryDoubleOutput);
+    MERGE_TRUE(usePhysicalStorageBuffer);
+}
+
+//
+// Merge the 'unit' AST into 'this' AST.
+// That includes rationalizing the unique IDs, which were set up independently,
+// and might have overlaps that are not the same symbol, or might have different
+// IDs for what should be the same shared symbol.
+//
+void TIntermediate::mergeTrees(TInfoSink& infoSink, TIntermediate& unit)
+{
+    if (unit.treeRoot == nullptr)
         return;
 
-    if (treeRoot == 0) {
+    if (treeRoot == nullptr) {
         treeRoot = unit.treeRoot;
-        version = unit.version;
-        requestedExtensions = unit.requestedExtensions;
         return;
     }
 
     // Getting this far means we have two existing trees to merge...
-    
-    version = std::max(version, unit.version);
-    requestedExtensions.insert(unit.requestedExtensions.begin(), unit.requestedExtensions.end());
+    numShaderRecordBlocks += unit.numShaderRecordBlocks;
+    numTaskNVBlocks += unit.numTaskNVBlocks;
 
     // Get the top-level globals of each unit
     TIntermSequence& globals = treeRoot->getAsAggregate()->getSequence();
     TIntermSequence& unitGlobals = unit.treeRoot->getAsAggregate()->getSequence();
 
     // Get the linker-object lists
-    TIntermSequence& linkerObjects = findLinkerObjects();
-    TIntermSequence& unitLinkerObjects = unit.findLinkerObjects();
+    TIntermSequence& linkerObjects = findLinkerObjects()->getSequence();
+    const TIntermSequence& unitLinkerObjects = unit.findLinkerObjects()->getSequence();
+
+    // Map by global name to unique ID to rationalize the same object having
+    // differing IDs in different trees.
+    TIdMaps idMaps;
+    int maxId;
+    seedIdMap(idMaps, maxId);
+    remapIds(idMaps, maxId + 1, unit);
 
     mergeBodies(infoSink, globals, unitGlobals);
     mergeLinkerObjects(infoSink, linkerObjects, unitLinkerObjects);
-
     ioAccessed.insert(unit.ioAccessed.begin(), unit.ioAccessed.end());
+}
+
+#endif
+
+static const TString& getNameForIdMap(TIntermSymbol* symbol)
+{
+    TShaderInterface si = symbol->getType().getShaderInterface();
+    if (si == EsiNone)
+        return symbol->getName();
+    else
+        return symbol->getType().getTypeName();
+}
+
+
+
+// Traverser that seeds an ID map with all built-ins, and tracks the
+// maximum ID used.
+// (It would be nice to put this in a function, but that causes warnings
+// on having no bodies for the copy-constructor/operator=.)
+class TBuiltInIdTraverser : public TIntermTraverser {
+public:
+    TBuiltInIdTraverser(TIdMaps& idMaps) : idMaps(idMaps), maxId(0) { }
+    // If it's a built in, add it to the map.
+    // Track the max ID.
+    virtual void visitSymbol(TIntermSymbol* symbol)
+    {
+        const TQualifier& qualifier = symbol->getType().getQualifier();
+        if (qualifier.builtIn != EbvNone) {
+            TShaderInterface si = symbol->getType().getShaderInterface();
+            idMaps[si][getNameForIdMap(symbol)] = symbol->getId();
+        }
+        maxId = std::max(maxId, symbol->getId());
+    }
+    int getMaxId() const { return maxId; }
+protected:
+    TBuiltInIdTraverser(TBuiltInIdTraverser&);
+    TBuiltInIdTraverser& operator=(TBuiltInIdTraverser&);
+    TIdMaps& idMaps;
+    int maxId;
+};
+
+// Traverser that seeds an ID map with non-builtins.
+// (It would be nice to put this in a function, but that causes warnings
+// on having no bodies for the copy-constructor/operator=.)
+class TUserIdTraverser : public TIntermTraverser {
+public:
+    TUserIdTraverser(TIdMaps& idMaps) : idMaps(idMaps) { }
+    // If its a non-built-in global, add it to the map.
+    virtual void visitSymbol(TIntermSymbol* symbol)
+    {
+        const TQualifier& qualifier = symbol->getType().getQualifier();
+        if (qualifier.builtIn == EbvNone) {
+            TShaderInterface si = symbol->getType().getShaderInterface();
+            idMaps[si][getNameForIdMap(symbol)] = symbol->getId();
+        }
+    }
+
+protected:
+    TUserIdTraverser(TUserIdTraverser&);
+    TUserIdTraverser& operator=(TUserIdTraverser&);
+    TIdMaps& idMaps; // over biggest id
+};
+
+// Initialize the the ID map with what we know of 'this' AST.
+void TIntermediate::seedIdMap(TIdMaps& idMaps, int& maxId)
+{
+    // all built-ins everywhere need to align on IDs and contribute to the max ID
+    TBuiltInIdTraverser builtInIdTraverser(idMaps);
+    treeRoot->traverse(&builtInIdTraverser);
+    maxId = builtInIdTraverser.getMaxId();
+
+    // user variables in the linker object list need to align on ids
+    TUserIdTraverser userIdTraverser(idMaps);
+    findLinkerObjects()->traverse(&userIdTraverser);
+}
+
+// Traverser to map an AST ID to what was known from the seeding AST.
+// (It would be nice to put this in a function, but that causes warnings
+// on having no bodies for the copy-constructor/operator=.)
+class TRemapIdTraverser : public TIntermTraverser {
+public:
+    TRemapIdTraverser(const TIdMaps& idMaps, int idShift) : idMaps(idMaps), idShift(idShift) { }
+    // Do the mapping:
+    //  - if the same symbol, adopt the 'this' ID
+    //  - otherwise, ensure a unique ID by shifting to a new space
+    virtual void visitSymbol(TIntermSymbol* symbol)
+    {
+        const TQualifier& qualifier = symbol->getType().getQualifier();
+        bool remapped = false;
+        if (qualifier.isLinkable() || qualifier.builtIn != EbvNone) {
+            TShaderInterface si = symbol->getType().getShaderInterface();
+            auto it = idMaps[si].find(getNameForIdMap(symbol));
+            if (it != idMaps[si].end()) {
+                symbol->changeId(it->second);
+                remapped = true;
+            }
+        }
+        if (!remapped)
+            symbol->changeId(symbol->getId() + idShift);
+    }
+protected:
+    TRemapIdTraverser(TRemapIdTraverser&);
+    TRemapIdTraverser& operator=(TRemapIdTraverser&);
+    const TIdMaps& idMaps;
+    int idShift;
+};
+
+void TIntermediate::remapIds(const TIdMaps& idMaps, int idShift, TIntermediate& unit)
+{
+    // Remap all IDs to either share or be unique, as dictated by the idMap and idShift.
+    TRemapIdTraverser idTraverser(idMaps, idShift);
+    unit.getTreeRoot()->traverse(&idTraverser);
 }
 
 //
@@ -225,7 +463,19 @@ void TIntermediate::mergeLinkerObjects(TInfoSink& infoSink, TIntermSequence& lin
             TIntermSymbol* symbol = linkerObjects[linkObj]->getAsSymbolNode();
             TIntermSymbol* unitSymbol = unitLinkerObjects[unitLinkObj]->getAsSymbolNode();
             assert(symbol && unitSymbol);
-            if (symbol->getName() == unitSymbol->getName()) {
+
+            bool isSameSymbol = false;
+            // If they are both blocks in the same shader interface,
+            // match by the block-name, not the identifier name.
+            if (symbol->getType().getBasicType() == EbtBlock && unitSymbol->getType().getBasicType() == EbtBlock) {
+                if (symbol->getType().getShaderInterface() == unitSymbol->getType().getShaderInterface()) {
+                    isSameSymbol = symbol->getType().getTypeName() == unitSymbol->getType().getTypeName();
+                }
+            }
+            else if (symbol->getName() == unitSymbol->getName())
+                isSameSymbol = true;
+
+            if (isSameSymbol) {
                 // filter out copy
                 merge = false;
 
@@ -244,6 +494,9 @@ void TIntermediate::mergeLinkerObjects(TInfoSink& infoSink, TIntermSequence& lin
                 // Check for consistent types/qualification/initializers etc.
                 mergeErrorCheck(infoSink, *symbol, *unitSymbol, false);
             }
+            // If different symbols, verify they arn't push_constant since there can only be one per stage
+            else if (symbol->getQualifier().isPushConstant() && unitSymbol->getQualifier().isPushConstant())
+                error(infoSink, "Only one push_constant block is allowed per stage");
         }
         if (merge)
             linkerObjects.push_back(unitLinkerObjects[unitLinkObj]);
@@ -255,10 +508,13 @@ void TIntermediate::mergeLinkerObjects(TInfoSink& infoSink, TIntermSequence& lin
 // Recursively merge the implicit array sizes through the objects' respective type trees.
 void TIntermediate::mergeImplicitArraySizes(TType& type, const TType& unitType)
 {
-    if (type.isImplicitlySizedArray() && unitType.isArray()) {
-        int newImplicitArraySize = unitType.isImplicitlySizedArray() ? unitType.getImplicitArraySize() : unitType.getOuterArraySize();
-        if (newImplicitArraySize > type.getImplicitArraySize ())
-            type.setImplicitArraySize(newImplicitArraySize);
+    if (type.isUnsizedArray()) {
+        if (unitType.isUnsizedArray()) {
+            type.updateImplicitArraySize(unitType.getImplicitArraySize());
+            if (unitType.isArrayVariablyIndexed())
+                type.setArrayVariablyIndexed();
+        } else if (unitType.isSizedArray())
+            type.changeOuterArraySize(unitType.getOuterArraySize());
     }
 
     // Type mismatches are caught and reported after this, just be careful for now.
@@ -277,12 +533,18 @@ void TIntermediate::mergeImplicitArraySizes(TType& type, const TType& unitType)
 //
 void TIntermediate::mergeErrorCheck(TInfoSink& infoSink, const TIntermSymbol& symbol, const TIntermSymbol& unitSymbol, bool crossStage)
 {
+#ifndef GLSLANG_WEB
     bool writeTypeComparison = false;
 
     // Types have to match
     if (symbol.getType() != unitSymbol.getType()) {
-        error(infoSink, "Types must match:");
-        writeTypeComparison = true;
+        // but, we make an exception if one is an implicit array and the other is sized
+        if (! (symbol.getType().isArray() && unitSymbol.getType().isArray() &&
+                symbol.getType().sameElementType(unitSymbol.getType()) &&
+                (symbol.getType().isUnsizedArray() || unitSymbol.getType().isUnsizedArray()))) {
+            error(infoSink, "Types must match:");
+            writeTypeComparison = true;
+        }
     }
 
     // Qualifiers have to (almost) match
@@ -290,6 +552,22 @@ void TIntermediate::mergeErrorCheck(TInfoSink& infoSink, const TIntermSymbol& sy
     // Storage...
     if (symbol.getQualifier().storage != unitSymbol.getQualifier().storage) {
         error(infoSink, "Storage qualifiers must match:");
+        writeTypeComparison = true;
+    }
+
+    // Uniform and buffer blocks must either both have an instance name, or
+    // must both be anonymous. The names don't need to match though.
+    if (symbol.getQualifier().isUniformOrBuffer() &&
+        (IsAnonymous(symbol.getName()) != IsAnonymous(unitSymbol.getName()))) {
+        error(infoSink, "Matched Uniform or Storage blocks must all be anonymous,"
+                        " or all be named:");
+        writeTypeComparison = true;
+    }
+
+    if (symbol.getQualifier().storage == unitSymbol.getQualifier().storage &&
+        (IsAnonymous(symbol.getName()) != IsAnonymous(unitSymbol.getName()) ||
+         (!IsAnonymous(symbol.getName()) && symbol.getName() != unitSymbol.getName()))) {
+        warn(infoSink, "Matched shader interfaces are using different instance names.");
         writeTypeComparison = true;
     }
 
@@ -306,7 +584,7 @@ void TIntermediate::mergeErrorCheck(TInfoSink& infoSink, const TIntermSymbol& sy
     }
 
     // Precise...
-    if (! crossStage && symbol.getQualifier().noContraction != unitSymbol.getQualifier().noContraction) {
+    if (! crossStage && symbol.getQualifier().isNoContraction() != unitSymbol.getQualifier().isNoContraction()) {
         error(infoSink, "Presence of precise qualifier must match:");
         writeTypeComparison = true;
     }
@@ -315,26 +593,32 @@ void TIntermediate::mergeErrorCheck(TInfoSink& infoSink, const TIntermSymbol& sy
     if (symbol.getQualifier().centroid  != unitSymbol.getQualifier().centroid ||
         symbol.getQualifier().smooth    != unitSymbol.getQualifier().smooth ||
         symbol.getQualifier().flat      != unitSymbol.getQualifier().flat ||
-        symbol.getQualifier().sample    != unitSymbol.getQualifier().sample ||
-        symbol.getQualifier().patch     != unitSymbol.getQualifier().patch ||
-        symbol.getQualifier().nopersp   != unitSymbol.getQualifier().nopersp) {
+        symbol.getQualifier().isSample()!= unitSymbol.getQualifier().isSample() ||
+        symbol.getQualifier().isPatch() != unitSymbol.getQualifier().isPatch() ||
+        symbol.getQualifier().isNonPerspective() != unitSymbol.getQualifier().isNonPerspective()) {
         error(infoSink, "Interpolation and auxiliary storage qualifiers must match:");
         writeTypeComparison = true;
     }
 
     // Memory...
-    if (symbol.getQualifier().coherent  != unitSymbol.getQualifier().coherent ||
-        symbol.getQualifier().volatil   != unitSymbol.getQualifier().volatil ||
-        symbol.getQualifier().restrict  != unitSymbol.getQualifier().restrict ||
-        symbol.getQualifier().readonly  != unitSymbol.getQualifier().readonly ||
-        symbol.getQualifier().writeonly != unitSymbol.getQualifier().writeonly) {
+    if (symbol.getQualifier().coherent          != unitSymbol.getQualifier().coherent ||
+        symbol.getQualifier().devicecoherent    != unitSymbol.getQualifier().devicecoherent ||
+        symbol.getQualifier().queuefamilycoherent  != unitSymbol.getQualifier().queuefamilycoherent ||
+        symbol.getQualifier().workgroupcoherent != unitSymbol.getQualifier().workgroupcoherent ||
+        symbol.getQualifier().subgroupcoherent  != unitSymbol.getQualifier().subgroupcoherent ||
+        symbol.getQualifier().shadercallcoherent!= unitSymbol.getQualifier().shadercallcoherent ||
+        symbol.getQualifier().nonprivate        != unitSymbol.getQualifier().nonprivate ||
+        symbol.getQualifier().volatil           != unitSymbol.getQualifier().volatil ||
+        symbol.getQualifier().restrict          != unitSymbol.getQualifier().restrict ||
+        symbol.getQualifier().readonly          != unitSymbol.getQualifier().readonly ||
+        symbol.getQualifier().writeonly         != unitSymbol.getQualifier().writeonly) {
         error(infoSink, "Memory qualifiers must match:");
         writeTypeComparison = true;
     }
 
-    // Layouts... 
-    // TODO: 4.4 enhanced layouts: Generalize to include offset/align: current spec 
-    //       requires separate user-supplied offset from actual computed offset, but 
+    // Layouts...
+    // TODO: 4.4 enhanced layouts: Generalize to include offset/align: current spec
+    //       requires separate user-supplied offset from actual computed offset, but
     //       current implementation only has one offset.
     if (symbol.getQualifier().layoutMatrix    != unitSymbol.getQualifier().layoutMatrix ||
         symbol.getQualifier().layoutPacking   != unitSymbol.getQualifier().layoutPacking ||
@@ -357,9 +641,14 @@ void TIntermediate::mergeErrorCheck(TInfoSink& infoSink, const TIntermSymbol& sy
         }
     }
 
-    if (writeTypeComparison)
-        infoSink.info << "    " << symbol.getName() << ": \"" << symbol.getType().getCompleteString() << "\" versus \"" <<
-                                                             unitSymbol.getType().getCompleteString() << "\"\n";
+    if (writeTypeComparison) {
+        infoSink.info << "    " << symbol.getName() << ": \"" << symbol.getType().getCompleteString() << "\" versus ";
+        if (symbol.getName() != unitSymbol.getName())
+            infoSink.info << unitSymbol.getName() << ": ";
+
+        infoSink.info << "\"" << unitSymbol.getType().getCompleteString() << "\"\n";
+    }
+#endif
 }
 
 //
@@ -368,19 +657,28 @@ void TIntermediate::mergeErrorCheck(TInfoSink& infoSink, const TIntermSymbol& sy
 //
 // Also, lock in defaults of things not set, including array sizes.
 //
-void TIntermediate::finalCheck(TInfoSink& infoSink)
+void TIntermediate::finalCheck(TInfoSink& infoSink, bool keepUncalled)
 {
-    if (source == EShSourceGlsl && numEntryPoints < 1)
-        error(infoSink, "Missing entry point: Each stage requires one entry point");
+    if (getTreeRoot() == nullptr)
+        return;
 
-    if (numPushConstants > 1)
-        error(infoSink, "Only one push_constant block is allowed per stage");
+    if (numEntryPoints < 1) {
+        if (getSource() == EShSourceGlsl)
+            error(infoSink, "Missing entry point: Each stage requires one entry point");
+        else
+            warn(infoSink, "Entry point not found");
+    }
 
-    // recursion checking
+    // recursion and missing body checking
     checkCallGraphCycles(infoSink);
+    checkCallGraphBodies(infoSink, keepUncalled);
 
     // overlap/alias/missing I/O, etc.
     inOutLocationCheck(infoSink);
+
+#ifndef GLSLANG_WEB
+    if (getNumPushConstants() > 1)
+        error(infoSink, "Only one push_constant block is allowed per stage");
 
     // invocations
     if (invocations == TQualifier::layoutNotSet)
@@ -397,10 +695,14 @@ void TIntermediate::finalCheck(TInfoSink& infoSink)
         error(infoSink, "Cannot use both gl_FragColor and gl_FragData");
 
     for (size_t b = 0; b < xfbBuffers.size(); ++b) {
-        if (xfbBuffers[b].containsDouble)
+        if (xfbBuffers[b].contains64BitType)
             RoundToPow2(xfbBuffers[b].implicitStride, 8);
+        else if (xfbBuffers[b].contains32BitType)
+            RoundToPow2(xfbBuffers[b].implicitStride, 4);
+        else if (xfbBuffers[b].contains16BitType)
+            RoundToPow2(xfbBuffers[b].implicitStride, 2);
 
-        // "It is a compile-time or link-time error to have 
+        // "It is a compile-time or link-time error to have
         // any xfb_offset that overflows xfb_stride, whether stated on declarations before or after the xfb_stride, or
         // in different compilation units. While xfb_stride can be declared multiple times for the same buffer, it is a
         // compile-time or link-time error to have different values specified for the stride for the same buffer."
@@ -412,20 +714,27 @@ void TIntermediate::finalCheck(TInfoSink& infoSink)
         if (xfbBuffers[b].stride == TQualifier::layoutXfbStrideEnd)
             xfbBuffers[b].stride = xfbBuffers[b].implicitStride;
 
-        // "If the buffer is capturing any 
-        // outputs with double-precision components, the stride must be a multiple of 8, otherwise it must be a 
+        // "If the buffer is capturing any
+        // outputs with double-precision or 64-bit integer components, the stride must be a multiple of 8, otherwise it must be a
         // multiple of 4, or a compile-time or link-time error results."
-        if (xfbBuffers[b].containsDouble && ! IsMultipleOfPow2(xfbBuffers[b].stride, 8)) {
-            error(infoSink, "xfb_stride must be multiple of 8 for buffer holding a double:");
+        if (xfbBuffers[b].contains64BitType && ! IsMultipleOfPow2(xfbBuffers[b].stride, 8)) {
+            error(infoSink, "xfb_stride must be multiple of 8 for buffer holding a double or 64-bit integer:");
             infoSink.info.prefix(EPrefixError);
             infoSink.info << "    xfb_buffer " << (unsigned int)b << ", xfb_stride " << xfbBuffers[b].stride << "\n";
-        } else if (! IsMultipleOfPow2(xfbBuffers[b].stride, 4)) {
+        } else if (xfbBuffers[b].contains32BitType && ! IsMultipleOfPow2(xfbBuffers[b].stride, 4)) {
             error(infoSink, "xfb_stride must be multiple of 4:");
             infoSink.info.prefix(EPrefixError);
             infoSink.info << "    xfb_buffer " << (unsigned int)b << ", xfb_stride " << xfbBuffers[b].stride << "\n";
         }
+        // "If the buffer is capturing any
+        // outputs with half-precision or 16-bit integer components, the stride must be a multiple of 2"
+        else if (xfbBuffers[b].contains16BitType && ! IsMultipleOfPow2(xfbBuffers[b].stride, 2)) {
+            error(infoSink, "xfb_stride must be multiple of 2 for buffer holding a half float or 16-bit integer:");
+            infoSink.info.prefix(EPrefixError);
+            infoSink.info << "    xfb_buffer " << (unsigned int)b << ", xfb_stride " << xfbBuffers[b].stride << "\n";
+        }
 
-        // "The resulting stride (implicit or explicit), when divided by 4, must be less than or equal to the 
+        // "The resulting stride (implicit or explicit), when divided by 4, must be less than or equal to the
         // implementation-dependent constant gl_MaxTransformFeedbackInterleavedComponents."
         if (xfbBuffers[b].stride > (unsigned int)(4 * resources.maxTransformFeedbackInterleavedComponents)) {
             error(infoSink, "xfb_stride is too large:");
@@ -442,12 +751,14 @@ void TIntermediate::finalCheck(TInfoSink& infoSink)
             error(infoSink, "At least one shader must specify an output layout(vertices=...)");
         break;
     case EShLangTessEvaluation:
-        if (inputPrimitive == ElgNone)
-            error(infoSink, "At least one shader must specify an input layout primitive");
-        if (vertexSpacing == EvsNone)
-            vertexSpacing = EvsEqual;
-        if (vertexOrder == EvoNone)
-            vertexOrder = EvoCcw;
+        if (getSource() == EShSourceGlsl) {
+            if (inputPrimitive == ElgNone)
+                error(infoSink, "At least one shader must specify an input layout primitive");
+            if (vertexSpacing == EvsNone)
+                vertexSpacing = EvsEqual;
+            if (vertexOrder == EvoNone)
+                vertexOrder = EvoCcw;
+        }
         break;
     case EShLangGeometry:
         if (inputPrimitive == ElgNone)
@@ -458,8 +769,45 @@ void TIntermediate::finalCheck(TInfoSink& infoSink)
             error(infoSink, "At least one shader must specify a layout(max_vertices = value)");
         break;
     case EShLangFragment:
+        // for GL_ARB_post_depth_coverage, EarlyFragmentTest is set automatically in 
+        // ParseHelper.cpp. So if we reach here, this must be GL_EXT_post_depth_coverage 
+        // requiring explicit early_fragment_tests
+        if (getPostDepthCoverage() && !getEarlyFragmentTests())
+            error(infoSink, "post_depth_coverage requires early_fragment_tests");
         break;
     case EShLangCompute:
+        break;
+    case EShLangRayGen:
+    case EShLangIntersect:
+    case EShLangAnyHit:
+    case EShLangClosestHit:
+    case EShLangMiss:
+    case EShLangCallable:
+        if (numShaderRecordBlocks > 1)
+            error(infoSink, "Only one shaderRecordNV buffer block is allowed per stage");
+        break;
+    case EShLangMeshNV:
+        // NV_mesh_shader doesn't allow use of both single-view and per-view builtins.
+        if (inIoAccessed("gl_Position") && inIoAccessed("gl_PositionPerViewNV"))
+            error(infoSink, "Can only use one of gl_Position or gl_PositionPerViewNV");
+        if (inIoAccessed("gl_ClipDistance") && inIoAccessed("gl_ClipDistancePerViewNV"))
+            error(infoSink, "Can only use one of gl_ClipDistance or gl_ClipDistancePerViewNV");
+        if (inIoAccessed("gl_CullDistance") && inIoAccessed("gl_CullDistancePerViewNV"))
+            error(infoSink, "Can only use one of gl_CullDistance or gl_CullDistancePerViewNV");
+        if (inIoAccessed("gl_Layer") && inIoAccessed("gl_LayerPerViewNV"))
+            error(infoSink, "Can only use one of gl_Layer or gl_LayerPerViewNV");
+        if (inIoAccessed("gl_ViewportMask") && inIoAccessed("gl_ViewportMaskPerViewNV"))
+            error(infoSink, "Can only use one of gl_ViewportMask or gl_ViewportMaskPerViewNV");
+        if (outputPrimitive == ElgNone)
+            error(infoSink, "At least one shader must specify an output layout primitive");
+        if (vertices == TQualifier::layoutNotSet)
+            error(infoSink, "At least one shader must specify a layout(max_vertices = value)");
+        if (primitives == TQualifier::layoutNotSet)
+            error(infoSink, "At least one shader must specify a layout(max_primitives = value)");
+        // fall through
+    case EShLangTaskNV:
+        if (numTaskNVBlocks > 1)
+            error(infoSink, "Only one taskNV interface block is allowed per shader");
         break;
     default:
         error(infoSink, "Unknown Stage.");
@@ -475,11 +823,14 @@ void TIntermediate::finalCheck(TInfoSink& infoSink)
         virtual void visitSymbol(TIntermSymbol* symbol)
         {
             // Implicitly size arrays.
-            symbol->getWritableType().adoptImplicitArraySizes();
+            // If an unsized array is left as unsized, it effectively
+            // becomes run-time sized.
+            symbol->getWritableType().adoptImplicitArraySizes(false);
         }
     } finalLinkTraverser;
 
     treeRoot->traverse(&finalLinkTraverser);
+#endif
 }
 
 //
@@ -488,7 +839,7 @@ void TIntermediate::finalCheck(TInfoSink& infoSink)
 //
 void TIntermediate::checkCallGraphCycles(TInfoSink& infoSink)
 {
-    // Reset everything, once.
+    // Clear fields we'll use for this.
     for (TGraph::iterator call = callGraph.begin(); call != callGraph.end(); ++call) {
         call->visited = false;
         call->currentPath = false;
@@ -515,7 +866,7 @@ void TIntermediate::checkCallGraphCycles(TInfoSink& infoSink)
             break;
 
         // Otherwise, we found a new subgraph, process it:
-        // See what all can be reached by this new root, and if any of 
+        // See what all can be reached by this new root, and if any of
         // that is recursive.  This is done by depth-first traversals, seeing
         // if a new call is found that was already in the currentPath (a back edge),
         // thereby detecting recursion.
@@ -564,6 +915,85 @@ void TIntermediate::checkCallGraphCycles(TInfoSink& infoSink)
 }
 
 //
+// See which functions are reachable from the entry point and which have bodies.
+// Reachable ones with missing bodies are errors.
+// Unreachable bodies are dead code.
+//
+void TIntermediate::checkCallGraphBodies(TInfoSink& infoSink, bool keepUncalled)
+{
+    // Clear fields we'll use for this.
+    for (TGraph::iterator call = callGraph.begin(); call != callGraph.end(); ++call) {
+        call->visited = false;
+        call->calleeBodyPosition = -1;
+    }
+
+    // The top level of the AST includes function definitions (bodies).
+    // Compare these to function calls in the call graph.
+    // We'll end up knowing which have bodies, and if so,
+    // how to map the call-graph node to the location in the AST.
+    TIntermSequence &functionSequence = getTreeRoot()->getAsAggregate()->getSequence();
+    std::vector<bool> reachable(functionSequence.size(), true); // so that non-functions are reachable
+    for (int f = 0; f < (int)functionSequence.size(); ++f) {
+        glslang::TIntermAggregate* node = functionSequence[f]->getAsAggregate();
+        if (node && (node->getOp() == glslang::EOpFunction)) {
+            if (node->getName().compare(getEntryPointMangledName().c_str()) != 0)
+                reachable[f] = false; // so that function bodies are unreachable, until proven otherwise
+            for (TGraph::iterator call = callGraph.begin(); call != callGraph.end(); ++call) {
+                if (call->callee == node->getName())
+                    call->calleeBodyPosition = f;
+            }
+        }
+    }
+
+    // Start call-graph traversal by visiting the entry point nodes.
+    for (TGraph::iterator call = callGraph.begin(); call != callGraph.end(); ++call) {
+        if (call->caller.compare(getEntryPointMangledName().c_str()) == 0)
+            call->visited = true;
+    }
+
+    // Propagate 'visited' through the call-graph to every part of the graph it
+    // can reach (seeded with the entry-point setting above).
+    bool changed;
+    do {
+        changed = false;
+        for (auto call1 = callGraph.begin(); call1 != callGraph.end(); ++call1) {
+            if (call1->visited) {
+                for (TGraph::iterator call2 = callGraph.begin(); call2 != callGraph.end(); ++call2) {
+                    if (! call2->visited) {
+                        if (call1->callee == call2->caller) {
+                            changed = true;
+                            call2->visited = true;
+                        }
+                    }
+                }
+            }
+        }
+    } while (changed);
+
+    // Any call-graph node set to visited but without a callee body is an error.
+    for (TGraph::iterator call = callGraph.begin(); call != callGraph.end(); ++call) {
+        if (call->visited) {
+            if (call->calleeBodyPosition == -1) {
+                error(infoSink, "No function definition (body) found: ");
+                infoSink.info << "    " << call->callee << "\n";
+            } else
+                reachable[call->calleeBodyPosition] = true;
+        }
+    }
+
+    // Bodies in the AST not reached by the call graph are dead;
+    // clear them out, since they can't be reached and also can't
+    // be translated further due to possibility of being ill defined.
+    if (! keepUncalled) {
+        for (int f = 0; f < (int)functionSequence.size(); ++f) {
+            if (! reachable[f])
+                functionSequence[f] = nullptr;
+        }
+        functionSequence.erase(std::remove(functionSequence.begin(), functionSequence.end(), nullptr), functionSequence.end());
+    }
+}
+
+//
 // Satisfy rules for location qualifiers on inputs and outputs
 //
 void TIntermediate::inOutLocationCheck(TInfoSink& infoSink)
@@ -574,7 +1004,7 @@ void TIntermediate::inOutLocationCheck(TInfoSink& infoSink)
 
     // TODO: linker functionality: location collision checking
 
-    TIntermSequence& linkObjects = findLinkerObjects();
+    TIntermSequence& linkObjects = findLinkerObjects()->getSequence();
     for (size_t i = 0; i < linkObjects.size(); ++i) {
         const TType& type = linkObjects[i]->getAsTyped()->getType();
         const TQualifier& qualifier = type.getQualifier();
@@ -587,13 +1017,13 @@ void TIntermediate::inOutLocationCheck(TInfoSink& infoSink)
         }
     }
 
-    if (profile == EEsProfile) {
+    if (isEsProfile()) {
         if (numFragOut > 1 && fragOutWithNoLocation)
             error(infoSink, "when more than one fragment shader output, all must have location qualifiers");
     }
 }
 
-TIntermSequence& TIntermediate::findLinkerObjects() const
+TIntermAggregate* TIntermediate::findLinkerObjects() const
 {
     // Get the top-level globals
     TIntermSequence& globals = treeRoot->getAsAggregate()->getSequence();
@@ -601,22 +1031,22 @@ TIntermSequence& TIntermediate::findLinkerObjects() const
     // Get the last member of the sequences, expected to be the linker-object lists
     assert(globals.back()->getAsAggregate()->getOp() == EOpLinkerObjects);
 
-    return globals.back()->getAsAggregate()->getSequence();
+    return globals.back()->getAsAggregate();
 }
 
 // See if a variable was both a user-declared output and used.
-// Note: the spec discusses writing to one, but this looks at read or write, which 
+// Note: the spec discusses writing to one, but this looks at read or write, which
 // is more useful, and perhaps the spec should be changed to reflect that.
 bool TIntermediate::userOutputUsed() const
 {
-    const TIntermSequence& linkerObjects = findLinkerObjects();
+    const TIntermSequence& linkerObjects = findLinkerObjects()->getSequence();
 
     bool found = false;
     for (size_t i = 0; i < linkerObjects.size(); ++i) {
         const TIntermSymbol& symbolNode = *linkerObjects[i]->getAsSymbolNode();
         if (symbolNode.getQualifier().storage == EvqVaryingOut &&
             symbolNode.getName().compare(0, 3, "gl_") != 0 &&
-            inIoAccessed(symbolNode.getName())) {            
+            inIoAccessed(symbolNode.getName())) {
             found = true;
             break;
         }
@@ -650,8 +1080,8 @@ int TIntermediate::addUsedLocation(const TQualifier& qualifier, const TType& typ
         return -1;
 
     int size;
-    if (qualifier.isUniformOrBuffer()) {
-        if (type.isExplicitlySizedArray())
+    if (qualifier.isUniformOrBuffer() || qualifier.isTaskMemory()) {
+        if (type.isSizedArray())
             size = type.getCumulativeArraySize();
         else
             size = 1;
@@ -659,9 +1089,9 @@ int TIntermediate::addUsedLocation(const TQualifier& qualifier, const TType& typ
         // Strip off the outer array dimension for those having an extra one.
         if (type.isArray() && qualifier.isArrayedIo(language)) {
             TType elementType(type, 0);
-            size = computeTypeLocationSize(elementType);
+            size = computeTypeLocationSize(elementType, language);
         } else
-            size = computeTypeLocationSize(type);
+            size = computeTypeLocationSize(type, language);
     }
 
     // Locations, and components within locations.
@@ -680,6 +1110,7 @@ int TIntermediate::addUsedLocation(const TQualifier& qualifier, const TType& typ
     // So, for the case of dvec3, we need two independent ioRanges.
 
     int collision = -1; // no collision
+#ifndef GLSLANG_WEB
     if (size == 2 && type.getBasicType() == EbtDouble && type.getVectorSize() == 3 &&
         (qualifier.isPipeInput() || qualifier.isPipeOutput())) {
         // Dealing with dvec3 in/out split across two locations.
@@ -706,7 +1137,9 @@ int TIntermediate::addUsedLocation(const TQualifier& qualifier, const TType& typ
             if (collision < 0)
                 usedIo[set].push_back(range2);
         }
-    } else {
+    } else
+#endif
+    {
         // Not a dvec3 in/out split across two locations, generic path.
         // Need a single IO-range block.
 
@@ -720,10 +1153,10 @@ int TIntermediate::addUsedLocation(const TQualifier& qualifier, const TType& typ
         }
 
         // combine location and component ranges
-        TIoRange range(locationRange, componentRange, type.getBasicType(), qualifier.hasIndex() ? qualifier.layoutIndex : 0);
+        TIoRange range(locationRange, componentRange, type.getBasicType(), qualifier.hasIndex() ? qualifier.getIndex() : 0);
 
-        // check for collisions, except for vertex inputs on desktop
-        if (! (profile != EEsProfile && language == EShLangVertex && qualifier.isPipeInput()))
+        // check for collisions, except for vertex inputs on desktop targeting OpenGL
+        if (! (!isEsProfile() && language == EShLangVertex && qualifier.isPipeInput()) || spvVersion.vulkan > 0)
             collision = checkLocationRange(set, range, type, typeCollision);
 
         if (collision < 0)
@@ -754,7 +1187,7 @@ int TIntermediate::checkLocationRange(int set, const TIoRange& range, const TTyp
     return -1; // no collision
 }
 
-// Accumulate locations used for inputs, outputs, and uniforms, and check for collisions
+// Accumulate bindings and offsets, and check for collisions
 // as the accumulation is done.
 //
 // Returns < 0 if no collision, >= 0 if collision and the value returned is a colliding value.
@@ -793,41 +1226,46 @@ bool TIntermediate::addUsedConstantId(int id)
 
 // Recursively figure out how many locations are used up by an input or output type.
 // Return the size of type, as measured by "locations".
-int TIntermediate::computeTypeLocationSize(const TType& type) const
+int TIntermediate::computeTypeLocationSize(const TType& type, EShLanguage stage)
 {
-    // "If the declared input is an array of size n and each element takes m locations, it will be assigned m * n 
+    // "If the declared input is an array of size n and each element takes m locations, it will be assigned m * n
     // consecutive locations..."
     if (type.isArray()) {
         // TODO: perf: this can be flattened by using getCumulativeArraySize(), and a deref that discards all arrayness
+        // TODO: are there valid cases of having an unsized array with a location?  If so, running this code too early.
         TType elementType(type, 0);
-        if (type.isImplicitlySizedArray()) {
-            // TODO: are there valid cases of having an implicitly-sized array with a location?  If so, running this code too early.
-            return computeTypeLocationSize(elementType);
-        } else
-            return type.getOuterArraySize() * computeTypeLocationSize(elementType);
+        if (type.isSizedArray() && !type.getQualifier().isPerView())
+            return type.getOuterArraySize() * computeTypeLocationSize(elementType, stage);
+        else {
+#ifndef GLSLANG_WEB
+            // unset perViewNV attributes for arrayed per-view outputs: "perviewNV vec4 v[MAX_VIEWS][3];"
+            elementType.getQualifier().perViewNV = false;
+#endif
+            return computeTypeLocationSize(elementType, stage);
+        }
     }
 
-    // "The locations consumed by block and structure members are determined by applying the rules above 
-    // recursively..."    
+    // "The locations consumed by block and structure members are determined by applying the rules above
+    // recursively..."
     if (type.isStruct()) {
         int size = 0;
         for (int member = 0; member < (int)type.getStruct()->size(); ++member) {
             TType memberType(type, member);
-            size += computeTypeLocationSize(memberType);
+            size += computeTypeLocationSize(memberType, stage);
         }
         return size;
     }
 
     // ES: "If a shader input is any scalar or vector type, it will consume a single location."
 
-    // Desktop: "If a vertex shader input is any scalar or vector type, it will consume a single location. If a non-vertex 
-    // shader input is a scalar or vector type other than dvec3 or dvec4, it will consume a single location, while 
-    // types dvec3 or dvec4 will consume two consecutive locations. Inputs of type double and dvec2 will 
+    // Desktop: "If a vertex shader input is any scalar or vector type, it will consume a single location. If a non-vertex
+    // shader input is a scalar or vector type other than dvec3 or dvec4, it will consume a single location, while
+    // types dvec3 or dvec4 will consume two consecutive locations. Inputs of type double and dvec2 will
     // consume only a single location, in all stages."
     if (type.isScalar())
         return 1;
     if (type.isVector()) {
-        if (language == EShLangVertex && type.getQualifier().isPipeInput())
+        if (stage == EShLangVertex && type.getQualifier().isPipeInput())
             return 1;
         if (type.getBasicType() == EbtDouble && type.getVectorSize() > 2)
             return 2;
@@ -836,16 +1274,49 @@ int TIntermediate::computeTypeLocationSize(const TType& type) const
     }
 
     // "If the declared input is an n x m single- or double-precision matrix, ...
-    // The number of locations assigned for each matrix will be the same as 
+    // The number of locations assigned for each matrix will be the same as
     // for an n-element array of m-component vectors..."
     if (type.isMatrix()) {
         TType columnType(type, 0);
-        return type.getMatrixCols() * computeTypeLocationSize(columnType);
+        return type.getMatrixCols() * computeTypeLocationSize(columnType, stage);
     }
 
     assert(0);
     return 1;
 }
+
+// Same as computeTypeLocationSize but for uniforms
+int TIntermediate::computeTypeUniformLocationSize(const TType& type)
+{
+    // "Individual elements of a uniform array are assigned
+    // consecutive locations with the first element taking location
+    // location."
+    if (type.isArray()) {
+        // TODO: perf: this can be flattened by using getCumulativeArraySize(), and a deref that discards all arrayness
+        TType elementType(type, 0);
+        if (type.isSizedArray()) {
+            return type.getOuterArraySize() * computeTypeUniformLocationSize(elementType);
+        } else {
+            // TODO: are there valid cases of having an implicitly-sized array with a location?  If so, running this code too early.
+            return computeTypeUniformLocationSize(elementType);
+        }
+    }
+
+    // "Each subsequent inner-most member or element gets incremental
+    // locations for the entire structure or array."
+    if (type.isStruct()) {
+        int size = 0;
+        for (int member = 0; member < (int)type.getStruct()->size(); ++member) {
+            TType memberType(type, member);
+            size += computeTypeUniformLocationSize(memberType);
+        }
+        return size;
+    }
+
+    return 1;
+}
+
+#ifndef GLSLANG_WEB
 
 // Accumulate xfb buffer ranges and check for collisions as the accumulation is done.
 //
@@ -859,7 +1330,7 @@ int TIntermediate::addXfbBufferOffset(const TType& type)
     TXfbBuffer& buffer = xfbBuffers[qualifier.layoutXfbBuffer];
 
     // compute the range
-    unsigned int size = computeTypeXfbSize(type, buffer.containsDouble);
+    unsigned int size = computeTypeXfbSize(type, buffer.contains64BitType, buffer.contains32BitType, buffer.contains16BitType);
     buffer.implicitStride = std::max(buffer.implicitStride, qualifier.layoutXfbOffset + size);
     TRange range(qualifier.layoutXfbOffset, qualifier.layoutXfbOffset + size - 1);
 
@@ -878,44 +1349,62 @@ int TIntermediate::addXfbBufferOffset(const TType& type)
 
 // Recursively figure out how many bytes of xfb buffer are used by the given type.
 // Return the size of type, in bytes.
-// Sets containsDouble to true if the type contains a double.
-// N.B. Caller must set containsDouble to false before calling.
-unsigned int TIntermediate::computeTypeXfbSize(const TType& type, bool& containsDouble) const
+// Sets contains64BitType to true if the type contains a 64-bit data type.
+// Sets contains32BitType to true if the type contains a 32-bit data type.
+// Sets contains16BitType to true if the type contains a 16-bit data type.
+// N.B. Caller must set contains64BitType, contains32BitType, and contains16BitType to false before calling.
+unsigned int TIntermediate::computeTypeXfbSize(const TType& type, bool& contains64BitType, bool& contains32BitType, bool& contains16BitType) const
 {
-    // "...if applied to an aggregate containing a double, the offset must also be a multiple of 8, 
+    // "...if applied to an aggregate containing a double or 64-bit integer, the offset must also be a multiple of 8,
     // and the space taken in the buffer will be a multiple of 8.
-    // ...within the qualified entity, subsequent components are each 
+    // ...within the qualified entity, subsequent components are each
     // assigned, in order, to the next available offset aligned to a multiple of
     // that component's size.  Aggregate types are flattened down to the component
     // level to get this sequence of components."
 
-    if (type.isArray()) {        
+    if (type.isArray()) {
         // TODO: perf: this can be flattened by using getCumulativeArraySize(), and a deref that discards all arrayness
-        assert(type.isExplicitlySizedArray());
+        assert(type.isSizedArray());
         TType elementType(type, 0);
-        return type.getOuterArraySize() * computeTypeXfbSize(elementType, containsDouble);
+        return type.getOuterArraySize() * computeTypeXfbSize(elementType, contains64BitType, contains16BitType, contains16BitType);
     }
 
     if (type.isStruct()) {
         unsigned int size = 0;
-        bool structContainsDouble = false;
+        bool structContains64BitType = false;
+        bool structContains32BitType = false;
+        bool structContains16BitType = false;
         for (int member = 0; member < (int)type.getStruct()->size(); ++member) {
             TType memberType(type, member);
-            // "... if applied to 
-            // an aggregate containing a double, the offset must also be a multiple of 8, 
+            // "... if applied to
+            // an aggregate containing a double or 64-bit integer, the offset must also be a multiple of 8,
             // and the space taken in the buffer will be a multiple of 8."
-            bool memberContainsDouble = false;
-            int memberSize = computeTypeXfbSize(memberType, memberContainsDouble);
-            if (memberContainsDouble) {
-                structContainsDouble = true;
+            bool memberContains64BitType = false;
+            bool memberContains32BitType = false;
+            bool memberContains16BitType = false;
+            int memberSize = computeTypeXfbSize(memberType, memberContains64BitType, memberContains32BitType, memberContains16BitType);
+            if (memberContains64BitType) {
+                structContains64BitType = true;
                 RoundToPow2(size, 8);
+            } else if (memberContains32BitType) {
+                structContains32BitType = true;
+                RoundToPow2(size, 4);
+            } else if (memberContains16BitType) {
+                structContains16BitType = true;
+                RoundToPow2(size, 2);
             }
             size += memberSize;
         }
 
-        if (structContainsDouble) {
-            containsDouble = true;
+        if (structContains64BitType) {
+            contains64BitType = true;
             RoundToPow2(size, 8);
+        } else if (structContains32BitType) {
+            contains32BitType = true;
+            RoundToPow2(size, 4);
+        } else if (structContains16BitType) {
+            contains16BitType = true;
+            RoundToPow2(size, 2);
         }
         return size;
     }
@@ -932,27 +1421,43 @@ unsigned int TIntermediate::computeTypeXfbSize(const TType& type, bool& contains
         numComponents = 1;
     }
 
-    if (type.getBasicType() == EbtDouble) {
-        containsDouble = true;
+    if (type.getBasicType() == EbtDouble || type.getBasicType() == EbtInt64 || type.getBasicType() == EbtUint64) {
+        contains64BitType = true;
         return 8 * numComponents;
-    } else
+    } else if (type.getBasicType() == EbtFloat16 || type.getBasicType() == EbtInt16 || type.getBasicType() == EbtUint16) {
+        contains16BitType = true;
+        return 2 * numComponents;
+    } else if (type.getBasicType() == EbtInt8 || type.getBasicType() == EbtUint8)
+        return numComponents;
+    else {
+        contains32BitType = true;
         return 4 * numComponents;
+    }
 }
+
+#endif
 
 const int baseAlignmentVec4Std140 = 16;
 
-// Return the size and alignment of a scalar.
+// Return the size and alignment of a component of the given type.
 // The size is returned in the 'size' parameter
-// Return value is the alignment of the type.
+// Return value is the alignment..
 int TIntermediate::getBaseAlignmentScalar(const TType& type, int& size)
 {
+#ifdef GLSLANG_WEB
+    size = 4; return 4;
+#endif
+
     switch (type.getBasicType()) {
     case EbtInt64:
     case EbtUint64:
     case EbtDouble:  size = 8; return 8;
-#ifdef AMD_EXTENSIONS
     case EbtFloat16: size = 2; return 2;
-#endif
+    case EbtInt8:
+    case EbtUint8:   size = 1; return 1;
+    case EbtInt16:
+    case EbtUint16:  size = 2; return 2;
+    case EbtReference: size = 8; return 8;
     default:         size = 4; return 4;
     }
 }
@@ -960,7 +1465,7 @@ int TIntermediate::getBaseAlignmentScalar(const TType& type, int& size)
 // Implement base-alignment and size rules from section 7.6.2.2 Standard Uniform Block Layout
 // Operates recursively.
 //
-// If std140 is true, it does the rounding up to vec4 size required by std140, 
+// If std140 is true, it does the rounding up to vec4 size required by std140,
 // otherwise it does not, yielding std430 rules.
 //
 // The size is returned in the 'size' parameter
@@ -971,10 +1476,11 @@ int TIntermediate::getBaseAlignmentScalar(const TType& type, int& size)
 // stride comes from the flattening down to vectors.
 //
 // Return value is the alignment of the type.
-int TIntermediate::getBaseAlignment(const TType& type, int& size, int& stride, bool std140, bool rowMajor)
+int TIntermediate::getBaseAlignment(const TType& type, int& size, int& stride, TLayoutPacking layoutPacking, bool rowMajor)
 {
     int alignment;
 
+    bool std140 = layoutPacking == glslang::ElpStd140;
     // When using the std140 storage layout, structures will be laid out in buffer
     // storage with its members stored in monotonically increasing order based on their
     // location in the declaration. A structure and each structure member have a base
@@ -989,7 +1495,7 @@ int TIntermediate::getBaseAlignment(const TType& type, int& size, int& stride, b
     //
     //   1. If the member is a scalar consuming N basic machine units, the base alignment is N.
     //
-    //   2. If the member is a two- or four-component vector with components consuming N basic 
+    //   2. If the member is a two- or four-component vector with components consuming N basic
     //      machine units, the base alignment is 2N or 4N, respectively.
     //
     //   3. If the member is a three-component vector with components consuming N
@@ -1002,7 +1508,7 @@ int TIntermediate::getBaseAlignment(const TType& type, int& size, int& stride, b
     //      the array is rounded up to the next multiple of the base alignment.
     //
     //   5. If the member is a column-major matrix with C columns and R rows, the
-    //      matrix is stored identically to an array of C column vectors with R 
+    //      matrix is stored identically to an array of C column vectors with R
     //      components each, according to rule (4).
     //
     //   6. If the member is an array of S column-major matrices with C columns and
@@ -1019,7 +1525,7 @@ int TIntermediate::getBaseAlignment(const TType& type, int& size, int& stride, b
     //
     //   9. If the member is a structure, the base alignment of the structure is N , where
     //      N is the largest base alignment value of any    of its members, and rounded
-    //      up to the base alignment of a vec4. The individual members of this substructure 
+    //      up to the base alignment of a vec4. The individual members of this substructure
     //      are then assigned offsets by applying this set of rules recursively,
     //      where the base offset of the first member of the sub-structure is equal to the
     //      aligned offset of the structure. The structure may have padding at the end;
@@ -1038,7 +1544,7 @@ int TIntermediate::getBaseAlignment(const TType& type, int& size, int& stride, b
     if (type.isArray()) {
         // TODO: perf: this might be flattened by using getCumulativeArraySize(), and a deref that discards all arrayness
         TType derefType(type, 0);
-        alignment = getBaseAlignment(derefType, size, dummyStride, std140, rowMajor);
+        alignment = getBaseAlignment(derefType, size, dummyStride, layoutPacking, rowMajor);
         if (std140)
             alignment = std::max(baseAlignmentVec4Std140, alignment);
         RoundToPow2(size, alignment);
@@ -1058,10 +1564,10 @@ int TIntermediate::getBaseAlignment(const TType& type, int& size, int& stride, b
             int memberSize;
             // modify just the children's view of matrix layout, if there is one for this member
             TLayoutMatrix subMatrixLayout = memberList[m].type->getQualifier().layoutMatrix;
-            int memberAlignment = getBaseAlignment(*memberList[m].type, memberSize, dummyStride, std140,
+            int memberAlignment = getBaseAlignment(*memberList[m].type, memberSize, dummyStride, layoutPacking,
                                                    (subMatrixLayout != ElmNone) ? (subMatrixLayout == ElmRowMajor) : rowMajor);
             maxAlignment = std::max(maxAlignment, memberAlignment);
-            RoundToPow2(size, memberAlignment);         
+            RoundToPow2(size, memberAlignment);
             size += memberSize;
         }
 
@@ -1081,10 +1587,12 @@ int TIntermediate::getBaseAlignment(const TType& type, int& size, int& stride, b
     if (type.isVector()) {
         int scalarAlign = getBaseAlignmentScalar(type, size);
         switch (type.getVectorSize()) {
+        case 1: // HLSL has this, GLSL does not
+            return scalarAlign;
         case 2:
             size *= 2;
             return 2 * scalarAlign;
-        default: 
+        default:
             size *= type.getVectorSize();
             return 4 * scalarAlign;
         }
@@ -1094,8 +1602,8 @@ int TIntermediate::getBaseAlignment(const TType& type, int& size, int& stride, b
     if (type.isMatrix()) {
         // rule 5: deref to row, not to column, meaning the size of vector is num columns instead of num rows
         TType derefType(type, 0, rowMajor);
-            
-        alignment = getBaseAlignment(derefType, size, dummyStride, std140, rowMajor);
+
+        alignment = getBaseAlignment(derefType, size, dummyStride, layoutPacking, rowMajor);
         if (std140)
             alignment = std::max(baseAlignmentVec4Std140, alignment);
         RoundToPow2(size, alignment);
@@ -1111,6 +1619,161 @@ int TIntermediate::getBaseAlignment(const TType& type, int& size, int& stride, b
     assert(0);  // all cases should be covered above
     size = baseAlignmentVec4Std140;
     return baseAlignmentVec4Std140;
+}
+
+// To aid the basic HLSL rule about crossing vec4 boundaries.
+bool TIntermediate::improperStraddle(const TType& type, int size, int offset)
+{
+    if (! type.isVector() || type.isArray())
+        return false;
+
+    return size <= 16 ? offset / 16 != (offset + size - 1) / 16
+                      : offset % 16 != 0;
+}
+
+int TIntermediate::getScalarAlignment(const TType& type, int& size, int& stride, bool rowMajor)
+{
+    int alignment;
+
+    stride = 0;
+    int dummyStride;
+
+    if (type.isArray()) {
+        TType derefType(type, 0);
+        alignment = getScalarAlignment(derefType, size, dummyStride, rowMajor);
+
+        stride = size;
+        RoundToPow2(stride, alignment);
+
+        size = stride * (type.getOuterArraySize() - 1) + size;
+        return alignment;
+    }
+
+    if (type.getBasicType() == EbtStruct) {
+        const TTypeList& memberList = *type.getStruct();
+
+        size = 0;
+        int maxAlignment = 0;
+        for (size_t m = 0; m < memberList.size(); ++m) {
+            int memberSize;
+            // modify just the children's view of matrix layout, if there is one for this member
+            TLayoutMatrix subMatrixLayout = memberList[m].type->getQualifier().layoutMatrix;
+            int memberAlignment = getScalarAlignment(*memberList[m].type, memberSize, dummyStride,
+                                                     (subMatrixLayout != ElmNone) ? (subMatrixLayout == ElmRowMajor) : rowMajor);
+            maxAlignment = std::max(maxAlignment, memberAlignment);
+            RoundToPow2(size, memberAlignment);
+            size += memberSize;
+        }
+
+        return maxAlignment;
+    }
+
+    if (type.isScalar())
+        return getBaseAlignmentScalar(type, size);
+
+    if (type.isVector()) {
+        int scalarAlign = getBaseAlignmentScalar(type, size);
+        
+        size *= type.getVectorSize();
+        return scalarAlign;
+    }
+
+    if (type.isMatrix()) {
+        TType derefType(type, 0, rowMajor);
+
+        alignment = getScalarAlignment(derefType, size, dummyStride, rowMajor);
+
+        stride = size;  // use intra-matrix stride for stride of a just a matrix
+        if (rowMajor)
+            size = stride * type.getMatrixRows();
+        else
+            size = stride * type.getMatrixCols();
+
+        return alignment;
+    }
+
+    assert(0);  // all cases should be covered above
+    size = 1;
+    return 1;    
+}
+
+int TIntermediate::getMemberAlignment(const TType& type, int& size, int& stride, TLayoutPacking layoutPacking, bool rowMajor)
+{
+    if (layoutPacking == glslang::ElpScalar) {
+        return getScalarAlignment(type, size, stride, rowMajor);
+    } else {
+        return getBaseAlignment(type, size, stride, layoutPacking, rowMajor);
+    }
+}
+
+// shared calculation by getOffset and getOffsets
+void TIntermediate::updateOffset(const TType& parentType, const TType& memberType, int& offset, int& memberSize)
+{
+    int dummyStride;
+
+    // modify just the children's view of matrix layout, if there is one for this member
+    TLayoutMatrix subMatrixLayout = memberType.getQualifier().layoutMatrix;
+    int memberAlignment = getMemberAlignment(memberType, memberSize, dummyStride,
+                                             parentType.getQualifier().layoutPacking,
+                                             subMatrixLayout != ElmNone
+                                                 ? subMatrixLayout == ElmRowMajor
+                                                 : parentType.getQualifier().layoutMatrix == ElmRowMajor);
+    RoundToPow2(offset, memberAlignment);
+}
+
+// Lookup or calculate the offset of a block member, using the recursively
+// defined block offset rules.
+int TIntermediate::getOffset(const TType& type, int index)
+{
+    const TTypeList& memberList = *type.getStruct();
+
+    // Don't calculate offset if one is present, it could be user supplied
+    // and different than what would be calculated.  That is, this is faster,
+    // but not just an optimization.
+    if (memberList[index].type->getQualifier().hasOffset())
+        return memberList[index].type->getQualifier().layoutOffset;
+
+    int memberSize = 0;
+    int offset = 0;
+    for (int m = 0; m <= index; ++m) {
+        updateOffset(type, *memberList[m].type, offset, memberSize);
+
+        if (m < index)
+            offset += memberSize;
+    }
+
+    return offset;
+}
+
+// Calculate the block data size.
+// Block arrayness is not taken into account, each element is backed by a separate buffer.
+int TIntermediate::getBlockSize(const TType& blockType)
+{
+    const TTypeList& memberList = *blockType.getStruct();
+    int lastIndex = (int)memberList.size() - 1;
+    int lastOffset = getOffset(blockType, lastIndex);
+
+    int lastMemberSize;
+    int dummyStride;
+    getMemberAlignment(*memberList[lastIndex].type, lastMemberSize, dummyStride,
+                       blockType.getQualifier().layoutPacking,
+                       blockType.getQualifier().layoutMatrix == ElmRowMajor);
+
+    return lastOffset + lastMemberSize;
+}
+
+int TIntermediate::computeBufferReferenceTypeSize(const TType& type)
+{
+    assert(type.isReference());
+    int size = getBlockSize(*type.getReferentType());
+
+    int align = type.getBufferReferenceAlignment();
+
+    if (align) {
+        size = (size + align - 1) & ~(align-1);
+    }
+
+    return size;
 }
 
 } // end namespace glslang

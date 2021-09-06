@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,11 +24,12 @@
 
 #pragma once
 
+#include <QDateTime>
 #include <QFrame>
 #include <QMutex>
 #include <QSemaphore>
 #include <QTimer>
-#include "Code/CaptureContext.h"
+#include "Code/Interface/QRDInterface.h"
 
 namespace Ui
 {
@@ -39,34 +40,45 @@ class QSplitter;
 class QAction;
 class QToolButton;
 class QListWidgetItem;
+class QMenu;
+class LambdaThread;
 class RDLabel;
 class MainWindow;
+class QKeyEvent;
+class NameEditOnlyDelegate;
 
 class LiveCapture : public QFrame
 {
   Q_OBJECT
 
 public:
-  explicit LiveCapture(CaptureContext *ctx, const QString &hostname, uint32_t ident,
-                       MainWindow *main, QWidget *parent = 0);
+  explicit LiveCapture(ICaptureContext &ctx, const QString &hostname, const QString &friendlyname,
+                       uint32_t ident, MainWindow *main, QWidget *parent = 0);
 
   ~LiveCapture();
 
-  void QueueCapture(int frameNumber);
+  void QueueCapture(int frameNumber, int numFrames);
   const QString &hostname() { return m_Hostname; }
   void cleanItems();
+  void fileSaved(QString from, QString to);
+
+public slots:
+  bool checkAllowClose();
 
 private slots:
   void on_captures_itemSelectionChanged();
   void on_captures_mouseClicked(QMouseEvent *e);
   void on_captures_itemActivated(QListWidgetItem *item);
   void on_childProcesses_itemActivated(QListWidgetItem *item);
-  void on_triggerCapture_clicked();
+  void on_triggerImmediateCapture_clicked();
+  void on_cycleActiveWindow_clicked();
+  void on_triggerDelayedCapture_clicked();
   void on_queueCap_clicked();
   void on_previewSplit_splitterMoved(int pos, int index);
+  void on_apiIcon_clicked(QMouseEvent *event);
 
   // manual slots
-  bool checkAllowClose();
+  void captures_keyPress(QKeyEvent *e);
 
   void childUpdate();
   void captureCountdownTick();
@@ -83,12 +95,16 @@ private slots:
 private:
   void showEvent(QShowEvent *event) override;
 
-  struct CaptureLog
+  friend class NameEditOnlyDelegate;
+
+  struct Capture
   {
     uint32_t remoteID;
-    QString exe;
+    QString name;
     QString api;
     QDateTime timestamp;
+    uint32_t frameNumber;
+    uint64_t byteSize;
 
     QImage thumb;
 
@@ -106,48 +122,64 @@ private:
     bool added = false;
   };
 
-  CaptureLog *GetLog(QListWidgetItem *item);
-  void SetLog(QListWidgetItem *item, CaptureLog *log);
+  struct APIStatus
+  {
+    APIStatus() = default;
+    APIStatus(bool p, bool s) : presenting(p), supported(s) {}
+    bool presenting = false;
+    bool supported = false;
+  };
 
-  QString MakeText(CaptureLog *log);
+  Capture *GetCapture(QListWidgetItem *item);
+  void AddCapture(QListWidgetItem *item, Capture *cap);
+
+  QString MakeText(Capture *cap);
   QImage MakeThumb(const QImage &screenshot);
+
+  void updateAPIStatus();
 
   void connectionThreadEntry();
   void captureCopied(uint32_t ID, const QString &localPath);
-  void captureAdded(uint32_t ID, const QString &executable, const QString &api,
-                    const rdctype::array<byte> &thumbnail, QDateTime timestamp, const QString &path,
-                    bool local);
+  void captureAdded(const QString &name, const NewCaptureData &newCapture);
   void connectionClosed();
+
+  void selfClose();
+
   void killThread();
 
   void setTitle(const QString &title);
-  void openCapture(CaptureLog *log);
-  bool saveCapture(CaptureLog *log);
+  void openCapture(Capture *cap);
+  bool saveCapture(Capture *cap, QString path);
   bool checkAllowDelete();
   void deleteCaptureUnprompted(QListWidgetItem *item);
 
   Ui::LiveCapture *ui;
-  CaptureContext *m_Ctx = NULL;
+  ICaptureContext &m_Ctx;
   QString m_Hostname;
+  QString m_HostFriendlyname;
   uint32_t m_RemoteIdent;
   MainWindow *m_Main;
 
   LambdaThread *m_ConnectThread = NULL;
-  bool m_TriggerCapture = false;
-  bool m_QueueCapture = false;
-  int m_CaptureNumFrames = 1;
-  int m_CaptureFrameNum = 0;
-  int m_CaptureCounter = 0;
+  QSemaphore m_TriggerCapture;
+  QSemaphore m_QueueCapture;
+  QSemaphore m_CopyCapture;
   QSemaphore m_Disconnect;
-  ITargetControl *m_Connection = NULL;
+  QSemaphore m_CycleWindow;
+  int m_CaptureNumFrames = 1;
+  int m_QueueCaptureFrameNum = 0;
+  int m_CaptureCounter = 0;
+  QSemaphore m_Connected;
 
-  uint32_t m_CopyLogID = ~0U;
-  QString m_CopyLogLocalPath;
-  QMutex m_DeleteLogsLock;
-  QVector<uint32_t> m_DeleteLogs;
+  uint32_t m_CopyCaptureID = ~0U;
+  QString m_CopyCaptureLocalPath;
+  QMutex m_DeleteCapturesLock;
+  QVector<uint32_t> m_DeleteCaptures;
 
   bool m_IgnoreThreadClosed = false;
   bool m_IgnorePreviewToggle = false;
+
+  QMenu *m_ContextMenu = NULL;
 
   QAction *previewToggle;
   QToolButton *openButton;
@@ -161,4 +193,5 @@ private:
 
   QMutex m_ChildrenLock;
   QList<ChildProcess> m_Children;
+  QMap<QString, APIStatus> m_APIs;
 };

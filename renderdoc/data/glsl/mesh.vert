@@ -1,18 +1,18 @@
 /******************************************************************************
  * The MIT License (MIT)
- * 
- * Copyright (c) 2015-2016 Baldur Karlsson
- * 
+ *
+ * Copyright (c) 2020-2021 Baldur Karlsson
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,53 +22,60 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-layout (location = 0) in vec4 position;
-layout (location = 1) in vec4 IN_secondary;
+#define MESH_UBO
 
-out gl_PerVertex
-{
-	vec4 gl_Position;
-	float gl_PointSize;
-};
+#include "glsl_ubos.h"
 
-layout (location = 0) out vec4 OUT_secondary;
-layout (location = 1) out vec4 norm;
+// this allows overrides from outside to change to e.g. dvec4
+
+#ifndef POSITION_TYPE
+#define POSITION_TYPE vec4
+#endif
+
+#ifndef SECONDARY_TYPE
+#define SECONDARY_TYPE vec4
+#endif
+
+IO_LOCATION(0) in POSITION_TYPE vsin_position;
+IO_LOCATION(1) in SECONDARY_TYPE vsin_secondary;
+
+IO_LOCATION(0) out vec4 vsout_secondary;
+IO_LOCATION(1) out vec4 vsout_norm;
 
 void main(void)
 {
-	vec2 psprite[4] =
-	{
-		vec2(-1.0f, -1.0f),
-		vec2(-1.0f,  1.0f),
-		vec2( 1.0f, -1.0f),
-		vec2( 1.0f,  1.0f)
-	};
+  vec2 psprite[4] =
+      vec2[](vec2(-1.0f, -1.0f), vec2(-1.0f, 1.0f), vec2(1.0f, -1.0f), vec2(1.0f, 1.0f));
 
-	vec4 pos = position;
-	if(Mesh.homogenousInput == 0)
-	{
-		pos = vec4(position.xyz, 1);
-	}
-	else
-	{
+  vec4 pos = vec4(vsin_position);
+  if(Mesh.homogenousInput == 0u)
+  {
+    pos = vec4(pos.xyz, 1);
+  }
+  else
+  {
 #ifdef VULKAN
-		pos = vec4(position.x, -position.y, position.z, position.w);
+    pos = vec4(pos.x, -pos.y, pos.z, pos.w);
 #endif
-	}
+  }
 
-	gl_Position = Mesh.mvp * pos;
-	gl_Position.xy += Mesh.pointSpriteSize.xy*0.01f*psprite[VERTEX_ID%4]*gl_Position.w;
-	OUT_secondary = IN_secondary;
-	norm = vec4(0, 0, 1, 1);
+  gl_Position = Mesh.mvp * pos;
+  gl_Position.xy += Mesh.pointSpriteSize.xy * 0.01f * psprite[VERTEX_ID % 4] * gl_Position.w;
+  vsout_secondary = vec4(vsin_secondary);
+  vsout_norm = vec4(0, 0, 1, 1);
 
 #ifdef VULKAN
-	// GL->VK conventions
-	gl_Position.y = -gl_Position.y;
-	if(Mesh.rawoutput == 0)
-	{
-		gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
-	}
+  // GL->VK conventions
+  gl_Position.y = -gl_Position.y;
+  if(Mesh.flipY == 1)
+  {
+    gl_Position.y = -gl_Position.y;
+  }
+  if(Mesh.rawoutput == 0)
+  {
+    gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
+  }
 
-	gl_PointSize = 4.0f;
+  gl_PointSize = 4.0f;
 #endif
 }

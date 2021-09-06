@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -24,1662 +24,244 @@
  ******************************************************************************/
 
 #include "replay_proxy.h"
+#include <list>
 #include "lz4/lz4.h"
+#include "replay/dummy_driver.h"
+#include "serialise/lz4io.h"
 
-// these functions do compile time asserts on the size of the structure, to
-// help prevent the structure changing without these functions being updated.
-// This isn't perfect as a new variable could be added in padding space, or
-// one removed and leaves padding. Most variables are 4 bytes in size though
-// so it should be fairly reliable and it's better than nothing!
-// Since structures contain pointers and vary in size, we do this only on
-// Win32 to try and hide less padding with the larger alignment requirement
-// of 8-byte pointers.
-
-#if ENABLED(RDOC_WIN32) && ENABLED(RDOC_X64)
-template <typename T, size_t actual, size_t expected>
-class oversized
+template <>
+rdcstr DoStringise(const ReplayProxyPacket &el)
 {
-  int check[int(actual) - int(expected) + 1];
-};
-template <typename T, size_t actual, size_t expected>
-class undersized
-{
-  int check[int(expected) - int(actual) + 1];
-};
+  BEGIN_ENUM_STRINGISE(ReplayProxyPacket);
+  {
+    STRINGISE_ENUM_NAMED(eReplayProxy_RemoteExecutionKeepAlive, "RemoteExecutionKeepAlive");
+    STRINGISE_ENUM_NAMED(eReplayProxy_RemoteExecutionFinished, "RemoteExecutionFinished");
 
-#define SIZE_CHECK(T, expected)         \
-  undersized<T, sizeof(T), expected>(); \
-  oversized<T, sizeof(T), expected>();
-#else
-#define SIZE_CHECK(T, expected)
+    STRINGISE_ENUM_NAMED(eReplayProxy_ReplayLog, "ReplayLog");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_CacheBufferData, "CacheBufferData");
+    STRINGISE_ENUM_NAMED(eReplayProxy_CacheTextureData, "CacheTextureData");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetAPIProperties, "GetAPIProperties");
+    STRINGISE_ENUM_NAMED(eReplayProxy_FetchStructuredFile, "FetchStructuredFile");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetPassEvents, "GetPassEvents");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetResources, "GetResources");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetTextures, "GetTextures");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetTexture, "GetTexture");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetBuffers, "GetBuffers");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetBuffer, "GetBuffer");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetShaderEntryPoints, "GetShaderEntryPoints");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetShader, "GetShader");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetDebugMessages, "GetDebugMessages");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetBufferData, "GetBufferData");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetTextureData, "GetTextureData");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_SavePipelineState, "SavePipelineState");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetUsage, "GetUsage");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetLiveID, "GetLiveID");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetFrameRecord, "GetFrameRecord");
+    STRINGISE_ENUM_NAMED(eReplayProxy_IsRenderOutput, "IsRenderOutput");
+    STRINGISE_ENUM_NAMED(eReplayProxy_NeedRemapForFetch, "NeedRemapForFetch");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_FreeTargetResource, "FreeTargetResource");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_FetchCounters, "FetchCounters");
+    STRINGISE_ENUM_NAMED(eReplayProxy_EnumerateCounters, "EnumerateCounters");
+    STRINGISE_ENUM_NAMED(eReplayProxy_DescribeCounter, "DescribeCounter");
+    STRINGISE_ENUM_NAMED(eReplayProxy_FillCBufferVariables, "FillCBufferVariables");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_InitPostVS, "InitPostVS");
+    STRINGISE_ENUM_NAMED(eReplayProxy_InitPostVSVec, "InitPostVSVec");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetPostVS, "GetPostVS");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_BuildTargetShader, "BuildTargetShader");
+    STRINGISE_ENUM_NAMED(eReplayProxy_ReplaceResource, "ReplaceResource");
+    STRINGISE_ENUM_NAMED(eReplayProxy_RemoveReplacement, "RemoveReplacement");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_DebugVertex, "DebugVertex");
+    STRINGISE_ENUM_NAMED(eReplayProxy_DebugPixel, "DebugPixel");
+    STRINGISE_ENUM_NAMED(eReplayProxy_DebugThread, "DebugThread");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_RenderOverlay, "RenderOverlay");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_PixelHistory, "PixelHistory");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_DisassembleShader, "DisassembleShader");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetDisassemblyTargets, "GetDisassemblyTargets");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetTargetShaderEncodings, "GetTargetShaderEncodings");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetDriverInfo, "GetDriverInfo");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_ContinueDebug, "ContinueDebug");
+    STRINGISE_ENUM_NAMED(eReplayProxy_FreeDebugger, "FreeDebugger");
+  }
+  END_ENUM_STRINGISE();
+}
+
+// utility macros for implementing proxied functions
+
+// begins a chunk with the given packet type, and if reading verifies that the
+// read type was what was expected - otherwise sets an error flag
+#define PACKET_HEADER(packet)                                         \
+  ReplayProxyPacket p = (ReplayProxyPacket)ser.BeginChunk(packet, 0); \
+  if(ser.IsReading() && p != packet)                                  \
+    m_IsErrored = true;
+
+// begins the set of parameters. Note that we only begin a chunk when writing (sending a request to
+// the remote server), since on reading the chunk has already been begun to read the type to
+// dispatch to the correct function.
+#define BEGIN_PARAMS()             \
+  ParamSerialiser &ser = paramser; \
+  if(ser.IsWriting())              \
+    ser.BeginChunk(packet, 0);
+
+// end the set of parameters, and that chunk.
+#define END_PARAMS()                                \
+  {                                                 \
+    GET_SERIALISER.Serialise("packet"_lit, packet); \
+    ser.EndChunk();                                 \
+    CheckError(packet, expectedPacket);             \
+  }
+
+// begin serialising a return value. We begin a chunk here in either the writing or reading case
+// since this chunk is used purely to send/receive the return value and is fully handled within the
+// function.
+#define SERIALISE_RETURN(retval)                                                          \
+  {                                                                                       \
+    ReplayStatus fatalStatus = ReplayStatus::Succeeded;                                   \
+    if(m_RemoteServer)                                                                    \
+      fatalStatus = m_Remote->FatalErrorCheck();                                          \
+    ReturnSerialiser &ser = retser;                                                       \
+    PACKET_HEADER(packet);                                                                \
+    SERIALISE_ELEMENT(retval);                                                            \
+    GET_SERIALISER.Serialise("fatalStatus"_lit, fatalStatus);                             \
+    GET_SERIALISER.Serialise("packet"_lit, packet);                                       \
+    ser.EndChunk();                                                                       \
+    if(fatalStatus != ReplayStatus::Succeeded && m_FatalError == ReplayStatus::Succeeded) \
+      m_FatalError = fatalStatus;                                                         \
+    CheckError(packet, expectedPacket);                                                   \
+  }
+
+// similar to the above, but for void functions that don't return anything. We still want to check
+// that both sides of the communication are on the same page.
+#define SERIALISE_RETURN_VOID()                                                           \
+  {                                                                                       \
+    ReplayStatus fatalStatus = ReplayStatus::Succeeded;                                   \
+    if(m_RemoteServer)                                                                    \
+      fatalStatus = m_Remote->FatalErrorCheck();                                          \
+    ReturnSerialiser &ser = retser;                                                       \
+    PACKET_HEADER(packet);                                                                \
+    SERIALISE_ELEMENT(packet);                                                            \
+    GET_SERIALISER.Serialise("fatalStatus"_lit, fatalStatus);                             \
+    ser.EndChunk();                                                                       \
+    if(fatalStatus != ReplayStatus::Succeeded && m_FatalError == ReplayStatus::Succeeded) \
+      m_FatalError = fatalStatus;                                                         \
+    CheckError(packet, expectedPacket);                                                   \
+  }
+
+// defines the area where we're executing on the remote host. To avoid timeouts, the remote side
+// will pass over to a thread and begin sending periodic keepalive packets. Once complete, it will
+// send a finished packet and continue. The host side will accept any keepalive packets and continue
+// once it reads the finished packet. This is very synchronous, but by design the whole replay proxy
+// is very synchronous.
+// The host side will also abort under the usual circumstances - if some network error happens, or
+// if there is a true timeout.
+// Only the remote side needs a thread because the main thread will be busy inside the actual
+// workload, on the host side our thread can do the packet searching itself.
+struct RemoteExecution
+{
+  ReplayProxy *m_Proxy;
+  RemoteExecution(ReplayProxy *proxy)
+  {
+    m_Proxy = proxy;
+    m_Proxy->BeginRemoteExecution();
+  }
+  ~RemoteExecution() { m_Proxy->EndRemoteExecution(); }
+};
+#define REMOTE_EXECUTION() RemoteExecution exec(this);
+
+// uncomment the following to print verbose debugging prints for the remote proxy packets
+//#define PROXY_DEBUG(...) RDCDEBUG(__VA_ARGS__)
+
+#if !defined(PROXY_DEBUG)
+#define PROXY_DEBUG(...) \
+  do                     \
+  {                      \
+  } while(0)
 #endif
 
-#pragma region General Shader / State
-
-template <>
-string ToStrHelper<false, SystemAttribute>::Get(const SystemAttribute &el)
-{
-  switch(el)
-  {
-    TOSTR_CASE_STRINGIZE(eAttr_None)
-    TOSTR_CASE_STRINGIZE(eAttr_Position)
-    TOSTR_CASE_STRINGIZE(eAttr_PointSize)
-    TOSTR_CASE_STRINGIZE(eAttr_ClipDistance)
-    TOSTR_CASE_STRINGIZE(eAttr_CullDistance)
-    TOSTR_CASE_STRINGIZE(eAttr_RTIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_ViewportIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_VertexIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_PrimitiveIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_InstanceIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_InvocationIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_DispatchSize)
-    TOSTR_CASE_STRINGIZE(eAttr_DispatchThreadIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_GroupIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_GroupFlatIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_GroupThreadIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_GSInstanceIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_OutputControlPointIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_DomainLocation)
-    TOSTR_CASE_STRINGIZE(eAttr_IsFrontFace)
-    TOSTR_CASE_STRINGIZE(eAttr_MSAACoverage)
-    TOSTR_CASE_STRINGIZE(eAttr_MSAASamplePosition)
-    TOSTR_CASE_STRINGIZE(eAttr_MSAASampleIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_PatchNumVertices)
-    TOSTR_CASE_STRINGIZE(eAttr_OuterTessFactor)
-    TOSTR_CASE_STRINGIZE(eAttr_InsideTessFactor)
-    TOSTR_CASE_STRINGIZE(eAttr_ColourOutput)
-    TOSTR_CASE_STRINGIZE(eAttr_DepthOutput)
-    TOSTR_CASE_STRINGIZE(eAttr_DepthOutputGreaterEqual)
-    TOSTR_CASE_STRINGIZE(eAttr_DepthOutputLessEqual)
-    default: break;
-  }
-
-  char tostrBuf[256] = {0};
-  StringFormat::snprintf(tostrBuf, 255, "SystemAttribute<%d>", el);
-
-  return tostrBuf;
-}
-
-template <>
-void Serialiser::Serialise(const char *name, ResourceFormat &el)
-{
-  Serialise("", el.rawType);
-  Serialise("", el.special);
-  Serialise("", el.specialFormat);
-  Serialise("", el.strname);
-  Serialise("", el.compCount);
-  Serialise("", el.compByteWidth);
-  Serialise("", el.compType);
-  Serialise("", el.bgraOrder);
-  Serialise("", el.srgbCorrected);
-
-  SIZE_CHECK(ResourceFormat, 56);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, BindpointMap &el)
-{
-  Serialise("", el.bindset);
-  Serialise("", el.bind);
-  Serialise("", el.used);
-  Serialise("", el.arraySize);
-
-  SIZE_CHECK(BindpointMap, 16);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, ShaderBindpointMapping &el)
-{
-  Serialise("", el.InputAttributes);
-  Serialise("", el.ConstantBlocks);
-  Serialise("", el.ReadOnlyResources);
-  Serialise("", el.ReadWriteResources);
-
-  SIZE_CHECK(ShaderBindpointMapping, 64);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, SigParameter &el)
-{
-  Serialise("", el.varName);
-  Serialise("", el.semanticName);
-  Serialise("", el.semanticIndex);
-  Serialise("", el.semanticIdxName);
-  Serialise("", el.needSemanticIndex);
-  Serialise("", el.regIndex);
-  Serialise("", el.systemValue);
-  Serialise("", el.compType);
-  Serialise("", el.regChannelMask);
-  Serialise("", el.channelUsedMask);
-  Serialise("", el.compCount);
-  Serialise("", el.stream);
-  Serialise("", el.arrayIndex);
-
-  SIZE_CHECK(SigParameter, 88);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, ShaderVariableType &el)
-{
-  Serialise("", el.descriptor.name);
-  Serialise("", el.descriptor.type);
-  Serialise("", el.descriptor.rows);
-  Serialise("", el.descriptor.cols);
-  Serialise("", el.descriptor.elements);
-  Serialise("", el.descriptor.rowMajorStorage);
-  Serialise("", el.descriptor.arrayStride);
-  Serialise("", el.members);
-
-  SIZE_CHECK(ShaderVariableType, 56);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, ShaderConstant &el)
-{
-  Serialise("", el.name);
-  Serialise("", el.reg.vec);
-  Serialise("", el.reg.comp);
-  Serialise("", el.defaultValue);
-  Serialise("", el.type);
-
-  SIZE_CHECK(ShaderConstant, 88);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, ConstantBlock &el)
-{
-  Serialise("", el.name);
-  Serialise("", el.variables);
-  Serialise("", el.bufferBacked);
-  Serialise("", el.bindPoint);
-  Serialise("", el.byteSize);
-
-  SIZE_CHECK(ConstantBlock, 48);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, ShaderResource &el)
-{
-  Serialise("", el.IsSampler);
-  Serialise("", el.IsTexture);
-  Serialise("", el.IsSRV);
-  Serialise("", el.resType);
-  Serialise("", el.name);
-  Serialise("", el.variableType);
-  Serialise("", el.bindPoint);
-
-  SIZE_CHECK(ShaderResource, 96);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, ShaderReflection &el)
-{
-  Serialise("", el.DebugInfo.compileFlags);
-  Serialise("", el.DebugInfo.entryFunc);
-  Serialise("", el.DebugInfo.files);
-
-  SerialisePODArray<3>("", el.DispatchThreadsDimension);
-
-  Serialise("", el.Disassembly);
-
-  Serialise("", el.RawBytes);
-
-  Serialise("", el.InputSig);
-  Serialise("", el.OutputSig);
-
-  Serialise("", el.ConstantBlocks);
-
-  Serialise("", el.ReadOnlyResources);
-  Serialise("", el.ReadWriteResources);
-
-  Serialise("", el.Interfaces);
-
-  SIZE_CHECK(ShaderReflection, 192);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, ShaderVariable &el)
-{
-  Serialise("", el.rows);
-  Serialise("", el.columns);
-  Serialise("", el.name);
-  Serialise("", el.type);
-
-  SerialisePODArray<16>("", el.value.dv);
-
-  Serialise("", el.isStruct);
-
-  Serialise("", el.members);
-
-  SIZE_CHECK(ShaderVariable, 184);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, ShaderDebugState &el)
-{
-  Serialise("", el.registers);
-  Serialise("", el.outputs);
-  Serialise("", el.nextInstruction);
-
-  vector<vector<ShaderVariable> > indexableTemps;
-
-  int32_t numidxtemps = el.indexableTemps.count;
-  Serialise("", numidxtemps);
-
-  if(m_Mode == READING)
-    create_array_uninit(el.indexableTemps, numidxtemps);
-
-  for(int32_t i = 0; i < numidxtemps; i++)
-    Serialise("", el.indexableTemps[i]);
-
-  SIZE_CHECK(ShaderDebugState, 56);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, ShaderDebugTrace &el)
-{
-  Serialise("", el.inputs);
-
-  int32_t numcbuffers = el.cbuffers.count;
-  Serialise("", numcbuffers);
-
-  if(m_Mode == READING)
-    create_array_uninit(el.cbuffers, numcbuffers);
-
-  for(int32_t i = 0; i < numcbuffers; i++)
-    Serialise("", el.cbuffers[i]);
-
-  Serialise("", el.states);
-
-  SIZE_CHECK(ShaderDebugTrace, 48);
-}
-
-#pragma endregion General Shader / State
-
-#pragma region D3D11 pipeline state
-
-template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::InputAssembler::LayoutInput &el)
-{
-  Serialise("", el.SemanticName);
-  Serialise("", el.SemanticIndex);
-  Serialise("", el.Format);
-  Serialise("", el.InputSlot);
-  Serialise("", el.ByteOffset);
-  Serialise("", el.PerInstance);
-  Serialise("", el.InstanceDataStepRate);
-
-  SIZE_CHECK(D3D11PipelineState::InputAssembler::LayoutInput, 96);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::InputAssembler &el)
-{
-  Serialise("", el.ibuffer.Buffer);
-  Serialise("", el.ibuffer.Offset);
-
-  Serialise("", el.customName);
-  Serialise("", el.LayoutName);
-
-  Serialise("", el.vbuffers);
-  Serialise("", el.layouts);
-
-  SIZE_CHECK(D3D11PipelineState::InputAssembler, 88);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::ShaderStage::ResourceView &el)
-{
-  Serialise("", el.View);
-  Serialise("", el.Resource);
-  Serialise("", el.Type);
-  Serialise("", el.Format);
-
-  Serialise("", el.Structured);
-  Serialise("", el.BufferStructCount);
-  Serialise("", el.ElementOffset);
-  Serialise("", el.ElementWidth);
-  Serialise("", el.FirstElement);
-  Serialise("", el.NumElements);
-
-  Serialise("", el.Flags);
-  Serialise("", el.HighestMip);
-  Serialise("", el.NumMipLevels);
-  Serialise("", el.ArraySize);
-  Serialise("", el.FirstArraySlice);
-
-  SIZE_CHECK(D3D11PipelineState::ShaderStage::ResourceView, 136);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::ShaderStage::Sampler &el)
-{
-  Serialise("", el.Samp);
-  Serialise("", el.SamplerName);
-  Serialise("", el.customSamplerName);
-  Serialise("", el.AddressU);
-  Serialise("", el.AddressV);
-  Serialise("", el.AddressW);
-  SerialisePODArray<4>("", el.BorderColor);
-  Serialise("", el.Comparison);
-  Serialise("", el.Filter);
-  Serialise("", el.UseBorder);
-  Serialise("", el.UseComparison);
-  Serialise("", el.MaxAniso);
-  Serialise("", el.MaxLOD);
-  Serialise("", el.MinLOD);
-  Serialise("", el.MipLODBias);
-
-  SIZE_CHECK(D3D11PipelineState::ShaderStage::Sampler, 152);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::ShaderStage &el)
-{
-  Serialise("", el.Shader);
-  Serialise("", el.stage);
-  Serialise("", el.ShaderName);
-  Serialise("", el.customName);
-
-  if(m_Mode == READING)
-    el.ShaderDetails = NULL;
-
-  Serialise("", el.BindpointMapping);
-
-  Serialise("", el.SRVs);
-  Serialise("", el.UAVs);
-  Serialise("", el.Samplers);
-  Serialise("", el.ConstantBuffers);
-  Serialise("", el.ClassInstances);
-
-  SIZE_CHECK(D3D11PipelineState::ShaderStage, 192);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::Rasterizer &el)
-{
-  Serialise("", el.m_State);
-  Serialise("", el.Scissors);
-  Serialise("", el.Viewports);
-
-  SIZE_CHECK(D3D11PipelineState::Rasterizer, 88);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::OutputMerger::BlendState::RTBlend &el)
-{
-  Serialise("", el.m_Blend.Source);
-  Serialise("", el.m_Blend.Destination);
-  Serialise("", el.m_Blend.Operation);
-
-  Serialise("", el.m_AlphaBlend.Source);
-  Serialise("", el.m_AlphaBlend.Destination);
-  Serialise("", el.m_AlphaBlend.Operation);
-
-  Serialise("", el.LogicOp);
-
-  Serialise("", el.Enabled);
-  Serialise("", el.LogicEnabled);
-  Serialise("", el.WriteMask);
-
-  SIZE_CHECK(D3D11PipelineState::OutputMerger::BlendState::RTBlend, 128);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::OutputMerger &el)
-{
-  {
-    Serialise("", el.m_State.State);
-    Serialise("", el.m_State.DepthEnable);
-    Serialise("", el.m_State.DepthFunc);
-    Serialise("", el.m_State.DepthWrites);
-    Serialise("", el.m_State.StencilEnable);
-    Serialise("", el.m_State.StencilReadMask);
-    Serialise("", el.m_State.StencilWriteMask);
-
-    Serialise("", el.m_State.m_FrontFace.FailOp);
-    Serialise("", el.m_State.m_FrontFace.DepthFailOp);
-    Serialise("", el.m_State.m_FrontFace.PassOp);
-    Serialise("", el.m_State.m_FrontFace.Func);
-
-    Serialise("", el.m_State.m_BackFace.FailOp);
-    Serialise("", el.m_State.m_BackFace.DepthFailOp);
-    Serialise("", el.m_State.m_BackFace.PassOp);
-    Serialise("", el.m_State.m_BackFace.Func);
-
-    Serialise("", el.m_State.StencilRef);
-  }
-
-  {
-    Serialise("", el.m_BlendState.State);
-    Serialise("", el.m_BlendState.AlphaToCoverage);
-    Serialise("", el.m_BlendState.IndependentBlend);
-    Serialise("", el.m_BlendState.Blends);
-    SerialisePODArray<4>("", el.m_BlendState.BlendFactor);
-
-    Serialise("", el.m_BlendState.SampleMask);
-  }
-
-  Serialise("", el.RenderTargets);
-  Serialise("", el.UAVStartSlot);
-  Serialise("", el.UAVs);
-  Serialise("", el.DepthTarget);
-  Serialise("", el.DepthReadOnly);
-  Serialise("", el.StencilReadOnly);
-
-  SIZE_CHECK(D3D11PipelineState::OutputMerger, 424);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState &el)
-{
-  Serialise("", el.m_IA);
-
-  Serialise("", el.m_VS);
-  Serialise("", el.m_HS);
-  Serialise("", el.m_DS);
-  Serialise("", el.m_GS);
-  Serialise("", el.m_PS);
-  Serialise("", el.m_CS);
-
-  Serialise("", el.m_SO.Outputs);
-
-  Serialise("", el.m_RS);
-  Serialise("", el.m_OM);
-
-  SIZE_CHECK(D3D11PipelineState, 1768);
-}
-
-#pragma endregion D3D11 pipeline state
-
-#pragma region D3D12 pipeline state
-
-template <>
-void Serialiser::Serialise(const char *name, D3D12PipelineState &el)
-{
-  RDCUNIMPLEMENTED("Serialiser::Serialise<D3D12PipelineState>()");
-}
-
-#pragma endregion D3D12 pipeline state
-
-#pragma region OpenGL pipeline state
-
-template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::VertexInput::VertexAttribute &el)
-{
-  Serialise("", el.Enabled);
-  Serialise("", el.Format);
-  SerialisePODArray<4>("", el.GenericValue.f);
-  Serialise("", el.BufferSlot);
-  Serialise("", el.RelativeOffset);
-
-  SIZE_CHECK(GLPipelineState::VertexInput::VertexAttribute, 88);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::VertexInput &el)
-{
-  Serialise("", el.attributes);
-  Serialise("", el.vbuffers);
-  Serialise("", el.ibuffer);
-  Serialise("", el.primitiveRestart);
-  Serialise("", el.restartIndex);
-  Serialise("", el.provokingVertexLast);
-
-  SIZE_CHECK(GLPipelineState::VertexInput, 56);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::ShaderStage &el)
-{
-  Serialise("", el.Shader);
-
-  Serialise("", el.ShaderName);
-  Serialise("", el.customShaderName);
-
-  Serialise("", el.ProgramName);
-  Serialise("", el.customProgramName);
-
-  Serialise("", el.PipelineActive);
-  Serialise("", el.PipelineName);
-  Serialise("", el.customPipelineName);
-
-  Serialise("", el.stage);
-  Serialise("", el.BindpointMapping);
-  Serialise("", el.Subroutines);
-
-  if(m_Mode == READING)
-    el.ShaderDetails = NULL;
-
-  SIZE_CHECK(GLPipelineState::ShaderStage, 176);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::Sampler &el)
-{
-  Serialise("", el.Samp);
-  Serialise("", el.AddressS);
-  Serialise("", el.AddressT);
-  Serialise("", el.AddressR);
-  SerialisePODArray<4>("", el.BorderColor);
-  Serialise("", el.Comparison);
-  Serialise("", el.MinFilter);
-  Serialise("", el.MagFilter);
-  Serialise("", el.UseBorder);
-  Serialise("", el.UseComparison);
-  Serialise("", el.SeamlessCube);
-  Serialise("", el.MaxAniso);
-  Serialise("", el.MaxLOD);
-  Serialise("", el.MinLOD);
-  Serialise("", el.MipLODBias);
-
-  SIZE_CHECK(GLPipelineState::Sampler, 152);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::ImageLoadStore &el)
-{
-  Serialise("", el.Resource);
-  Serialise("", el.Level);
-  Serialise("", el.Layered);
-  Serialise("", el.Layer);
-  Serialise("", el.ResType);
-  Serialise("", el.readAllowed);
-  Serialise("", el.writeAllowed);
-  Serialise("", el.Format);
-
-  SIZE_CHECK(GLPipelineState::ImageLoadStore, 88);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::Rasterizer &el)
-{
-  Serialise("", el.Viewports);
-  Serialise("", el.Scissors);
-  Serialise("", el.m_State);
-
-  SIZE_CHECK(GLPipelineState::Rasterizer, 120);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::DepthState &el)
-{
-  Serialise("", el.DepthEnable);
-  Serialise("", el.DepthFunc);
-  Serialise("", el.DepthWrites);
-  Serialise("", el.DepthBounds);
-  Serialise("", el.NearBound);
-  Serialise("", el.FarBound);
-
-  SIZE_CHECK(GLPipelineState::DepthState, 48);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::StencilState &el)
-{
-  Serialise("", el.StencilEnable);
-
-  Serialise("", el.m_FrontFace.FailOp);
-  Serialise("", el.m_FrontFace.DepthFailOp);
-  Serialise("", el.m_FrontFace.PassOp);
-  Serialise("", el.m_FrontFace.Func);
-  Serialise("", el.m_FrontFace.Ref);
-  Serialise("", el.m_FrontFace.ValueMask);
-  Serialise("", el.m_FrontFace.WriteMask);
-
-  Serialise("", el.m_BackFace.FailOp);
-  Serialise("", el.m_BackFace.DepthFailOp);
-  Serialise("", el.m_BackFace.PassOp);
-  Serialise("", el.m_BackFace.Func);
-  Serialise("", el.m_BackFace.Ref);
-  Serialise("", el.m_BackFace.ValueMask);
-  Serialise("", el.m_BackFace.WriteMask);
-
-  SIZE_CHECK(GLPipelineState::StencilState, 168);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::FrameBuffer::BlendState::RTBlend &el)
-{
-  Serialise("", el.Enabled);
-  Serialise("", el.WriteMask);
-  Serialise("", el.LogicOp);
-
-  Serialise("", el.m_Blend.Source);
-  Serialise("", el.m_Blend.Destination);
-  Serialise("", el.m_Blend.Operation);
-
-  Serialise("", el.m_AlphaBlend.Source);
-  Serialise("", el.m_AlphaBlend.Destination);
-  Serialise("", el.m_AlphaBlend.Operation);
-
-  SIZE_CHECK(GLPipelineState::FrameBuffer::BlendState::RTBlend, 120);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::FrameBuffer::BlendState &el)
-{
-  SerialisePODArray<4>("", el.BlendFactor);
-  Serialise("", el.Blends);
-
-  SIZE_CHECK(GLPipelineState::FrameBuffer::BlendState, 32);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::FrameBuffer::Attachment &el)
-{
-  Serialise("", el.Obj);
-  Serialise("", el.Layer);
-  Serialise("", el.Mip);
-
-  SIZE_CHECK(GLPipelineState::FrameBuffer::Attachment, 16);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::FrameBuffer &el)
-{
-  Serialise("", el.FramebufferSRGB);
-  Serialise("", el.Dither);
-
-  Serialise("", el.m_DrawFBO.Obj);
-  Serialise("", el.m_DrawFBO.Color);
-  Serialise("", el.m_DrawFBO.Depth);
-  Serialise("", el.m_DrawFBO.Stencil);
-  Serialise("", el.m_DrawFBO.DrawBuffers);
-  Serialise("", el.m_DrawFBO.ReadBuffer);
-
-  Serialise("", el.m_ReadFBO.Obj);
-  Serialise("", el.m_ReadFBO.Color);
-  Serialise("", el.m_ReadFBO.Depth);
-  Serialise("", el.m_ReadFBO.Stencil);
-  Serialise("", el.m_ReadFBO.DrawBuffers);
-  Serialise("", el.m_ReadFBO.ReadBuffer);
-
-  Serialise("", el.m_Blending);
-
-  SIZE_CHECK(GLPipelineState::FrameBuffer, 200);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, GLPipelineState &el)
-{
-  Serialise("", el.m_VtxIn);
-
-  Serialise("", el.m_VS);
-  Serialise("", el.m_TCS);
-  Serialise("", el.m_TES);
-  Serialise("", el.m_GS);
-  Serialise("", el.m_FS);
-  Serialise("", el.m_CS);
-
-  Serialise("", el.m_VtxProcess);
-
-  Serialise("", el.Textures);
-  Serialise("", el.Samplers);
-  Serialise("", el.AtomicBuffers);
-  Serialise("", el.UniformBuffers);
-  Serialise("", el.ShaderStorageBuffers);
-  Serialise("", el.Images);
-
-  Serialise("", el.m_Feedback);
-
-  Serialise("", el.m_Rasterizer);
-  Serialise("", el.m_DepthState);
-  Serialise("", el.m_StencilState);
-
-  Serialise("", el.m_FB);
-
-  Serialise("", el.m_Hints);
-
-  SIZE_CHECK(GLPipelineState, 1952);
-}
-
-#pragma endregion OpenGL pipeline state
-
-#pragma region Vulkan pipeline state
-
-template <>
-void Serialiser::Serialise(
-    const char *name,
-    VulkanPipelineState::Pipeline::DescriptorSet::DescriptorBinding::BindingElement &el)
-{
-  Serialise("", el.view);
-  Serialise("", el.res);
-  Serialise("", el.sampler);
-  Serialise("", el.immutableSampler);
-
-  Serialise("", el.SamplerName);
-  Serialise("", el.customSamplerName);
-
-  Serialise("", el.viewfmt);
-  SerialisePODArray<4>("", el.swizzle);
-  Serialise("", el.baseMip);
-  Serialise("", el.baseLayer);
-  Serialise("", el.numMip);
-  Serialise("", el.numLayer);
-
-  Serialise("", el.offset);
-  Serialise("", el.size);
-
-  Serialise("", el.mag);
-  Serialise("", el.min);
-  Serialise("", el.mip);
-  Serialise("", el.addrU);
-  Serialise("", el.addrV);
-  Serialise("", el.addrW);
-  Serialise("", el.mipBias);
-  Serialise("", el.maxAniso);
-  Serialise("", el.compareEnable);
-  Serialise("", el.comparison);
-  Serialise("", el.minlod);
-  Serialise("", el.maxlod);
-  Serialise("", el.borderEnable);
-  Serialise("", el.border);
-  Serialise("", el.unnormalized);
-
-  SIZE_CHECK(VulkanPipelineState::Pipeline::DescriptorSet::DescriptorBinding::BindingElement, 328);
-};
-
-template <>
-void Serialiser::Serialise(const char *name,
-                           VulkanPipelineState::Pipeline::DescriptorSet::DescriptorBinding &el)
-{
-  Serialise("", el.descriptorCount);
-  Serialise("", el.type);
-  Serialise("", el.stageFlags);
-
-  Serialise("", el.binds);
-
-  SIZE_CHECK(VulkanPipelineState::Pipeline::DescriptorSet::DescriptorBinding, 32);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::Pipeline::DescriptorSet &el)
-{
-  Serialise("", el.layout);
-  Serialise("", el.descset);
-
-  Serialise("", el.bindings);
-
-  SIZE_CHECK(VulkanPipelineState::Pipeline::DescriptorSet, 32);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::Pipeline &el)
-{
-  Serialise("", el.obj);
-  Serialise("", el.flags);
-
-  Serialise("", el.DescSets);
-
-  SIZE_CHECK(VulkanPipelineState::Pipeline, 32);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::VertexInput::Attribute &el)
-{
-  Serialise("", el.location);
-  Serialise("", el.binding);
-  Serialise("", el.format);
-  Serialise("", el.byteoffset);
-
-  SIZE_CHECK(VulkanPipelineState::VertexInput::Attribute, 72);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::VertexInput &el)
-{
-  Serialise("", el.attrs);
-  Serialise("", el.binds);
-  Serialise("", el.vbuffers);
-
-  SIZE_CHECK(VulkanPipelineState::VertexInput, 48);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::ShaderStage::SpecInfo &el)
-{
-  Serialise("", el.specID);
-  Serialise("", el.data);
-
-  SIZE_CHECK(VulkanPipelineState::ShaderStage::SpecInfo, 24);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::ShaderStage &el)
-{
-  Serialise("", el.Shader);
-  Serialise("", el.entryPoint);
-
-  Serialise("", el.ShaderName);
-  Serialise("", el.customName);
-  Serialise("", el.BindpointMapping);
-  Serialise("", el.stage);
-
-  if(m_Mode == READING)
-    el.ShaderDetails = NULL;
-
-  Serialise("", el.specialization);
-
-  SIZE_CHECK(VulkanPipelineState::ShaderStage, 144);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::ViewState &el)
-{
-  Serialise("", el.viewportScissors);
-
-  SIZE_CHECK(VulkanPipelineState::ViewState, 16);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::ColorBlend::Attachment &el)
-{
-  Serialise("", el.blendEnable);
-
-  Serialise("", el.blend.Source);
-  Serialise("", el.blend.Destination);
-  Serialise("", el.blend.Operation);
-
-  Serialise("", el.alphaBlend.Source);
-  Serialise("", el.alphaBlend.Destination);
-  Serialise("", el.alphaBlend.Operation);
-
-  Serialise("", el.writeMask);
-
-  SIZE_CHECK(VulkanPipelineState::ColorBlend::Attachment, 112);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::ColorBlend &el)
-{
-  Serialise("", el.alphaToCoverageEnable);
-  Serialise("", el.alphaToOneEnable);
-  Serialise("", el.logicOpEnable);
-  Serialise("", el.logicOp);
-
-  Serialise("", el.attachments);
-
-  SerialisePODArray<4>("", el.blendConst);
-
-  SIZE_CHECK(VulkanPipelineState::ColorBlend, 64);
-}
-
-template <>
-void Serialiser::Serialise(const char *name,
-                           VulkanPipelineState::CurrentPass::Framebuffer::Attachment &el)
-{
-  Serialise("", el.view);
-  Serialise("", el.img);
-
-  Serialise("", el.viewfmt);
-  SerialisePODArray<4>("", el.swizzle);
-
-  Serialise("", el.baseMip);
-  Serialise("", el.baseLayer);
-  Serialise("", el.numMip);
-  Serialise("", el.numLayer);
-
-  SIZE_CHECK(VulkanPipelineState::CurrentPass::Framebuffer::Attachment, 104);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::DepthStencil &el)
-{
-  Serialise("", el.depthTestEnable);
-  Serialise("", el.depthWriteEnable);
-  Serialise("", el.depthBoundsEnable);
-  Serialise("", el.depthCompareOp);
-
-  Serialise("", el.stencilTestEnable);
-
-  Serialise("", el.front.failOp);
-  Serialise("", el.front.depthFailOp);
-  Serialise("", el.front.passOp);
-  Serialise("", el.front.func);
-  Serialise("", el.front.ref);
-  Serialise("", el.front.compareMask);
-  Serialise("", el.front.writeMask);
-
-  Serialise("", el.back.failOp);
-  Serialise("", el.back.depthFailOp);
-  Serialise("", el.back.passOp);
-  Serialise("", el.back.func);
-  Serialise("", el.back.ref);
-  Serialise("", el.back.compareMask);
-  Serialise("", el.back.writeMask);
-
-  Serialise("", el.minDepthBounds);
-  Serialise("", el.maxDepthBounds);
-
-  SIZE_CHECK(VulkanPipelineState::DepthStencil, 208);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::CurrentPass &el)
-{
-  Serialise("", el.renderpass.obj);
-  Serialise("", el.renderpass.inputAttachments);
-  Serialise("", el.renderpass.colorAttachments);
-  Serialise("", el.renderpass.depthstencilAttachment);
-
-  Serialise("", el.framebuffer.obj);
-  Serialise("", el.framebuffer.attachments);
-  Serialise("", el.framebuffer.width);
-  Serialise("", el.framebuffer.height);
-  Serialise("", el.framebuffer.layers);
-
-  Serialise("", el.renderArea);
-
-  SIZE_CHECK(VulkanPipelineState::CurrentPass, 104);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::ImageData::ImageLayout &el)
-{
-  Serialise("", el.baseMip);
-  Serialise("", el.baseLayer);
-  Serialise("", el.numMip);
-  Serialise("", el.numLayer);
-  Serialise("", el.name);
-
-  SIZE_CHECK(VulkanPipelineState::ImageData::ImageLayout, 32);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::ImageData &el)
-{
-  Serialise("", el.image);
-  Serialise("", el.layouts);
-
-  SIZE_CHECK(VulkanPipelineState::ImageData, 24);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState &el)
-{
-  Serialise("", el.compute);
-  Serialise("", el.graphics);
-
-  Serialise("", el.IA);
-  Serialise("", el.VI);
-
-  Serialise("", el.VS);
-  Serialise("", el.TCS);
-  Serialise("", el.TES);
-  Serialise("", el.GS);
-  Serialise("", el.FS);
-  Serialise("", el.CS);
-
-  Serialise("", el.Tess);
-
-  Serialise("", el.VP);
-  Serialise("", el.RS);
-  Serialise("", el.MSAA);
-  Serialise("", el.CB);
-  Serialise("", el.DS);
-  Serialise("", el.Pass);
-
-  Serialise("", el.images);
-
-  SIZE_CHECK(VulkanPipelineState, 1472);
-}
-
-#pragma endregion Vulkan pipeline state
-
-#pragma region Data descriptors
-
-template <>
-void Serialiser::Serialise(const char *name, FetchTexture &el)
-{
-  Serialise("", el.name);
-  Serialise("", el.customName);
-  Serialise("", el.format);
-  Serialise("", el.dimension);
-  Serialise("", el.resType);
-  Serialise("", el.width);
-  Serialise("", el.height);
-  Serialise("", el.depth);
-  Serialise("", el.ID);
-  Serialise("", el.cubemap);
-  Serialise("", el.mips);
-  Serialise("", el.arraysize);
-  Serialise("", el.creationFlags);
-  Serialise("", el.msQual);
-  Serialise("", el.msSamp);
-  Serialise("", el.byteSize);
-
-  SIZE_CHECK(FetchTexture, 144);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchBuffer &el)
-{
-  Serialise("", el.ID);
-  Serialise("", el.name);
-  Serialise("", el.customName);
-  Serialise("", el.creationFlags);
-  Serialise("", el.length);
-
-  SIZE_CHECK(FetchBuffer, 40);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, APIProperties &el)
-{
-  Serialise("", el.pipelineType);
-  Serialise("", el.localRenderer);
-  Serialise("", el.degraded);
-
-  SIZE_CHECK(APIProperties, 12);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, DebugMessage &el)
-{
-  Serialise("", el.eventID);
-  Serialise("", el.category);
-  Serialise("", el.severity);
-  Serialise("", el.source);
-  Serialise("", el.messageID);
-  Serialise("", el.description);
-
-  SIZE_CHECK(DebugMessage, 40);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchAPIEvent &el)
-{
-  Serialise("", el.eventID);
-  Serialise("", el.context);
-  Serialise("", el.callstack);
-  Serialise("", el.eventDesc);
-  Serialise("", el.fileOffset);
-
-  SIZE_CHECK(FetchAPIEvent, 56);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchDrawcall &el)
-{
-  Serialise("", el.eventID);
-  Serialise("", el.drawcallID);
-
-  Serialise("", el.name);
-
-  Serialise("", el.flags);
-
-  SerialisePODArray<4>("", el.markerColour);
-
-  Serialise("", el.numIndices);
-  Serialise("", el.numInstances);
-  Serialise("", el.baseVertex);
-  Serialise("", el.indexOffset);
-  Serialise("", el.vertexOffset);
-  Serialise("", el.instanceOffset);
-
-  SerialisePODArray<3>("", el.dispatchDimension);
-  SerialisePODArray<3>("", el.dispatchThreadsDimension);
-
-  Serialise("", el.indexByteWidth);
-  Serialise("", el.topology);
-
-  Serialise("", el.copySource);
-  Serialise("", el.copyDestination);
-
-  Serialise("", el.parent);
-  Serialise("", el.previous);
-  Serialise("", el.next);
-
-  SerialisePODArray<8>("", el.outputs);
-  Serialise("", el.depthOut);
-
-  Serialise("", el.events);
-  Serialise("", el.children);
-
-  SIZE_CHECK(FetchDrawcall, 248);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameConstantBindStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.sets);
-  Serialise("", el.nulls);
-  Serialise("", el.bindslots);
-  Serialise("", el.sizes);
-
-  SIZE_CHECK(FetchFrameConstantBindStats, 48);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameSamplerBindStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.sets);
-  Serialise("", el.nulls);
-  Serialise("", el.bindslots);
-
-  SIZE_CHECK(FetchFrameSamplerBindStats, 32);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameResourceBindStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.sets);
-  Serialise("", el.nulls);
-  Serialise("", el.types);
-  Serialise("", el.bindslots);
-
-  SIZE_CHECK(FetchFrameResourceBindStats, 48);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameUpdateStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.clients);
-  Serialise("", el.servers);
-  Serialise("", el.types);
-  Serialise("", el.sizes);
-
-  SIZE_CHECK(FetchFrameUpdateStats, 48);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameDrawStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.instanced);
-  Serialise("", el.indirect);
-  Serialise("", el.counts);
-
-  SIZE_CHECK(FetchFrameDrawStats, 32);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameDispatchStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.indirect);
-
-  SIZE_CHECK(FetchFrameDispatchStats, 8);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameIndexBindStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.sets);
-  Serialise("", el.nulls);
-
-  SIZE_CHECK(FetchFrameIndexBindStats, 12);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameVertexBindStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.sets);
-  Serialise("", el.nulls);
-  Serialise("", el.bindslots);
-
-  SIZE_CHECK(FetchFrameVertexBindStats, 32);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameLayoutBindStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.sets);
-  Serialise("", el.nulls);
-
-  SIZE_CHECK(FetchFrameLayoutBindStats, 12);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameShaderStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.sets);
-  Serialise("", el.nulls);
-  Serialise("", el.redundants);
-
-  SIZE_CHECK(FetchFrameShaderStats, 16);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameBlendStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.sets);
-  Serialise("", el.nulls);
-  Serialise("", el.redundants);
-
-  SIZE_CHECK(FetchFrameBlendStats, 16);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameDepthStencilStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.sets);
-  Serialise("", el.nulls);
-  Serialise("", el.redundants);
-
-  SIZE_CHECK(FetchFrameDepthStencilStats, 16);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameRasterizationStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.sets);
-  Serialise("", el.nulls);
-  Serialise("", el.redundants);
-  Serialise("", el.viewports);
-  Serialise("", el.rects);
-
-  SIZE_CHECK(FetchFrameRasterizationStats, 48);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameOutputStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.sets);
-  Serialise("", el.nulls);
-  Serialise("", el.bindslots);
-
-  SIZE_CHECK(FetchFrameOutputStats, 32);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameStatistics &el)
-{
-  Serialise("", el.recorded);
-  // #mivance note this is technically error-prone from the perspective
-  // that we're passing references to pointers, but as we're really
-  // dealing with arrays,t hey'll never be NULL and need to be assigned
-  // to, so this is fine
-  FetchFrameConstantBindStats *constants = el.constants;
-  SerialiseComplexArray<eShaderStage_Count>("", constants);
-  FetchFrameSamplerBindStats *samplers = el.samplers;
-  SerialiseComplexArray<eShaderStage_Count>("", samplers);
-  FetchFrameResourceBindStats *resources = el.resources;
-  SerialiseComplexArray<eShaderStage_Count>("", resources);
-  Serialise("", el.updates);
-  Serialise("", el.draws);
-  Serialise("", el.dispatches);
-  Serialise("", el.indices);
-  Serialise("", el.vertices);
-  Serialise("", el.layouts);
-  FetchFrameShaderStats *shaders = el.shaders;
-  SerialiseComplexArray<eShaderStage_Count>("", shaders);
-  Serialise("", el.blends);
-  Serialise("", el.depths);
-  Serialise("", el.rasters);
-  Serialise("", el.outputs);
-
-  SIZE_CHECK(FetchFrameStatistics, 1136);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameInfo &el)
-{
-  Serialise("", el.frameNumber);
-  Serialise("", el.firstEvent);
-  Serialise("", el.fileOffset);
-  Serialise("", el.uncompressedFileSize);
-  Serialise("", el.compressedFileSize);
-  Serialise("", el.persistentSize);
-  Serialise("", el.initDataSize);
-  Serialise("", el.captureTime);
-  Serialise("", el.stats);
-  Serialise("", el.debugMessages);
-
-  SIZE_CHECK(FetchFrameInfo, 1208);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameRecord &el)
-{
-  Serialise("", el.frameInfo);
-  Serialise("", el.drawcallList);
-
-  SIZE_CHECK(FetchFrameRecord, 1224);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, MeshFormat &el)
-{
-  Serialise("", el.idxbuf);
-  Serialise("", el.idxoffs);
-  Serialise("", el.idxByteWidth);
-  Serialise("", el.baseVertex);
-  Serialise("", el.buf);
-  Serialise("", el.offset);
-  Serialise("", el.stride);
-  Serialise("", el.compCount);
-  Serialise("", el.compByteWidth);
-  Serialise("", el.compType);
-  Serialise("", el.bgraOrder);
-  Serialise("", el.specialFormat);
-  Serialise("", el.meshColour);
-  Serialise("", el.showAlpha);
-  Serialise("", el.topo);
-  Serialise("", el.numVerts);
-  Serialise("", el.unproject);
-  Serialise("", el.nearPlane);
-  Serialise("", el.farPlane);
-
-  SIZE_CHECK(MeshFormat, 104);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, CounterDescription &el)
-{
-  Serialise("", el.counterID);
-  Serialise("", el.name);
-  Serialise("", el.description);
-  Serialise("", el.resultCompType);
-  Serialise("", el.resultByteWidth);
-  Serialise("", el.units);
-
-  SIZE_CHECK(CounterDescription, 56);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, PixelModification &el)
-{
-  Serialise("", el.eventID);
-
-  Serialise("", el.uavWrite);
-  Serialise("", el.unboundPS);
-
-  Serialise("", el.fragIndex);
-  Serialise("", el.primitiveID);
-
-  SerialisePODArray<4>("", el.preMod.col.value_u);
-  Serialise("", el.preMod.depth);
-  Serialise("", el.preMod.stencil);
-  SerialisePODArray<4>("", el.shaderOut.col.value_u);
-  Serialise("", el.shaderOut.depth);
-  Serialise("", el.shaderOut.stencil);
-  SerialisePODArray<4>("", el.postMod.col.value_u);
-  Serialise("", el.postMod.depth);
-  Serialise("", el.postMod.stencil);
-
-  Serialise("", el.sampleMasked);
-  Serialise("", el.backfaceCulled);
-  Serialise("", el.depthClipped);
-  Serialise("", el.viewClipped);
-  Serialise("", el.scissorClipped);
-  Serialise("", el.shaderDiscarded);
-  Serialise("", el.depthTestFailed);
-  Serialise("", el.stencilTestFailed);
-
-  SIZE_CHECK(PixelModification, 124);
-}
-
-#pragma endregion Data descriptors
-
-#pragma region Ignored Enums
-
-// don't need string representation of these enums
-template <>
-string ToStrHelper<false, SpecialFormat>::Get(const SpecialFormat &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, FormatComponentType>::Get(const FormatComponentType &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, TextureSwizzle>::Get(const TextureSwizzle &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, CounterUnits>::Get(const CounterUnits &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, PrimitiveTopology>::Get(const PrimitiveTopology &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, ShaderStageType>::Get(const ShaderStageType &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, ShaderStageBits>::Get(const ShaderStageBits &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, ShaderBindType>::Get(const ShaderBindType &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, ShaderResourceType>::Get(const ShaderResourceType &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, DebugMessageCategory>::Get(const DebugMessageCategory &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, DebugMessageSeverity>::Get(const DebugMessageSeverity &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, DebugMessageSource>::Get(const DebugMessageSource &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, VarType>::Get(const VarType &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, MeshDataStage>::Get(const MeshDataStage &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, TextureDisplayOverlay>::Get(const TextureDisplayOverlay &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, GraphicsAPI>::Get(const GraphicsAPI &el)
-{
-  return "<...>";
-}
-
-#pragma endregion Ignored Enums
-
-#pragma region Plain - old data structures
-
-// these structures we can just serialise as a blob, since they're POD.
-template <>
-string ToStrHelper<false, D3D11PipelineState::InputAssembler::VertexBuffer>::Get(
-    const D3D11PipelineState::InputAssembler::VertexBuffer &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, D3D11PipelineState::Rasterizer::RasterizerState>::Get(
-    const D3D11PipelineState::Rasterizer::RasterizerState &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, D3D11PipelineState::ShaderStage::CBuffer>::Get(
-    const D3D11PipelineState::ShaderStage::CBuffer &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, D3D11PipelineState::Rasterizer::Scissor>::Get(
-    const D3D11PipelineState::Rasterizer::Scissor &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, D3D11PipelineState::Rasterizer::Viewport>::Get(
-    const D3D11PipelineState::Rasterizer::Viewport &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, D3D11PipelineState::Streamout::Output>::Get(
-    const D3D11PipelineState::Streamout::Output &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, GLPipelineState::VertexInput::VertexBuffer>::Get(
-    const GLPipelineState::VertexInput::VertexBuffer &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, GLPipelineState::FixedVertexProcessing>::Get(
-    const GLPipelineState::FixedVertexProcessing &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, GLPipelineState::Texture>::Get(const GLPipelineState::Texture &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, GLPipelineState::Buffer>::Get(const GLPipelineState::Buffer &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, GLPipelineState::Feedback>::Get(const GLPipelineState::Feedback &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, GLPipelineState::Rasterizer::Viewport>::Get(
-    const GLPipelineState::Rasterizer::Viewport &el)
-{
-  return "<...>";
+// dispatches to the right implementation of the Proxied_ function, depending on whether we're on
+// the remote server or not.
+#define PROXY_FUNCTION(name, ...)                                     \
+  PROXY_DEBUG("Proxying out %s", #name);                              \
+  if(m_RemoteServer)                                                  \
+    return CONCAT(Proxied_, name)(m_Reader, m_Writer, ##__VA_ARGS__); \
+  else                                                                \
+    return CONCAT(Proxied_, name)(m_Writer, m_Reader, ##__VA_ARGS__);
+
+ReplayProxy::ReplayProxy(ReadSerialiser &reader, WriteSerialiser &writer, IRemoteDriver *remoteDriver,
+                         IReplayDriver *replayDriver, RENDERDOC_PreviewWindowCallback previewWindow)
+    : m_Reader(reader),
+      m_Writer(writer),
+      m_Proxy(NULL),
+      m_Remote(remoteDriver),
+      m_Replay(replayDriver),
+      m_PreviewWindow(previewWindow),
+      m_RemoteServer(true)
+{
+  m_StructuredFile = new SDFile;
+
+  m_APIProps = m_Remote->GetAPIProperties();
+
+  InitRemoteExecutionThread();
+
+  if(m_Replay)
+    InitPreviewWindow();
+
+  if(m_APIProps.pipelineType == GraphicsAPI::D3D11)
+    m_D3D11PipelineState = new D3D11Pipe::State;
+  else if(m_APIProps.pipelineType == GraphicsAPI::D3D12)
+    m_D3D12PipelineState = new D3D12Pipe::State;
+  else if(m_APIProps.pipelineType == GraphicsAPI::OpenGL)
+    m_GLPipelineState = new GLPipe::State;
+  else if(m_APIProps.pipelineType == GraphicsAPI::Vulkan)
+    m_VulkanPipelineState = new VKPipe::State;
+
+  m_Remote->SetPipelineStates(m_D3D11PipelineState, m_D3D12PipelineState, m_GLPipelineState,
+                              m_VulkanPipelineState);
+}
+
+ReplayProxy::ReplayProxy(ReadSerialiser &reader, WriteSerialiser &writer, IReplayDriver *proxy)
+    : m_Reader(reader),
+      m_Writer(writer),
+      m_Proxy(proxy),
+      m_Remote(NULL),
+      m_Replay(NULL),
+      m_RemoteServer(false)
+{
+  m_StructuredFile = new SDFile;
+
+  ReplayProxy::GetAPIProperties();
+  ReplayProxy::FetchStructuredFile();
 }
-template <>
-string ToStrHelper<false, GLPipelineState::Rasterizer::Scissor>::Get(
-    const GLPipelineState::Rasterizer::Scissor &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, GLPipelineState::Rasterizer::RasterizerState>::Get(
-    const GLPipelineState::Rasterizer::RasterizerState &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, GLPipelineState::Hints>::Get(const GLPipelineState::Hints &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, VulkanPipelineState::CurrentPass::RenderArea>::Get(
-    const VulkanPipelineState::CurrentPass::RenderArea &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, VulkanPipelineState::InputAssembly>::Get(
-    const VulkanPipelineState::InputAssembly &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, VulkanPipelineState::Tessellation>::Get(
-    const VulkanPipelineState::Tessellation &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, VulkanPipelineState::Raster>::Get(const VulkanPipelineState::Raster &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, VulkanPipelineState::MultiSample>::Get(
-    const VulkanPipelineState::MultiSample &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, VulkanPipelineState::Pipeline::DescriptorSet::DescriptorBinding::BindingElement>::Get(
-    const VulkanPipelineState::Pipeline::DescriptorSet::DescriptorBinding::BindingElement &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, VulkanPipelineState::VertexInput::Binding>::Get(
-    const VulkanPipelineState::VertexInput::Binding &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, VulkanPipelineState::VertexInput::VertexBuffer>::Get(
-    const VulkanPipelineState::VertexInput::VertexBuffer &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, VulkanPipelineState::ViewState::ViewportScissor>::Get(
-    const VulkanPipelineState::ViewState::ViewportScissor &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, EventUsage>::Get(const EventUsage &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, CounterResult>::Get(const CounterResult &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, ReplayLogType>::Get(const ReplayLogType &el)
-{
-  return "<...>";
-}
-template <>
-string ToStrHelper<false, FloatVector>::Get(const FloatVector &el)
-{
-  return "<...>";
-}
-
-#pragma endregion Plain - old data structures
 
 ReplayProxy::~ReplayProxy()
 {
-  SAFE_DELETE(m_FromReplaySerialiser);
-  m_ToReplaySerialiser = NULL;    // we don't own this
+  SAFE_DELETE(m_StructuredFile);
+  if(m_Remote)
+  {
+    SAFE_DELETE(m_D3D11PipelineState);
+    SAFE_DELETE(m_D3D12PipelineState);
+    SAFE_DELETE(m_GLPipelineState);
+    SAFE_DELETE(m_VulkanPipelineState);
+  }
+
+  ShutdownRemoteExecutionThread();
+
+  ShutdownPreviewWindow();
 
   if(m_Proxy)
     m_Proxy->Shutdown();
@@ -1689,1125 +271,2687 @@ ReplayProxy::~ReplayProxy()
     delete it->second;
 }
 
-bool ReplayProxy::SendReplayCommand(ReplayProxyPacket type)
+#pragma region Proxied Functions
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+bool ReplayProxy::Proxied_NeedRemapForFetch(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                            const ResourceFormat &format)
 {
-  if(!m_Socket->Connected())
-    return false;
-
-  if(!SendPacket(m_Socket, type, *m_ToReplaySerialiser))
-    return false;
-
-  m_ToReplaySerialiser->Rewind();
-
-  SAFE_DELETE(m_FromReplaySerialiser);
-
-  if(!RecvPacket(m_Socket, type, &m_FromReplaySerialiser))
-    return false;
-
-  return true;
-}
-
-template <>
-string ToStrHelper<false, RemapTextureEnum>::Get(const RemapTextureEnum &el)
-{
-  switch(el)
-  {
-    TOSTR_CASE_STRINGIZE(eRemap_None)
-    TOSTR_CASE_STRINGIZE(eRemap_RGBA8)
-    TOSTR_CASE_STRINGIZE(eRemap_RGBA16)
-    TOSTR_CASE_STRINGIZE(eRemap_RGBA32)
-    TOSTR_CASE_STRINGIZE(eRemap_D32S8)
-    default: break;
-  }
-
-  return StringFormat::Fmt("RemapTextureEnum<%d>", el);
-}
-
-// If a remap is required, modify the params that are used when getting the proxy texture data
-// for replay on the current driver.
-void ReplayProxy::RemapProxyTextureIfNeeded(ResourceFormat &format, GetTextureDataParams &params)
-{
-  if(m_Proxy->IsTextureSupported(format))
-    return;
-
-  if(format.special)
-  {
-    switch(format.specialFormat)
-    {
-      case eSpecial_S8:
-      case eSpecial_D16S8: params.remap = eRemap_D32S8; break;
-      case eSpecial_ASTC:
-      case eSpecial_EAC:
-      case eSpecial_ETC2: params.remap = eRemap_RGBA8; break;
-      default:
-        RDCERR("Don't know how to remap special format %u, falling back to RGBA32");
-        params.remap = eRemap_RGBA32;
-        break;
-    }
-    format.special = false;
-  }
-  else
-  {
-    if(format.compByteWidth == 4)
-      params.remap = eRemap_RGBA32;
-    else if(format.compByteWidth == 2)
-      params.remap = eRemap_RGBA16;
-    else if(format.compByteWidth == 1)
-      params.remap = eRemap_RGBA8;
-  }
-
-  switch(params.remap)
-  {
-    case eRemap_None: RDCERR("IsTextureSupported == false, but we have no remap"); break;
-    case eRemap_RGBA8:
-      format.compCount = 4;
-      format.compByteWidth = 1;
-      format.compType = eCompType_UNorm;
-      // Range adaptation is only needed when remapping a higher precision format down to RGBA8.
-      params.whitePoint = 1.0f;
-      break;
-    case eRemap_RGBA16:
-      format.compCount = 4;
-      format.compByteWidth = 2;
-      format.compType = eCompType_UNorm;
-      break;
-    case eRemap_RGBA32:
-      format.compCount = 4;
-      format.compByteWidth = 4;
-      format.compType = eCompType_Float;
-      break;
-    case eRemap_D32S8: RDCERR("Remapping depth/stencil formats not implemented."); break;
-  }
-}
-
-void ReplayProxy::EnsureTexCached(ResourceId texid, uint32_t arrayIdx, uint32_t mip)
-{
-  if(!m_Socket->Connected())
-    return;
-
-  TextureCacheEntry entry = {texid, arrayIdx, mip};
-
-  if(m_LocalTextures.find(texid) != m_LocalTextures.end())
-    return;
-
-  if(m_TextureProxyCache.find(entry) == m_TextureProxyCache.end())
-  {
-    if(m_ProxyTextures.find(texid) == m_ProxyTextures.end())
-    {
-      FetchTexture tex = GetTexture(texid);
-
-      ProxyTextureProperties proxy;
-      RemapProxyTextureIfNeeded(tex.format, proxy.params);
-
-      proxy.id = m_Proxy->CreateProxyTexture(tex);
-      m_ProxyTextures[texid] = proxy;
-    }
-
-    const ProxyTextureProperties &proxy = m_ProxyTextures[texid];
-
-    size_t size;
-    byte *data = GetTextureData(texid, arrayIdx, mip, proxy.params, size);
-
-    if(data)
-      m_Proxy->SetProxyTextureData(proxy.id, arrayIdx, mip, data, size);
-
-    delete[] data;
-
-    m_TextureProxyCache.insert(entry);
-  }
-}
-
-void ReplayProxy::EnsureBufCached(ResourceId bufid)
-{
-  if(!m_Socket->Connected())
-    return;
-
-  if(m_BufferProxyCache.find(bufid) == m_BufferProxyCache.end())
-  {
-    if(m_ProxyBufferIds.find(bufid) == m_ProxyBufferIds.end())
-    {
-      FetchBuffer buf = GetBuffer(bufid);
-      m_ProxyBufferIds[bufid] = m_Proxy->CreateProxyBuffer(buf);
-    }
-
-    ResourceId proxyid = m_ProxyBufferIds[bufid];
-
-    vector<byte> data;
-    GetBufferData(bufid, 0, 0, data);
-
-    if(!data.empty())
-      m_Proxy->SetProxyBufferData(proxyid, &data[0], data.size());
-
-    m_BufferProxyCache.insert(bufid);
-  }
-}
-
-bool ReplayProxy::Tick(int type, Serialiser *incomingPacket)
-{
-  if(!m_RemoteServer)
-    return true;
-
-  if(!m_Socket || !m_Socket->Connected())
-    return false;
-
-  m_ToReplaySerialiser = incomingPacket;
-
-  m_FromReplaySerialiser->Rewind();
-
-  switch(type)
-  {
-    case eReplayProxy_ReplayLog: ReplayLog(0, (ReplayLogType)0); break;
-    case eReplayProxy_GetPassEvents: GetPassEvents(0); break;
-    case eReplayProxy_GetAPIProperties: GetAPIProperties(); break;
-    case eReplayProxy_GetTextures: GetTextures(); break;
-    case eReplayProxy_GetTexture: GetTexture(ResourceId()); break;
-    case eReplayProxy_GetBuffers: GetBuffers(); break;
-    case eReplayProxy_GetBuffer: GetBuffer(ResourceId()); break;
-    case eReplayProxy_GetShader: GetShader(ResourceId(), ""); break;
-    case eReplayProxy_GetDebugMessages: GetDebugMessages(); break;
-    case eReplayProxy_SavePipelineState: SavePipelineState(); break;
-    case eReplayProxy_GetUsage: GetUsage(ResourceId()); break;
-    case eReplayProxy_GetLiveID: GetLiveID(ResourceId()); break;
-    case eReplayProxy_GetFrameRecord: GetFrameRecord(); break;
-    case eReplayProxy_IsRenderOutput: IsRenderOutput(ResourceId()); break;
-    case eReplayProxy_HasResolver: HasCallstacks(); break;
-    case eReplayProxy_InitStackResolver: InitCallstackResolver(); break;
-    case eReplayProxy_HasStackResolver: GetCallstackResolver(); break;
-    case eReplayProxy_GetAddressDetails: GetAddr(0); break;
-    case eReplayProxy_FreeResource: FreeTargetResource(ResourceId()); break;
-    case eReplayProxy_FetchCounters:
-    {
-      vector<uint32_t> counters;
-      FetchCounters(counters);
-      break;
-    }
-    case eReplayProxy_EnumerateCounters: EnumerateCounters(); break;
-    case eReplayProxy_DescribeCounter:
-    {
-      CounterDescription desc;
-      DescribeCounter(0, desc);
-      break;
-    }
-    case eReplayProxy_FillCBufferVariables:
-    {
-      vector<ShaderVariable> vars;
-      vector<byte> data;
-      FillCBufferVariables(ResourceId(), "", 0, vars, data);
-      break;
-    }
-    case eReplayProxy_GetBufferData:
-    {
-      vector<byte> dummy;
-      GetBufferData(ResourceId(), 0, 0, dummy);
-      break;
-    }
-    case eReplayProxy_GetTextureData:
-    {
-      size_t dummy;
-      GetTextureData(ResourceId(), 0, 0, GetTextureDataParams(), dummy);
-      break;
-    }
-    case eReplayProxy_InitPostVS: InitPostVSBuffers(0); break;
-    case eReplayProxy_InitPostVSVec:
-    {
-      vector<uint32_t> dummy;
-      InitPostVSBuffers(dummy);
-      break;
-    }
-    case eReplayProxy_GetPostVS: GetPostVSBuffers(0, 0, eMeshDataStage_Unknown); break;
-    case eReplayProxy_BuildTargetShader:
-      BuildTargetShader("", "", 0, eShaderStage_Vertex, NULL, NULL);
-      break;
-    case eReplayProxy_ReplaceResource: ReplaceResource(ResourceId(), ResourceId()); break;
-    case eReplayProxy_RemoveReplacement: RemoveReplacement(ResourceId()); break;
-    case eReplayProxy_RenderOverlay:
-      RenderOverlay(ResourceId(), eCompType_None, eTexOverlay_None, 0, vector<uint32_t>());
-      break;
-    case eReplayProxy_PixelHistory:
-      PixelHistory(vector<EventUsage>(), ResourceId(), 0, 0, 0, 0, 0, eCompType_None);
-      break;
-    case eReplayProxy_DebugVertex: DebugVertex(0, 0, 0, 0, 0, 0); break;
-    case eReplayProxy_DebugPixel: DebugPixel(0, 0, 0, 0, 0); break;
-    case eReplayProxy_DebugThread:
-    {
-      uint32_t dummy1[3] = {0};
-      uint32_t dummy2[3] = {0};
-      DebugThread(0, dummy1, dummy2);
-      break;
-    }
-    default: RDCERR("Unexpected command"); return false;
-  }
-
-  if(!SendPacket(m_Socket, type, *m_FromReplaySerialiser))
-    return false;
-
-  return true;
-}
-
-bool ReplayProxy::IsRenderOutput(ResourceId id)
-{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_NeedRemapForFetch;
+  ReplayProxyPacket packet = eReplayProxy_NeedRemapForFetch;
   bool ret = false;
 
-  m_ToReplaySerialiser->Serialise("", id);
-
-  if(m_RemoteServer)
   {
-    ret = m_Remote->IsRenderOutput(id);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_IsRenderOutput))
-      return ret;
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(format);
+    END_PARAMS();
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->NeedRemapForFetch(format);
+  }
+
+  SERIALISE_RETURN(ret);
 
   return ret;
 }
 
-APIProperties ReplayProxy::GetAPIProperties()
+bool ReplayProxy::NeedRemapForFetch(const ResourceFormat &fmt)
 {
-  APIProperties ret;
-  RDCEraseEl(ret);
+  PROXY_FUNCTION(NeedRemapForFetch, fmt);
+}
 
-  if(m_RemoteServer)
+template <typename ParamSerialiser, typename ReturnSerialiser>
+bool ReplayProxy::Proxied_IsRenderOutput(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                         ResourceId id)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_IsRenderOutput;
+  ReplayProxyPacket packet = eReplayProxy_IsRenderOutput;
+  bool ret = false;
+
   {
-    ret = m_Remote->GetAPIProperties();
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_GetAPIProperties))
-      return ret;
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(id);
+    END_PARAMS();
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->IsRenderOutput(id);
+  }
+
+  SERIALISE_RETURN(ret);
+
+  return ret;
+}
+
+bool ReplayProxy::IsRenderOutput(ResourceId id)
+{
+  PROXY_FUNCTION(IsRenderOutput, id);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+APIProperties ReplayProxy::Proxied_GetAPIProperties(ParamSerialiser &paramser,
+                                                    ReturnSerialiser &retser)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetAPIProperties;
+  ReplayProxyPacket packet = eReplayProxy_GetAPIProperties;
+  APIProperties ret = {};
+
+  {
+    BEGIN_PARAMS();
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetAPIProperties();
+  }
+
+  SERIALISE_RETURN(ret);
 
   if(!m_RemoteServer)
+  {
     ret.localRenderer = m_Proxy->GetAPIProperties().localRenderer;
+    ret.remoteReplay = true;
+  }
 
   m_APIProps = ret;
 
   return ret;
 }
 
-vector<ResourceId> ReplayProxy::GetTextures()
+APIProperties ReplayProxy::GetAPIProperties()
 {
-  vector<ResourceId> ret;
+  PROXY_FUNCTION(GetAPIProperties);
+}
 
-  if(m_RemoteServer)
+template <typename ParamSerialiser, typename ReturnSerialiser>
+DriverInformation ReplayProxy::Proxied_GetDriverInfo(ParamSerialiser &paramser,
+                                                     ReturnSerialiser &retser)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetDriverInfo;
+  ReplayProxyPacket packet = eReplayProxy_GetDriverInfo;
+  DriverInformation ret = {};
+
   {
-    ret = m_Remote->GetTextures();
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_GetTextures))
-      return ret;
+    BEGIN_PARAMS();
+    END_PARAMS();
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetDriverInfo();
+  }
+
+  SERIALISE_RETURN(ret);
 
   return ret;
 }
 
-vector<DebugMessage> ReplayProxy::GetDebugMessages()
+DriverInformation ReplayProxy::GetDriverInfo()
 {
-  vector<DebugMessage> ret;
+  PROXY_FUNCTION(GetDriverInfo);
+}
 
-  if(m_RemoteServer)
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<GPUDevice> ReplayProxy::Proxied_GetAvailableGPUs(ParamSerialiser &paramser,
+                                                          ReturnSerialiser &retser)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetAvailableGPUs;
+  ReplayProxyPacket packet = eReplayProxy_GetAvailableGPUs;
+  rdcarray<GPUDevice> ret = {};
+
   {
-    ret = m_Remote->GetDebugMessages();
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_GetDebugMessages))
-      return ret;
+    BEGIN_PARAMS();
+    END_PARAMS();
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetAvailableGPUs();
+  }
+
+  SERIALISE_RETURN(ret);
 
   return ret;
 }
 
-FetchTexture ReplayProxy::GetTexture(ResourceId id)
+rdcarray<GPUDevice> ReplayProxy::GetAvailableGPUs()
 {
-  FetchTexture ret = {};
+  PROXY_FUNCTION(GetAvailableGPUs);
+}
 
-  m_ToReplaySerialiser->Serialise("", id);
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<DebugMessage> ReplayProxy::Proxied_GetDebugMessages(ParamSerialiser &paramser,
+                                                             ReturnSerialiser &retser)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetDebugMessages;
+  ReplayProxyPacket packet = eReplayProxy_GetDebugMessages;
+  rdcarray<DebugMessage> ret;
 
-  if(m_RemoteServer)
   {
-    ret = m_Remote->GetTexture(id);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_GetTexture))
-      return ret;
+    BEGIN_PARAMS();
+    END_PARAMS();
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetDebugMessages();
+  }
+
+  SERIALISE_RETURN(ret);
 
   return ret;
 }
 
-vector<ResourceId> ReplayProxy::GetBuffers()
+rdcarray<DebugMessage> ReplayProxy::GetDebugMessages()
 {
-  vector<ResourceId> ret;
+  PROXY_FUNCTION(GetDebugMessages);
+}
 
-  if(m_RemoteServer)
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<TextureDescription> ReplayProxy::Proxied_GetTextures(ParamSerialiser &paramser,
+                                                              ReturnSerialiser &retser)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetTextures;
+  ReplayProxyPacket packet = eReplayProxy_GetTextures;
+  rdcarray<TextureDescription> ret;
+
   {
-    ret = m_Remote->GetBuffers();
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_GetBuffers))
-      return ret;
+    BEGIN_PARAMS();
+    END_PARAMS();
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetTextures();
+  }
+
+  SERIALISE_RETURN(ret);
+
+  if(retser.IsReading())
+  {
+    for(const TextureDescription &tex : ret)
+      m_TextureInfo[tex.resourceId] = tex;
+  }
 
   return ret;
 }
 
-FetchBuffer ReplayProxy::GetBuffer(ResourceId id)
+rdcarray<TextureDescription> ReplayProxy::GetTextures()
 {
-  FetchBuffer ret = {};
+  PROXY_FUNCTION(GetTextures);
+}
 
-  m_ToReplaySerialiser->Serialise("", id);
+template <typename ParamSerialiser, typename ReturnSerialiser>
+TextureDescription ReplayProxy::Proxied_GetTexture(ParamSerialiser &paramser,
+                                                   ReturnSerialiser &retser, ResourceId id)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetTexture;
+  ReplayProxyPacket packet = eReplayProxy_GetTexture;
+  TextureDescription ret = {};
 
-  if(m_RemoteServer)
   {
-    ret = m_Remote->GetBuffer(id);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_GetBuffer))
-      return ret;
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(id);
+    END_PARAMS();
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetTexture(id);
+  }
+
+  SERIALISE_RETURN(ret);
+
+  if(retser.IsReading())
+    m_TextureInfo[id] = ret;
 
   return ret;
 }
 
-void ReplayProxy::SavePipelineState()
+TextureDescription ReplayProxy::GetTexture(ResourceId id)
 {
-  if(m_RemoteServer)
-  {
-    m_Remote->SavePipelineState();
-    m_D3D11PipelineState = m_Remote->GetD3D11PipelineState();
-    m_D3D12PipelineState = m_Remote->GetD3D12PipelineState();
-    m_GLPipelineState = m_Remote->GetGLPipelineState();
-    m_VulkanPipelineState = m_Remote->GetVulkanPipelineState();
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_SavePipelineState))
-      return;
-
-    m_D3D11PipelineState = D3D11PipelineState();
-    m_D3D12PipelineState = D3D12PipelineState();
-    m_GLPipelineState = GLPipelineState();
-    m_VulkanPipelineState = VulkanPipelineState();
-  }
-
-  m_FromReplaySerialiser->Serialise("", m_D3D11PipelineState);
-  m_FromReplaySerialiser->Serialise("", m_D3D12PipelineState);
-  m_FromReplaySerialiser->Serialise("", m_GLPipelineState);
-  m_FromReplaySerialiser->Serialise("", m_VulkanPipelineState);
+  PROXY_FUNCTION(GetTexture, id);
 }
 
-void ReplayProxy::ReplayLog(uint32_t endEventID, ReplayLogType replayType)
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<BufferDescription> ReplayProxy::Proxied_GetBuffers(ParamSerialiser &paramser,
+                                                            ReturnSerialiser &retser)
 {
-  m_ToReplaySerialiser->Serialise("", endEventID);
-  m_ToReplaySerialiser->Serialise("", replayType);
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetBuffers;
+  ReplayProxyPacket packet = eReplayProxy_GetBuffers;
+  rdcarray<BufferDescription> ret;
 
-  if(m_RemoteServer)
   {
-    m_Remote->ReplayLog(endEventID, replayType);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_ReplayLog))
-      return;
-
-    m_TextureProxyCache.clear();
-    m_BufferProxyCache.clear();
-  }
-}
-
-vector<uint32_t> ReplayProxy::GetPassEvents(uint32_t eventID)
-{
-  vector<uint32_t> ret;
-
-  m_ToReplaySerialiser->Serialise("", eventID);
-
-  if(m_RemoteServer)
-  {
-    ret = m_Remote->GetPassEvents(eventID);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_GetPassEvents))
-      return ret;
+    BEGIN_PARAMS();
+    END_PARAMS();
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetBuffers();
+  }
+
+  SERIALISE_RETURN(ret);
 
   return ret;
 }
 
-vector<EventUsage> ReplayProxy::GetUsage(ResourceId id)
+rdcarray<BufferDescription> ReplayProxy::GetBuffers()
 {
-  vector<EventUsage> ret;
+  PROXY_FUNCTION(GetBuffers);
+}
 
-  m_ToReplaySerialiser->Serialise("", id);
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<ResourceDescription> ReplayProxy::Proxied_GetResources(ParamSerialiser &paramser,
+                                                                ReturnSerialiser &retser)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetResources;
+  ReplayProxyPacket packet = eReplayProxy_GetResources;
+  rdcarray<ResourceDescription> ret;
 
-  if(m_RemoteServer)
   {
-    ret = m_Remote->GetUsage(id);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_GetUsage))
-      return ret;
+    BEGIN_PARAMS();
+    END_PARAMS();
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetResources();
+  }
+
+  SERIALISE_RETURN(ret);
 
   return ret;
 }
 
-FetchFrameRecord ReplayProxy::GetFrameRecord()
+rdcarray<ResourceDescription> ReplayProxy::GetResources()
 {
-  FetchFrameRecord ret;
+  PROXY_FUNCTION(GetResources);
+}
 
-  if(m_RemoteServer)
+template <typename ParamSerialiser, typename ReturnSerialiser>
+BufferDescription ReplayProxy::Proxied_GetBuffer(ParamSerialiser &paramser,
+                                                 ReturnSerialiser &retser, ResourceId id)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetBuffer;
+  ReplayProxyPacket packet = eReplayProxy_GetBuffer;
+  BufferDescription ret = {};
+
   {
-    ret = m_Remote->GetFrameRecord();
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_GetFrameRecord))
-      return ret;
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(id);
+    END_PARAMS();
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetBuffer(id);
+  }
+
+  SERIALISE_RETURN(ret);
 
   return ret;
 }
 
-bool ReplayProxy::HasCallstacks()
+BufferDescription ReplayProxy::GetBuffer(ResourceId id)
 {
-  bool ret = false;
+  PROXY_FUNCTION(GetBuffer, id);
+}
 
-  RDCASSERT(m_RemoteServer || m_ToReplaySerialiser->GetSize() == 0);
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<uint32_t> ReplayProxy::Proxied_GetPassEvents(ParamSerialiser &paramser,
+                                                      ReturnSerialiser &retser, uint32_t eventId)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetPassEvents;
+  ReplayProxyPacket packet = eReplayProxy_GetPassEvents;
+  rdcarray<uint32_t> ret;
 
-  if(m_RemoteServer)
   {
-    ret = m_Remote->HasCallstacks();
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(eventId);
+    END_PARAMS();
   }
-  else
+
   {
-    if(!SendReplayCommand(eReplayProxy_HasResolver))
-      return ret;
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetPassEvents(eventId);
   }
 
-  RDCASSERT(!m_RemoteServer || m_FromReplaySerialiser->GetSize() == 0);
+  SERIALISE_RETURN(ret);
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  return ret;
+}
+
+rdcarray<uint32_t> ReplayProxy::GetPassEvents(uint32_t eventId)
+{
+  PROXY_FUNCTION(GetPassEvents, eventId);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<EventUsage> ReplayProxy::Proxied_GetUsage(ParamSerialiser &paramser,
+                                                   ReturnSerialiser &retser, ResourceId id)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetUsage;
+  ReplayProxyPacket packet = eReplayProxy_GetUsage;
+  rdcarray<EventUsage> ret;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(id);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetUsage(id);
+  }
+
+  SERIALISE_RETURN(ret);
+
+  return ret;
+}
+
+rdcarray<EventUsage> ReplayProxy::GetUsage(ResourceId id)
+{
+  PROXY_FUNCTION(GetUsage, id);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+FrameRecord ReplayProxy::Proxied_GetFrameRecord(ParamSerialiser &paramser, ReturnSerialiser &retser)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetFrameRecord;
+  ReplayProxyPacket packet = eReplayProxy_GetFrameRecord;
+  FrameRecord ret = {};
+
+  {
+    BEGIN_PARAMS();
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetFrameRecord();
+  }
+
+  SERIALISE_RETURN(ret);
+
+  if(paramser.IsWriting())
+  {
+    // re-configure the action pointers, since they will be invalid
+    SetupActionPointers(m_Actions, ret.actionList);
+  }
+
+  return ret;
+}
+
+FrameRecord ReplayProxy::GetFrameRecord()
+{
+  PROXY_FUNCTION(GetFrameRecord);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+ResourceId ReplayProxy::Proxied_GetLiveID(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                          ResourceId id)
+{
+  if(paramser.IsWriting())
+  {
+    if(m_LiveIDs.find(id) != m_LiveIDs.end())
+      return m_LiveIDs[id];
+
+    if(m_LocalTextures.find(id) != m_LocalTextures.end())
+      return id;
+  }
+
+  if(paramser.IsErrored() || retser.IsErrored() || m_IsErrored)
+    return ResourceId();
+
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetLiveID;
+  ReplayProxyPacket packet = eReplayProxy_GetLiveID;
+  ResourceId ret;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(id);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetLiveID(id);
+  }
+
+  SERIALISE_RETURN(ret);
+
+  if(paramser.IsWriting())
+    m_LiveIDs[id] = ret;
 
   return ret;
 }
 
 ResourceId ReplayProxy::GetLiveID(ResourceId id)
 {
-  if(!m_RemoteServer && m_LiveIDs.find(id) != m_LiveIDs.end())
-    return m_LiveIDs[id];
+  PROXY_FUNCTION(GetLiveID, id);
+}
 
-  if(!m_RemoteServer && m_LocalTextures.find(id) != m_LocalTextures.end())
-    return id;
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<CounterResult> ReplayProxy::Proxied_FetchCounters(ParamSerialiser &paramser,
+                                                           ReturnSerialiser &retser,
+                                                           const rdcarray<GPUCounter> &counters)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_FetchCounters;
+  ReplayProxyPacket packet = eReplayProxy_FetchCounters;
+  rdcarray<CounterResult> ret;
 
-  if(!m_Socket->Connected())
-    return ResourceId();
-
-  ResourceId ret;
-
-  RDCASSERT(m_RemoteServer || m_ToReplaySerialiser->GetSize() == 0);
-
-  m_ToReplaySerialiser->Serialise("", id);
-
-  if(m_RemoteServer)
   {
-    ret = m_Remote->GetLiveID(id);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_GetLiveID))
-      return ret;
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(counters);
+    END_PARAMS();
   }
 
-  RDCASSERT(!m_RemoteServer || m_FromReplaySerialiser->GetSize() == 0);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->FetchCounters(counters);
+  }
 
-  m_FromReplaySerialiser->Serialise("", ret);
-
-  if(!m_RemoteServer)
-    m_LiveIDs[id] = ret;
+  SERIALISE_RETURN(ret);
 
   return ret;
 }
 
-vector<CounterResult> ReplayProxy::FetchCounters(const vector<uint32_t> &counters)
+rdcarray<CounterResult> ReplayProxy::FetchCounters(const rdcarray<GPUCounter> &counters)
 {
-  vector<CounterResult> ret;
+  PROXY_FUNCTION(FetchCounters, counters);
+}
 
-  m_ToReplaySerialiser->Serialise("", (vector<uint32_t> &)counters);
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<GPUCounter> ReplayProxy::Proxied_EnumerateCounters(ParamSerialiser &paramser,
+                                                            ReturnSerialiser &retser)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_EnumerateCounters;
+  ReplayProxyPacket packet = eReplayProxy_EnumerateCounters;
+  rdcarray<GPUCounter> ret;
 
-  if(m_RemoteServer)
   {
-    ret = m_Remote->FetchCounters(counters);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_FetchCounters))
-      return ret;
+    BEGIN_PARAMS();
+    END_PARAMS();
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->EnumerateCounters();
+  }
+
+  SERIALISE_RETURN(ret);
 
   return ret;
 }
 
-vector<uint32_t> ReplayProxy::EnumerateCounters()
+rdcarray<GPUCounter> ReplayProxy::EnumerateCounters()
 {
-  vector<uint32_t> ret;
+  PROXY_FUNCTION(EnumerateCounters);
+}
 
-  if(m_RemoteServer)
+template <typename ParamSerialiser, typename ReturnSerialiser>
+CounterDescription ReplayProxy::Proxied_DescribeCounter(ParamSerialiser &paramser,
+                                                        ReturnSerialiser &retser,
+                                                        GPUCounter counterID)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_DescribeCounter;
+  ReplayProxyPacket packet = eReplayProxy_DescribeCounter;
+  CounterDescription ret = {};
+
   {
-    ret = m_Remote->EnumerateCounters();
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_EnumerateCounters))
-      return ret;
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(counterID);
+    END_PARAMS();
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->DescribeCounter(counterID);
+  }
+
+  SERIALISE_RETURN(ret);
 
   return ret;
 }
 
-void ReplayProxy::DescribeCounter(uint32_t counterID, CounterDescription &desc)
+CounterDescription ReplayProxy::DescribeCounter(GPUCounter counterID)
 {
-  m_ToReplaySerialiser->Serialise("", counterID);
+  PROXY_FUNCTION(DescribeCounter, counterID);
+}
 
-  if(m_RemoteServer)
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_FillCBufferVariables(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                               ResourceId pipeline, ResourceId shader,
+                                               rdcstr entryPoint, uint32_t cbufSlot,
+                                               rdcarray<ShaderVariable> &outvars, const bytebuf &data)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_FillCBufferVariables;
+  ReplayProxyPacket packet = eReplayProxy_FillCBufferVariables;
+
   {
-    m_Remote->DescribeCounter(counterID, desc);
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(pipeline);
+    SERIALISE_ELEMENT(shader);
+    SERIALISE_ELEMENT(entryPoint);
+    SERIALISE_ELEMENT(cbufSlot);
+    SERIALISE_ELEMENT(data);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->FillCBufferVariables(pipeline, shader, entryPoint, cbufSlot, outvars, data);
+  }
+
+  SERIALISE_RETURN(outvars);
+}
+
+void ReplayProxy::FillCBufferVariables(ResourceId pipeline, ResourceId shader, rdcstr entryPoint,
+                                       uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
+                                       const bytebuf &data)
+{
+  PROXY_FUNCTION(FillCBufferVariables, pipeline, shader, entryPoint, cbufSlot, outvars, data);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_GetBufferData(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                        ResourceId buff, uint64_t offset, uint64_t len,
+                                        bytebuf &retData)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetBufferData;
+  ReplayProxyPacket packet = eReplayProxy_GetBufferData;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(buff);
+    SERIALISE_ELEMENT(offset);
+    SERIALISE_ELEMENT(len);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->GetBufferData(buff, offset, len, retData);
+  }
+
+  // over-estimate of total uncompressed data written. Since the decompression chain needs to know
+  // the exact uncompressed size, we over-estimate (to allow for length/padding/etc) and then pad
+  // to this amount.
+  uint64_t dataSize = retData.size() + 2 * retser.GetChunkAlignment();
+
+  {
+    ReturnSerialiser &ser = retser;
+    PACKET_HEADER(packet);
+    SERIALISE_ELEMENT(packet);
+    SERIALISE_ELEMENT(dataSize);
+  }
+
+  char empty[128] = {};
+
+  // lz4 compress
+  if(retser.IsReading())
+  {
+    ReadSerialiser ser(new StreamReader(new LZ4Decompressor(retser.GetReader(), Ownership::Nothing),
+                                        dataSize, Ownership::Stream),
+                       Ownership::Stream);
+
+    SERIALISE_ELEMENT(retData);
+
+    uint64_t offs = ser.GetReader()->GetOffset();
+    RDCASSERT(offs <= dataSize, offs, dataSize);
+    RDCASSERT(dataSize - offs < sizeof(empty), offs, dataSize);
+
+    if(offs < dataSize)
+      ser.GetReader()->Read(empty, dataSize - offs);
   }
   else
   {
-    if(!SendReplayCommand(eReplayProxy_DescribeCounter))
-      return;
+    WriteSerialiser ser(new StreamWriter(new LZ4Compressor(retser.GetWriter(), Ownership::Nothing),
+                                         Ownership::Stream),
+                        Ownership::Stream);
+
+    SERIALISE_ELEMENT(retData);
+
+    uint64_t offs = ser.GetWriter()->GetOffset();
+    RDCASSERT(offs <= dataSize, offs, dataSize);
+    RDCASSERT(dataSize - offs < sizeof(empty), offs, dataSize);
+
+    if(offs < dataSize)
+      ser.GetWriter()->Write(empty, dataSize - offs);
   }
 
-  m_FromReplaySerialiser->Serialise("", desc);
+  retser.EndChunk();
 
-  return;
+  CheckError(packet, expectedPacket);
 }
 
-void ReplayProxy::FillCBufferVariables(ResourceId shader, string entryPoint, uint32_t cbufSlot,
-                                       vector<ShaderVariable> &outvars, const vector<byte> &data)
+void ReplayProxy::GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, bytebuf &retData)
 {
-  m_ToReplaySerialiser->Serialise("", shader);
-  m_ToReplaySerialiser->Serialise("", entryPoint);
-  m_ToReplaySerialiser->Serialise("", cbufSlot);
-  m_ToReplaySerialiser->Serialise("", outvars);
-  m_ToReplaySerialiser->Serialise("", (vector<byte> &)data);
+  PROXY_FUNCTION(GetBufferData, buff, offset, len, retData);
+}
 
-  if(m_RemoteServer)
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_GetTextureData(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                         ResourceId tex, const Subresource &sub,
+                                         const GetTextureDataParams &params, bytebuf &data)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetTextureData;
+  ReplayProxyPacket packet = eReplayProxy_GetTextureData;
+
   {
-    m_Remote->FillCBufferVariables(shader, entryPoint, cbufSlot, outvars, data);
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(tex);
+    SERIALISE_ELEMENT(sub);
+    SERIALISE_ELEMENT(params);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->GetTextureData(tex, sub, params, data);
+  }
+
+  // over-estimate of total uncompressed data written. Since the decompression chain needs to know
+  // the exact uncompressed size, we over-estimate (to allow for length/padding/etc) and then pad
+  // to this amount.
+  uint64_t dataSize = data.size() + 2 * retser.GetChunkAlignment();
+
+  {
+    ReturnSerialiser &ser = retser;
+    PACKET_HEADER(packet);
+    SERIALISE_ELEMENT(packet);
+    SERIALISE_ELEMENT(dataSize);
+  }
+
+  char empty[128] = {};
+
+  // lz4 compress
+  if(retser.IsReading())
+  {
+    ReadSerialiser ser(new StreamReader(new LZ4Decompressor(retser.GetReader(), Ownership::Nothing),
+                                        dataSize, Ownership::Stream),
+                       Ownership::Stream);
+
+    SERIALISE_ELEMENT(data);
+
+    uint64_t offs = ser.GetReader()->GetOffset();
+    RDCASSERT(offs <= dataSize, offs, dataSize);
+    RDCASSERT(dataSize - offs < sizeof(empty), offs, dataSize);
+
+    if(offs < dataSize)
+      ser.GetReader()->Read(empty, dataSize - offs);
   }
   else
   {
-    if(!SendReplayCommand(eReplayProxy_FillCBufferVariables))
-      return;
+    WriteSerialiser ser(new StreamWriter(new LZ4Compressor(retser.GetWriter(), Ownership::Nothing),
+                                         Ownership::Stream),
+                        Ownership::Stream);
+
+    SERIALISE_ELEMENT(data);
+
+    uint64_t offs = ser.GetWriter()->GetOffset();
+    RDCASSERT(offs <= dataSize, offs, dataSize);
+    RDCASSERT(dataSize - offs < sizeof(empty), offs, dataSize);
+
+    if(offs < dataSize)
+      ser.GetWriter()->Write(empty, dataSize - offs);
   }
 
-  m_FromReplaySerialiser->Serialise("", outvars);
+  retser.EndChunk();
 
-  return;
+  CheckError(packet, expectedPacket);
 }
 
-void ReplayProxy::GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, vector<byte> &retData)
+void ReplayProxy::GetTextureData(ResourceId tex, const Subresource &sub,
+                                 const GetTextureDataParams &params, bytebuf &data)
 {
-  m_ToReplaySerialiser->Serialise("", buff);
-  m_ToReplaySerialiser->Serialise("", offset);
-  m_ToReplaySerialiser->Serialise("", len);
-
-  if(m_RemoteServer)
-  {
-    m_Remote->GetBufferData(buff, offset, len, retData);
-
-    uint64_t sz = retData.size();
-    m_FromReplaySerialiser->Serialise("", sz);
-    m_FromReplaySerialiser->RawWriteBytes(&retData[0], (size_t)sz);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_GetBufferData))
-      return;
-
-    uint64_t sz = 0;
-    m_FromReplaySerialiser->Serialise("", sz);
-    retData.resize((size_t)sz);
-    memcpy(&retData[0], m_FromReplaySerialiser->RawReadBytes((size_t)sz), (size_t)sz);
-  }
+  PROXY_FUNCTION(GetTextureData, tex, sub, params, data);
 }
 
-byte *ReplayProxy::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
-                                  const GetTextureDataParams &_params, size_t &dataSize)
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_InitPostVSBuffers(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                            uint32_t eventId)
 {
-  GetTextureDataParams params = _params;    // Serialiser is non-const
+  const ReplayProxyPacket expectedPacket = eReplayProxy_InitPostVS;
+  ReplayProxyPacket packet = eReplayProxy_InitPostVS;
 
-  m_ToReplaySerialiser->Serialise("", tex);
-  m_ToReplaySerialiser->Serialise("", arrayIdx);
-  m_ToReplaySerialiser->Serialise("", mip);
-  m_ToReplaySerialiser->Serialise("", params.forDiskSave);
-  m_ToReplaySerialiser->Serialise("", params.typeHint);
-  m_ToReplaySerialiser->Serialise("", params.resolve);
-  m_ToReplaySerialiser->Serialise("", params.remap);
-  m_ToReplaySerialiser->Serialise("", params.blackPoint);
-  m_ToReplaySerialiser->Serialise("", params.whitePoint);
-
-  if(m_RemoteServer)
   {
-    byte *data = m_Remote->GetTextureData(tex, arrayIdx, mip, params, dataSize);
-
-    byte *compressed = new byte[LZ4_COMPRESSBOUND(dataSize)];
-
-    uint32_t uncompressedSize = (uint32_t)dataSize;
-    uint32_t compressedSize =
-        (uint32_t)LZ4_compress((const char *)data, (char *)compressed, (int)uncompressedSize);
-
-    m_FromReplaySerialiser->Serialise("", uncompressedSize);
-    m_FromReplaySerialiser->Serialise("", compressedSize);
-    m_FromReplaySerialiser->RawWriteBytes(compressed, (size_t)compressedSize);
-
-    delete[] data;
-    delete[] compressed;
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_GetTextureData))
-    {
-      dataSize = 0;
-      return NULL;
-    }
-
-    uint32_t uncompressedSize = 0;
-    uint32_t compressedSize = 0;
-
-    m_FromReplaySerialiser->Serialise("", uncompressedSize);
-    m_FromReplaySerialiser->Serialise("", compressedSize);
-
-    if(uncompressedSize == 0 || compressedSize == 0)
-    {
-      dataSize = 0;
-      return NULL;
-    }
-
-    dataSize = (size_t)uncompressedSize;
-
-    byte *ret = new byte[dataSize + 512];
-
-    byte *compressed = (byte *)m_FromReplaySerialiser->RawReadBytes((size_t)compressedSize);
-
-    LZ4_decompress_fast((const char *)compressed, (char *)ret, (int)dataSize);
-
-    return ret;
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(eventId);
+    END_PARAMS();
   }
 
-  return NULL;
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->InitPostVSBuffers(eventId);
+  }
+
+  SERIALISE_RETURN_VOID();
 }
 
-void ReplayProxy::InitPostVSBuffers(uint32_t eventID)
+void ReplayProxy::InitPostVSBuffers(uint32_t eventId)
 {
-  m_ToReplaySerialiser->Serialise("", eventID);
-
-  if(m_RemoteServer)
-  {
-    m_Remote->InitPostVSBuffers(eventID);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_InitPostVS))
-      return;
-  }
+  PROXY_FUNCTION(InitPostVSBuffers, eventId);
 }
 
-void ReplayProxy::InitPostVSBuffers(const vector<uint32_t> &events)
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_InitPostVSBuffers(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                            const rdcarray<uint32_t> &events)
 {
-  m_ToReplaySerialiser->Serialise("", (vector<uint32_t> &)events);
+  const ReplayProxyPacket expectedPacket = eReplayProxy_InitPostVSVec;
+  ReplayProxyPacket packet = eReplayProxy_InitPostVSVec;
 
-  if(m_RemoteServer)
   {
-    m_Remote->InitPostVSBuffers(events);
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(events);
+    END_PARAMS();
   }
-  else
+
   {
-    if(!SendReplayCommand(eReplayProxy_InitPostVSVec))
-      return;
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->InitPostVSBuffers(events);
   }
+
+  SERIALISE_RETURN_VOID();
 }
 
-MeshFormat ReplayProxy::GetPostVSBuffers(uint32_t eventID, uint32_t instID, MeshDataStage stage)
+void ReplayProxy::InitPostVSBuffers(const rdcarray<uint32_t> &events)
 {
+  PROXY_FUNCTION(InitPostVSBuffers, events);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+MeshFormat ReplayProxy::Proxied_GetPostVSBuffers(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                                 uint32_t eventId, uint32_t instID, uint32_t viewID,
+                                                 MeshDataStage stage)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetPostVS;
+  ReplayProxyPacket packet = eReplayProxy_GetPostVS;
   MeshFormat ret = {};
 
-  m_ToReplaySerialiser->Serialise("", eventID);
-  m_ToReplaySerialiser->Serialise("", instID);
-  m_ToReplaySerialiser->Serialise("", stage);
-
-  if(m_RemoteServer)
   {
-    ret = m_Remote->GetPostVSBuffers(eventID, instID, stage);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_GetPostVS))
-      return ret;
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(eventId);
+    SERIALISE_ELEMENT(instID);
+    SERIALISE_ELEMENT(viewID);
+    SERIALISE_ELEMENT(stage);
+    END_PARAMS();
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetPostVSBuffers(eventId, instID, viewID, stage);
+  }
+
+  SERIALISE_RETURN(ret);
 
   return ret;
 }
 
-ResourceId ReplayProxy::RenderOverlay(ResourceId texid, FormatComponentType typeHint,
-                                      TextureDisplayOverlay overlay, uint32_t eventID,
-                                      const vector<uint32_t> &passEvents)
+MeshFormat ReplayProxy::GetPostVSBuffers(uint32_t eventId, uint32_t instID, uint32_t viewID,
+                                         MeshDataStage stage)
 {
+  PROXY_FUNCTION(GetPostVSBuffers, eventId, instID, viewID, stage);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+ResourceId ReplayProxy::Proxied_RenderOverlay(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                              ResourceId texid, FloatVector clearCol,
+                                              DebugOverlay overlay, uint32_t eventId,
+                                              const rdcarray<uint32_t> &passEvents)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_RenderOverlay;
+  ReplayProxyPacket packet = eReplayProxy_RenderOverlay;
   ResourceId ret;
 
-  vector<uint32_t> events = passEvents;
-
-  m_ToReplaySerialiser->Serialise("", texid);
-  m_ToReplaySerialiser->Serialise("", typeHint);
-  m_ToReplaySerialiser->Serialise("", overlay);
-  m_ToReplaySerialiser->Serialise("", eventID);
-  m_ToReplaySerialiser->Serialise("", events);
-
-  if(m_RemoteServer)
   {
-    ret = m_Remote->RenderOverlay(texid, typeHint, overlay, eventID, events);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_RenderOverlay))
-      return ret;
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(texid);
+    SERIALISE_ELEMENT(overlay);
+    SERIALISE_ELEMENT(clearCol);
+    SERIALISE_ELEMENT(eventId);
+    SERIALISE_ELEMENT(passEvents);
+    END_PARAMS();
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->RenderOverlay(texid, clearCol, overlay, eventId, passEvents);
+  }
+
+  SERIALISE_RETURN(ret);
 
   return ret;
 }
 
-ShaderReflection *ReplayProxy::GetShader(ResourceId id, string entryPoint)
+ResourceId ReplayProxy::RenderOverlay(ResourceId texid, FloatVector clearCol, DebugOverlay overlay,
+                                      uint32_t eventId, const rdcarray<uint32_t> &passEvents)
 {
-  if(m_RemoteServer)
+  PROXY_FUNCTION(RenderOverlay, texid, clearCol, overlay, eventId, passEvents);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<ShaderEntryPoint> ReplayProxy::Proxied_GetShaderEntryPoints(ParamSerialiser &paramser,
+                                                                     ReturnSerialiser &retser,
+                                                                     ResourceId id)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetShaderEntryPoints;
+  ReplayProxyPacket packet = eReplayProxy_GetShaderEntryPoints;
+  rdcarray<ShaderEntryPoint> ret;
+
   {
-    m_ToReplaySerialiser->Serialise("", id);
-    m_ToReplaySerialiser->Serialise("", entryPoint);
-
-    ShaderReflection *refl = m_Remote->GetShader(id, entryPoint);
-
-    bool hasrefl = (refl != NULL);
-    m_FromReplaySerialiser->Serialise("", hasrefl);
-
-    if(hasrefl)
-      m_FromReplaySerialiser->Serialise("", *refl);
-
-    return NULL;
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(id);
+    END_PARAMS();
   }
 
-  ShaderReflKey key(id, entryPoint);
-
-  if(m_ShaderReflectionCache.find(key) == m_ShaderReflectionCache.end())
   {
-    m_ToReplaySerialiser->Serialise("", id);
-    m_ToReplaySerialiser->Serialise("", entryPoint);
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetShaderEntryPoints(id);
+  }
 
-    if(!SendReplayCommand(eReplayProxy_GetShader))
-      return NULL;
+  SERIALISE_RETURN(ret);
 
-    bool hasrefl = false;
-    m_FromReplaySerialiser->Serialise("", hasrefl);
+  return ret;
+}
 
-    if(hasrefl)
+rdcarray<ShaderEntryPoint> ReplayProxy::GetShaderEntryPoints(ResourceId id)
+{
+  PROXY_FUNCTION(GetShaderEntryPoints, id);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+ShaderReflection *ReplayProxy::Proxied_GetShader(ParamSerialiser &paramser,
+                                                 ReturnSerialiser &retser, ResourceId pipeline,
+                                                 ResourceId shader, ShaderEntryPoint entry)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetShader;
+  ReplayProxyPacket packet = eReplayProxy_GetShader;
+  ShaderReflection *ret = NULL;
+
+  // only consider eventID part of the key on APIs where shaders are mutable
+  ShaderReflKey key(m_APIProps.shadersMutable ? m_EventID : 0, pipeline, shader, entry);
+
+  if(retser.IsReading() && m_ShaderReflectionCache.find(key) != m_ShaderReflectionCache.end())
+    return m_ShaderReflectionCache[key];
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(pipeline);
+    SERIALISE_ELEMENT(shader);
+    SERIALISE_ELEMENT(entry);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetShader(pipeline, shader, entry);
+  }
+
+  {
+    ReturnSerialiser &ser = retser;
+    PACKET_HEADER(packet);
+    SERIALISE_ELEMENT_OPT(ret);
+    SERIALISE_ELEMENT(packet);
+    ser.EndChunk();
+
+    // if we're reading, we should have checked the cache above. If we didn't, we need to steal the
+    // serialised pointer here into our cache
+    if(ser.IsReading())
     {
-      m_ShaderReflectionCache[key] = new ShaderReflection();
-
-      m_FromReplaySerialiser->Serialise("", *m_ShaderReflectionCache[key]);
-    }
-    else
-    {
-      m_ShaderReflectionCache[key] = NULL;
+      m_ShaderReflectionCache[key] = ret;
+      ret = NULL;
     }
   }
+
+  CheckError(packet, expectedPacket);
 
   return m_ShaderReflectionCache[key];
 }
 
+ShaderReflection *ReplayProxy::GetShader(ResourceId pipeline, ResourceId shader,
+                                         ShaderEntryPoint entry)
+{
+  PROXY_FUNCTION(GetShader, pipeline, shader, entry);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcstr ReplayProxy::Proxied_DisassembleShader(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                              ResourceId pipeline, const ShaderReflection *refl,
+                                              const rdcstr &target)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_DisassembleShader;
+  ReplayProxyPacket packet = eReplayProxy_DisassembleShader;
+  ResourceId Shader;
+  ShaderEntryPoint EntryPoint;
+  rdcstr ret;
+
+  if(refl)
+  {
+    Shader = refl->resourceId;
+    EntryPoint.name = refl->entryPoint;
+    EntryPoint.stage = refl->stage;
+  }
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(pipeline);
+    SERIALISE_ELEMENT(Shader);
+    SERIALISE_ELEMENT(EntryPoint);
+    SERIALISE_ELEMENT(target);
+    END_PARAMS();
+  }
+
+  if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+  {
+    refl =
+        m_Remote->GetShader(m_Remote->GetLiveID(pipeline), m_Remote->GetLiveID(Shader), EntryPoint);
+    ret = m_Remote->DisassembleShader(pipeline, refl, target);
+  }
+
+  SERIALISE_RETURN(ret);
+
+  return ret;
+}
+
+rdcstr ReplayProxy::DisassembleShader(ResourceId pipeline, const ShaderReflection *refl,
+                                      const rdcstr &target)
+{
+  PROXY_FUNCTION(DisassembleShader, pipeline, refl, target);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<rdcstr> ReplayProxy::Proxied_GetDisassemblyTargets(ParamSerialiser &paramser,
+                                                            ReturnSerialiser &retser,
+                                                            bool withPipeline)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetDisassemblyTargets;
+  ReplayProxyPacket packet = eReplayProxy_GetDisassemblyTargets;
+  rdcarray<rdcstr> ret;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(withPipeline);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetDisassemblyTargets(withPipeline);
+  }
+
+  SERIALISE_RETURN(ret);
+
+  return ret;
+}
+
+rdcarray<rdcstr> ReplayProxy::GetDisassemblyTargets(bool withPipeline)
+{
+  PROXY_FUNCTION(GetDisassemblyTargets, withPipeline);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_FreeTargetResource(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                             ResourceId id)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_FreeTargetResource;
+  ReplayProxyPacket packet = eReplayProxy_FreeTargetResource;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(id);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->FreeTargetResource(id);
+  }
+
+  SERIALISE_RETURN_VOID();
+}
+
 void ReplayProxy::FreeTargetResource(ResourceId id)
 {
-  m_ToReplaySerialiser->Serialise("", id);
+  PROXY_FUNCTION(FreeTargetResource, id);
+}
 
-  if(m_RemoteServer)
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<ShaderEncoding> ReplayProxy::Proxied_GetTargetShaderEncodings(ParamSerialiser &paramser,
+                                                                       ReturnSerialiser &retser)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetTargetShaderEncodings;
+  ReplayProxyPacket packet = eReplayProxy_GetTargetShaderEncodings;
+  rdcarray<ShaderEncoding> ret;
+
   {
-    m_Remote->FreeTargetResource(id);
+    BEGIN_PARAMS();
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetTargetShaderEncodings();
+  }
+
+  SERIALISE_RETURN(ret);
+
+  return ret;
+}
+
+rdcarray<ShaderEncoding> ReplayProxy::GetTargetShaderEncodings()
+{
+  PROXY_FUNCTION(GetTargetShaderEncodings);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_BuildTargetShader(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                            ShaderEncoding sourceEncoding, const bytebuf &source,
+                                            const rdcstr &entry,
+                                            const ShaderCompileFlags &compileFlags,
+                                            ShaderStage type, ResourceId &id, rdcstr &errors)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_BuildTargetShader;
+  ReplayProxyPacket packet = eReplayProxy_BuildTargetShader;
+  ResourceId ret_id;
+  rdcstr ret_errors;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(sourceEncoding);
+    SERIALISE_ELEMENT(source);
+    SERIALISE_ELEMENT(entry);
+    SERIALISE_ELEMENT(compileFlags);
+    SERIALISE_ELEMENT(type);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->BuildTargetShader(sourceEncoding, source, entry, compileFlags, type, ret_id,
+                                  ret_errors);
+  }
+
+  {
+    ReturnSerialiser &ser = retser;
+    PACKET_HEADER(packet);
+    SERIALISE_ELEMENT(ret_id);
+    SERIALISE_ELEMENT(ret_errors);
+    SERIALISE_ELEMENT(packet);
+    ser.EndChunk();
+
+    id = ret_id;
+    errors = ret_errors;
+  }
+
+  CheckError(packet, expectedPacket);
+}
+
+void ReplayProxy::BuildTargetShader(ShaderEncoding sourceEncoding, const bytebuf &source,
+                                    const rdcstr &entry, const ShaderCompileFlags &compileFlags,
+                                    ShaderStage type, ResourceId &id, rdcstr &errors)
+{
+  PROXY_FUNCTION(BuildTargetShader, sourceEncoding, source, entry, compileFlags, type, id, errors);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_ReplaceResource(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                          ResourceId from, ResourceId to)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_ReplaceResource;
+  ReplayProxyPacket packet = eReplayProxy_ReplaceResource;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(from);
+    SERIALISE_ELEMENT(to);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->ReplaceResource(from, to);
+  }
+
+  SERIALISE_RETURN_VOID();
+}
+
+void ReplayProxy::ReplaceResource(ResourceId from, ResourceId to)
+{
+  PROXY_FUNCTION(ReplaceResource, from, to);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_RemoveReplacement(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                            ResourceId id)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_RemoveReplacement;
+  ReplayProxyPacket packet = eReplayProxy_RemoveReplacement;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(id);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->RemoveReplacement(id);
+  }
+
+  SERIALISE_RETURN_VOID();
+}
+
+void ReplayProxy::RemoveReplacement(ResourceId id)
+{
+  PROXY_FUNCTION(RemoveReplacement, id);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<PixelModification> ReplayProxy::Proxied_PixelHistory(
+    ParamSerialiser &paramser, ReturnSerialiser &retser, rdcarray<EventUsage> events,
+    ResourceId target, uint32_t x, uint32_t y, const Subresource &sub, CompType typeCast)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_PixelHistory;
+  ReplayProxyPacket packet = eReplayProxy_PixelHistory;
+  rdcarray<PixelModification> ret;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(events);
+    SERIALISE_ELEMENT(target);
+    SERIALISE_ELEMENT(x);
+    SERIALISE_ELEMENT(y);
+    SERIALISE_ELEMENT(sub);
+    SERIALISE_ELEMENT(typeCast);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->PixelHistory(events, target, x, y, sub, typeCast);
+  }
+
+  SERIALISE_RETURN(ret);
+
+  return ret;
+}
+
+rdcarray<PixelModification> ReplayProxy::PixelHistory(rdcarray<EventUsage> events,
+                                                      ResourceId target, uint32_t x, uint32_t y,
+                                                      const Subresource &sub, CompType typeCast)
+{
+  PROXY_FUNCTION(PixelHistory, events, target, x, y, sub, typeCast);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+ShaderDebugTrace *ReplayProxy::Proxied_DebugVertex(ParamSerialiser &paramser,
+                                                   ReturnSerialiser &retser, uint32_t eventId,
+                                                   uint32_t vertid, uint32_t instid, uint32_t idx,
+                                                   uint32_t view)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_DebugVertex;
+  ReplayProxyPacket packet = eReplayProxy_DebugVertex;
+  ShaderDebugTrace *ret;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(eventId);
+    SERIALISE_ELEMENT(vertid);
+    SERIALISE_ELEMENT(instid);
+    SERIALISE_ELEMENT(idx);
+    SERIALISE_ELEMENT(view);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->DebugVertex(eventId, vertid, instid, idx, view);
+    else
+      ret = new ShaderDebugTrace;
+  }
+
+  SERIALISE_RETURN(*ret);
+
+  return ret;
+}
+
+ShaderDebugTrace *ReplayProxy::DebugVertex(uint32_t eventId, uint32_t vertid, uint32_t instid,
+                                           uint32_t idx, uint32_t view)
+{
+  PROXY_FUNCTION(DebugVertex, eventId, vertid, instid, idx, view);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+ShaderDebugTrace *ReplayProxy::Proxied_DebugPixel(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                                  uint32_t eventId, uint32_t x, uint32_t y,
+                                                  uint32_t sample, uint32_t primitive)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_DebugPixel;
+  ReplayProxyPacket packet = eReplayProxy_DebugPixel;
+  ShaderDebugTrace *ret;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(eventId);
+    SERIALISE_ELEMENT(x);
+    SERIALISE_ELEMENT(y);
+    SERIALISE_ELEMENT(sample);
+    SERIALISE_ELEMENT(primitive);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->DebugPixel(eventId, x, y, sample, primitive);
+    else
+      ret = new ShaderDebugTrace;
+  }
+
+  SERIALISE_RETURN(*ret);
+
+  return ret;
+}
+
+ShaderDebugTrace *ReplayProxy::DebugPixel(uint32_t eventId, uint32_t x, uint32_t y, uint32_t sample,
+                                          uint32_t primitive)
+{
+  PROXY_FUNCTION(DebugPixel, eventId, x, y, sample, primitive);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+ShaderDebugTrace *ReplayProxy::Proxied_DebugThread(ParamSerialiser &paramser,
+                                                   ReturnSerialiser &retser, uint32_t eventId,
+                                                   const rdcfixedarray<uint32_t, 3> &groupid,
+                                                   const rdcfixedarray<uint32_t, 3> &threadid)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_DebugThread;
+  ReplayProxyPacket packet = eReplayProxy_DebugThread;
+  ShaderDebugTrace *ret;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(eventId);
+    SERIALISE_ELEMENT(groupid);
+    SERIALISE_ELEMENT(threadid);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->DebugThread(eventId, groupid, threadid);
+    else
+      ret = new ShaderDebugTrace;
+  }
+
+  SERIALISE_RETURN(*ret);
+
+  return ret;
+}
+
+ShaderDebugTrace *ReplayProxy::DebugThread(uint32_t eventId,
+                                           const rdcfixedarray<uint32_t, 3> &groupid,
+                                           const rdcfixedarray<uint32_t, 3> &threadid)
+{
+  PROXY_FUNCTION(DebugThread, eventId, groupid, threadid);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<ShaderDebugState> ReplayProxy::Proxied_ContinueDebug(ParamSerialiser &paramser,
+                                                              ReturnSerialiser &retser,
+                                                              ShaderDebugger *debugger)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_ContinueDebug;
+  ReplayProxyPacket packet = eReplayProxy_ContinueDebug;
+  rdcarray<ShaderDebugState> ret;
+
+  {
+    BEGIN_PARAMS();
+    uint64_t debugger_ptr = (uint64_t)(uintptr_t)debugger;
+    SERIALISE_ELEMENT(debugger_ptr);
+    debugger = (ShaderDebugger *)(uintptr_t)debugger_ptr;
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->ContinueDebug(debugger);
+  }
+
+  SERIALISE_RETURN(ret);
+
+  return ret;
+}
+
+rdcarray<ShaderDebugState> ReplayProxy::ContinueDebug(ShaderDebugger *debugger)
+{
+  PROXY_FUNCTION(ContinueDebug, debugger);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_FreeDebugger(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                       ShaderDebugger *debugger)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_FreeDebugger;
+  ReplayProxyPacket packet = eReplayProxy_FreeDebugger;
+
+  {
+    BEGIN_PARAMS();
+    uint64_t debugger_ptr = (uint64_t)(uintptr_t)debugger;
+    SERIALISE_ELEMENT(debugger_ptr);
+    debugger = (ShaderDebugger *)(uintptr_t)debugger_ptr;
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->FreeDebugger(debugger);
+  }
+
+  CheckError(packet, expectedPacket);
+}
+
+void ReplayProxy::FreeDebugger(ShaderDebugger *debugger)
+{
+  PROXY_FUNCTION(FreeDebugger, debugger);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_SavePipelineState(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                            uint32_t eventId)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_SavePipelineState;
+  ReplayProxyPacket packet = eReplayProxy_SavePipelineState;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(eventId);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+    {
+      m_Remote->SavePipelineState(eventId);
+    }
+  }
+
+  {
+    ReturnSerialiser &ser = retser;
+    PACKET_HEADER(packet);
+    if(m_APIProps.pipelineType == GraphicsAPI::D3D11)
+    {
+      SERIALISE_ELEMENT(*m_D3D11PipelineState);
+    }
+    else if(m_APIProps.pipelineType == GraphicsAPI::D3D12)
+    {
+      SERIALISE_ELEMENT(*m_D3D12PipelineState);
+    }
+    else if(m_APIProps.pipelineType == GraphicsAPI::OpenGL)
+    {
+      SERIALISE_ELEMENT(*m_GLPipelineState);
+    }
+    else if(m_APIProps.pipelineType == GraphicsAPI::Vulkan)
+    {
+      SERIALISE_ELEMENT(*m_VulkanPipelineState);
+    }
+    SERIALISE_ELEMENT(packet);
+    ser.EndChunk();
+
+    if(retser.IsReading())
+    {
+      if(m_APIProps.pipelineType == GraphicsAPI::D3D11 && m_D3D11PipelineState)
+      {
+        D3D11Pipe::Shader *stages[] = {
+            &m_D3D11PipelineState->vertexShader, &m_D3D11PipelineState->hullShader,
+            &m_D3D11PipelineState->domainShader, &m_D3D11PipelineState->geometryShader,
+            &m_D3D11PipelineState->pixelShader,  &m_D3D11PipelineState->computeShader,
+        };
+
+        for(int i = 0; i < 6; i++)
+          if(stages[i]->resourceId != ResourceId())
+            stages[i]->reflection =
+                GetShader(ResourceId(), GetLiveID(stages[i]->resourceId), ShaderEntryPoint());
+
+        if(m_D3D11PipelineState->inputAssembly.resourceId != ResourceId())
+          m_D3D11PipelineState->inputAssembly.bytecode =
+              GetShader(ResourceId(), GetLiveID(m_D3D11PipelineState->inputAssembly.resourceId),
+                        ShaderEntryPoint());
+      }
+      else if(m_APIProps.pipelineType == GraphicsAPI::D3D12 && m_D3D12PipelineState)
+      {
+        D3D12Pipe::Shader *stages[] = {
+            &m_D3D12PipelineState->vertexShader, &m_D3D12PipelineState->hullShader,
+            &m_D3D12PipelineState->domainShader, &m_D3D12PipelineState->geometryShader,
+            &m_D3D12PipelineState->pixelShader,  &m_D3D12PipelineState->computeShader,
+        };
+
+        ResourceId pipe = GetLiveID(m_D3D12PipelineState->pipelineResourceId);
+
+        for(int i = 0; i < 6; i++)
+          if(stages[i]->resourceId != ResourceId())
+            stages[i]->reflection =
+                GetShader(pipe, GetLiveID(stages[i]->resourceId), ShaderEntryPoint());
+      }
+      else if(m_APIProps.pipelineType == GraphicsAPI::OpenGL && m_GLPipelineState)
+      {
+        GLPipe::Shader *stages[] = {
+            &m_GLPipelineState->vertexShader,   &m_GLPipelineState->tessControlShader,
+            &m_GLPipelineState->tessEvalShader, &m_GLPipelineState->geometryShader,
+            &m_GLPipelineState->fragmentShader, &m_GLPipelineState->computeShader,
+        };
+
+        for(int i = 0; i < 6; i++)
+          if(stages[i]->shaderResourceId != ResourceId())
+            stages[i]->reflection =
+                GetShader(ResourceId(), GetLiveID(stages[i]->shaderResourceId), ShaderEntryPoint());
+      }
+      else if(m_APIProps.pipelineType == GraphicsAPI::Vulkan && m_VulkanPipelineState)
+      {
+        VKPipe::Shader *stages[] = {
+            &m_VulkanPipelineState->vertexShader,   &m_VulkanPipelineState->tessControlShader,
+            &m_VulkanPipelineState->tessEvalShader, &m_VulkanPipelineState->geometryShader,
+            &m_VulkanPipelineState->fragmentShader, &m_VulkanPipelineState->computeShader,
+        };
+
+        ResourceId pipe = GetLiveID(m_VulkanPipelineState->graphics.pipelineResourceId);
+
+        for(int i = 0; i < 6; i++)
+        {
+          if(i == 5)
+            pipe = GetLiveID(m_VulkanPipelineState->compute.pipelineResourceId);
+
+          if(stages[i]->resourceId != ResourceId())
+            stages[i]->reflection =
+                GetShader(pipe, GetLiveID(stages[i]->resourceId),
+                          ShaderEntryPoint(stages[i]->entryPoint, stages[i]->stage));
+        }
+      }
+    }
+  }
+
+  CheckError(packet, expectedPacket);
+}
+
+void ReplayProxy::SavePipelineState(uint32_t eventId)
+{
+  PROXY_FUNCTION(SavePipelineState, eventId);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_ReplayLog(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                    uint32_t endEventID, ReplayLogType replayType)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_ReplayLog;
+  ReplayProxyPacket packet = eReplayProxy_ReplayLog;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(endEventID);
+    SERIALISE_ELEMENT(replayType);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->ReplayLog(endEventID, replayType);
+  }
+
+  if(retser.IsReading())
+  {
+    m_TextureProxyCache.clear();
+    m_BufferProxyCache.clear();
+  }
+
+  m_EventID = endEventID;
+
+  SERIALISE_RETURN_VOID();
+}
+
+void ReplayProxy::ReplayLog(uint32_t endEventID, ReplayLogType replayType)
+{
+  PROXY_FUNCTION(ReplayLog, endEventID, replayType);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_FetchStructuredFile(ParamSerialiser &paramser, ReturnSerialiser &retser)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_FetchStructuredFile;
+  ReplayProxyPacket packet = eReplayProxy_FetchStructuredFile;
+
+  {
+    BEGIN_PARAMS();
+    END_PARAMS();
+  }
+
+  SDFile *file = m_StructuredFile;
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      file = (SDFile *)m_Remote->GetStructuredFile();
+  }
+
+  {
+    ReturnSerialiser &ser = retser;
+    PACKET_HEADER(packet);
+
+    uint64_t chunkCount = file->chunks.size();
+    SERIALISE_ELEMENT(chunkCount);
+
+    if(retser.IsReading())
+      file->chunks.resize((size_t)chunkCount);
+
+    for(size_t c = 0; c < (size_t)chunkCount; c++)
+    {
+      if(retser.IsReading())
+        file->chunks[c] = new SDChunk(""_lit);
+
+      ser.Serialise("chunk"_lit, *file->chunks[c]);
+    }
+
+    uint64_t bufferCount = file->buffers.size();
+    SERIALISE_ELEMENT(bufferCount);
+
+    if(retser.IsReading())
+      file->buffers.resize((size_t)bufferCount);
+
+    for(size_t b = 0; b < (size_t)bufferCount; b++)
+    {
+      if(retser.IsReading())
+        file->buffers[b] = new bytebuf;
+
+      bytebuf *buf = file->buffers[b];
+
+      ser.Serialise("buffer"_lit, *buf);
+    }
+
+    SERIALISE_ELEMENT(packet);
+
+    ser.EndChunk();
+  }
+
+  CheckError(packet, expectedPacket);
+}
+
+void ReplayProxy::FetchStructuredFile()
+{
+  PROXY_FUNCTION(FetchStructuredFile);
+}
+
+struct DeltaSection
+{
+  uint64_t offs = 0;
+  bytebuf contents;
+
+  void swap(DeltaSection &o)
+  {
+    std::swap(offs, o.offs);
+    contents.swap(o.contents);
+  }
+};
+
+DECLARE_REFLECTION_STRUCT(DeltaSection);
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, DeltaSection &el)
+{
+  SERIALISE_MEMBER(offs);
+  SERIALISE_MEMBER(contents);
+}
+
+template <typename SerialiserType>
+void ReplayProxy::DeltaTransferBytes(SerialiserType &xferser, bytebuf &referenceData, bytebuf &newData)
+{
+  // lz4 compress
+  if(xferser.IsReading())
+  {
+    uint64_t uncompSize = 0;
+    xferser.Serialise("uncompSize"_lit, uncompSize);
+
+    if(uncompSize == 0)
+    {
+      // fast path - no changes.
+      RDCDEBUG("Unchanged");
+      return;
+    }
+    else
+    {
+      rdcarray<DeltaSection> deltas;
+
+      {
+        ReadSerialiser ser(
+            new StreamReader(new LZ4Decompressor(xferser.GetReader(), Ownership::Nothing),
+                             uncompSize, Ownership::Stream),
+            Ownership::Stream);
+
+        SERIALISE_ELEMENT(deltas);
+
+        // add any necessary padding.
+        uint64_t offs = ser.GetReader()->GetOffset();
+        RDCASSERT(offs <= uncompSize, offs, uncompSize);
+
+        if(offs < uncompSize)
+        {
+          if(uncompSize - offs > 128)
+            RDCERR("Unexpected amount of padding: %llu", uncompSize - offs);
+          ser.GetReader()->Read(NULL, uncompSize - offs);
+        }
+      }
+
+      if(deltas.empty())
+      {
+        RDCERR("Unexpected empty delta list");
+      }
+      else if(referenceData.empty())
+      {
+        // if we don't have reference data we blat the whole contents.
+        // in this case we only expect one delta with the whole range
+        if(deltas.size() != 1)
+          RDCERR("Got more than one delta with no reference data - taking first delta.");
+
+        referenceData = deltas.front().contents;
+        RDCDEBUG("Creating new reference data, %llu bytes", (uint64_t)referenceData.size());
+      }
+      else
+      {
+        uint64_t deltaBytes = 0;
+
+        // apply deltas to refData
+        for(const DeltaSection &delta : deltas)
+        {
+          if(delta.offs + delta.contents.size() > referenceData.size())
+          {
+            RDCERR("{%llu, %llu} larger than reference data (%llu bytes) - expanding to fit.",
+                   delta.offs, (uint64_t)delta.contents.size(), (uint64_t)referenceData.size());
+
+            referenceData.resize(size_t(delta.offs + delta.contents.size()));
+          }
+
+          byte *dst = referenceData.data() + (ptrdiff_t)delta.offs;
+          const byte *src = delta.contents.data();
+
+          memcpy(dst, src, delta.contents.size());
+
+          deltaBytes += (uint64_t)delta.contents.size();
+        }
+
+        RDCDEBUG("Applied %u deltas data, %llu total delta bytes to %llu resource size",
+                 (uint32_t)deltas.size(), deltaBytes, (uint64_t)referenceData.size());
+      }
+    }
   }
   else
   {
-    if(!SendReplayCommand(eReplayProxy_FreeResource))
-      return;
+    uint64_t uncompSize = 0;
+
+    // we use a list so that we don't have to reserve and pushing new sections will never cause
+    // previous ones to be reallocated and move around lots of data.
+    std::list<DeltaSection> deltasList;
+
+    if(referenceData.empty())
+    {
+      // no previous reference data, need to transfer the whole object.
+      deltasList.resize(1);
+      deltasList.back().contents = newData;
+    }
+    else
+    {
+      if(referenceData.size() != newData.size())
+      {
+        RDCERR("Reference data existed at %llu bytes, but new data is now %llu bytes",
+               referenceData.size(), newData.size());
+
+        // re-transfer the whole block, something went seriously wrong if the resource changed size.
+        deltasList.resize(1);
+        deltasList.back().contents = newData;
+      }
+      else
+      {
+        // do actual diff.
+        const byte *srcBegin = newData.data();
+        const byte *src = srcBegin;
+        const byte *dst = referenceData.data();
+        size_t bytesRemain = newData.size();
+
+        // we only care about large-ish chunks at a time. This prevents us generating lots of tiny
+        // deltas where we could batch changes together. This is tuned to not be too large (and
+        // thus causing us to miss too many sections we could skip) and not too small (causing us
+        // to devolve into lots of byte-wise deltas). The current value as of this comment of 128
+        // is definitely on the small end of the range, but consider e.g. an android image of
+        // 1440x2560 and a pixel-wide line that goes vertically from top to bottom. Reading
+        // horizontally that will mean 2560 different diffs, and only actually one pixel changed.
+        // The larger this value gets, the more redundant data we'll send along with.
+        const size_t chunkSize = 128;
+
+        // we use a simple state machine. Start in state 1
+        //
+        // State 1: No active delta. Look at the current chunk, if there's no difference move to the
+        //          next chunk and stay in this state. If there is a difference, push a delta onto
+        //          the list at the current offset. Copy the current chunk into the contents of the
+        //          delta. Move to state 2.
+        // State 2. Active delta. Look at the current chunk, if there is a difference then append
+        //          the current chunk to the last delta's contents, move to the next chunk, and stay
+        //          in this state. If there isn't a difference, move back to state 1 (the delta is
+        //          already 'finished' so we have no need to do anything more on it).
+        //
+        // At any point we can end the loop, both states are 'complete' at all points.
+
+        enum DeltaState
+        {
+          None,
+          Active
+        };
+        DeltaState state = DeltaState::None;
+
+        // loop over whole chunks
+        while(bytesRemain > chunkSize)
+        {
+          // check if there's a difference in this chunk.
+          bool chunkDiff = memcmp(src, dst, chunkSize) != 0;
+
+          // if we're in state 1
+          if(state == DeltaState::None)
+          {
+            // if there's a difference, append a new delta with the current offset and chunk
+            // contents and move to state 2
+            if(chunkDiff)
+            {
+              deltasList.push_back(DeltaSection());
+              deltasList.back().offs = src - srcBegin;
+              deltasList.back().contents.append(src, chunkSize);
+
+              state = DeltaState::Active;
+            }
+          }
+          // if we're in state 2
+          else if(state == DeltaState::Active)
+          {
+            // continue to append to the delta if there's another difference in this chunk.
+            if(chunkDiff)
+            {
+              deltasList.back().contents.append(src, chunkSize);
+            }
+            else
+            {
+              state = DeltaState::None;
+            }
+          }
+
+          // move to the next chunk
+          bytesRemain -= chunkSize;
+          src += chunkSize;
+          dst += chunkSize;
+        }
+
+        // if there are still some bytes remaining at the end of the image, smaller than the chunk
+        // size, just diff directly and send if needed. We could combine this with the last delta if
+        // we ended in the active state.
+        if(bytesRemain > 0 && memcmp(src, dst, bytesRemain) != 0)
+        {
+          deltasList.push_back(DeltaSection());
+          deltasList.back().offs = src - srcBegin;
+          deltasList.back().contents.append(src, bytesRemain);
+        }
+      }
+    }
+
+    // serialise as an array, move the storage from the list into here
+    rdcarray<DeltaSection> deltas(deltasList.size());
+
+    {
+      // swap between the list and array, so all the buffers just move storage
+      size_t i = 0;
+      for(auto it = deltasList.begin(); it != deltasList.end(); it++)
+      {
+        deltas[i].swap(*it);
+        i++;
+      }
+    }
+
+    // fast path - no changes.
+    if(deltas.empty())
+    {
+      uncompSize = 0;
+    }
+    else
+    {
+      // serialise to an invalid writer, to get the size of the data that will be written.
+      WriteSerialiser ser(new StreamWriter(StreamWriter::InvalidStream), Ownership::Stream);
+
+      SERIALISE_ELEMENT(deltas);
+
+      uncompSize = ser.GetWriter()->GetOffset() + ser.GetChunkAlignment();
+    }
+
+    xferser.Serialise("uncompSize"_lit, uncompSize);
+
+    if(uncompSize > 0)
+    {
+      WriteSerialiser ser(new StreamWriter(new LZ4Compressor(xferser.GetWriter(), Ownership::Nothing),
+                                           Ownership::Stream),
+                          Ownership::Stream);
+
+      SERIALISE_ELEMENT(deltas);
+
+      char empty[128] = {};
+
+      // add any necessary padding.
+      uint64_t offs = ser.GetWriter()->GetOffset();
+      RDCASSERT(offs <= uncompSize, offs, uncompSize);
+      RDCASSERT(uncompSize - offs < sizeof(empty), offs, uncompSize);
+
+      if(offs < uncompSize)
+        ser.GetWriter()->Write(empty, uncompSize - offs);
+    }
+
+    // This is the proxy side, so we have the complete newest contents in data. Swap the new data
+    // into refData for next time.
+    referenceData.swap(newData);
   }
 }
 
-void ReplayProxy::InitCallstackResolver()
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_CacheBufferData(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                          ResourceId buff)
 {
-  if(m_RemoteServer)
+  const ReplayProxyPacket expectedPacket = eReplayProxy_CacheBufferData;
+  ReplayProxyPacket packet = eReplayProxy_CacheBufferData;
+
   {
-    m_Remote->InitCallstackResolver();
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(buff);
+    END_PARAMS();
+  }
+
+  bytebuf data;
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->GetBufferData(buff, 0, 0, data);
+  }
+
+  {
+    ReturnSerialiser &ser = retser;
+    PACKET_HEADER(packet);
+    SERIALISE_ELEMENT(packet);
+  }
+
+  DeltaTransferBytes(retser, m_ProxyBufferData[buff], data);
+
+  retser.EndChunk();
+
+  CheckError(packet, expectedPacket);
+}
+
+void ReplayProxy::CacheBufferData(ResourceId buff)
+{
+  PROXY_FUNCTION(CacheBufferData, buff);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_CacheTextureData(ParamSerialiser &paramser, ReturnSerialiser &retser,
+                                           ResourceId tex, const Subresource &sub,
+                                           const GetTextureDataParams &params)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_CacheTextureData;
+  ReplayProxyPacket packet = eReplayProxy_CacheTextureData;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(tex);
+    SERIALISE_ELEMENT(sub);
+    SERIALISE_ELEMENT(params);
+    END_PARAMS();
+  }
+
+  bytebuf data;
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->GetTextureData(tex, sub, params, data);
+  }
+
+  {
+    ReturnSerialiser &ser = retser;
+    PACKET_HEADER(packet);
+    SERIALISE_ELEMENT(packet);
+  }
+
+  TextureCacheEntry entry = {tex, sub};
+  DeltaTransferBytes(retser, m_ProxyTextureData[entry], data);
+
+  retser.EndChunk();
+
+  CheckError(packet, expectedPacket);
+}
+
+void ReplayProxy::CacheTextureData(ResourceId tex, const Subresource &sub,
+                                   const GetTextureDataParams &params)
+{
+  PROXY_FUNCTION(CacheTextureData, tex, sub, params);
+}
+
+#pragma endregion Proxied Functions
+
+// If a remap is required, modify the params that are used when getting the proxy texture data
+// for replay on the current driver.
+void ReplayProxy::RemapProxyTextureIfNeeded(TextureDescription &tex, GetTextureDataParams &params)
+{
+  if(NeedRemapForFetch(tex.format))
+  {
+    // currently only OpenGL ES need to remap all the depth formats for fetch
+    // when depth read is not supported
+    params.remap = RemapTexture::RGBA32;
+    tex.format.compCount = 4;
+    tex.format.compByteWidth = 4;
+    tex.format.compType = CompType::Float;
+    tex.format.type = ResourceFormatType::Regular;
+    tex.creationFlags &= ~TextureCategory::DepthTarget;
+    return;
+  }
+
+  if(m_Proxy->IsTextureSupported(tex))
+    return;
+
+  if(tex.format.Special())
+  {
+    switch(tex.format.type)
+    {
+      case ResourceFormatType::S8:
+      case ResourceFormatType::D16S8:
+      case ResourceFormatType::D24S8:
+      case ResourceFormatType::D32S8:
+        tex.format.compType = CompType::Float;
+        params.remap = RemapTexture::RGBA32;
+        tex.creationFlags &= ~TextureCategory::DepthTarget;
+        break;
+      case ResourceFormatType::A8:
+        tex.format.compType = CompType::UNorm;
+        params.remap = RemapTexture::RGBA8;
+        break;
+      case ResourceFormatType::BC1:
+      case ResourceFormatType::BC2:
+      case ResourceFormatType::BC3:
+      case ResourceFormatType::BC7:
+        tex.format.compType = CompType::UNorm;
+        params.remap = RemapTexture::RGBA8;
+        break;
+      case ResourceFormatType::BC4:
+      case ResourceFormatType::BC5:
+      case ResourceFormatType::BC6:
+        tex.format.compType = CompType::Float;
+        params.remap = RemapTexture::RGBA16;
+        break;
+      case ResourceFormatType::ASTC:
+        tex.format.compType = CompType::Float;
+        params.remap = RemapTexture::RGBA16;
+        break;
+      case ResourceFormatType::EAC:
+      case ResourceFormatType::R5G6B5:
+      case ResourceFormatType::R5G5B5A1:
+      case ResourceFormatType::R4G4:
+      case ResourceFormatType::R4G4B4A4:
+      case ResourceFormatType::ETC2: params.remap = RemapTexture::RGBA8; break;
+      case ResourceFormatType::R10G10B10A2: params.remap = RemapTexture::RGBA16; break;
+      default:
+        RDCERR("Don't know how to remap resource format type %u, falling back to RGBA32",
+               tex.format.type);
+        tex.format.compType = CompType::Float;
+        params.remap = RemapTexture::RGBA32;
+        break;
+    }
   }
   else
   {
-    if(!SendReplayCommand(eReplayProxy_InitStackResolver))
-      return;
+    if(tex.format.compByteWidth == 1)
+    {
+      params.remap = RemapTexture::RGBA8;
+
+      if(tex.format.compType == CompType::SNorm || tex.format.compType == CompType::UNormSRGB)
+      {
+        params.remap = RemapTexture::RGBA16;
+        tex.format.compType = CompType::Float;
+      }
+    }
+    else if(tex.format.compByteWidth == 2)
+    {
+      params.remap = RemapTexture::RGBA16;
+    }
+    else
+    {
+      params.remap = RemapTexture::RGBA32;
+    }
+
+    // always remap depth to RGBA32F, because D16_UNORM will lose precision if remapped to R16_FLOAT
+    if(tex.format.compType == CompType::Depth)
+    {
+      params.remap = RemapTexture::RGBA32;
+      tex.format.compType = CompType::Float;
+    }
+  }
+
+  tex.format.SetBGRAOrder(false);
+  tex.format.type = ResourceFormatType::Regular;
+  tex.format.compCount = 4;
+
+  switch(params.remap)
+  {
+    case RemapTexture::NoRemap: RDCERR("IsTextureSupported == false, but we have no remap"); break;
+    case RemapTexture::RGBA8: tex.format.compByteWidth = 1; break;
+    case RemapTexture::RGBA16: tex.format.compByteWidth = 2; break;
+    case RemapTexture::RGBA32: tex.format.compByteWidth = 4; break;
   }
 }
 
-Callstack::StackResolver *ReplayProxy::GetCallstackResolver()
+void ReplayProxy::EnsureTexCached(ResourceId &texid, CompType &typeCast, const Subresource &sub)
 {
-  if(m_RemoteHasResolver)
-    return this;
+  if(m_Reader.IsErrored() || m_Writer.IsErrored())
+    return;
 
-  bool remoteHasResolver = false;
+  if(m_LocalTextures.find(texid) != m_LocalTextures.end())
+    return;
 
-  if(m_RemoteServer)
+  if(texid == ResourceId())
+    return;
+
+  TextureCacheEntry entry = {texid, sub};
+
+  // ignore parameters in the key which don't matter for this texture
   {
-    remoteHasResolver = m_Remote->GetCallstackResolver() != NULL;
+    auto it = m_TextureInfo.find(texid);
+    if(it != m_TextureInfo.end())
+    {
+      if(it->second.mips <= 1)
+        entry.sub.mip = 0;
+
+      if(it->second.dimension == 3 || it->second.arraysize <= 1)
+        entry.sub.slice = 0;
+
+      if(it->second.msSamp <= 1)
+        entry.sub.sample = 0;
+    }
   }
-  else
+
+  auto proxyit = m_ProxyTextures.find(texid);
+
+  if(m_TextureProxyCache.find(entry) == m_TextureProxyCache.end())
   {
-    if(!SendReplayCommand(eReplayProxy_HasStackResolver))
-      return NULL;
+    if(proxyit == m_ProxyTextures.end())
+    {
+      TextureDescription tex = GetTexture(texid);
+
+      ProxyTextureProperties proxy;
+      RemapProxyTextureIfNeeded(tex, proxy.params);
+
+      proxy.id = m_Proxy->CreateProxyTexture(tex);
+      proxy.msSamp = RDCMAX(1U, tex.msSamp);
+      proxyit = m_ProxyTextures.insert(std::make_pair(texid, proxy)).first;
+    }
+
+    const ProxyTextureProperties &proxy = proxyit->second;
+
+    for(uint32_t sample = 0; sample < proxy.msSamp; sample++)
+    {
+      Subresource s = sub;
+      s.sample = sample;
+
+      TextureCacheEntry sampleArrayEntry = {texid, s};
+
+      GetTextureDataParams params = proxy.params;
+
+      params.typeCast = typeCast;
+      params.standardLayout = true;
+
+#if ENABLED(TRANSFER_RESOURCE_CONTENTS_DELTAS)
+      CacheTextureData(texid, s, params);
+#else
+      GetTextureData(texid, s, params, m_ProxyTextureData[entry]);
+#endif
+
+      auto it = m_ProxyTextureData.find(sampleArrayEntry);
+      if(it != m_ProxyTextureData.end())
+        m_Proxy->SetProxyTextureData(proxy.id, s, it->second.data(), it->second.size());
+    }
+
+    m_TextureProxyCache.insert(entry);
   }
 
-  m_FromReplaySerialiser->Serialise("", remoteHasResolver);
+  if(proxyit->second.params.remap != RemapTexture::NoRemap)
+    typeCast = BaseRemapType(typeCast);
 
-  if(remoteHasResolver)
+  // change texid to the proxy texture's ID for passing to our proxy renderer
+  texid = proxyit->second.id;
+}
+
+void ReplayProxy::EnsureBufCached(ResourceId bufid)
+{
+  if(m_Reader.IsErrored() || m_Writer.IsErrored())
+    return;
+
+  if(m_BufferProxyCache.find(bufid) == m_BufferProxyCache.end())
   {
-    if(!m_RemoteServer)
-      m_RemoteHasResolver = true;
+    if(m_ProxyBufferIds.find(bufid) == m_ProxyBufferIds.end())
+    {
+      BufferDescription buf = GetBuffer(bufid);
+      m_ProxyBufferIds[bufid] = m_Proxy->CreateProxyBuffer(buf);
+    }
 
-    return this;
+    ResourceId proxyid = m_ProxyBufferIds[bufid];
+
+#if ENABLED(TRANSFER_RESOURCE_CONTENTS_DELTAS)
+    CacheBufferData(bufid);
+#else
+    GetBufferData(bufid, 0, 0, m_ProxyBufferData[bufid]);
+#endif
+
+    auto it = m_ProxyBufferData.find(bufid);
+    if(it != m_ProxyBufferData.end())
+      m_Proxy->SetProxyBufferData(proxyid, it->second.data(), it->second.size());
+
+    m_BufferProxyCache.insert(bufid);
+  }
+}
+
+const ActionDescription *ReplayProxy::FindAction(const rdcarray<ActionDescription> &actionList,
+                                                 uint32_t eventId)
+{
+  for(const ActionDescription &a : actionList)
+  {
+    if(!a.children.empty())
+    {
+      const ActionDescription *action = FindAction(a.children, eventId);
+      if(action != NULL)
+        return action;
+    }
+
+    if(a.eventId == eventId)
+      return &a;
   }
 
   return NULL;
 }
 
-Callstack::AddressDetails ReplayProxy::GetAddr(uint64_t addr)
+void ReplayProxy::InitPreviewWindow()
 {
-  Callstack::AddressDetails ret;
-
-  if(m_RemoteServer)
+  if(m_Replay && m_PreviewWindow)
   {
-    Callstack::StackResolver *resolv = m_Remote->GetCallstackResolver();
-    if(resolv)
-      ret = resolv->GetAddr(addr);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_HasStackResolver))
-      return ret;
-  }
+    WindowingData data = m_PreviewWindow(true, m_Replay->GetSupportedWindowSystems());
 
-  m_FromReplaySerialiser->Serialise("", ret.filename);
-  m_FromReplaySerialiser->Serialise("", ret.function);
-  m_FromReplaySerialiser->Serialise("", ret.line);
+    if(data.system != WindowingSystem::Unknown)
+    {
+      // if the data has changed, destroy the old window so we'll recreate
+      if(m_PreviewWindow == 0 || memcmp(&m_PreviewWindowingData, &data, sizeof(data)) != 0)
+      {
+        if(m_PreviewWindow)
+        {
+          RDCDEBUG("Re-creating preview window due to change in data");
+          m_Replay->DestroyOutputWindow(m_PreviewOutput);
+        }
 
-  return ret;
+        m_PreviewOutput = m_Replay->MakeOutputWindow(data, false);
+
+        m_PreviewWindowingData = data;
+      }
+    }
+
+    if(m_FrameRecord.actionList.empty())
+      m_FrameRecord = m_Replay->GetFrameRecord();
+  }
 }
 
-void ReplayProxy::BuildTargetShader(string source, string entry, const uint32_t compileFlags,
-                                    ShaderStageType type, ResourceId *id, string *errors)
+void ReplayProxy::ShutdownPreviewWindow()
 {
-  uint32_t flags = compileFlags;
-  m_ToReplaySerialiser->Serialise("", source);
-  m_ToReplaySerialiser->Serialise("", entry);
-  m_ToReplaySerialiser->Serialise("", flags);
-  m_ToReplaySerialiser->Serialise("", type);
+  if(m_Replay && m_PreviewOutput)
+  {
+    m_Replay->DestroyOutputWindow(m_PreviewOutput);
+    m_PreviewOutput = 0;
+  }
 
-  ResourceId outId;
-  string outErrs;
+  if(m_PreviewWindow)
+    m_PreviewWindow(false, {});
+}
 
+void ReplayProxy::RefreshPreviewWindow()
+{
+  InitPreviewWindow();
+
+  if(m_Replay && m_PreviewOutput)
+  {
+    m_Replay->BindOutputWindow(m_PreviewOutput, false);
+    m_Replay->ClearOutputWindowColor(m_PreviewOutput, FloatVector(0.0f, 0.0f, 0.0f, 1.0f));
+
+    int32_t winWidth = 1;
+    int32_t winHeight = 1;
+    m_Replay->GetOutputWindowDimensions(m_PreviewOutput, winWidth, winHeight);
+
+    m_Replay->RenderCheckerboard(RenderDoc::Inst().DarkCheckerboardColor(),
+                                 RenderDoc::Inst().LightCheckerboardColor());
+
+    const ActionDescription *curDraw = FindAction(m_FrameRecord.actionList, m_EventID);
+
+    if(curDraw)
+    {
+      TextureDisplay cfg = {};
+
+      cfg.red = cfg.green = cfg.blue = true;
+      cfg.alpha = false;
+
+      for(ResourceId id : curDraw->outputs)
+      {
+        if(id != ResourceId())
+        {
+          cfg.resourceId = id;
+          break;
+        }
+      }
+
+      // if we didn't get a colour target, try the depth target
+      if(cfg.resourceId == ResourceId() && curDraw->depthOut != ResourceId())
+      {
+        cfg.resourceId = curDraw->depthOut;
+        // red only for depth textures
+        cfg.green = cfg.blue = false;
+      }
+
+      // if we didn't get any target, use the copy destination
+      if(cfg.resourceId == ResourceId())
+        cfg.resourceId = curDraw->copyDestination;
+
+      // if we did get a texture, get the live ID for it
+      if(cfg.resourceId != ResourceId())
+        cfg.resourceId = m_Replay->GetLiveID(cfg.resourceId);
+
+      if(cfg.resourceId != ResourceId())
+      {
+        TextureDescription texInfo = m_Replay->GetTexture(cfg.resourceId);
+
+        cfg.typeCast = CompType::Typeless;
+        cfg.rangeMin = 0.0f;
+        cfg.rangeMax = 1.0f;
+        cfg.flipY = false;
+        cfg.hdrMultiplier = -1.0f;
+        cfg.linearDisplayAsGamma = true;
+        cfg.customShaderId = ResourceId();
+        cfg.subresource = {0, 0, 0};
+        cfg.rawOutput = false;
+        cfg.backgroundColor = FloatVector(0, 0, 0, 0);
+        cfg.overlay = DebugOverlay::NoOverlay;
+        cfg.xOffset = 0.0f;
+        cfg.yOffset = 0.0f;
+
+        float xScale = float(winWidth) / float(texInfo.width);
+        float yScale = float(winHeight) / float(texInfo.height);
+
+        // use the smaller scale, and shrink a little so we don't display it fullscreen - makes it a
+        // little clearer that this is the replay, not the original application
+        cfg.scale = RDCMIN(xScale, yScale) * 0.9f;
+
+        // centre the texture
+        cfg.xOffset = (float(winWidth) - float(texInfo.width) * cfg.scale) / 2.0f;
+        cfg.yOffset = (float(winHeight) - float(texInfo.height) * cfg.scale) / 2.0f;
+
+        m_Replay->RenderTexture(cfg);
+      }
+    }
+
+    m_Replay->FlipOutputWindow(m_PreviewOutput);
+
+    m_PreviewWindow(true, m_Replay->GetSupportedWindowSystems());
+  }
+}
+
+void ReplayProxy::InitRemoteExecutionThread()
+{
+  m_RemoteExecutionThread = Threading::CreateThread([this]() { RemoteExecutionThreadEntry(); });
+}
+
+void ReplayProxy::ShutdownRemoteExecutionThread()
+{
+  if(m_RemoteExecutionThread)
+  {
+    Atomic::Inc32(&m_RemoteExecutionKill);
+
+    Threading::JoinThread(m_RemoteExecutionThread);
+    Threading::CloseThread(m_RemoteExecutionThread);
+    m_RemoteExecutionThread = 0;
+  }
+}
+
+void ReplayProxy::BeginRemoteExecution()
+{
   if(m_RemoteServer)
   {
-    m_Remote->BuildTargetShader(source, entry, flags, type, &outId, &outErrs);
+    // m_RemoteExecutionActive must be inactive because it starts inactive, and we synchronise it in
+    // EndRemoteExecution
+    Atomic::CmpExch32(&m_RemoteExecutionState, RemoteExecution_Inactive, RemoteExecution_ThreadIdle);
   }
   else
   {
-    if(!SendReplayCommand(eReplayProxy_BuildTargetShader))
-      return;
+    // don't do anything, we go immediately to EndRemoteExecution and start reading packets
+  }
+}
+
+void ReplayProxy::EndRemoteExecution()
+{
+  if(m_RemoteServer)
+  {
+    // wait until the thread is idle, and move it to inactive. This is unlikely to contend because
+    // the thread only becomes active when it's sending a keepalive packet.
+    while(Atomic::CmpExch32(&m_RemoteExecutionState, RemoteExecution_ThreadIdle,
+                            RemoteExecution_Inactive) == RemoteExecution_ThreadIdle)
+      Threading::Sleep(0);
+
+    // send the finished packet
+    m_Writer.BeginChunk(eReplayProxy_RemoteExecutionFinished, 0);
+    m_Writer.EndChunk();
+  }
+  else
+  {
+    while(!m_Writer.IsErrored() && !m_Reader.IsErrored() && !m_IsErrored)
+    {
+      ReplayProxyPacket packet = m_Reader.ReadChunk<ReplayProxyPacket>();
+      m_Reader.EndChunk();
+
+      if(packet == eReplayProxy_RemoteExecutionKeepAlive)
+      {
+        RDCDEBUG("Got keepalive packet");
+        continue;
+      }
+
+      if(packet != eReplayProxy_RemoteExecutionFinished)
+      {
+        CheckError(packet, eReplayProxy_RemoteExecutionFinished);
+        return;
+      }
+
+      break;
+    }
+
+    CheckError(eReplayProxy_RemoteExecutionFinished, eReplayProxy_RemoteExecutionFinished);
+  }
+}
+
+void ReplayProxy::RemoteExecutionThreadEntry()
+{
+  Threading::SetCurrentThreadName("RemoteExecutionThreadEntry");
+
+  // while we're alive
+  while(Atomic::CmpExch32(&m_RemoteExecutionKill, 0, 0) == 0)
+  {
+    if(IsThreadIdle())
+    {
+      // while we're still idle (rather than inactive), do a period of:
+      // 1. Wait for 1 second, aborting if we've been moved to inactive
+      // 2. Send a keepalive packet
+      //
+      // The wait we tradeoff between busy-waits (to catch very short-lived executions) with waits
+      // to avoid spinning too much.
+
+      while(IsThreadIdle())
+      {
+        PerformanceTimer waitTimer;
+        while(waitTimer.GetMilliseconds() < 5 && IsThreadIdle())
+          (void)waitTimer;    // wait
+
+        if(!IsThreadIdle())
+          break;
+
+        // 5ms has elapsed, wait up to 100ms in 5ms chunks
+        while(waitTimer.GetMilliseconds() < 100 && IsThreadIdle())
+          Threading::Sleep(5);
+
+        if(!IsThreadIdle())
+          break;
+
+        // 100ms has elapsed, wait up to 1000ms in 50ms chunks
+        while(waitTimer.GetMilliseconds() < 1000 && IsThreadIdle())
+          Threading::Sleep(50);
+
+        if(!IsThreadIdle())
+          break;
+
+        // if we got here, it's time to send a keepalive packet. First become active so that
+        // EndRemoteExecution() blocks until this finishes
+        if(Atomic::CmpExch32(&m_RemoteExecutionState, RemoteExecution_ThreadIdle,
+                             RemoteExecution_ThreadActive) == RemoteExecution_ThreadIdle)
+        {
+          m_Writer.BeginChunk(eReplayProxy_RemoteExecutionKeepAlive, 0);
+          m_Writer.EndChunk();
+
+          Atomic::CmpExch32(&m_RemoteExecutionState, RemoteExecution_ThreadActive,
+                            RemoteExecution_ThreadIdle);
+        }
+      }
+    }
+
+    // don't busy-wait
+    Threading::Sleep(0);
+  }
+}
+
+ReplayStatus ReplayProxy::FatalErrorCheck()
+{
+  // this isn't proxied since it's called at relatively high frequency. Whenever we proxy a
+  // function, we also return the the remote side's status
+  if(m_IsErrored)
+  {
+    // if we're error'd due to a network issue (i.e. the other side crashed and disconnected) we
+    // won't have a status, set a generic one
+    if(m_FatalError == ReplayStatus::Succeeded)
+      m_FatalError = ReplayStatus::RemoteServerConnectionLost;
+
+    return m_FatalError;
   }
 
-  m_FromReplaySerialiser->Serialise("", outId);
-  m_FromReplaySerialiser->Serialise("", outErrs);
+  return ReplayStatus::Succeeded;
+}
 
+IReplayDriver *ReplayProxy::MakeDummyDriver()
+{
+  // gather up the shaders we've allocated to pass to the dummy driver
+  rdcarray<ShaderReflection *> shaders;
+  for(auto it = m_ShaderReflectionCache.begin(); it != m_ShaderReflectionCache.end(); ++it)
+    shaders.push_back(it->second);
+  m_ShaderReflectionCache.clear();
+
+  IReplayDriver *dummy = new DummyDriver(this, shaders);
+
+  // the dummy driver now owns the file, remove our reference
+  m_StructuredFile = NULL;
+
+  return dummy;
+}
+
+bool ReplayProxy::CheckError(ReplayProxyPacket receivedPacket, ReplayProxyPacket expectedPacket)
+{
+  if(m_FatalError != ReplayStatus::Succeeded)
+  {
+    RDCERR("Fatal error detected while processing %s: %s", ToStr(expectedPacket).c_str(),
+           ToStr(m_FatalError).c_str());
+    m_IsErrored = true;
+    return true;
+  }
+
+  if(m_Writer.IsErrored() || m_Reader.IsErrored() || m_IsErrored)
+  {
+    RDCERR("Error during processing of %s", ToStr(expectedPacket).c_str());
+    m_IsErrored = true;
+    return true;
+  }
+
+  if(receivedPacket != expectedPacket)
+  {
+    RDCERR("Expected %s, received %s", ToStr(expectedPacket).c_str(), ToStr(receivedPacket).c_str());
+    m_IsErrored = true;
+    return true;
+  }
+
+  return false;
+}
+
+bool ReplayProxy::Tick(int type)
+{
   if(!m_RemoteServer)
+    return true;
+
+  if(m_Writer.IsErrored() || m_Reader.IsErrored() || m_IsErrored)
+    return false;
+
+  ReplayProxyPacket packet = (ReplayProxyPacket)type;
+
+  PROXY_DEBUG("Received %s", ToStr(packet).c_str());
+
+  switch(packet)
   {
-    if(id)
-      *id = outId;
-    if(errors)
-      *errors = outErrs;
-  }
-}
-
-void ReplayProxy::ReplaceResource(ResourceId from, ResourceId to)
-{
-  m_ToReplaySerialiser->Serialise("", from);
-  m_ToReplaySerialiser->Serialise("", to);
-
-  if(m_RemoteServer)
-  {
-    m_Remote->ReplaceResource(from, to);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_ReplaceResource))
-      return;
-  }
-}
-
-void ReplayProxy::RemoveReplacement(ResourceId id)
-{
-  m_ToReplaySerialiser->Serialise("", id);
-
-  if(m_RemoteServer)
-  {
-    m_Remote->RemoveReplacement(id);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_RemoveReplacement))
-      return;
-  }
-}
-
-vector<PixelModification> ReplayProxy::PixelHistory(vector<EventUsage> events, ResourceId target,
-                                                    uint32_t x, uint32_t y, uint32_t slice,
-                                                    uint32_t mip, uint32_t sampleIdx,
-                                                    FormatComponentType typeHint)
-{
-  vector<PixelModification> ret;
-
-  m_ToReplaySerialiser->Serialise("", events);
-  m_ToReplaySerialiser->Serialise("", target);
-  m_ToReplaySerialiser->Serialise("", x);
-  m_ToReplaySerialiser->Serialise("", y);
-  m_ToReplaySerialiser->Serialise("", slice);
-  m_ToReplaySerialiser->Serialise("", mip);
-  m_ToReplaySerialiser->Serialise("", sampleIdx);
-  m_ToReplaySerialiser->Serialise("", typeHint);
-
-  if(m_RemoteServer)
-  {
-    ret = m_Remote->PixelHistory(events, target, x, y, slice, mip, sampleIdx, typeHint);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_PixelHistory))
-      return ret;
-  }
-
-  m_FromReplaySerialiser->Serialise("", ret);
-
-  return ret;
-}
-
-ShaderDebugTrace ReplayProxy::DebugVertex(uint32_t eventID, uint32_t vertid, uint32_t instid,
-                                          uint32_t idx, uint32_t instOffset, uint32_t vertOffset)
-{
-  ShaderDebugTrace ret;
-
-  m_ToReplaySerialiser->Serialise("", eventID);
-  m_ToReplaySerialiser->Serialise("", vertid);
-  m_ToReplaySerialiser->Serialise("", instid);
-  m_ToReplaySerialiser->Serialise("", idx);
-  m_ToReplaySerialiser->Serialise("", instOffset);
-  m_ToReplaySerialiser->Serialise("", vertOffset);
-
-  if(m_RemoteServer)
-  {
-    ret = m_Remote->DebugVertex(eventID, vertid, instid, idx, instOffset, vertOffset);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_DebugVertex))
-      return ret;
-  }
-
-  m_FromReplaySerialiser->Serialise("", ret);
-
-  return ret;
-}
-
-ShaderDebugTrace ReplayProxy::DebugPixel(uint32_t eventID, uint32_t x, uint32_t y, uint32_t sample,
-                                         uint32_t primitive)
-{
-  ShaderDebugTrace ret;
-
-  m_ToReplaySerialiser->Serialise("", eventID);
-  m_ToReplaySerialiser->Serialise("", x);
-  m_ToReplaySerialiser->Serialise("", y);
-  m_ToReplaySerialiser->Serialise("", sample);
-  m_ToReplaySerialiser->Serialise("", primitive);
-
-  if(m_RemoteServer)
-  {
-    ret = m_Remote->DebugPixel(eventID, x, y, sample, primitive);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_DebugPixel))
-      return ret;
+    case eReplayProxy_CacheBufferData: CacheBufferData(ResourceId()); break;
+    case eReplayProxy_CacheTextureData:
+      CacheTextureData(ResourceId(), Subresource(), GetTextureDataParams());
+      break;
+    case eReplayProxy_ReplayLog: ReplayLog(0, (ReplayLogType)0); break;
+    case eReplayProxy_FetchStructuredFile: FetchStructuredFile(); break;
+    case eReplayProxy_GetAPIProperties: GetAPIProperties(); break;
+    case eReplayProxy_GetPassEvents: GetPassEvents(0); break;
+    case eReplayProxy_GetResources: GetResources(); break;
+    case eReplayProxy_GetTextures: GetTextures(); break;
+    case eReplayProxy_GetTexture: GetTexture(ResourceId()); break;
+    case eReplayProxy_GetBuffers: GetBuffers(); break;
+    case eReplayProxy_GetBuffer: GetBuffer(ResourceId()); break;
+    case eReplayProxy_GetShaderEntryPoints: GetShaderEntryPoints(ResourceId()); break;
+    case eReplayProxy_GetShader: GetShader(ResourceId(), ResourceId(), ShaderEntryPoint()); break;
+    case eReplayProxy_GetDebugMessages: GetDebugMessages(); break;
+    case eReplayProxy_GetBufferData:
+    {
+      bytebuf dummy;
+      GetBufferData(ResourceId(), 0, 0, dummy);
+      break;
+    }
+    case eReplayProxy_GetTextureData:
+    {
+      bytebuf dummy;
+      GetTextureData(ResourceId(), Subresource(), GetTextureDataParams(), dummy);
+      break;
+    }
+    case eReplayProxy_SavePipelineState: SavePipelineState(0); break;
+    case eReplayProxy_GetUsage: GetUsage(ResourceId()); break;
+    case eReplayProxy_GetLiveID: GetLiveID(ResourceId()); break;
+    case eReplayProxy_GetFrameRecord: GetFrameRecord(); break;
+    case eReplayProxy_IsRenderOutput: IsRenderOutput(ResourceId()); break;
+    case eReplayProxy_NeedRemapForFetch: NeedRemapForFetch(ResourceFormat()); break;
+    case eReplayProxy_FreeTargetResource: FreeTargetResource(ResourceId()); break;
+    case eReplayProxy_FetchCounters:
+    {
+      rdcarray<GPUCounter> counters;
+      FetchCounters(counters);
+      break;
+    }
+    case eReplayProxy_EnumerateCounters: EnumerateCounters(); break;
+    case eReplayProxy_DescribeCounter: DescribeCounter(GPUCounter::EventGPUDuration); break;
+    case eReplayProxy_FillCBufferVariables:
+    {
+      rdcarray<ShaderVariable> vars;
+      bytebuf data;
+      FillCBufferVariables(ResourceId(), ResourceId(), "", 0, vars, data);
+      break;
+    }
+    case eReplayProxy_InitPostVS: InitPostVSBuffers(0); break;
+    case eReplayProxy_InitPostVSVec:
+    {
+      rdcarray<uint32_t> dummy;
+      InitPostVSBuffers(dummy);
+      break;
+    }
+    case eReplayProxy_GetPostVS: GetPostVSBuffers(0, 0, 0, MeshDataStage::Unknown); break;
+    case eReplayProxy_BuildTargetShader:
+    {
+      rdcstr entry;
+      ResourceId id;
+      rdcstr errors;
+      BuildTargetShader(ShaderEncoding::Unknown, bytebuf(), entry, ShaderCompileFlags(),
+                        ShaderStage::Vertex, id, errors);
+      break;
+    }
+    case eReplayProxy_ReplaceResource: ReplaceResource(ResourceId(), ResourceId()); break;
+    case eReplayProxy_RemoveReplacement: RemoveReplacement(ResourceId()); break;
+    case eReplayProxy_DebugVertex: DebugVertex(0, 0, 0, 0, 0); break;
+    case eReplayProxy_DebugPixel: DebugPixel(0, 0, 0, 0, 0); break;
+    case eReplayProxy_DebugThread:
+    {
+      DebugThread(0, {}, {});
+      break;
+    }
+    case eReplayProxy_ContinueDebug: ContinueDebug(NULL); break;
+    case eReplayProxy_FreeDebugger: FreeDebugger(NULL); break;
+    case eReplayProxy_RenderOverlay:
+      RenderOverlay(ResourceId(), FloatVector(), DebugOverlay::NoOverlay, 0, rdcarray<uint32_t>());
+      break;
+    case eReplayProxy_PixelHistory:
+      PixelHistory(rdcarray<EventUsage>(), ResourceId(), 0, 0, Subresource(), CompType::Typeless);
+      break;
+    case eReplayProxy_DisassembleShader: DisassembleShader(ResourceId(), NULL, ""); break;
+    case eReplayProxy_GetDisassemblyTargets: GetDisassemblyTargets(false); break;
+    case eReplayProxy_GetTargetShaderEncodings: GetTargetShaderEncodings(); break;
+    case eReplayProxy_GetDriverInfo: GetDriverInfo(); break;
+    case eReplayProxy_GetAvailableGPUs: GetAvailableGPUs(); break;
+    default: RDCERR("Unexpected command %u", type); return false;
   }
 
-  m_FromReplaySerialiser->Serialise("", ret);
+  PROXY_DEBUG("Processed %s", ToStr(packet).c_str());
 
-  return ret;
-}
+  if(packet == eReplayProxy_ReplayLog)
+    RefreshPreviewWindow();
 
-ShaderDebugTrace ReplayProxy::DebugThread(uint32_t eventID, uint32_t groupid[3], uint32_t threadid[3])
-{
-  ShaderDebugTrace ret;
+  if(CheckError(packet, packet))
+    return false;
 
-  m_ToReplaySerialiser->Serialise("", eventID);
-  m_ToReplaySerialiser->SerialisePODArray<3>("", groupid);
-  m_ToReplaySerialiser->SerialisePODArray<3>("", threadid);
-
-  if(m_RemoteServer)
-  {
-    ret = m_Remote->DebugThread(eventID, groupid, threadid);
-  }
-  else
-  {
-    if(!SendReplayCommand(eReplayProxy_DebugThread))
-      return ret;
-  }
-
-  m_FromReplaySerialiser->Serialise("", ret);
-
-  return ret;
+  return true;
 }

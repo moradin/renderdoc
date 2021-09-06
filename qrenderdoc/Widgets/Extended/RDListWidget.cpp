@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,7 +23,10 @@
  ******************************************************************************/
 
 #include "RDListWidget.h"
+#include <QApplication>
+#include <QClipboard>
 #include <QMouseEvent>
+#include "Code/Interface/QRDInterface.h"
 
 RDListWidget::RDListWidget(QWidget *parent) : QListWidget(parent)
 {
@@ -35,12 +38,38 @@ RDListWidget::~RDListWidget()
 
 void RDListWidget::mousePressEvent(QMouseEvent *event)
 {
-  emit(mouseClicked(event));
   QListWidget::mousePressEvent(event);
+  emit(mouseClicked(event));
 }
 
 void RDListWidget::mouseDoubleClickEvent(QMouseEvent *event)
 {
-  emit(mouseDoubleClicked(event));
   QListWidget::mouseDoubleClickEvent(event);
+  emit(mouseDoubleClicked(event));
+}
+
+void RDListWidget::keyPressEvent(QKeyEvent *event)
+{
+  if(!m_customCopyPaste && event->matches(QKeySequence::Copy))
+  {
+    QList<QListWidgetItem *> items = selectedItems();
+
+    std::sort(items.begin(), items.end(),
+              [this](QListWidgetItem *a, QListWidgetItem *b) { return row(a) < row(b); });
+
+    QString clipboardText;
+    for(QListWidgetItem *i : items)
+    {
+      clipboardText += i->text() + lit("\n");
+    }
+
+    QClipboard *clipboard = QApplication::clipboard();
+    clipboard->setText(clipboardText.trimmed());
+  }
+  else
+  {
+    QListWidget::keyPressEvent(event);
+  }
+
+  emit(keyPress(event));
 }

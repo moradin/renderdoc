@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2014-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,14 +22,40 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-#include "replay/replay_driver.h"
-#include "gl_hookset.h"
+#include "gl_dispatch_table.h"
 
 class WrappedOpenGL;
 
-void MakeShaderReflection(const GLHookSet &gl, GLenum shadType, GLuint sepProg,
-                          ShaderReflection &refl, bool pointSizeUsed, bool clipDistanceUsed);
-GLuint MakeSeparableShaderProgram(WrappedOpenGL &gl, GLenum type, std::vector<std::string> sources,
-                                  vector<string> *includepaths);
-void CheckVertexOutputUses(const std::vector<std::string> &sources, bool &pointSizeUsed,
-                           bool &clipDistanceUsed);
+enum class FFVertexOutput : uint32_t
+{
+  // Core members of gl_PerVertex
+  PointSize,
+  First = PointSize,
+  ClipDistance,
+  CullDistance,
+
+  // Compatibility implicit varyings, generally only comes back from glslang's reflection
+  ClipVertex,
+  FrontColor,
+  BackColor,
+  FrontSecondaryColor,
+  BackSecondaryColor,
+  TexCoord,
+  FogFragCoord,
+  Count,
+};
+
+DECLARE_REFLECTION_ENUM(FFVertexOutput);
+ITERABLE_OPERATORS(FFVertexOutput);
+
+struct FixedFunctionVertexOutputs
+{
+  bool used[arraydim<FFVertexOutput>()] = {};
+};
+
+int ParseVersionStatement(const char *version);
+void MakeShaderReflection(GLenum shadType, GLuint sepProg, ShaderReflection &refl,
+                          const FixedFunctionVertexOutputs &outputUsage);
+GLuint MakeSeparableShaderProgram(WrappedOpenGL &drv, GLenum type, rdcarray<rdcstr> sources,
+                                  rdcarray<rdcstr> *includepaths);
+void CheckVertexOutputUses(const rdcarray<rdcstr> &sources, FixedFunctionVertexOutputs &outputUsage);

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -34,67 +34,58 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <map>
-#include <string>
-#include <vector>
-#include "common/common.h"
-
-using std::string;
-using std::vector;
-using std::map;
+#include <stdio.h>
+#include <functional>
+#include "api/replay/rdcarray.h"
+#include "api/replay/rdcpair.h"
+#include "api/replay/rdcstr.h"
+#include "common/globalconfig.h"
 
 struct CaptureOptions;
+struct EnvironmentModification;
+struct PathEntry;
+enum class WindowingSystem : uint32_t;
+enum class ReplayStatus : uint32_t;
+typedef std::function<void(float)> RENDERDOC_ProgressCallback;
 
 namespace Process
 {
-enum ModificationType
-{
-  eEnvModification_Replace = 0,
-
-  // prepend/append options will replace if there is no existing variable
-  eEnvModification_AppendPlatform,     // append, separated by colons for linux & semi-colons for
-                                       // windows
-  eEnvModification_AppendSemiColon,    // append, separated by semi-colons
-  eEnvModification_AppendColon,        // append, separated by colons
-  eEnvModification_Append,             // append with no separators
-
-  eEnvModification_PrependPlatform,     // prepend, separated by colons for linux & semi-colons for
-                                        // windows
-  eEnvModification_PrependSemiColon,    // prepend, separated by semi-colons
-  eEnvModification_PrependColon,        // prepend, separated by colons
-  eEnvModification_Prepend,             // prepend with no separators
-};
-struct EnvironmentModification
-{
-  EnvironmentModification() : type(eEnvModification_Replace), name(""), value("") {}
-  EnvironmentModification(ModificationType t, const char *n, const char *v)
-      : type(t), name(n), value(v)
-  {
-  }
-  ModificationType type;
-  string name;
-  string value;
-};
-void RegisterEnvironmentModification(EnvironmentModification modif);
+void RegisterEnvironmentModification(const EnvironmentModification &modif);
 
 void ApplyEnvironmentModification();
 
-void StartGlobalHook(const char *pathmatch, const char *logfile, const CaptureOptions *opts);
-uint32_t InjectIntoProcess(uint32_t pid, EnvironmentModification *env, const char *logfile,
-                           const CaptureOptions *opts, bool waitForExit);
+rdcstr GetEnvVariable(const rdcstr &name);
+
+uint64_t GetMemoryUsage();
+
+bool CanGlobalHook();
+bool StartGlobalHook(const rdcstr &pathmatch, const rdcstr &capturefile, const CaptureOptions &opts);
+bool IsGlobalHookActive();
+void StopGlobalHook();
+
+rdcpair<ReplayStatus, uint32_t> InjectIntoProcess(uint32_t pid,
+                                                  const rdcarray<EnvironmentModification> &env,
+                                                  const rdcstr &capturefile,
+                                                  const CaptureOptions &opts, bool waitForExit);
 struct ProcessResult
 {
-  string strStdout, strStderror;
+  rdcstr strStdout, strStderror;
   int retCode;
 };
-uint32_t LaunchProcess(const char *app, const char *workingDir, const char *cmdLine,
-                       ProcessResult *result = NULL);
-uint32_t LaunchAndInjectIntoProcess(const char *app, const char *workingDir, const char *cmdLine,
-                                    EnvironmentModification *env, const char *logfile,
-                                    const CaptureOptions *opts, bool waitForExit);
-void *LoadModule(const char *module);
-void *GetFunctionAddress(void *module, const char *function);
+uint32_t LaunchProcess(const rdcstr &app, const rdcstr &workingDir, const rdcstr &cmdLine,
+                       bool internal, ProcessResult *result = NULL);
+uint32_t LaunchScript(const rdcstr &script, const rdcstr &workingDir, const rdcstr &args,
+                      bool internal, ProcessResult *result = NULL);
+rdcpair<ReplayStatus, uint32_t> LaunchAndInjectIntoProcess(
+    const rdcstr &app, const rdcstr &workingDir, const rdcstr &cmdLine,
+    const rdcarray<EnvironmentModification> &env, const rdcstr &capturefile,
+    const CaptureOptions &opts, bool waitForExit);
+bool IsModuleLoaded(const rdcstr &module);
+void *LoadModule(const rdcstr &module);
+void *GetFunctionAddress(void *module, const rdcstr &function);
 uint32_t GetCurrentPID();
+
+void Shutdown();
 };
 
 namespace Timing
@@ -102,6 +93,7 @@ namespace Timing
 double GetTickFrequency();
 uint64_t GetTick();
 uint64_t GetUnixTimestamp();
+time_t GetUTCTime();
 };
 
 namespace Threading
@@ -116,10 +108,31 @@ public:
   bool Trylock();
   void Unlock();
 
-private:
   // no copying
-  CriticalSectionTemplate &operator=(const CriticalSectionTemplate &other);
-  CriticalSectionTemplate(const CriticalSectionTemplate &other);
+  CriticalSectionTemplate &operator=(const CriticalSectionTemplate &other) = delete;
+  CriticalSectionTemplate(const CriticalSectionTemplate &other) = delete;
+
+  data m_Data;
+};
+
+template <class data>
+class RWLockTemplate
+{
+public:
+  RWLockTemplate();
+  ~RWLockTemplate();
+
+  void ReadLock();
+  bool TryReadlock();
+  void ReadUnlock();
+
+  void WriteLock();
+  bool TryWritelock();
+  void WriteUnlock();
+
+  // no copying
+  RWLockTemplate &operator=(const RWLockTemplate &other) = delete;
+  RWLockTemplate(const RWLockTemplate &other) = delete;
 
   data m_Data;
 };
@@ -133,11 +146,13 @@ void SetTLSValue(uint64_t slot, void *value);
 
 // must typedef CriticalSectionTemplate<X> CriticalSection
 
-typedef void (*ThreadEntry)(void *);
+void SetCurrentThreadName(const rdcstr &name);
+
 typedef uint64_t ThreadHandle;
-ThreadHandle CreateThread(ThreadEntry entryFunc, void *userData);
+ThreadHandle CreateThread(std::function<void()> entryFunc);
 uint64_t GetCurrentID();
 void JoinThread(ThreadHandle handle);
+void DetachThread(ThreadHandle handle);
 void CloseThread(ThreadHandle handle);
 void Sleep(uint32_t milliseconds);
 
@@ -152,13 +167,15 @@ namespace Network
 class Socket
 {
 public:
-  Socket(ptrdiff_t s) : socket(s) {}
+  Socket(ptrdiff_t s) : socket(s), timeoutMS(5000) {}
   ~Socket();
   void Shutdown();
 
   bool Connected() const;
 
-  Socket *AcceptClient(bool wait);
+  uint32_t GetTimeout() const { return timeoutMS; }
+  void SetTimeout(uint32_t milliseconds) { timeoutMS = milliseconds; }
+  Socket *AcceptClient(uint32_t timeoutMilliseconds);
 
   uint32_t GetRemoteIP() const;
 
@@ -166,13 +183,15 @@ public:
 
   bool SendDataBlocking(const void *buf, uint32_t length);
   bool RecvDataBlocking(void *data, uint32_t length);
+  bool RecvDataNonBlocking(void *data, uint32_t &length);
 
 private:
   ptrdiff_t socket;
+  uint32_t timeoutMS;
 };
 
-Socket *CreateServerSocket(const char *addr, uint16_t port, int queuesize);
-Socket *CreateClientSocket(const char *host, uint16_t port, int timeoutMS);
+Socket *CreateServerSocket(const rdcstr &addr, uint16_t port, int queuesize);
+Socket *CreateClientSocket(const rdcstr &host, uint16_t port, int timeoutMS);
 
 // ip is packed in HOST byte order
 inline uint32_t GetIPOctet(uint32_t ip, uint32_t octet)
@@ -197,7 +216,7 @@ inline bool MatchIPMask(uint32_t ip, uint32_t range, uint32_t mask)
 
 // parses the null-terminated string at 'str' for CIDR notation IP range
 // aaa.bbb.ccc.ddd/nn
-bool ParseIPRangeCIDR(const char *str, uint32_t &ip, uint32_t &mask);
+bool ParseIPRangeCIDR(const rdcstr &str, uint32_t &ip, uint32_t &mask);
 
 void Init();
 void Shutdown();
@@ -205,12 +224,12 @@ void Shutdown();
 
 namespace Atomic
 {
-int32_t Inc32(volatile int32_t *i);
-int32_t Dec32(volatile int32_t *i);
-int64_t Inc64(volatile int64_t *i);
-int64_t Dec64(volatile int64_t *i);
-int64_t ExchAdd64(volatile int64_t *i, int64_t a);
-int32_t CmpExch32(volatile int32_t *dest, int32_t oldVal, int32_t newVal);
+int32_t Inc32(int32_t *i);
+int32_t Dec32(int32_t *i);
+int64_t Inc64(int64_t *i);
+int64_t Dec64(int64_t *i);
+int64_t ExchAdd64(int64_t *i, int64_t a);
+int32_t CmpExch32(int32_t *dest, int32_t oldVal, int32_t newVal);
 };
 
 namespace Callstack
@@ -228,11 +247,11 @@ public:
 struct AddressDetails
 {
   AddressDetails() : line(0) {}
-  string function;
-  string filename;
+  rdcstr function;
+  rdcstr filename;
   uint32_t line;
 
-  string formattedString(const char *commonPath = NULL);
+  rdcstr formattedString(const rdcstr &commonPath = rdcstr());
 };
 
 class StackResolver
@@ -247,61 +266,62 @@ void Init();
 Stackwalk *Collect();
 Stackwalk *Create();
 
-StackResolver *MakeResolver(char *moduleDB, size_t DBSize, string pdbSearchPaths,
-                            volatile bool *killSignal);
+StackResolver *MakeResolver(bool interactive, byte *moduleDB, size_t DBSize,
+                            RENDERDOC_ProgressCallback);
 
-bool GetLoadedModules(char *&buf, size_t &size);
+bool GetLoadedModules(byte *buf, size_t &size);
 };    // namespace Callstack
 
 namespace FileIO
 {
-void GetDefaultFiles(const char *logBaseName, string &capture_filename, string &logging_filename,
-                     string &target);
-string GetHomeFolderFilename();
-string GetAppFolderFilename(const string &filename);
-string GetReplayAppFilename();
+void GetDefaultFiles(const rdcstr &logBaseName, rdcstr &capture_filename, rdcstr &logging_filename,
+                     rdcstr &target);
+rdcstr GetHomeFolderFilename();
+rdcstr GetAppFolderFilename(const rdcstr &filename);
+rdcstr GetTempFolderFilename();
+rdcstr GetReplayAppFilename();
 
-void CreateParentDirectory(const string &filename);
+void CreateParentDirectory(const rdcstr &filename);
 
-string GetFullPathname(const string &filename);
+bool IsRelativePath(const rdcstr &path);
+rdcstr GetFullPathname(const rdcstr &filename);
+rdcstr FindFileInPath(const rdcstr &fileName);
 
-void GetExecutableFilename(string &selfName);
+void GetExecutableFilename(rdcstr &selfName);
+void GetLibraryFilename(rdcstr &selfName);
 
-uint64_t GetModifiedTimestamp(const string &filename);
+uint64_t GetModifiedTimestamp(const rdcstr &filename);
+uint64_t GetFileSize(const rdcstr &filename);
 
-void Copy(const char *from, const char *to, bool allowOverwrite);
-void Delete(const char *path);
+bool Copy(const rdcstr &from, const rdcstr &to, bool allowOverwrite);
+bool Move(const rdcstr &from, const rdcstr &to, bool allowOverwrite);
+void Delete(const rdcstr &path);
+void GetFilesInDirectory(const rdcstr &path, rdcarray<PathEntry> &entries);
 
-enum
+enum FileMode
 {
-  eFileProp_Directory = 0x1,
-  eFileProp_Hidden = 0x2,
-  eFileProp_Executable = 0x4,
-
-  eFileProp_ErrorUnknown = 0x2000,
-  eFileProp_ErrorAccessDenied = 0x4000,
-  eFileProp_ErrorInvalidPath = 0x8000,
+  ReadText,
+  ReadBinary,
+  WriteText,
+  WriteBinary,
+  UpdateBinary,
+  OverwriteBinary,
 };
-
-struct FoundFile
-{
-  FoundFile() : flags(0) {}
-  FoundFile(string fn, uint32_t f) : filename(fn), flags(f) {}
-  string filename;
-  uint32_t flags;
-};
-
-vector<FoundFile> GetFilesInDirectory(const char *path);
-
-FILE *fopen(const char *filename, const char *mode);
+FILE *fopen(const rdcstr &filename, FileMode mode);
 
 size_t fread(void *buf, size_t elementSize, size_t count, FILE *f);
 size_t fwrite(const void *buf, size_t elementSize, size_t count, FILE *f);
 
-std::string getline(FILE *f);
+bool exists(const rdcstr &filename);
+
+rdcstr ErrorString();
 
 uint64_t ftell64(FILE *f);
 void fseek64(FILE *f, uint64_t offset, int origin);
+
+void ftruncateat(FILE *f, uint64_t length);
+
+bool fflush(FILE *f);
 
 bool feof(FILE *f);
 
@@ -309,14 +329,20 @@ int fclose(FILE *f);
 
 // functions for atomically appending to a log that may be in use in multiple
 // processes
-void *logfile_open(const char *filename);
-void logfile_append(void *handle, const char *msg, size_t length);
-void logfile_close(void *handle);
+struct LogFileHandle;
+LogFileHandle *logfile_open(const rdcstr &filename);
+void logfile_append(LogFileHandle *logHandle, const char *msg, size_t length);
+void logfile_close(LogFileHandle *logHandle, const rdcstr &deleteFilename);
+
+// read the whole logfile into memory starting at a given offset. This may race with processes
+// writing, but it will read the whole of the file at some point. Useful since normal file reading
+// may fail on the shared logfile
+rdcstr logfile_readall(uint64_t offset, const rdcstr &filename);
 
 // utility functions
-inline bool dump(const char *filename, const void *buffer, size_t size)
+inline bool WriteAll(const rdcstr &filename, const void *buffer, size_t size)
 {
-  FILE *f = FileIO::fopen(filename, "wb");
+  FILE *f = FileIO::fopen(filename, FileIO::WriteBinary);
   if(f == NULL)
     return false;
 
@@ -327,9 +353,21 @@ inline bool dump(const char *filename, const void *buffer, size_t size)
   return numWritten == size;
 }
 
-inline bool slurp(const char *filename, vector<unsigned char> &buffer)
+template <typename T>
+bool WriteAll(const rdcstr &filename, const rdcarray<T> &buffer)
 {
-  FILE *f = FileIO::fopen(filename, "rb");
+  return WriteAll(filename, buffer.data(), buffer.size() * sizeof(T));
+}
+
+inline bool WriteAll(const rdcstr &filename, const rdcstr &buffer)
+{
+  return WriteAll(filename, buffer.c_str(), buffer.length());
+}
+
+template <typename T>
+bool ReadAll(const rdcstr &filename, rdcarray<T> &buffer)
+{
+  FILE *f = FileIO::fopen(filename, FileIO::ReadBinary);
   if(f == NULL)
     return false;
 
@@ -337,44 +375,86 @@ inline bool slurp(const char *filename, vector<unsigned char> &buffer)
   uint64_t size = ftell64(f);
   FileIO::fseek64(f, 0, SEEK_SET);
 
-  buffer.resize((size_t)size);
+  buffer.resize((size_t)size / sizeof(T));
 
-  size_t numRead = FileIO::fread(&buffer[0], 1, buffer.size(), f);
+  size_t numRead = FileIO::fread(&buffer[0], sizeof(T), buffer.size(), f);
 
   FileIO::fclose(f);
 
   return numRead == buffer.size();
+}
+
+inline bool ReadAll(const rdcstr &filename, rdcstr &str)
+{
+  FILE *f = FileIO::fopen(filename, FileIO::ReadBinary);
+  if(f == NULL)
+    return false;
+
+  char chunk[513];
+
+  while(!FileIO::feof(f))
+  {
+    memset(chunk, 0, 513);
+    size_t numRead = FileIO::fread(chunk, 1, 512, f);
+    str.append(chunk, numRead);
+  }
+
+  FileIO::fclose(f);
+
+  return true;
 }
 };
 
 namespace Keyboard
 {
 void Init();
-void AddInputWindow(void *wnd);
-void RemoveInputWindow(void *wnd);
+void AddInputWindow(WindowingSystem windowSystem, void *wnd);
+void RemoveInputWindow(WindowingSystem windowSystem, void *wnd);
 bool GetKeyState(int key);
 bool PlatformHasKeyInput();
+};
+
+// simple container for passing around temporary wide strings. We leave it immutable and manually
+// add the trailing NULL. These are used as rarely as possible but still needed for interacting with
+// windows/D3D APIs.
+struct rdcwstr : private rdcarray<wchar_t>
+{
+  rdcwstr() : rdcarray<wchar_t>() {}
+  rdcwstr(const wchar_t *str, size_t N) : rdcarray<wchar_t>(str, N)
+  {
+    // push null terminator
+    rdcarray<wchar_t>::push_back(0);
+  }
+  rdcwstr(const wchar_t *str)
+  {
+    while(*str)
+    {
+      rdcarray<wchar_t>::push_back(*str);
+      str++;
+    }
+    // push null terminator
+    rdcarray<wchar_t>::push_back(0);
+  }
+  template <size_t N>
+  rdcwstr(const wchar_t (&el)[N]) : rdcwstr(&el[0])
+  {
+  }
+  rdcwstr(size_t N) { resize(N + 1); }
+  wchar_t *data() { return rdcarray<wchar_t>::data(); }
+  const wchar_t *c_str() const { return rdcarray<wchar_t>::data(); }
+  using rdcarray<wchar_t>::operator[];
+  size_t length() const { return rdcarray<wchar_t>::size() - 1; }
 };
 
 // implemented per-platform
 namespace StringFormat
 {
-void sntimef(char *str, size_t bufSize, const char *format);
+rdcstr sntimef(time_t utcTime, const char *format);
 
-// forwards to vsnprintf below, needed to be here due to va_copy differences
-string Fmt(const char *format, ...);
+rdcstr Wide2UTF8(const rdcwstr &str);
+rdcwstr UTF82Wide(const rdcstr &s);
 
-string Wide2UTF8(const std::wstring &s);
-};
-
-// utility functions, implemented in os_specific.cpp, not per-platform (assuming standard stdarg.h)
-// forwarded to custom printf implementation in utf8printf.cpp
-namespace StringFormat
-{
-int vsnprintf(char *str, size_t bufSize, const char *format, va_list v);
-int snprintf(char *str, size_t bufSize, const char *format, ...);
-
-int Wide2UTF8(wchar_t chr, char mbchr[4]);
+void Shutdown();
 };
 
 namespace OSUtility
@@ -424,7 +504,7 @@ enum MachineIdentBits
 };
 
 uint64_t GetMachineIdent();
-string MakeMachineIdentString(uint64_t ident);
+rdcstr MakeMachineIdentString(uint64_t ident);
 };
 
 namespace Bits
@@ -436,11 +516,9 @@ inline uint64_t CountLeadingZeroes(uint64_t value);
 };
 
 // must #define:
-// __PRETTY_FUNCTION_SIGNATURE__ - undecorated function signature
 // GetEmbeddedResource(name_with_underscores_ext) - function/inline that returns the given file in a
-// std::string
-// OS_DEBUG_BREAK() - instruction that debugbreaks the debugger - define instead of function to
-// preserve callstacks
+// rdcstr
+// EndianSwapXX() for XX = 16, 32, 64
 
 #if ENABLED(RDOC_WIN32)
 #include "win32/win32_specific.h"
@@ -450,9 +528,65 @@ inline uint64_t CountLeadingZeroes(uint64_t value);
 #error Undefined Platform!
 #endif
 
-namespace Android
+inline uint64_t EndianSwap(uint64_t t)
 {
-bool IsHostADB(const char *hostname);
-uint32_t StartAndroidPackageForCapture(const char *package);
-string adbExecCommand(const string &args);
+  return EndianSwap64(t);
+}
+
+inline uint32_t EndianSwap(uint32_t t)
+{
+  return EndianSwap32(t);
+}
+
+inline uint16_t EndianSwap(uint16_t t)
+{
+  return EndianSwap16(t);
+}
+
+inline int64_t EndianSwap(int64_t t)
+{
+  return (int64_t)EndianSwap(uint64_t(t));
+}
+
+inline int32_t EndianSwap(int32_t t)
+{
+  return (int32_t)EndianSwap(uint32_t(t));
+}
+
+inline int16_t EndianSwap(int16_t t)
+{
+  return (int16_t)EndianSwap(uint16_t(t));
+}
+
+inline double EndianSwap(double t)
+{
+  uint64_t u;
+  memcpy(&u, &t, sizeof(t));
+  u = EndianSwap(u);
+  memcpy(&t, &u, sizeof(t));
+  return t;
+}
+
+inline float EndianSwap(float t)
+{
+  uint32_t u;
+  memcpy(&u, &t, sizeof(t));
+  u = EndianSwap(u);
+  memcpy(&t, &u, sizeof(t));
+  return t;
+}
+
+inline char EndianSwap(char t)
+{
+  return t;
+}
+
+inline byte EndianSwap(byte t)
+{
+  return t;
+}
+
+inline bool EndianSwap(bool t)
+{
+  return t;
 }

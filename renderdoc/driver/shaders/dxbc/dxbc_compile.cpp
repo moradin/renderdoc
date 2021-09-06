@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,10 +24,19 @@
 
 #include "dxbc_compile.h"
 #include "common/common.h"
-#include "serialise/string_utils.h"
+#include "core/core.h"
+#include "os/os_specific.h"
+#include "strings/string_utils.h"
 
-// gives us an address to identify this dll with
-static int dllLocator = 0;
+static HMODULE GetLocalD3DCompiler()
+{
+  rdcstr dllFile;
+  FileIO::GetLibraryFilename(dllFile);
+
+  rdcstr dll = get_dirname(dllFile) + "/d3dcompiler_47.dll";
+
+  return LoadLibraryW(StringFormat::UTF82Wide(dll).data());
+}
 
 HMODULE GetD3DCompiler()
 {
@@ -35,7 +44,15 @@ HMODULE GetD3DCompiler()
   if(ret != NULL)
     return ret;
 
-  // dlls to try in priority order
+  // during replay, try to load our local one to get the newest possible.
+  if(RenderDoc::Inst().IsReplayApp())
+  {
+    ret = GetLocalD3DCompiler();
+    if(ret)
+      return ret;
+  }
+
+  // now dlls to try in priority order
   const char *dlls[] = {
       "d3dcompiler_47.dll", "d3dcompiler_46.dll", "d3dcompiler_45.dll",
       "d3dcompiler_44.dll", "d3dcompiler_43.dll",
@@ -45,6 +62,8 @@ HMODULE GetD3DCompiler()
   {
     for(int d = 0; d < ARRAY_COUNT(dlls); d++)
     {
+      // first time around, try to load one that already exists. Second time around try to load it
+      // in the default search path.
       if(i == 0)
         ret = GetModuleHandleA(dlls[d]);
       else
@@ -55,23 +74,9 @@ HMODULE GetD3DCompiler()
     }
   }
 
-  // all else failed, couldn't find d3dcompiler loaded,
-  // and couldn't even loadlibrary any version!
-  // we'll have to loadlibrary the version that ships with
-  // RenderDoc.
-
-  HMODULE hModule = NULL;
-  GetModuleHandleEx(
-      GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-      (LPCTSTR)&dllLocator, &hModule);
-  wchar_t curFile[512] = {0};
-  GetModuleFileNameW(hModule, curFile, 511);
-
-  std::wstring path = std::wstring(curFile);
-  path = dirname(path);
-  std::wstring dll = path + L"/d3dcompiler_47.dll";
-
-  ret = LoadLibraryW(dll.c_str());
+  // finally if we couldn't load a library anywhere from the system while capturing, load our local
+  // compiler.
+  ret = GetLocalD3DCompiler();
 
   return ret;
 }

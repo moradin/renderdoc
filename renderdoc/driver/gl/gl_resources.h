@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -26,20 +26,21 @@
 #pragma once
 
 #include "core/resource_manager.h"
-#include "driver/gl/gl_common.h"
+#include "gl_common.h"
 
-struct GLHookSet;
-
-size_t GetCompressedByteSize(GLsizei w, GLsizei h, GLsizei d, GLenum internalformat, int mip);
+size_t GetCompressedByteSize(GLsizei w, GLsizei h, GLsizei d, GLenum internalformat);
+rdcpair<uint32_t, uint32_t> GetCompressedBlockSize(GLenum internalformat);
 size_t GetByteSize(GLsizei w, GLsizei h, GLsizei d, GLenum format, GLenum type);
 GLenum GetBaseFormat(GLenum internalFormat);
 GLenum GetDataType(GLenum internalFormat);
-GLenum GetSizedFormat(const GLHookSet &gl, GLenum target, GLenum internalFormat);
-void GetFramebufferMipAndLayer(const GLHookSet &gl, GLenum framebuffer, GLenum attachment,
-                               GLint *mip, GLint *layer);
+void GetFramebufferMipAndLayer(GLuint framebuffer, GLenum attachment, GLint *mip, GLint *layer);
+void GetTextureSwizzle(GLuint tex, GLenum target, GLenum *swizzleRGBA);
+void SetTextureSwizzle(GLuint tex, GLenum target, const GLenum *swizzleRGBA);
 
-bool EmulateLuminanceFormat(const GLHookSet &gl, GLuint tex, GLenum target, GLenum &internalFormat,
-                            GLenum &dataFormat);
+rdcstr GetTextureCompleteStatus(GLenum target, GLuint tex, GLuint sampler);
+
+bool EmulateLuminanceFormat(GLuint tex, GLenum target, GLenum &internalFormat, GLenum &dataFormat);
+GLenum GetSizedFormat(GLenum internalFormat);
 
 inline void EmulateGLClamp(GLenum pname, GLenum param)
 {
@@ -47,7 +48,7 @@ inline void EmulateGLClamp(GLenum pname, GLenum param)
     param = eGL_CLAMP_TO_EDGE;
 }
 
-int GetNumMips(const GLHookSet &gl, GLenum target, GLuint tex, GLuint w, GLuint h, GLuint d);
+int GetNumMips(GLenum target, GLuint tex, GLuint w, GLuint h, GLuint d);
 
 bool IsCompressedFormat(GLenum internalFormat);
 bool IsDepthStencilFormat(GLenum internalFormat);
@@ -55,12 +56,16 @@ bool IsUIntFormat(GLenum internalFormat);
 bool IsSIntFormat(GLenum internalFormat);
 bool IsSRGBFormat(GLenum internalFormat);
 
+GLenum GetViewCastedFormat(GLenum internalFormat, CompType typeCast);
+
+bool IsCubeFace(GLenum target);
 GLint CubeTargetIndex(GLenum face);
 GLenum TextureBinding(GLenum target);
 GLenum TextureTarget(GLenum target);
 bool IsProxyTarget(GLenum target);
 
 GLenum BufferBinding(GLenum target);
+GLenum FramebufferBinding(GLenum target);
 
 enum GLNamespace
 {
@@ -78,7 +83,11 @@ enum GLNamespace
   eResFeedback,
   eResQuery,
   eResSync,
+  eResExternalMemory,
+  eResExternalSemaphore,
 };
+
+DECLARE_REFLECTION_ENUM(GLNamespace);
 
 enum GLSpecialResource
 {
@@ -95,120 +104,133 @@ struct GLResource
 {
   GLResource()
   {
+    ContextShareGroup = NULL;
     Namespace = eResUnknown;
-    Context = NULL;
-    name = ~0U;
+    name = 0;
   }
   GLResource(NullInitialiser)
   {
+    ContextShareGroup = NULL;
     Namespace = eResUnknown;
-    Context = NULL;
-    name = ~0U;
+    name = 0;
   }
   GLResource(void *ctx, GLNamespace n, GLuint i)
   {
-    Context = ctx;
+    ContextShareGroup = ctx;
     Namespace = n;
     name = i;
   }
 
-  void *Context;
+  void *ContextShareGroup;
   GLNamespace Namespace;
   GLuint name;
 
   bool operator==(const GLResource &o) const
   {
-    return Context == o.Context && Namespace == o.Namespace && name == o.name;
+    return ContextShareGroup == o.ContextShareGroup && Namespace == o.Namespace && name == o.name;
   }
 
   bool operator!=(const GLResource &o) const { return !(*this == o); }
   bool operator<(const GLResource &o) const
   {
-    if(Context != o.Context)
-      return Context < o.Context;
+    if(ContextShareGroup != o.ContextShareGroup)
+      return ContextShareGroup < o.ContextShareGroup;
     if(Namespace != o.Namespace)
       return Namespace < o.Namespace;
     return name < o.name;
   }
 };
 
+DECLARE_REFLECTION_STRUCT(GLResource);
+
+struct ContextPair
+{
+  void *ctx;
+  void *shareGroup;
+};
+
 // Shared objects currently ignore the context parameter.
 // For correctness we'd need to check if the context is shared and if so move up to a 'parent'
 // so the context value ends up being identical for objects being shared, but can be different
 // for objects in non-shared contexts
-inline GLResource TextureRes(void *ctx, GLuint i)
+inline GLResource TextureRes(const ContextPair &c, GLuint i)
 {
-  (void)ctx;
-  return GLResource(NULL, eResTexture, i);
+  return GLResource(c.shareGroup, eResTexture, i);
 }
-inline GLResource SamplerRes(void *ctx, GLuint i)
+inline GLResource SamplerRes(const ContextPair &c, GLuint i)
 {
-  (void)ctx;
-  return GLResource(NULL, eResSampler, i);
+  return GLResource(c.shareGroup, eResSampler, i);
 }
-inline GLResource FramebufferRes(void *ctx, GLuint i)
+inline GLResource FramebufferRes(const ContextPair &c, GLuint i)
 {
-  return GLResource(VendorCheck[VendorCheck_EXT_fbo_shared] ? NULL : ctx, eResFramebuffer, i);
+  return GLResource(VendorCheck[VendorCheck_EXT_fbo_shared] ? c.shareGroup : c.ctx, eResFramebuffer,
+                    i);
 }
-inline GLResource RenderbufferRes(void *ctx, GLuint i)
+inline GLResource RenderbufferRes(const ContextPair &c, GLuint i)
 {
-  (void)ctx;
-  return GLResource(NULL, eResRenderbuffer, i);
+  return GLResource(c.shareGroup, eResRenderbuffer, i);
 }
-inline GLResource BufferRes(void *ctx, GLuint i)
+inline GLResource BufferRes(const ContextPair &c, GLuint i)
 {
-  (void)ctx;
-  return GLResource(NULL, eResBuffer, i);
+  return GLResource(c.shareGroup, eResBuffer, i);
 }
-inline GLResource VertexArrayRes(void *ctx, GLuint i)
+inline GLResource VertexArrayRes(const ContextPair &c, GLuint i)
 {
-  return GLResource(VendorCheck[VendorCheck_EXT_vao_shared] ? NULL : ctx, eResVertexArray, i);
+  return GLResource(VendorCheck[VendorCheck_EXT_vao_shared] ? c.shareGroup : c.ctx, eResVertexArray,
+                    i);
 }
-inline GLResource ShaderRes(void *ctx, GLuint i)
+inline GLResource ShaderRes(const ContextPair &c, GLuint i)
 {
-  (void)ctx;
-  return GLResource(NULL, eResShader, i);
+  return GLResource(c.shareGroup, eResShader, i);
 }
-inline GLResource ProgramRes(void *ctx, GLuint i)
+inline GLResource ProgramRes(const ContextPair &c, GLuint i)
 {
-  (void)ctx;
-  return GLResource(NULL, eResProgram, i);
+  return GLResource(c.shareGroup, eResProgram, i);
 }
-inline GLResource ProgramPipeRes(void *ctx, GLuint i)
+inline GLResource ProgramPipeRes(const ContextPair &c, GLuint i)
 {
-  return GLResource(ctx, eResProgramPipe, i);
+  return GLResource(c.ctx, eResProgramPipe, i);
 }
-inline GLResource FeedbackRes(void *ctx, GLuint i)
+inline GLResource FeedbackRes(const ContextPair &c, GLuint i)
 {
-  return GLResource(ctx, eResFeedback, i);
+  return GLResource(c.ctx, eResFeedback, i);
 }
-inline GLResource QueryRes(void *ctx, GLuint i)
+inline GLResource QueryRes(const ContextPair &c, GLuint i)
 {
-  return GLResource(ctx, eResQuery, i);
+  return GLResource(c.ctx, eResQuery, i);
 }
-inline GLResource SyncRes(void *ctx, GLuint i)
+inline GLResource SyncRes(const ContextPair &c, GLuint i)
 {
-  (void)ctx;
-  return GLResource(NULL, eResSync, i);
+  return GLResource(c.shareGroup, eResSync, i);
+}
+inline GLResource ExtMemRes(const ContextPair &c, GLuint i)
+{
+  return GLResource(c.ctx, eResExternalMemory, i);
+}
+inline GLResource ExtSemRes(const ContextPair &c, GLuint i)
+{
+  return GLResource(c.ctx, eResExternalSemaphore, i);
 }
 
 struct GLResourceRecord : public ResourceRecord
 {
   static const NullInitialiser NullResource = MakeNullResource;
 
+  static byte markerValue[32];
+
   GLResourceRecord(ResourceId id) : ResourceRecord(id, true), datatype(eGL_NONE), usage(eGL_NONE)
   {
     RDCEraseEl(ShadowPtr);
     RDCEraseEl(Map);
+    ShadowSize = 0;
   }
 
   ~GLResourceRecord() { FreeShadowStorage(); }
   enum MapStatus
   {
     Unmapped,
-    Mapped_Read,
     Mapped_Write,
-    Mapped_Ignore_Real,
+    Mapped_Direct,
   };
 
   struct
@@ -218,29 +240,11 @@ struct GLResourceRecord : public ResourceRecord
     GLbitfield access;
     MapStatus status;
     bool invalidate;
+    bool verifyWrite;
+    bool orphaned;
+    bool persistent;
     byte *ptr;
-
-    byte *persistentPtr;
-    int64_t persistentMaps;    // counter indicating how many coherent maps are 'live'
   } Map;
-
-  template <typename ChunkFilter>
-  void FilterChunks(const ChunkFilter &filter)
-  {
-    LockChunks();
-    std::vector<std::map<int32_t, Chunk *>::iterator> deletions;
-    for(auto it = m_Chunks.begin(); it != m_Chunks.end(); ++it)
-    {
-      if(filter(it->second))
-        deletions.push_back(it);
-    }
-    for(size_t i = 0; i < deletions.size(); i++)
-    {
-      SAFE_DELETE(deletions[i]->second);
-      m_Chunks.erase(deletions[i]);
-    }
-    UnlockChunks();
-  }
 
   void VerifyDataType(GLenum target)
   {
@@ -255,38 +259,71 @@ struct GLResourceRecord : public ResourceRecord
   }
 
   bool AlreadyDataType(GLenum target) { return datatype == TextureBinding(target); }
-  GLenum datatype;
+  union
+  {
+    GLenum datatype;
+    uint32_t age;
+  };
   GLenum usage;
 
-  // for texture buffers and texture views, this points from the data texture (or buffer)
-  // to the view texture. When preparing resource initial states, we force initial states
-  // for anything that is viewed if the viewer is frame referenced. Otherwise we might
-  // lose the underlying data for the view.
-  // Since it's 1-to-many, we keep a set here.
-  set<ResourceId> viewTextures;
+  // for texture buffers, this points from the texture to the real buffer, for texture views this
+  // points to the texture that's being viewed (the actual data source).
+  // When we mark a resource as dirty or frame referenced, we also mark the underlyingData resource
+  // the same, so that if we dirty the texture then we dirty the buffer/real texture, and so that if
+  // the texture is used then we bring the buffer/real texture into the frame.
+  ResourceId viewSource;
 
   GLResource Resource;
 
   void AllocShadowStorage(size_t size)
   {
+    if(ShadowSize != size)
+      FreeShadowStorage();
+
     if(ShadowPtr[0] == NULL)
     {
-      ShadowPtr[0] = Serialiser::AllocAlignedBuffer(size);
-      ShadowPtr[1] = Serialiser::AllocAlignedBuffer(size);
+      ShadowPtr[0] = AllocAlignedBuffer(size + sizeof(markerValue));
+      ShadowPtr[1] = AllocAlignedBuffer(size + sizeof(markerValue));
+
+      memcpy(ShadowPtr[0] + size, markerValue, sizeof(markerValue));
+      memcpy(ShadowPtr[1] + size, markerValue, sizeof(markerValue));
+
+      ShadowSize = size;
     }
+  }
+
+  bool VerifyShadowStorage()
+  {
+    if(ShadowPtr[0] && memcmp(ShadowPtr[0] + ShadowSize, markerValue, sizeof(markerValue)) != 0)
+      return false;
+
+    if(ShadowPtr[1] && memcmp(ShadowPtr[1] + ShadowSize, markerValue, sizeof(markerValue)) != 0)
+      return false;
+
+    return true;
   }
 
   void FreeShadowStorage()
   {
     if(ShadowPtr[0] != NULL)
     {
-      Serialiser::FreeAlignedBuffer(ShadowPtr[0]);
-      Serialiser::FreeAlignedBuffer(ShadowPtr[1]);
+      FreeAlignedBuffer(ShadowPtr[0]);
+      FreeAlignedBuffer(ShadowPtr[1]);
     }
     ShadowPtr[0] = ShadowPtr[1] = NULL;
+    ShadowSize = 0;
   }
 
   byte *GetShadowPtr(int p) { return ShadowPtr[p]; }
 private:
   byte *ShadowPtr[2];
+  size_t ShadowSize;
+};
+
+struct GLContextTLSData
+{
+  GLContextTLSData() : ctxPair({NULL, NULL}), ctxRecord(NULL) {}
+  GLContextTLSData(ContextPair p, GLResourceRecord *r) : ctxPair(p), ctxRecord(r) {}
+  ContextPair ctxPair;
+  GLResourceRecord *ctxRecord;
 };

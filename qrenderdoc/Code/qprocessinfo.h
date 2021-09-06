@@ -14,7 +14,9 @@ typedef QList<QProcessInfo> QProcessList;
 class QProcessInfo
 {
 public:
-  static QProcessList enumerate();
+  QProcessInfo();
+
+  static QProcessList enumerate(bool includeWindowTitles = true);
 
   uint32_t pid() const;
   void setPid(uint32_t pid);

@@ -6,34 +6,28 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>662</width>
-    <height>590</height>
+    <width>281</width>
+    <height>298</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>Event Browser</string>
-  </property>
-  <property name="frameShape">
-   <enum>QFrame::StyledPanel</enum>
-  </property>
-  <property name="frameShadow">
-   <enum>QFrame::Raised</enum>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <property name="spacing">
     <number>0</number>
    </property>
    <property name="leftMargin">
-    <number>0</number>
+    <number>3</number>
    </property>
    <property name="topMargin">
-    <number>0</number>
+    <number>3</number>
    </property>
    <property name="rightMargin">
-    <number>0</number>
+    <number>3</number>
    </property>
    <property name="bottomMargin">
-    <number>0</number>
+    <number>3</number>
    </property>
    <item>
     <layout class="QHBoxLayout" name="horizontalLayout">
@@ -63,6 +57,41 @@
       </widget>
      </item>
      <item>
+      <widget class="Line" name="line_2">
+       <property name="orientation">
+        <enum>Qt::Vertical</enum>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QToolButton" name="stepPrev">
+       <property name="toolTip">
+        <string>Go to Previous Action</string>
+       </property>
+       <property name="icon">
+        <iconset resource="../Resources/resources.qrc">
+         <normaloff>:/arrow_left.png</normaloff>:/arrow_left.png</iconset>
+       </property>
+       <property name="autoRaise">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QToolButton" name="stepNext">
+       <property name="toolTip">
+        <string>Go to Next Action</string>
+       </property>
+       <property name="icon">
+        <iconset resource="../Resources/resources.qrc">
+         <normaloff>:/arrow_right.png</normaloff>:/arrow_right.png</iconset>
+       </property>
+       <property name="autoRaise">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="Line" name="line">
        <property name="orientation">
         <enum>Qt::Vertical</enum>
@@ -71,18 +100,35 @@
      </item>
      <item>
       <widget class="QToolButton" name="find">
-       <property name="text">
-        <string/>
+       <property name="toolTip">
+        <string>Find event by string</string>
        </property>
        <property name="icon">
-        <iconset resource="../resources.qrc">
-         <normaloff>:/Resources/find.png</normaloff>:/Resources/find.png</iconset>
+        <iconset resource="../Resources/resources.qrc">
+         <normaloff>:/find.png</normaloff>:/find.png</iconset>
        </property>
        <property name="checkable">
+        <bool>true</bool>
+       </property>
+       <property name="checked">
         <bool>false</bool>
        </property>
-       <property name="autoRepeat">
-        <bool>false</bool>
+       <property name="autoRaise">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QToolButton" name="timeActions">
+       <property name="toolTip">
+        <string>Time durations for the actions</string>
+       </property>
+       <property name="text">
+        <string/>
+       </property>
+       <property name="icon">
+        <iconset resource="../Resources/resources.qrc">
+         <normaloff>:/time.png</normaloff>:/time.png</iconset>
        </property>
        <property name="autoRaise">
         <bool>true</bool>
@@ -90,13 +136,13 @@
       </widget>
      </item>
      <item>
-      <widget class="QToolButton" name="gotoEID">
-       <property name="text">
-        <string/>
+      <widget class="QToolButton" name="colSelect">
+       <property name="toolTip">
+        <string>Select visible columns</string>
        </property>
        <property name="icon">
-        <iconset resource="../resources.qrc">
-         <normaloff>:/Resources/flag_green.png</normaloff>:/Resources/flag_green.png</iconset>
+        <iconset resource="../Resources/resources.qrc">
+         <normaloff>:/timeline_marker.png</normaloff>:/timeline_marker.png</iconset>
        </property>
        <property name="autoRaise">
         <bool>true</bool>
@@ -104,13 +150,16 @@
       </widget>
      </item>
      <item>
-      <widget class="QToolButton" name="timeDraws">
+      <widget class="QToolButton" name="bookmark">
+       <property name="toolTip">
+        <string>Toggle Bookmark</string>
+       </property>
        <property name="text">
         <string/>
        </property>
        <property name="icon">
-        <iconset resource="../resources.qrc">
-         <normaloff>:/Resources/time.png</normaloff>:/Resources/time.png</iconset>
+        <iconset resource="../Resources/resources.qrc">
+         <normaloff>:/asterisk_orange.png</normaloff>:/asterisk_orange.png</iconset>
        </property>
        <property name="autoRaise">
         <bool>true</bool>
@@ -118,13 +167,24 @@
       </widget>
      </item>
      <item>
-      <widget class="QToolButton" name="toolButton">
-       <property name="text">
-        <string/>
+      <widget class="QToolButton" name="exportActions">
+       <property name="toolTip">
+        <string>Export the list of events to disk</string>
        </property>
        <property name="icon">
-        <iconset resource="../resources.qrc">
-         <normaloff>:/Resources/asterisk_orange.png</normaloff>:/Resources/asterisk_orange.png</iconset>
+        <iconset resource="../Resources/resources.qrc">
+         <normaloff>:/save.png</normaloff>:/save.png</iconset>
+       </property>
+       <property name="autoRaise">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QToolButton" name="extensions">
+       <property name="icon">
+        <iconset resource="../Resources/resources.qrc">
+         <normaloff>:/plugin.png</normaloff>:/plugin.png</iconset>
        </property>
        <property name="autoRaise">
         <bool>true</bool>
@@ -145,128 +205,6 @@
       </spacer>
      </item>
     </layout>
-   </item>
-   <item>
-    <widget class="QWidget" name="jumpStrip" native="true">
-     <layout class="QHBoxLayout" name="horizontalLayout_3">
-      <property name="spacing">
-       <number>3</number>
-      </property>
-      <property name="leftMargin">
-       <number>6</number>
-      </property>
-      <property name="topMargin">
-       <number>0</number>
-      </property>
-      <property name="rightMargin">
-       <number>6</number>
-      </property>
-      <property name="bottomMargin">
-       <number>0</number>
-      </property>
-      <item>
-       <widget class="QLabel" name="label_3">
-        <property name="text">
-         <string/>
-        </property>
-        <property name="pixmap">
-         <pixmap resource="../resources.qrc">:/Resources/flag_green.png</pixmap>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QLabel" name="label_2">
-        <property name="text">
-         <string>Jump to Event</string>
-        </property>
-        <property name="textFormat">
-         <enum>Qt::PlainText</enum>
-        </property>
-        <property name="alignment">
-         <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
-        </property>
-        <property name="margin">
-         <number>0</number>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QFrame" name="frame">
-        <property name="sizePolicy">
-         <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
-          <horstretch>0</horstretch>
-          <verstretch>0</verstretch>
-         </sizepolicy>
-        </property>
-        <property name="frameShape">
-         <enum>QFrame::Box</enum>
-        </property>
-        <property name="frameShadow">
-         <enum>QFrame::Plain</enum>
-        </property>
-        <property name="lineWidth">
-         <number>1</number>
-        </property>
-        <layout class="QHBoxLayout" name="horizontalLayout_2">
-         <property name="spacing">
-          <number>0</number>
-         </property>
-         <property name="leftMargin">
-          <number>0</number>
-         </property>
-         <property name="topMargin">
-          <number>0</number>
-         </property>
-         <property name="rightMargin">
-          <number>0</number>
-         </property>
-         <property name="bottomMargin">
-          <number>0</number>
-         </property>
-         <item>
-          <widget class="RDLineEdit" name="jumpToEID">
-           <property name="minimumSize">
-            <size>
-             <width>0</width>
-             <height>20</height>
-            </size>
-           </property>
-           <property name="autoFillBackground">
-            <bool>false</bool>
-           </property>
-           <property name="frame">
-            <bool>false</bool>
-           </property>
-           <property name="placeholderText">
-            <string>Event ID</string>
-           </property>
-           <property name="clearButtonEnabled">
-            <bool>false</bool>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </widget>
-      </item>
-      <item>
-       <widget class="QToolButton" name="closeJump">
-        <property name="text">
-         <string/>
-        </property>
-        <property name="icon">
-         <iconset resource="../resources.qrc">
-          <normaloff>:/Resources/cross.png</normaloff>:/Resources/cross.png</iconset>
-        </property>
-        <property name="shortcut">
-         <string>Esc</string>
-        </property>
-        <property name="autoRaise">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </widget>
    </item>
    <item>
     <widget class="QWidget" name="findStrip" native="true">
@@ -292,7 +230,7 @@
          <string/>
         </property>
         <property name="pixmap">
-         <pixmap resource="../resources.qrc">:/Resources/find.png</pixmap>
+         <pixmap resource="../Resources/resources.qrc">:/find.png</pixmap>
         </property>
        </widget>
       </item>
@@ -313,65 +251,29 @@
        </widget>
       </item>
       <item>
-       <widget class="QFrame" name="frame_2">
-        <property name="frameShape">
-         <enum>QFrame::Box</enum>
+       <widget class="RDLineEdit" name="findEvent">
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>20</height>
+         </size>
         </property>
-        <property name="frameShadow">
-         <enum>QFrame::Plain</enum>
+        <property name="placeholderText">
+         <string>Search String</string>
         </property>
-        <layout class="QHBoxLayout" name="horizontalLayout_4">
-         <property name="spacing">
-          <number>0</number>
-         </property>
-         <property name="leftMargin">
-          <number>0</number>
-         </property>
-         <property name="topMargin">
-          <number>0</number>
-         </property>
-         <property name="rightMargin">
-          <number>0</number>
-         </property>
-         <property name="bottomMargin">
-          <number>0</number>
-         </property>
-         <item>
-          <widget class="RDLineEdit" name="findEvent">
-           <property name="minimumSize">
-            <size>
-             <width>0</width>
-             <height>20</height>
-            </size>
-           </property>
-           <property name="autoFillBackground">
-            <bool>false</bool>
-           </property>
-           <property name="frame">
-            <bool>false</bool>
-           </property>
-           <property name="placeholderText">
-            <string>Search String</string>
-           </property>
-           <property name="clearButtonEnabled">
-            <bool>false</bool>
-           </property>
-          </widget>
-         </item>
-        </layout>
+        <property name="clearButtonEnabled">
+         <bool>true</bool>
+        </property>
        </widget>
       </item>
       <item>
-       <widget class="QToolButton" name="closeFind">
+       <widget class="QToolButton" name="findPrev">
         <property name="text">
          <string/>
         </property>
         <property name="icon">
-         <iconset resource="../resources.qrc">
-          <normaloff>:/Resources/cross.png</normaloff>:/Resources/cross.png</iconset>
-        </property>
-        <property name="shortcut">
-         <string>Esc</string>
+         <iconset resource="../Resources/resources.qrc">
+          <normaloff>:/arrow_left.png</normaloff>:/arrow_left.png</iconset>
         </property>
         <property name="autoRaise">
          <bool>true</bool>
@@ -384,22 +286,8 @@
          <string/>
         </property>
         <property name="icon">
-         <iconset resource="../resources.qrc">
-          <normaloff>:/Resources/stepnext.png</normaloff>:/Resources/stepnext.png</iconset>
-        </property>
-        <property name="autoRaise">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QToolButton" name="findPrev">
-        <property name="text">
-         <string/>
-        </property>
-        <property name="icon">
-         <iconset resource="../resources.qrc">
-          <normaloff>:/Resources/stepprev.png</normaloff>:/Resources/stepprev.png</iconset>
+         <iconset resource="../Resources/resources.qrc">
+          <normaloff>:/arrow_right.png</normaloff>:/arrow_right.png</iconset>
         </property>
         <property name="autoRaise">
          <bool>true</bool>
@@ -408,10 +296,9 @@
       </item>
      </layout>
     </widget>
-   </item>
-   <item>
-    <widget class="QWidget" name="bookmarkStrip" native="true">
-     <layout class="QHBoxLayout" name="horizontalLayout_6">
+   </item><item>
+    <widget class="QWidget" name="filterStrip" native="true">
+     <layout class="QHBoxLayout" name="horizontalLayout_7">
       <property name="spacing">
        <number>3</number>
       </property>
@@ -425,7 +312,7 @@
        <number>6</number>
       </property>
       <property name="bottomMargin">
-       <number>0</number>
+       <number>2</number>
       </property>
       <item>
        <widget class="QLabel" name="label_6">
@@ -433,14 +320,14 @@
          <string/>
         </property>
         <property name="pixmap">
-         <pixmap resource="../resources.qrc">:/Resources/asterisk_orange.png</pixmap>
+         <pixmap resource="../Resources/resources.qrc">:/filter.png</pixmap>
         </property>
        </widget>
       </item>
       <item>
        <widget class="QLabel" name="label_7">
         <property name="text">
-         <string>Bookmarks</string>
+         <string>Filter</string>
         </property>
         <property name="textFormat">
          <enum>Qt::PlainText</enum>
@@ -454,32 +341,113 @@
        </widget>
       </item>
       <item>
-       <widget class="Line" name="line_2">
-        <property name="orientation">
-         <enum>Qt::Vertical</enum>
+       <widget class="RDTextEdit" name="filterExpression">
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>20</height>
+         </size>
         </property>
        </widget>
       </item>
       <item>
-       <spacer name="bookmarkSpacer">
-        <property name="orientation">
-         <enum>Qt::Horizontal</enum>
+       <widget class="QToolButton" name="filterSettings">
+        <property name="toolTip">
+         <string>Configuration and help for filter expressions</string>
         </property>
-        <property name="sizeHint" stdset="0">
-         <size>
-          <width>564</width>
-          <height>20</height>
-         </size>
+        <property name="text">
+         <string>Settings &amp;&amp; Help</string>
         </property>
-       </spacer>
+        <property name="icon">
+         <iconset resource="../Resources/resources.qrc">
+          <normaloff>:/cog.png</normaloff>:/cog.png</iconset>
+        </property>
+        <property name="toolButtonStyle">
+         <enum>Qt::ToolButtonTextBesideIcon</enum>
+        </property>
+        <property name="autoRaise">
+         <bool>true</bool>
+        </property>
+       </widget>
       </item>
      </layout>
     </widget>
    </item>
    <item>
-    <widget class="QTreeWidget" name="events">
+    <widget class="QWidget" name="breadcrumbStrip" native="true">
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="bookmarkStrip" native="true">
+     <widget class="QWidget" name="bookmarkStripHeader" native="true">
+      <property name="geometry">
+       <rect>
+        <x>0</x>
+        <y>0</y>
+        <width>82</width>
+        <height>16</height>
+       </rect>
+      </property>
+      <layout class="QHBoxLayout" name="horizontalLayout_6">
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+       <item>
+        <widget class="QLabel" name="bookmarkStripIcon">
+         <property name="text">
+          <string/>
+         </property>
+         <property name="pixmap">
+          <pixmap resource="../Resources/resources.qrc">:/asterisk_orange.png</pixmap>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="bookmarkStripLabel">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Preferred" vsizetype="MinimumExpanding">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="text">
+          <string>Bookmarks</string>
+         </property>
+         <property name="textFormat">
+          <enum>Qt::PlainText</enum>
+         </property>
+         <property name="alignment">
+          <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+         </property>
+         <property name="margin">
+          <number>0</number>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="Line" name="bookmarkStripLine">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+   <item>
+    <widget class="RDTreeView" name="events">
      <property name="frameShape">
-      <enum>QFrame::NoFrame</enum>
+      <enum>QFrame::Box</enum>
      </property>
      <property name="frameShadow">
       <enum>QFrame::Plain</enum>
@@ -490,14 +458,8 @@
      <property name="verticalScrollBarPolicy">
       <enum>Qt::ScrollBarAlwaysOn</enum>
      </property>
-     <property name="horizontalScrollBarPolicy">
-      <enum>Qt::ScrollBarAlwaysOff</enum>
-     </property>
      <property name="editTriggers">
       <set>QAbstractItemView::NoEditTriggers</set>
-     </property>
-     <property name="alternatingRowColors">
-      <bool>true</bool>
      </property>
      <property name="indentation">
       <number>12</number>
@@ -520,32 +482,21 @@
      <attribute name="headerStretchLastSection">
       <bool>false</bool>
      </attribute>
-     <column>
-      <property name="text">
-       <string>Name</string>
-      </property>
-     </column>
-     <column>
-      <property name="text">
-       <string>EID</string>
-      </property>
-      <property name="toolTip">
-       <string/>
-      </property>
-      <property name="whatsThis">
-       <string/>
-      </property>
-     </column>
-     <column>
-      <property name="text">
-       <string>Duration (µs)</string>
-      </property>
-     </column>
     </widget>
    </item>
   </layout>
  </widget>
  <customwidgets>
+  <customwidget>
+   <class>RDTreeView</class>
+   <extends>QTreeView</extends>
+   <header>Widgets/Extended/RDTreeView.h</header>
+  </customwidget>
+  <customwidget>
+   <class>RDTextEdit</class>
+   <extends>QTextEdit</extends>
+   <header>Widgets/Extended/RDTextEdit.h</header>
+  </customwidget>
   <customwidget>
    <class>RDLineEdit</class>
    <extends>QLineEdit</extends>
@@ -553,7 +504,7 @@
   </customwidget>
  </customwidgets>
  <resources>
-  <include location="../resources.qrc"/>
+  <include location="../Resources/resources.qrc"/>
  </resources>
  <connections/>
 </ui>

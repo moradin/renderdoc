@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -23,18 +23,12 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-#include <map>
-#include <string>
-#include <utility>
-#include <vector>
-using std::vector;
-using std::pair;
-using std::string;
-using std::map;
-
 #pragma once
 
-#include "dxbc_disassemble.h"
+#include <map>
+#include "api/replay/rdcarray.h"
+#include "api/replay/rdcstr.h"
+#include "dxbc_bytecode.h"
 
 namespace DXBC
 {
@@ -62,12 +56,6 @@ namespace DXBC
 //  * SDBGVariable
 //  * SDBGInputRegister
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-struct CountOffset
-{
-  int32_t count;
-  int32_t offset;
-};
 
 // Completely understood
 struct SDBGHeader
@@ -125,7 +113,7 @@ struct SDBGAsmInstruction
 {
   int32_t instructionNum;
 
-  OpcodeType opCode;
+  DXBCBytecode::OpcodeType opCode;
 
   int32_t unknown_a[2];
   int32_t destRegister;
@@ -251,16 +239,21 @@ struct SDBGType
 
 // SDBG chunk gets its own class since it's so complex. Deliberately fairly leaky too
 // since the data + use is a bit unclear still
-class SDBGChunk : public DXBCDebugChunk
+class SDBGChunk : public IDebugInfo
 {
 public:
   SDBGChunk(void *data);
 
-  string GetCompilerSig() const { return m_CompilerSig; }
-  string GetEntryFunction() const { return m_Entry; }
-  string GetShaderProfile() const { return m_Profile; }
-  uint32_t GetShaderCompileFlags() const { return m_ShaderFlags; }
-  void GetFileLine(size_t instruction, uintptr_t offset, int32_t &fileIdx, int32_t &lineNum) const;
+  rdcstr GetCompilerSig() const { return m_CompilerSig; }
+  rdcstr GetEntryFunction() const { return m_Entry; }
+  rdcstr GetShaderProfile() const { return m_Profile; }
+  ShaderCompileFlags GetShaderCompileFlags() const { return EncodeFlags(m_ShaderFlags, m_Profile); }
+  void GetLineInfo(size_t instruction, uintptr_t offset, LineColumnInfo &lineInfo) const;
+  void GetCallstack(size_t instruction, uintptr_t offset, rdcarray<rdcstr> &callstack) const;
+
+  bool HasSourceMapping() const;
+  void GetLocals(const DXBC::DXBCContainer *dxbc, size_t instruction, uintptr_t offset,
+                 rdcarray<SourceVariableMapping> &locals) const;
 
 private:
   SDBGChunk();
@@ -269,28 +262,28 @@ private:
 
   bool m_HasDebugInfo;
 
-  string GetSymbolName(int symbolID);
-  string GetSymbolName(int32_t symbolOffset, int32_t symbolLength);
+  rdcstr GetSymbolName(int symbolID);
+  rdcstr GetSymbolName(int32_t symbolOffset, int32_t symbolLength);
 
-  vector<SDBGAsmInstruction> m_Instructions;
-  vector<SDBGVariable> m_Variables;
-  vector<SDBGInputRegister> m_Inputs;
-  vector<SDBGSymbol> m_SymbolTable;
-  vector<SDBGScope> m_Scopes;
-  vector<SDBGType> m_Types;
-  vector<int32_t> m_Int32Database;
+  rdcarray<SDBGAsmInstruction> m_Instructions;
+  rdcarray<SDBGVariable> m_Variables;
+  rdcarray<SDBGInputRegister> m_Inputs;
+  rdcarray<SDBGSymbol> m_SymbolTable;
+  rdcarray<SDBGScope> m_Scopes;
+  rdcarray<SDBGType> m_Types;
+  rdcarray<int32_t> m_Int32Database;
 
   uint32_t m_ShaderFlags;
 
-  string m_CompilerSig;
-  string m_Entry;
-  string m_Profile;
+  rdcstr m_CompilerSig;
+  rdcstr m_Entry;
+  rdcstr m_Profile;
 
   // these don't need to be exposed, a more processed and friendly
   // version is exposed
   SDBGHeader m_Header;
-  vector<SDBGFileHeader> m_FileHeaders;
+  rdcarray<SDBGFileHeader> m_FileHeaders;
 
-  vector<char> m_RawData;
+  rdcarray<char> m_RawData;
 };
 };

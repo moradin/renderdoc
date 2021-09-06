@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,6 +24,7 @@
 
 #include "TextureGoto.h"
 #include <QApplication>
+#include <QCursor>
 #include <QDebug>
 #include <QFocusEvent>
 #include <QGridLayout>
@@ -101,6 +102,8 @@ void TextureGoto::show(QWidget *showParent, QPoint p)
 
   m_Y->setFocus(Qt::TabFocusReason);
   m_X->setFocus(Qt::TabFocusReason);
+
+  QCursor::setPos(mapToGlobal(rect().bottomRight() - QPoint(2, 2)));
 }
 
 void TextureGoto::leaveEvent(QEvent *event)

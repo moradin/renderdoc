@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -28,7 +28,10 @@
 #include "os/os_specific.h"
 #include "replay/replay_driver.h"
 #include "serialise/serialiser.h"
-#include "socket_helpers.h"
+
+// turns on/off the feature to transfer resource contents (cached textures and buffers) as a series
+// of deltas to a shared view of the previous resource contents.
+#define TRANSFER_RESOURCE_CONTENTS_DELTAS OPTION_ON
 
 enum ReplayProxyPacket
 {
@@ -36,14 +39,25 @@ enum ReplayProxyPacket
   // peacefully with remote server packet numbers
   eReplayProxy_First = 0x1000,
 
-  eReplayProxy_ReplayLog = eReplayProxy_First,
+  eReplayProxy_RemoteExecutionKeepAlive = eReplayProxy_First,
+  eReplayProxy_RemoteExecutionFinished,
+
+  eReplayProxy_ReplayLog,
+
+  eReplayProxy_CacheBufferData,
+  eReplayProxy_CacheTextureData,
+
+  eReplayProxy_GetAPIProperties,
+  eReplayProxy_FetchStructuredFile,
 
   eReplayProxy_GetPassEvents,
 
+  eReplayProxy_GetResources,
   eReplayProxy_GetTextures,
   eReplayProxy_GetTexture,
   eReplayProxy_GetBuffers,
   eReplayProxy_GetBuffer,
+  eReplayProxy_GetShaderEntryPoints,
   eReplayProxy_GetShader,
   eReplayProxy_GetDebugMessages,
 
@@ -55,9 +69,9 @@ enum ReplayProxyPacket
   eReplayProxy_GetLiveID,
   eReplayProxy_GetFrameRecord,
   eReplayProxy_IsRenderOutput,
+  eReplayProxy_NeedRemapForFetch,
 
-  eReplayProxy_FreeResource,
-  eReplayProxy_HasResolver,
+  eReplayProxy_FreeTargetResource,
 
   eReplayProxy_FetchCounters,
   eReplayProxy_EnumerateCounters,
@@ -67,10 +81,6 @@ enum ReplayProxyPacket
   eReplayProxy_InitPostVS,
   eReplayProxy_InitPostVSVec,
   eReplayProxy_GetPostVS,
-
-  eReplayProxy_InitStackResolver,
-  eReplayProxy_HasStackResolver,
-  eReplayProxy_GetAddressDetails,
 
   eReplayProxy_BuildTargetShader,
   eReplayProxy_ReplaceResource,
@@ -82,55 +92,74 @@ enum ReplayProxyPacket
 
   eReplayProxy_RenderOverlay,
 
-  eReplayProxy_GetAPIProperties,
-
   eReplayProxy_PixelHistory,
+
+  eReplayProxy_DisassembleShader,
+  eReplayProxy_GetDisassemblyTargets,
+  eReplayProxy_GetTargetShaderEncodings,
+
+  eReplayProxy_GetDriverInfo,
+  eReplayProxy_GetAvailableGPUs,
+
+  eReplayProxy_ContinueDebug,
+  eReplayProxy_FreeDebugger,
+
+  eReplayProxy_FatalErrorCheck,
 };
 
-// This class implements IReplayDriver and StackResolver. On the local machine where the UI
-// is, this can then act like a full local replay by farming out over the network to a remote
-// replay where necessary to implement some functions, and using a local proxy where necessary.
+DECLARE_REFLECTION_ENUM(ReplayProxyPacket);
+
+#define IMPLEMENT_FUNCTION_PROXIED(rettype, name, ...)                                  \
+  rettype name(__VA_ARGS__);                                                            \
+  template <typename ParamSerialiser, typename ReturnSerialiser>                        \
+  rettype CONCAT(Proxied_, name)(ParamSerialiser & paramser, ReturnSerialiser & retser, \
+                                 ##__VA_ARGS__);
+
+// This class implements IReplayDriver. On the local machine where the UI is, this can then act like
+// a full local replay by farming out over the network to a remote replay where necessary to
+// implement some functions, and using a local proxy where necessary.
 //
-// This class is also used on the remote replay just so we can re-use the serialisation logic
-// across the network before and after implementing the IRemoteDriver parts.
-class ReplayProxy : public IReplayDriver, Callstack::StackResolver
+// This class is also used on the remote replay just so we can re-use the serialisation logic across
+// the network before and after implementing the IRemoteDriver parts.
+class ReplayProxy : public IReplayDriver
 {
 public:
-  ReplayProxy(Network::Socket *sock, IReplayDriver *proxy)
-      : m_Socket(sock), m_Proxy(proxy), m_Remote(NULL), m_RemoteServer(false)
-  {
-    m_FromReplaySerialiser = NULL;
-    m_ToReplaySerialiser = new Serialiser(NULL, Serialiser::WRITING, false);
-    m_RemoteHasResolver = false;
+  ReplayProxy(ReadSerialiser &reader, WriteSerialiser &writer, IReplayDriver *proxy);
 
-    GetAPIProperties();
-  }
-
-  ReplayProxy(Network::Socket *sock, IRemoteDriver *remote)
-      : m_Socket(sock), m_Proxy(NULL), m_Remote(remote), m_RemoteServer(true)
-  {
-    m_ToReplaySerialiser = NULL;
-    m_FromReplaySerialiser = new Serialiser(NULL, Serialiser::WRITING, false);
-    m_RemoteHasResolver = false;
-
-    RDCEraseEl(m_APIProps);
-  }
+  ReplayProxy(ReadSerialiser &reader, WriteSerialiser &writer, IRemoteDriver *remoteDriver,
+              IReplayDriver *replayDriver, RENDERDOC_PreviewWindowCallback previewWindow);
 
   virtual ~ReplayProxy();
 
+  void InitPreviewWindow();
+  void ShutdownPreviewWindow();
+  void RefreshPreviewWindow();
+
+  void InitRemoteExecutionThread();
+  void ShutdownRemoteExecutionThread();
+  void BeginRemoteExecution();
+  void EndRemoteExecution();
+  void RemoteExecutionThreadEntry();
+
   bool IsRemoteProxy() { return !m_RemoteServer; }
+  ReplayStatus FatalErrorCheck();
+  IReplayDriver *MakeDummyDriver();
   void Shutdown() { delete this; }
-  void ReadLogInitialisation() {}
-  vector<WindowingSystem> GetSupportedWindowSystems()
+  ReplayStatus ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers)
+  {
+    return ReplayStatus::Succeeded;
+  }
+  AMDRGPControl *GetRGPControl() { return NULL; }
+  rdcarray<WindowingSystem> GetSupportedWindowSystems()
   {
     if(m_Proxy)
       return m_Proxy->GetSupportedWindowSystems();
-    return vector<WindowingSystem>();
+    return rdcarray<WindowingSystem>();
   }
-  uint64_t MakeOutputWindow(WindowingSystem system, void *data, bool depth)
+  uint64_t MakeOutputWindow(WindowingData window, bool depth)
   {
     if(m_Proxy)
-      return m_Proxy->MakeOutputWindow(system, data, depth);
+      return m_Proxy->MakeOutputWindow(window, depth);
     return 0;
   }
   void DestroyOutputWindow(uint64_t id)
@@ -149,10 +178,20 @@ public:
     if(m_Proxy)
       return m_Proxy->GetOutputWindowDimensions(id, w, h);
   }
-  void ClearOutputWindowColour(uint64_t id, float col[4])
+  void SetOutputWindowDimensions(uint64_t id, int32_t w, int32_t h)
   {
     if(m_Proxy)
-      return m_Proxy->ClearOutputWindowColour(id, col);
+      m_Proxy->SetOutputWindowDimensions(id, w, h);
+  }
+  void GetOutputWindowData(uint64_t id, bytebuf &retData)
+  {
+    if(m_Proxy)
+      m_Proxy->GetOutputWindowData(id, retData);
+  }
+  void ClearOutputWindowColor(uint64_t id, FloatVector col)
+  {
+    if(m_Proxy)
+      return m_Proxy->ClearOutputWindowColor(id, col);
   }
   void ClearOutputWindowDepth(uint64_t id, float depth, uint8_t stencil)
   {
@@ -176,10 +215,10 @@ public:
       return m_Proxy->FlipOutputWindow(id);
   }
 
-  void RenderCheckerboard(Vec3f light, Vec3f dark)
+  void RenderCheckerboard(FloatVector dark, FloatVector light)
   {
     if(m_Proxy)
-      return m_Proxy->RenderCheckerboard(light, dark);
+      return m_Proxy->RenderCheckerboard(dark, light);
   }
 
   void RenderHighlightBox(float w, float h, float scale)
@@ -188,52 +227,21 @@ public:
       return m_Proxy->RenderHighlightBox(w, h, scale);
   }
 
-  bool GetMinMax(ResourceId texid, uint32_t sliceFace, uint32_t mip, uint32_t sample,
-                 FormatComponentType typeHint, float *minval, float *maxval)
-  {
-    if(m_Proxy)
-    {
-      EnsureTexCached(texid, sliceFace, mip);
-      if(texid == ResourceId() || m_ProxyTextures[texid] == ResourceId())
-        return false;
-      return m_Proxy->GetMinMax(m_ProxyTextures[texid], sliceFace, mip, sample, typeHint, minval,
-                                maxval);
-    }
-
-    return false;
-  }
-
-  bool GetHistogram(ResourceId texid, uint32_t sliceFace, uint32_t mip, uint32_t sample,
-                    FormatComponentType typeHint, float minval, float maxval, bool channels[4],
-                    vector<uint32_t> &histogram)
-  {
-    if(m_Proxy)
-    {
-      EnsureTexCached(texid, sliceFace, mip);
-      if(texid == ResourceId() || m_ProxyTextures[texid] == ResourceId())
-        return false;
-      return m_Proxy->GetHistogram(m_ProxyTextures[texid], sliceFace, mip, sample, typeHint, minval,
-                                   maxval, channels, histogram);
-    }
-
-    return false;
-  }
-
   bool RenderTexture(TextureDisplay cfg)
   {
     if(m_Proxy)
     {
-      EnsureTexCached(cfg.texid, cfg.sliceFace, cfg.mip);
-      if(cfg.texid == ResourceId() || m_ProxyTextures[cfg.texid] == ResourceId())
+      EnsureTexCached(cfg.resourceId, cfg.typeCast, cfg.subresource);
+
+      if(cfg.resourceId == ResourceId())
         return false;
-      cfg.texid = m_ProxyTextures[cfg.texid];
 
       // due to OpenGL having origin bottom-left compared to the rest of the world,
       // we need to flip going in or out of GL.
-      if((m_APIProps.pipelineType == eGraphicsAPI_OpenGL) !=
-         (m_APIProps.localRenderer == eGraphicsAPI_OpenGL))
+      if((m_APIProps.pipelineType == GraphicsAPI::OpenGL) !=
+         (m_APIProps.localRenderer == GraphicsAPI::OpenGL))
       {
-        cfg.FlipY = !cfg.FlipY;
+        cfg.flipY = !cfg.flipY;
       }
 
       return m_Proxy->RenderTexture(cfg);
@@ -242,121 +250,166 @@ public:
     return false;
   }
 
-  void PickPixel(ResourceId texture, uint32_t x, uint32_t y, uint32_t sliceFace, uint32_t mip,
-                 uint32_t sample, FormatComponentType typeHint, float pixel[4])
+  void PickPixel(ResourceId texture, uint32_t x, uint32_t y, const Subresource &sub,
+                 CompType typeCast, float pixel[4])
   {
     if(m_Proxy)
     {
-      EnsureTexCached(texture, sliceFace, mip);
-      if(texture == ResourceId() || m_ProxyTextures[texture] == ResourceId())
-        return;
+      EnsureTexCached(texture, typeCast, sub);
 
-      texture = m_ProxyTextures[texture];
+      if(texture == ResourceId())
+        return;
 
       // due to OpenGL having origin bottom-left compared to the rest of the world,
       // we need to flip going in or out of GL.
       // This is a bit more annoying here as we don't have a bool to flip, we need to
       // manually adjust y
-      if((m_APIProps.pipelineType == eGraphicsAPI_OpenGL) !=
-         (m_APIProps.localRenderer == eGraphicsAPI_OpenGL))
+      if((m_APIProps.pipelineType == GraphicsAPI::OpenGL) !=
+         (m_APIProps.localRenderer == GraphicsAPI::OpenGL))
       {
-        FetchTexture tex = m_Proxy->GetTexture(texture);
-        uint32_t mipHeight = RDCMAX(1U, tex.height >> mip);
+        TextureDescription tex = m_Proxy->GetTexture(texture);
+        uint32_t mipHeight = RDCMAX(1U, tex.height >> sub.mip);
         y = (mipHeight - 1) - y;
       }
 
-      m_Proxy->PickPixel(texture, x, y, sliceFace, mip, sample, typeHint, pixel);
+      m_Proxy->PickPixel(texture, x, y, sub, typeCast, pixel);
     }
   }
 
-  void RenderMesh(uint32_t eventID, const vector<MeshFormat> &secondaryDraws, const MeshDisplay &cfg)
+  bool GetMinMax(ResourceId texid, const Subresource &sub, CompType typeCast, float *minval,
+                 float *maxval)
   {
-    if(m_Proxy && cfg.position.buf != ResourceId())
+    if(m_Proxy)
+    {
+      EnsureTexCached(texid, typeCast, sub);
+
+      if(texid == ResourceId())
+        return false;
+
+      return m_Proxy->GetMinMax(texid, sub, typeCast, minval, maxval);
+    }
+
+    return false;
+  }
+
+  bool GetHistogram(ResourceId texid, const Subresource &sub, CompType typeCast, float minval,
+                    float maxval, const rdcfixedarray<bool, 4> &channels,
+                    rdcarray<uint32_t> &histogram)
+  {
+    if(m_Proxy)
+    {
+      EnsureTexCached(texid, typeCast, sub);
+
+      if(texid == ResourceId())
+        return false;
+
+      return m_Proxy->GetHistogram(texid, sub, typeCast, minval, maxval, channels, histogram);
+    }
+
+    return false;
+  }
+
+  void RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondaryDraws, const MeshDisplay &cfg)
+  {
+    if(m_Proxy && cfg.position.vertexResourceId != ResourceId())
     {
       MeshDisplay proxiedCfg = cfg;
 
-      EnsureBufCached(proxiedCfg.position.buf);
-      if(proxiedCfg.position.buf == ResourceId() ||
-         m_ProxyBufferIds[proxiedCfg.position.buf] == ResourceId())
+      EnsureBufCached(proxiedCfg.position.vertexResourceId);
+      if(proxiedCfg.position.vertexResourceId == ResourceId() ||
+         m_ProxyBufferIds[proxiedCfg.position.vertexResourceId] == ResourceId())
         return;
-      proxiedCfg.position.buf = m_ProxyBufferIds[proxiedCfg.position.buf];
+      proxiedCfg.position.vertexResourceId = m_ProxyBufferIds[proxiedCfg.position.vertexResourceId];
 
-      if(proxiedCfg.second.buf != ResourceId())
+      if(proxiedCfg.second.vertexResourceId != ResourceId())
       {
-        EnsureBufCached(proxiedCfg.second.buf);
-        proxiedCfg.second.buf = m_ProxyBufferIds[proxiedCfg.second.buf];
+        EnsureBufCached(proxiedCfg.second.vertexResourceId);
+        proxiedCfg.second.vertexResourceId = m_ProxyBufferIds[proxiedCfg.second.vertexResourceId];
       }
 
-      if(proxiedCfg.position.idxbuf != ResourceId())
+      if(proxiedCfg.position.indexResourceId != ResourceId())
       {
-        EnsureBufCached(proxiedCfg.position.idxbuf);
-        proxiedCfg.position.idxbuf = m_ProxyBufferIds[proxiedCfg.position.idxbuf];
+        EnsureBufCached(proxiedCfg.position.indexResourceId);
+        proxiedCfg.position.indexResourceId = m_ProxyBufferIds[proxiedCfg.position.indexResourceId];
       }
 
-      vector<MeshFormat> secDraws = secondaryDraws;
+      rdcarray<MeshFormat> secDraws = secondaryDraws;
 
       for(size_t i = 0; i < secDraws.size(); i++)
       {
-        if(secDraws[i].buf != ResourceId())
+        if(secDraws[i].vertexResourceId != ResourceId())
         {
-          EnsureBufCached(secDraws[i].buf);
-          secDraws[i].buf = m_ProxyBufferIds[secDraws[i].buf];
+          EnsureBufCached(secDraws[i].vertexResourceId);
+          secDraws[i].vertexResourceId = m_ProxyBufferIds[secDraws[i].vertexResourceId];
         }
-        if(secDraws[i].idxbuf != ResourceId())
+        if(secDraws[i].indexResourceId != ResourceId())
         {
-          EnsureBufCached(secDraws[i].idxbuf);
-          secDraws[i].idxbuf = m_ProxyBufferIds[secDraws[i].idxbuf];
+          EnsureBufCached(secDraws[i].indexResourceId);
+          secDraws[i].indexResourceId = m_ProxyBufferIds[secDraws[i].indexResourceId];
         }
       }
 
-      m_Proxy->RenderMesh(eventID, secDraws, proxiedCfg);
+      m_Proxy->RenderMesh(eventId, secDraws, proxiedCfg);
     }
   }
 
-  uint32_t PickVertex(uint32_t eventID, const MeshDisplay &cfg, uint32_t x, uint32_t y)
+  uint32_t PickVertex(uint32_t eventId, int32_t width, int32_t height, const MeshDisplay &cfg,
+                      uint32_t x, uint32_t y)
   {
-    if(m_Proxy && cfg.position.buf != ResourceId())
+    if(m_Proxy && cfg.position.vertexResourceId != ResourceId())
     {
       MeshDisplay proxiedCfg = cfg;
 
-      EnsureBufCached(proxiedCfg.position.buf);
-      if(proxiedCfg.position.buf == ResourceId() ||
-         m_ProxyBufferIds[proxiedCfg.position.buf] == ResourceId())
+      EnsureBufCached(proxiedCfg.position.vertexResourceId);
+      if(proxiedCfg.position.vertexResourceId == ResourceId() ||
+         m_ProxyBufferIds[proxiedCfg.position.vertexResourceId] == ResourceId())
         return ~0U;
-      proxiedCfg.position.buf = m_ProxyBufferIds[proxiedCfg.position.buf];
+      proxiedCfg.position.vertexResourceId = m_ProxyBufferIds[proxiedCfg.position.vertexResourceId];
 
-      if(proxiedCfg.second.buf != ResourceId())
+      if(proxiedCfg.second.vertexResourceId != ResourceId())
       {
-        EnsureBufCached(proxiedCfg.second.buf);
-        proxiedCfg.second.buf = m_ProxyBufferIds[proxiedCfg.second.buf];
+        EnsureBufCached(proxiedCfg.second.vertexResourceId);
+        proxiedCfg.second.vertexResourceId = m_ProxyBufferIds[proxiedCfg.second.vertexResourceId];
       }
 
-      if(proxiedCfg.position.idxbuf != ResourceId())
+      if(proxiedCfg.position.indexResourceId != ResourceId())
       {
-        EnsureBufCached(proxiedCfg.position.idxbuf);
-        proxiedCfg.position.idxbuf = m_ProxyBufferIds[proxiedCfg.position.idxbuf];
+        EnsureBufCached(proxiedCfg.position.indexResourceId);
+        proxiedCfg.position.indexResourceId = m_ProxyBufferIds[proxiedCfg.position.indexResourceId];
       }
 
-      return m_Proxy->PickVertex(eventID, proxiedCfg, x, y);
+      return m_Proxy->PickVertex(eventId, width, height, proxiedCfg, x, y);
     }
 
     return ~0U;
   }
 
-  void BuildCustomShader(string source, string entry, const uint32_t compileFlags,
-                         ShaderStageType type, ResourceId *id, string *errors)
+  void SetCustomShaderIncludes(const rdcarray<rdcstr> &directories)
+  {
+    if(m_Proxy)
+      m_Proxy->SetCustomShaderIncludes(directories);
+  }
+  void BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &source, const rdcstr &entry,
+                         const ShaderCompileFlags &compileFlags, ShaderStage type, ResourceId &id,
+                         rdcstr &errors)
   {
     if(m_Proxy)
     {
-      m_Proxy->BuildCustomShader(source, entry, compileFlags, type, id, errors);
+      m_Proxy->BuildCustomShader(sourceEncoding, source, entry, compileFlags, type, id, errors);
     }
     else
     {
-      if(id)
-        *id = ResourceId();
-      if(errors)
-        *errors = "Unsupported BuildShader call on proxy without local renderer";
+      id = ResourceId();
+      errors = "Unsupported BuildShader call on proxy without local renderer";
     }
+  }
+
+  rdcarray<ShaderEncoding> GetCustomShaderEncodings()
+  {
+    if(m_Proxy)
+      return m_Proxy->GetCustomShaderEncodings();
+
+    return {};
   }
 
   void FreeCustomShader(ResourceId id)
@@ -365,17 +418,17 @@ public:
       m_Proxy->FreeTargetResource(id);
   }
 
-  ResourceId ApplyCustomShader(ResourceId shader, ResourceId texid, uint32_t mip, uint32_t arrayIdx,
-                               uint32_t sampleIdx, FormatComponentType typeHint)
+  ResourceId ApplyCustomShader(ResourceId shader, ResourceId texid, const Subresource &sub,
+                               CompType typeCast)
   {
     if(m_Proxy)
     {
-      EnsureTexCached(texid, 0, mip);
-      if(texid == ResourceId() || m_ProxyTextures[texid] == ResourceId())
+      EnsureTexCached(texid, typeCast, sub);
+
+      if(texid == ResourceId())
         return ResourceId();
-      texid = m_ProxyTextures[texid];
-      ResourceId customResourceId =
-          m_Proxy->ApplyCustomShader(shader, texid, mip, arrayIdx, sampleIdx, typeHint);
+
+      ResourceId customResourceId = m_Proxy->ApplyCustomShader(shader, texid, sub, typeCast);
       m_LocalTextures.insert(customResourceId);
       m_ProxyTextures[customResourceId] = customResourceId;
       return customResourceId;
@@ -384,93 +437,126 @@ public:
     return ResourceId();
   }
 
-  bool Tick(int type, Serialiser *incomingPacket);
+  bool Tick(int type);
 
-  vector<ResourceId> GetBuffers();
-  FetchBuffer GetBuffer(ResourceId id);
+  void SetPipelineStates(D3D11Pipe::State *d3d11, D3D12Pipe::State *d3d12, GLPipe::State *gl,
+                         VKPipe::State *vk)
+  {
+    m_D3D11PipelineState = d3d11;
+    m_D3D12PipelineState = d3d12;
+    m_GLPipelineState = gl;
+    m_VulkanPipelineState = vk;
+  }
+  SDFile *GetStructuredFile() { return m_StructuredFile; }
+  IMPLEMENT_FUNCTION_PROXIED(void, FetchStructuredFile);
 
-  vector<ResourceId> GetTextures();
-  FetchTexture GetTexture(ResourceId id);
+  IMPLEMENT_FUNCTION_PROXIED(rdcarray<ResourceDescription>, GetResources);
 
-  APIProperties GetAPIProperties();
+  IMPLEMENT_FUNCTION_PROXIED(rdcarray<BufferDescription>, GetBuffers);
+  IMPLEMENT_FUNCTION_PROXIED(BufferDescription, GetBuffer, ResourceId id);
 
-  vector<DebugMessage> GetDebugMessages();
+  IMPLEMENT_FUNCTION_PROXIED(rdcarray<TextureDescription>, GetTextures);
+  IMPLEMENT_FUNCTION_PROXIED(TextureDescription, GetTexture, ResourceId id);
 
-  void SavePipelineState();
-  D3D11PipelineState GetD3D11PipelineState() { return m_D3D11PipelineState; }
-  D3D12PipelineState GetD3D12PipelineState() { return m_D3D12PipelineState; }
-  GLPipelineState GetGLPipelineState() { return m_GLPipelineState; }
-  VulkanPipelineState GetVulkanPipelineState() { return m_VulkanPipelineState; }
-  void ReplayLog(uint32_t endEventID, ReplayLogType replayType);
+  IMPLEMENT_FUNCTION_PROXIED(APIProperties, GetAPIProperties);
+  IMPLEMENT_FUNCTION_PROXIED(DriverInformation, GetDriverInfo);
+  IMPLEMENT_FUNCTION_PROXIED(rdcarray<GPUDevice>, GetAvailableGPUs);
 
-  vector<uint32_t> GetPassEvents(uint32_t eventID);
+  IMPLEMENT_FUNCTION_PROXIED(rdcarray<DebugMessage>, GetDebugMessages);
 
-  vector<EventUsage> GetUsage(ResourceId id);
-  FetchFrameRecord GetFrameRecord();
+  IMPLEMENT_FUNCTION_PROXIED(void, SavePipelineState, uint32_t eventId);
+  IMPLEMENT_FUNCTION_PROXIED(void, ReplayLog, uint32_t endEventID, ReplayLogType replayType);
 
-  bool IsRenderOutput(ResourceId id);
+  IMPLEMENT_FUNCTION_PROXIED(rdcarray<uint32_t>, GetPassEvents, uint32_t eventId);
 
-  ResourceId GetLiveID(ResourceId id);
+  IMPLEMENT_FUNCTION_PROXIED(rdcarray<EventUsage>, GetUsage, ResourceId id);
+  IMPLEMENT_FUNCTION_PROXIED(FrameRecord, GetFrameRecord);
 
-  vector<uint32_t> EnumerateCounters();
-  void DescribeCounter(uint32_t counterID, CounterDescription &desc);
-  vector<CounterResult> FetchCounters(const vector<uint32_t> &counterID);
+  IMPLEMENT_FUNCTION_PROXIED(bool, IsRenderOutput, ResourceId id);
 
-  void FillCBufferVariables(ResourceId shader, string entryPoint, uint32_t cbufSlot,
-                            vector<ShaderVariable> &outvars, const vector<byte> &data);
+  IMPLEMENT_FUNCTION_PROXIED(ResourceId, GetLiveID, ResourceId id);
 
-  void GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, vector<byte> &retData);
-  byte *GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
-                       const GetTextureDataParams &params, size_t &dataSize);
+  IMPLEMENT_FUNCTION_PROXIED(rdcarray<GPUCounter>, EnumerateCounters);
+  IMPLEMENT_FUNCTION_PROXIED(CounterDescription, DescribeCounter, GPUCounter counterID);
+  IMPLEMENT_FUNCTION_PROXIED(rdcarray<CounterResult>, FetchCounters,
+                             const rdcarray<GPUCounter> &counterID);
 
-  void InitPostVSBuffers(uint32_t eventID);
-  void InitPostVSBuffers(const vector<uint32_t> &passEvents);
-  MeshFormat GetPostVSBuffers(uint32_t eventID, uint32_t instID, MeshDataStage stage);
+  IMPLEMENT_FUNCTION_PROXIED(void, FillCBufferVariables, ResourceId pipeline, ResourceId shader,
+                             rdcstr entryPoint, uint32_t cbufSlot,
+                             rdcarray<ShaderVariable> &outvars, const bytebuf &data);
 
-  ResourceId RenderOverlay(ResourceId texid, FormatComponentType typeHint,
-                           TextureDisplayOverlay overlay, uint32_t eventID,
-                           const vector<uint32_t> &passEvents);
+  IMPLEMENT_FUNCTION_PROXIED(void, GetBufferData, ResourceId buff, uint64_t offset, uint64_t len,
+                             bytebuf &retData);
+  IMPLEMENT_FUNCTION_PROXIED(void, GetTextureData, ResourceId tex, const Subresource &sub,
+                             const GetTextureDataParams &params, bytebuf &data);
 
-  ShaderReflection *GetShader(ResourceId shader, string entryPoint);
+  IMPLEMENT_FUNCTION_PROXIED(void, InitPostVSBuffers, uint32_t eventId);
+  IMPLEMENT_FUNCTION_PROXIED(void, InitPostVSBuffers, const rdcarray<uint32_t> &passEvents);
+  IMPLEMENT_FUNCTION_PROXIED(MeshFormat, GetPostVSBuffers, uint32_t eventId, uint32_t instID,
+                             uint32_t viewID, MeshDataStage stage);
 
-  bool HasCallstacks();
-  void InitCallstackResolver();
-  Callstack::StackResolver *GetCallstackResolver();
-  // implementing Callstack::StackResolver
-  Callstack::AddressDetails GetAddr(uint64_t addr);
+  IMPLEMENT_FUNCTION_PROXIED(ResourceId, RenderOverlay, ResourceId texid, FloatVector clearCol,
+                             DebugOverlay overlay, uint32_t eventId,
+                             const rdcarray<uint32_t> &passEvents);
 
-  void FreeTargetResource(ResourceId id);
+  IMPLEMENT_FUNCTION_PROXIED(rdcarray<ShaderEntryPoint>, GetShaderEntryPoints, ResourceId shader);
+  IMPLEMENT_FUNCTION_PROXIED(ShaderReflection *, GetShader, ResourceId pipeline, ResourceId,
+                             ShaderEntryPoint entry);
 
-  vector<PixelModification> PixelHistory(vector<EventUsage> events, ResourceId target, uint32_t x,
-                                         uint32_t y, uint32_t slice, uint32_t mip,
-                                         uint32_t sampleIdx, FormatComponentType typeHint);
-  ShaderDebugTrace DebugVertex(uint32_t eventID, uint32_t vertid, uint32_t instid, uint32_t idx,
-                               uint32_t instOffset, uint32_t vertOffset);
-  ShaderDebugTrace DebugPixel(uint32_t eventID, uint32_t x, uint32_t y, uint32_t sample,
-                              uint32_t primitive);
-  ShaderDebugTrace DebugThread(uint32_t eventID, uint32_t groupid[3], uint32_t threadid[3]);
+  IMPLEMENT_FUNCTION_PROXIED(rdcarray<rdcstr>, GetDisassemblyTargets, bool withPipeline);
+  IMPLEMENT_FUNCTION_PROXIED(rdcstr, DisassembleShader, ResourceId pipeline,
+                             const ShaderReflection *refl, const rdcstr &target);
 
-  void BuildTargetShader(string source, string entry, const uint32_t compileFlags,
-                         ShaderStageType type, ResourceId *id, string *errors);
-  void ReplaceResource(ResourceId from, ResourceId to);
-  void RemoveReplacement(ResourceId id);
+  IMPLEMENT_FUNCTION_PROXIED(void, FreeTargetResource, ResourceId id);
+
+  IMPLEMENT_FUNCTION_PROXIED(rdcarray<PixelModification>, PixelHistory, rdcarray<EventUsage> events,
+                             ResourceId target, uint32_t x, uint32_t y, const Subresource &sub,
+                             CompType typeCast);
+  IMPLEMENT_FUNCTION_PROXIED(ShaderDebugTrace *, DebugVertex, uint32_t eventId, uint32_t vertid,
+                             uint32_t instid, uint32_t idx, uint32_t view);
+  IMPLEMENT_FUNCTION_PROXIED(ShaderDebugTrace *, DebugPixel, uint32_t eventId, uint32_t x,
+                             uint32_t y, uint32_t sample, uint32_t primitive);
+  IMPLEMENT_FUNCTION_PROXIED(ShaderDebugTrace *, DebugThread, uint32_t eventId,
+                             const rdcfixedarray<uint32_t, 3> &groupid,
+                             const rdcfixedarray<uint32_t, 3> &threadid);
+  IMPLEMENT_FUNCTION_PROXIED(rdcarray<ShaderDebugState>, ContinueDebug, ShaderDebugger *debugger);
+  IMPLEMENT_FUNCTION_PROXIED(void, FreeDebugger, ShaderDebugger *debugger);
+
+  IMPLEMENT_FUNCTION_PROXIED(rdcarray<ShaderEncoding>, GetTargetShaderEncodings);
+  IMPLEMENT_FUNCTION_PROXIED(void, BuildTargetShader, ShaderEncoding sourceEncoding,
+                             const bytebuf &source, const rdcstr &entry,
+                             const ShaderCompileFlags &compileFlags, ShaderStage type,
+                             ResourceId &id, rdcstr &errors);
+  IMPLEMENT_FUNCTION_PROXIED(void, ReplaceResource, ResourceId from, ResourceId to);
+  IMPLEMENT_FUNCTION_PROXIED(void, RemoveReplacement, ResourceId id);
+
+  // these functions are not part of the replay driver interface - they are similar to GetBufferData
+  // and GetTextureData, but they do extra work to try and optimise transfer by delta-encoding the
+  // difference in the returned data to the last time the resource was cached
+  IMPLEMENT_FUNCTION_PROXIED(void, CacheBufferData, ResourceId buff);
+  IMPLEMENT_FUNCTION_PROXIED(void, CacheTextureData, ResourceId tex, const Subresource &sub,
+                             const GetTextureDataParams &params);
+
+  // utility function to serialise the contents of a byte array given the previous contents that's
+  // available on both sides of the communication.
+  template <typename SerialiserType>
+  void DeltaTransferBytes(SerialiserType &xferser, bytebuf &referenceData, bytebuf &newData);
 
   void FileChanged() {}
   // will never be used
-  ResourceId CreateProxyTexture(const FetchTexture &templateTex)
+  ResourceId CreateProxyTexture(const TextureDescription &templateTex)
   {
     RDCERR("Calling proxy-render functions on a proxy serialiser");
     return ResourceId();
   }
 
-  void SetProxyTextureData(ResourceId texid, uint32_t arrayIdx, uint32_t mip, byte *data,
-                           size_t dataSize)
+  void SetProxyTextureData(ResourceId texid, const Subresource &sub, byte *data, size_t dataSize)
   {
     RDCERR("Calling proxy-render functions on a proxy serialiser");
   }
 
-  bool IsTextureSupported(const ResourceFormat &format) { return true; }
-  ResourceId CreateProxyBuffer(const FetchBuffer &templateBuf)
+  bool IsTextureSupported(const TextureDescription &tex) { return true; }
+  ResourceId CreateProxyBuffer(const BufferDescription &templateBuf)
   {
     RDCERR("Calling proxy-render functions on a proxy serialiser");
     return ResourceId();
@@ -482,78 +568,148 @@ public:
   }
 
 private:
-  bool SendReplayCommand(ReplayProxyPacket type);
-
-  void EnsureTexCached(ResourceId texid, uint32_t arrayIdx, uint32_t mip);
-  void RemapProxyTextureIfNeeded(ResourceFormat &format, GetTextureDataParams &params);
+  void EnsureTexCached(ResourceId &texid, CompType &typeCast, const Subresource &sub);
+  void RemapProxyTextureIfNeeded(TextureDescription &tex, GetTextureDataParams &params);
   void EnsureBufCached(ResourceId bufid);
+  IMPLEMENT_FUNCTION_PROXIED(bool, NeedRemapForFetch, const ResourceFormat &format);
+
+  const ActionDescription *FindAction(const rdcarray<ActionDescription> &actionList,
+                                      uint32_t eventId);
+
+  bool CheckError(ReplayProxyPacket receivedPacket, ReplayProxyPacket expectedPacket);
 
   struct TextureCacheEntry
   {
     ResourceId replayid;
-    uint32_t arrayIdx;
-    uint32_t mip;
+    Subresource sub;
 
     bool operator<(const TextureCacheEntry &o) const
     {
       if(replayid != o.replayid)
         return replayid < o.replayid;
-      if(arrayIdx != o.arrayIdx)
-        return arrayIdx < o.arrayIdx;
-      return mip < o.mip;
+      return sub < o.sub;
     }
   };
-  set<TextureCacheEntry> m_TextureProxyCache;
-  set<ResourceId> m_LocalTextures;
+  // this cache only exists on the client side, with the proxy renderer. This denotes cases where we
+  // already have up-to-date texture data for the current event so we don't need to check for any
+  // deltas. It is cleared any time we set event.
+  std::set<TextureCacheEntry> m_TextureProxyCache;
+  std::set<ResourceId> m_BufferProxyCache;
 
   struct ProxyTextureProperties
   {
     ResourceId id;
+    uint32_t msSamp;
     GetTextureDataParams params;
 
     ProxyTextureProperties() {}
     // Create a proxy Id with the default get-data parameters.
     ProxyTextureProperties(ResourceId proxyid) : id(proxyid) {}
-    operator ResourceId() const { return id; }
     bool operator==(const ResourceId &other) const { return id == other; }
   };
-  map<ResourceId, ProxyTextureProperties> m_ProxyTextures;
+  // this cache only exists on the client side, with the proxy renderer. It contains the created
+  // proxy textures to stand-in for remote real textures.
+  std::map<ResourceId, ProxyTextureProperties> m_ProxyTextures;
+  std::map<ResourceId, ResourceId> m_ProxyBufferIds;
 
-  set<ResourceId> m_BufferProxyCache;
-  map<ResourceId, ResourceId> m_ProxyBufferIds;
+  // this cache exists on *both* sides of the proxy connection, and must be kept in sync. It is used
+  // on the remote side to determine which deltas are necessary, and then each time on the client
+  // side the data is uploaded into the proxy textures above.
+  std::map<TextureCacheEntry, bytebuf> m_ProxyTextureData;
+  std::map<ResourceId, bytebuf> m_ProxyBufferData;
 
-  map<ResourceId, ResourceId> m_LiveIDs;
+  // this lists any textures which are only created locally (e.g. custom visualisation shaders) and
+  // should not be treated as proxied.
+  std::set<ResourceId> m_LocalTextures;
+
+  std::map<ResourceId, ResourceId> m_LiveIDs;
 
   struct ShaderReflKey
   {
     ShaderReflKey() {}
-    ShaderReflKey(ResourceId i, string e) : id(i), entryPoint(e) {}
-    ResourceId id;
-    string entryPoint;
+    ShaderReflKey(uint32_t eid, ResourceId p, ResourceId s, ShaderEntryPoint e)
+        : eventId(eid), pipeline(p), shader(s), entry(e)
+    {
+    }
+    uint32_t eventId;
+    ResourceId pipeline, shader;
+    ShaderEntryPoint entry;
     bool operator<(const ShaderReflKey &o) const
     {
-      if(id != o.id)
-        return id < o.id;
+      if(eventId != o.eventId)
+        return eventId < o.eventId;
 
-      return entryPoint < o.entryPoint;
+      if(pipeline != o.pipeline)
+        return pipeline < o.pipeline;
+
+      if(shader != o.shader)
+        return shader < o.shader;
+
+      return entry < o.entry;
     }
   };
 
-  map<ShaderReflKey, ShaderReflection *> m_ShaderReflectionCache;
+  std::map<ShaderReflKey, ShaderReflection *> m_ShaderReflectionCache;
 
-  Network::Socket *m_Socket;
-  Serialiser *m_FromReplaySerialiser;
-  Serialiser *m_ToReplaySerialiser;
+  // reader from the other side of the host <-> remote connection
+  ReadSerialiser &m_Reader;
+  // writer to the other side of the host <-> remote connection
+  WriteSerialiser &m_Writer;
+
+  // the local proxy replay driver when on the host side, NULL on the remote server
   IReplayDriver *m_Proxy;
+  // the remote driver on the remote server, NULL on the host side
   IRemoteDriver *m_Remote;
+  // an *optional* replay driver on the remote server, could be NULL if not supported by the system
+  // on the remote server. Always NULL on the host side.
+  // This allows us to do some extra things on the remote server such as displaying a preview window
+  IReplayDriver *m_Replay;
+
+  // true if we're the remote server, false if we're the host
   bool m_RemoteServer;
 
-  bool m_RemoteHasResolver;
+  // The callback (if provided) that handles creating and ticking a preview window on the remote
+  // host.
+  RENDERDOC_PreviewWindowCallback m_PreviewWindow;
+  // the ID of the output window to use for previewing on the remote host. Only valid/useful if
+  // m_Replay is set
+  uint64_t m_PreviewOutput = 0;
+  // The previous windowing data, so we can detect changes and recreate the window
+  WindowingData m_PreviewWindowingData = {WindowingSystem::Unknown};
 
+  uint32_t m_EventID = 0;
+
+  enum RemoteExecutionState
+  {
+    RemoteExecution_Inactive = 0,
+    RemoteExecution_ThreadIdle = 1,
+    RemoteExecution_ThreadActive = 2,
+  };
+
+  int32_t m_RemoteExecutionKill = 0;
+  int32_t m_RemoteExecutionState = RemoteExecution_Inactive;
+
+  bool IsThreadIdle()
+  {
+    return Atomic::CmpExch32(&m_RemoteExecutionState, RemoteExecution_ThreadIdle,
+                             RemoteExecution_ThreadIdle) == RemoteExecution_ThreadIdle;
+  }
+
+  Threading::ThreadHandle m_RemoteExecutionThread = 0;
+
+  bool m_IsErrored = false;
+  ReplayStatus m_FatalError = ReplayStatus::Succeeded;
+
+  FrameRecord m_FrameRecord;
   APIProperties m_APIProps;
+  std::map<ResourceId, TextureDescription> m_TextureInfo;
 
-  D3D11PipelineState m_D3D11PipelineState;
-  D3D12PipelineState m_D3D12PipelineState;
-  GLPipelineState m_GLPipelineState;
-  VulkanPipelineState m_VulkanPipelineState;
+  rdcarray<ActionDescription *> m_Actions;
+
+  SDFile *m_StructuredFile;
+
+  D3D11Pipe::State *m_D3D11PipelineState = NULL;
+  D3D12Pipe::State *m_D3D12PipelineState = NULL;
+  GLPipe::State *m_GLPipelineState = NULL;
+  VKPipe::State *m_VulkanPipelineState = NULL;
 };

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -32,19 +32,28 @@
 #undef CreateSemaphore
 #endif
 
-#include "official/vk_layer.h"
+#include "vk_dispatch_defs.h"
 #include "vk_hookset_defs.h"
 
 void InitReplayTables(void *vulkanModule);
 
-void InitInstanceReplayTables(VkInstance instance);
-void InitDeviceReplayTables(VkDevice device);
+struct InstanceDeviceInfo
+{
+#undef DeclExt
+#define DeclExt(name) bool ext_##name = false;
 
-void InitInstanceExtensionTables(VkInstance instance);
-void InitDeviceExtensionTables(VkDevice device);
+  bool brokenGetDeviceProcAddr = false;
 
-VkLayerDispatchTableExtended *GetDeviceDispatchTable(void *device);
-VkLayerInstanceDispatchTableExtended *GetInstanceDispatchTable(void *instance);
+  uint32_t vulkanVersion = VK_API_VERSION_1_0;
+
+  DeclExts();
+};
+
+void InitInstanceExtensionTables(VkInstance instance, InstanceDeviceInfo *info);
+void InitDeviceExtensionTables(VkDevice device, InstanceDeviceInfo *info);
+
+VkDevDispatchTable *GetDeviceDispatchTable(void *device);
+VkInstDispatchTable *GetInstanceDispatchTable(void *instance);
 
 class WrappedVulkan;
 

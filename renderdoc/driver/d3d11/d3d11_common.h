@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -27,7 +27,6 @@
 
 #define INITGUID
 
-#include "api/replay/renderdoc_replay.h"
 #include "core/core.h"
 #include "driver/dx/official/d3d11_4.h"
 #include "driver/dx/official/dxgi1_3.h"
@@ -37,320 +36,516 @@
 class WrappedID3D11Device;
 struct D3D11RenderState;
 
-ShaderReflection *MakeShaderReflection(DXBC::DXBCFile *dxbc);
+// replay only class for handling marker regions
+struct D3D11MarkerRegion
+{
+  D3D11MarkerRegion(const rdcstr &marker);
+  ~D3D11MarkerRegion();
+  static void Set(const rdcstr &marker);
+  static void Begin(const rdcstr &marker);
+  static void End();
+
+  static WrappedID3D11Device *device;
+};
+
+struct ResourceRange
+{
+private:
+  enum Empty
+  {
+    empty
+  };
+
+  // used to initialise Null below
+  ResourceRange(Empty)
+  {
+    resource = NULL;
+    minMip = 0;
+    maxMip = 0;
+    minSlice = 0;
+    maxSlice = 0;
+    fullRange = false;
+    depthReadOnly = false;
+    stencilReadOnly = false;
+  }
+
+public:
+  static ResourceRange Null;
+
+  ResourceRange(ID3D11Buffer *res);
+  ResourceRange(ID3D11Texture2D *res);
+
+  // construct a range for a specific mip/slice. Used for easily checking if
+  // a view includes this mip/slice
+  ResourceRange(ID3D11Resource *res, UINT mip, UINT slice);
+
+  // initialises the range with the contents of the view
+  ResourceRange(ID3D11ShaderResourceView *srv);
+  ResourceRange(ID3D11UnorderedAccessView *uav);
+  ResourceRange(ID3D11RenderTargetView *rtv);
+  ResourceRange(ID3D11DepthStencilView *dsv);
+
+  bool Intersects(const ResourceRange &range) const
+  {
+    if(resource != range.resource)
+      return false;
+
+    // we are the same resource, but maybe we refer to disjoint
+    // ranges of the subresources. Do an early-out check though
+    // if either of the ranges refers to the whole resource
+    if(fullRange || range.fullRange)
+      return true;
+
+    // do we refer to the same mip anywhere
+    if(minMip <= range.maxMip && range.minMip <= maxMip)
+    {
+      // and the same slice? (for resources without slices, this will just be
+      // 0 - ~0U so definitely true
+      if(minSlice <= range.maxSlice && range.minSlice <= maxSlice)
+        return true;
+    }
+
+    // if not, then we don't intersect
+    return false;
+  }
+
+  bool IsDepthReadOnly() const { return depthReadOnly; }
+  bool IsStencilReadOnly() const { return stencilReadOnly; }
+  bool IsNull() const { return resource == NULL; }
+  ID3D11Resource *GetResource() const { return resource; }
+  UINT GetMinMip() const { return minMip; }
+  UINT GetMaxMip() const { return maxMip; }
+  UINT GetMinSlice() const { return minSlice; }
+  UINT GetMaxSlice() const { return maxSlice; }
+private:
+  ResourceRange();
+
+  void SetMaxes(UINT numMips, UINT numSlices)
+  {
+    if(numMips == allMip)
+      maxMip = allMip;
+    else
+      maxMip = minMip + numMips - 1;
+
+    if(numSlices == allSlice)
+      maxSlice = allSlice;
+    else
+      maxSlice = minSlice + numSlices - 1;
+
+    // save this bool for faster intersection tests. Note that full range could also
+    // be true if maxMip == 12 or something, but since this is just a conservative
+    // early out we are only concerned with a common case.
+    fullRange = (minMip == 0 && minSlice == 0 && maxMip == allMip && maxSlice == allSlice);
+  }
+
+  static const UINT allMip = 0xf;
+  static const UINT allSlice = 0x7ff;
+
+  ID3D11Resource *resource;
+  UINT minMip : 4;
+  UINT minSlice : 12;
+  UINT maxMip : 4;
+  UINT maxSlice : 12;
+  UINT fullRange : 1;
+  UINT depthReadOnly : 1;
+  UINT stencilReadOnly : 1;
+};
+
+// don't need to differentiate arrays as we treat everything
+// as an array (potentially with only one element).
+enum D3D11TextureDetailsType
+{
+  eTexType_1D = 1,
+  eTexType_2D,
+  eTexType_3D,
+  eTexType_Depth,
+  eTexType_Stencil,
+  eTexType_DepthMS,
+  eTexType_StencilMS,
+  eTexType_Unused,    // removed, kept just to keep slots the same
+  eTexType_2DMS,
+  eTexType_YUV,
+  eTexType_Max
+};
+
+template <typename T>
+inline const ResourceRange &GetResourceRange(T *);
+
+TextureType MakeTextureDim(D3D11_SRV_DIMENSION dim);
+TextureType MakeTextureDim(D3D11_RTV_DIMENSION dim);
+TextureType MakeTextureDim(D3D11_DSV_DIMENSION dim);
+TextureType MakeTextureDim(D3D11_UAV_DIMENSION dim);
+AddressMode MakeAddressMode(D3D11_TEXTURE_ADDRESS_MODE addr);
+CompareFunction MakeCompareFunc(D3D11_COMPARISON_FUNC func);
+TextureFilter MakeFilter(D3D11_FILTER filter);
+LogicOperation MakeLogicOp(D3D11_LOGIC_OP op);
+BlendMultiplier MakeBlendMultiplier(D3D11_BLEND blend, bool alpha);
+BlendOperation MakeBlendOp(D3D11_BLEND_OP op);
+StencilOperation MakeStencilOp(D3D11_STENCIL_OP op);
 
 template <class T>
 inline void SetDebugName(T *pObj, const char *name)
 {
   if(pObj)
-    pObj->SetPrivateData(WKPDID_D3DDebugObjectName, (UINT)strlen(name), name);
+    pObj->SetPrivateData(WKPDID_D3DDebugObjectName, name ? (UINT)strlen(name) : 0, name);
 }
 
 template <class T>
-inline const char *GetDebugName(T *pObj)
+inline rdcstr GetDebugName(T *pObj)
 {
-  static char tmpBuf[1024] = {0};
-  UINT size = 1023;
+  static const UINT DEBUG_NAME_SIZE = 1024;
+  static wchar_t tmpBuf[DEBUG_NAME_SIZE] = {0};    // Used for both char and wchar_t
   if(pObj)
   {
-    HRESULT hr = pObj->GetPrivateData(WKPDID_D3DDebugObjectName, &size, tmpBuf);
-    if(FAILED(hr))
-      return "";
+    // Try char first
+    UINT size = DEBUG_NAME_SIZE - 1;
+    HRESULT hr = pObj->GetPrivateData(WKPDID_D3DDebugObjectName, &size, (char *)tmpBuf);
+    if(SUCCEEDED(hr))
+    {
+      return rdcstr((char *)tmpBuf, size);
+    }
 
-    tmpBuf[size] = 0;
-    return tmpBuf;
+    // Try wchar_t
+    size = (DEBUG_NAME_SIZE - 1) * sizeof(wchar_t);
+    hr = pObj->GetPrivateData(WKPDID_D3DDebugObjectNameW, &size, tmpBuf);
+    if(SUCCEEDED(hr))
+    {
+      size /= 2;    // Convert from bytes read to wide char count
+      rdcwstr sName(tmpBuf, size);
+      return StringFormat::Wide2UTF8(sName);
+    }
   }
-  return "";
+
+  return rdcstr();
 }
 
-class RefCounter
+#define SAFE_INTADDREF(p) \
+  do                      \
+  {                       \
+    if(p)                 \
+    {                     \
+      IntAddRef(p);       \
+    }                     \
+  } while((void)0, 0)
+
+#define SAFE_INTRELEASE(p) \
+  do                       \
+  {                        \
+    if(p)                  \
+    {                      \
+      IntRelease(p);       \
+      (p) = NULL;          \
+    }                      \
+  } while((void)0, 0)
+
+#if ENABLED(RDOC_DEVEL)
+#define ASSERT_REFCOUNT(refcount) \
+  if(refcount < 0)                \
+    RDCERR("Unbalanced refcounting, refcount has dropped below 0");
+#else
+#define ASSERT_REFCOUNT(refcount)
+#endif
+
+#define IMPLEMENT_FUNCTION_SERIALISED(ret, func, ...) \
+  ret func(__VA_ARGS__);                              \
+  template <typename SerialiserType>                  \
+  bool CONCAT(Serialise_, func(SerialiserType &ser, __VA_ARGS__));
+
+#define INSTANTIATE_FUNCTION_SERIALISED(ret, parent, func, ...)                     \
+  template bool parent::CONCAT(Serialise_, func(ReadSerialiser &ser, __VA_ARGS__)); \
+  template bool parent::CONCAT(Serialise_, func(WriteSerialiser &ser, __VA_ARGS__));
+
+#define USE_SCRATCH_SERIALISER() WriteSerialiser &ser = m_ScratchSerialiser;
+
+#define SERIALISE_TIME_CALL(...)                                          \
+  m_ScratchSerialiser.ChunkMetadata().timestampMicro = Timing::GetTick(); \
+  __VA_ARGS__;                                                            \
+  m_ScratchSerialiser.ChunkMetadata().durationMicro =                     \
+      Timing::GetTick() - m_ScratchSerialiser.ChunkMetadata().timestampMicro;
+
+// A handy macros to say "is the serialiser reading and we're doing replay-mode stuff?"
+// The reason we check both is that checking the first allows the compiler to eliminate the other
+// path at compile-time, and the second because we might be just struct-serialising in which case we
+// should be doing no work to restore states.
+// Writing is unambiguously during capture mode, so we don't have to check both in that case.
+#define IsReplayingAndReading() (ser.IsReading() && IsReplayMode(m_State))
+
+enum class D3D11Chunk : uint32_t
 {
-private:
-  IUnknown *m_pReal;
-  unsigned int m_iRefcount;
-  bool m_SelfDeleting;
-
-protected:
-  void SetSelfDeleting(bool selfDelete) { m_SelfDeleting = selfDelete; }
-  // used for derived classes that need to soft ref but are handling their
-  // own self-deletion
-  static void AddDeviceSoftref(WrappedID3D11Device *device);
-  static void ReleaseDeviceSoftref(WrappedID3D11Device *device);
-
-public:
-  RefCounter(IUnknown *real, bool selfDelete = true)
-      : m_pReal(real), m_iRefcount(1), m_SelfDeleting(selfDelete)
-  {
-  }
-  virtual ~RefCounter() {}
-  unsigned int GetRefCount() { return m_iRefcount; }
-  //////////////////////////////
-  // implement IUnknown
-  HRESULT STDMETHODCALLTYPE QueryInterface(
-      /* [in] */ REFIID riid,
-      /* [annotation][iid_is][out] */
-      __RPC__deref_out void **ppvObject);
-
-  ULONG STDMETHODCALLTYPE AddRef()
-  {
-    InterlockedIncrement(&m_iRefcount);
-    return m_iRefcount;
-  }
-  ULONG STDMETHODCALLTYPE Release()
-  {
-    unsigned int ret = InterlockedDecrement(&m_iRefcount);
-    if(ret == 0 && m_SelfDeleting)
-      delete this;
-    return ret;
-  }
-
-  unsigned int SoftRef(WrappedID3D11Device *device);
-  unsigned int SoftRelease(WrappedID3D11Device *device);
+  DeviceInitialisation = (uint32_t)SystemChunk::FirstDriverChunk,
+  SetResourceName,
+  CreateSwapBuffer,
+  CreateTexture1D,
+  CreateTexture2D,
+  CreateTexture3D,
+  CreateBuffer,
+  CreateVertexShader,
+  CreateHullShader,
+  CreateDomainShader,
+  CreateGeometryShader,
+  CreateGeometryShaderWithStreamOutput,
+  CreatePixelShader,
+  CreateComputeShader,
+  GetClassInstance,
+  CreateClassInstance,
+  CreateClassLinkage,
+  CreateShaderResourceView,
+  CreateRenderTargetView,
+  CreateDepthStencilView,
+  CreateUnorderedAccessView,
+  CreateInputLayout,
+  CreateBlendState,
+  CreateDepthStencilState,
+  CreateRasterizerState,
+  CreateSamplerState,
+  CreateQuery,
+  CreatePredicate,
+  CreateCounter,
+  CreateDeferredContext,
+  SetExceptionMode,
+  OpenSharedResource,
+  IASetInputLayout,
+  IASetVertexBuffers,
+  IASetIndexBuffer,
+  IASetPrimitiveTopology,
+  VSSetConstantBuffers,
+  VSSetShaderResources,
+  VSSetSamplers,
+  VSSetShader,
+  HSSetConstantBuffers,
+  HSSetShaderResources,
+  HSSetSamplers,
+  HSSetShader,
+  DSSetConstantBuffers,
+  DSSetShaderResources,
+  DSSetSamplers,
+  DSSetShader,
+  GSSetConstantBuffers,
+  GSSetShaderResources,
+  GSSetSamplers,
+  GSSetShader,
+  SOSetTargets,
+  PSSetConstantBuffers,
+  PSSetShaderResources,
+  PSSetSamplers,
+  PSSetShader,
+  CSSetConstantBuffers,
+  CSSetShaderResources,
+  CSSetUnorderedAccessViews,
+  CSSetSamplers,
+  CSSetShader,
+  RSSetViewports,
+  RSSetScissorRects,
+  RSSetState,
+  OMSetRenderTargets,
+  OMSetRenderTargetsAndUnorderedAccessViews,
+  OMSetBlendState,
+  OMSetDepthStencilState,
+  DrawIndexedInstanced,
+  DrawInstanced,
+  DrawIndexed,
+  Draw,
+  DrawAuto,
+  DrawIndexedInstancedIndirect,
+  DrawInstancedIndirect,
+  Map,
+  Unmap,
+  CopySubresourceRegion,
+  CopyResource,
+  UpdateSubresource,
+  CopyStructureCount,
+  ResolveSubresource,
+  GenerateMips,
+  ClearDepthStencilView,
+  ClearRenderTargetView,
+  ClearUnorderedAccessViewUint,
+  ClearUnorderedAccessViewFloat,
+  ClearState,
+  ExecuteCommandList,
+  Dispatch,
+  DispatchIndirect,
+  FinishCommandList,
+  Flush,
+  SetPredication,
+  SetResourceMinLOD,
+  Begin,
+  End,
+  CreateRasterizerState1,
+  CreateBlendState1,
+  CopySubresourceRegion1,
+  UpdateSubresource1,
+  ClearView,
+  VSSetConstantBuffers1,
+  HSSetConstantBuffers1,
+  DSSetConstantBuffers1,
+  GSSetConstantBuffers1,
+  PSSetConstantBuffers1,
+  CSSetConstantBuffers1,
+  PushMarker,
+  SetMarker,
+  PopMarker,
+  SetShaderDebugPath,
+  DiscardResource,
+  DiscardView,
+  DiscardView1,
+  CreateRasterizerState2,
+  CreateQuery1,
+  CreateTexture2D1,
+  CreateTexture3D1,
+  CreateShaderResourceView1,
+  CreateRenderTargetView1,
+  CreateUnorderedAccessView1,
+  SwapchainPresent,
+  PostExecuteCommandList,
+  PostFinishCommandListSet,
+  SwapDeviceContextState,
+  ExternalDXGIResource,
+  OpenSharedResource1,
+  OpenSharedResourceByName,
+  SetShaderExtUAV,
+  Max,
 };
 
-#define IMPLEMENT_IUNKNOWN_WITH_REFCOUNTER                                \
-  ULONG STDMETHODCALLTYPE AddRef() { return RefCounter::AddRef(); }       \
-  ULONG STDMETHODCALLTYPE Release() { return RefCounter::Release(); }     \
-  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) \
-  {                                                                       \
-    return RefCounter::QueryInterface(riid, ppvObject);                   \
-  }
+DECLARE_REFLECTION_ENUM(D3D11Chunk);
 
-#define IMPLEMENT_IUNKNOWN_WITH_REFCOUNTER_CUSTOMQUERY              \
-  ULONG STDMETHODCALLTYPE AddRef() { return RefCounter::AddRef(); } \
-  ULONG STDMETHODCALLTYPE Release() { return RefCounter::Release(); }
-#define IMPLEMENT_FUNCTION_SERIALISED(ret, func) \
-  ret func;                                      \
-  bool CONCAT(Serialise_, func);
+// this is special - these serialise overloads will fetch the ID during capture, serialise the ID
+// directly as-if it were the original type, then on replay load up the resource if available.
+// Really this is only one type of serialisation, but we declare a couple of overloads to account
+// for resources being accessed through different interfaces in different functions
+#define SERIALISE_D3D_INTERFACES()                \
+  SERIALISE_INTERFACE(ID3D11DeviceChild);         \
+  SERIALISE_INTERFACE(ID3D11Resource);            \
+  SERIALISE_INTERFACE(ID3D11View);                \
+  SERIALISE_INTERFACE(ID3D11UnorderedAccessView); \
+  SERIALISE_INTERFACE(ID3D11ShaderResourceView);  \
+  SERIALISE_INTERFACE(ID3D11RenderTargetView);    \
+  SERIALISE_INTERFACE(ID3D11DepthStencilView);    \
+  SERIALISE_INTERFACE(ID3D11BlendState);          \
+  SERIALISE_INTERFACE(ID3D11DepthStencilState);   \
+  SERIALISE_INTERFACE(ID3D11RasterizerState);     \
+  SERIALISE_INTERFACE(ID3D11SamplerState);        \
+  SERIALISE_INTERFACE(ID3D11Buffer);              \
+  SERIALISE_INTERFACE(ID3D11ClassInstance);       \
+  SERIALISE_INTERFACE(ID3D11ClassLinkage);        \
+  SERIALISE_INTERFACE(ID3D11InputLayout);         \
+  SERIALISE_INTERFACE(ID3D11VertexShader);        \
+  SERIALISE_INTERFACE(ID3D11HullShader);          \
+  SERIALISE_INTERFACE(ID3D11DomainShader);        \
+  SERIALISE_INTERFACE(ID3D11GeometryShader);      \
+  SERIALISE_INTERFACE(ID3D11PixelShader);         \
+  SERIALISE_INTERFACE(ID3D11ComputeShader);       \
+  SERIALISE_INTERFACE(ID3D11CommandList);         \
+  SERIALISE_INTERFACE(ID3D11Counter);             \
+  SERIALISE_INTERFACE(ID3D11Predicate);           \
+  SERIALISE_INTERFACE(ID3D11Query);               \
+  SERIALISE_INTERFACE(ID3D11Asynchronous);
 
-#include "serialise/serialiser.h"
+#define SERIALISE_INTERFACE(iface) DECLARE_REFLECTION_STRUCT(iface *)
 
-// I don't really like this but it's not the end of the world - declare d3d specialisations to
-// enforce
-// that this specialisation gets used.
-template <>
-void Serialiser::Serialise(const char *name, D3D11_BUFFER_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_TEXTURE1D_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_TEXTURE2D_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_TEXTURE2D_DESC1 &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_TEXTURE3D_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_TEXTURE3D_DESC1 &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_SHADER_RESOURCE_VIEW_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_SHADER_RESOURCE_VIEW_DESC1 &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_RENDER_TARGET_VIEW_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_RENDER_TARGET_VIEW_DESC1 &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_DEPTH_STENCIL_VIEW_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_UNORDERED_ACCESS_VIEW_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_UNORDERED_ACCESS_VIEW_DESC1 &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_BLEND_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_BLEND_DESC1 &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_DEPTH_STENCIL_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_RASTERIZER_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_RASTERIZER_DESC1 &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_RASTERIZER_DESC2 &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_SAMPLER_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_QUERY_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_QUERY_DESC1 &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_COUNTER_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_INPUT_ELEMENT_DESC &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_SO_DECLARATION_ENTRY &el);
-template <>
-void Serialiser::Serialise(const char *name, D3D11_SUBRESOURCE_DATA &el);
+SERIALISE_D3D_INTERFACES();
 
-#pragma region Chunks
+DECLARE_REFLECTION_ENUM(D3D11_BIND_FLAG);
+DECLARE_REFLECTION_ENUM(D3D11_CPU_ACCESS_FLAG);
+DECLARE_REFLECTION_ENUM(D3D11_RESOURCE_MISC_FLAG);
+DECLARE_REFLECTION_ENUM(D3D11_COLOR_WRITE_ENABLE);
+DECLARE_REFLECTION_ENUM(D3D11_BUFFER_UAV_FLAG);
+DECLARE_REFLECTION_ENUM(D3D11_DSV_FLAG);
+DECLARE_REFLECTION_ENUM(D3D11_COPY_FLAGS);
+DECLARE_REFLECTION_ENUM(D3D11_MAP_FLAG);
+DECLARE_REFLECTION_ENUM(D3D11_CLEAR_FLAG);
+DECLARE_REFLECTION_ENUM(D3D11_BUFFEREX_SRV_FLAG);
+DECLARE_REFLECTION_ENUM(D3D11_TEXTURE_LAYOUT);
+DECLARE_REFLECTION_ENUM(D3D11_DEPTH_WRITE_MASK);
+DECLARE_REFLECTION_ENUM(D3D11_COMPARISON_FUNC);
+DECLARE_REFLECTION_ENUM(D3D11_STENCIL_OP);
+DECLARE_REFLECTION_ENUM(D3D11_BLEND);
+DECLARE_REFLECTION_ENUM(D3D11_BLEND_OP);
+DECLARE_REFLECTION_ENUM(D3D11_CULL_MODE);
+DECLARE_REFLECTION_ENUM(D3D11_FILL_MODE);
+DECLARE_REFLECTION_ENUM(D3D11_CONSERVATIVE_RASTERIZATION_MODE);
+DECLARE_REFLECTION_ENUM(D3D11_TEXTURE_ADDRESS_MODE);
+DECLARE_REFLECTION_ENUM(D3D11_FILTER);
+DECLARE_REFLECTION_ENUM(D3D11_SRV_DIMENSION);
+DECLARE_REFLECTION_ENUM(D3D11_RTV_DIMENSION);
+DECLARE_REFLECTION_ENUM(D3D11_UAV_DIMENSION);
+DECLARE_REFLECTION_ENUM(D3D11_DSV_DIMENSION);
+DECLARE_REFLECTION_ENUM(D3D11_CONTEXT_TYPE);
+DECLARE_REFLECTION_ENUM(D3D11_QUERY);
+DECLARE_REFLECTION_ENUM(D3D11_COUNTER);
+DECLARE_REFLECTION_ENUM(D3D11_MAP);
+DECLARE_REFLECTION_ENUM(D3D11_PRIMITIVE_TOPOLOGY);
+DECLARE_REFLECTION_ENUM(D3D11_USAGE);
+DECLARE_REFLECTION_ENUM(D3D11_INPUT_CLASSIFICATION);
+DECLARE_REFLECTION_ENUM(D3D11_LOGIC_OP);
 
-enum D3D11ChunkType
-{
-  DEVICE_INIT = FIRST_CHUNK_ID,
-  SET_RESOURCE_NAME,
-  RELEASE_RESOURCE,
-  CREATE_SWAP_BUFFER,
+// declare reflect-able types
 
-  CREATE_TEXTURE_1D,
-  CREATE_TEXTURE_2D,
-  CREATE_TEXTURE_3D,
-  CREATE_BUFFER,
-  CREATE_VERTEX_SHADER,
-  CREATE_HULL_SHADER,
-  CREATE_DOMAIN_SHADER,
-  CREATE_GEOMETRY_SHADER,
-  CREATE_GEOMETRY_SHADER_WITH_SO,
-  CREATE_PIXEL_SHADER,
-  CREATE_COMPUTE_SHADER,
-  GET_CLASS_INSTANCE,
-  CREATE_CLASS_INSTANCE,
-  CREATE_CLASS_LINKAGE,
-  CREATE_SRV,
-  CREATE_RTV,
-  CREATE_DSV,
-  CREATE_UAV,
-  CREATE_INPUT_LAYOUT,
-  CREATE_BLEND_STATE,
-  CREATE_DEPTHSTENCIL_STATE,
-  CREATE_RASTER_STATE,
-  CREATE_SAMPLER_STATE,
-  CREATE_QUERY,
-  CREATE_PREDICATE,
-  CREATE_COUNTER,
-  CREATE_DEFERRED_CONTEXT,
-  SET_EXCEPTION_MODE,
-  OPEN_SHARED_RESOURCE,
-
-  CAPTURE_SCOPE,
-
-  SET_INPUT_LAYOUT,
-  SET_VBUFFER,
-  SET_IBUFFER,
-  SET_TOPOLOGY,
-
-  SET_VS_CBUFFERS,
-  SET_VS_RESOURCES,
-  SET_VS_SAMPLERS,
-  SET_VS,
-
-  SET_HS_CBUFFERS,
-  SET_HS_RESOURCES,
-  SET_HS_SAMPLERS,
-  SET_HS,
-
-  SET_DS_CBUFFERS,
-  SET_DS_RESOURCES,
-  SET_DS_SAMPLERS,
-  SET_DS,
-
-  SET_GS_CBUFFERS,
-  SET_GS_RESOURCES,
-  SET_GS_SAMPLERS,
-  SET_GS,
-
-  SET_SO_TARGETS,
-
-  SET_PS_CBUFFERS,
-  SET_PS_RESOURCES,
-  SET_PS_SAMPLERS,
-  SET_PS,
-
-  SET_CS_CBUFFERS,
-  SET_CS_RESOURCES,
-  SET_CS_UAVS,
-  SET_CS_SAMPLERS,
-  SET_CS,
-
-  SET_VIEWPORTS,
-  SET_SCISSORS,
-  SET_RASTER,
-
-  SET_RTARGET,
-  SET_RTARGET_AND_UAVS,
-  SET_BLEND,
-  SET_DEPTHSTENCIL,
-
-  DRAW_INDEXED_INST,
-  DRAW_INST,
-  DRAW_INDEXED,
-  DRAW,
-  DRAW_AUTO,
-  DRAW_INDEXED_INST_INDIRECT,
-  DRAW_INST_INDIRECT,
-
-  MAP,
-  UNMAP,
-
-  COPY_SUBRESOURCE_REGION,
-  COPY_RESOURCE,
-  UPDATE_SUBRESOURCE,
-  COPY_STRUCTURE_COUNT,
-  RESOLVE_SUBRESOURCE,
-  GENERATE_MIPS,
-
-  CLEAR_DSV,
-  CLEAR_RTV,
-  CLEAR_UAV_INT,
-  CLEAR_UAV_FLOAT,
-  CLEAR_STATE,
-
-  EXECUTE_CMD_LIST,
-  DISPATCH,
-  DISPATCH_INDIRECT,
-  FINISH_CMD_LIST,
-  FLUSH,
-
-  SET_PREDICATION,
-  SET_RESOURCE_MINLOD,
-
-  BEGIN,
-  END,
-
-  CREATE_RASTER_STATE1,
-  CREATE_BLEND_STATE1,
-
-  COPY_SUBRESOURCE_REGION1,
-  UPDATE_SUBRESOURCE1,
-  CLEAR_VIEW,
-
-  SET_VS_CBUFFERS1,
-  SET_HS_CBUFFERS1,
-  SET_DS_CBUFFERS1,
-  SET_GS_CBUFFERS1,
-  SET_PS_CBUFFERS1,
-  SET_CS_CBUFFERS1,
-
-  PUSH_EVENT,
-  SET_MARKER,
-  POP_EVENT,
-
-  DEBUG_MESSAGES,
-
-  CONTEXT_CAPTURE_HEADER,    // chunk at beginning of context's chunk stream
-  CONTEXT_CAPTURE_FOOTER,    // chunk at end of context's chunk stream
-
-  SET_SHADER_DEBUG_PATH,
-
-  DISCARD_RESOURCE,
-  DISCARD_VIEW,
-  DISCARD_VIEW1,
-
-  CREATE_RASTER_STATE2,
-  CREATE_QUERY1,
-
-  CREATE_TEXTURE_2D1,
-  CREATE_TEXTURE_3D1,
-
-  CREATE_SRV1,
-  CREATE_RTV1,
-  CREATE_UAV1,
-
-  SWAP_PRESENT,
-  RESTORE_STATE_AFTER_EXEC,
-  RESTORE_STATE_AFTER_FINISH,
-
-  SWAP_DEVICE_STATE,
-
-  NUM_D3D11_CHUNKS,
-};
-
-#pragma endregion Chunks
+DECLARE_REFLECTION_STRUCT(D3D11_BUFFER_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_TEXTURE1D_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_TEXTURE2D_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_TEXTURE2D_DESC1);
+DECLARE_REFLECTION_STRUCT(D3D11_TEXTURE3D_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_TEXTURE3D_DESC1);
+DECLARE_REFLECTION_STRUCT(D3D11_BUFFER_SRV);
+DECLARE_REFLECTION_STRUCT(D3D11_BUFFEREX_SRV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX1D_SRV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX1D_ARRAY_SRV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2D_SRV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2D_ARRAY_SRV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2D_SRV1);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2D_ARRAY_SRV1);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX3D_SRV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEXCUBE_SRV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEXCUBE_ARRAY_SRV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2DMS_SRV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2DMS_ARRAY_SRV);
+DECLARE_REFLECTION_STRUCT(D3D11_SHADER_RESOURCE_VIEW_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_SHADER_RESOURCE_VIEW_DESC1);
+DECLARE_REFLECTION_STRUCT(D3D11_BUFFER_RTV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX1D_RTV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX1D_ARRAY_RTV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2D_RTV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2D_ARRAY_RTV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2DMS_RTV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2DMS_ARRAY_RTV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2D_RTV1);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2D_ARRAY_RTV1);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX3D_RTV);
+DECLARE_REFLECTION_STRUCT(D3D11_RENDER_TARGET_VIEW_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_RENDER_TARGET_VIEW_DESC1);
+DECLARE_REFLECTION_STRUCT(D3D11_BUFFER_UAV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX1D_UAV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX1D_ARRAY_UAV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2D_UAV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2D_ARRAY_UAV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2D_UAV1);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2D_ARRAY_UAV1);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX3D_UAV);
+DECLARE_REFLECTION_STRUCT(D3D11_UNORDERED_ACCESS_VIEW_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_UNORDERED_ACCESS_VIEW_DESC1);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX1D_DSV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX1D_ARRAY_DSV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2D_DSV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2D_ARRAY_DSV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2DMS_DSV);
+DECLARE_REFLECTION_STRUCT(D3D11_TEX2DMS_ARRAY_DSV);
+DECLARE_REFLECTION_STRUCT(D3D11_DEPTH_STENCIL_VIEW_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_RENDER_TARGET_BLEND_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_RENDER_TARGET_BLEND_DESC1);
+DECLARE_REFLECTION_STRUCT(D3D11_BLEND_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_BLEND_DESC1);
+DECLARE_REFLECTION_STRUCT(D3D11_DEPTH_STENCILOP_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_DEPTH_STENCIL_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_RASTERIZER_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_RASTERIZER_DESC1);
+DECLARE_REFLECTION_STRUCT(D3D11_RASTERIZER_DESC2);
+DECLARE_REFLECTION_STRUCT(D3D11_QUERY_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_QUERY_DESC1);
+DECLARE_REFLECTION_STRUCT(D3D11_COUNTER_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_SAMPLER_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_SO_DECLARATION_ENTRY);
+DECLARE_REFLECTION_STRUCT(D3D11_INPUT_ELEMENT_DESC);
+DECLARE_REFLECTION_STRUCT(D3D11_SUBRESOURCE_DATA);
+DECLARE_REFLECTION_STRUCT(D3D11_VIEWPORT);
+DECLARE_REFLECTION_STRUCT(D3D11_RECT);
+DECLARE_REFLECTION_STRUCT(D3D11_BOX);

@@ -19,6 +19,9 @@
     <Filter Include="Resources">
       <UniqueIdentifier>{6434fd9d-f5c4-46df-b5f2-7cd37d39f2f5}</UniqueIdentifier>
     </Filter>
+    <Filter Include="PCH">
+      <UniqueIdentifier>{3442a8df-5f4a-49c7-bbf4-854c57362fd3}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="d3d9_hooks.cpp">
@@ -41,6 +44,9 @@
     </ClCompile>
     <ClCompile Include="d3d9_surface.cpp">
       <Filter>Resources</Filter>
+    </ClCompile>
+    <ClCompile Include="precompiled.cpp">
+      <Filter>PCH</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -73,6 +79,9 @@
     </ClInclude>
     <ClInclude Include="d3d9_surface.h">
       <Filter>Resources</Filter>
+    </ClInclude>
+    <ClInclude Include="precompiled.h">
+      <Filter>PCH</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

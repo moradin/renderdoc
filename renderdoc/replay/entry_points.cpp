@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -23,281 +23,250 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-#include <sstream>
+#include "android/android.h"
 #include "api/replay/renderdoc_replay.h"
 #include "api/replay/version.h"
 #include "common/common.h"
+#include "common/formatting.h"
 #include "core/core.h"
-#include "jpeg-compressor/jpgd.h"
-#include "jpeg-compressor/jpge.h"
 #include "maths/camera.h"
 #include "maths/formatpacking.h"
-#include "replay/replay_renderer.h"
-#include "serialise/serialiser.h"
-#include "serialise/string_utils.h"
-#include "stb/stb_image_resize.h"
-#include "stb/stb_image_write.h"
+#include "miniz/miniz.h"
+#include "replay/replay_driver.h"
+#include "strings/string_utils.h"
+#include "superluminal/superluminal.h"
 
 // these entry points are for the replay/analysis side - not for the application.
 
-extern "C" RENDERDOC_API uint32_t RENDERDOC_CC Topology_NumVerticesPerPrimitive(PrimitiveTopology topology)
+extern "C" RENDERDOC_API uint32_t RENDERDOC_CC RENDERDOC_NumVerticesPerPrimitive(Topology topology)
 {
   // strips/loops/fans have the same number of indices for a single primitive
   // as their list friends
   switch(topology)
   {
     default:
-    case eTopology_Unknown: break;
-    case eTopology_PointList: return 1;
-    case eTopology_LineList:
-    case eTopology_LineStrip:
-    case eTopology_LineLoop: return 2;
-    case eTopology_TriangleList:
-    case eTopology_TriangleStrip:
-    case eTopology_TriangleFan: return 3;
-    case eTopology_LineList_Adj:
-    case eTopology_LineStrip_Adj: return 4;
-    case eTopology_TriangleList_Adj:
-    case eTopology_TriangleStrip_Adj: return 6;
-    case eTopology_PatchList_1CPs:
-    case eTopology_PatchList_2CPs:
-    case eTopology_PatchList_3CPs:
-    case eTopology_PatchList_4CPs:
-    case eTopology_PatchList_5CPs:
-    case eTopology_PatchList_6CPs:
-    case eTopology_PatchList_7CPs:
-    case eTopology_PatchList_8CPs:
-    case eTopology_PatchList_9CPs:
-    case eTopology_PatchList_10CPs:
-    case eTopology_PatchList_11CPs:
-    case eTopology_PatchList_12CPs:
-    case eTopology_PatchList_13CPs:
-    case eTopology_PatchList_14CPs:
-    case eTopology_PatchList_15CPs:
-    case eTopology_PatchList_16CPs:
-    case eTopology_PatchList_17CPs:
-    case eTopology_PatchList_18CPs:
-    case eTopology_PatchList_19CPs:
-    case eTopology_PatchList_20CPs:
-    case eTopology_PatchList_21CPs:
-    case eTopology_PatchList_22CPs:
-    case eTopology_PatchList_23CPs:
-    case eTopology_PatchList_24CPs:
-    case eTopology_PatchList_25CPs:
-    case eTopology_PatchList_26CPs:
-    case eTopology_PatchList_27CPs:
-    case eTopology_PatchList_28CPs:
-    case eTopology_PatchList_29CPs:
-    case eTopology_PatchList_30CPs:
-    case eTopology_PatchList_31CPs:
-    case eTopology_PatchList_32CPs: return uint32_t(topology - eTopology_PatchList_1CPs + 1);
+    case Topology::Unknown: break;
+    case Topology::PointList: return 1;
+    case Topology::LineList:
+    case Topology::LineStrip:
+    case Topology::LineLoop: return 2;
+    case Topology::TriangleList:
+    case Topology::TriangleStrip:
+    case Topology::TriangleFan: return 3;
+    case Topology::LineList_Adj:
+    case Topology::LineStrip_Adj: return 4;
+    case Topology::TriangleList_Adj:
+    case Topology::TriangleStrip_Adj: return 6;
+    case Topology::PatchList_1CPs:
+    case Topology::PatchList_2CPs:
+    case Topology::PatchList_3CPs:
+    case Topology::PatchList_4CPs:
+    case Topology::PatchList_5CPs:
+    case Topology::PatchList_6CPs:
+    case Topology::PatchList_7CPs:
+    case Topology::PatchList_8CPs:
+    case Topology::PatchList_9CPs:
+    case Topology::PatchList_10CPs:
+    case Topology::PatchList_11CPs:
+    case Topology::PatchList_12CPs:
+    case Topology::PatchList_13CPs:
+    case Topology::PatchList_14CPs:
+    case Topology::PatchList_15CPs:
+    case Topology::PatchList_16CPs:
+    case Topology::PatchList_17CPs:
+    case Topology::PatchList_18CPs:
+    case Topology::PatchList_19CPs:
+    case Topology::PatchList_20CPs:
+    case Topology::PatchList_21CPs:
+    case Topology::PatchList_22CPs:
+    case Topology::PatchList_23CPs:
+    case Topology::PatchList_24CPs:
+    case Topology::PatchList_25CPs:
+    case Topology::PatchList_26CPs:
+    case Topology::PatchList_27CPs:
+    case Topology::PatchList_28CPs:
+    case Topology::PatchList_29CPs:
+    case Topology::PatchList_30CPs:
+    case Topology::PatchList_31CPs:
+    case Topology::PatchList_32CPs: return PatchList_Count(topology);
   }
 
   return 0;
 }
 
-extern "C" RENDERDOC_API uint32_t RENDERDOC_CC Topology_VertexOffset(PrimitiveTopology topology,
-                                                                     uint32_t primitive)
+extern "C" RENDERDOC_API uint32_t RENDERDOC_CC RENDERDOC_VertexOffset(Topology topology,
+                                                                      uint32_t primitive)
 {
   // strips/loops/fans have the same number of indices for a single primitive
   // as their list friends
   switch(topology)
   {
     default:
-    case eTopology_Unknown:
-    case eTopology_PointList:
-    case eTopology_LineList:
-    case eTopology_TriangleList:
-    case eTopology_LineList_Adj:
-    case eTopology_TriangleList_Adj:
-    case eTopology_PatchList_1CPs:
-    case eTopology_PatchList_2CPs:
-    case eTopology_PatchList_3CPs:
-    case eTopology_PatchList_4CPs:
-    case eTopology_PatchList_5CPs:
-    case eTopology_PatchList_6CPs:
-    case eTopology_PatchList_7CPs:
-    case eTopology_PatchList_8CPs:
-    case eTopology_PatchList_9CPs:
-    case eTopology_PatchList_10CPs:
-    case eTopology_PatchList_11CPs:
-    case eTopology_PatchList_12CPs:
-    case eTopology_PatchList_13CPs:
-    case eTopology_PatchList_14CPs:
-    case eTopology_PatchList_15CPs:
-    case eTopology_PatchList_16CPs:
-    case eTopology_PatchList_17CPs:
-    case eTopology_PatchList_18CPs:
-    case eTopology_PatchList_19CPs:
-    case eTopology_PatchList_20CPs:
-    case eTopology_PatchList_21CPs:
-    case eTopology_PatchList_22CPs:
-    case eTopology_PatchList_23CPs:
-    case eTopology_PatchList_24CPs:
-    case eTopology_PatchList_25CPs:
-    case eTopology_PatchList_26CPs:
-    case eTopology_PatchList_27CPs:
-    case eTopology_PatchList_28CPs:
-    case eTopology_PatchList_29CPs:
-    case eTopology_PatchList_30CPs:
-    case eTopology_PatchList_31CPs:
-    case eTopology_PatchList_32CPs:
+    case Topology::Unknown:
+    case Topology::PointList:
+    case Topology::LineList:
+    case Topology::TriangleList:
+    case Topology::LineList_Adj:
+    case Topology::TriangleList_Adj:
+    case Topology::PatchList_1CPs:
+    case Topology::PatchList_2CPs:
+    case Topology::PatchList_3CPs:
+    case Topology::PatchList_4CPs:
+    case Topology::PatchList_5CPs:
+    case Topology::PatchList_6CPs:
+    case Topology::PatchList_7CPs:
+    case Topology::PatchList_8CPs:
+    case Topology::PatchList_9CPs:
+    case Topology::PatchList_10CPs:
+    case Topology::PatchList_11CPs:
+    case Topology::PatchList_12CPs:
+    case Topology::PatchList_13CPs:
+    case Topology::PatchList_14CPs:
+    case Topology::PatchList_15CPs:
+    case Topology::PatchList_16CPs:
+    case Topology::PatchList_17CPs:
+    case Topology::PatchList_18CPs:
+    case Topology::PatchList_19CPs:
+    case Topology::PatchList_20CPs:
+    case Topology::PatchList_21CPs:
+    case Topology::PatchList_22CPs:
+    case Topology::PatchList_23CPs:
+    case Topology::PatchList_24CPs:
+    case Topology::PatchList_25CPs:
+    case Topology::PatchList_26CPs:
+    case Topology::PatchList_27CPs:
+    case Topology::PatchList_28CPs:
+    case Topology::PatchList_29CPs:
+    case Topology::PatchList_30CPs:
+    case Topology::PatchList_31CPs:
+    case Topology::PatchList_32CPs:
       // for all lists, it's just primitive * Topology_NumVerticesPerPrimitive(topology)
       break;
-    case eTopology_LineStrip:
-    case eTopology_LineLoop:
-    case eTopology_TriangleStrip:
-    case eTopology_LineStrip_Adj:
+    case Topology::LineStrip:
+    case Topology::LineLoop:
+    case Topology::TriangleStrip:
+    case Topology::LineStrip_Adj:
+    case Topology::TriangleFan:
       // for strips, each new vertex creates a new primitive
       return primitive;
-    case eTopology_TriangleStrip_Adj:
+    case Topology::TriangleStrip_Adj:
       // triangle strip with adjacency is a special case as every other
       // vert is purely for adjacency so it's doubled
       return primitive * 2;
-    case eTopology_TriangleFan: RDCERR("Cannot get VertexOffset for triangle fan!"); break;
   }
 
-  return primitive * Topology_NumVerticesPerPrimitive(topology);
+  return primitive * RENDERDOC_NumVerticesPerPrimitive(topology);
 }
 
-extern "C" RENDERDOC_API float RENDERDOC_CC Maths_HalfToFloat(uint16_t half)
+extern "C" RENDERDOC_API float RENDERDOC_CC RENDERDOC_HalfToFloat(uint16_t half)
 {
   return ConvertFromHalf(half);
 }
 
-extern "C" RENDERDOC_API uint16_t RENDERDOC_CC Maths_FloatToHalf(float f)
+extern "C" RENDERDOC_API uint16_t RENDERDOC_CC RENDERDOC_FloatToHalf(float f)
 {
   return ConvertToHalf(f);
 }
 
-extern "C" RENDERDOC_API Camera *RENDERDOC_CC Camera_InitArcball()
+extern "C" RENDERDOC_API ICamera *RENDERDOC_CC RENDERDOC_InitCamera(CameraType type)
 {
-  return new Camera(Camera::eType_Arcball);
-}
-
-extern "C" RENDERDOC_API Camera *RENDERDOC_CC Camera_InitFPSLook()
-{
-  return new Camera(Camera::eType_FPSLook);
-}
-
-extern "C" RENDERDOC_API void RENDERDOC_CC Camera_Shutdown(Camera *c)
-{
-  delete c;
-}
-
-extern "C" RENDERDOC_API void RENDERDOC_CC Camera_SetPosition(Camera *c, float x, float y, float z)
-{
-  c->SetPosition(Vec3f(x, y, z));
-}
-
-extern "C" RENDERDOC_API void RENDERDOC_CC Camera_SetFPSRotation(Camera *c, float x, float y, float z)
-{
-  c->SetFPSRotation(Vec3f(x, y, z));
-}
-
-extern "C" RENDERDOC_API void RENDERDOC_CC Camera_SetArcballDistance(Camera *c, float dist)
-{
-  c->SetArcballDistance(dist);
-}
-
-extern "C" RENDERDOC_API void RENDERDOC_CC Camera_ResetArcball(Camera *c)
-{
-  c->ResetArcball();
-}
-
-extern "C" RENDERDOC_API void RENDERDOC_CC Camera_RotateArcball(Camera *c, float ax, float ay,
-                                                                float bx, float by)
-{
-  c->RotateArcball(Vec2f(ax, ay), Vec2f(bx, by));
-}
-
-extern "C" RENDERDOC_API void RENDERDOC_CC Camera_GetBasis(Camera *c, FloatVector *pos,
-                                                           FloatVector *fwd, FloatVector *right,
-                                                           FloatVector *up)
-{
-  Vec3f p = c->GetPosition();
-  Vec3f f = c->GetForward();
-  Vec3f r = c->GetRight();
-  Vec3f u = c->GetUp();
-
-  pos->x = p.x;
-  pos->y = p.y;
-  pos->z = p.z;
-
-  fwd->x = f.x;
-  fwd->y = f.y;
-  fwd->z = f.z;
-
-  right->x = r.x;
-  right->y = r.y;
-  right->z = r.z;
-
-  up->x = u.x;
-  up->y = u.y;
-  up->z = u.z;
+  return new Camera(type);
 }
 
 extern "C" RENDERDOC_API const char *RENDERDOC_CC RENDERDOC_GetVersionString()
 {
-  return RENDERDOC_VERSION_STRING;
+  return MAJOR_MINOR_VERSION_STRING;
+}
+
+extern "C" RENDERDOC_API bool RENDERDOC_CC RENDERDOC_IsReleaseBuild()
+{
+#if ENABLED(RDOC_RELEASE)
+  return true;
+#else
+  return false;
+#endif
 }
 
 extern "C" RENDERDOC_API const char *RENDERDOC_CC RENDERDOC_GetCommitHash()
 {
-  return GIT_COMMIT_HASH;
+  return GitVersionHash;
 }
 
-extern "C" RENDERDOC_API const char *RENDERDOC_CC RENDERDOC_GetConfigSetting(const char *name)
+extern "C" RENDERDOC_API DriverInformation RENDERDOC_CC RENDERDOC_GetDriverInformation(GraphicsAPI api)
 {
-  return RenderDoc::Inst().GetConfigSetting(name).c_str();
+  return RenderDoc::Inst().GetDriverInformation(api);
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_SetConfigSetting(const char *name,
-                                                                      const char *value)
+extern "C" RENDERDOC_API uint64_t RENDERDOC_CC RENDERDOC_GetCurrentProcessMemoryUsage()
 {
-  RenderDoc::Inst().SetConfigSetting(name, value);
+  return Process::GetMemoryUsage();
 }
 
-extern "C" RENDERDOC_API void *RENDERDOC_CC RENDERDOC_MakeEnvironmentModificationList(int numElems)
+extern "C" RENDERDOC_API const SDObject *RENDERDOC_CC RENDERDOC_GetConfigSetting(const rdcstr &name)
 {
-  return new Process::EnvironmentModification[numElems + 1];    // last one is a terminator
+  return RenderDoc::Inst().GetConfigSetting(name);
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_SetEnvironmentModification(
-    void *mem, int idx, const char *variable, const char *value, EnvironmentModificationType type,
-    EnvironmentSeparator separator)
+extern "C" RENDERDOC_API SDObject *RENDERDOC_CC RENDERDOC_SetConfigSetting(const rdcstr &name)
 {
-  Process::EnvironmentModification *mods = (Process::EnvironmentModification *)mem;
-
-  Process::ModificationType modType = Process::eEnvModification_Replace;
-
-  if(type == eEnvMod_Append)
-    modType = Process::ModificationType(Process::eEnvModification_AppendPlatform + (int)separator);
-  if(type == eEnvMod_Prepend)
-    modType = Process::ModificationType(Process::eEnvModification_PrependPlatform + (int)separator);
-
-  mods[idx] = Process::EnvironmentModification(modType, variable, value);
+  return RenderDoc::Inst().SetConfigSetting(name);
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_FreeEnvironmentModificationList(void *mem)
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_SaveConfigSettings()
 {
-  Process::EnvironmentModification *mods = (Process::EnvironmentModification *)mem;
-  delete[] mods;
+  return RenderDoc::Inst().SaveConfigSettings();
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_LogText(const char *text)
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_SetColors(FloatVector darkChecker,
+                                                               FloatVector lightChecker,
+                                                               bool darkTheme)
 {
-  rdclog_int(RDCLog_Comment, "EXT", "external", 0, "%s", text);
+  RenderDoc::Inst().SetDarkCheckerboardColor(darkChecker);
+  RenderDoc::Inst().SetLightCheckerboardColor(lightChecker);
+  RenderDoc::Inst().SetDarkTheme(darkTheme);
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_LogMessage(LogMessageType type,
-                                                                const char *project, const char *file,
-                                                                unsigned int line, const char *text)
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_SetDebugLogFile(const rdcstr &log)
 {
-  RDCCOMPILE_ASSERT(
-      (int)eLogType_First == (int)RDCLog_First && (int)eLogType_NumTypes == (int)eLogType_NumTypes,
-      "Log type enum is out of sync");
-  rdclog_int((LogType)type, project ? project : "UNK?", file ? file : "unknown", line, "%s", text);
+  if(!log.empty())
+  {
+    RDCLOGFILE(log.c_str());
+
+    // need to recreate the crash handler to propagate the new log filename.
+    if(RenderDoc::Inst().GetCrashHandler() != NULL)
+      RenderDoc::Inst().RecreateCrashHandler();
+  }
+}
+
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_LogMessage(LogType type, const rdcstr &project,
+                                                                const rdcstr &file,
+                                                                unsigned int line, const rdcstr &text)
+{
+  rdclog_direct(FILL_AUTO_VALUE, FILL_AUTO_VALUE, type, project.c_str(), file.c_str(), line, "%s",
+                text.c_str());
+
+  // see comment in common.h
+  RDCCOMPILE_ASSERT((uint32_t)LogType::Debug == (uint32_t)LogType__Internal::Debug,
+                    "External and internal LogType enums must match");
+  RDCCOMPILE_ASSERT((uint32_t)LogType::Comment == (uint32_t)LogType__Internal::Comment,
+                    "External and internal LogType enums must match");
+  RDCCOMPILE_ASSERT((uint32_t)LogType::Warning == (uint32_t)LogType__Internal::Warning,
+                    "External and internal LogType enums must match");
+  RDCCOMPILE_ASSERT((uint32_t)LogType::Error == (uint32_t)LogType__Internal::Error,
+                    "External and internal LogType enums must match");
+  RDCCOMPILE_ASSERT((uint32_t)LogType::Fatal == (uint32_t)LogType__Internal::Fatal,
+                    "External and internal LogType enums must match");
+  RDCCOMPILE_ASSERT((uint32_t)LogType::Count == (uint32_t)LogType__Internal::Count,
+                    "External and internal LogType enums must match");
+  RDCCOMPILE_ASSERT(arraydim<LogType>() == 5, "External and internal LogType enums must match");
+
+#if ENABLED(DEBUGBREAK_ON_ERROR_LOG)
+  if(type == LogType::Error)
+    RDCBREAK();
+#endif
+
+  if(type == LogType::Fatal)
+    RDCDUMP();
 }
 
 extern "C" RENDERDOC_API const char *RENDERDOC_CC RENDERDOC_GetLogFile()
@@ -305,104 +274,95 @@ extern "C" RENDERDOC_API const char *RENDERDOC_CC RENDERDOC_GetLogFile()
   return RDCGETLOGFILE();
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_TriggerExceptionHandler(void *exceptionPtrs,
-                                                                             bool32 crashed)
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_GetLogFileContents(uint64_t offset,
+                                                                        rdcstr &logfile)
 {
+  logfile = FileIO::logfile_readall(offset, RDCGETLOGFILE());
+}
+
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_InitialiseReplay(GlobalEnvironment env,
+                                                                      const rdcarray<rdcstr> &args)
+{
+  RenderDoc::Inst().InitialiseReplay(env, args);
+
   if(RenderDoc::Inst().GetCrashHandler() == NULL)
     return;
 
-  if(exceptionPtrs)
+  for(const rdcstr &s : args)
   {
-    RenderDoc::Inst().GetCrashHandler()->WriteMinidump(exceptionPtrs);
-  }
-  else
-  {
-    if(!crashed)
+    if(s == "--crash")
     {
-      RDCLOG("Writing crash log");
-    }
-
-    RenderDoc::Inst().GetCrashHandler()->WriteMinidump();
-
-    if(!crashed)
-    {
-      RenderDoc::Inst().RecreateCrashHandler();
+      RenderDoc::Inst().UnloadCrashHandler();
+      return;
     }
   }
+
+  RenderDoc::Inst().RecreateCrashHandler();
 }
 
-extern "C" RENDERDOC_API ReplaySupport RENDERDOC_CC RENDERDOC_SupportLocalReplay(
-    const char *logfile, rdctype::str *driver, rdctype::str *recordMachineIdent)
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_ShutdownReplay()
 {
-  if(logfile == NULL)
-    return eReplaySupport_Unsupported;
-
-  RDCDriver driverType = RDC_Unknown;
-  string driverName = "";
-  uint64_t fileMachineIdent = 0;
-  RenderDoc::Inst().FillInitParams(logfile, driverType, driverName, fileMachineIdent, NULL);
-
-  if(driver)
-    *driver = driverName;
-
-  bool supported = RenderDoc::Inst().HasReplayDriver(driverType);
-
-  if(!supported)
-    return eReplaySupport_Unsupported;
-
-  if(fileMachineIdent != 0)
-  {
-    uint64_t machineIdent = OSUtility::GetMachineIdent();
-
-    if(recordMachineIdent)
-      *recordMachineIdent = OSUtility::MakeMachineIdentString(fileMachineIdent);
-
-    if((machineIdent & OSUtility::MachineIdent_OS_Mask) !=
-       (fileMachineIdent & OSUtility::MachineIdent_OS_Mask))
-      return eReplaySupport_SuggestRemote;
-  }
-
-  return eReplaySupport_Supported;
+  RenderDoc::Inst().ShutdownReplay();
 }
 
-extern "C" RENDERDOC_API ReplayCreateStatus RENDERDOC_CC
-RENDERDOC_CreateReplayRenderer(const char *logfile, float *progress, ReplayRenderer **rend)
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_CreateBugReport(const rdcstr &logfile,
+                                                                     const rdcstr &dumpfile,
+                                                                     rdcstr &report)
 {
-  if(rend == NULL)
-    return eReplayCreate_InternalError;
+  mz_zip_archive zip;
+  RDCEraseEl(zip);
 
-  RenderDoc::Inst().SetProgressPtr(progress);
-
-  ReplayRenderer *render = new ReplayRenderer();
-
-  if(!render)
+  if(report.empty())
   {
-    RenderDoc::Inst().SetProgressPtr(NULL);
-    return eReplayCreate_InternalError;
+    report = FileIO::GetTempFolderFilename() +
+             StringFormat::sntimef(Timing::GetUTCTime(), "/renderdoc_report_%H%M%S.zip");
   }
 
-  ReplayCreateStatus ret = render->CreateDevice(logfile);
+  FileIO::Delete(report);
 
-  if(ret != eReplayCreate_Success)
+  mz_zip_writer_init_file(&zip, report.c_str(), 0);
+
+  if(!dumpfile.empty())
+    mz_zip_writer_add_file(&zip, "minidump.dmp", dumpfile.c_str(), NULL, 0, MZ_BEST_COMPRESSION);
+
+  if(!logfile.empty())
   {
-    delete render;
-    RenderDoc::Inst().SetProgressPtr(NULL);
-    return ret;
+    rdcstr contents = FileIO::logfile_readall(0, logfile);
+    mz_zip_writer_add_mem(&zip, "error.log", contents.data(), contents.length(), MZ_BEST_COMPRESSION);
   }
 
-  *rend = render;
-
-  RenderDoc::Inst().SetProgressPtr(NULL);
-  return eReplayCreate_Success;
+  mz_zip_writer_finalize_archive(&zip);
+  mz_zip_writer_end(&zip);
 }
 
-extern "C" RENDERDOC_API uint32_t RENDERDOC_CC
-RENDERDOC_ExecuteAndInject(const char *app, const char *workingDir, const char *cmdLine, void *env,
-                           const char *logfile, const CaptureOptions *opts, bool32 waitForExit)
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_RegisterMemoryRegion(void *base, size_t size)
 {
-  return Process::LaunchAndInjectIntoProcess(app, workingDir, cmdLine,
-                                             (Process::EnvironmentModification *)env, logfile, opts,
-                                             waitForExit != 0);
+  ICrashHandler *handler = RenderDoc::Inst().GetCrashHandler();
+
+  if(handler)
+    handler->RegisterMemoryRegion(base, size);
+}
+
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_UnregisterMemoryRegion(void *base)
+{
+  ICrashHandler *handler = RenderDoc::Inst().GetCrashHandler();
+
+  if(handler)
+    handler->UnregisterMemoryRegion(base);
+}
+
+extern "C" RENDERDOC_API ExecuteResult RENDERDOC_CC
+RENDERDOC_ExecuteAndInject(const rdcstr &app, const rdcstr &workingDir, const rdcstr &cmdLine,
+                           const rdcarray<EnvironmentModification> &env, const rdcstr &capturefile,
+                           const CaptureOptions &opts, bool waitForExit)
+{
+  rdcpair<ReplayStatus, uint32_t> status = Process::LaunchAndInjectIntoProcess(
+      app, workingDir, cmdLine, env, capturefile, opts, waitForExit != 0);
+
+  ExecuteResult ret;
+  ret.status = status.first;
+  ret.ident = status.second;
+  return ret;
 }
 
 extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_GetDefaultCaptureOptions(CaptureOptions *opts)
@@ -410,175 +370,68 @@ extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_GetDefaultCaptureOptions(Ca
   *opts = CaptureOptions();
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_StartGlobalHook(const char *pathmatch,
-                                                                     const char *logfile,
-                                                                     const CaptureOptions *opts)
+extern "C" RENDERDOC_API bool RENDERDOC_CC RENDERDOC_StartGlobalHook(const rdcstr &pathmatch,
+                                                                     const rdcstr &capturefile,
+                                                                     const CaptureOptions &opts)
 {
-  Process::StartGlobalHook(pathmatch, logfile, opts);
+  return Process::StartGlobalHook(pathmatch, capturefile, opts);
 }
 
-extern "C" RENDERDOC_API uint32_t RENDERDOC_CC RENDERDOC_InjectIntoProcess(
-    uint32_t pid, void *env, const char *logfile, const CaptureOptions *opts, bool32 waitForExit)
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_StopGlobalHook()
 {
-  return Process::InjectIntoProcess(pid, (Process::EnvironmentModification *)env, logfile, opts,
-                                    waitForExit != 0);
+  Process::StopGlobalHook();
 }
 
-static void writeToByteVector(void *context, void *data, int size)
+extern "C" RENDERDOC_API bool RENDERDOC_CC RENDERDOC_IsGlobalHookActive()
 {
-  std::vector<byte> *vec = (std::vector<byte> *)context;
-  byte *start = (byte *)data;
-  byte *end = start + size;
-  vec->insert(vec->end(), start, end);
+  return Process::IsGlobalHookActive();
 }
 
-extern "C" RENDERDOC_API bool32 RENDERDOC_CC RENDERDOC_GetThumbnail(const char *filename,
-                                                                    FileType type, uint32_t maxsize,
-                                                                    rdctype::array<byte> *buf)
+extern "C" RENDERDOC_API bool RENDERDOC_CC RENDERDOC_CanGlobalHook()
 {
-  Serialiser ser(filename, Serialiser::READING, false);
-
-  if(ser.HasError())
-    return false;
-
-  ser.Rewind();
-
-  int chunkType = ser.PushContext(NULL, NULL, 1, false);
-
-  if(chunkType != THUMBNAIL_DATA)
-    return false;
-
-  bool HasThumbnail = false;
-  ser.Serialise(NULL, HasThumbnail);
-
-  if(!HasThumbnail)
-    return false;
-
-  byte *jpgbuf = NULL;
-  size_t thumblen = 0;
-  uint32_t thumbwidth = 0, thumbheight = 0;
-  {
-    ser.Serialise("ThumbWidth", thumbwidth);
-    ser.Serialise("ThumbHeight", thumbheight);
-    ser.SerialiseBuffer("ThumbnailPixels", jpgbuf, thumblen);
-  }
-
-  if(jpgbuf == NULL)
-    return false;
-
-  // if the desired output is jpg and either there's no max size or it's already satisfied,
-  // return the data directly
-  if(type == eFileType_JPG && (maxsize == 0 || (maxsize > thumbwidth && maxsize > thumbheight)))
-  {
-    create_array_init(*buf, thumblen, jpgbuf);
-  }
-  else
-  {
-    // otherwise we need to decode, resample maybe, and re-encode
-
-    int w = (int)thumbwidth;
-    int h = (int)thumbheight;
-    int comp = 3;
-    byte *thumbpixels =
-        jpgd::decompress_jpeg_image_from_memory(jpgbuf, (int)thumblen, &w, &h, &comp, 3);
-
-    if(maxsize != 0)
-    {
-      uint32_t clampedWidth = RDCMIN(maxsize, thumbwidth);
-      uint32_t clampedHeight = RDCMIN(maxsize, thumbheight);
-
-      if(clampedWidth != thumbwidth || clampedHeight != thumbheight)
-      {
-        // preserve aspect ratio, take the smallest scale factor and multiply both
-        float scaleX = float(clampedWidth) / float(thumbwidth);
-        float scaleY = float(clampedHeight) / float(thumbheight);
-
-        if(scaleX < scaleY)
-          clampedHeight = uint32_t(scaleX * thumbheight);
-        else if(scaleY < scaleX)
-          clampedWidth = uint32_t(scaleY * thumbwidth);
-
-        byte *resizedpixels = (byte *)malloc(3 * clampedWidth * clampedHeight);
-
-        stbir_resize_uint8_srgb(thumbpixels, thumbwidth, thumbheight, 0, resizedpixels,
-                                clampedWidth, clampedHeight, 0, 3, -1, 0);
-
-        free(thumbpixels);
-
-        thumbpixels = resizedpixels;
-        thumbwidth = clampedWidth;
-        thumbheight = clampedHeight;
-      }
-    }
-
-    std::vector<byte> encodedBytes;
-
-    switch(type)
-    {
-      case eFileType_JPG:
-      {
-        int len = thumbwidth * thumbheight * 3;
-        encodedBytes.resize(len);
-        jpge::params p;
-        p.m_quality = 90;
-        jpge::compress_image_to_jpeg_file_in_memory(&encodedBytes[0], len, (int)thumbwidth,
-                                                    (int)thumbheight, 3, thumbpixels, p);
-        encodedBytes.resize(len);
-        break;
-      }
-      case eFileType_PNG:
-      {
-        stbi_write_png_to_func(&writeToByteVector, &encodedBytes, (int)thumbwidth, (int)thumbheight,
-                               3, thumbpixels, 0);
-        break;
-      }
-      case eFileType_TGA:
-      {
-        stbi_write_tga_to_func(&writeToByteVector, &encodedBytes, (int)thumbwidth, (int)thumbheight,
-                               3, thumbpixels);
-        break;
-      }
-      case eFileType_BMP:
-      {
-        stbi_write_bmp_to_func(&writeToByteVector, &encodedBytes, (int)thumbwidth, (int)thumbheight,
-                               3, thumbpixels);
-        break;
-      }
-      default:
-      {
-        RDCERR("Unsupported file type %d in thumbnail fetch", type);
-        free(thumbpixels);
-        delete[] jpgbuf;
-        return false;
-      }
-    }
-
-    *buf = encodedBytes;
-
-    free(thumbpixels);
-  }
-
-  delete[] jpgbuf;
-
-  return true;
+  return Process::CanGlobalHook();
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_FreeArrayMem(const void *mem)
+extern "C" RENDERDOC_API ExecuteResult RENDERDOC_CC
+RENDERDOC_InjectIntoProcess(uint32_t pid, const rdcarray<EnvironmentModification> &env,
+                            const rdcstr &capturefile, const CaptureOptions &opts, bool waitForExit)
 {
-  rdctype::array<char>::deallocate(mem);
+  rdcpair<ReplayStatus, uint32_t> status =
+      Process::InjectIntoProcess(pid, env, capturefile, opts, waitForExit != 0);
+
+  ExecuteResult ret;
+  ret.status = status.first;
+  ret.ident = status.second;
+  return ret;
+}
+
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_FreeArrayMem(void *mem)
+{
+  free(mem);
+}
+
+// not exported, this is needed for calling from the container allocate functions
+void RENDERDOC_OutOfMemory(uint64_t sz)
+{
+  RDCFATAL("Allocation failed for %llu bytes", sz);
 }
 
 extern "C" RENDERDOC_API void *RENDERDOC_CC RENDERDOC_AllocArrayMem(uint64_t sz)
 {
-  return rdctype::array<char>::allocate((size_t)sz);
+  void *ret = malloc((size_t)sz);
+  if(ret == NULL)
+    RENDERDOC_OutOfMemory(sz);
+  return ret;
 }
 
-extern "C" RENDERDOC_API uint32_t RENDERDOC_CC RENDERDOC_EnumerateRemoteTargets(const char *host,
+extern "C" RENDERDOC_API uint32_t RENDERDOC_CC RENDERDOC_EnumerateRemoteTargets(const rdcstr &URL,
                                                                                 uint32_t nextIdent)
 {
-  string s = "localhost";
-  if(host != NULL && host[0] != '\0')
-    s = host;
+  rdcstr host = "localhost";
+  if(!URL.empty())
+    host = URL;
+
+  rdcstr deviceID = host;
 
   // initial case is we're called with 0, start with the first port.
   // otherwise we're called with the last successful ident, so increment
@@ -588,58 +441,85 @@ extern "C" RENDERDOC_API uint32_t RENDERDOC_CC RENDERDOC_EnumerateRemoteTargets(
   else
     nextIdent++;
 
-  uint32_t lastIdent = RenderDoc_LastTargetControlPort;
-  if(host != NULL && Android::IsHostADB(host))
+  IDeviceProtocolHandler *protocol = RenderDoc::Inst().GetDeviceProtocol(deviceID);
+
+  if(protocol)
   {
-    if(nextIdent == RenderDoc_FirstTargetControlPort)
-      nextIdent += RenderDoc_AndroidPortOffset;
-    lastIdent += RenderDoc_AndroidPortOffset;
-
-    s = "127.0.0.1";
-
-    // could parse out an (optional) device name from host+4 here.
+    deviceID = protocol->GetDeviceID(deviceID);
+    host = protocol->RemapHostname(deviceID);
+    if(host.empty())
+      return 0;
   }
 
-  for(; nextIdent <= lastIdent; nextIdent++)
+  for(; nextIdent <= RenderDoc_LastTargetControlPort; nextIdent++)
   {
-    Network::Socket *sock = Network::CreateClientSocket(s.c_str(), (uint16_t)nextIdent, 250);
+    uint16_t port = (uint16_t)nextIdent;
+    if(protocol)
+      port = protocol->RemapPort(deviceID, port);
+
+    if(port == 0)
+      return 0;
+
+    Network::Socket *sock = Network::CreateClientSocket(host, port, 250);
 
     if(sock)
     {
+      if(protocol)
+      {
+        Threading::Sleep(100);
+        (void)sock->IsRecvDataWaiting();
+        if(!sock->Connected())
+        {
+          SAFE_DELETE(sock);
+          return 0;
+        }
+      }
+
       SAFE_DELETE(sock);
       return nextIdent;
     }
   }
 
   // tried all idents remaining and found nothing
-  return ~0U;
+  return 0;
 }
 
-extern "C" RENDERDOC_API uint32_t RENDERDOC_CC RENDERDOC_GetDefaultRemoteServerPort()
+extern "C" RENDERDOC_API void RENDERDOC_CC
+RENDERDOC_GetSupportedDeviceProtocols(rdcarray<rdcstr> *supportedProtocols)
 {
-  return RenderDoc_RemoteServerPort;
+  *supportedProtocols = RenderDoc::Inst().GetSupportedDeviceProtocols();
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_BecomeRemoteServer(const char *listenhost,
-                                                                        uint32_t port,
-                                                                        volatile bool32 *killReplay)
+extern "C" RENDERDOC_API IDeviceProtocolController *RENDERDOC_CC
+RENDERDOC_GetDeviceProtocolController(const rdcstr &protocol)
 {
-  bool32 dummy = false;
-
-  if(killReplay == NULL)
-    killReplay = &dummy;
-
-  if(listenhost == NULL || listenhost[0] == 0)
-    listenhost = "0.0.0.0";
-
-  if(port == 0)
-    port = RENDERDOC_GetDefaultRemoteServerPort();
-
-  RenderDoc::Inst().BecomeRemoteServer(listenhost, (uint16_t)port, *killReplay);
+  return RenderDoc::Inst().GetDeviceProtocol(protocol);
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_StartSelfHostCapture(const char *dllname)
+extern "C" RENDERDOC_API void RENDERDOC_CC
+RENDERDOC_BecomeRemoteServer(const rdcstr &listenhost, RENDERDOC_KillCallback killReplay,
+                             RENDERDOC_PreviewWindowCallback previewWindow)
 {
+  // ensure a sensible default if no callback is provided, that just never kills
+  if(!killReplay)
+    killReplay = []() { return false; };
+
+  // ditto for preview windows
+  if(!previewWindow)
+    previewWindow = [](bool, const rdcarray<WindowingSystem> &) {
+      WindowingData ret = {WindowingSystem::Unknown};
+      return ret;
+    };
+
+  RenderDoc::Inst().BecomeRemoteServer(listenhost.empty() ? "0.0.0.0" : listenhost,
+                                       RenderDoc_RemoteServerPort, killReplay, previewWindow);
+}
+
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_StartSelfHostCapture(const rdcstr &dllname)
+{
+  if(!Process::IsModuleLoaded(dllname))
+    return;
+
   void *module = Process::LoadModule(dllname);
 
   if(module == NULL)
@@ -661,8 +541,11 @@ extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_StartSelfHostCapture(const 
   rdoc->StartFrameCapture(NULL, NULL);
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_EndSelfHostCapture(const char *dllname)
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_EndSelfHostCapture(const rdcstr &dllname)
 {
+  if(!Process::IsModuleLoaded(dllname))
+    return;
+
   void *module = Process::LoadModule(dllname);
 
   if(module == NULL)
@@ -684,81 +567,422 @@ extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_EndSelfHostCapture(const ch
   rdoc->EndFrameCapture(NULL, NULL);
 }
 
-namespace Android
+extern "C" RENDERDOC_API bool RENDERDOC_CC
+RENDERDOC_NeedVulkanLayerRegistration(VulkanLayerRegistrationInfo *info)
 {
-bool IsHostADB(const char *hostname)
-{
-  return !strncmp(hostname, "adb:", 4);
-}
-string adbExecCommand(const string &args)
-{
-  string adbExePath = RenderDoc::Inst().GetConfigSetting("adbExePath");
-  Process::ProcessResult result;
-  Process::LaunchProcess(adbExePath.c_str(), "", args.c_str(), &result);
-  RDCLOG("COMMAND: adb %s", args.c_str());
-  if(result.strStdout.length())
-    // This could be an error (i.e. no package), or just regular output from adb devices.
-    RDCLOG("STDOUT:\n%s", result.strStdout.c_str());
-  return result.strStdout;
-}
-void adbForwardPorts()
-{
-  adbExecCommand(StringFormat::Fmt("forward tcp:%i tcp:%i",
-                                   RenderDoc_RemoteServerPort + RenderDoc_AndroidPortOffset,
-                                   RenderDoc_RemoteServerPort));
-  adbExecCommand(StringFormat::Fmt("forward tcp:%i tcp:%i",
-                                   RenderDoc_FirstTargetControlPort + RenderDoc_AndroidPortOffset,
-                                   RenderDoc_FirstTargetControlPort));
-}
-uint32_t StartAndroidPackageForCapture(const char *package)
-{
-  string packageName = basename(string(package));    // Remove leading '/' if any
+  VulkanLayerFlags flags = VulkanLayerFlags::NoFlags;
+  rdcarray<rdcstr> myJSONs;
+  rdcarray<rdcstr> otherJSONs;
 
-  adbExecCommand("shell am force-stop " + packageName);
-  adbForwardPorts();
-  adbExecCommand("shell setprop debug.vulkan.layers VK_LAYER_RENDERDOC_Capture");
-  adbExecCommand("shell monkey -p " + packageName + " -c android.intent.category.LAUNCHER 1");
-  Threading::Sleep(
-      5000);    // Let the app pickup the setprop before we turn it back off for replaying.
-  adbExecCommand("shell setprop debug.vulkan.layers \\\"\\\"");
+  bool ret = RenderDoc::Inst().NeedVulkanLayerRegistration(flags, myJSONs, otherJSONs);
 
-  return RenderDoc_FirstTargetControlPort + RenderDoc_AndroidPortOffset;
-}
-}
-
-using namespace Android;
-extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_EnumerateAndroidDevices(rdctype::str *deviceList)
-{
-  string adbStdout = adbExecCommand("devices");
-
-  using namespace std;
-  istringstream stdoutStream(adbStdout);
-  string ret;
-  string line;
-  while(getline(stdoutStream, line))
+  if(info)
   {
-    vector<string> tokens;
-    split(line, tokens, '\t');
-    if(tokens.size() == 2 && trim(tokens[1]) == "device")
+    info->flags = flags;
+
+    info->myJSONs.resize(myJSONs.size());
+    for(size_t i = 0; i < myJSONs.size(); i++)
+      info->myJSONs[i] = myJSONs[i];
+
+    info->otherJSONs.resize(otherJSONs.size());
+    for(size_t i = 0; i < otherJSONs.size(); i++)
+      info->otherJSONs[i] = otherJSONs[i];
+  }
+
+  return ret;
+}
+
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_UpdateVulkanLayerRegistration(bool systemLevel)
+{
+  RenderDoc::Inst().UpdateVulkanLayerRegistration(systemLevel);
+}
+
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_UpdateInstalledVersionNumber()
+{
+#if ENABLED(RDOC_WIN32)
+  HKEY key = NULL;
+
+  LSTATUS ret =
+      RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+                      0, NULL, 0, KEY_READ | KEY_WRITE, NULL, &key, NULL);
+
+  if(ret != ERROR_SUCCESS)
+  {
+    if(key)
+      RegCloseKey(key);
+
+    return;
+  }
+
+  bool done = false;
+
+  char guidName[256] = {};
+  for(DWORD idx = 0; !done; idx++)
+  {
+    // enumerate all the uninstall keys
+    ret = RegEnumKeyA(key, idx, guidName, sizeof(guidName) - 1);
+
+    if(ret == ERROR_NO_MORE_ITEMS)
     {
-      if(ret.length())
-        ret += ",";
-      ret += tokens[0];
+      break;
+    }
+    else if(ret != ERROR_SUCCESS)
+    {
+      break;
+    }
+
+    // open the key as we'll need it for RegSetValueExA
+    HKEY subkey = NULL;
+    ret = RegCreateKeyExA(key, guidName, 0, NULL, 0, KEY_READ | KEY_WRITE, NULL, &subkey, NULL);
+
+    if(ret == ERROR_SUCCESS && subkey)
+    {
+      char DisplayName[256] = {};
+      char Publisher[256] = {};
+      DWORD len = sizeof(DisplayName) - 1;
+
+      // fetch DisplayName and Publisher values
+      ret = RegGetValueA(subkey, NULL, "DisplayName", RRF_RT_ANY, NULL, DisplayName, &len);
+
+      // allow the value to silently not exist
+      if(ret != ERROR_SUCCESS)
+        DisplayName[0] = 0;
+
+      len = sizeof(Publisher) - 1;
+      ret = RegGetValueA(subkey, NULL, "Publisher", RRF_RT_ANY, NULL, Publisher, &len);
+
+      if(ret != ERROR_SUCCESS)
+        Publisher[0] = 0;
+
+      // if this is our key, set the version number
+      if(!strcmp(DisplayName, "RenderDoc") && !strcmp(Publisher, "Baldur Karlsson"))
+      {
+        DWORD Version = (RENDERDOC_VERSION_MAJOR << 24) | (RENDERDOC_VERSION_MINOR << 16);
+        DWORD VersionMajor = RENDERDOC_VERSION_MAJOR;
+        DWORD VersionMinor = RENDERDOC_VERSION_MINOR;
+        rdcstr DisplayVersion = MAJOR_MINOR_VERSION_STRING ".0";
+
+        RegSetValueExA(subkey, "Version", 0, REG_DWORD, (const BYTE *)&Version, sizeof(Version));
+        RegSetValueExA(subkey, "VersionMajor", 0, REG_DWORD, (const BYTE *)&VersionMajor,
+                       sizeof(VersionMajor));
+        RegSetValueExA(subkey, "VersionMinor", 0, REG_DWORD, (const BYTE *)&VersionMinor,
+                       sizeof(VersionMinor));
+        RegSetValueExA(subkey, "DisplayVersion", 0, REG_SZ, (const BYTE *)DisplayVersion.c_str(),
+                       (DWORD)DisplayVersion.size() + 1);
+        done = true;
+      }
+    }
+
+    if(subkey)
+      RegCloseKey(subkey);
+  }
+
+  if(key)
+    RegCloseKey(key);
+
+#endif
+}
+
+static rdcstr ResourceFormatName(const ResourceFormat &fmt)
+{
+  rdcstr ret;
+
+  if(fmt.Special())
+  {
+    switch(fmt.type)
+    {
+      case ResourceFormatType::Regular: break;
+      case ResourceFormatType::Undefined: return "Undefined";
+      case ResourceFormatType::BC1:
+        if(fmt.compType == CompType::Typeless)
+          return "BC1_TYPELESS";
+        return fmt.SRGBCorrected() ? "BC1_SRGB" : "BC1_UNORM";
+      case ResourceFormatType::BC2:
+        if(fmt.compType == CompType::Typeless)
+          return "BC2_TYPELESS";
+        return fmt.SRGBCorrected() ? "BC2_SRGB" : "BC2_UNORM";
+      case ResourceFormatType::BC3:
+        if(fmt.compType == CompType::Typeless)
+          return "BC3_TYPELESS";
+        return fmt.SRGBCorrected() ? "BC3_SRGB" : "BC3_UNORM";
+      case ResourceFormatType::BC4:
+        if(fmt.compType == CompType::Typeless)
+          return "BC4_TYPELESS";
+        return fmt.compType == CompType::UNorm ? "BC4_UNORM" : "BC4_SNORM";
+      case ResourceFormatType::BC5:
+        if(fmt.compType == CompType::Typeless)
+          return "BC5_TYPELESS";
+        return fmt.compType == CompType::UNorm ? "BC5_UNORM" : "BC5_SNORM";
+      case ResourceFormatType::BC6:
+        if(fmt.compType == CompType::Typeless)
+          return "BC6_TYPELESS";
+        return fmt.compType == CompType::UNorm ? "BC6_UFLOAT" : "BC6_SFLOAT";
+      case ResourceFormatType::BC7:
+        if(fmt.compType == CompType::Typeless)
+          return "BC7_TYPELESS";
+        return fmt.SRGBCorrected() ? "BC7_SRGB" : "BC7_UNORM";
+      case ResourceFormatType::ETC2:
+      {
+        if(fmt.compCount == 4)
+          return fmt.SRGBCorrected() ? "ETC2_RGB8A1_SRGB" : "ETC2_RGB8A1_UNORM";
+        else
+          return fmt.SRGBCorrected() ? "ETC2_RGB8_SRGB" : "ETC2_RGB8_UNORM";
+      }
+      case ResourceFormatType::EAC:
+      {
+        if(fmt.compCount == 1)
+          return fmt.compType == CompType::UNorm ? "EAC_R11_UNORM" : "EAC_R11_SNORM";
+        else if(fmt.compCount == 2)
+          return fmt.compType == CompType::UNorm ? "EAC_RG11_UNORM" : "EAC_RG11_SNORM";
+        else
+          return fmt.SRGBCorrected() ? "ETC2_EAC_RGBA8_SRGB" : "ETC2_EAC_RGBA8_UNORM";
+      }
+      case ResourceFormatType::ASTC:
+        return fmt.SRGBCorrected() ? "ASTC_SRGB" : "ASTC_UNORM";
+      // 10:10:10 A2 is the only format that can have all the usual format types (unorm, snorm,
+      // etc). So we break and handle it like any other format below.
+      case ResourceFormatType::R10G10B10A2:
+        ret = fmt.BGRAOrder() ? "B10G10R10A2" : "R10G10B10A2";
+        break;
+      case ResourceFormatType::R11G11B10: return "R11G11B10_FLOAT";
+      case ResourceFormatType::R5G6B5: return fmt.BGRAOrder() ? "B5G6R5_UNORM" : "R5G6B5_UNORM";
+      case ResourceFormatType::R5G5B5A1:
+        return fmt.BGRAOrder() ? "B5G5R5A1_UNORM" : "R5G5B5A1_UNORM";
+      case ResourceFormatType::R9G9B9E5: return "R9G9B9E5_FLOAT";
+      case ResourceFormatType::R4G4B4A4:
+        return fmt.BGRAOrder() ? "B4G4R4A4_UNORM" : "R4G4B4A4_UNORM";
+      case ResourceFormatType::R4G4: return "R4G4_UNORM";
+      case ResourceFormatType::D16S8:
+        return fmt.compType == CompType::Typeless ? "D16S8_TYPELESS" : "D16S8";
+      case ResourceFormatType::D24S8:
+        return fmt.compType == CompType::Typeless ? "D24S8_TYPELESS" : "D24S8";
+      case ResourceFormatType::D32S8:
+        return fmt.compType == CompType::Typeless ? "D32S8_TYPELESS" : "D32S8";
+      case ResourceFormatType::S8: return "S8";
+      case ResourceFormatType::A8: return "A8_UNORM";
+      case ResourceFormatType::YUV8:
+      case ResourceFormatType::YUV10:
+      case ResourceFormatType::YUV12:
+      case ResourceFormatType::YUV16:
+      {
+        int yuvbits = 0;
+
+        switch(fmt.type)
+        {
+          case ResourceFormatType::YUV8: yuvbits = 8; break;
+          case ResourceFormatType::YUV10: yuvbits = 10; break;
+          case ResourceFormatType::YUV12: yuvbits = 12; break;
+          case ResourceFormatType::YUV16: yuvbits = 16; break;
+          default: break;
+        }
+
+        uint32_t planeCount = fmt.YUVPlaneCount();
+        uint32_t subsampling = fmt.YUVSubsampling();
+
+        // special case formats that don't match the FOURCC format
+        if(yuvbits == 8 && planeCount == 2 && subsampling == 420)
+          return "NV12";
+        if(yuvbits == 8 && planeCount == 1 && subsampling == 444)
+          return "AYUV";
+        if(yuvbits == 8 && planeCount == 1 && subsampling == 422)
+          return "YUY2";
+
+        switch(subsampling)
+        {
+          case 444:
+            if(planeCount == 1)
+              return StringFormat::Fmt("Y4%02u", yuvbits);
+            else if(planeCount == 2)
+              return StringFormat::Fmt("P4%02u", yuvbits);
+            else
+              return StringFormat::Fmt("YUV444_%uPlane_%ubit", planeCount, yuvbits);
+          case 422:
+            if(planeCount == 1)
+              return StringFormat::Fmt("Y2%02u", yuvbits);
+            else if(planeCount == 2)
+              return StringFormat::Fmt("P2%02u", yuvbits);
+            else
+              return StringFormat::Fmt("YUV422_%uPlane_%ubit", planeCount, yuvbits);
+          case 420:
+            if(planeCount == 1)
+              return StringFormat::Fmt("Y0%02u", yuvbits);
+            else if(planeCount == 2)
+              return StringFormat::Fmt("P0%02u", yuvbits);
+            else
+              return StringFormat::Fmt("YUV420_%uPlane_%ubit", planeCount, yuvbits);
+          default: RDCERR("Unexpected YUV Subsampling amount %u", subsampling);
+        }
+
+        return StringFormat::Fmt("YUV_%u_%uPlane_%ubit", subsampling, planeCount, yuvbits);
+      }
+      case ResourceFormatType::PVRTC: return "PVRTC";
+    }
+  }
+  else if(fmt.compType == CompType::Depth)
+  {
+    ret = StringFormat::Fmt("D%u", fmt.compByteWidth * 8);
+  }
+  else
+  {
+    char comps[] = "RGBA";
+
+    if(fmt.BGRAOrder())
+      std::swap(comps[0], comps[2]);
+
+    for(uint32_t i = 0; i < fmt.compCount; i++)
+      ret += StringFormat::Fmt("%c%u", comps[i], fmt.compByteWidth * 8);
+  }
+
+  switch(fmt.compType)
+  {
+    case CompType::Typeless: return ret + "_TYPELESS";
+    case CompType::Float: return ret + "_FLOAT";
+    case CompType::UNorm: return ret + "_UNORM";
+    case CompType::SNorm: return ret + "_SNORM";
+    case CompType::UInt: return ret + "_UINT";
+    case CompType::SInt: return ret + "_SINT";
+    case CompType::UScaled: return ret + "_USCALED";
+    case CompType::SScaled: return ret + "_SSCALED";
+    case CompType::UNormSRGB: return ret + "_SRGB";
+    case CompType::Depth:
+      // we already special-cased depth component type above to be Dx instead of Rx
+      return ret;
+  }
+
+  // should never get here
+  RDCERR("Unhandled format component type");
+  return ret + "_UNKNOWN";
+}
+
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_ResourceFormatName(const ResourceFormat &fmt,
+                                                                        rdcstr &name)
+{
+  name = ResourceFormatName(fmt);
+}
+
+static void TestPrintMsg(const rdcstr &msg)
+{
+  OSUtility::WriteOutput(OSUtility::Output_DebugMon, msg.c_str());
+  OSUtility::WriteOutput(OSUtility::Output_StdErr, msg.c_str());
+}
+
+extern "C" RENDERDOC_API int RENDERDOC_CC RENDERDOC_RunFunctionalTests(int pythonMinorVersion,
+                                                                       const rdcarray<rdcstr> &args)
+{
+#if ENABLED(RDOC_WIN32)
+  const char *moduledir = "/pymodules";
+  const char *modulename = "renderdoc.pyd";
+  rdcstr pythonlibs[] = {"python3?.dll"};
+#elif ENABLED(RDOC_LINUX)
+  const char *moduledir = "";
+  const char *modulename = "renderdoc.so";
+  // we don't care about pymalloc or not
+  rdcstr pythonlibs[] = {"libpython3.?m.so.1.0", "libpython3.?.so.1.0", "libpython3.?m.so",
+                         "libpython3.?.so"};
+#elif ENABLED(RDOC_APPLE)
+  const char *moduledir = "";
+  const char *modulename = "renderdoc.so";
+  rdcstr pythonlibs[] = {"libpython3.?.dylib"};
+#else
+  const char *moduledir = "";
+  const char *modulename = "";
+  rdcstr pythonlibs[] = {};
+  TestPrintMsg(
+      "Running functional tests not directly supported on this platform.\n"
+      "Try running util/test/run_tests.py manually.\n");
+  return 1;
+#endif
+
+  rdcstr libPath;
+  FileIO::GetLibraryFilename(libPath);
+
+  libPath = get_dirname(libPath);
+  rdcstr modulePath = libPath + moduledir;
+
+  rdcstr moduleFilename = modulePath + "/" + modulename;
+
+  if(!FileIO::exists(moduleFilename))
+  {
+    TestPrintMsg(StringFormat::Fmt("Couldn't locate python module at %s\n", moduleFilename.c_str()));
+    return 1;
+  }
+
+  // if we've been built either on windows or on linux from within the project root, going up two
+  // directories from the library will put us at the project root. This is the most common scenario
+  // and we don't add handling for locating the script elsewhere as in that case the user can run it
+  // directly. This is just intended as a useful shortcut for common cases.
+  rdcstr scriptPath = libPath + "/../../util/test/run_tests.py";
+
+  if(!FileIO::exists(scriptPath))
+  {
+    TestPrintMsg(StringFormat::Fmt("Couldn't locate run_tests.py script at %s\n", scriptPath.c_str()));
+    return 1;
+  }
+
+  void *handle = NULL;
+
+  for(rdcstr py : pythonlibs)
+  {
+    // patch up the python minor version
+    char *ver = strchr(&py[0], '?');
+    *ver = char('0' + pythonMinorVersion);
+
+    handle = Process::LoadModule(py);
+    if(handle)
+    {
+      RDCLOG("Loaded python from %s", py.c_str());
+      break;
     }
   }
 
-  if(ret.size())
-    adbForwardPorts();    // Forward the ports so we can see if a remoteserver/captured app is
-                          // already running.
+  if(!handle)
+  {
+    TestPrintMsg("Couldn't locate python 3.6 library\n");
+    return 1;
+  }
 
-  *deviceList = ret;
+  typedef int(RENDERDOC_CC * PFN_Py_Main)(int, wchar_t **);
+
+  PFN_Py_Main mainFunc = (PFN_Py_Main)Process::GetFunctionAddress(handle, "Py_Main");
+
+  if(!mainFunc)
+  {
+    TestPrintMsg("Couldn't get Py_Main in python library\n");
+    return 1;
+  }
+
+  rdcarray<rdcwstr> wideArgs(args.size());
+
+  for(size_t i = 0; i < args.size(); i++)
+    wideArgs[i] = StringFormat::UTF82Wide(args[i]);
+
+  // insert fake arguments to point at the script and our modules
+  wideArgs.insert(0, {
+                         L"python",
+                         // specify script path
+                         StringFormat::UTF82Wide(scriptPath),
+                         // specify native library path
+                         L"--renderdoc", StringFormat::UTF82Wide(libPath),
+                         // specify python module path
+                         L"--pyrenderdoc", StringFormat::UTF82Wide(modulePath),
+                         // force in-process as we can't fork out to python to pass args
+                         L"--in-process",
+                     });
+
+  rdcarray<wchar_t *> wideArgStrings(wideArgs.size());
+
+  for(size_t i = 0; i < wideArgs.size(); i++)
+    wideArgStrings[i] = wideArgs[i].data();
+
+  return mainFunc((int)wideArgStrings.size(), wideArgStrings.data());
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_StartAndroidRemoteServer()
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_BeginProfileRegion(const rdcstr &name)
 {
-  adbExecCommand("shell am force-stop org.renderdoc.renderdoccmd");
-  adbForwardPorts();
-  adbExecCommand("shell setprop debug.vulkan.layers \\\"\\\"");
-  adbExecCommand(
-      "shell am start -n org.renderdoc.renderdoccmd/.Loader -e renderdoccmd remoteserver");
+  Superluminal::BeginProfileRange(name);
+}
+
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_EndProfileRegion()
+{
+  Superluminal::EndProfileRange();
 }

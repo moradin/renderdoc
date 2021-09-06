@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -27,6 +27,7 @@
 #include <math.h>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 
 RangeHistogram::RangeHistogram(QWidget *parent) : QWidget(parent)
 {
@@ -62,11 +63,10 @@ void RangeHistogram::setRange(float min, float max)
 
 bool RangeHistogram::ValidRange() const
 {
-  if(std::isinf(m_WhitePoint) || std::isnan(m_WhitePoint) || std::isinf(m_BlackPoint) ||
-     std::isnan(m_BlackPoint) || std::isinf(m_RangeMax) || std::isnan(m_RangeMax) ||
-     std::isinf(m_RangeMin) || std::isnan(m_RangeMin) || std::isinf(m_RangeMax - m_RangeMin) ||
-     std::isnan(m_RangeMax - m_RangeMin) || std::isinf(m_WhitePoint - m_BlackPoint) ||
-     std::isnan(m_WhitePoint - m_BlackPoint))
+  if(qIsInf(m_WhitePoint) || qIsNaN(m_WhitePoint) || qIsInf(m_BlackPoint) || qIsNaN(m_BlackPoint) ||
+     qIsInf(m_RangeMax) || qIsNaN(m_RangeMax) || qIsInf(m_RangeMin) || qIsNaN(m_RangeMin) ||
+     qIsInf(m_RangeMax - m_RangeMin) || qIsNaN(m_RangeMax - m_RangeMin) ||
+     qIsInf(m_WhitePoint - m_BlackPoint) || qIsNaN(m_WhitePoint - m_BlackPoint))
   {
     return false;
   }
@@ -141,8 +141,6 @@ void RangeHistogram::mousePressEvent(QMouseEvent *e)
 
   QRect r = rect();
 
-  r.marginsRemoved(QMargins(totalSpace(), totalSpace(), totalSpace(), totalSpace()));
-
   int whiteX = (int)(whiteDelta() * r.width());
   int blackX = (int)(blackDelta() * r.width());
 
@@ -216,40 +214,44 @@ void RangeHistogram::mouseMoveEvent(QMouseEvent *e)
   }
 }
 
-void RangeHistogram::enterEvent(QEvent *e)
-{
-}
-
-void RangeHistogram::leaveEvent(QEvent *e)
-{
-}
-
 void RangeHistogram::paintEvent(QPaintEvent *e)
 {
   QPainter p(this);
+
+  p.setRenderHint(QPainter::Antialiasing);
+
   const QBrush blackBrush(QColor(0, 0, 0));
-  const QBrush grayBrush(QColor(180, 180, 180));
   const QBrush redBrush(QColor(60, 0, 0));
   const QBrush greenBrush(QColor(0, 128, 0));
   const QBrush whiteBrush(QColor(255, 255, 255));
 
-  QRect r = this->rect();
+  QRectF r = rect();
 
   p.eraseRect(r);
 
-  r = r.marginsRemoved(QMargins(m_Margin, m_Margin, m_Margin, m_Margin));
+  r = r.marginsRemoved(QMarginsF(m_Margin, m_Margin, m_Margin, m_Margin));
 
-  p.fillRect(r, blackBrush);
+  p.fillRect(r, palette().brush(QPalette::Shadow));
 
-  r = r.marginsRemoved(QMargins(m_Border, m_Border, m_Border, m_Border));
+  QMarginsF border(m_Border, m_Border, m_Border, m_Border);
+  border /= devicePixelRatioF();
 
-  p.fillRect(r, ValidRange() ? grayBrush : redBrush);
+  r = r.marginsRemoved(border);
+
+  p.fillRect(r, ValidRange() ? palette().brush(QPalette::Inactive, QPalette::Highlight) : redBrush);
 
   int whiteX = (int)(whiteDelta() * r.width());
-  int blackX = (int)(blackDelta() * r.width());
+  int blackX = (int)(blackDelta() * r.width() + 0.5);
 
-  QRect blackPoint(r.topLeft(), QSize(blackX, r.height()));
-  QRect whitePoint(r.left() + whiteX, r.top(), r.width() - whiteX, r.height());
+  QRectF blackPoint(r.topLeft(), QSize(blackX, r.height()));
+  QRectF whitePoint(r.left() + whiteX, r.top(), r.width() - whiteX, r.height());
+
+  if(ValidRange())
+  {
+    p.setPen(QPen(palette().color(QPalette::Dark)));
+    p.drawLine(blackPoint.topRight(), blackPoint.bottomRight());
+    p.drawLine(whitePoint.topLeft(), whitePoint.bottomLeft());
+  }
 
   p.fillRect(whitePoint, whiteBrush);
   p.fillRect(blackPoint, blackBrush);
@@ -287,7 +289,7 @@ void RangeHistogram::paintEvent(QPaintEvent *e)
 
       if(xdelta >= 0.0f && xdelta <= 1.0f)
       {
-        float segwidth = qMax(r.width() * (maxx - minx) / (float)m_HistogramData.count(), 1.0f);
+        float segwidth = qMax(r.width() * (maxx - minx) / (float)m_HistogramData.count(), 1.0);
 
         QRectF barRect(QPointF(r.left() + r.width() * (minx + x * (maxx - minx)),
                                r.bottom() - r.height() * y + 1),
@@ -298,37 +300,36 @@ void RangeHistogram::paintEvent(QPaintEvent *e)
     }
   }
 
-  QVector<QPoint> blackTriangle = {QPoint(blackPoint.right() + 1, m_MarkerSize * 2),
-                                   QPoint(blackPoint.right() + m_MarkerSize + 1, 0),
-                                   QPoint(blackPoint.right() - m_MarkerSize + 1, 0)};
+  QVector<QPointF> blackTriangle = {QPoint(blackPoint.right(), m_MarkerSize * 2),
+                                    QPoint(blackPoint.right() + m_MarkerSize, 0),
+                                    QPoint(blackPoint.right() - m_MarkerSize, 0)};
 
   QPainterPath blackPath;
-  blackPath.addPolygon(QPolygon(blackTriangle));
+  blackPath.addPolygon(QPolygonF(blackTriangle));
+  p.fillPath(blackPath, palette().brush(QPalette::Dark));
 
-  p.fillPath(blackPath, grayBrush);
-
-  QVector<QPoint> whiteTriangle = {
+  QVector<QPointF> whiteTriangle = {
       QPoint(whitePoint.left(), whitePoint.bottom() - m_MarkerSize * 2 + m_Margin),
       QPoint(whitePoint.left() + m_MarkerSize, whitePoint.bottom() + m_Margin),
       QPoint(whitePoint.left() - m_MarkerSize, whitePoint.bottom() + m_Margin)};
 
   QPainterPath whitePath;
-  whitePath.addPolygon(QPolygon(whiteTriangle));
-  p.fillPath(whitePath, grayBrush);
+  whitePath.addPolygon(QPolygonF(whiteTriangle));
+  p.fillPath(whitePath, palette().brush(QPalette::Dark));
 
-  blackTriangle[0] -= QPoint(0, 2);
-  blackTriangle[1] += QPoint(-2, 1);
-  blackTriangle[2] += QPoint(2, 1);
+  blackTriangle[0] -= QPointF(0.0, 2.0) / devicePixelRatioF();
+  blackTriangle[1] += QPointF(-2.0, 1.0) / devicePixelRatioF();
+  blackTriangle[2] += QPointF(2.0, 1.0) / devicePixelRatioF();
 
   blackPath = QPainterPath();
-  blackPath.addPolygon(QPolygon(blackTriangle));
+  blackPath.addPolygon(QPolygonF(blackTriangle));
 
-  whiteTriangle[0] += QPoint(0, 2);
-  whiteTriangle[1] -= QPoint(2, 1);
-  whiteTriangle[2] += QPoint(2, -1);
+  whiteTriangle[0] += QPointF(0.0, 2.0) / devicePixelRatioF();
+  whiteTriangle[1] -= QPointF(2.0, 1.0) / devicePixelRatioF();
+  whiteTriangle[2] += QPointF(2.0, -1.0) / devicePixelRatioF();
 
   whitePath = QPainterPath();
-  whitePath.addPolygon(QPolygon(whiteTriangle));
+  whitePath.addPolygon(QPolygonF(whiteTriangle));
 
   p.fillPath(blackPath, blackBrush);
   p.fillPath(whitePath, whiteBrush);

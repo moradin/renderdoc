@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,131 +23,23 @@
  ******************************************************************************/
 
 #include "d3d12_resources.h"
-#include "3rdparty/lz4/lz4.h"
+#include "driver/shaders/dxbc/dxbc_reflect.h"
 #include "d3d12_command_list.h"
 #include "d3d12_command_queue.h"
 
 GPUAddressRangeTracker WrappedID3D12Resource::m_Addresses;
-std::map<ResourceId, WrappedID3D12Resource *> *WrappedID3D12Resource::m_List = NULL;
-std::map<WrappedID3D12PipelineState::DXBCKey, WrappedID3D12PipelineState::ShaderEntry *>
-    WrappedID3D12PipelineState::m_Shaders;
+std::map<WrappedID3D12PipelineState::DXBCKey, WrappedID3D12Shader *> WrappedID3D12Shader::m_Shaders;
+bool WrappedID3D12Shader::m_InternalResources = false;
+int32_t WrappedID3D12CommandAllocator::m_ResetEnabled = 1;
 
 const GUID RENDERDOC_ID3D12ShaderGUID_ShaderDebugMagicValue = RENDERDOC_ShaderDebugMagicValue_struct;
-
-void WrappedID3D12PipelineState::ShaderEntry::TryReplaceOriginalByteCode()
-{
-  if(!DXBC::DXBCFile::CheckForDebugInfo((const void *)&m_Bytecode[0], m_Bytecode.size()))
-  {
-    string originalPath = m_DebugInfoPath;
-
-    if(originalPath.empty())
-      originalPath =
-          DXBC::DXBCFile::GetDebugBinaryPath((const void *)&m_Bytecode[0], m_Bytecode.size());
-
-    if(!originalPath.empty())
-    {
-      bool lz4 = false;
-
-      if(!strncmp(originalPath.c_str(), "lz4#", 4))
-      {
-        originalPath = originalPath.substr(4);
-        lz4 = true;
-      }
-      // could support more if we're willing to compile in the decompressor
-
-      FILE *originalShaderFile = NULL;
-
-      size_t numSearchPaths = m_DebugInfoSearchPaths ? m_DebugInfoSearchPaths->size() : 0;
-
-      string foundPath;
-
-      // while we haven't found a file, keep trying through the search paths. For i==0
-      // check the path on its own, in case it's an absolute path.
-      for(size_t i = 0; originalShaderFile == NULL && i <= numSearchPaths; i++)
-      {
-        if(i == 0)
-        {
-          originalShaderFile = FileIO::fopen(originalPath.c_str(), "rb");
-          foundPath = originalPath;
-          continue;
-        }
-        else
-        {
-          const std::string &searchPath = (*m_DebugInfoSearchPaths)[i - 1];
-          foundPath = searchPath + "/" + originalPath;
-          originalShaderFile = FileIO::fopen(foundPath.c_str(), "rb");
-        }
-      }
-
-      if(originalShaderFile == NULL)
-        return;
-
-      FileIO::fseek64(originalShaderFile, 0L, SEEK_END);
-      uint64_t originalShaderSize = FileIO::ftell64(originalShaderFile);
-      FileIO::fseek64(originalShaderFile, 0, SEEK_SET);
-
-      if(lz4 || originalShaderSize >= m_Bytecode.size())
-      {
-        vector<byte> originalBytecode;
-
-        originalBytecode.resize((size_t)originalShaderSize);
-        FileIO::fread(&originalBytecode[0], sizeof(byte), (size_t)originalShaderSize,
-                      originalShaderFile);
-
-        if(lz4)
-        {
-          vector<byte> decompressed;
-
-          // first try decompressing to 1MB flat
-          decompressed.resize(100 * 1024);
-
-          int ret = LZ4_decompress_safe((const char *)&originalBytecode[0], (char *)&decompressed[0],
-                                        (int)originalBytecode.size(), (int)decompressed.size());
-
-          if(ret < 0)
-          {
-            // if it failed, either source is corrupt or we didn't allocate enough space.
-            // Just allocate 255x compressed size since it can't need any more than that.
-            decompressed.resize(255 * originalBytecode.size());
-
-            ret = LZ4_decompress_safe((const char *)&originalBytecode[0], (char *)&decompressed[0],
-                                      (int)originalBytecode.size(), (int)decompressed.size());
-
-            if(ret < 0)
-            {
-              RDCERR("Failed to decompress LZ4 data from %s", foundPath.c_str());
-              return;
-            }
-          }
-
-          RDCASSERT(ret > 0, ret);
-
-          // we resize and memcpy instead of just doing .swap() because that would
-          // transfer over the over-large pessimistic capacity needed for decompression
-          originalBytecode.resize(ret);
-          memcpy(&originalBytecode[0], &decompressed[0], originalBytecode.size());
-        }
-
-        if(DXBC::DXBCFile::CheckForDebugInfo((const void *)&originalBytecode[0],
-                                             originalBytecode.size()))
-        {
-          m_Bytecode.swap(originalBytecode);
-        }
-      }
-
-      FileIO::fclose(originalShaderFile);
-    }
-  }
-}
 
 #undef D3D12_TYPE_MACRO
 #define D3D12_TYPE_MACRO(iface) WRAPPED_POOL_INST(CONCAT(Wrapped, iface));
 
 ALL_D3D12_TYPES;
 
-WRAPPED_POOL_INST(WrappedID3D12PipelineState::ShaderEntry);
-
-D3D12ResourceType IdentifyTypeByPtr(ID3D12DeviceChild *ptr)
+D3D12ResourceType IdentifyTypeByPtr(ID3D12Object *ptr)
 {
   if(ptr == NULL)
     return Resource_Unknown;
@@ -169,91 +61,77 @@ D3D12ResourceType IdentifyTypeByPtr(ID3D12DeviceChild *ptr)
   return Resource_Unknown;
 }
 
-TrackedResource12 *GetTracked(ID3D12DeviceChild *ptr)
+TrackedResource12 *GetTracked(ID3D12Object *ptr)
 {
   if(ptr == NULL)
     return NULL;
 
-#undef D3D12_TYPE_MACRO
-#define D3D12_TYPE_MACRO(iface)         \
-  if(UnwrapHelper<iface>::IsAlloc(ptr)) \
-    return (TrackedResource12 *)GetWrapped((iface *)ptr);
-
-  ALL_D3D12_TYPES;
-
-  if(WrappedID3D12PipelineState::ShaderEntry::IsAlloc(ptr))
-    return (TrackedResource12 *)(WrappedID3D12PipelineState::ShaderEntry *)ptr;
-
-  return NULL;
+  return (TrackedResource12 *)(WrappedDeviceChild12<ID3D12DeviceChild> *)ptr;
 }
 
 template <>
-ID3D12DeviceChild *Unwrap(ID3D12DeviceChild *ptr)
+ID3D12Object *Unwrap(ID3D12Object *ptr)
 {
   if(ptr == NULL)
     return NULL;
 
-#undef D3D12_TYPE_MACRO
-#define D3D12_TYPE_MACRO(iface)         \
-  if(UnwrapHelper<iface>::IsAlloc(ptr)) \
-    return (ID3D12DeviceChild *)GetWrapped((iface *)ptr)->GetReal();
+  if(WrappedID3D12GraphicsCommandList::IsAlloc(ptr))
+    return (ID3D12Object *)(((WrappedID3D12GraphicsCommandList *)ptr)->GetReal());
+  if(WrappedID3D12CommandQueue::IsAlloc(ptr))
+    return (ID3D12Object *)(((WrappedID3D12CommandQueue *)ptr)->GetReal());
 
-  ALL_D3D12_TYPES;
+  return ((WrappedDeviceChild12<ID3D12DeviceChild> *)ptr)->GetReal();
+}
+
+template <>
+ResourceId GetResID(ID3D12Object *ptr)
+{
+  if(ptr == NULL)
+    return ResourceId();
 
   if(WrappedID3D12GraphicsCommandList::IsAlloc(ptr))
-    return (ID3D12DeviceChild *)(((WrappedID3D12GraphicsCommandList *)ptr)->GetReal());
+    return ((WrappedID3D12GraphicsCommandList *)ptr)->GetResourceID();
   if(WrappedID3D12CommandQueue::IsAlloc(ptr))
-    return (ID3D12DeviceChild *)(((WrappedID3D12CommandQueue *)ptr)->GetReal());
+    return ((WrappedID3D12CommandQueue *)ptr)->GetResourceID();
 
-  RDCERR("Unknown type of ptr 0x%p", ptr);
+  return GetTracked(ptr)->GetResourceID();
+}
 
-  return NULL;
+template <>
+D3D12ResourceRecord *GetRecord(ID3D12Object *ptr)
+{
+  if(ptr == NULL)
+    return NULL;
+
+  if(WrappedID3D12GraphicsCommandList::IsAlloc(ptr))
+    return ((WrappedID3D12GraphicsCommandList *)ptr)->GetResourceRecord();
+  if(WrappedID3D12CommandQueue::IsAlloc(ptr))
+    return ((WrappedID3D12CommandQueue *)ptr)->GetResourceRecord();
+
+  return GetTracked(ptr)->GetResourceRecord();
 }
 
 template <>
 ResourceId GetResID(ID3D12DeviceChild *ptr)
 {
-  if(ptr == NULL)
-    return ResourceId();
+  return GetResID((ID3D12Object *)ptr);
+}
 
-  TrackedResource12 *res = GetTracked(ptr);
-
-  if(res == NULL)
-  {
-    if(WrappedID3D12GraphicsCommandList::IsAlloc(ptr))
-      return ((WrappedID3D12GraphicsCommandList *)ptr)->GetResourceID();
-    if(WrappedID3D12CommandQueue::IsAlloc(ptr))
-      return ((WrappedID3D12CommandQueue *)ptr)->GetResourceID();
-
-    RDCERR("Unknown type of ptr 0x%p", ptr);
-
-    return ResourceId();
-  }
-
-  return res->GetResourceID();
+template <>
+ResourceId GetResID(ID3D12Pageable *ptr)
+{
+  return GetResID((ID3D12Object *)ptr);
 }
 
 template <>
 D3D12ResourceRecord *GetRecord(ID3D12DeviceChild *ptr)
 {
-  if(ptr == NULL)
-    return NULL;
-
-  TrackedResource12 *res = GetTracked(ptr);
-
-  if(res == NULL)
-  {
-    if(WrappedID3D12GraphicsCommandList::IsAlloc(ptr))
-      return ((WrappedID3D12GraphicsCommandList *)ptr)->GetResourceRecord();
-    if(WrappedID3D12CommandQueue::IsAlloc(ptr))
-      return ((WrappedID3D12CommandQueue *)ptr)->GetResourceRecord();
-
-    RDCERR("Unknown type of ptr 0x%p", ptr);
-
-    return NULL;
-  }
-
-  return res->GetResourceRecord();
+  return GetRecord((ID3D12Object *)ptr);
+}
+template <>
+ID3D12DeviceChild *Unwrap(ID3D12DeviceChild *ptr)
+{
+  return (ID3D12DeviceChild *)Unwrap((ID3D12Object *)ptr);
 }
 
 WrappedID3D12Resource::~WrappedID3D12Resource()
@@ -261,28 +139,36 @@ WrappedID3D12Resource::~WrappedID3D12Resource()
   // perform an implicit unmap on release
   if(GetResourceRecord())
   {
-    vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+    D3D12ResourceRecord::MapData *map = GetResourceRecord()->m_Maps;
+    size_t mapcount = GetResourceRecord()->m_MapsCount;
 
     // may not have a map if e.g. no pointer was requested
-    for(size_t i = 0; i < map.size(); i++)
+    for(size_t i = 0; i < mapcount; i++)
     {
       if(map[i].refcount > 0)
       {
         m_pDevice->Unmap(this, (UINT)i, map[i].realPtr, NULL);
 
-        Serialiser::FreeAlignedBuffer(map[i].shadowPtr);
+        FreeAlignedBuffer(map[i].shadowPtr);
         map[i].realPtr = NULL;
         map[i].shadowPtr = NULL;
       }
     }
   }
 
-  if(m_List)
-    (*m_List).erase(GetResourceID());
+  if(IsReplayMode(m_pDevice->GetState()))
+    m_pDevice->GetResourceList().erase(GetResourceID());
 
   // assuming only valid for buffers
   if(m_pReal->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
-    m_Addresses.RemoveFrom(m_pReal->GetGPUVirtualAddress());
+  {
+    GPUAddressRange range;
+    range.start = m_pReal->GetGPUVirtualAddress();
+    range.end = m_pReal->GetGPUVirtualAddress() + m_pReal->GetDesc().Width;
+    range.id = GetResourceID();
+
+    m_Addresses.RemoveFrom(range);
+  }
 
   Shutdown();
 
@@ -291,9 +177,12 @@ WrappedID3D12Resource::~WrappedID3D12Resource()
 
 byte *WrappedID3D12Resource::GetMap(UINT Subresource)
 {
-  vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+  SCOPED_LOCK(GetResourceRecord()->m_MapLock);
 
-  if(Subresource < map.size())
+  D3D12ResourceRecord::MapData *map = GetResourceRecord()->m_Maps;
+  size_t mapcount = GetResourceRecord()->m_MapsCount;
+
+  if(Subresource < mapcount)
     return map[Subresource].realPtr;
 
   return NULL;
@@ -301,34 +190,50 @@ byte *WrappedID3D12Resource::GetMap(UINT Subresource)
 
 byte *WrappedID3D12Resource::GetShadow(UINT Subresource)
 {
-  vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+  SCOPED_LOCK(GetResourceRecord()->m_MapLock);
 
-  if(Subresource >= map.size())
-    map.resize(Subresource + 1);
+  D3D12ResourceRecord::MapData *map = GetResourceRecord()->m_Maps;
 
   return map[Subresource].shadowPtr;
 }
 
 void WrappedID3D12Resource::AllocShadow(UINT Subresource, size_t size)
 {
-  vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+  SCOPED_LOCK(GetResourceRecord()->m_MapLock);
 
-  if(Subresource >= map.size())
-    map.resize(Subresource + 1);
+  D3D12ResourceRecord::MapData *map = GetResourceRecord()->m_Maps;
 
   if(map[Subresource].shadowPtr == NULL)
-    map[Subresource].shadowPtr = Serialiser::AllocAlignedBuffer(size);
+    map[Subresource].shadowPtr = AllocAlignedBuffer(size);
 }
 
 void WrappedID3D12Resource::FreeShadow()
 {
-  vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+  SCOPED_LOCK(GetResourceRecord()->m_MapLock);
 
-  for(size_t i = 0; i < map.size(); i++)
+  D3D12ResourceRecord::MapData *map = GetResourceRecord()->m_Maps;
+  size_t mapcount = GetResourceRecord()->m_MapsCount;
+
+  for(size_t i = 0; i < mapcount; i++)
   {
-    Serialiser::FreeAlignedBuffer(map[i].shadowPtr);
+    FreeAlignedBuffer(map[i].shadowPtr);
     map[i].shadowPtr = NULL;
   }
+}
+
+void WrappedID3D12Resource::LockMaps()
+{
+  GetResourceRecord()->m_MapLock.Lock();
+}
+
+void WrappedID3D12Resource::UnlockMaps()
+{
+  GetResourceRecord()->m_MapLock.Unlock();
+}
+
+WriteSerialiser &WrappedID3D12Resource::GetThreadSerialiser()
+{
+  return m_pDevice->GetThreadSerialiser();
 }
 
 HRESULT STDMETHODCALLTYPE WrappedID3D12Resource::Map(UINT Subresource,
@@ -348,20 +253,15 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12Resource::Map(UINT Subresource,
 
   if(SUCCEEDED(hr) && GetResourceRecord())
   {
-    vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+    SCOPED_LOCK(GetResourceRecord()->m_MapLock);
 
-    if(Subresource >= map.size())
-      map.resize(Subresource + 1);
-
-    // the map pointer should be NULL or identical (if we are in a nested Map)
-    RDCASSERT(map[Subresource].realPtr == mapPtr || map[Subresource].realPtr == NULL);
+    D3D12ResourceRecord::MapData *map = GetResourceRecord()->m_Maps;
 
     map[Subresource].realPtr = (byte *)mapPtr;
-
-    int32_t refcount = Atomic::Inc32(&map[Subresource].refcount);
+    map[Subresource].refcount++;
 
     // on the first map, register this so we can flush any updates in case it's left persistant
-    if(refcount == 1)
+    if(map[Subresource].refcount == 1)
       m_pDevice->Map(this, Subresource);
   }
 
@@ -372,20 +272,24 @@ void STDMETHODCALLTYPE WrappedID3D12Resource::Unmap(UINT Subresource, const D3D1
 {
   if(GetResourceRecord())
   {
-    vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+    D3D12ResourceRecord::MapData *map = GetResourceRecord()->m_Maps;
 
-    // may not have a map if e.g. no pointer was requested
-    if(Subresource < map.size())
     {
-      int32_t refcount = Atomic::Dec32(&map[Subresource].refcount);
+      SCOPED_LOCK(GetResourceRecord()->m_MapLock);
 
-      if(refcount == 0)
+      // may not have a ref at all if e.g. no pointer was requested
+      if(map[Subresource].refcount >= 1)
       {
-        m_pDevice->Unmap(this, Subresource, map[Subresource].realPtr, pWrittenRange);
+        map[Subresource].refcount--;
 
-        Serialiser::FreeAlignedBuffer(map[Subresource].shadowPtr);
-        map[Subresource].realPtr = NULL;
-        map[Subresource].shadowPtr = NULL;
+        if(map[Subresource].refcount == 0)
+        {
+          m_pDevice->Unmap(this, Subresource, map[Subresource].realPtr, pWrittenRange);
+
+          FreeAlignedBuffer(map[Subresource].shadowPtr);
+          map[Subresource].realPtr = NULL;
+          map[Subresource].shadowPtr = NULL;
+        }
       }
     }
   }
@@ -399,63 +303,279 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12Resource::WriteToSubresource(UINT DstSubr
                                                                     UINT SrcRowPitch,
                                                                     UINT SrcDepthPitch)
 {
+  HRESULT ret;
+
+  SERIALISE_TIME_CALL(ret = m_pReal->WriteToSubresource(DstSubresource, pDstBox, pSrcData,
+                                                        SrcRowPitch, SrcDepthPitch));
+
   if(GetResourceRecord())
   {
-    vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
-
-    if(DstSubresource < map.size())
-    {
-      m_pDevice->WriteToSubresource(this, DstSubresource, pDstBox, pSrcData, SrcDepthPitch,
-                                    SrcDepthPitch);
-    }
-    else
-    {
-      RDCERR("WriteToSubresource without matching map!");
-    }
+    m_pDevice->WriteToSubresource(this, DstSubresource, pDstBox, pSrcData, SrcRowPitch,
+                                  SrcDepthPitch);
   }
 
-  return m_pReal->WriteToSubresource(DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch);
+  return ret;
 }
 
 void WrappedID3D12Resource::RefBuffers(D3D12ResourceManager *rm)
 {
   // only buffers go into m_Addresses
-  SCOPED_LOCK(m_Addresses.addressLock);
+  SCOPED_READLOCK(m_Addresses.addressLock);
   for(size_t i = 0; i < m_Addresses.addresses.size(); i++)
     rm->MarkResourceFrameReferenced(m_Addresses.addresses[i].id, eFrameRef_Read);
 }
 
+rdcarray<ID3D12Resource *> WrappedID3D12Resource::AddRefBuffersBeforeCapture(D3D12ResourceManager *rm)
+{
+  rdcarray<ID3D12Resource *> ret;
+
+  rdcarray<GPUAddressRange> addresses;
+  {
+    SCOPED_READLOCK(m_Addresses.addressLock);
+    addresses = m_Addresses.addresses;
+  }
+
+  for(size_t i = 0; i < addresses.size(); i++)
+  {
+    ID3D12Resource *resource = (ID3D12Resource *)rm->GetCurrentResource(m_Addresses.addresses[i].id);
+    if(resource)
+    {
+      resource->AddRef();
+      ret.push_back(resource);
+    }
+  }
+
+  return ret;
+}
+
 WrappedID3D12DescriptorHeap::WrappedID3D12DescriptorHeap(ID3D12DescriptorHeap *real,
                                                          WrappedID3D12Device *device,
-                                                         const D3D12_DESCRIPTOR_HEAP_DESC &desc)
+                                                         const D3D12_DESCRIPTOR_HEAP_DESC &desc,
+                                                         UINT UnpatchedNumDescriptors)
     : WrappedDeviceChild12(real, device)
 {
   realCPUBase = real->GetCPUDescriptorHandleForHeapStart();
   realGPUBase = real->GetGPUDescriptorHandleForHeapStart();
 
-  SetResident(true);
-
   increment = device->GetUnwrappedDescriptorIncrement(desc.Type);
-  numDescriptors = desc.NumDescriptors;
+  numDescriptors = UnpatchedNumDescriptors;
 
-  descriptors = new D3D12Descriptor[numDescriptors];
+  descriptors = new D3D12Descriptor[desc.NumDescriptors];
 
-  RDCEraseMem(descriptors, sizeof(D3D12Descriptor) * numDescriptors);
-  for(UINT i = 0; i < numDescriptors; i++)
-  {
-    // only need to set this once, it's aliased between samp and nonsamp
-    descriptors[i].samp.heap = this;
-    descriptors[i].samp.idx = i;
-
-    // initially descriptors are undefined. This way we just fill them with
-    // some null SRV descriptor so it's safe to copy around etc but is no
-    // less undefined for the application to use
-    descriptors[i].nonsamp.type = D3D12Descriptor::TypeUndefined;
-  }
+  RDCEraseMem(descriptors, sizeof(D3D12Descriptor) * desc.NumDescriptors);
+  for(UINT i = 0; i < desc.NumDescriptors; i++)
+    descriptors[i].Setup(this, i);
 }
 
 WrappedID3D12DescriptorHeap::~WrappedID3D12DescriptorHeap()
 {
   Shutdown();
   SAFE_DELETE_ARRAY(descriptors);
+}
+
+void WrappedID3D12PipelineState::ShaderEntry::BuildReflection()
+{
+  RDCCOMPILE_ASSERT(
+      D3Dx_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT == D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT,
+      "Mismatched vertex input count");
+
+  MakeShaderReflection(m_DXBCFile, m_Details, &m_Mapping);
+  m_Details->resourceId = GetResourceID();
+}
+
+UINT GetPlaneForSubresource(ID3D12Resource *res, int Subresource)
+{
+  D3D12_RESOURCE_DESC desc = res->GetDesc();
+
+  if(desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+    return 0;
+
+  int mipLevels = desc.MipLevels;
+
+  if(mipLevels == 0)
+    mipLevels = CalcNumMips((int)desc.Width, 1, 1);
+
+  UINT arraySlices = desc.DepthOrArraySize;
+  if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+    arraySlices = 1;
+
+  return Subresource / (mipLevels * arraySlices);
+}
+
+UINT GetMipForSubresource(ID3D12Resource *res, int Subresource)
+{
+  D3D12_RESOURCE_DESC desc = res->GetDesc();
+
+  if(desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+    return Subresource;
+
+  int mipLevels = desc.MipLevels;
+
+  if(mipLevels == 0)
+    mipLevels = CalcNumMips((int)desc.Width, 1, 1);
+
+  return (Subresource % mipLevels);
+}
+
+UINT GetSliceForSubresource(ID3D12Resource *res, int Subresource)
+{
+  D3D12_RESOURCE_DESC desc = res->GetDesc();
+
+  if(desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+    return Subresource;
+
+  int mipLevels = desc.MipLevels;
+
+  if(mipLevels == 0)
+    mipLevels = CalcNumMips((int)desc.Width, 1, 1);
+
+  return (Subresource / mipLevels) % desc.DepthOrArraySize;
+}
+
+UINT GetMipForDsv(const D3D12_DEPTH_STENCIL_VIEW_DESC &view)
+{
+  switch(view.ViewDimension)
+  {
+    case D3D12_DSV_DIMENSION_TEXTURE1D: return view.Texture1D.MipSlice;
+    case D3D12_DSV_DIMENSION_TEXTURE1DARRAY: return view.Texture1DArray.MipSlice;
+    case D3D12_DSV_DIMENSION_TEXTURE2D: return view.Texture2D.MipSlice;
+    case D3D12_DSV_DIMENSION_TEXTURE2DARRAY: return view.Texture2DArray.MipSlice;
+    default: return 0;
+  }
+}
+
+UINT GetSliceForDsv(const D3D12_DEPTH_STENCIL_VIEW_DESC &view)
+{
+  switch(view.ViewDimension)
+  {
+    case D3D12_DSV_DIMENSION_TEXTURE1DARRAY: return view.Texture1DArray.FirstArraySlice;
+    case D3D12_DSV_DIMENSION_TEXTURE2DARRAY: return view.Texture2DArray.FirstArraySlice;
+    case D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY: return view.Texture2DMSArray.FirstArraySlice;
+    default: return 0;
+  }
+}
+
+UINT GetMipForRtv(const D3D12_RENDER_TARGET_VIEW_DESC &view)
+{
+  switch(view.ViewDimension)
+  {
+    case D3D12_RTV_DIMENSION_TEXTURE1D: return view.Texture1D.MipSlice;
+    case D3D12_RTV_DIMENSION_TEXTURE1DARRAY: return view.Texture1DArray.MipSlice;
+    case D3D12_RTV_DIMENSION_TEXTURE2D: return view.Texture2D.MipSlice;
+    case D3D12_RTV_DIMENSION_TEXTURE2DARRAY: return view.Texture2DArray.MipSlice;
+    case D3D12_RTV_DIMENSION_TEXTURE3D: return view.Texture3D.MipSlice;
+    default: return 0;
+  }
+}
+UINT GetSliceForRtv(const D3D12_RENDER_TARGET_VIEW_DESC &view)
+{
+  switch(view.ViewDimension)
+  {
+    case D3D12_RTV_DIMENSION_TEXTURE1DARRAY: return view.Texture1DArray.FirstArraySlice;
+    case D3D12_RTV_DIMENSION_TEXTURE2DARRAY: return view.Texture2DArray.FirstArraySlice;
+    case D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY: return view.Texture2DMSArray.FirstArraySlice;
+    default: return 0;
+  }
+}
+
+D3D12_SHADER_RESOURCE_VIEW_DESC MakeSRVDesc(const D3D12_RESOURCE_DESC &desc)
+{
+  D3D12_SHADER_RESOURCE_VIEW_DESC ret = {};
+
+  ret.Format = desc.Format;
+  ret.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+
+  bool arrayed = desc.DepthOrArraySize > 1;
+
+  if(desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+  {
+    // I don't think it's possible to create a SRV/SRV of a buffer with a NULL desc, but the docs
+    // and debug layer are quite hard to be sure. Put in something sensible.
+
+    ret.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    ret.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    ret.Buffer.StructureByteStride = 0;
+    ret.Buffer.FirstElement = 0;
+    ret.Buffer.NumElements = (UINT)desc.Width;
+  }
+  else if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D)
+  {
+    ret.ViewDimension = arrayed ? D3D12_SRV_DIMENSION_TEXTURE1DARRAY : D3D12_SRV_DIMENSION_TEXTURE1D;
+
+    // shared between arrayed and not
+    ret.Texture1D.MipLevels = desc.MipLevels;
+
+    if(arrayed)
+      ret.Texture1DArray.ArraySize = desc.DepthOrArraySize;
+  }
+  else if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+  {
+    if(desc.SampleDesc.Count > 1)
+    {
+      ret.ViewDimension =
+          arrayed ? D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY : D3D12_SRV_DIMENSION_TEXTURE2DMS;
+
+      if(arrayed)
+        ret.Texture2DMSArray.ArraySize = desc.DepthOrArraySize;
+    }
+    else
+    {
+      ret.ViewDimension =
+          arrayed ? D3D12_SRV_DIMENSION_TEXTURE2DARRAY : D3D12_SRV_DIMENSION_TEXTURE2D;
+
+      // shared between arrayed and not
+      ret.Texture2D.MipLevels = desc.MipLevels;
+
+      if(arrayed)
+        ret.Texture2DArray.ArraySize = desc.DepthOrArraySize;
+    }
+  }
+  else if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+  {
+    ret.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+
+    ret.Texture3D.MipLevels = desc.MipLevels;
+  }
+
+  return ret;
+}
+
+D3D12_UNORDERED_ACCESS_VIEW_DESC MakeUAVDesc(const D3D12_RESOURCE_DESC &desc)
+{
+  D3D12_UNORDERED_ACCESS_VIEW_DESC ret = {};
+
+  ret.Format = desc.Format;
+
+  bool arrayed = desc.DepthOrArraySize > 1;
+
+  if(desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+  {
+    // I don't think it's possible to create a UAV/SRV of a buffer with a NULL desc, but the docs
+    // and debug layer are quite hard to be sure. Put in something sensible.
+
+    ret.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    ret.Buffer.NumElements = (UINT)desc.Width;
+  }
+  else if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D)
+  {
+    ret.ViewDimension = arrayed ? D3D12_UAV_DIMENSION_TEXTURE1DARRAY : D3D12_UAV_DIMENSION_TEXTURE1D;
+
+    if(arrayed)
+      ret.Texture1DArray.ArraySize = desc.DepthOrArraySize;
+  }
+  else if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+  {
+    ret.ViewDimension = arrayed ? D3D12_UAV_DIMENSION_TEXTURE2DARRAY : D3D12_UAV_DIMENSION_TEXTURE2D;
+
+    if(arrayed)
+      ret.Texture2DArray.ArraySize = desc.DepthOrArraySize;
+  }
+  else if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+  {
+    ret.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+
+    ret.Texture3D.WSize = desc.DepthOrArraySize;
+  }
+
+  return ret;
 }

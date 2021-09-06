@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2014-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,43 +22,33 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-vec3 CalcCubeCoord(vec2 uv, int face)
-{
-  // From table 8.19 in GL4.5 spec
-  // Map UVs to [-0.5, 0.5] and rotate
-  uv -= vec2(0.5);
-  vec3 coord;
-  if(face == CUBEMAP_FACE_POS_X)
-    coord = vec3(0.5, -uv.y, -uv.x);
-  else if(face == CUBEMAP_FACE_NEG_X)
-    coord = vec3(-0.5, -uv.y, uv.x);
-  else if(face == CUBEMAP_FACE_POS_Y)
-    coord = vec3(uv.x, 0.5, uv.y);
-  else if(face == CUBEMAP_FACE_NEG_Y)
-    coord = vec3(uv.x, -0.5, -uv.y);
-  else if(face == CUBEMAP_FACE_POS_Z)
-    coord = vec3(uv.x, -uv.y, 0.5);
-  else    // face == CUBEMAP_FACE_NEG_Z
-    coord = vec3(-uv.x, -uv.y, -0.5);
-  return coord;
-}
+// since we pre-process externally, we can't preserve preprocessor commands through to use them for
+// optional extensions. Instead we set defines externally and use those entirely, and require the
+// extension whenever they're set.
+//
+// TEXSAMPLE_CUBE_ARRAY: GL_ARB_texture_cube_map_array
+// TEXSAMPLE_MULTISAMPLE: GL_ARB_texture_multisample
 
 #if UINT_TEX
 
-// these bindings are defined based on the RESTYPE_ defines in debuguniforms.h
+// these bindings are defined based on the RESTYPE_ defines in glsl_ubos.h
 
-layout(binding = 1) uniform usampler1D texUInt1D;
-layout(binding = 2) uniform usampler2D texUInt2D;
-layout(binding = 3) uniform usampler3D texUInt3D;
+uniform usampler1D texUInt1D;
+uniform usampler2D texUInt2D;
+uniform usampler3D texUInt3D;
 // cube = 4
-layout(binding = 5) uniform usampler1DArray texUInt1DArray;
-layout(binding = 6) uniform usampler2DArray texUInt2DArray;
+uniform usampler1DArray texUInt1DArray;
+uniform usampler2DArray texUInt2DArray;
 // cube array = 7
-layout(binding = 8) uniform usampler2DRect texUInt2DRect;
-layout(binding = 9) uniform usamplerBuffer texUIntBuffer;
-layout(binding = 10) uniform usampler2DMS texUInt2DMS;
+uniform usampler2DRect texUInt2DRect;
+uniform usamplerBuffer texUIntBuffer;
+#ifdef TEXSAMPLE_MULTISAMPLE
+uniform usampler2DMS texUInt2DMS;
+uniform usampler2DMSArray texUInt2DMSArray;
+#endif
 
-vec4 SampleTextureFloat4(int type, vec2 pos, float slice, int mipLevel, int sampleIdx, vec3 texRes)
+vec4 SampleTextureFloat4(int type, vec2 pos, float slice, int mipLevel, int sampleIdx, vec3 texRes,
+                         uvec4 YUVDownsampleRate, uvec4 YUVAChannels)
 {
   return vec4(0.0f, 0.0f, 0.0f, 0.0f);
 }
@@ -88,10 +78,25 @@ uvec4 SampleTextureUInt4(int type, vec2 pos, float slice, int mipLevel, int samp
   }
   else if(type == RESTYPE_TEX2DMS)
   {
+#ifdef TEXSAMPLE_MULTISAMPLE
     if(sampleIdx < 0)
       sampleIdx = 0;
 
     col = texelFetch(texUInt2DMS, ivec2(pos * texRes.xy), sampleIdx);
+#else
+    col = uvec4(0u, 0u, 0u, 0u);
+#endif
+  }
+  else if(type == RESTYPE_TEX2DMSARRAY)
+  {
+#ifdef TEXSAMPLE_MULTISAMPLE
+    if(sampleIdx < 0)
+      sampleIdx = 0;
+
+    col = texelFetch(texUInt2DMSArray, ivec3(pos * texRes.xy, slice), sampleIdx);
+#else
+    col = uvec4(0u, 0u, 0u, 0u);
+#endif
   }
   else if(type == RESTYPE_TEX2DARRAY)
   {
@@ -112,20 +117,24 @@ ivec4 SampleTextureSInt4(int type, vec2 pos, float slice, int mipLevel, int samp
 
 #elif SINT_TEX
 
-// these bindings are defined based on the RESTYPE_ defines in debuguniforms.h
+// these bindings are defined based on the RESTYPE_ defines in glsl_ubos.h
 
-layout(binding = 1) uniform isampler1D texSInt1D;
-layout(binding = 2) uniform isampler2D texSInt2D;
-layout(binding = 3) uniform isampler3D texSInt3D;
+uniform isampler1D texSInt1D;
+uniform isampler2D texSInt2D;
+uniform isampler3D texSInt3D;
 // cube = 4
-layout(binding = 5) uniform isampler1DArray texSInt1DArray;
-layout(binding = 6) uniform isampler2DArray texSInt2DArray;
+uniform isampler1DArray texSInt1DArray;
+uniform isampler2DArray texSInt2DArray;
 // cube array = 7
-layout(binding = 8) uniform isampler2DRect texSInt2DRect;
-layout(binding = 9) uniform isamplerBuffer texSIntBuffer;
-layout(binding = 10) uniform isampler2DMS texSInt2DMS;
+uniform isampler2DRect texSInt2DRect;
+uniform isamplerBuffer texSIntBuffer;
+#ifdef TEXSAMPLE_MULTISAMPLE
+uniform isampler2DMS texSInt2DMS;
+uniform isampler2DMSArray texSInt2DMSArray;
+#endif
 
-vec4 SampleTextureFloat4(int type, vec2 pos, float slice, int mipLevel, int sampleIdx, vec3 texRes)
+vec4 SampleTextureFloat4(int type, vec2 pos, float slice, int mipLevel, int sampleIdx, vec3 texRes,
+                         uvec4 YUVDownsampleRate, uvec4 YUVAChannels)
 {
   return vec4(0.0f, 0.0f, 0.0f, 0.0f);
 }
@@ -160,10 +169,25 @@ ivec4 SampleTextureSInt4(int type, vec2 pos, float slice, int mipLevel, int samp
   }
   else if(type == RESTYPE_TEX2DMS)
   {
+#ifdef TEXSAMPLE_MULTISAMPLE
     if(sampleIdx < 0)
       sampleIdx = 0;
 
     col = texelFetch(texSInt2DMS, ivec2(pos * texRes.xy), sampleIdx);
+#else
+    col = ivec4(0, 0, 0, 0);
+#endif
+  }
+  else if(type == RESTYPE_TEX2DMSARRAY)
+  {
+#ifdef TEXSAMPLE_MULTISAMPLE
+    if(sampleIdx < 0)
+      sampleIdx = 0;
+
+    col = texelFetch(texSInt2DMSArray, ivec3(pos * texRes.xy, slice), sampleIdx);
+#else
+    col = ivec4(0, 0, 0, 0);
+#endif
   }
   else if(type == RESTYPE_TEX2DARRAY)
   {
@@ -179,20 +203,26 @@ ivec4 SampleTextureSInt4(int type, vec2 pos, float slice, int mipLevel, int samp
 
 #else
 
-// these bindings are defined based on the RESTYPE_ defines in debuguniforms.h
+// these bindings are defined based on the RESTYPE_ defines in glsl_ubos.h
 
-layout(binding = 1) uniform sampler1D tex1D;
-layout(binding = 2) uniform sampler2D tex2D;
-layout(binding = 3) uniform sampler3D tex3D;
-layout(binding = 4) uniform samplerCube texCube;
-layout(binding = 5) uniform sampler1DArray tex1DArray;
-layout(binding = 6) uniform sampler2DArray tex2DArray;
-layout(binding = 7) uniform samplerCubeArray texCubeArray;
-layout(binding = 8) uniform sampler2DRect tex2DRect;
-layout(binding = 9) uniform samplerBuffer texBuffer;
-layout(binding = 10) uniform sampler2DMS tex2DMS;
+uniform sampler1D tex1D;
+uniform sampler2D tex2D;
+uniform sampler3D tex3D;
+uniform samplerCube texCube;
+uniform sampler1DArray tex1DArray;
+uniform sampler2DArray tex2DArray;
+#ifdef TEXSAMPLE_CUBE_ARRAY
+uniform samplerCubeArray texCubeArray;
+#endif
+uniform sampler2DRect tex2DRect;
+uniform samplerBuffer texBuffer;
+#ifdef TEXSAMPLE_MULTISAMPLE
+uniform sampler2DMS tex2DMS;
+uniform sampler2DMSArray tex2DMSArray;
+#endif
 
-vec4 SampleTextureFloat4(int type, vec2 pos, float slice, int mipLevel, int sampleIdx, vec3 texRes)
+vec4 SampleTextureFloat4(int type, vec2 pos, float slice, int mipLevel, int sampleIdx, vec3 texRes,
+                         uvec4 YUVDownsampleRate, uvec4 YUVAChannels)
 {
   vec4 col;
   if(type == RESTYPE_TEX1D)
@@ -217,9 +247,12 @@ vec4 SampleTextureFloat4(int type, vec2 pos, float slice, int mipLevel, int samp
   }
   else if(type == RESTYPE_TEX2DMS)
   {
+#ifdef TEXSAMPLE_MULTISAMPLE
     if(sampleIdx < 0)
     {
       int sampleCount = -sampleIdx;
+
+      col = vec4(0, 0, 0, 0);
 
       // worst resolve you've seen in your life
       // it's manually unrolled because doing it as a dynamic loop on
@@ -271,6 +304,72 @@ vec4 SampleTextureFloat4(int type, vec2 pos, float slice, int mipLevel, int samp
     {
       col = texelFetch(tex2DMS, ivec2(pos * texRes.xy), sampleIdx);
     }
+#else
+    col = vec4(0.0f, 0.0f, 0.0f, 0.0f);
+#endif
+  }
+  else if(type == RESTYPE_TEX2DMSARRAY)
+  {
+#ifdef TEXSAMPLE_MULTISAMPLE
+    if(sampleIdx < 0)
+    {
+      int sampleCount = -sampleIdx;
+
+      col = vec4(0, 0, 0, 0);
+
+      // worst resolve you've seen in your life
+      // it's manually unrolled because doing it as a dynamic loop on
+      // sampleCount seems to produce crazy artifacts on nvidia - probably a compiler bug
+      if(sampleCount == 2)
+      {
+        col += 0.5f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 0);
+        col += 0.5f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 1);
+      }
+      else if(sampleCount == 4)
+      {
+        col += 0.25f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 0);
+        col += 0.25f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 1);
+        col += 0.25f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 2);
+        col += 0.25f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 3);
+      }
+      else if(sampleCount == 8)
+      {
+        col += 0.125f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 0);
+        col += 0.125f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 1);
+        col += 0.125f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 2);
+        col += 0.125f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 3);
+        col += 0.125f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 4);
+        col += 0.125f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 5);
+        col += 0.125f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 6);
+        col += 0.125f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 7);
+      }
+      else if(sampleCount == 16)
+      {
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 0);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 1);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 2);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 3);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 4);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 5);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 6);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 7);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 8);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 9);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 10);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 11);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 12);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 13);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 14);
+        col += 0.0625f * texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), 15);
+      }
+    }
+    else
+    {
+      col = texelFetch(tex2DMSArray, ivec3(pos * texRes.xy, slice), sampleIdx);
+    }
+#else
+    col = vec4(0.0f, 0.0f, 0.0f, 0.0f);
+#endif
   }
   else if(type == RESTYPE_TEX2DARRAY)
   {
@@ -288,10 +387,14 @@ vec4 SampleTextureFloat4(int type, vec2 pos, float slice, int mipLevel, int samp
   }
   else    // type == RESTYPE_TEXCUBEARRAY
   {
+#ifdef TEXSAMPLE_CUBE_ARRAY
     vec3 cubeCoord = CalcCubeCoord(pos, int(slice) % 6);
     vec4 arrayCoord = vec4(cubeCoord, int(slice) / 6);
 
     col = textureLod(texCubeArray, arrayCoord, float(mipLevel));
+#else
+    col = vec4(0.0f, 0.0f, 0.0f, 0.0f);
+#endif
   }
 
   return col;

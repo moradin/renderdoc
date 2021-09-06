@@ -1,18 +1,18 @@
 /******************************************************************************
  * The MIT License (MIT)
- * 
- * Copyright (c) 2015-2016 Baldur Karlsson
- * 
+ *
+ * Copyright (c) 2020-2021 Baldur Karlsson
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -21,24 +21,15 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  ******************************************************************************/
- 
-#define NUM_RAMP_COLOURS 128
 
-layout(binding = 1) uniform OverdrawRampColors
-{
-	vec4 colors[NUM_RAMP_COLOURS];
-} ramp;
+#include "glsl_globals.h"
 
-layout (location = 0) in float pixarea;
+IO_LOCATION(0) in float pixarea;
 
-layout (location = 0) out vec4 color_out;
+IO_LOCATION(0) out vec4 color_out;
 
 void main(void)
 {
-	// bucket triangle area
-	float area = max(pixarea, 0.001f);
-
-	int bucket = 2 + int( floor(20.0f - 20.1f * (1.0f - exp(-0.4f * area) ) ) );
-	
-	color_out = ramp.colors[bucket];
+  float area = max(pixarea, 0.001f);
+  color_out = vec4(area, area, area, 1.0f);
 }

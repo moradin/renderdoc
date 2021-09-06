@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2020-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,48 +22,62 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-//#extension GL_ARB_compute_shader : require
+#if defined(GLES)
+#extension GL_OES_texture_storage_multisample_2d_array : require
+#elif defined(OPENGL_CORE)
+#extension GL_ARB_compute_shader : require
 
-layout (local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+// safe to assume this extension in compute shaders as it pre-dates compute shaders
+#extension GL_ARB_shading_language_420pack : require
+#endif
 
-layout(binding = 0) uniform usampler2DArray srcArray;
+#include "glsl_globals.h"
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) uniform PRECISION usampler2DArray srcArray;
 // binding = 1 used as stencil read in the depth-stencil copy fragment shaders
-layout(binding = 2) writeonly uniform uimage2DMSArray dstMS;
 
 #ifdef VULKAN
 
+layout(binding = 2) writeonly uniform PRECISION uimage2DMSArray dstMS;
+
 layout(push_constant) uniform multisamplePush
 {
-	int numMultiSamples;
-	int currentSample;
-	int currentSlice;
-	uint currentStencil;
-} mscopy;
+  int numMultiSamples;
+  int sampleOffset;
+  int sliceOffset;
+  uint currentStencil;
+}
+mscopy;
 
 #define numMultiSamples (mscopy.numMultiSamples)
-#define currentSample (mscopy.currentSample)
-#define currentSlice (mscopy.currentSlice)
+#define sampleOffset (mscopy.sampleOffset)
+#define sliceOffset (mscopy.sliceOffset)
 #define currentStencil (mscopy.currentStencil)
 
 #else
 
-uniform uvec4 mscopy;
+layout(rgba32ui, binding = 2) writeonly uniform PRECISION uimage2DMSArray dstMS;
 
-#define numMultiSamples (int(mscopy.x))
-#define currentSample (mscopy.y)
-#define currentSlice (mscopy.z)
+uniform ivec4 mscopy;
+
+#define numMultiSamples (mscopy.x)
+#define sampleOffset (mscopy.y)
+#define sliceOffset (mscopy.z)
 #define currentStencil (mscopy.w)
 
 #endif
 
 void main()
 {
-	uvec3 id = gl_GlobalInvocationID;
+  ivec3 id = ivec3(gl_GlobalInvocationID);
 
-	int slice = int(id.z / numMultiSamples);
-	int sampleIdx = int(id.z % numMultiSamples);
+  int slice = sliceOffset + int(id.z / numMultiSamples);
+  int sampleIdx = sampleOffset + int(id.z % numMultiSamples);
 
-	uvec4 data = texelFetch(srcArray, ivec3(int(id.x), int(id.y), int(id.z)), 0);
+  uvec4 data =
+      texelFetch(srcArray, ivec3(int(id.x), int(id.y), slice *numMultiSamples + sampleIdx), 0);
 
-	imageStore(dstMS, ivec3(int(id.x), int(id.y), slice), sampleIdx, data);
+  imageStore(dstMS, ivec3(int(id.x), int(id.y), slice), sampleIdx, data);
 }

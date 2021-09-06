@@ -8,7 +8,7 @@
 /* this ALWAYS GENERATED file contains the definitions for the interfaces */
 
 
- /* File created by MIDL compiler version 8.01.0618 */
+ /* File created by MIDL compiler version 8.01.0622 */
 /* @@MIDL_FILE_HEADING(  ) */
 
 
@@ -1050,6 +1050,10 @@ extern "C"{
 #define _D3D11_2_CONSTANTS
 #define	D3D11_2_TILED_RESOURCE_TILE_SIZE_IN_BYTES	( 65536 )
 
+#define	D3D11_4_VIDEO_DECODER_MAX_HISTOGRAM_COMPONENTS	( 4 )
+
+#define	D3D11_4_VIDEO_DECODER_HISTOGRAM_OFFSET_ALIGNMENT	( 256 )
+
 #endif
 #define	_FACD3D11	( 0x87c )
 
@@ -1289,8 +1293,7 @@ typedef RECT D3D11_RECT;
 }
 struct CD3D11_RECT : public D3D11_RECT
 {
-    CD3D11_RECT()
-    {}
+    CD3D11_RECT() = default;
     explicit CD3D11_RECT( const D3D11_RECT& o ) :
         D3D11_RECT( o )
     {}
@@ -1306,7 +1309,6 @@ struct CD3D11_RECT : public D3D11_RECT
         bottom = Bottom;
     }
     ~CD3D11_RECT() {}
-    operator const D3D11_RECT&() const { return *this; }
 };
 inline bool operator==( const D3D11_RECT& l, const D3D11_RECT& r )
 {
@@ -1331,8 +1333,7 @@ typedef struct D3D11_BOX
 }
 struct CD3D11_BOX : public D3D11_BOX
 {
-    CD3D11_BOX()
-    {}
+    CD3D11_BOX() = default;
     explicit CD3D11_BOX( const D3D11_BOX& o ) :
         D3D11_BOX( o )
     {}
@@ -1352,7 +1353,6 @@ struct CD3D11_BOX : public D3D11_BOX
         back = Back;
     }
     ~CD3D11_BOX() {}
-    operator const D3D11_BOX&() const { return *this; }
 };
 inline bool operator==( const D3D11_BOX& l, const D3D11_BOX& r )
 {
@@ -1568,8 +1568,7 @@ typedef struct D3D11_DEPTH_STENCIL_DESC
 }
 struct CD3D11_DEPTH_STENCIL_DESC : public D3D11_DEPTH_STENCIL_DESC
 {
-    CD3D11_DEPTH_STENCIL_DESC()
-    {}
+    CD3D11_DEPTH_STENCIL_DESC() = default;
     explicit CD3D11_DEPTH_STENCIL_DESC( const D3D11_DEPTH_STENCIL_DESC& o ) :
         D3D11_DEPTH_STENCIL_DESC( o )
     {}
@@ -1618,7 +1617,6 @@ struct CD3D11_DEPTH_STENCIL_DESC : public D3D11_DEPTH_STENCIL_DESC
         BackFace.StencilFunc = backStencilFunc;
     }
     ~CD3D11_DEPTH_STENCIL_DESC() {}
-    operator const D3D11_DEPTH_STENCIL_DESC&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -1822,8 +1820,7 @@ typedef struct D3D11_BLEND_DESC
 }
 struct CD3D11_BLEND_DESC : public D3D11_BLEND_DESC
 {
-    CD3D11_BLEND_DESC()
-    {}
+    CD3D11_BLEND_DESC() = default;
     explicit CD3D11_BLEND_DESC( const D3D11_BLEND_DESC& o ) :
         D3D11_BLEND_DESC( o )
     {}
@@ -1842,7 +1839,6 @@ struct CD3D11_BLEND_DESC : public D3D11_BLEND_DESC
             RenderTarget[ i ] = defaultRenderTargetBlendDesc;
     }
     ~CD3D11_BLEND_DESC() {}
-    operator const D3D11_BLEND_DESC&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -1997,8 +1993,7 @@ typedef struct D3D11_RASTERIZER_DESC
 }
 struct CD3D11_RASTERIZER_DESC : public D3D11_RASTERIZER_DESC
 {
-    CD3D11_RASTERIZER_DESC()
-    {}
+    CD3D11_RASTERIZER_DESC() = default;
     explicit CD3D11_RASTERIZER_DESC( const D3D11_RASTERIZER_DESC& o ) :
         D3D11_RASTERIZER_DESC( o )
     {}
@@ -2039,7 +2034,6 @@ struct CD3D11_RASTERIZER_DESC : public D3D11_RASTERIZER_DESC
         AntialiasedLineEnable = antialiasedLineEnable;
     }
     ~CD3D11_RASTERIZER_DESC() {}
-    operator const D3D11_RASTERIZER_DESC&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -2363,8 +2357,7 @@ typedef struct D3D11_BUFFER_DESC
 }
 struct CD3D11_BUFFER_DESC : public D3D11_BUFFER_DESC
 {
-    CD3D11_BUFFER_DESC()
-    {}
+    CD3D11_BUFFER_DESC() = default;
     explicit CD3D11_BUFFER_DESC( const D3D11_BUFFER_DESC& o ) :
         D3D11_BUFFER_DESC( o )
     {}
@@ -2384,7 +2377,6 @@ struct CD3D11_BUFFER_DESC : public D3D11_BUFFER_DESC
         StructureByteStride = structureByteStride;
     }
     ~CD3D11_BUFFER_DESC() {}
-    operator const D3D11_BUFFER_DESC&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -2560,8 +2552,7 @@ typedef struct D3D11_TEXTURE1D_DESC
 }
 struct CD3D11_TEXTURE1D_DESC : public D3D11_TEXTURE1D_DESC
 {
-    CD3D11_TEXTURE1D_DESC()
-    {}
+    CD3D11_TEXTURE1D_DESC() = default;
     explicit CD3D11_TEXTURE1D_DESC( const D3D11_TEXTURE1D_DESC& o ) :
         D3D11_TEXTURE1D_DESC( o )
     {}
@@ -2585,7 +2576,6 @@ struct CD3D11_TEXTURE1D_DESC : public D3D11_TEXTURE1D_DESC
         MiscFlags = miscFlags;
     }
     ~CD3D11_TEXTURE1D_DESC() {}
-    operator const D3D11_TEXTURE1D_DESC&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -2763,8 +2753,7 @@ typedef struct D3D11_TEXTURE2D_DESC
 }
 struct CD3D11_TEXTURE2D_DESC : public D3D11_TEXTURE2D_DESC
 {
-    CD3D11_TEXTURE2D_DESC()
-    {}
+    CD3D11_TEXTURE2D_DESC() = default;
     explicit CD3D11_TEXTURE2D_DESC( const D3D11_TEXTURE2D_DESC& o ) :
         D3D11_TEXTURE2D_DESC( o )
     {}
@@ -2794,7 +2783,6 @@ struct CD3D11_TEXTURE2D_DESC : public D3D11_TEXTURE2D_DESC
         MiscFlags = miscFlags;
     }
     ~CD3D11_TEXTURE2D_DESC() {}
-    operator const D3D11_TEXTURE2D_DESC&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -2971,8 +2959,7 @@ typedef struct D3D11_TEXTURE3D_DESC
 }
 struct CD3D11_TEXTURE3D_DESC : public D3D11_TEXTURE3D_DESC
 {
-    CD3D11_TEXTURE3D_DESC()
-    {}
+    CD3D11_TEXTURE3D_DESC() = default;
     explicit CD3D11_TEXTURE3D_DESC( const D3D11_TEXTURE3D_DESC& o ) :
         D3D11_TEXTURE3D_DESC( o )
     {}
@@ -2998,7 +2985,6 @@ struct CD3D11_TEXTURE3D_DESC : public D3D11_TEXTURE3D_DESC
         MiscFlags = miscFlags;
     }
     ~CD3D11_TEXTURE3D_DESC() {}
-    operator const D3D11_TEXTURE3D_DESC&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -3412,8 +3398,7 @@ typedef struct D3D11_SHADER_RESOURCE_VIEW_DESC
 }
 struct CD3D11_SHADER_RESOURCE_VIEW_DESC : public D3D11_SHADER_RESOURCE_VIEW_DESC
 {
-    CD3D11_SHADER_RESOURCE_VIEW_DESC()
-    {}
+    CD3D11_SHADER_RESOURCE_VIEW_DESC() = default;
     explicit CD3D11_SHADER_RESOURCE_VIEW_DESC( const D3D11_SHADER_RESOURCE_VIEW_DESC& o ) :
         D3D11_SHADER_RESOURCE_VIEW_DESC( o )
     {}
@@ -3610,7 +3595,6 @@ struct CD3D11_SHADER_RESOURCE_VIEW_DESC : public D3D11_SHADER_RESOURCE_VIEW_DESC
         Texture3D.MipLevels = mipLevels;
     }
     ~CD3D11_SHADER_RESOURCE_VIEW_DESC() {}
-    operator const D3D11_SHADER_RESOURCE_VIEW_DESC&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -3833,8 +3817,7 @@ typedef struct D3D11_RENDER_TARGET_VIEW_DESC
 }
 struct CD3D11_RENDER_TARGET_VIEW_DESC : public D3D11_RENDER_TARGET_VIEW_DESC
 {
-    CD3D11_RENDER_TARGET_VIEW_DESC()
-    {}
+    CD3D11_RENDER_TARGET_VIEW_DESC() = default;
     explicit CD3D11_RENDER_TARGET_VIEW_DESC( const D3D11_RENDER_TARGET_VIEW_DESC& o ) :
         D3D11_RENDER_TARGET_VIEW_DESC( o )
     {}
@@ -3985,7 +3968,6 @@ struct CD3D11_RENDER_TARGET_VIEW_DESC : public D3D11_RENDER_TARGET_VIEW_DESC
         Texture3D.WSize = wSize;
     }
     ~CD3D11_RENDER_TARGET_VIEW_DESC() {}
-    operator const D3D11_RENDER_TARGET_VIEW_DESC&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -4135,8 +4117,7 @@ EXTERN_C const IID IID_ID3D11RenderTargetView;
 }
 struct CD3D11_VIEWPORT : public D3D11_VIEWPORT
 {
-    CD3D11_VIEWPORT()
-    {}
+    CD3D11_VIEWPORT() = default;
     explicit CD3D11_VIEWPORT( const D3D11_VIEWPORT& o ) :
         D3D11_VIEWPORT( o )
     {}
@@ -4274,7 +4255,6 @@ struct CD3D11_VIEWPORT : public D3D11_VIEWPORT
         MaxDepth = maxDepth;
     }
     ~CD3D11_VIEWPORT() {}
-    operator const D3D11_VIEWPORT&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -4340,8 +4320,7 @@ typedef struct D3D11_DEPTH_STENCIL_VIEW_DESC
 }
 struct CD3D11_DEPTH_STENCIL_VIEW_DESC : public D3D11_DEPTH_STENCIL_VIEW_DESC
 {
-    CD3D11_DEPTH_STENCIL_VIEW_DESC()
-    {}
+    CD3D11_DEPTH_STENCIL_VIEW_DESC() = default;
     explicit CD3D11_DEPTH_STENCIL_VIEW_DESC( const D3D11_DEPTH_STENCIL_VIEW_DESC& o ) :
         D3D11_DEPTH_STENCIL_VIEW_DESC( o )
     {}
@@ -4458,7 +4437,6 @@ struct CD3D11_DEPTH_STENCIL_VIEW_DESC : public D3D11_DEPTH_STENCIL_VIEW_DESC
         }
     }
     ~CD3D11_DEPTH_STENCIL_VIEW_DESC() {}
-    operator const D3D11_DEPTH_STENCIL_VIEW_DESC&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -4669,8 +4647,7 @@ typedef struct D3D11_UNORDERED_ACCESS_VIEW_DESC
 }
 struct CD3D11_UNORDERED_ACCESS_VIEW_DESC : public D3D11_UNORDERED_ACCESS_VIEW_DESC
 {
-    CD3D11_UNORDERED_ACCESS_VIEW_DESC()
-    {}
+    CD3D11_UNORDERED_ACCESS_VIEW_DESC() = default;
     explicit CD3D11_UNORDERED_ACCESS_VIEW_DESC( const D3D11_UNORDERED_ACCESS_VIEW_DESC& o ) :
         D3D11_UNORDERED_ACCESS_VIEW_DESC( o )
     {}
@@ -4811,7 +4788,6 @@ struct CD3D11_UNORDERED_ACCESS_VIEW_DESC : public D3D11_UNORDERED_ACCESS_VIEW_DE
         Texture3D.WSize = wSize;
     }
     ~CD3D11_UNORDERED_ACCESS_VIEW_DESC() {}
-    operator const D3D11_UNORDERED_ACCESS_VIEW_DESC&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -5884,8 +5860,7 @@ typedef struct D3D11_SAMPLER_DESC
 }
 struct CD3D11_SAMPLER_DESC : public D3D11_SAMPLER_DESC
 {
-    CD3D11_SAMPLER_DESC()
-    {}
+    CD3D11_SAMPLER_DESC() = default;
     explicit CD3D11_SAMPLER_DESC( const D3D11_SAMPLER_DESC& o ) :
         D3D11_SAMPLER_DESC( o )
     {}
@@ -5934,7 +5909,6 @@ struct CD3D11_SAMPLER_DESC : public D3D11_SAMPLER_DESC
         MaxLOD = maxLOD;
     }
     ~CD3D11_SAMPLER_DESC() {}
-    operator const D3D11_SAMPLER_DESC&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -6296,8 +6270,7 @@ typedef struct D3D11_QUERY_DESC
 }
 struct CD3D11_QUERY_DESC : public D3D11_QUERY_DESC
 {
-    CD3D11_QUERY_DESC()
-    {}
+    CD3D11_QUERY_DESC() = default;
     explicit CD3D11_QUERY_DESC( const D3D11_QUERY_DESC& o ) :
         D3D11_QUERY_DESC( o )
     {}
@@ -6309,7 +6282,6 @@ struct CD3D11_QUERY_DESC : public D3D11_QUERY_DESC
         MiscFlags = miscFlags;
     }
     ~CD3D11_QUERY_DESC() {}
-    operator const D3D11_QUERY_DESC&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -6634,8 +6606,7 @@ typedef struct D3D11_COUNTER_DESC
 }
 struct CD3D11_COUNTER_DESC : public D3D11_COUNTER_DESC
 {
-    CD3D11_COUNTER_DESC()
-    {}
+    CD3D11_COUNTER_DESC() = default;
     explicit CD3D11_COUNTER_DESC( const D3D11_COUNTER_DESC& o ) :
         D3D11_COUNTER_DESC( o )
     {}
@@ -6647,7 +6618,6 @@ struct CD3D11_COUNTER_DESC : public D3D11_COUNTER_DESC
         MiscFlags = miscFlags;
     }
     ~CD3D11_COUNTER_DESC() {}
-    operator const D3D11_COUNTER_DESC&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -7307,7 +7277,9 @@ enum D3D11_FEATURE
         D3D11_FEATURE_D3D11_OPTIONS2	= ( D3D11_FEATURE_D3D9_OPTIONS1 + 1 ) ,
         D3D11_FEATURE_D3D11_OPTIONS3	= ( D3D11_FEATURE_D3D11_OPTIONS2 + 1 ) ,
         D3D11_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT	= ( D3D11_FEATURE_D3D11_OPTIONS3 + 1 ) ,
-        D3D11_FEATURE_D3D11_OPTIONS4	= ( D3D11_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT + 1 ) 
+        D3D11_FEATURE_D3D11_OPTIONS4	= ( D3D11_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT + 1 ) ,
+        D3D11_FEATURE_SHADER_CACHE	= ( D3D11_FEATURE_D3D11_OPTIONS4 + 1 ) ,
+        D3D11_FEATURE_D3D11_OPTIONS5	= ( D3D11_FEATURE_SHADER_CACHE + 1 ) 
     } 	D3D11_FEATURE;
 
 typedef struct D3D11_FEATURE_DATA_THREADING
@@ -7463,6 +7435,33 @@ typedef struct D3D11_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT
     UINT MaxGPUVirtualAddressBitsPerResource;
     UINT MaxGPUVirtualAddressBitsPerProcess;
     } 	D3D11_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT;
+
+typedef 
+enum D3D11_SHADER_CACHE_SUPPORT_FLAGS
+    {
+        D3D11_SHADER_CACHE_SUPPORT_NONE	= 0,
+        D3D11_SHADER_CACHE_SUPPORT_AUTOMATIC_INPROC_CACHE	= 0x1,
+        D3D11_SHADER_CACHE_SUPPORT_AUTOMATIC_DISK_CACHE	= 0x2
+    } 	D3D11_SHADER_CACHE_SUPPORT_FLAGS;
+
+typedef struct D3D11_FEATURE_DATA_SHADER_CACHE
+    {
+    UINT SupportFlags;
+    } 	D3D11_FEATURE_DATA_SHADER_CACHE;
+
+typedef 
+enum D3D11_SHARED_RESOURCE_TIER
+    {
+        D3D11_SHARED_RESOURCE_TIER_0	= 0,
+        D3D11_SHARED_RESOURCE_TIER_1	= ( D3D11_SHARED_RESOURCE_TIER_0 + 1 ) ,
+        D3D11_SHARED_RESOURCE_TIER_2	= ( D3D11_SHARED_RESOURCE_TIER_1 + 1 ) ,
+        D3D11_SHARED_RESOURCE_TIER_3	= ( D3D11_SHARED_RESOURCE_TIER_2 + 1 ) 
+    } 	D3D11_SHARED_RESOURCE_TIER;
+
+typedef struct D3D11_FEATURE_DATA_D3D11_OPTIONS5
+    {
+    D3D11_SHARED_RESOURCE_TIER SharedResourceTier;
+    } 	D3D11_FEATURE_DATA_D3D11_OPTIONS5;
 
 
 
@@ -10047,11 +10046,14 @@ enum D3D11_CONTENT_PROTECTION_CAPS
         D3D11_CONTENT_PROTECTION_CAPS_HARDWARE_PROTECT_UNCOMPRESSED	= 0x800,
         D3D11_CONTENT_PROTECTION_CAPS_HARDWARE_PROTECTED_MEMORY_PAGEABLE	= 0x1000,
         D3D11_CONTENT_PROTECTION_CAPS_HARDWARE_TEARDOWN	= 0x2000,
-        D3D11_CONTENT_PROTECTION_CAPS_HARDWARE_DRM_COMMUNICATION	= 0x4000
+        D3D11_CONTENT_PROTECTION_CAPS_HARDWARE_DRM_COMMUNICATION	= 0x4000,
+        D3D11_CONTENT_PROTECTION_CAPS_HARDWARE_DRM_COMMUNICATION_MULTI_THREADED	= 0x8000
     } 	D3D11_CONTENT_PROTECTION_CAPS;
 
 DEFINE_GUID(D3D11_CRYPTO_TYPE_AES128_CTR, 0x9b6bd711, 0x4f74, 0x41c9, 0x9e, 0x7b, 0xb, 0xe2, 0xd7, 0xd9, 0x3b, 0x4f );
 DEFINE_GUID(D3D11_DECODER_ENCRYPTION_HW_CENC, 0x89d6ac4f, 0x9f2, 0x4229, 0xb2, 0xcd, 0x37, 0x74, 0xa, 0x6d, 0xfd, 0x81);
+DEFINE_GUID(D3D11_DECODER_BITSTREAM_ENCRYPTION_TYPE_CENC, 0xb0405235, 0xc13d, 0x44f2, 0x9a, 0xe5, 0xdd, 0x48, 0xe0, 0x8e, 0x5b, 0x67);
+DEFINE_GUID(D3D11_DECODER_BITSTREAM_ENCRYPTION_TYPE_CBCS, 0x422d9319, 0x9d21, 0x4bb7, 0x93, 0x71, 0xfa, 0xf5, 0xa8, 0x2c, 0x3e, 0x04);
 DEFINE_GUID(D3D11_KEY_EXCHANGE_HW_PROTECTION, 0xb1170d8a, 0x628d, 0x4da3, 0xad, 0x3b, 0x82, 0xdd, 0xb0, 0x8b, 0x49, 0x70);
 typedef struct D3D11_VIDEO_CONTENT_PROTECTION_CAPS
     {

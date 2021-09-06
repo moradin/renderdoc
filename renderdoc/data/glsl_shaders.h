@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,15 +22,25 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-enum ShaderType
+enum class ShaderType
 {
-  eShaderGLSL,
-  eShaderVulkan
+  GLSL,
+  GLSLES,
+  Vulkan,
+  GLSPIRV,
 };
 
-#include <string>
-#include <vector>
+#include <functional>
+#include "api/replay/rdcstr.h"
 
-void GenerateGLSLShader(std::vector<std::string> &sources, ShaderType type,
-                        const std::string &defines, const std::string &shader, int version,
-                        bool uniforms = true);
+rdcstr GenerateGLSLShader(const rdcstr &shader, ShaderType type, int version,
+                          const rdcstr &defines = "");
+
+// for unit tests
+struct ShaderReflection;
+struct ShaderBindpointMapping;
+enum class ShaderStage : uint32_t;
+using ReflectionMaker =
+    std::function<void(ShaderStage stage, const rdcstr &source, const rdcstr &entryPoint,
+                       ShaderReflection &refl, ShaderBindpointMapping &mapping)>;
+void TestGLSLReflection(ShaderType testType, ReflectionMaker compile);

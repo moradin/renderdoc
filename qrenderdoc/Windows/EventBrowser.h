@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,76 +26,233 @@
 
 #include <QFrame>
 #include <QIcon>
-#include "Code/CaptureContext.h"
+#include <QLabel>
+#include <QSet>
+#include "Code/Interface/QRDInterface.h"
 
 namespace Ui
 {
 class EventBrowser;
 }
 
-class QTreeWidgetItem;
+class QSpacerItem;
+class QToolButton;
 class QTimer;
-class SizeDelegate;
+class QTextStream;
+class FlowLayout;
+struct EventItemTag;
+class RDLabel;
+class RDTreeWidget;
+class RDTreeWidgetItem;
+class RDTextEdit;
+class QListWidget;
+class QCheckBox;
+class QCompleter;
+class QStringListModel;
 
-class EventBrowser : public QFrame, public ILogViewerForm
+typedef QSet<uint> RDTreeViewExpansionState;
+
+class RichTextViewDelegate;
+struct EventItemModel;
+struct EventFilterModel;
+
+struct ParseTrace;
+
+class MarkerBreadcrumbs;
+
+enum class MatchType
+{
+  MustMatch,
+  Normal,
+  CantMatch
+};
+
+struct FilterExpression
+{
+  MatchType matchType;
+
+  bool function;
+  QString name;
+  QString params;
+
+  QString printName() const
+  {
+    if(name == lit("$any$"))
+      return lit("(...)");
+    if(function)
+      return QFormatStr("$%1(%2)").arg(name).arg(params);
+    return name;
+  }
+
+  int position = -1;
+  int length = 0;
+
+  QColor col;
+
+  QVector<FilterExpression> exprs;
+};
+
+class ParseErrorTipLabel : public QLabel
 {
 private:
   Q_OBJECT
 
+  QPoint m_Pos;
+  QWidget *m_Widget;
+
 public:
-  explicit EventBrowser(CaptureContext *ctx, QWidget *parent = 0);
+  explicit ParseErrorTipLabel(QWidget *widget);
+
+protected:
+  void paintEvent(QPaintEvent *);
+  void resizeEvent(QResizeEvent *);
+};
+
+class EventBrowser : public QFrame, public IEventBrowser, public ICaptureViewer
+{
+private:
+  Q_OBJECT
+
+  Q_PROPERTY(QVariant persistData READ persistData WRITE setPersistData DESIGNABLE false SCRIPTABLE false)
+
+public:
+  explicit EventBrowser(ICaptureContext &ctx, QWidget *parent = 0);
   ~EventBrowser();
 
-  void OnLogfileLoaded();
-  void OnLogfileClosed();
-  void OnEventSelected(uint32_t eventID);
+  // IEventBrowser
+  QWidget *Widget() override { return this; }
+  void UpdateDurationColumn() override;
+  APIEvent GetAPIEventForEID(uint32_t eid) override;
+  const ActionDescription *GetActionForEID(uint32_t eid) override;
+  rdcstr GetEventName(uint32_t eventId) override;
+  bool IsAPIEventVisible(uint32_t eid) override;
+  bool RegisterEventFilterFunction(const rdcstr &name, const rdcstr &description,
+                                   EventFilterCallback filter, FilterParseCallback parser,
+                                   AutoCompleteCallback completer) override;
+  bool UnregisterEventFilterFunction(const rdcstr &name) override;
+
+  void SetCurrentFilterText(const rdcstr &text) override;
+  rdcstr GetCurrentFilterText() override;
+  void SetUseCustomActionNames(bool use) override;
+  void SetShowParameterNames(bool show) override;
+  void SetShowAllParameters(bool show) override;
+  void SetEmptyRegionsVisible(bool show) override;
+
+  // ICaptureViewer
+  void OnCaptureLoaded() override;
+  void OnCaptureClosed() override;
+  void OnSelectedEventChanged(uint32_t eventId) override {}
+  void OnEventChanged(uint32_t eventId) override;
+
+  QVariant persistData();
+  void setPersistData(const QVariant &persistData);
 
 private slots:
   // automatic slots
-  void on_find_clicked();
-  void on_gotoEID_clicked();
-  void on_timeDraws_clicked();
-  void on_toolButton_clicked();
-  void on_HideFindJump();
-  void on_jumpToEID_returnPressed();
+  void on_find_toggled(bool checked);
+  void on_timeActions_clicked();
+  void on_bookmark_clicked();
+  void on_HideFind();
   void on_findEvent_returnPressed();
+  void on_findEvent_keyPress(QKeyEvent *event);
   void on_findEvent_textEdited(const QString &arg1);
-  void on_events_currentItemChanged(QTreeWidgetItem *current, QTreeWidgetItem *previous);
+  void on_filterExpression_keyPress(QKeyEvent *event);
+  void on_filterExpression_textChanged();
+  void on_filterExpression_mouseMoved(QMouseEvent *event);
+  void on_filterExpression_hoverEnter();
+  void on_filterExpression_hoverLeave();
   void on_findNext_clicked();
   void on_findPrev_clicked();
+  void on_stepNext_clicked();
+  void on_stepPrev_clicked();
+  void on_exportActions_clicked();
+  void on_colSelect_clicked();
 
   // manual slots
   void findHighlight_timeout();
+  void explanation_currentItemChanged(RDTreeWidgetItem *current, RDTreeWidgetItem *prev);
+  void settings_filterApply();
+  void filterSettings_clicked();
+  void filter_forceCompletion_keyPress(QKeyEvent *e);
+  void savedFilter_keyPress(QKeyEvent *e);
+  void filter_CompletionBegin(QString prefix);
+  void filter_apply();
+  void events_keyPress(QKeyEvent *event);
+  void events_contextMenu(const QPoint &pos);
+  void events_currentChanged(const QModelIndex &current, const QModelIndex &previous);
 
 private:
-  uint AddDrawcalls(QTreeWidgetItem *parent, const rdctype::array<FetchDrawcall> &draws);
-  void SetDrawcallTimes(QTreeWidgetItem *node, const rdctype::array<CounterResult> &results);
+  void ExpandNode(QModelIndex idx);
 
-  void ExpandNode(QTreeWidgetItem *node);
+  bool SelectEvent(uint32_t eventId);
+  void SelectEvent(QModelIndex found);
+  void FindNext(bool forward);
 
-  bool FindEventNode(QTreeWidgetItem *&found, QTreeWidgetItem *parent, uint32_t eventID);
-  bool SelectEvent(uint32_t eventID);
+  void updateFindResultsAvailable(bool forceNoResults);
 
-  void ClearFindIcons(QTreeWidgetItem *parent);
-  void ClearFindIcons();
+  void clearBookmarks();
+  void jumpToBookmark(int idx);
+  void repopulateBookmarks();
+  void highlightBookmarks();
 
-  int SetFindIcons(QTreeWidgetItem *parent, QString filter);
-  int SetFindIcons(QString filter);
-
-  QTreeWidgetItem *FindNode(QTreeWidgetItem *parent, QString filter, uint32_t after);
-  int FindEvent(QTreeWidgetItem *parent, QString filter, uint32_t after, bool forward);
+  int FindEvent(QModelIndex parent, QString filter, uint32_t after, bool forward);
   int FindEvent(QString filter, uint32_t after, bool forward);
   void Find(bool forward);
 
-  QIcon m_CurrentIcon;
-  QIcon m_FindIcon;
-  QIcon m_BookmarkIcon;
+  void ShowSavedFilterCompleter(RDTextEdit *filter);
+  void CreateFilterDialog();
 
-  SizeDelegate *m_SizeDelegate;
-  QTimer *m_FindHighlight;
+  void AddFilterExplanations(RDTreeWidgetItem *root, QVector<FilterExpression> exprs, QString &notes);
 
-  void RefreshIcon(QTreeWidgetItem *item);
+  QString GetExportString(int indent, bool firstchild, const QModelIndex &idx);
+  void GetMaxNameLength(int &maxNameLength, int indent, bool firstchild, const QModelIndex &idx);
+  void ExportAction(QTextStream &writer, int maxNameLength, int indent, bool firstchild,
+                    const QModelIndex &idx);
 
+  QPalette m_redPalette;
+
+  RichTextViewDelegate *m_delegate = NULL;
+
+  EventItemModel *m_Model;
+  EventFilterModel *m_FilterModel;
+
+  TimeUnit m_TimeUnit = TimeUnit::Count;
+
+  RDTreeViewExpansionState m_EventsExpansion;
+
+  QTimer *m_FindHighlight, *m_FilterTimeout;
+
+  ParseTrace *m_ParseTrace;
+  ParseErrorTipLabel *m_ParseError;
+  QPoint m_ParseErrorPos;
+
+  FlowLayout *m_BookmarkStripLayout;
+  QSpacerItem *m_BookmarkSpacer;
+  QMap<uint32_t, QToolButton *> m_BookmarkButtons;
+
+  MarkerBreadcrumbs *m_Breadcrumbs;
+
+  struct
+  {
+    QDialog *Dialog;
+    RDLabel *Notes;
+    QListWidget *FuncList;
+    RDTextEdit *FuncDocs;
+    RDTextEdit *Filter;
+    RDTreeWidget *Explanation;
+
+    QCheckBox *ShowParams;
+    QCheckBox *ShowAll;
+    QCheckBox *UseCustom;
+
+    QTimer *Timeout;
+  } m_FilterSettings;
+
+  QCompleter *m_SavedCompleter;
+  QStringListModel *m_SavedCompletionModel;
+  RDTextEdit *m_CurrentFilterText;
+
+  void RefreshShaderMessages();
   Ui::EventBrowser *ui;
-  CaptureContext *m_Ctx;
+  ICaptureContext &m_Ctx;
 };

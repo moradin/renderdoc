@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,6 +23,8 @@
  ******************************************************************************/
 
 #include "RDLineEdit.h"
+#include <QKeyEvent>
+#include "Code/Interface/QRDInterface.h"
 
 RDLineEdit::RDLineEdit(QWidget *parent) : QLineEdit(parent)
 {
@@ -48,4 +50,19 @@ void RDLineEdit::keyPressEvent(QKeyEvent *e)
 {
   QLineEdit::keyPressEvent(e);
   emit(keyPress(e));
+}
+
+bool RDLineEdit::event(QEvent *e)
+{
+  if(m_acceptTabs && e->type() == QEvent::KeyPress)
+  {
+    QKeyEvent *ke = (QKeyEvent *)e;
+    if(ke->key() == Qt::Key_Tab)
+    {
+      keyPressEvent(ke);
+      e->accept();
+      return true;
+    }
+  }
+  return QLineEdit::event(e);
 }

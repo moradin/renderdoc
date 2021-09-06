@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,11 +22,18 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+// for dl_iterate_phdr
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <execinfo.h>
+#include <link.h>
 #include <stdio.h>
 #include <string.h>
 #include <map>
-#include <vector>
+#include "common/common.h"
+#include "common/formatting.h"
 #include "os/os_specific.h"
 
 void *renderdocBase = NULL;
@@ -46,11 +53,11 @@ public:
   void Set(uint64_t *calls, size_t num)
   {
     numLevels = num;
-    for(int i = 0; i < numLevels; i++)
+    for(size_t i = 0; i < numLevels; i++)
       addrs[i] = calls[i];
   }
 
-  size_t NumLevels() const { return size_t(numLevels); }
+  size_t NumLevels() const { return numLevels; }
   const uint64_t *GetAddrs() const { return addrs; }
 private:
   LinuxCallstack(const Callstack::Stackwalk &other);
@@ -59,7 +66,11 @@ private:
   {
     void *addrs_ptr[ARRAY_COUNT(addrs)];
 
-    numLevels = backtrace(addrs_ptr, ARRAY_COUNT(addrs));
+    int ret = backtrace(addrs_ptr, ARRAY_COUNT(addrs));
+
+    numLevels = 0;
+    if(ret > 0)
+      numLevels = (size_t)ret;
 
     int offs = 0;
     // if we want to trim levels of the stack, we can do that here
@@ -70,12 +81,12 @@ private:
       numLevels--;
     }
 
-    for(int i = 0; i < numLevels; i++)
+    for(size_t i = 0; i < numLevels; i++)
       addrs[i] = (uint64_t)addrs_ptr[i + offs];
   }
 
   uint64_t addrs[128];
-  int numLevels;
+  size_t numLevels;
 };
 
 namespace Callstack
@@ -83,7 +94,7 @@ namespace Callstack
 void Init()
 {
   // look for our own line
-  FILE *f = FileIO::fopen("/proc/self/maps", "r");
+  FILE *f = FileIO::fopen("/proc/self/maps", FileIO::ReadText);
 
   if(f)
   {
@@ -114,35 +125,60 @@ Stackwalk *Create()
   return new LinuxCallstack(NULL, 0);
 }
 
-bool GetLoadedModules(char *&buf, size_t &size)
+static int dl_iterate_callback(struct dl_phdr_info *info, size_t size, void *data)
 {
-  // we just dump the whole file rather than pre-parsing, that way we can improve
-  // parsing without needing to recapture
-  FILE *f = FileIO::fopen("/proc/self/maps", "r");
+  if(info->dlpi_name == NULL)
+  {
+    RDCLOG("Skipping NULL entry!");
+    return 0;
+  }
+
+  rdcstr *out = (rdcstr *)data;
+
+  rdcstr name = info->dlpi_name;
+  if(name.empty())
+    FileIO::GetExecutableFilename(name);
+
+  name = FileIO::GetFullPathname(name);
+
+  for(int j = 0; j < info->dlpi_phnum; j++)
+  {
+    uint32_t rxMask = PF_R | PF_X;
+    if(info->dlpi_phdr[j].p_type == PT_LOAD && (info->dlpi_phdr[j].p_flags & rxMask) == rxMask)
+    {
+      uint64_t baseAddr = info->dlpi_addr + info->dlpi_phdr[j].p_vaddr;
+      *out += StringFormat::Fmt("%llx-%llx r-xp %08x 123:45 12345678    %s\n", baseAddr,
+                                baseAddr + info->dlpi_phdr[j].p_memsz, info->dlpi_phdr[j].p_vaddr,
+                                name.c_str());
+    }
+  }
+
+  return 0;
+}
+
+bool GetLoadedModules(byte *buf, size_t &size)
+{
+  size = 0;
 
   if(buf)
   {
-    buf[0] = 'L';
-    buf[1] = 'N';
-    buf[2] = 'U';
-    buf[3] = 'X';
-    buf[4] = 'C';
-    buf[5] = 'A';
-    buf[6] = 'L';
-    buf[7] = 'L';
+    memcpy(buf, "LNUXCALL", 8);
+    buf += 8;
   }
 
   size += 8;
 
-  char dummy[512];
+  // generate a fake /proc/self/maps. This is mostly for backwards compatibility, we could generate
+  // a more compact representation. The slight difference is that we change how we calculate the
+  // offset for each segment, so that we handle non-PIE executables properly.
+  rdcstr fake_maps;
 
-  while(!feof(f))
-  {
-    char *readbuf = buf ? buf + size : dummy;
-    size += FileIO::fread(readbuf, 1, 512, f);
-  }
+  dl_iterate_phdr(dl_iterate_callback, &fake_maps);
 
-  FileIO::fclose(f);
+  size += fake_maps.size();
+
+  if(buf)
+    memcpy(buf, fake_maps.data(), fake_maps.size());
 
   return true;
 }
@@ -151,13 +187,14 @@ struct LookupModule
 {
   uint64_t base;
   uint64_t end;
+  uint64_t offset;
   char path[2048];
 };
 
 class LinuxResolver : public Callstack::StackResolver
 {
 public:
-  LinuxResolver(vector<LookupModule> modules) { m_Modules = modules; }
+  LinuxResolver(rdcarray<LookupModule> modules) { m_Modules = modules; }
   Callstack::AddressDetails GetAddr(uint64_t addr)
   {
     EnsureCached(addr);
@@ -183,9 +220,12 @@ private:
     {
       if(addr >= m_Modules[i].base && addr < m_Modules[i].end)
       {
-        uint64_t relative = addr - m_Modules[i].base;
-        string cmd =
-            StringFormat::Fmt("addr2line -j.text -fCe \"%s\" 0x%llx", m_Modules[i].path, relative);
+        RDCLOG("%llx relative to module %llx-%llx, with offset %llx", addr, m_Modules[i].base,
+               m_Modules[i].end, m_Modules[i].offset);
+        uint64_t relative = addr - m_Modules[i].base + m_Modules[i].offset;
+        rdcstr cmd = StringFormat::Fmt("addr2line -fCe \"%s\" 0x%llx", m_Modules[i].path, relative);
+
+        RDCLOG(": %s", cmd.c_str());
 
         FILE *f = ::popen(cmd.c_str(), "r");
 
@@ -205,18 +245,24 @@ private:
 
         if(line2)
         {
-          char *last = line2 + strlen(line2) - 1;
-          uint32_t mul = 1;
+          char *linenum = line2 + strlen(line2) - 1;
+          while(linenum > line2 && *linenum != ':')
+            linenum--;
+
           ret.line = 0;
-          while(*last >= '0' && *last <= '9')
+
+          if(*linenum == ':')
           {
-            ret.line += mul * (uint32_t(*last) - uint32_t('0'));
-            *last = 0;
-            last--;
-            mul *= 10;
+            *linenum = 0;
+            linenum++;
+
+            while(*linenum >= '0' && *linenum <= '9')
+            {
+              ret.line *= 10;
+              ret.line += (uint32_t(*linenum) - uint32_t('0'));
+              linenum++;
+            }
           }
-          if(*last == ':')
-            *last = 0;
 
           ret.filename = line2;
         }
@@ -226,57 +272,60 @@ private:
     }
   }
 
-  std::vector<LookupModule> m_Modules;
+  rdcarray<LookupModule> m_Modules;
   std::map<uint64_t, Callstack::AddressDetails> m_Cache;
 };
 
-StackResolver *MakeResolver(char *moduleDB, size_t DBSize, string pdbSearchPaths,
-                            volatile bool *killSignal)
+StackResolver *MakeResolver(bool interactive, byte *moduleDB, size_t DBSize,
+                            RENDERDOC_ProgressCallback progress)
 {
   // we look in the original locations for the files, we don't prompt if we can't
   // find the file, or the file doesn't have symbols (and we don't validate that
   // the file is the right version). A good option for doing this would be
   // http://github.com/mlabbe/nativefiledialog
 
-  bool valid = true;
-  if(memcmp(moduleDB, "LNUXCALL", 8))
+  if(DBSize < 8 || memcmp(moduleDB, "LNUXCALL", 8))
   {
     RDCWARN("Can't load callstack resolve for this log. Possibly from another platform?");
-    valid = false;
+    return NULL;
   }
 
-  char *search = moduleDB + 8;
+  char *start = (char *)(moduleDB + 8);
+  char *search = start;
+  char *dbend = (char *)(moduleDB + DBSize);
 
-  vector<LookupModule> modules;
+  rdcarray<LookupModule> modules;
 
-  while(valid && search && size_t(search - moduleDB) < DBSize)
+  while(search && search < dbend)
   {
-    if(killSignal && *killSignal)
-      break;
+    if(progress)
+      progress(float(search - start) / float(DBSize));
 
     // find .text segments
     {
-      long unsigned int base = 0, end = 0;
+      long unsigned int base = 0, end = 0, offset = 0;
 
       int inode = 0;
       int offs = 0;
       //                        base-end   perms offset devid   inode offs
-      int num = sscanf(search, "%lx-%lx  r-xp  %*x    %*x:%*x %d    %n", &base, &end, &inode, &offs);
+      int num = sscanf(search, "%lx-%lx  r-xp  %lx    %*x:%*x %d    %n", &base, &end, &offset,
+                       &inode, &offs);
 
       // we don't care about inode actually, we ust use it to verify that
-      // we read all 3 params (and so perms == r-xp)
-      if(num == 3 && offs > 0)
+      // we read all 4 params (and so perms == r-xp)
+      if(num == 4 && offs > 0)
       {
         LookupModule mod = {0};
 
         mod.base = (uint64_t)base;
         mod.end = (uint64_t)end;
+        mod.offset = (uint64_t)offset;
 
         search += offs;
-        while(size_t(search - moduleDB) < DBSize && (*search == ' ' || *search == '\t'))
+        while(search < dbend && (*search == ' ' || *search == '\t'))
           search++;
 
-        if(size_t(search - moduleDB) < DBSize && *search != '[' && *search != 0 && *search != '\n')
+        if(search < dbend && *search != '[' && *search != 0 && *search != '\n')
         {
           size_t n = ARRAY_COUNT(mod.path) - 1;
           mod.path[n] = 0;
@@ -287,7 +336,7 @@ StackResolver *MakeResolver(char *moduleDB, size_t DBSize, string pdbSearchPaths
               mod.path[i] = 0;
               break;
             }
-            if(search + i >= moduleDB + DBSize)
+            if(search + i >= dbend)
             {
               mod.path[i] = 0;
               break;
@@ -295,42 +344,15 @@ StackResolver *MakeResolver(char *moduleDB, size_t DBSize, string pdbSearchPaths
             mod.path[i] = search[i];
           }
 
-          // addr2line wants offsets relative to text section, have to find offset of .text section
-          // in this
-          // mmapped section
-
-          int textoffs = 0;
-          string cmd = StringFormat::Fmt("readelf -WS \"%s\"", mod.path);
-
-          FILE *f = ::popen(cmd.c_str(), "r");
-
-          char result[4096] = {0};
-          fread(result, 1, 4095, f);
-
-          fclose(f);
-
-          // find .text line
-          char *find = strstr(result, ".text");
-
-          if(find)
-          {
-            find += 5;
-
-            while(isalpha(*find) || isspace(*find))
-              find++;
-
-            // virtual address is listed first, we want the offset
-            sscanf(find, "%*x %x", &textoffs);
-
-            mod.base += textoffs;
-
-            modules.push_back(mod);
-          }
+          modules.push_back(mod);
         }
       }
     }
 
-    if(search >= (char *)(moduleDB + DBSize))
+    if(progress)
+      progress(RDCMIN(1.0f, float(search - start) / float(DBSize)));
+
+    if(search >= dbend)
       break;
 
     search = strchr(search, '\n');

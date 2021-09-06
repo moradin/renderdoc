@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,207 +24,229 @@
 
 #pragma once
 
-#include "api/replay/renderdoc_replay.h"
 #include "core/core.h"
-#include "driver/shaders/dxbc/dxbc_debug.h"
 #include "replay/replay_driver.h"
 #include "d3d12_common.h"
+#include "d3d12_state.h"
 
 class WrappedID3D12Device;
 class D3D12ResourceManager;
+struct D3D12Descriptor;
+
+namespace DXBC
+{
+class DXBCContainer;
+};
+
+#define D3D12_MSAA_SAMPLECOUNT 4
+
+// baked indices in descriptor heaps
+enum CBVUAVSRVSlot
+{
+  FIRST_TEXDISPLAY_SRV = 0,
+  MINMAX_TILE_SRVS = 128,
+
+  MINMAX_TILE_UAVS = MINMAX_TILE_SRVS + 3,
+  MINMAX_RESULT_UAVS = MINMAX_TILE_UAVS + 3,
+  HISTOGRAM_UAV = MINMAX_RESULT_UAVS + 3,
+
+  OVERDRAW_SRV,
+  OVERDRAW_UAV,
+  STREAM_OUT_UAV,
+
+  PICK_IB_SRV,
+  PICK_VB_SRV,
+  PICK_RESULT_UAV,
+  PICK_RESULT_CLEAR_UAV,
+
+  SHADER_DEBUG_UAV,
+  SHADER_DEBUG_MSAA_UAV,
+
+  TMP_UAV,
+
+  FEEDBACK_CLEAR_UAV,
+
+  MSAA_SRV2x,
+  MSAA_SRV4x,
+  MSAA_SRV8x,
+  MSAA_SRV16x,
+  MSAA_SRV32x,
+  STENCIL_MSAA_SRV2x,
+  STENCIL_MSAA_SRV4x,
+  STENCIL_MSAA_SRV8x,
+  STENCIL_MSAA_SRV16x,
+  STENCIL_MSAA_SRV32x,
+
+  MAX_SRV_SLOT,
+};
+
+enum RTVSlot
+{
+  PICK_PIXEL_RTV,
+  CUSTOM_SHADER_RTV,
+  OVERLAY_RTV,
+  GET_TEX_RTV,
+  MSAA_RTV,
+  SHADER_DEBUG_RTV,
+  FIRST_TMP_RTV,
+  LAST_TMP_RTV = FIRST_TMP_RTV + 16,
+  FIRST_WIN_RTV,
+};
+
+enum SamplerSlot
+{
+  POINT_SAMP,
+  FIRST_SAMP = POINT_SAMP,
+  LINEAR_SAMP,
+};
+
+enum DSVSlot
+{
+  OVERLAY_DSV,
+  MSAA_DSV,
+  TMP_DSV,
+  FIRST_WIN_DSV,
+};
+
+struct MeshDisplayPipelines
+{
+  enum
+  {
+    ePipe_Wire = 0,
+    ePipe_WireDepth,
+    ePipe_Solid,
+    ePipe_SolidDepth,
+    ePipe_Lit,
+    ePipe_Secondary,
+    ePipe_Count,
+  };
+
+  ID3D12PipelineState *pipes[ePipe_Count] = {};
+  ID3D12RootSignature *rootsig = NULL;
+};
 
 class D3D12DebugManager
 {
 public:
   D3D12DebugManager(WrappedID3D12Device *wrapper);
-
   ~D3D12DebugManager();
 
-  uint64_t MakeOutputWindow(WindowingSystem system, void *data, bool depth);
-  void DestroyOutputWindow(uint64_t id);
-  bool CheckResizeOutputWindow(uint64_t id);
-  void GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h);
-  void ClearOutputWindowColour(uint64_t id, float col[4]);
-  void ClearOutputWindowDepth(uint64_t id, float depth, uint8_t stencil);
-  void BindOutputWindow(uint64_t id, bool depth);
-  bool IsOutputWindowVisible(uint64_t id);
-  void FlipOutputWindow(uint64_t id);
-
-  void SetOutputDimensions(int w, int h, DXGI_FORMAT fmt)
-  {
-    m_width = w;
-    m_height = h;
-
-    if(fmt == DXGI_FORMAT_B8G8R8A8_UNORM)
-      m_BBFmtIdx = BGRA8_BACKBUFFER;
-    else if(fmt == DXGI_FORMAT_R16G16B16A16_FLOAT)
-      m_BBFmtIdx = RGBA16_BACKBUFFER;
-    else if(fmt == DXGI_FORMAT_R32G32B32A32_FLOAT)
-      m_BBFmtIdx = RGBA32_BACKBUFFER;
-    else
-      m_BBFmtIdx = RGBA8_BACKBUFFER;
-  }
-  int GetWidth() { return m_width; }
-  int GetHeight() { return m_height; }
-  void RenderText(ID3D12GraphicsCommandList *list, float x, float y, const char *textfmt, ...);
-
-  void RenderHighlightBox(float w, float h, float scale);
-
-  void RenderCheckerboard(Vec3f light, Vec3f dark);
-  bool RenderTexture(TextureDisplay cfg, bool blendAlpha);
-
-  void PickPixel(ResourceId texture, uint32_t x, uint32_t y, uint32_t sliceFace, uint32_t mip,
-                 uint32_t sample, FormatComponentType typeHint, float pixel[4]);
-
-  void FillCBufferVariables(const vector<DXBC::CBufferVariable> &invars,
-                            vector<ShaderVariable> &outvars, bool flattenVec4s,
-                            const vector<byte> &data);
-
-  void GetBufferData(ResourceId buff, uint64_t offset, uint64_t length, vector<byte> &retData);
-  void GetBufferData(ID3D12Resource *buff, uint64_t offset, uint64_t length, vector<byte> &retData);
-
-  void BuildShader(string source, string entry, const uint32_t compileFlags, ShaderStageType type,
-                   ResourceId *id, string *errors);
-
-  D3D12_CPU_DESCRIPTOR_HANDLE AllocRTV();
-  void FreeRTV(D3D12_CPU_DESCRIPTOR_HANDLE handle);
-
-  static D3D12RootSignature GetRootSig(const void *data, size_t dataSize);
-
-private:
-  struct OutputWindow
-  {
-    HWND wnd;
-    IDXGISwapChain *swap;
-    ID3D12Resource *bb[2];
-    uint32_t bbIdx;
-    ID3D12Resource *col;
-    ID3D12Resource *depth;
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv;
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv;
-
-    WrappedID3D12Device *dev;
-
-    void MakeRTV(bool multisampled);
-    void MakeDSV();
-
-    int width, height;
-  };
+  void GetBufferData(ID3D12Resource *buff, uint64_t offset, uint64_t length, bytebuf &retData);
 
   ID3D12Resource *MakeCBuffer(UINT64 size);
-  void FillBuffer(ID3D12Resource *buf, void *data, size_t size);
+  void FillBuffer(ID3D12Resource *buf, size_t offset, const void *data, size_t size);
+  D3D12_GPU_VIRTUAL_ADDRESS UploadConstants(const void *data, size_t size);
 
-  static const int FONT_TEX_WIDTH = 256;
-  static const int FONT_TEX_HEIGHT = 128;
-  static const int FONT_MAX_CHARS = 256;
+  ID3D12RootSignature *GetMeshRootSig() { return m_MeshRootSig; }
+  ID3D12RootSignature *GetMathIntrinsicsRootSig() { return m_MathIntrinsicsRootSig; }
+  ID3D12PipelineState *GetMathIntrinsicsPso() { return m_MathIntrinsicsPso; }
+  ID3D12Resource *GetMathIntrinsicsResultBuffer() { return m_MathIntrinsicsResultBuffer; }
+  ID3D12GraphicsCommandListX *ResetDebugList();
+  void ResetDebugAlloc();
 
-  // how much character space is in the ring buffer
-  static const int FONT_BUFFER_CHARS = 8192;
+  void FillWithDiscardPattern(ID3D12GraphicsCommandListX *cmd, const D3D12RenderState &state,
+                              DiscardType type, ID3D12Resource *res,
+                              const D3D12_DISCARD_REGION *region);
 
-  // index in SRV heap
-  static const int FONT_SRV = 128;
+  D3D12_CPU_DESCRIPTOR_HANDLE GetCPUHandle(CBVUAVSRVSlot slot);
+  D3D12_CPU_DESCRIPTOR_HANDLE GetCPUHandle(RTVSlot slot);
+  D3D12_CPU_DESCRIPTOR_HANDLE GetCPUHandle(DSVSlot slot);
 
-  enum
-  {
-    FIXED_RTV_PICK_PIXEL,
-    FIXED_RTV_CUSTOM_SHADER,
-    FIXED_RTV_COUNT,
-  };
+  D3D12_GPU_DESCRIPTOR_HANDLE GetGPUHandle(CBVUAVSRVSlot slot);
+  D3D12_GPU_DESCRIPTOR_HANDLE GetGPUHandle(RTVSlot slot);
+  D3D12_GPU_DESCRIPTOR_HANDLE GetGPUHandle(DSVSlot slot);
+  D3D12_GPU_DESCRIPTOR_HANDLE GetGPUHandle(SamplerSlot slot);
 
-  // indices for the pipelines, for the three possible backbuffer formats
-  enum
-  {
-    BGRA8_BACKBUFFER = 0,
-    RGBA8_BACKBUFFER,
-    RGBA16_BACKBUFFER,
-    RGBA32_BACKBUFFER,
-    FMTNUM_BACKBUFFER,
-  } m_BBFmtIdx;
+  D3D12_CPU_DESCRIPTOR_HANDLE GetTempDescriptor(const D3D12Descriptor &desc, size_t idx = 0);
 
-  struct FontData
-  {
-    FontData() { RDCEraseMem(this, sizeof(FontData)); }
-    ~FontData()
-    {
-      SAFE_RELEASE(Tex);
-      SAFE_RELEASE(RootSig);
-      SAFE_RELEASE(GlyphData);
-      SAFE_RELEASE(CharBuffer);
+  void SetDescriptorHeaps(ID3D12GraphicsCommandList *list, bool cbvsrvuav, bool samplers);
 
-      for(size_t i = 0; i < ARRAY_COUNT(Constants); i++)
-        SAFE_RELEASE(Constants[i]);
-      for(int i = 0; i < ARRAY_COUNT(Pipe); i++)
-        SAFE_RELEASE(Pipe[i]);
-    }
+  D3D12_CPU_DESCRIPTOR_HANDLE GetUAVClearHandle(CBVUAVSRVSlot slot);
 
-    ID3D12Resource *Tex;
-    ID3D12PipelineState *Pipe[FMTNUM_BACKBUFFER];
-    ID3D12RootSignature *RootSig;
-    ID3D12Resource *Constants[20];
-    ID3D12Resource *GlyphData;
-    ID3D12Resource *CharBuffer;
+  void PrepareTextureSampling(ID3D12Resource *resource, CompType typeCast, int &resType,
+                              rdcarray<D3D12_RESOURCE_BARRIER> &barriers);
 
-    size_t CharOffset;
-    size_t ConstRingIdx;
+  MeshDisplayPipelines CacheMeshDisplayPipelines(const MeshFormat &primary,
+                                                 const MeshFormat &secondary);
 
-    float CharAspect;
-    float CharSize;
-  } m_Font;
+  void CopyTex2DMSToArray(ID3D12GraphicsCommandList *list, ID3D12Resource *destArray,
+                          ID3D12Resource *srcMS);
+  void CopyArrayToTex2DMS(ID3D12Resource *destMS, ID3D12Resource *srcArray, UINT selectedSlice);
 
-  ID3D12DescriptorHeap *cbvsrvHeap;
-  ID3D12DescriptorHeap *samplerHeap;
-  ID3D12DescriptorHeap *rtvHeap;
-  ID3D12DescriptorHeap *dsvHeap;
+private:
+  bool CreateMathIntrinsicsResources();
 
-  ID3D12Resource *m_GenericVSCbuffer;
-  ID3D12Resource *m_GenericPSCbuffer;
+  rdcpair<ID3D12PipelineState *, ID3D12PipelineState *> D3D12DebugManager::GetMSToArrayPSOs(
+      DXGI_FORMAT format);
 
-  ID3D12PipelineState *m_TexDisplayPipe;
-  ID3D12PipelineState *m_TexDisplayF32Pipe;
-  ID3D12PipelineState *m_TexDisplayBlendPipe;
+  std::map<DXGI_FORMAT, rdcpair<ID3D12PipelineState *, ID3D12PipelineState *>> m_MS2ArrayPSOCache;
 
-  ID3D12RootSignature *m_TexDisplayRootSig;
+  WrappedID3D12Device *m_pDevice = NULL;
 
-  ID3D12PipelineState *m_CheckerboardPipe;
+  // heaps
+  ID3D12DescriptorHeap *cbvsrvuavHeap = NULL;
+  ID3D12DescriptorHeap *uavClearHeap = NULL;
+  ID3D12DescriptorHeap *samplerHeap = NULL;
+  ID3D12DescriptorHeap *rtvHeap = NULL;
+  ID3D12DescriptorHeap *dsvHeap = NULL;
 
-  ID3D12Resource *m_PickPixelTex;
-  D3D12_CPU_DESCRIPTOR_HANDLE m_PickPixelRTV;
+  // PrepareTextureSampling
+  ID3D12Resource *m_TexResource = NULL;
 
-  ID3D12GraphicsCommandList *m_ReadbackList;
-  ID3D12CommandAllocator *m_ReadbackAlloc;
-  ID3D12Resource *m_ReadbackBuffer;
+  // UploadConstants
+  ID3D12Resource *m_RingConstantBuffer = NULL;
+  UINT64 m_RingConstantOffset = 0;
 
-  ID3D12Resource *m_TexResource;
+  // CacheMeshDisplayPipelines
+  ID3DBlob *m_MeshVS = NULL;
+  ID3DBlob *m_MeshGS = NULL;
+  ID3DBlob *m_MeshPS = NULL;
+  ID3D12RootSignature *m_MeshRootSig = NULL;
+  std::map<uint64_t, MeshDisplayPipelines> m_CachedMeshPipelines;
 
+  // Shader debugging resources
+  ID3D12RootSignature *m_MathIntrinsicsRootSig = NULL;
+  ID3D12PipelineState *m_MathIntrinsicsPso = NULL;
+  ID3D12Resource *m_MathIntrinsicsResultBuffer = NULL;
+
+  // GetBufferData
   static const uint64_t m_ReadbackSize = 16 * 1024 * 1024;
 
-  static const uint32_t m_ShaderCacheMagic = 0xbaafd1d1;
-  static const uint32_t m_ShaderCacheVersion = 1;
+  ID3D12Resource *m_ReadbackBuffer = NULL;
 
-  bool m_ShaderCacheDirty, m_CacheShaders;
-  map<uint32_t, ID3DBlob *> m_ShaderCache;
+  // Array <-> MSAA copying
+  ID3D12RootSignature *m_ArrayMSAARootSig = NULL;
+  ID3DBlob *m_FullscreenVS = NULL;
 
-  void FillCBufferVariables(const string &prefix, size_t &offset, bool flatten,
-                            const vector<DXBC::CBufferVariable> &invars,
-                            vector<ShaderVariable> &outvars, const vector<byte> &data);
+  ID3DBlob *m_IntMS2Array = NULL;
+  ID3DBlob *m_FloatMS2Array = NULL;
+  ID3DBlob *m_DepthMS2Array = NULL;
 
-  void RenderTextInternal(ID3D12GraphicsCommandList *list, float x, float y, const char *text);
-  bool RenderTextureInternal(D3D12_CPU_DESCRIPTOR_HANDLE rtv, TextureDisplay cfg, bool blendAlpha);
+  ID3DBlob *m_IntArray2MS = NULL;
+  ID3DBlob *m_FloatArray2MS = NULL;
+  ID3DBlob *m_DepthArray2MS = NULL;
 
-  string GetShaderBlob(const char *source, const char *entry, const uint32_t compileFlags,
-                       const char *profile, ID3DBlob **srcblob);
-  static ID3DBlob *MakeRootSig(const vector<D3D12_ROOT_PARAMETER> &rootSig);
-  int m_width, m_height;
+  // Debug lists
+  ID3D12GraphicsCommandListX *m_DebugList = NULL;
+  ID3D12CommandAllocator *m_DebugAlloc = NULL;
+  ID3D12Fence *m_DebugFence = NULL;
 
-  uint64_t m_OutputWindowID;
-  uint64_t m_DSVID;
-  uint64_t m_CurrentOutputWindow;
-  map<uint64_t, OutputWindow> m_OutputWindows;
+  // Discard pattern rendering
+  ID3DBlob *m_DiscardFloatPS = NULL;
+  ID3DBlob *m_DiscardIntPS = NULL;
+  ID3D12Resource *m_DiscardConstants = NULL;
+  ID3D12RootSignature *m_DiscardRootSig = NULL;
 
-  WrappedID3D12Device *m_WrappedDevice;
-  ID3D12Device *m_Device;
-
-  IDXGIFactory4 *m_pFactory;
-
-  D3D12ResourceManager *m_ResourceManager;
+  std::map<rdcpair<DXGI_FORMAT, UINT>, ID3D12PipelineState *> m_DiscardPipes;
+  std::map<DXGI_FORMAT, ID3D12Resource *> m_DiscardPatterns;
+  rdcarray<ID3D12Resource *> m_DiscardBuffers;
 };
+
+void MoveRootSignatureElementsToRegisterSpace(D3D12RootSignature &sig, uint32_t registerSpace,
+                                              D3D12DescriptorType type,
+                                              D3D12_SHADER_VISIBILITY visibility);
+
+void AddDebugDescriptorsToRenderState(WrappedID3D12Device *pDevice, D3D12RenderState &rs,
+                                      const rdcarray<PortableHandle> &handles,
+                                      D3D12_DESCRIPTOR_HEAP_TYPE heapType, uint32_t sigElem,
+                                      std::set<ResourceId> &copiedHeaps);

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,34 +24,38 @@
 
 #include "ResourcePreview.h"
 #include <QMouseEvent>
+#include "Code/QRDUtils.h"
 #include "ui_ResourcePreview.h"
 
-ResourcePreview::ResourcePreview(CaptureContext *c, IReplayOutput *output, QWidget *parent)
+ResourcePreview::ResourcePreview(ICaptureContext &c, IReplayOutput *output, QWidget *parent)
     : QFrame(parent), ui(new Ui::ResourcePreview)
 {
   ui->setupUi(this);
 
-  CustomPaintWidget *thumb = new CustomPaintWidget(c, this);
-  thumb->setOutput(output);
-  thumb->setObjectName(ui->thumbnail->objectName());
-  thumb->setSizePolicy(ui->thumbnail->sizePolicy());
-  thumb->setMinimumSize(QSize(0, 0));
+  ui->thumbnail->SetContext(c);
+  ui->thumbnail->SetOutput(output);
 
-  delete ui->thumbnail;
-  ui->thumbnail = thumb;
-  ui->gridLayout->addWidget(ui->thumbnail, 0, 0, 1, 2);
+  setBackgroundRole(QPalette::Background);
+  setForegroundRole(QPalette::Foreground);
 
-  QPalette Pal(ui->slotLabel->palette());
+  QPalette Pal(palette());
 
-  QWidget tmp;
+  Pal.setColor(QPalette::Highlight, QColor(Qt::red));
 
-  Pal.setColor(ui->slotLabel->foregroundRole(), tmp.palette().color(QPalette::Foreground));
-  Pal.setColor(ui->slotLabel->backgroundRole(), tmp.palette().color(QPalette::Dark));
+  setPalette(Pal);
 
+  setSelected(false);
+
+  ui->slotLabel->setPalette(palette());
+  ui->slotLabel->setBackgroundRole(QPalette::Dark);
+  ui->slotLabel->setForegroundRole(QPalette::Foreground);
   ui->slotLabel->setAutoFillBackground(true);
-  ui->slotLabel->setPalette(Pal);
+  ui->slotLabel->setFont(Formatter::PreferredFont());
+  ui->descriptionLabel->setPalette(palette());
   ui->descriptionLabel->setAutoFillBackground(true);
-  ui->descriptionLabel->setPalette(Pal);
+  ui->descriptionLabel->setBackgroundRole(QPalette::Dark);
+  ui->descriptionLabel->setForegroundRole(QPalette::Foreground);
+  ui->descriptionLabel->setFont(Formatter::PreferredFont());
 
   QObject::connect(ui->thumbnail, &CustomPaintWidget::clicked, this, &ResourcePreview::clickEvent);
   QObject::connect(ui->slotLabel, &RDLabel::clicked, this, &ResourcePreview::clickEvent);
@@ -99,14 +103,12 @@ void ResourcePreview::setSize(QSize s)
 
 void ResourcePreview::setSelected(bool sel)
 {
-  QPalette Pal(palette());
+  m_Selected = sel;
 
-  Pal.setColor(QPalette::Foreground, sel ? Qt::red : Qt::black);
-
-  setPalette(Pal);
+  setForegroundRole(sel ? QPalette::Highlight : QPalette::Foreground);
 }
 
-WId ResourcePreview::thumbWinId()
+WindowingData ResourcePreview::GetWidgetWindowingData()
 {
-  return ui->thumbnail->winId();
+  return ui->thumbnail->GetWidgetWindowingData();
 }

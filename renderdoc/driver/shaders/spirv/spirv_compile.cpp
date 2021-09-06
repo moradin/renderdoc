@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,147 +22,67 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+#include "spirv_compile.h"
+#include <vector>
 #include "common/common.h"
-#include "spirv_common.h"
+#include "common/formatting.h"
+#include "glslang_compile.h"
 
 #undef min
 #undef max
 
-#if ENABLED(RDOC_MSVS)
-#pragma warning(disable : 4481)    // nonstandard extension used: override specifier 'override'
-#endif
+#include "glslang/SPIRV/GlslangToSpv.h"
+#include "glslang/glslang/Public/ShaderLang.h"
 
-#include "3rdparty/glslang/SPIRV/GlslangToSpv.h"
-#include "3rdparty/glslang/glslang/Public/ShaderLang.h"
-
-TBuiltInResource DefaultResources = {
-    /*.maxLights =*/32,
-    /*.maxClipPlanes =*/6,
-    /*.maxTextureUnits =*/32,
-    /*.maxTextureCoords =*/32,
-    /*.maxVertexAttribs =*/64,
-    /*.maxVertexUniformComponents =*/4096,
-    /*.maxVaryingFloats =*/64,
-    /*.maxVertexTextureImageUnits =*/32,
-    /*.maxCombinedTextureImageUnits =*/80,
-    /*.maxTextureImageUnits =*/32,
-    /*.maxFragmentUniformComponents =*/4096,
-    /*.maxDrawBuffers =*/32,
-    /*.maxVertexUniformVectors =*/128,
-    /*.maxVaryingVectors =*/8,
-    /*.maxFragmentUniformVectors =*/16,
-    /*.maxVertexOutputVectors =*/16,
-    /*.maxFragmentInputVectors =*/15,
-    /*.minProgramTexelOffset =*/-8,
-    /*.maxProgramTexelOffset =*/7,
-    /*.maxClipDistances =*/8,
-    /*.maxComputeWorkGroupCountX =*/65535,
-    /*.maxComputeWorkGroupCountY =*/65535,
-    /*.maxComputeWorkGroupCountZ =*/65535,
-    /*.maxComputeWorkGroupSizeX =*/1024,
-    /*.maxComputeWorkGroupSizeY =*/1024,
-    /*.maxComputeWorkGroupSizeZ =*/64,
-    /*.maxComputeUniformComponents =*/1024,
-    /*.maxComputeTextureImageUnits =*/16,
-    /*.maxComputeImageUniforms =*/8,
-    /*.maxComputeAtomicCounters =*/8,
-    /*.maxComputeAtomicCounterBuffers =*/1,
-    /*.maxVaryingComponents =*/60,
-    /*.maxVertexOutputComponents =*/64,
-    /*.maxGeometryInputComponents =*/64,
-    /*.maxGeometryOutputComponents =*/128,
-    /*.maxFragmentInputComponents =*/128,
-    /*.maxImageUnits =*/8,
-    /*.maxCombinedImageUnitsAndFragmentOutputs =*/8,
-    /*.maxCombinedShaderOutputResources =*/8,
-    /*.maxImageSamples =*/0,
-    /*.maxVertexImageUniforms =*/0,
-    /*.maxTessControlImageUniforms =*/0,
-    /*.maxTessEvaluationImageUniforms =*/0,
-    /*.maxGeometryImageUniforms =*/0,
-    /*.maxFragmentImageUniforms =*/8,
-    /*.maxCombinedImageUniforms =*/8,
-    /*.maxGeometryTextureImageUnits =*/16,
-    /*.maxGeometryOutputVertices =*/256,
-    /*.maxGeometryTotalOutputComponents =*/1024,
-    /*.maxGeometryUniformComponents =*/1024,
-    /*.maxGeometryVaryingComponents =*/64,
-    /*.maxTessControlInputComponents =*/128,
-    /*.maxTessControlOutputComponents =*/128,
-    /*.maxTessControlTextureImageUnits =*/16,
-    /*.maxTessControlUniformComponents =*/1024,
-    /*.maxTessControlTotalOutputComponents =*/4096,
-    /*.maxTessEvaluationInputComponents =*/128,
-    /*.maxTessEvaluationOutputComponents =*/128,
-    /*.maxTessEvaluationTextureImageUnits =*/16,
-    /*.maxTessEvaluationUniformComponents =*/1024,
-    /*.maxTessPatchComponents =*/120,
-    /*.maxPatchVertices =*/32,
-    /*.maxTessGenLevel =*/64,
-    /*.maxViewports =*/16,
-    /*.maxVertexAtomicCounters =*/0,
-    /*.maxTessControlAtomicCounters =*/0,
-    /*.maxTessEvaluationAtomicCounters =*/0,
-    /*.maxGeometryAtomicCounters =*/0,
-    /*.maxFragmentAtomicCounters =*/8,
-    /*.maxCombinedAtomicCounters =*/8,
-    /*.maxAtomicCounterBindings =*/1,
-    /*.maxVertexAtomicCounterBuffers =*/0,
-    /*.maxTessControlAtomicCounterBuffers =*/0,
-    /*.maxTessEvaluationAtomicCounterBuffers =*/0,
-    /*.maxGeometryAtomicCounterBuffers =*/0,
-    /*.maxFragmentAtomicCounterBuffers =*/1,
-    /*.maxCombinedAtomicCounterBuffers =*/1,
-    /*.maxAtomicCounterBufferSize =*/16384,
-    /*.maxTransformFeedbackBuffers =*/4,
-    /*.maxTransformFeedbackInterleavedComponents =*/64,
-    /*.maxCullDistances =*/8,
-    /*.maxCombinedClipAndCullDistances =*/8,
-    /*.maxSamples =*/4,
-
-    /*.limits*/
-    {
-        /*.limits.nonInductiveForLoops =*/1,
-        /*.limits.whileLoops =*/1,
-        /*.limits.doWhileLoops =*/1,
-        /*.limits.generalUniformIndexing =*/1,
-        /*.limits.generalAttributeMatrixVectorIndexing =*/1,
-        /*.limits.generalVaryingIndexing =*/1,
-        /*.limits.generalSamplerIndexing =*/1,
-        /*.limits.generalVariableIndexing =*/1,
-        /*.limits.generalConstantMatrixVectorIndexing =*/1,
-    },
-};
-
-string CompileSPIRV(SPIRVShaderStage shadType, const std::vector<std::string> &sources,
-                    vector<uint32_t> &spirv)
+rdcstr rdcspv::Compile(const rdcspv::CompilationSettings &settings, const rdcarray<rdcstr> &sources,
+                       rdcarray<uint32_t> &spirv)
 {
-  if(shadType >= eSPIRVInvalid)
+  if(settings.stage == rdcspv::ShaderStage::Invalid)
     return "Invalid shader stage specified";
 
-  string errors = "";
+  rdcstr errors = "";
 
   const char **strs = new const char *[sources.size()];
+  const char **names = new const char *[sources.size()];
+  rdcarray<rdcstr> names_str;
+  names_str.resize(sources.size());
 
   for(size_t i = 0; i < sources.size(); i++)
+  {
     strs[i] = sources[i].c_str();
+    names_str[i] = StringFormat::Fmt("source%d.glsl", i);
+    names[i] = names_str[i].c_str();
+  }
 
-  RDCCOMPILE_ASSERT(
-      (int)EShLangVertex == (int)eSPIRVVertex && (int)EShLangTessControl == (int)eSPIRVTessControl &&
-          (int)EShLangTessEvaluation == (int)eSPIRVTessEvaluation &&
-          (int)EShLangGeometry == (int)eSPIRVGeometry && (int)EShLangCompute == (int)eSPIRVCompute,
-      "Shader language enums don't match");
+  RDCCOMPILE_ASSERT((int)EShLangVertex == (int)rdcspv::ShaderStage::Vertex &&
+                        (int)EShLangTessControl == (int)rdcspv::ShaderStage::TessControl &&
+                        (int)EShLangTessEvaluation == (int)rdcspv::ShaderStage::TessEvaluation &&
+                        (int)EShLangGeometry == (int)rdcspv::ShaderStage::Geometry &&
+                        (int)EShLangCompute == (int)rdcspv::ShaderStage::Compute,
+                    "Shader language enums don't match");
 
   {
     // these enums are matched
-    EShLanguage lang = EShLanguage((int)shadType);
+    EShLanguage lang = EShLanguage(settings.stage);
 
     glslang::TShader *shader = new glslang::TShader(lang);
 
-    shader->setStrings(strs, (int)sources.size());
+    shader->setStringsWithLengthsAndNames(strs, NULL, names, (int)sources.size());
 
-    bool success = shader->parse(&DefaultResources, 110, false,
-                                 EShMessages(EShMsgSpvRules | EShMsgVulkanRules));
+    if(!settings.entryPoint.empty())
+      shader->setEntryPoint(settings.entryPoint.c_str());
+
+    EShMessages flags = EShMsgSpvRules;
+
+    if(settings.lang == rdcspv::InputLanguage::VulkanGLSL)
+      flags = EShMessages(flags | EShMsgVulkanRules);
+    if(settings.lang == rdcspv::InputLanguage::VulkanHLSL)
+      flags = EShMessages(flags | EShMsgVulkanRules | EShMsgReadHlsl);
+
+    if(settings.debugInfo)
+      flags = EShMessages(flags | EShMsgDebugInfo);
+
+    bool success = shader->parse(GetDefaultResources(), settings.gles ? 100 : 110, false, flags);
 
     if(!success)
     {
@@ -193,7 +113,14 @@ string CompileSPIRV(SPIRVShaderStage shadType, const std::vector<std::string> &s
         // if we successfully compiled and linked, we must have the stage we started with
         RDCASSERT(intermediate);
 
-        glslang::GlslangToSpv(*intermediate, spirv);
+        glslang::SpvOptions opts;
+        if(settings.debugInfo)
+          opts.generateDebugInfo = true;
+
+        std::vector<uint32_t> spirvVec;
+        glslang::GlslangToSpv(*intermediate, spirvVec, &opts);
+
+        spirv.assign(spirvVec.data(), spirvVec.size());
       }
 
       delete program;
@@ -203,6 +130,7 @@ string CompileSPIRV(SPIRVShaderStage shadType, const std::vector<std::string> &s
   }
 
   delete[] strs;
+  delete[] names;
 
   return errors;
 }

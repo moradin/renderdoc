@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,19 +22,21 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+#include "strings/string_utils.h"
 #include "vk_core.h"
 #include "vk_replay.h"
 
+#include <shlwapi.h>
+
 static int dllLocator = 0;
 
-void VulkanReplay::OutputWindow::SetWindowHandle(WindowingSystem system, void *data)
+void VulkanReplay::OutputWindow::SetWindowHandle(WindowingData window)
 {
-  RDCASSERT(system == eWindowingSystem_Win32, system);
-  wnd = (HWND)data;
-  m_WindowSystem = system;
+  RDCASSERT(window.system == WindowingSystem::Win32, window.system);
+  wnd = window.win32.window;
 }
 
-void VulkanReplay::OutputWindow::CreateSurface(VkInstance inst)
+void VulkanReplay::OutputWindow::CreateSurface(WrappedVulkan *driver, VkInstance inst)
 {
   VkWin32SurfaceCreateInfoKHR createInfo;
 
@@ -48,7 +50,7 @@ void VulkanReplay::OutputWindow::CreateSurface(VkInstance inst)
       (const char *)&dllLocator, (HMODULE *)&createInfo.hinstance);
 
   VkResult vkr = ObjDisp(inst)->CreateWin32SurfaceKHR(Unwrap(inst), &createInfo, NULL, &surface);
-  RDCASSERTEQUAL(vkr, VK_SUCCESS);
+  driver->CheckVkResult(vkr);
 }
 
 void VulkanReplay::GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h)
@@ -57,6 +59,13 @@ void VulkanReplay::GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h
     return;
 
   OutputWindow &outw = m_OutputWindows[id];
+
+  if(outw.m_WindowSystem == WindowingSystem::Headless)
+  {
+    w = outw.width;
+    h = outw.height;
+    return;
+  }
 
   RECT rect = {0};
   GetClientRect(outw.wnd, &rect);
@@ -69,11 +78,14 @@ bool VulkanReplay::IsOutputWindowVisible(uint64_t id)
   if(id == 0 || m_OutputWindows.find(id) == m_OutputWindows.end())
     return false;
 
+  if(m_OutputWindows[id].m_WindowSystem == WindowingSystem::Headless)
+    return true;
+
   return (IsWindowVisible(m_OutputWindows[id].wnd) == TRUE);
 }
 
-bool WrappedVulkan::AddRequiredExtensions(bool instance, vector<string> &extensionList,
-                                          const std::set<string> &supportedExtensions)
+void WrappedVulkan::AddRequiredExtensions(bool instance, rdcarray<rdcstr> &extensionList,
+                                          const std::set<rdcstr> &supportedExtensions)
 {
   bool device = !instance;
 
@@ -83,77 +95,279 @@ bool WrappedVulkan::AddRequiredExtensions(bool instance, vector<string> &extensi
     if(supportedExtensions.find(VK_KHR_SURFACE_EXTENSION_NAME) == supportedExtensions.end())
     {
       RDCERR("Unsupported required instance extension '%s'", VK_KHR_SURFACE_EXTENSION_NAME);
-      return false;
+    }
+    else
+    {
+      // don't add duplicates
+      if(!extensionList.contains(VK_KHR_SURFACE_EXTENSION_NAME))
+        extensionList.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
     }
 
     if(supportedExtensions.find(VK_KHR_WIN32_SURFACE_EXTENSION_NAME) == supportedExtensions.end())
     {
       RDCERR("Unsupported required instance extension '%s'", VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
-      return false;
     }
+    else
+    {
+      m_SupportedWindowSystems.push_back(WindowingSystem::Win32);
 
-    // don't add duplicates
-    if(std::find(extensionList.begin(), extensionList.end(), VK_KHR_SURFACE_EXTENSION_NAME) ==
-       extensionList.end())
-      extensionList.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
-
-    if(std::find(extensionList.begin(), extensionList.end(), VK_KHR_WIN32_SURFACE_EXTENSION_NAME) ==
-       extensionList.end())
-      extensionList.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
+      if(!extensionList.contains(VK_KHR_WIN32_SURFACE_EXTENSION_NAME))
+        extensionList.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
+    }
   }
   else if(device)
   {
     if(supportedExtensions.find(VK_KHR_SWAPCHAIN_EXTENSION_NAME) == supportedExtensions.end())
     {
       RDCERR("Unsupported required device extension '%s'", VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-      return false;
     }
-
-    // don't add duplicates
-    if(std::find(extensionList.begin(), extensionList.end(), VK_KHR_SWAPCHAIN_EXTENSION_NAME) ==
-       extensionList.end())
-      extensionList.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    else
+    {
+      // don't add duplicates
+      if(!extensionList.contains(VK_KHR_SWAPCHAIN_EXTENSION_NAME))
+        extensionList.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    }
   }
-
-  return true;
 }
 
 #if !defined(VK_USE_PLATFORM_WIN32_KHR)
 #error "Win32 KHR platform not defined"
 #endif
 
-VkResult WrappedVulkan::vkCreateWin32SurfaceKHR(VkInstance instance,
-                                                const VkWin32SurfaceCreateInfoKHR *pCreateInfo,
-                                                const VkAllocationCallbacks *pAllocator,
-                                                VkSurfaceKHR *pSurface)
+void *LoadVulkanLibrary()
 {
-  // should not come in here at all on replay
-  RDCASSERT(m_State >= WRITING);
+  return Process::LoadModule("vulkan-1.dll");
+}
 
-  VkResult ret =
-      ObjDisp(instance)->CreateWin32SurfaceKHR(Unwrap(instance), pCreateInfo, pAllocator, pSurface);
+rdcstr GetJSONPath(bool wow6432)
+{
+  rdcstr libPath;
+  FileIO::GetLibraryFilename(libPath);
+  rdcstr jsonPath = get_dirname(FileIO::GetFullPathname(libPath));
 
-  if(ret == VK_SUCCESS)
+  const rdcwstr jsonWide = StringFormat::UTF82Wide(jsonPath);
+
+  if(jsonWide[1] == L':' && PathIsNetworkPathW(jsonWide.c_str()))
   {
-    GetResourceManager()->WrapResource(Unwrap(instance), *pSurface);
+    using PFN_WNetGetUniversalNameW = decltype(&WNetGetUniversalNameW);
 
-    WrappedVkSurfaceKHR *wrapped = GetWrapped(*pSurface);
+    HMODULE mpr = LoadLibraryA("mpr.dll");
+    if(mpr)
+    {
+      PFN_WNetGetUniversalNameW getUniversal =
+          (PFN_WNetGetUniversalNameW)GetProcAddress(mpr, "WNetGetUniversalNameW");
 
-    // since there's no point in allocating a full resource record and storing the window
-    // handle under there somewhere, we just cast. We won't use the resource record for anything
-    wrapped->record = (VkResourceRecord *)pCreateInfo->hwnd;
+      DWORD bufSize = 2048;
+      byte *buf = new byte[bufSize];
+      memset(buf, 0, bufSize);
+      DWORD result = getUniversal(jsonWide.c_str(), UNIVERSAL_NAME_INFO_LEVEL, buf, &bufSize);
+      if(result == NO_ERROR)
+      {
+        UNIVERSAL_NAME_INFOW *nameInfo = (UNIVERSAL_NAME_INFOW *)buf;
+        RDCLOG("Converted %ls network path to %ls", jsonWide.c_str(), nameInfo->lpUniversalName);
+        jsonPath = StringFormat::Wide2UTF8(nameInfo->lpUniversalName);
+      }
+      else
+      {
+        RDCERR("Error calling WNetGetUniversalNameW: %d", result);
+      }
 
-    Keyboard::AddInputWindow((void *)pCreateInfo->hwnd);
+      delete[] buf;
+    }
+    else
+    {
+      RDCERR("Can't load mpr.dll for WNetGetUniversalNameW");
+    }
   }
 
-  return ret;
+  if(wow6432)
+    jsonPath += "\\x86";
+
+  jsonPath += "\\";
+
+  rdcstr module_name;
+  FileIO::GetLibraryFilename(module_name);
+  jsonPath += strip_extension(get_basename(module_name));
+
+  jsonPath += ".json";
+
+  return jsonPath;
 }
 
-VkBool32 WrappedVulkan::vkGetPhysicalDeviceWin32PresentationSupportKHR(VkPhysicalDevice physicalDevice,
-                                                                       uint32_t queueFamilyIndex)
+static HKEY GetImplicitLayersKey(bool writeable, bool wow6432)
 {
-  return ObjDisp(physicalDevice)
-      ->GetPhysicalDeviceWin32PresentationSupportKHR(Unwrap(physicalDevice), queueFamilyIndex);
+  rdcstr basepath = "SOFTWARE\\";
+
+  if(wow6432)
+    basepath += "Wow6432Node\\";
+
+  basepath += "Khronos\\Vulkan\\ImplicitLayers";
+
+  HKEY key = NULL;
+  LSTATUS ret = ERROR_SUCCESS;
+
+  if(writeable)
+    ret = RegCreateKeyExA(HKEY_LOCAL_MACHINE, basepath.c_str(), 0, NULL, 0, KEY_READ | KEY_WRITE,
+                          NULL, &key, NULL);
+  else
+    ret = RegOpenKeyExA(HKEY_LOCAL_MACHINE, basepath.c_str(), 0, KEY_READ, &key);
+
+  if(ret != ERROR_SUCCESS)
+  {
+    if(key)
+      RegCloseKey(key);
+
+    // find to fail to open for read, the key may not exist
+    if(writeable)
+      RDCERR("Couldn't open %s for write", basepath.c_str());
+
+    return NULL;
+  }
+
+  return key;
 }
 
-const char *VulkanLibraryName = "vulkan-1.dll";
+bool ProcessImplicitLayersKey(HKEY key, const rdcstr &path, rdcarray<rdcstr> *otherJSONs,
+                              bool deleteOthers)
+{
+  bool thisRegistered = false;
+
+  wchar_t name[1025] = {};
+  DWORD nameSize = 1024;
+  DWORD idx = 0;
+
+  LONG ret = RegEnumValueW(key, idx++, name, &nameSize, NULL, NULL, NULL, NULL);
+
+  rdcwstr myJSON = StringFormat::UTF82Wide(path);
+  for(size_t i = 0; i < myJSON.length(); i++)
+    myJSON[i] = towlower(myJSON[i]);
+
+  while(ret == ERROR_SUCCESS)
+  {
+    // convert the name here so we preserve casing
+    rdcstr utf8name = StringFormat::Wide2UTF8(name);
+
+    for(DWORD i = 0; i <= nameSize && name[i]; i++)
+      name[i] = towlower(name[i]);
+
+    if(wcscmp(name, myJSON.c_str()) == 0)
+    {
+      thisRegistered = true;
+    }
+    else if(wcsstr(name, L"renderdoc.json") != NULL)
+    {
+      if(otherJSONs)
+        otherJSONs->push_back(utf8name);
+
+      if(deleteOthers)
+        RegDeleteValueW(key, name);
+    }
+
+    nameSize = 1024;
+    ret = RegEnumValueW(key, idx++, name, &nameSize, NULL, NULL, NULL, NULL);
+  }
+
+  return thisRegistered;
+}
+
+bool VulkanReplay::CheckVulkanLayer(VulkanLayerFlags &flags, rdcarray<rdcstr> &myJSONs,
+                                    rdcarray<rdcstr> &otherJSONs)
+{
+  rdcstr normalPath = GetJSONPath(false);
+  myJSONs.push_back(normalPath);
+
+#if ENABLED(RDOC_X64)
+  rdcstr wow6432Path = GetJSONPath(true);
+  myJSONs.push_back(wow6432Path);
+#endif
+
+  HKEY key = GetImplicitLayersKey(false, false);
+
+  // if we couldn't even get the ImplicitLayers reg key the system doesn't have the
+  // vulkan runtime, so we return as if we are not registered (as that's the case).
+  // People not using vulkan can either ignore the message, or click to set it up
+  // and it will go away as we'll have rights to create it.
+  if(!key)
+  {
+    flags = VulkanLayerFlags::NeedElevation | VulkanLayerFlags::RegisterAll;
+    return true;
+  }
+
+  bool thisRegistered = ProcessImplicitLayersKey(key, normalPath, &otherJSONs, false);
+
+  RegCloseKey(key);
+
+#if ENABLED(RDOC_X64)
+  {
+    key = GetImplicitLayersKey(false, true);
+
+    if(key)
+    {
+      // if we're on 64-bit, the layer isn't registered unless both keys are registered.
+      thisRegistered &= ProcessImplicitLayersKey(key, wow6432Path, &otherJSONs, false);
+
+      RegCloseKey(key);
+    }
+    else
+    {
+      flags = VulkanLayerFlags::NeedElevation | VulkanLayerFlags::RegisterAll;
+      return true;
+    }
+  }
+#endif
+
+  flags = VulkanLayerFlags::NeedElevation | VulkanLayerFlags::RegisterAll;
+
+  if(thisRegistered)
+    flags |= VulkanLayerFlags::ThisInstallRegistered;
+
+  if(!otherJSONs.empty())
+    flags |= VulkanLayerFlags::OtherInstallsRegistered;
+
+  // return true if any changes are needed
+  return !otherJSONs.empty() || !thisRegistered;
+}
+
+void VulkanReplay::InstallVulkanLayer(bool systemLevel)
+{
+  HKEY key = GetImplicitLayersKey(true, false);
+
+  const DWORD zero = 0;
+
+  if(key)
+  {
+    rdcstr path = GetJSONPath(false);
+
+    // this function will delete all non-matching renderdoc.json values, and return true if our own
+    // is registered
+    bool thisRegistered = ProcessImplicitLayersKey(key, path, NULL, true);
+
+    if(!thisRegistered)
+      RegSetValueExW(key, StringFormat::UTF82Wide(path).c_str(), 0, REG_DWORD, (const BYTE *)&zero,
+                     sizeof(zero));
+
+    RegCloseKey(key);
+  }
+
+// if we're a 64-bit process, update the 32-bit key
+#if ENABLED(RDOC_X64)
+  {
+    key = GetImplicitLayersKey(true, true);
+
+    if(key)
+    {
+      rdcstr path = GetJSONPath(true);
+
+      // this function will delete all non-matching renderdoc.json values, and return true if our
+      // own is registered
+      bool thisRegistered = ProcessImplicitLayersKey(key, path, NULL, true);
+
+      if(!thisRegistered)
+        RegSetValueExW(key, StringFormat::UTF82Wide(path).c_str(), 0, REG_DWORD,
+                       (const BYTE *)&zero, sizeof(zero));
+
+      RegCloseKey(key);
+    }
+  }
+#endif
+}

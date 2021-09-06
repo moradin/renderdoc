@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -25,12 +25,42 @@
 
 #pragma once
 
-#include "api/replay/renderdoc_replay.h"
 #include "common/wrapped_pool.h"
 #include "core/core.h"
 #include "core/resource_manager.h"
-#include "driver/d3d11/d3d11_common.h"
 #include "serialise/serialiser.h"
+#include "d3d11_common.h"
+
+enum D3D11ResourceType
+{
+  Resource_Unknown = 0,
+  Resource_InputLayout,
+  Resource_Buffer,
+  Resource_Texture1D,
+  Resource_Texture2D,
+  Resource_Texture3D,
+  Resource_RasterizerState,
+  Resource_BlendState,
+  Resource_DepthStencilState,
+  Resource_SamplerState,
+  Resource_RenderTargetView,
+  Resource_ShaderResourceView,
+  Resource_DepthStencilView,
+  Resource_UnorderedAccessView,
+  Resource_Shader,
+  Resource_Counter,
+  Resource_Query,
+  Resource_Predicate,
+  Resource_ClassInstance,
+  Resource_ClassLinkage,
+
+  Resource_DeviceContext,
+  Resource_CommandList,
+  Resource_DeviceState,
+  Resource_Fence,
+};
+
+DECLARE_REFLECTION_ENUM(D3D11ResourceType);
 
 struct D3D11ResourceRecord : public ResourceRecord
 {
@@ -39,14 +69,10 @@ struct D3D11ResourceRecord : public ResourceRecord
     NullResource = NULL
   };
 
-  static byte markerValue[32];
-
   D3D11ResourceRecord(ResourceId id)
       : ResourceRecord(id, true), NumSubResources(0), SubResources(NULL)
   {
-    RDCEraseEl(ShadowPtr);
-    RDCEraseEl(contexts);
-    ignoreSerialise = false;
+    RDCEraseEl(ImmediateShadow);
   }
 
   ~D3D11ResourceRecord()
@@ -62,67 +88,80 @@ struct D3D11ResourceRecord : public ResourceRecord
     FreeShadowStorage();
   }
 
-  void AllocShadowStorage(int ctx, size_t size)
+  void AllocShadowStorage(size_t ctx, size_t size)
   {
-    if(ShadowPtr[ctx][0] == NULL)
+    if(ctx == 0)
     {
-      ShadowPtr[ctx][0] = Serialiser::AllocAlignedBuffer(size + sizeof(markerValue));
-      ShadowPtr[ctx][1] = Serialiser::AllocAlignedBuffer(size + sizeof(markerValue));
-
-      memcpy(ShadowPtr[ctx][0] + size, markerValue, sizeof(markerValue));
-      memcpy(ShadowPtr[ctx][1] + size, markerValue, sizeof(markerValue));
-
-      ShadowSize[ctx] = size;
+      ImmediateShadow.Alloc(size);
+      return;
     }
+
+    SCOPED_READLOCK(DeferredShadowLock);
+
+    DeferredShadow[ctx - 1].Alloc(size);
   }
 
-  bool VerifyShadowStorage(int ctx)
+  bool VerifyShadowStorage(size_t ctx)
   {
-    if(ShadowPtr[ctx][0] &&
-       memcmp(ShadowPtr[ctx][0] + ShadowSize[ctx], markerValue, sizeof(markerValue)))
-      return false;
+    if(ctx == 0)
+      return ImmediateShadow.Verify();
 
-    if(ShadowPtr[ctx][1] &&
-       memcmp(ShadowPtr[ctx][1] + ShadowSize[ctx], markerValue, sizeof(markerValue)))
-      return false;
+    SCOPED_READLOCK(DeferredShadowLock);
 
-    return true;
+    return DeferredShadow[ctx - 1].Verify();
   }
 
   void FreeShadowStorage()
   {
-    for(int i = 0; i < 32; i++)
-    {
-      if(ShadowPtr[i][0] != NULL)
-      {
-        Serialiser::FreeAlignedBuffer(ShadowPtr[i][0]);
-        Serialiser::FreeAlignedBuffer(ShadowPtr[i][1]);
-      }
-      ShadowPtr[i][0] = ShadowPtr[i][1] = NULL;
-    }
+    ImmediateShadow.Free();
+
+    SCOPED_READLOCK(DeferredShadowLock);
+
+    for(size_t i = 0; i < DeferredShadow.size(); i++)
+      DeferredShadow[i].Free();
   }
 
-  byte *GetShadowPtr(int ctx, int p) { return ShadowPtr[ctx][p]; }
-  int GetContextID()
+  byte *GetShadowPtr(size_t ctx, size_t p)
   {
-    // 0 is reserved for the immediate context
-    for(int i = 1; i < 32; i++)
+    if(ctx == 0)
+      return ImmediateShadow.ptr[p];
+
+    SCOPED_READLOCK(DeferredShadowLock);
+
+    return DeferredShadow[ctx - 1].ptr[p];
+  }
+
+  size_t GetContextID()
+  {
+    SCOPED_WRITELOCK(DeferredShadowLock);
+
+    for(size_t i = 0; i < DeferredShadow.size(); i++)
     {
-      if(contexts[i] == false)
+      if(!DeferredShadow[i].used)
       {
-        contexts[i] = true;
-        return i;
+        DeferredShadow[i].used = true;
+        return i + 1;
       }
     }
 
-    RDCERR(
-        "More than 32 deferred contexts wanted an ID! Either a leak, or many many contexts mapping "
-        "the same buffer");
+    ShadowPointerData data = {};
+    data.used = true;
+    DeferredShadow.push_back(data);
 
-    return 0;
+    return DeferredShadow.size();
   }
 
-  void FreeContextID(int ctx) { contexts[ctx] = false; }
+  void FreeContextID(size_t ctx)
+  {
+    if(ctx == 0)
+      return;
+
+    {
+      SCOPED_WRITELOCK(DeferredShadowLock);
+      DeferredShadow[ctx - 1].used = false;
+    }
+  }
+
   void SetDataPtr(byte *ptr)
   {
     DataPtr = ptr;
@@ -131,7 +170,7 @@ struct D3D11ResourceRecord : public ResourceRecord
       SubResources[i]->SetDataPtr(ptr);
   }
 
-  void Insert(map<int32_t, Chunk *> &recordlist)
+  void Insert(std::map<int64_t, Chunk *> &recordlist)
   {
     bool dataWritten = DataWritten;
 
@@ -147,60 +186,153 @@ struct D3D11ResourceRecord : public ResourceRecord
 
     if(!dataWritten)
     {
-      recordlist.insert(m_Chunks.begin(), m_Chunks.end());
+      for(auto it = m_Chunks.begin(); it != m_Chunks.end(); ++it)
+        recordlist[it->id] = it->chunk;
 
       for(int i = 0; i < NumSubResources; i++)
         SubResources[i]->Insert(recordlist);
     }
   }
 
-  bool ignoreSerialise;
-
   int NumSubResources;
-  ResourceRecord **SubResources;
+  D3D11ResourceRecord **SubResources;
 
 private:
-  byte *ShadowPtr[32][2];
-  size_t ShadowSize[32];
+  struct ShadowPointerData
+  {
+    static byte markerValue[32];
 
-  bool contexts[32];
+    byte *ptr[2];
+    size_t size;
+    bool used;
+
+    void Alloc(size_t s)
+    {
+      if(ptr[0] == NULL)
+      {
+        size = s;
+
+        ptr[0] = AllocAlignedBuffer(size + sizeof(markerValue));
+        ptr[1] = AllocAlignedBuffer(size + sizeof(markerValue));
+
+        memcpy(ptr[0] + size, markerValue, sizeof(markerValue));
+        memcpy(ptr[1] + size, markerValue, sizeof(markerValue));
+      }
+    }
+
+    bool Verify()
+    {
+      if(ptr[0] && memcmp(ptr[0] + size, markerValue, sizeof(markerValue)) != 0)
+        return false;
+
+      if(ptr[1] && memcmp(ptr[1] + size, markerValue, sizeof(markerValue)) != 0)
+        return false;
+
+      return true;
+    }
+
+    void Free()
+    {
+      if(ptr[0])
+      {
+        FreeAlignedBuffer(ptr[0]);
+        FreeAlignedBuffer(ptr[1]);
+      }
+
+      ptr[0] = ptr[1] = NULL;
+    }
+  };
+
+  ShadowPointerData ImmediateShadow;
+
+  Threading::RWLock DeferredShadowLock;
+  rdcarray<ShadowPointerData> DeferredShadow;
 };
 
-class D3D11ResourceManager
-    : public ResourceManager<ID3D11DeviceChild *, ID3D11DeviceChild *, D3D11ResourceRecord>
+struct D3D11InitialContents
+{
+  enum Tag
+  {
+    Copy,
+    ClearRTV,
+    ClearDSV,
+    UAVCount,
+  };
+  D3D11InitialContents(D3D11ResourceType t, ID3D11Resource *r)
+      : resourceType(t), tag(Copy), resource(r), resource2(NULL), uavCount(0)
+  {
+  }
+  D3D11InitialContents(D3D11ResourceType t, ID3D11RenderTargetView *r,
+                       ID3D11RenderTargetView *r2 = NULL)
+      : resourceType(t), tag(ClearRTV), resource(r), resource2(r2), uavCount(0)
+  {
+  }
+  D3D11InitialContents(D3D11ResourceType t, ID3D11DepthStencilView *r)
+      : resourceType(t), tag(ClearDSV), resource(r), resource2(NULL), uavCount(0)
+  {
+  }
+  D3D11InitialContents(D3D11ResourceType t, uint32_t c)
+      : resourceType(t), tag(UAVCount), resource(NULL), resource2(NULL), uavCount(c)
+  {
+  }
+  D3D11InitialContents()
+      : resourceType(Resource_Unknown), tag(Copy), resource(NULL), resource2(NULL), uavCount(0)
+  {
+  }
+  template <typename Configuration>
+  void Free(ResourceManager<Configuration> *rm)
+  {
+    SAFE_RELEASE(resource);
+    SAFE_RELEASE(resource2);
+  }
+
+  D3D11ResourceType resourceType;
+  Tag tag;
+  ID3D11DeviceChild *resource, *resource2;
+  uint32_t uavCount;
+};
+
+struct D3D11ResourceManagerConfiguration
+{
+  typedef ID3D11DeviceChild *WrappedResourceType;
+  typedef ID3D11DeviceChild *RealResourceType;
+  typedef D3D11ResourceRecord RecordType;
+  typedef D3D11InitialContents InitialContentData;
+};
+
+class D3D11ResourceManager : public ResourceManager<D3D11ResourceManagerConfiguration>
 {
 public:
-  D3D11ResourceManager(LogState state, Serialiser *ser, WrappedID3D11Device *dev)
-      : ResourceManager(state, ser), m_Device(dev)
+  D3D11ResourceManager(CaptureState &state, WrappedID3D11Device *dev)
+      : ResourceManager(state), m_Device(dev)
   {
   }
 
-  ID3D11DeviceChild *UnwrapResource(ID3D11DeviceChild *res);
-  ID3D11Resource *UnwrapResource(ID3D11Resource *res)
-  {
-    return (ID3D11Resource *)UnwrapResource((ID3D11DeviceChild *)res);
-  }
+  void SetInternalResource(ID3D11DeviceChild *res);
+  void FreeCaptureData();
 
 private:
-  bool SerialisableResource(ResourceId id, D3D11ResourceRecord *record);
   ResourceId GetID(ID3D11DeviceChild *res);
 
   bool ResourceTypeRelease(ID3D11DeviceChild *res);
 
-  bool Force_InitialState(ID3D11DeviceChild *res, bool prepare);
-  bool Need_InitialStateChunk(ID3D11DeviceChild *res);
+  bool Need_InitialStateChunk(ResourceId id, const InitialContentData &initial);
   bool Prepare_InitialState(ID3D11DeviceChild *res);
-  bool Serialise_InitialState(ResourceId resid, ID3D11DeviceChild *res);
+  uint64_t GetSize_InitialState(ResourceId id, const D3D11InitialContents &initial);
+  bool Serialise_InitialState(WriteSerialiser &ser, ResourceId id, D3D11ResourceRecord *record,
+                              const D3D11InitialContents *initial);
   void Create_InitialState(ResourceId id, ID3D11DeviceChild *live, bool hasData);
-  void Apply_InitialState(ID3D11DeviceChild *live, InitialContentData data);
+  void Apply_InitialState(ID3D11DeviceChild *live, const D3D11InitialContents &data);
 
   WrappedID3D11Device *m_Device;
 };
 
+#define WRAPPING_DEBUG OPTION_OFF
+
 template <typename Dest>
 typename Dest::InnerType *Unwrap(typename Dest::InnerType *obj)
 {
-#if ENABLED(RDOC_DEVEL)
+#if ENABLED(WRAPPING_DEBUG)
   if(obj && !Dest::IsAlloc(obj))
   {
     RDCERR("Trying to unwrap invalid type");

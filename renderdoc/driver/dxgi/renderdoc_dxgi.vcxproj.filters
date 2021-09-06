@@ -10,6 +10,12 @@
     <ClCompile Include="dxgi_common.cpp">
       <Filter>Util</Filter>
     </ClCompile>
+    <ClCompile Include="precompiled.cpp">
+      <Filter>PCH</Filter>
+    </ClCompile>
+    <ClCompile Include="dxgi_stringise.cpp">
+      <Filter>Util</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\dx\official\dxgi.h">
@@ -39,6 +45,18 @@
     <ClInclude Include="dxgi_common.h">
       <Filter>Util</Filter>
     </ClInclude>
+    <ClInclude Include="precompiled.h">
+      <Filter>PCH</Filter>
+    </ClInclude>
+    <ClInclude Include="..\dx\official\dxgi1_6.h">
+      <Filter>official</Filter>
+    </ClInclude>
+    <ClInclude Include="..\dx\official\dxgicommon.h">
+      <Filter>official</Filter>
+    </ClInclude>
+    <ClInclude Include="..\dx\official\dxgidebug.h">
+      <Filter>official</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="official">
@@ -52,6 +70,9 @@
     </Filter>
     <Filter Include="Wrapped">
       <UniqueIdentifier>{846e54d9-08da-4d5a-aac1-250f6be13e33}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="PCH">
+      <UniqueIdentifier>{872fc0e1-6867-4782-bbb6-fc6ba44c713a}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

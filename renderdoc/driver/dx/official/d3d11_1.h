@@ -8,7 +8,7 @@
 /* this ALWAYS GENERATED file contains the definitions for the interfaces */
 
 
- /* File created by MIDL compiler version 8.01.0618 */
+ /* File created by MIDL compiler version 8.01.0622 */
 /* @@MIDL_FILE_HEADING(  ) */
 
 
@@ -183,8 +183,7 @@ typedef struct D3D11_BLEND_DESC1
 }
 struct CD3D11_BLEND_DESC1 : public D3D11_BLEND_DESC1
 {
-    CD3D11_BLEND_DESC1()
-    {}
+    CD3D11_BLEND_DESC1() = default;
     explicit CD3D11_BLEND_DESC1( const D3D11_BLEND_DESC1& o ) :
         D3D11_BLEND_DESC1( o )
     {}
@@ -204,7 +203,6 @@ struct CD3D11_BLEND_DESC1 : public D3D11_BLEND_DESC1
             RenderTarget[ i ] = defaultRenderTargetBlendDesc;
     }
     ~CD3D11_BLEND_DESC1() {}
-    operator const D3D11_BLEND_DESC1&() const { return *this; }
 };
 extern "C"{
 #endif
@@ -369,8 +367,7 @@ typedef struct D3D11_RASTERIZER_DESC1
 }
 struct CD3D11_RASTERIZER_DESC1 : public D3D11_RASTERIZER_DESC1
 {
-    CD3D11_RASTERIZER_DESC1()
-    {}
+    CD3D11_RASTERIZER_DESC1() = default;
     explicit CD3D11_RASTERIZER_DESC1( const D3D11_RASTERIZER_DESC1& o ) :
         D3D11_RASTERIZER_DESC1( o )
     {}
@@ -414,7 +411,6 @@ struct CD3D11_RASTERIZER_DESC1 : public D3D11_RASTERIZER_DESC1
         ForcedSampleCount = forcedSampleCount;
     }
     ~CD3D11_RASTERIZER_DESC1() {}
-    operator const D3D11_RASTERIZER_DESC1&() const { return *this; }
 };
 extern "C"{
 #endif

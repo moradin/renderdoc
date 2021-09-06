@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2014-2016 Baldur Karlsson
+ * Copyright (c) 2014-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,7 +26,8 @@ struct ShimData
 {
   wchar_t pathmatchstring[2048];
   wchar_t rdocpath[2048];
-  char log[2048];
+  char debuglog[2048];
+  char capfile[2048];
 
   unsigned char opts[512];
 };

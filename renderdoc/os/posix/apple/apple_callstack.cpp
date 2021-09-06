@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,6 +22,7 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+#include "common/common.h"
 #include "os/os_specific.h"
 
 class AndroidCallstack : public Callstack::Stackwalk
@@ -66,35 +67,22 @@ Stackwalk *Create()
   return new AndroidCallstack(NULL, 0);
 }
 
-bool GetLoadedModules(char *&buf, size_t &size)
+bool GetLoadedModules(byte *buf, size_t &size)
 {
+  size = 0;
+
   if(buf)
-  {
-    buf[0] = 'A';
-    buf[1] = 'P';
-    buf[2] = 'P';
-    buf[3] = 'L';
-    buf[4] = 'C';
-    buf[5] = 'A';
-    buf[6] = 'L';
-    buf[7] = 'L';
-  }
+    memcpy(buf, "APPLCALL", 8);
 
   size += 8;
 
   return true;
 }
 
-class AndroidResolver : public Callstack::StackResolver
-{
-public:
-  Callstack::AddressDetails GetAddr(uint64_t addr) { return Callstack::AddressDetails(); }
-};
-
-StackResolver *MakeResolver(char *moduleDB, size_t DBSize, string pdbSearchPaths,
-                            volatile bool *killSignal)
+StackResolver *MakeResolver(bool interactive, byte *moduleDB, size_t DBSize,
+                            RENDERDOC_ProgressCallback progress)
 {
   RDCERR("Callstack resolving not supported on Apple.");
-  return new AndroidResolver();
+  return NULL;
 }
 };

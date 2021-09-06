@@ -5,11 +5,16 @@ Window reference
 	texture_viewer
 	api_inspector
 	buffer_viewer
-	capture_log_attach
+	capture_attach
 	event_browser
-	options_window
+	settings_window
 	pipeline_state
+	shader_viewer
+	shader_messages
 	timeline_bar
 	capture_connection
 	debug_messages
 	python_shell
+	resource_inspector
+	performance_counter_viewer
+	capture_comments

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,29 +25,51 @@
 #include "TextureSaveDialog.h"
 #include <QColorDialog>
 #include <QFileInfo>
-#include "Code/CaptureContext.h"
 #include "Code/QRDUtils.h"
 #include "ui_TextureSaveDialog.h"
 
-TextureSaveDialog::TextureSaveDialog(const FetchTexture &t, const TextureSave &s, QWidget *parent)
+TextureSaveDialog::TextureSaveDialog(const TextureDescription &t, bool enableOverlaySelection,
+                                     const TextureSave &s, QWidget *parent)
     : QDialog(parent), ui(new Ui::TextureSaveDialog)
 {
   setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
   ui->setupUi(this);
+
+  setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
+
+  ui->filename->setFont(Formatter::PreferredFont());
+  ui->fileFormat->setFont(Formatter::PreferredFont());
+  ui->jpegCompression->setFont(Formatter::PreferredFont());
+  ui->mipSelect->setFont(Formatter::PreferredFont());
+  ui->sampleSelect->setFont(Formatter::PreferredFont());
+  ui->sliceSelect->setFont(Formatter::PreferredFont());
+  ui->blackPoint->setFont(Formatter::PreferredFont());
+  ui->whitePoint->setFont(Formatter::PreferredFont());
+
+  if(!enableOverlaySelection)
+    ui->texSelectionGroup->hide();
 
   QObject::connect(&typingTimer, &QTimer::timeout, [this] { SetFiletypeFromFilename(); });
 
   ui->fileFormat->clear();
 
   QStringList strs;
-  for(int i = 0; i < eFileType_Count; i++)
-    strs << ToQStr((FileType)i);
+  for(FileType i : values<FileType>())
+  {
+    if(i == FileType::Raw)
+      continue;
+    strs << ToQStr(i);
+  }
 
   ui->fileFormat->addItems(strs);
 
   strs.clear();
-  for(int i = 0; i < eAlphaMap_Count; i++)
-    strs << ToQStr((AlphaMapping)i);
+  for(AlphaMapping i : values<AlphaMapping>())
+  {
+    if(i == AlphaMapping::Preserve)
+      break;
+    strs << ToQStr(i);
+  }
 
   ui->alphaMap->addItems(strs);
 
@@ -56,19 +78,28 @@ TextureSaveDialog::TextureSaveDialog(const FetchTexture &t, const TextureSave &s
 
   ui->jpegCompression->setValue(saveData.jpegQuality);
 
-  ui->alphaMap->setCurrentIndex((int)saveData.alpha);
+  if(saveData.alpha == AlphaMapping::Preserve)
+    ui->alphaMap->setCurrentIndex((int)AlphaMapping::BlendToCheckerboard);
+  else
+    ui->alphaMap->setCurrentIndex((int)saveData.alpha);
 
   ui->blackPoint->setText(Formatter::Format(saveData.comp.blackPoint));
   ui->whitePoint->setText(Formatter::Format(saveData.comp.whitePoint));
 
   for(uint32_t i = 0; i < tex.mips; i++)
-    ui->mipSelect->addItem(QString::number(i) + " - " + QString::number(qMax(1U, tex.width >> i)) +
-                           "x" + QString::number(qMax(1U, tex.height >> i)));
+    ui->mipSelect->addItem(
+        QFormatStr("%1 - %2x%3").arg(i).arg(qMax(1U, tex.width >> i)).arg(qMax(1U, tex.height >> i)));
+
+  // reset as it might have been changed by adding items
+  saveData.mip = s.mip;
 
   ui->mipSelect->setCurrentIndex(saveData.mip >= 0 ? saveData.mip : 0);
 
   for(uint32_t i = 0; i < tex.msSamp; i++)
-    ui->sampleSelect->addItem(QString("Sample %1").arg(i));
+    ui->sampleSelect->addItem(tr("Sample %1").arg(i));
+
+  // reset as it might have been changed by adding items
+  saveData.sample = s.sample;
 
   ui->sampleSelect->setCurrentIndex(qMin(
       (int)tex.msSamp, (saveData.sample.sampleIndex == ~0U ? 0 : (int)saveData.sample.sampleIndex)));
@@ -82,7 +113,7 @@ TextureSaveDialog::TextureSaveDialog(const FetchTexture &t, const TextureSave &s
     ui->oneSample->setChecked(true);
   }
 
-  const char *cubeFaces[] = {"X+", "X-", "Y+", "Y-", "Z+", "Z-"};
+  const QString cubeFaces[] = {lit("X+"), lit("X-"), lit("Y+"), lit("Y-"), lit("Z+"), lit("Z-")};
 
   uint32_t numSlices = qMax(tex.arraysize, tex.depth);
 
@@ -93,28 +124,36 @@ TextureSaveDialog::TextureSaveDialog(const FetchTexture &t, const TextureSave &s
       QString name = cubeFaces[i % 6];
       // Front 1, Back 2, 3, 4 etc for cube arrays
       if(numSlices > 6)
-        name = QString("[%1] %2").arg(i / 6).arg(cubeFaces[i % 6]);
+        name = QFormatStr("[%1] %2").arg(i / 6).arg(cubeFaces[i % 6]);
       ui->sliceSelect->addItem(name);
     }
     else
     {
-      ui->sliceSelect->addItem(QString("Slice %1").arg(i));
+      ui->sliceSelect->addItem(tr("Slice %1").arg(i));
     }
   }
+
+  // reset as it might have been changed by adding items
+  saveData.slice = s.slice;
 
   ui->sliceSelect->setCurrentIndex(saveData.slice.sliceIndex >= 0 ? saveData.slice.sliceIndex : 0);
 
   ui->gridWidth->setMaximum(tex.depth * tex.arraysize * tex.msSamp);
 
-  ui->mipGroup->setVisible(tex.mips > 1);
+  SetOptionsVisible(true);
+}
 
-  ui->sampleGroup->setVisible(tex.msSamp > 1);
+void TextureSaveDialog::SetOptionsVisible(bool visible)
+{
+  ui->mipGroup->setVisible(visible && tex.mips > 1);
 
-  ui->sliceGroup->setVisible(tex.depth > 1 || tex.arraysize > 1 || tex.msSamp > 1);
+  ui->sampleGroup->setVisible(visible && tex.msSamp > 1);
 
-  if(saveData.destType != eFileType_DDS)
+  ui->sliceGroup->setVisible(visible && (tex.depth > 1 || tex.arraysize > 1 || tex.msSamp > 1));
+
+  if(saveData.destType != FileType::DDS)
   {
-    ui->cubeCruciform->setEnabled(tex.cubemap && tex.arraysize == 6);
+    ui->cubeCruciform->setEnabled(visible && tex.cubemap && tex.arraysize == 6);
 
     if(!ui->oneSlice->isChecked() && !ui->cubeCruciform->isEnabled())
       ui->mapSlicesToGrid->setChecked(true);
@@ -140,10 +179,10 @@ void TextureSaveDialog::SetFiletypeFromFilename()
   QFileInfo path(ui->filename->text());
   QString ext = path.suffix().toUpper();
 
-  for(int i = 0; i < eFileType_Count; i++)
+  for(FileType i : values<FileType>())
   {
-    if(ToQStr((FileType)i) == ext)
-      ui->fileFormat->setCurrentIndex(i);
+    if(ToQStr(i) == ext)
+      ui->fileFormat->setCurrentIndex(uint32_t(i));
   }
 }
 
@@ -154,11 +193,11 @@ void TextureSaveDialog::SetFilenameFromFiletype()
 
   int idx = ui->fileFormat->currentIndex();
 
-  if(idx >= 0 && idx < eFileType_Count)
+  if(idx >= 0 && idx < (int)FileType::Count)
   {
     QString selectedExt = ToQStr((FileType)idx).toLower();
 
-    if(ext != selectedExt && ext != "")
+    if(ext != selectedExt && !ext.isEmpty())
     {
       QString fn = ui->filename->text();
       fn.chop(ext.length());
@@ -168,24 +207,36 @@ void TextureSaveDialog::SetFilenameFromFiletype()
   }
 }
 
+void TextureSaveDialog::on_mainTex_clicked()
+{
+  SetOptionsVisible(true);
+  m_saveOverlayInsteadOfSelectedTexture = false;
+}
+
+void TextureSaveDialog::on_overlayTex_clicked()
+{
+  SetOptionsVisible(false);
+  m_saveOverlayInsteadOfSelectedTexture = true;
+}
+
 void TextureSaveDialog::on_fileFormat_currentIndexChanged(int index)
 {
-  saveData.destType = (FileType)ui->fileFormat->currentIndex();
+  saveData.destType = selectedFileType();
 
-  ui->jpegCompression->setEnabled(saveData.destType == eFileType_JPG);
+  ui->jpegCompression->setEnabled(saveData.destType == FileType::JPG);
 
-  ui->alphaGroup->setVisible(saveData.destType != eFileType_HDR &&
-                             saveData.destType != eFileType_EXR &&
-                             saveData.destType != eFileType_DDS);
+  ui->alphaGroup->setVisible(saveData.destType != FileType::HDR &&
+                             saveData.destType != FileType::EXR &&
+                             saveData.destType != FileType::DDS);
 
-  bool noAlphaFormat = (saveData.destType == eFileType_BMP || saveData.destType == eFileType_JPG);
+  bool noAlphaFormat = (saveData.destType == FileType::BMP || saveData.destType == FileType::JPG);
 
   ui->alphaMap->setEnabled(tex.format.compCount == 4 && noAlphaFormat);
 
-  ui->alphaCol->setEnabled(saveData.alpha == eAlphaMap_BlendToColour && tex.format.compCount == 4 &&
-                           noAlphaFormat);
+  ui->alphaCol->setEnabled(saveData.alpha == AlphaMapping::BlendToColor &&
+                           tex.format.compCount == 4 && noAlphaFormat);
 
-  if(saveData.destType == eFileType_DDS)
+  if(saveData.destType == FileType::DDS)
   {
     ui->exportAllMips->setEnabled(true);
     ui->exportAllMips->setChecked(true);
@@ -210,6 +261,11 @@ void TextureSaveDialog::on_fileFormat_currentIndexChanged(int index)
   SetFilenameFromFiletype();
 
   adjustSize();
+}
+
+FileType TextureSaveDialog::selectedFileType()
+{
+  return (FileType)qMax(0, ui->fileFormat->currentIndex());
 }
 
 void TextureSaveDialog::on_jpegCompression_valueChanged(double arg1)
@@ -240,7 +296,7 @@ void TextureSaveDialog::on_oneMip_toggled(bool checked)
   ui->exportAllMips->setChecked(!ui->oneMip->isChecked());
   ui->mipSelect->setEnabled(ui->oneMip->isChecked());
 
-  if(saveData.destType != eFileType_DDS)
+  if(saveData.destType != FileType::DDS)
   {
     ui->oneMip->setChecked(true);
     ui->exportAllMips->setChecked(false);
@@ -252,7 +308,7 @@ void TextureSaveDialog::on_oneMip_toggled(bool checked)
 
 void TextureSaveDialog::on_mipSelect_currentIndexChanged(int index)
 {
-  saveData.mip = index;
+  saveData.mip = qMax(0, index);
 }
 
 void TextureSaveDialog::on_mapSampleArray_toggled(bool checked)
@@ -323,7 +379,7 @@ void TextureSaveDialog::on_oneSample_toggled(bool checked)
 
 void TextureSaveDialog::on_sampleSelect_currentIndexChanged(int index)
 {
-  saveData.sample.sampleIndex = (uint32_t)index;
+  saveData.sample.sampleIndex = (uint32_t)qMax(0, index);
 }
 
 void TextureSaveDialog::on_exportAllSlices_toggled(bool checked)
@@ -334,7 +390,7 @@ void TextureSaveDialog::on_exportAllSlices_toggled(bool checked)
   m_Recurse = true;
 
   ui->oneSlice->setChecked(!ui->exportAllSlices->isChecked());
-  if(saveData.destType == eFileType_DDS)
+  if(saveData.destType == FileType::DDS)
   {
     ui->mapSlicesToGrid->setEnabled(false);
     ui->gridWidth->setEnabled(false);
@@ -366,7 +422,7 @@ void TextureSaveDialog::on_oneSlice_toggled(bool checked)
   m_Recurse = true;
 
   ui->exportAllSlices->setChecked(!ui->oneSlice->isChecked());
-  if(saveData.destType == eFileType_DDS)
+  if(saveData.destType == FileType::DDS)
   {
     ui->mapSlicesToGrid->setEnabled(false);
     ui->gridWidth->setEnabled(false);
@@ -401,7 +457,7 @@ void TextureSaveDialog::on_mapSlicesToGrid_toggled(bool checked)
   {
     ui->cubeCruciform->setChecked(false);
   }
-  else if(saveData.destType != eFileType_DDS)
+  else if(saveData.destType != FileType::DDS)
   {
     ui->oneSlice->setChecked(true);
     ui->exportAllSlices->setChecked(false);
@@ -413,7 +469,7 @@ void TextureSaveDialog::on_mapSlicesToGrid_toggled(bool checked)
 
   m_Recurse = false;
 
-  if(saveData.destType == eFileType_DDS)
+  if(saveData.destType == FileType::DDS)
     ui->gridWidth->setEnabled(false);
   else
     ui->gridWidth->setEnabled(ui->mapSlicesToGrid->isChecked());
@@ -430,7 +486,7 @@ void TextureSaveDialog::on_cubeCruciform_toggled(bool checked)
   {
     ui->mapSlicesToGrid->setChecked(false);
   }
-  else if(saveData.destType != eFileType_DDS)
+  else if(saveData.destType != FileType::DDS)
   {
     ui->oneSlice->setChecked(true);
     ui->exportAllSlices->setChecked(false);
@@ -445,7 +501,7 @@ void TextureSaveDialog::on_cubeCruciform_toggled(bool checked)
 
 void TextureSaveDialog::on_sliceSelect_currentIndexChanged(int index)
 {
-  saveData.slice.sliceIndex = index;
+  saveData.slice.sliceIndex = qMax(0, index);
 }
 
 void TextureSaveDialog::on_gridWidth_valueChanged(double arg1)
@@ -467,9 +523,9 @@ void TextureSaveDialog::on_alphaCol_clicked()
 
 void TextureSaveDialog::on_alphaMap_currentIndexChanged(int index)
 {
-  saveData.alpha = (AlphaMapping)index;
+  saveData.alpha = (AlphaMapping)qMax(0, index);
 
-  ui->alphaCol->setEnabled(saveData.alpha == eAlphaMap_BlendToColour);
+  ui->alphaCol->setEnabled(saveData.alpha == AlphaMapping::BlendToColor);
 }
 
 void TextureSaveDialog::on_blackPoint_textEdited(const QString &arg)
@@ -492,24 +548,43 @@ void TextureSaveDialog::on_whitePoint_textEdited(const QString &arg)
 
 void TextureSaveDialog::on_browse_clicked()
 {
-  QString filter = "";
+  QString filter;
 
-  for(int i = 0; i < eFileType_Count; i++)
+  // put the selected filetype first
+  FileType curType = selectedFileType();
+  QString ext = ToQStr(curType);
+  filter = tr("%1 Files").arg(ext) + lit(" (*.%1)").arg(ext.toLower());
+
+  for(FileType i : values<FileType>())
   {
-    QString ext = ToQStr((FileType)i);
+    // skip the one we bumped to the front
+    if(i == curType)
+      continue;
 
-    if(filter.length() > 0)
-      filter += ";;";
-    filter += tr("%1 Files (*.%2)").arg(ext).arg(ext.toLower());
+    ext = ToQStr(i);
+
+    filter += lit(";;") + tr("%1 Files").arg(ext) + lit(" (*.%1)").arg(ext.toLower());
   }
 
-  QString *selectedFilter = NULL;
+  QString selectedFilter;
 
   QString filename =
-      RDDialog::getSaveFileName(this, tr("Save Texture As"), "", filter, selectedFilter);
+      RDDialog::getSaveFileName(this, tr("Save Texture As"), QString(), filter, &selectedFilter);
 
-  QFileInfo checkFile(filename);
-  if(filename != "")
+  // if they selected a different file type, update the selection.
+  for(FileType i : values<FileType>())
+  {
+    ext = ToQStr(i);
+
+    if(selectedFilter.startsWith(tr("%1 Files").arg(ext)))
+    {
+      if(i != curType)
+        ui->fileFormat->setCurrentIndex(uint32_t(i));
+      break;
+    }
+  }
+
+  if(!filename.isEmpty())
   {
     ui->filename->setText(filename);
     SetFiletypeFromFilename();
@@ -525,9 +600,9 @@ void TextureSaveDialog::on_filename_textEdited(const QString &arg1)
 
 void TextureSaveDialog::on_saveCancelButtons_accepted()
 {
-  saveData.alpha = (AlphaMapping)ui->alphaMap->currentIndex();
+  saveData.alpha = (AlphaMapping)qMax(0, ui->alphaMap->currentIndex());
 
-  if(saveData.alpha == eAlphaMap_BlendToCheckerboard)
+  if(saveData.alpha == AlphaMapping::BlendToCheckerboard)
   {
     saveData.alphaCol = FloatVector(0.666f, 0.666f, 0.666f, 1.0f);
   }
@@ -535,7 +610,7 @@ void TextureSaveDialog::on_saveCancelButtons_accepted()
   if(ui->exportAllMips->isChecked())
     saveData.mip = -1;
   else
-    saveData.mip = (int)ui->mipSelect->currentIndex();
+    saveData.mip = (int)qMax(0, ui->mipSelect->currentIndex());
 
   if(ui->resolveSamples->isChecked())
   {
@@ -549,7 +624,7 @@ void TextureSaveDialog::on_saveCancelButtons_accepted()
   }
   else
   {
-    saveData.sample.sampleIndex = (uint)ui->sampleSelect->currentIndex();
+    saveData.sample.sampleIndex = (uint)qMax(0, ui->sampleSelect->currentIndex());
     saveData.sample.mapToArray = false;
   }
 
@@ -557,7 +632,7 @@ void TextureSaveDialog::on_saveCancelButtons_accepted()
   {
     saveData.slice.cubeCruciform = saveData.slice.slicesAsGrid = false;
     saveData.slice.sliceGridWidth = 1;
-    saveData.slice.sliceIndex = (int)ui->sliceSelect->currentIndex();
+    saveData.slice.sliceIndex = (int)qMax(0, ui->sliceSelect->currentIndex());
   }
   else
   {
@@ -576,7 +651,7 @@ void TextureSaveDialog::on_saveCancelButtons_accepted()
     }
   }
 
-  saveData.destType = (FileType)ui->fileFormat->currentIndex();
+  saveData.destType = (FileType)qMax(0, ui->fileFormat->currentIndex());
   saveData.jpegQuality = (int)ui->jpegCompression->value();
 
   bool ok = false;
@@ -593,6 +668,15 @@ void TextureSaveDialog::on_saveCancelButtons_accepted()
     saveData.comp.whitePoint = d;
 
   QFileInfo fi(filename());
+
+  if(!fi.isAbsolute())
+  {
+    RDDialog::critical(
+        this, tr("Save Texture"),
+        tr("%1\nIs not an absolute path.\nCheck the path and try again.").arg(filename()));
+
+    return;
+  }
 
   QDir dir = fi.dir();
 

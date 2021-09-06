@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2019-2021 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -25,22 +25,23 @@
 
 #pragma once
 
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+
 #include <intrin.h>
+#include <stdlib.h>
 #include <windows.h>
 #include "data/resource.h"
 
-#define __PRETTY_FUNCTION_SIGNATURE__ __FUNCSIG__
+#define EndianSwap16(x) _byteswap_ushort(x)
+#define EndianSwap32(x) _byteswap_ulong(x)
+#define EndianSwap64(x) _byteswap_uint64(x)
 
-#define OS_DEBUG_BREAK() __debugbreak()
+#define EmbeddedResourceType int
+#define EmbeddedResource(filename) CONCAT(RESOURCE_, filename)
 
-#define GetEmbeddedResource(filename) GetEmbeddedResourceWin32(CONCAT(RESOURCE_, filename))
-string GetEmbeddedResourceWin32(int resource);
-
-namespace StringFormat
-{
-// useful for converting to wide before passing to OS functions
-std::wstring UTF82Wide(const string &s);
-};
+#define GetEmbeddedResource(filename) GetDynamicEmbeddedResource(EmbeddedResource(filename))
+rdcstr GetDynamicEmbeddedResource(int resource);
 
 namespace OSUtility
 {
@@ -56,12 +57,12 @@ inline bool DebuggerPresent()
 {
   return ::IsDebuggerPresent() == TRUE;
 }
-void WriteOutput(int channel, const char *str);
 };
 
 namespace Threading
 {
 typedef CriticalSectionTemplate<CRITICAL_SECTION> CriticalSection;
+typedef RWLockTemplate<SRWLOCK> RWLock;
 };
 
 namespace Bits
@@ -79,6 +80,34 @@ inline uint64_t CountLeadingZeroes(uint64_t value)
   DWORD index;
   BOOLEAN result = _BitScanReverse64(&index, value);
   return (result == TRUE) ? (index ^ 63) : 64;
+}
+#endif
+
+inline uint32_t CountTrailingZeroes(uint32_t value)
+{
+  DWORD index;
+  BOOLEAN result = _BitScanForward(&index, value);
+  return (result == TRUE) ? index : 32;
+}
+
+#if ENABLED(RDOC_X64)
+inline uint64_t CountTrailingZeroes(uint64_t value)
+{
+  DWORD index;
+  BOOLEAN result = _BitScanForward64(&index, value);
+  return (result == TRUE) ? index : 64;
+}
+#endif
+
+inline uint32_t CountOnes(uint32_t value)
+{
+  return __popcnt(value);
+}
+
+#if ENABLED(RDOC_X64)
+inline uint64_t CountOnes(uint64_t value)
+{
+  return __popcnt64(value);
 }
 #endif
 };

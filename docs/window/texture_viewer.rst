@@ -8,7 +8,11 @@ Overview
 
 The texture viewer consists of a couple of different sections, which will be outlined here.
 
-Several specific techniques or features used within the texture viewer have their own separate pages that go into more detail. You might find more useful information there if they cover what you are looking for: :doc:`../how/how_view_texture`, :doc:`../how/how_inspect_pixel`, :doc:`../how/how_custom_visualisation`
+Several specific techniques or features used within the texture viewer have their own separate pages that go into more detail. You might find more useful information there if they cover what you are looking for:
+
+* :doc:`../how/how_view_texture`
+* :doc:`../how/how_inspect_pixel`
+* :doc:`../how/how_custom_visualisation`
 
 .. figure:: ../imgs/Screenshots/LabelledTexViewer.png
 
@@ -19,7 +23,7 @@ Main Texture Display
 
 The main texture display takes up the largest portion of the window, and is simply a container for the textures to display.
 
-It is a tabbed control and although one tab is always present showing the currently followed texture bound to the pipeline, other locked tabs can be opened up showing a single resource. More details are available on the page :doc:`../how/how_view_texture`.
+It is a tabbed control, and the first tab is always present showing a particular texture slot on the current pipeline state such as an input texture, or the color/depth outputs. Other locked tabs can be opened up showing a single resource. More details are available on the page :doc:`../how/how_view_texture`.
 
 The mouse wheel can be used to zoom in and out of the texture. When zoomed in, holding the left mouse button and dragging will pan the image from side to side.
 
@@ -34,9 +38,9 @@ The status bar below the main texture display contains information on the curren
 * Dimensions - Width, height, depth and array size as applicable.
 * Mip Count.
 * MSAA sample count and quality, if applicable.
-* Format - e.g. RGB8. The exact phrasing of this will vary by API.
+* Format - e.g. ``RGBA8_UNORM``.
 
-After this information there are a few displays that are pixel-based. The pixel that is under the cursor is displayed as a colour swatch, followed by its co-ordinates. Then any :doc:`picked pixel <../how/how_inspect_pixel>` is displayed afterwards with its numeric value displayed.
+After this information there are a few displays that are pixel-based. The pixel that is under the cursor is displayed as a color swatch, followed by its co-ordinates. Then any :doc:`picked pixel <../how/how_inspect_pixel>` is displayed afterwards with its numeric value displayed.
 
 .. figure:: ../imgs/Screenshots/RMBStatus.png
 
@@ -49,15 +53,13 @@ There are several thumbnail strip panels available, by default they are docked i
 
 These strips display thumbnails of the resources bound to their respective parts of the pipeline, to give some context and allow quick preview without having to switch the main display between these textures.
 
-The texture that the following tab is currently displaying is highlighted in red, and each thumbnail shows both the slot number and the name of the texture bound at that point. To follow a given slot simply left click on it. If the currently followed texture slot is empty (i.e. it was following a texture and then that slot was unbound) it will show up simply named "Unbound" and with no name or slot number.
+The texture that the following tab is currently displaying is highlighted in red, and each thumbnail shows both the slot number and the name of the texture bound at that point. To follow a given slot simply left click on it. If the currently followed texture slot is empty (i.e. it was following a texture and then that slot became unbound in a different action) it will show up simply named "Unbound" and with no name or slot number.
 
-Each thumbnail has a context menu available via right click. This menu allows you to open a locked tab (:doc:`../how/how_view_texture`), as well as containing a list of all the uses of this texture - as read-only resource and writable output. This is similar to the resource display strip on the :doc:`timeline_bar`. Clicking on any of these entries will jump to the first of the events in the event range listed.
+Each thumbnail has a context menu available via right click. This menu allows you to open a locked tab (:doc:`../how/how_view_texture`), jump to the :doc:`resource inspector <../window/resource_inspector>`, as well as containing a list of all the uses of this texture - as read-only resource and writable output. This is similar to the resource display strip on the :doc:`timeline_bar`. Clicking on any of these entries will jump to the first of the events in the event range listed.
 
 .. figure:: ../imgs/Screenshots/OpenLockedTab.png
 
   Thumbnail Menu: Thumbnail context menu with several options.
-
-There are also two general options - show disabled and show empty. These behave the same as the options in the :doc:`pipeline_state` window - temporarily overriding the default behaviour in RenderDoc to only show texture slots that are referenced in the shader.
 
 Pixel Context Display
 ---------------------
@@ -66,11 +68,13 @@ The Pixel context display is a small panel by default in the bottom right of the
 
 Whenever a pixel is picked small area of the texture around it is rendered at maximum zoom to this panel. This gives you some context for the pixels nearby to the one you're picking and allows fine refinement without needing to zoom in and lose your place in the overall image.
 
+You can adjust the selected pixel with the arrow keys on your keyboard after picking, using this context to guide your selection.
+
 .. figure:: ../imgs/Screenshots/PixelContext.png
 
   Pixel context: Pixel context displaying the surrounds of the picked pixel.
 
-From here, once you have selected a pixel, you can also launch the :doc:`pixel debugger <../how/how_debug_shader>` if you have the drawcall that you want to debug selected. You can also launch the :ref:`pixel-history` view which shows all modifications that have happened to the texture since the start of the frame to the currently selected event.
+From here, once you have selected a pixel, you can also launch the :doc:`pixel debugger <../how/how_debug_shader>` if you have the draw that you want to debug selected. You can also launch the :ref:`pixel-history` view which shows all modifications that have happened to the texture since the start of the frame to the currently selected event.
 
 Visible Range Control
 ---------------------
@@ -89,7 +93,7 @@ There are four other buttons available for control of the range:
 
 .. |zoom| image:: ../imgs/icons/zoom.png
 .. |wand| image:: ../imgs/icons/wand.png
-.. |UndoArrow| image:: ../imgs/icons/UndoArrow.png
+.. |arrow_undo| image:: ../imgs/icons/arrow_undo.png
 .. |chart_curve| image:: ../imgs/icons/chart_curve.png
 
 * |zoom| **Zoom in** - This button will zoom the extreme values in to whichever fine values have been selected by the draggable handles.
@@ -106,9 +110,9 @@ There are four other buttons available for control of the range:
 
 * |wand| **Autofit** - This button automatically fits the range control to the min and max values in any visible channels in the texture. Oftentimes this is a good starting point for a range, although with some extreme textures it may adjust badly.
 
-  Right clicking on this button will cause it to always auto-fit until you disable this. ie. when you move to another event or another texture, the range will be auto-fit again. This is useful if jumping between events or textures where the visible ranges are very different.
+  Right clicking on this button will cause it to always auto-fit until you disable this. i.e. when you move to another event or another texture, the range will be auto-fit again. This is useful if jumping between events or textures where the visible ranges are very different.
 
-* |UndoArrow| **Reset** - Simply resets the range back to the default of [0, 1] - useful for resetting after changing to a new texture where the range settings aren't applicable.
+* |arrow_undo| **Reset** - Simply resets the range back to the default of [0, 1] - useful for resetting after changing to a new texture where the range settings aren't applicable.
 
 * |chart_curve| **Histogram** - This is a toggle switch. When enabled it will change the thin bar of the range control into a thicker bar that contains a range-value histogram, showing the distribution of values.
 
@@ -134,31 +138,37 @@ Channels selector
 
 .. |RGBAChannels| image:: ../imgs/Screenshots/RGBAChannels.png
 .. |RGBMChannels| image:: ../imgs/Screenshots/RGBMChannels.png
+.. |YUVADecodeChannels| image:: ../imgs/Screenshots/YUVADecodeChannels.png
 .. |CustomDisplay| image:: ../imgs/Screenshots/CustomDisplay.png
 .. |add| image:: ../imgs/icons/add.png
 .. |page_white_edit| image:: ../imgs/icons/page_white_edit.png
-.. |delete| image:: ../imgs/icons/delete.png
+.. |delete| image:: ../imgs/icons/del.png
 
 ..
 
   | |RGBAChannels| Default RGBA channels
   | |RGBMChannels| RGBM mode
-  | |CustomDisplay| |add| |page_white_edit| |delete| :doc:`Custom Shader mode <../how/how_custom_visualisation>`
+  | |YUVADecodeChannels| YUVA Decode to RGBA
+  | |CustomDisplay| :doc:`Custom Shader mode <../how/how_custom_visualisation>`
 
 This selector switches between displaying standard RGBA channels, RGBM encoding with a custom multiplier and using a custom visualiser shader.
 
-When in **RGBA** mode, by default only the RGB channels are displayed and alpha is forced to fully opaque. Each of the channels can be toggled off independently and any combination can be used. Any RGB channel which is disabled is forced to fully black in the output. When Alpha is enabled, the background will be rendered with a solid colour or checkerboard pattern to indicate semi-transparent areas.
+When in **RGBA** mode, by default only the RGB channels are displayed and alpha is forced to fully opaque. Each of the channels can be toggled off independently and any combination can be used. Any RGB channel which is disabled is forced to fully black in the output. When Alpha is enabled, the background will be rendered with a solid color or checkerboard pattern to indicate semi-transparent areas.
 
-Also note that when a single channel is displayed solo, the image is rendered as grayscale in that channel rather than displaying a monochromatic coloured image.
+Also note that when a single channel is displayed solo, the image is rendered as grayscale in that channel rather than displaying a monochromatic colored image.
+
+If the texture is a YUV format texture, this will show as ``YUVA`` and allow selecting the luminance and chrominance channels in a similar way to RGBA.
 
 .. tip::
   Right clicking on one of the channel buttons in the texture viewer (R, G, B, A) will either select only that channel, or if it's already the only one selected it will select all of the others. This is useful e.g. to toggle between viewing RGB and alpha, or for looking at individual channels in a packed texture or render target.
 
-Note that these channel selections are by default saved as per-texture state, so switching to a different texture will revert back to the default RGB, but going back to the first texture will remember which channels you were viewing. See the option in the :doc:`options_window`.
+Note that these channel selections are by default saved as per-texture state, so switching to a different texture will revert back to the default RGB, but going back to the first texture will remember which channels you were viewing. See the option in the :doc:`settings_window`.
 
-When **RGBM** is selected, the RGB value will be multiplied by the specified multiplier and then by the alpha value. This is a common encoding used to pack a larger range into an 8-bit RGB image.
+When **RGBM** is selected, the RGB value will be multiplied by the specified multiplier and then by the alpha value. This is a common encoding used to pack HDR values into an 8-bit RGBA image by using the alpha channel as a scaling factor.
 
-With **Custom** selected a dropdown will be populated with any ``.hlsl`` or ``.glsl`` files as appropriate in the ``%APPDATA%\renderdoc`` folder. When choosing a custom shader the raw image will be passed through this shader before being displayed with the usual controls on the main display.
+When **YUVA Decode** is selected, the YUVA data will be transformed with a default full-range conversion using Rec. 709 conversion values.
+
+With **Custom** selected a dropdown will be populated with any custom shaders available for decoding and displaying textures. When choosing a custom shader the raw image will be passed through this shader before being displayed with the usual controls on the main display. For more information see :doc:`../how/how_custom_visualisation`.
 
 You can create a new custom shader with the |add| button, edit a shader with the |page_white_edit| button, and delete an one with the |delete| button.
 
@@ -167,19 +177,21 @@ Gamma display of Linear Data
 
   | γ Gamma display
 
-A proper explanation of this is available in the :ref:`FAQ <gamma-linear-display>`. In short, linear data is 'overcorrected' to look as expected, but this behaviour can be overridden by toggling off this option.
+A proper explanation of this is available in the :ref:`FAQ <gamma-linear-display>`. In short, linear data is 'over-corrected' to look as expected, but this behaviour can be overridden by toggling off this option.
+
+.. _Alpha background:
 
 Alpha background
 ~~~~~~~~~~~~~~~~
 .. |color_wheel| image:: ../imgs/icons/color_wheel.png
-.. |crosshatch| image:: ../imgs/icons/crosshatch.png
+.. |checkerboard| image:: ../imgs/icons/checkerboard.png
 
 ..
 
   | |color_wheel| Choose background color
-  | |crosshatch| Checkerboard background
+  | |checkerboard| Checkerboard background
 
-When displaying a texture with alpha channel, the background of the main display changes to make the semi-transparent sections more obvious. With these two controls you can either choose a checkerboard pattern |crosshatch| or open a colour picker to choose a solid colour |color_wheel|.
+When displaying a texture with alpha channel, the background of the main display changes to make the semi-transparent sections more obvious. With these two controls you can either choose a checkerboard pattern |checkerboard| or open a color picker to choose a solid color |color_wheel|.
 
 The currently enabled mode will be highlighted.
 
@@ -191,7 +203,7 @@ Subresource selection
 
   | |SubresourceSelect|
 
-The main display of the texture viewer can only display at most a single 2D image at once.
+The main display of the texture viewer can only display at most a single 2D subresource of an image at once.
 
 For textures with mip-maps this control allows you to select the mip level to display - the overall size of the image will remain the same but will be point sampled from the given mip level.
 
@@ -199,7 +211,7 @@ For 3D textures and 2D arrays you can select the slice to display here from the 
 
 For Multisampled textures, this will allow you to select either a single sample to view across the image, or to see a default-resolved image.
 
-Note that these selections are by default saved as per-texture state, so switching to a different texture will revert back to the default first slice or face, and top mip. Going back to the first texture though will remember which subresource you were viewing. See the option in the :doc:`options_window`.
+Note that these selections are by default saved as per-texture state, so switching to a different texture will revert back to the default first slice or face, and top mip. Going back to the first texture though will remember which subresource you were viewing. See the option in the :doc:`settings_window`.
 
 Save Texture
 ~~~~~~~~~~~~
@@ -215,11 +227,11 @@ This allows you to save the currently visible texture. Several formats are suppo
 Open Texture List
 ~~~~~~~~~~~~~~~~~
 
-.. |page_white_link| image:: ../imgs/icons/page_white_link.png
+.. |page_white_stack| image:: ../imgs/icons/page_white_stack.png
 
 ..
 
-  | |page_white_link| Open Texture List
+  | |page_white_stack| Open Texture List
 
 This button opens the texture list of all textures present in the capture. More details can be seen in :doc:`../how/how_view_texture`.
 
@@ -233,10 +245,6 @@ View Texture as Buffer
   | |page_white_code| Open Texture data in Buffer Viewer
 
 This button opens the texture in the :doc:`raw buffer viewer <buffer_viewer>`. This lets you see the raw data of the underlying texture and format it as you wish if the data represents more complex data than is easy to display in the texture viewer.
-
-.. warning::
-
-  The buffer viewer may not be able to handle the full number of columns that are appropriate for the full width of a texture, so it is better to limit the number of columns and manually calculate the offset into the table of data.
 
 Goto Location
 ~~~~~~~~~~~~~
@@ -253,10 +261,25 @@ This button opens a small popup above the main texture view that lets you type i
 
   This popup is also available with the keyboard shortcut :kbd:`Ctrl-G`.
 
+Open Resource Inspector
+~~~~~~~~~~~~~~~~~~~~~~~
+
+.. |link| image:: ../imgs/icons/link.png
+
+..
+
+  | |link| Open resource inspector
+
+This button opens a the currently visible texture in the :doc:`resource inspector <resource_inspector>` which allows you to see more details about how the object was created and any other resources it may be related to.
+
+.. note::
+
+  This popup is also available with the keyboard shortcut :kbd:`Ctrl-G`.
+
 Zoom Controls
 ~~~~~~~~~~~~~~~~~
 
-.. |fit_window| image:: ../imgs/icons/fit_window.png
+.. |arrow_out| image:: ../imgs/icons/arrow_out.png
 .. |ZoomControls| image:: ../imgs/Screenshots/ZoomControls.png
 
 ..
@@ -265,7 +288,7 @@ Zoom Controls
 
 The zoom controls are fairly self explanatory - a pre-existing zoom value can be chosen from the drop down or a custom value (clamped to the minimum and maximum zoom) can be entered as a percentage. Click the ``1:1`` button to zoom to the exact size.
 
-To automatically fit the texture to the space available in the window, regardless of its dimensions, you can click the |fit_window| Fit button.
+To automatically fit the texture to the space available in the window, regardless of its dimensions, you can click the |arrow_out| Fit button. This will toggle on and adjust the fit as different textures are displayed.
 
 Flip Y
 ~~~~~~
@@ -276,8 +299,10 @@ Flip Y
 
   | |flip_y| Flip Y
 
-This button toggles flipping the co-ordinate system in Y - y=0 is at the bottom of the window instead of at the top.
-  
+This button toggles flipping the co-ordinate system in Y, changing y=0 to be at the bottom of the window instead of at the top.
+
+.. _render-overlay:
+
 Render Overlay
 ~~~~~~~~~~~~~~
 
@@ -289,7 +314,9 @@ Render Overlay
 
 This is a powerful tool for quickly diagnosing issues and can be very useful for locating what you're looking for. Several overlays are available that can be rendered over any texture, although most of them are only meaningful for currently bound render targets.
 
-* ``Highlight Drawcall`` will do pretty much as it says. It darkens everything except the current drawcall which is highlighted in flat colour. This makes whatever is being drawn stand out and can be useful for seeing where the current object is on screen, especially if rapidly browsing through the frame.
+These overlays are only relevant when the currently selected action is a rasterization draw, for other actions the overlays will be empty.
+
+* ``Highlight Drawcall`` will do show the area covered by the drawcall. It darkens everything except the current drawcall which is highlighted in a flat color. This makes whatever is being drawn stand out and can be useful for seeing where the current object is on screen, especially if rapidly browsing through the frame.
 
 * ``Wireframe Mesh`` will render a wireframe mesh of the current drawcall over the top of the image.
 
@@ -299,14 +326,18 @@ This is a powerful tool for quickly diagnosing issues and can be very useful for
 
 * ``Backface Cull`` works as above but with backface culling.
 
-* ``Viewport/Scissor`` shows a coloured overlay on the image that corresponds to the viewport and scissor regions.
+* ``Viewport/Scissor`` shows a colored overlay on the image that corresponds to the viewport and scissor regions.
 
 * ``NaN/Inf/-ve display`` will render the image in grayscale (using the typical luminance calculation - ``dot(col.xyz, float3(0.2126, 0.7152, 0.0722)).xxx``) with red pixels highlighting any NaNs found, green pixels highlighting any infinities, and blue pixels for any negative values. Note that in any case where only one or some channels in a multi-channel texture pass, that pixel will still be highlighted (so ``{0.5, -1.0, 0.0}`` would highlight blue).
 
 * ``Clipping`` will simply highlight in red any values that are below the current black point (as defined by the range control - see above), and in green any values above the white point. This can be useful in identifying invalid ranges if the range control is adjusted correctly, or in combination with a custom shader visualiser.
 
-* ``Clear before Pass`` will act as if the current target had been cleared to black right before the current pass. This can sometimes make it easier to see the results of a draw, especially if it is blending and only makes a subtle change. If the current API does not have the concept of a pass, it is defined as all the drawcalls with the same set of render targets.
+* ``Clear before Pass`` will act as if the current target had been cleared right before the current pass. This can sometimes make it easier to see the results of a draw, especially if it is blending and only makes a subtle change. If the current API does not have the concept of a pass, it is defined as all the drawcalls with the same set of render targets.
 
+   * If the current target is a render target, it is cleared to the :ref:`Alpha background` color.
+
+   * If the current target is a depth/stencil target, the behavior depends on the depth function for the current draw. If it is ``EQUAL``, ``NOT EQUAL``, or ``ALWAYS``, the target is not cleared. If it is ``LESS`` or ``LESS EQUAL``, it is cleared to 1. If it is ``GREATER`` or ``GREATER EQUAL``, it is cleared to 0. Stencil is never cleared.
+   
 * ``Clear before Draw`` works similarly to the above overlay, but clearing immediately before the selected draw.
 
 * ``Quad Overdraw (Pass)`` will show a visualisation of the level of 2x2 quad overdraw in the 'pass' up to the selected draw. If the current API does not have the concept of a pass, it is defined as all the drawcalls with the same set of render targets.
