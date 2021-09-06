@@ -1,6 +1,7 @@
 #include "d3d9_swapchain.h"
 
 #include "serialise/serialiser.h"
+#include "../dxgi/dxgi_common.h"
 
 WrappedD3DSwapChain9::WrappedD3DSwapChain9(IDirect3DSwapChain9 *swapChain,
                                            WrappedD3DDevice9 *device, UINT index, bool implicit)
@@ -54,8 +55,7 @@ HRESULT __stdcall WrappedD3DSwapChain9::QueryInterface(REFIID riid, void **ppvOb
   }
   else
   {
-    string guid = ToStr::Get(riid);
-    RDCWARN("Querying IDirect3DSwapChain for interface: %s", guid.c_str());
+    WarnUnknownGUID("IDirect3DSwapChain", riid);
   }
 
   return m_SwapChain->QueryInterface(riid, ppvObj);
@@ -100,7 +100,7 @@ HRESULT __stdcall WrappedD3DSwapChain9::GetFrontBufferData(IDirect3DSurface9 *pD
 HRESULT __stdcall WrappedD3DSwapChain9::GetBackBuffer(UINT iBackBuffer, D3DBACKBUFFER_TYPE Type,
                                                       IDirect3DSurface9 **ppBackBuffer)
 {
-	IDirect3DSurface9* surface;
+	//IDirect3DSurface9* surface;
 	HRESULT res = m_SwapChain->GetBackBuffer(iBackBuffer, Type, ppBackBuffer);
 	if(res == S_OK)
 	{

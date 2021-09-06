@@ -65,6 +65,11 @@ WrappedD3DSurface9::~WrappedD3DSurface9()
 	//}
 }
 
+HRESULT STDMETHODCALLTYPE WrappedD3DSurface9::QueryInterface(REFIID riid, void **ppvObject) 
+{
+  return m_Surface->QueryInterface(riid, ppvObject);
+}
+
 HRESULT STDMETHODCALLTYPE WrappedD3DSurface9::GetDevice(IDirect3DDevice9 **ppDevice)
 {
   IDirect3DDevice9 *device;

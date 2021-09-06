@@ -38,9 +38,14 @@ public:
   ~WrappedD3DSurface9();
 
   /*** IUnknown methods ***/
+  ULONG STDMETHODCALLTYPE AddRef() { return m_RefCounter.AddRef(); }
+  ULONG STDMETHODCALLTYPE Release()
+  {
+    unsigned int ret = m_RefCounter.Release();
+    //CheckForDeath();
+    return ret;
+  }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject);
-  ULONG STDMETHODCALLTYPE AddRef();
-  ULONG STDMETHODCALLTYPE Release();
 
   /*** IDirect3DResource9 methods ***/
   HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **ppDevice);
@@ -67,7 +72,6 @@ private:
   IDirect3DTexture9 *m_ContainerTexture;
 
   WrappedD3DSwapChain9 *m_ContainerSwapChain;
-  backbufferindex?
 
   WrappedD3DDevice9 *m_Device;
 

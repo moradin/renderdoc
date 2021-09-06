@@ -292,13 +292,13 @@ public:
 private:
   void CheckForDeath();
 
-  IDirect3DDevice9 *m_Device;
-  IDirect3DDevice9Ex *m_DeviceEx;
+  IDirect3DDevice9 *m_device;
+  IDirect3DDevice9Ex *m_deviceEx;
 
   D3D9DebugManager *m_DebugManager;
 
   WrappedD3D9 *m_D3D;
-  std::vector<WrappedD3DSwapChain9 *> m_SwapChains;
+  rdcarray<WrappedD3DSwapChain9 *> m_SwapChains;
   UINT m_NumImplicitSwapChains;
 
   HWND m_Wnd;
@@ -309,8 +309,6 @@ private:
   bool m_Alive;
 
   uint32_t m_FrameCounter = 0;
-
-  LogState m_State;
 };
 
 ////////////////////////////////////////////////////////////////////////////

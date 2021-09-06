@@ -53,8 +53,6 @@ public:
     PERF_SetOptions.Register("d3d9.dll", "D3DPERF_SetOptions", PERF_SetOptions_hook);
     PERF_GetStatus.Register("d3d9.dll", "D3DPERF_GetStatus", PERF_GetStatus_hook);
 
-    success &= Create9Ex.Initialize("Direct3DCreate9Ex", DLL_NAME, Create9Ex_hook);
-
     Create9.Register("d3d9.dll", "Direct3DCreate9", Create9_hook);
 	Create9Ex.Register("d3d9.dll", "Direct3DCreate9Ex", Create9Ex_hook);
   }

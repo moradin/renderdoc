@@ -25,6 +25,7 @@
 #pragma once
 #include "d3d9_common.h"
 #include "d3d9_device.h"
+#include "d3d9_surface.h"
 
 class WrappedD3DSwapChain9 : public IDirect3DSwapChain9Ex
 {
@@ -67,5 +68,5 @@ private:
   WrappedD3DDevice9 *m_Device;
   UINT m_Index;
 
-  std::vector<WrappedD3DSurface9*> m_BackBuffers;
+  rdcarray<WrappedD3DSurface9*> m_BackBuffers;
 };

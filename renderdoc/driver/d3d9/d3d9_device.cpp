@@ -30,8 +30,8 @@
 #include "d3d9_swapchain.h"
 
 WrappedD3DDevice9::WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrappedD3D, HWND wnd)
-    : m_Device(device),
-      m_DeviceEx(NULL),
+    : m_device(device),
+      m_deviceEx(NULL),
       m_InternalRefcount(0),
       m_RefCounter(1),
       m_SoftRefCounter(0),
@@ -42,17 +42,14 @@ WrappedD3DDevice9::WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrap
       m_NumImplicitSwapChains(device->GetNumberOfSwapChains())
 {
   m_D3D->AddRef();
-  m_Device->QueryInterface(__uuidof(IDirect3DDevice9Ex), (void **)&m_DeviceEx);
+  m_device->QueryInterface(__uuidof(IDirect3DDevice9Ex), (void **)&m_deviceEx);
 
   if(RenderDoc::Inst().IsReplayApp())
   {
-    m_State = READING;
 	m_Wnd = NULL;
   }
   else
   {
-    m_State = WRITING_IDLE;
-
     RenderDoc::Inst().AddDeviceFrameCapturer((IDirect3DDevice9 *)this, this);
 
     m_Wnd = wnd;
@@ -65,7 +62,7 @@ WrappedD3DDevice9::WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrap
   for(UINT i = 0; i < m_NumImplicitSwapChains; ++i)
   {
     IDirect3DSwapChain9 *swapChain = nullptr;
-    m_Device->GetSwapChain(i, &swapChain);
+    m_device->GetSwapChain(i, &swapChain);
     RDCASSERT(swapChain != nullptr);
     WrappedD3DSwapChain9 *wrappedSwapchain = new WrappedD3DSwapChain9(swapChain, this, i, true);
     m_SwapChains[i] = wrappedSwapchain;
@@ -103,57 +100,60 @@ WrappedD3DDevice9::~WrappedD3DDevice9()
 
   SAFE_DELETE(m_DebugManager);
 
-  m_Device->AddRef();
-  ULONG refcountBefore = m_Device->Release();
+  m_device->AddRef();
+  ULONG refcountBefore = m_device->Release();
   RDCASSERT(refcountBefore == 2);
 
   SAFE_RELEASE(m_D3D);
-  SAFE_RELEASE(m_Device);
-  SAFE_RELEASE(m_DeviceEx);
+  SAFE_RELEASE(m_device);
+  SAFE_RELEASE(m_deviceEx);
 }
 
 void WrappedD3DDevice9::RenderOverlay(HWND hDestWindowOverride)
 {
-  // if(m_State == WRITING_IDLE)
   RenderDoc::Inst().Tick();
 
-  m_Device->AddRef();
-  ULONG refcountBefore = m_Device->Release();
+  /* for debug refcounting
+  m_device->AddRef();
+  ULONG refcountBefore = m_device->Release();
+  */
 
-  IDirect3DSwapChain9 *swapChain;
-  m_Device->GetSwapChain(0, &swapChain);
-  D3DPRESENT_PARAMETERS presentParams;
-  swapChain->GetPresentParameters(&presentParams);
+  IDirect3DSwapChain9* swapChain = nullptr;
+  m_device->GetSwapChain(0, &swapChain);
+  D3DPRESENT_PARAMETERS presentParams = {};
+  if(swapChain)
+    swapChain->GetPresentParameters(&presentParams);
 
   HWND wnd = presentParams.hDeviceWindow;
   if(hDestWindowOverride != NULL)
     wnd = hDestWindowOverride;
 
-  bool activeWindow = RenderDoc::Inst().IsActiveWindow((IDirect3DDevice9 *)this, wnd);
+  bool activeWindow = RenderDoc::Inst().IsActiveWindow((IDirect3DDevice9*)this, wnd);
 
   m_FrameCounter++;
 
-  if(m_State == WRITING_IDLE)
+  // if (m_State == WRITING_IDLE)
+  if(wnd != NULL)
   {
     uint32_t overlay = RenderDoc::Inst().GetOverlayBits();
 
     if(overlay & eRENDERDOC_Overlay_Enabled)
     {
       HRESULT res = S_OK;
-      res = m_Device->BeginScene();
+      res = m_device->BeginScene();
       IDirect3DStateBlock9 *stateBlock;
-      HRESULT stateBlockRes = m_Device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
+      HRESULT stateBlockRes = m_device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
 
       IDirect3DSurface9 *backBuffer;
-      res |= m_Device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
-      res |= m_Device->SetRenderTarget(0, backBuffer);
+      res |= m_device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+      res |= m_device->SetRenderTarget(0, backBuffer);
 
       D3DSURFACE_DESC bbDesc;
       backBuffer->GetDesc(&bbDesc);
 
       //
       D3DVIEWPORT9 viewport = {0, 0, bbDesc.Width, bbDesc.Height, 0.f, 1.f};
-      res |= m_Device->SetViewport(&viewport);
+      res |= m_device->SetViewport(&viewport);
 
       GetDebugManager()->SetOutputDimensions(bbDesc.Width, bbDesc.Height);
       GetDebugManager()->SetOutputWindow(presentParams.hDeviceWindow);
@@ -161,7 +161,7 @@ void WrappedD3DDevice9::RenderOverlay(HWND hDestWindowOverride)
       int flags = activeWindow ? RenderDoc::eOverlay_ActiveWindow : 0;
       flags |= RenderDoc::eOverlay_CaptureDisabled;
 
-      string overlayText = RenderDoc::Inst().GetOverlayText(RDC_D3D9, m_FrameCounter, flags);
+      rdcstr overlayText = RenderDoc::Inst().GetOverlayText(RDCDriver::D3D9, m_FrameCounter, flags);
 
       overlayText += "Captures not supported with D3D9\n";
 
@@ -170,21 +170,20 @@ void WrappedD3DDevice9::RenderOverlay(HWND hDestWindowOverride)
 
       stateBlockRes = stateBlock->Apply();
       stateBlock->Release();
-      res |= m_Device->EndScene();
+      res |= m_device->EndScene();
 
       backBuffer->Release();
       swapChain->Release();
     }
   }
 
-  if(activeWindow)
-  {
-    RenderDoc::Inst().SetCurrentDriver(RDC_D3D9);
-  }
+  RenderDoc::Inst().AddActiveDriver(RDCDriver::D3D9, true);
 
-  m_Device->AddRef();
-  ULONG refcountAfter = m_Device->Release();
+  /* for debug refcounting
+  m_device->AddRef();
+  ULONG refcountAfter = m_device->Release();
   RDCASSERT(refcountAfter == refcountBefore);
+  */
 }
 
 void WrappedD3DDevice9::RemoveSwapchain(UINT index)
@@ -207,12 +206,12 @@ HRESULT WrappedD3DDevice9::QueryInterface(REFIID riid, void **ppvObject)
   }
   else if(riid == __uuidof(IDirect3DDevice9))
   {
-    HRESULT hr = m_Device->QueryInterface(riid, ppvObject);
+    HRESULT hr = m_device->QueryInterface(riid, ppvObject);
 
     if(SUCCEEDED(hr))
     {
       AddRef();
-      m_Device->Release();    // transfer the refcount to the wrapper
+      m_device->Release();    // transfer the refcount to the wrapper
       *ppvObject = this;
       return S_OK;
     }
@@ -224,12 +223,12 @@ HRESULT WrappedD3DDevice9::QueryInterface(REFIID riid, void **ppvObject)
   }
   else if(riid == __uuidof(IDirect3DDevice9Ex))
   {
-    HRESULT hr = m_Device->QueryInterface(riid, ppvObject);
+    HRESULT hr = m_device->QueryInterface(riid, ppvObject);
 
     if(SUCCEEDED(hr))
     {
       AddRef();
-      m_Device->Release();    // transfer the refcount to the wrapper
+      m_device->Release();    // transfer the refcount to the wrapper
       *ppvObject = this;
       return S_OK;
     }
@@ -244,7 +243,7 @@ HRESULT WrappedD3DDevice9::QueryInterface(REFIID riid, void **ppvObject)
     WarnUnknownGUID("IDirect3DDevice9", riid);
   }
 
-  return m_Device->QueryInterface(riid, ppvObject);
+  return m_device->QueryInterface(riid, ppvObject);
 }
 
 void WrappedD3DDevice9::LazyInit()
@@ -271,24 +270,24 @@ bool WrappedD3DDevice9::DiscardFrameCapture(void *dev, void *wnd)
 
 HRESULT __stdcall WrappedD3DDevice9::TestCooperativeLevel()
 {
-  return m_Device->TestCooperativeLevel();
+  return m_device->TestCooperativeLevel();
 }
 
 UINT __stdcall WrappedD3DDevice9::GetAvailableTextureMem()
 {
-  return m_Device->GetAvailableTextureMem();
+  return m_device->GetAvailableTextureMem();
 }
 
 HRESULT __stdcall WrappedD3DDevice9::EvictManagedResources()
 {
-  return m_Device->EvictManagedResources();
+  return m_device->EvictManagedResources();
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetDirect3D(IDirect3D9 **ppD3D9)
 {
   // make sure the underlying object is actually there
   IDirect3D9 *direct3D = NULL;
-  HRESULT res = m_Device->GetDirect3D(&direct3D);
+  HRESULT res = m_device->GetDirect3D(&direct3D);
   if(direct3D != NULL)
   {
     direct3D->Release();
@@ -309,46 +308,46 @@ HRESULT __stdcall WrappedD3DDevice9::GetDirect3D(IDirect3D9 **ppD3D9)
 
 HRESULT __stdcall WrappedD3DDevice9::GetDeviceCaps(D3DCAPS9 *pCaps)
 {
-  return m_Device->GetDeviceCaps(pCaps);
+  return m_device->GetDeviceCaps(pCaps);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetDisplayMode(UINT iSwapChain, D3DDISPLAYMODE *pMode)
 {
-  return m_Device->GetDisplayMode(iSwapChain, pMode);
+  return m_device->GetDisplayMode(iSwapChain, pMode);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetCreationParameters(D3DDEVICE_CREATION_PARAMETERS *pParameters)
 {
-  return m_Device->GetCreationParameters(pParameters);
+  return m_device->GetCreationParameters(pParameters);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetCursorProperties(UINT XHotSpot, UINT YHotSpot,
                                                          IDirect3DSurface9 *pCursorBitmap)
 {
-  return m_Device->SetCursorProperties(XHotSpot, YHotSpot, pCursorBitmap);
+  return m_device->SetCursorProperties(XHotSpot, YHotSpot, pCursorBitmap);
 }
 
 void __stdcall WrappedD3DDevice9::SetCursorPosition(int X, int Y, DWORD Flags)
 {
-  m_Device->SetCursorPosition(X, Y, Flags);
+  m_device->SetCursorPosition(X, Y, Flags);
 }
 
 BOOL __stdcall WrappedD3DDevice9::ShowCursor(BOOL bShow)
 {
-  return m_Device->ShowCursor(bShow);
+  return m_device->ShowCursor(bShow);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::CreateAdditionalSwapChain(
     D3DPRESENT_PARAMETERS *pPresentationParameters, IDirect3DSwapChain9 **pSwapChain)
 {
   IDirect3DSwapChain9 *swapChain;
-  HRESULT res = m_Device->CreateAdditionalSwapChain(pPresentationParameters, &swapChain);
+  HRESULT res = m_device->CreateAdditionalSwapChain(pPresentationParameters, &swapChain);
 
   // TODO check if D3D is reusing indices after additional swapchains are released
 
   if(res == S_OK)
   {
-    UINT swapChainCount = m_Device->GetNumberOfSwapChains();
+    UINT swapChainCount = m_device->GetNumberOfSwapChains();
     RDCASSERT(swapChainCount == m_SwapChains.size());
     WrappedD3DSwapChain9 *wrappedSwapchain =
         new WrappedD3DSwapChain9(swapChain, this, swapChainCount, false);
@@ -366,7 +365,7 @@ HRESULT __stdcall WrappedD3DDevice9::GetSwapChain(UINT iSwapChain, IDirect3DSwap
   // in case of an error still try to not crash
   if(iSwapChain >= m_SwapChains.size())
   {
-    return m_Device->GetSwapChain(iSwapChain, pSwapChain);
+    return m_device->GetSwapChain(iSwapChain, pSwapChain);
   }
 
   RDCASSERT(m_SwapChains[iSwapChain] != NULL);
@@ -378,12 +377,12 @@ HRESULT __stdcall WrappedD3DDevice9::GetSwapChain(UINT iSwapChain, IDirect3DSwap
 
 UINT __stdcall WrappedD3DDevice9::GetNumberOfSwapChains()
 {
-  return m_Device->GetNumberOfSwapChains();
+  return m_device->GetNumberOfSwapChains();
 }
 
 HRESULT __stdcall WrappedD3DDevice9::Reset(D3DPRESENT_PARAMETERS *pPresentationParameters)
 {
-  return m_Device->Reset(pPresentationParameters);
+  return m_device->Reset(pPresentationParameters);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::Present(CONST RECT *pSourceRect, CONST RECT *pDestRect,
@@ -448,7 +447,7 @@ HRESULT __stdcall WrappedD3DDevice9::Present(CONST RECT *pSourceRect, CONST RECT
 
 */
 
-  RenderDoc::Inst().AddActiveDriver(RDCDriver::D3D9, true);
+
 
   return m_device->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 }
@@ -457,27 +456,27 @@ HRESULT __stdcall WrappedD3DDevice9::GetBackBuffer(UINT iSwapChain, UINT iBackBu
                                                    D3DBACKBUFFER_TYPE Type,
                                                    IDirect3DSurface9 **ppBackBuffer)
 {
-  return m_Device->GetBackBuffer(iSwapChain, iBackBuffer, Type, ppBackBuffer);
+  return m_device->GetBackBuffer(iSwapChain, iBackBuffer, Type, ppBackBuffer);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetRasterStatus(UINT iSwapChain, D3DRASTER_STATUS *pRasterStatus)
 {
-  return m_Device->GetRasterStatus(iSwapChain, pRasterStatus);
+  return m_device->GetRasterStatus(iSwapChain, pRasterStatus);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetDialogBoxMode(BOOL bEnableDialogs)
 {
-  return m_Device->SetDialogBoxMode(bEnableDialogs);
+  return m_device->SetDialogBoxMode(bEnableDialogs);
 }
 
 void __stdcall WrappedD3DDevice9::SetGammaRamp(UINT iSwapChain, DWORD Flags, CONST D3DGAMMARAMP *pRamp)
 {
-  m_Device->SetGammaRamp(iSwapChain, Flags, pRamp);
+  m_device->SetGammaRamp(iSwapChain, Flags, pRamp);
 }
 
 void __stdcall WrappedD3DDevice9::GetGammaRamp(UINT iSwapChain, D3DGAMMARAMP *pRamp)
 {
-  m_Device->GetGammaRamp(iSwapChain, pRamp);
+  m_device->GetGammaRamp(iSwapChain, pRamp);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::CreateTexture(UINT Width, UINT Height, UINT Levels,
@@ -485,7 +484,7 @@ HRESULT __stdcall WrappedD3DDevice9::CreateTexture(UINT Width, UINT Height, UINT
                                                    IDirect3DTexture9 **ppTexture,
                                                    HANDLE *pSharedHandle)
 {
-  return m_Device->CreateTexture(Width, Height, Levels, Usage, Format, Pool, ppTexture,
+  return m_device->CreateTexture(Width, Height, Levels, Usage, Format, Pool, ppTexture,
                                  pSharedHandle);
 }
 
@@ -495,7 +494,7 @@ HRESULT __stdcall WrappedD3DDevice9::CreateVolumeTexture(UINT Width, UINT Height
                                                          IDirect3DVolumeTexture9 **ppVolumeTexture,
                                                          HANDLE *pSharedHandle)
 {
-  return m_Device->CreateVolumeTexture(Width, Height, Depth, Levels, Usage, Format, Pool,
+  return m_device->CreateVolumeTexture(Width, Height, Depth, Levels, Usage, Format, Pool,
                                        ppVolumeTexture, pSharedHandle);
 }
 
@@ -504,7 +503,7 @@ HRESULT __stdcall WrappedD3DDevice9::CreateCubeTexture(UINT EdgeLength, UINT Lev
                                                        IDirect3DCubeTexture9 **ppCubeTexture,
                                                        HANDLE *pSharedHandle)
 {
-  return m_Device->CreateCubeTexture(EdgeLength, Levels, Usage, Format, Pool, ppCubeTexture,
+  return m_device->CreateCubeTexture(EdgeLength, Levels, Usage, Format, Pool, ppCubeTexture,
                                      pSharedHandle);
 }
 
@@ -513,7 +512,7 @@ HRESULT __stdcall WrappedD3DDevice9::CreateVertexBuffer(UINT Length, DWORD Usage
                                                         IDirect3DVertexBuffer9 **ppVertexBuffer,
                                                         HANDLE *pSharedHandle)
 {
-  return m_Device->CreateVertexBuffer(Length, Usage, FVF, Pool, ppVertexBuffer, pSharedHandle);
+  return m_device->CreateVertexBuffer(Length, Usage, FVF, Pool, ppVertexBuffer, pSharedHandle);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::CreateIndexBuffer(UINT Length, DWORD Usage, D3DFORMAT Format,
@@ -521,7 +520,7 @@ HRESULT __stdcall WrappedD3DDevice9::CreateIndexBuffer(UINT Length, DWORD Usage,
                                                        IDirect3DIndexBuffer9 **ppIndexBuffer,
                                                        HANDLE *pSharedHandle)
 {
-  return m_Device->CreateIndexBuffer(Length, Usage, Format, Pool, ppIndexBuffer, pSharedHandle);
+  return m_device->CreateIndexBuffer(Length, Usage, Format, Pool, ppIndexBuffer, pSharedHandle);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::CreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format,
@@ -530,7 +529,7 @@ HRESULT __stdcall WrappedD3DDevice9::CreateRenderTarget(UINT Width, UINT Height,
                                                         IDirect3DSurface9 **ppSurface,
                                                         HANDLE *pSharedHandle)
 {
-  return m_Device->CreateRenderTarget(Width, Height, Format, MultiSample, MultisampleQuality,
+  return m_device->CreateRenderTarget(Width, Height, Format, MultiSample, MultisampleQuality,
                                       Lockable, ppSurface, pSharedHandle);
 }
 
@@ -538,7 +537,7 @@ HRESULT __stdcall WrappedD3DDevice9::CreateDepthStencilSurface(
     UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample,
     DWORD MultisampleQuality, BOOL Discard, IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle)
 {
-  return m_Device->CreateDepthStencilSurface(Width, Height, Format, MultiSample, MultisampleQuality,
+  return m_device->CreateDepthStencilSurface(Width, Height, Format, MultiSample, MultisampleQuality,
                                              Discard, ppSurface, pSharedHandle);
 }
 
@@ -547,25 +546,25 @@ HRESULT __stdcall WrappedD3DDevice9::UpdateSurface(IDirect3DSurface9 *pSourceSur
                                                    IDirect3DSurface9 *pDestinationSurface,
                                                    CONST POINT *pDestPoint)
 {
-  return m_Device->UpdateSurface(pSourceSurface, pSourceRect, pDestinationSurface, pDestPoint);
+  return m_device->UpdateSurface(pSourceSurface, pSourceRect, pDestinationSurface, pDestPoint);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::UpdateTexture(IDirect3DBaseTexture9 *pSourceTexture,
                                                    IDirect3DBaseTexture9 *pDestinationTexture)
 {
-  return m_Device->UpdateTexture(pSourceTexture, pDestinationTexture);
+  return m_device->UpdateTexture(pSourceTexture, pDestinationTexture);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetRenderTargetData(IDirect3DSurface9 *pRenderTarget,
                                                          IDirect3DSurface9 *pDestSurface)
 {
-  return m_Device->GetRenderTargetData(pRenderTarget, pDestSurface);
+  return m_device->GetRenderTargetData(pRenderTarget, pDestSurface);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetFrontBufferData(UINT iSwapChain,
                                                         IDirect3DSurface9 *pDestSurface)
 {
-  return m_Device->GetFrontBufferData(iSwapChain, pDestSurface);
+  return m_device->GetFrontBufferData(iSwapChain, pDestSurface);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::StretchRect(IDirect3DSurface9 *pSourceSurface,
@@ -573,13 +572,13 @@ HRESULT __stdcall WrappedD3DDevice9::StretchRect(IDirect3DSurface9 *pSourceSurfa
                                                  IDirect3DSurface9 *pDestSurface,
                                                  CONST RECT *pDestRect, D3DTEXTUREFILTERTYPE Filter)
 {
-  return m_Device->StretchRect(pSourceSurface, pSourceRect, pDestSurface, pDestRect, Filter);
+  return m_device->StretchRect(pSourceSurface, pSourceRect, pDestSurface, pDestRect, Filter);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::ColorFill(IDirect3DSurface9 *pSurface, CONST RECT *pRect,
                                                D3DCOLOR color)
 {
-  return m_Device->ColorFill(pSurface, pRect, color);
+  return m_device->ColorFill(pSurface, pRect, color);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::CreateOffscreenPlainSurface(UINT Width, UINT Height,
@@ -587,251 +586,251 @@ HRESULT __stdcall WrappedD3DDevice9::CreateOffscreenPlainSurface(UINT Width, UIN
                                                                  IDirect3DSurface9 **ppSurface,
                                                                  HANDLE *pSharedHandle)
 {
-  return m_Device->CreateOffscreenPlainSurface(Width, Height, Format, Pool, ppSurface, pSharedHandle);
+  return m_device->CreateOffscreenPlainSurface(Width, Height, Format, Pool, ppSurface, pSharedHandle);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetRenderTarget(DWORD RenderTargetIndex,
                                                      IDirect3DSurface9 *pRenderTarget)
 {
-  return m_Device->SetRenderTarget(RenderTargetIndex, pRenderTarget);
+  return m_device->SetRenderTarget(RenderTargetIndex, pRenderTarget);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetRenderTarget(DWORD RenderTargetIndex,
                                                      IDirect3DSurface9 **ppRenderTarget)
 {
-  return m_Device->GetRenderTarget(RenderTargetIndex, ppRenderTarget);
+  return m_device->GetRenderTarget(RenderTargetIndex, ppRenderTarget);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetDepthStencilSurface(IDirect3DSurface9 *pNewZStencil)
 {
-  return m_Device->SetDepthStencilSurface(pNewZStencil);
+  return m_device->SetDepthStencilSurface(pNewZStencil);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetDepthStencilSurface(IDirect3DSurface9 **ppZStencilSurface)
 {
-  return m_Device->GetDepthStencilSurface(ppZStencilSurface);
+  return m_device->GetDepthStencilSurface(ppZStencilSurface);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::BeginScene()
 {
-  return m_Device->BeginScene();
+  return m_device->BeginScene();
 }
 
 HRESULT __stdcall WrappedD3DDevice9::EndScene()
 {
-  return m_Device->EndScene();
+  return m_device->EndScene();
 }
 
 HRESULT __stdcall WrappedD3DDevice9::Clear(DWORD Count, CONST D3DRECT *pRects, DWORD Flags,
                                            D3DCOLOR Color, float Z, DWORD Stencil)
 {
-  return m_Device->Clear(Count, pRects, Flags, Color, Z, Stencil);
+  return m_device->Clear(Count, pRects, Flags, Color, Z, Stencil);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetTransform(D3DTRANSFORMSTATETYPE State,
                                                   CONST D3DMATRIX *pMatrix)
 {
-  return m_Device->SetTransform(State, pMatrix);
+  return m_device->SetTransform(State, pMatrix);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetTransform(D3DTRANSFORMSTATETYPE State, D3DMATRIX *pMatrix)
 {
-  return m_Device->GetTransform(State, pMatrix);
+  return m_device->GetTransform(State, pMatrix);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::MultiplyTransform(D3DTRANSFORMSTATETYPE _arg1,
                                                        CONST D3DMATRIX *_arg2)
 {
-  return m_Device->MultiplyTransform(_arg1, _arg2);
+  return m_device->MultiplyTransform(_arg1, _arg2);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetViewport(CONST D3DVIEWPORT9 *pViewport)
 {
-  return m_Device->SetViewport(pViewport);
+  return m_device->SetViewport(pViewport);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetViewport(D3DVIEWPORT9 *pViewport)
 {
-  return m_Device->GetViewport(pViewport);
+  return m_device->GetViewport(pViewport);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetMaterial(CONST D3DMATERIAL9 *pMaterial)
 {
-  return m_Device->SetMaterial(pMaterial);
+  return m_device->SetMaterial(pMaterial);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetMaterial(D3DMATERIAL9 *pMaterial)
 {
-  return m_Device->GetMaterial(pMaterial);
+  return m_device->GetMaterial(pMaterial);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetLight(DWORD Index, CONST D3DLIGHT9 *_arg2)
 {
-  return m_Device->SetLight(Index, _arg2);
+  return m_device->SetLight(Index, _arg2);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetLight(DWORD Index, D3DLIGHT9 *_arg2)
 {
-  return m_Device->GetLight(Index, _arg2);
+  return m_device->GetLight(Index, _arg2);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::LightEnable(DWORD Index, BOOL Enable)
 {
-  return m_Device->LightEnable(Index, Enable);
+  return m_device->LightEnable(Index, Enable);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetLightEnable(DWORD Index, BOOL *pEnable)
 {
-  return m_Device->GetLightEnable(Index, pEnable);
+  return m_device->GetLightEnable(Index, pEnable);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetClipPlane(DWORD Index, CONST float *pPlane)
 {
-  return m_Device->SetClipPlane(Index, pPlane);
+  return m_device->SetClipPlane(Index, pPlane);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetClipPlane(DWORD Index, float *pPlane)
 {
-  return m_Device->GetClipPlane(Index, pPlane);
+  return m_device->GetClipPlane(Index, pPlane);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value)
 {
-  return m_Device->SetRenderState(State, Value);
+  return m_device->SetRenderState(State, Value);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetRenderState(D3DRENDERSTATETYPE State, DWORD *pValue)
 {
-  return m_Device->GetRenderState(State, pValue);
+  return m_device->GetRenderState(State, pValue);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::CreateStateBlock(D3DSTATEBLOCKTYPE Type,
                                                       IDirect3DStateBlock9 **ppSB)
 {
-  return m_Device->CreateStateBlock(Type, ppSB);
+  return m_device->CreateStateBlock(Type, ppSB);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::BeginStateBlock()
 {
-  return m_Device->BeginStateBlock();
+  return m_device->BeginStateBlock();
 }
 
 HRESULT __stdcall WrappedD3DDevice9::EndStateBlock(IDirect3DStateBlock9 **ppSB)
 {
-  return m_Device->EndStateBlock(ppSB);
+  return m_device->EndStateBlock(ppSB);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetClipStatus(CONST D3DCLIPSTATUS9 *pClipStatus)
 {
-  return m_Device->SetClipStatus(pClipStatus);
+  return m_device->SetClipStatus(pClipStatus);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetClipStatus(D3DCLIPSTATUS9 *pClipStatus)
 {
-  return m_Device->GetClipStatus(pClipStatus);
+  return m_device->GetClipStatus(pClipStatus);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetTexture(DWORD Stage, IDirect3DBaseTexture9 **ppTexture)
 {
-  return m_Device->GetTexture(Stage, ppTexture);
+  return m_device->GetTexture(Stage, ppTexture);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture)
 {
-  return m_Device->SetTexture(Stage, pTexture);
+  return m_device->SetTexture(Stage, pTexture);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type,
                                                           DWORD *pValue)
 {
-  return m_Device->GetTextureStageState(Stage, Type, pValue);
+  return m_device->GetTextureStageState(Stage, Type, pValue);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetTextureStageState(DWORD Stage,
                                                           D3DTEXTURESTAGESTATETYPE Type, DWORD Value)
 {
-  return m_Device->SetTextureStageState(Stage, Type, Value);
+  return m_device->SetTextureStageState(Stage, Type, Value);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type,
                                                      DWORD *pValue)
 {
-  return m_Device->GetSamplerState(Sampler, Type, pValue);
+  return m_device->GetSamplerState(Sampler, Type, pValue);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type,
                                                      DWORD Value)
 {
-  return m_Device->SetSamplerState(Sampler, Type, Value);
+  return m_device->SetSamplerState(Sampler, Type, Value);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::ValidateDevice(DWORD *pNumPasses)
 {
-  return m_Device->ValidateDevice(pNumPasses);
+  return m_device->ValidateDevice(pNumPasses);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetPaletteEntries(UINT PaletteNumber,
                                                        CONST PALETTEENTRY *pEntries)
 {
-  return m_Device->SetPaletteEntries(PaletteNumber, pEntries);
+  return m_device->SetPaletteEntries(PaletteNumber, pEntries);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetPaletteEntries(UINT PaletteNumber, PALETTEENTRY *pEntries)
 {
-  return m_Device->GetPaletteEntries(PaletteNumber, pEntries);
+  return m_device->GetPaletteEntries(PaletteNumber, pEntries);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetCurrentTexturePalette(UINT PaletteNumber)
 {
-  return m_Device->SetCurrentTexturePalette(PaletteNumber);
+  return m_device->SetCurrentTexturePalette(PaletteNumber);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetCurrentTexturePalette(UINT *PaletteNumber)
 {
-  return m_Device->GetCurrentTexturePalette(PaletteNumber);
+  return m_device->GetCurrentTexturePalette(PaletteNumber);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetScissorRect(CONST RECT *pRect)
 {
-  return m_Device->SetScissorRect(pRect);
+  return m_device->SetScissorRect(pRect);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetScissorRect(RECT *pRect)
 {
-  return m_Device->GetScissorRect(pRect);
+  return m_device->GetScissorRect(pRect);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetSoftwareVertexProcessing(BOOL bSoftware)
 {
-  return m_Device->SetSoftwareVertexProcessing(bSoftware);
+  return m_device->SetSoftwareVertexProcessing(bSoftware);
 }
 
 BOOL __stdcall WrappedD3DDevice9::GetSoftwareVertexProcessing()
 {
-  return m_Device->GetSoftwareVertexProcessing();
+  return m_device->GetSoftwareVertexProcessing();
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetNPatchMode(float nSegments)
 {
-  return m_Device->SetNPatchMode(nSegments);
+  return m_device->SetNPatchMode(nSegments);
 }
 
 float __stdcall WrappedD3DDevice9::GetNPatchMode()
 {
-  return m_Device->GetNPatchMode();
+  return m_device->GetNPatchMode();
 }
 
 HRESULT __stdcall WrappedD3DDevice9::DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex,
                                                    UINT PrimitiveCount)
 {
-  return m_Device->DrawPrimitive(PrimitiveType, StartVertex, PrimitiveCount);
+  return m_device->DrawPrimitive(PrimitiveType, StartVertex, PrimitiveCount);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::DrawIndexedPrimitive(D3DPRIMITIVETYPE _arg1, INT BaseVertexIndex,
                                                           UINT MinVertexIndex, UINT NumVertices,
                                                           UINT startIndex, UINT primCount)
 {
-  return m_Device->DrawIndexedPrimitive(_arg1, BaseVertexIndex, MinVertexIndex, NumVertices,
+  return m_device->DrawIndexedPrimitive(_arg1, BaseVertexIndex, MinVertexIndex, NumVertices,
                                         startIndex, primCount);
 }
 
@@ -840,7 +839,7 @@ HRESULT __stdcall WrappedD3DDevice9::DrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveT
                                                      CONST void *pVertexStreamZeroData,
                                                      UINT VertexStreamZeroStride)
 {
-  return m_Device->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, pVertexStreamZeroData,
+  return m_device->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, pVertexStreamZeroData,
                                    VertexStreamZeroStride);
 }
 
@@ -849,7 +848,7 @@ HRESULT __stdcall WrappedD3DDevice9::DrawIndexedPrimitiveUP(
     CONST void *pIndexData, D3DFORMAT IndexDataFormat, CONST void *pVertexStreamZeroData,
     UINT VertexStreamZeroStride)
 {
-  return m_Device->DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
+  return m_device->DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
                                           PrimitiveCount, pIndexData, IndexDataFormat,
                                           pVertexStreamZeroData, VertexStreamZeroStride);
 }
@@ -860,208 +859,208 @@ HRESULT __stdcall WrappedD3DDevice9::ProcessVertices(UINT SrcStartIndex, UINT De
                                                      IDirect3DVertexDeclaration9 *pVertexDecl,
                                                      DWORD Flags)
 {
-  return m_Device->ProcessVertices(SrcStartIndex, DestIndex, VertexCount, pDestBuffer, pVertexDecl,
+  return m_device->ProcessVertices(SrcStartIndex, DestIndex, VertexCount, pDestBuffer, pVertexDecl,
                                    Flags);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::CreateVertexDeclaration(CONST D3DVERTEXELEMENT9 *pVertexElements,
                                                              IDirect3DVertexDeclaration9 **ppDecl)
 {
-  return m_Device->CreateVertexDeclaration(pVertexElements, ppDecl);
+  return m_device->CreateVertexDeclaration(pVertexElements, ppDecl);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl)
 {
-  return m_Device->SetVertexDeclaration(pDecl);
+  return m_device->SetVertexDeclaration(pDecl);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetVertexDeclaration(IDirect3DVertexDeclaration9 **ppDecl)
 {
-  return m_Device->GetVertexDeclaration(ppDecl);
+  return m_device->GetVertexDeclaration(ppDecl);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetFVF(DWORD FVF)
 {
-  return m_Device->SetFVF(FVF);
+  return m_device->SetFVF(FVF);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetFVF(DWORD *pFVF)
 {
-  return m_Device->GetFVF(pFVF);
+  return m_device->GetFVF(pFVF);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::CreateVertexShader(CONST DWORD *pFunction,
                                                         IDirect3DVertexShader9 **ppShader)
 {
-  return m_Device->CreateVertexShader(pFunction, ppShader);
+  return m_device->CreateVertexShader(pFunction, ppShader);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetVertexShader(IDirect3DVertexShader9 *pShader)
 {
-  return m_Device->SetVertexShader(pShader);
+  return m_device->SetVertexShader(pShader);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetVertexShader(IDirect3DVertexShader9 **ppShader)
 {
-  return m_Device->GetVertexShader(ppShader);
+  return m_device->GetVertexShader(ppShader);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetVertexShaderConstantF(UINT StartRegister,
                                                               CONST float *pConstantData,
                                                               UINT Vector4fCount)
 {
-  return m_Device->SetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount);
+  return m_device->SetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetVertexShaderConstantF(UINT StartRegister,
                                                               float *pConstantData,
                                                               UINT Vector4fCount)
 {
-  return m_Device->GetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount);
+  return m_device->GetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetVertexShaderConstantI(UINT StartRegister,
                                                               CONST int *pConstantData,
                                                               UINT Vector4iCount)
 {
-  return m_Device->SetVertexShaderConstantI(StartRegister, pConstantData, Vector4iCount);
+  return m_device->SetVertexShaderConstantI(StartRegister, pConstantData, Vector4iCount);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetVertexShaderConstantI(UINT StartRegister,
                                                               int *pConstantData, UINT Vector4iCount)
 {
-  return m_Device->GetVertexShaderConstantI(StartRegister, pConstantData, Vector4iCount);
+  return m_device->GetVertexShaderConstantI(StartRegister, pConstantData, Vector4iCount);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetVertexShaderConstantB(UINT StartRegister,
                                                               CONST BOOL *pConstantData,
                                                               UINT BoolCount)
 {
-  return m_Device->SetVertexShaderConstantB(StartRegister, pConstantData, BoolCount);
+  return m_device->SetVertexShaderConstantB(StartRegister, pConstantData, BoolCount);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetVertexShaderConstantB(UINT StartRegister,
                                                               BOOL *pConstantData, UINT BoolCount)
 {
-  return m_Device->GetVertexShaderConstantB(StartRegister, pConstantData, BoolCount);
+  return m_device->GetVertexShaderConstantB(StartRegister, pConstantData, BoolCount);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetStreamSource(UINT StreamNumber,
                                                      IDirect3DVertexBuffer9 *pStreamData,
                                                      UINT OffsetInBytes, UINT Stride)
 {
-  return m_Device->SetStreamSource(StreamNumber, pStreamData, OffsetInBytes, Stride);
+  return m_device->SetStreamSource(StreamNumber, pStreamData, OffsetInBytes, Stride);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetStreamSource(UINT StreamNumber,
                                                      IDirect3DVertexBuffer9 **ppStreamData,
                                                      UINT *pOffsetInBytes, UINT *pStride)
 {
-  return m_Device->GetStreamSource(StreamNumber, ppStreamData, pOffsetInBytes, pStride);
+  return m_device->GetStreamSource(StreamNumber, ppStreamData, pOffsetInBytes, pStride);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetStreamSourceFreq(UINT StreamNumber, UINT Setting)
 {
-  return m_Device->SetStreamSourceFreq(StreamNumber, Setting);
+  return m_device->SetStreamSourceFreq(StreamNumber, Setting);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetStreamSourceFreq(UINT StreamNumber, UINT *pSetting)
 {
-  return m_Device->GetStreamSourceFreq(StreamNumber, pSetting);
+  return m_device->GetStreamSourceFreq(StreamNumber, pSetting);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetIndices(IDirect3DIndexBuffer9 *pIndexData)
 {
-  return m_Device->SetIndices(pIndexData);
+  return m_device->SetIndices(pIndexData);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetIndices(IDirect3DIndexBuffer9 **ppIndexData)
 {
-  return m_Device->GetIndices(ppIndexData);
+  return m_device->GetIndices(ppIndexData);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::CreatePixelShader(CONST DWORD *pFunction,
                                                        IDirect3DPixelShader9 **ppShader)
 {
-  return m_Device->CreatePixelShader(pFunction, ppShader);
+  return m_device->CreatePixelShader(pFunction, ppShader);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetPixelShader(IDirect3DPixelShader9 *pShader)
 {
-  return m_Device->SetPixelShader(pShader);
+  return m_device->SetPixelShader(pShader);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetPixelShader(IDirect3DPixelShader9 **ppShader)
 {
-  return m_Device->GetPixelShader(ppShader);
+  return m_device->GetPixelShader(ppShader);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetPixelShaderConstantF(UINT StartRegister,
                                                              CONST float *pConstantData,
                                                              UINT Vector4fCount)
 {
-  return m_Device->SetPixelShaderConstantF(StartRegister, pConstantData, Vector4fCount);
+  return m_device->SetPixelShaderConstantF(StartRegister, pConstantData, Vector4fCount);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetPixelShaderConstantF(UINT StartRegister,
                                                              float *pConstantData, UINT Vector4fCount)
 {
-  return m_Device->GetPixelShaderConstantF(StartRegister, pConstantData, Vector4fCount);
+  return m_device->GetPixelShaderConstantF(StartRegister, pConstantData, Vector4fCount);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetPixelShaderConstantI(UINT StartRegister,
                                                              CONST int *pConstantData,
                                                              UINT Vector4iCount)
 {
-  return m_Device->SetPixelShaderConstantI(StartRegister, pConstantData, Vector4iCount);
+  return m_device->SetPixelShaderConstantI(StartRegister, pConstantData, Vector4iCount);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetPixelShaderConstantI(UINT StartRegister, int *pConstantData,
                                                              UINT Vector4iCount)
 {
-  return m_Device->GetPixelShaderConstantI(StartRegister, pConstantData, Vector4iCount);
+  return m_device->GetPixelShaderConstantI(StartRegister, pConstantData, Vector4iCount);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::SetPixelShaderConstantB(UINT StartRegister,
                                                              CONST BOOL *pConstantData,
                                                              UINT BoolCount)
 {
-  return m_Device->SetPixelShaderConstantB(StartRegister, pConstantData, BoolCount);
+  return m_device->SetPixelShaderConstantB(StartRegister, pConstantData, BoolCount);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::GetPixelShaderConstantB(UINT StartRegister,
                                                              BOOL *pConstantData, UINT BoolCount)
 {
-  return m_Device->GetPixelShaderConstantB(StartRegister, pConstantData, BoolCount);
+  return m_device->GetPixelShaderConstantB(StartRegister, pConstantData, BoolCount);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::DrawRectPatch(UINT Handle, CONST float *pNumSegs,
                                                    CONST D3DRECTPATCH_INFO *pRectPatchInfo)
 {
-  return m_Device->DrawRectPatch(Handle, pNumSegs, pRectPatchInfo);
+  return m_device->DrawRectPatch(Handle, pNumSegs, pRectPatchInfo);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::DrawTriPatch(UINT Handle, CONST float *pNumSegs,
                                                   CONST D3DTRIPATCH_INFO *pTriPatchInfo)
 {
-  return m_Device->DrawTriPatch(Handle, pNumSegs, pTriPatchInfo);
+  return m_device->DrawTriPatch(Handle, pNumSegs, pTriPatchInfo);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::DeletePatch(UINT Handle)
 {
-  return m_Device->DeletePatch(Handle);
+  return m_device->DeletePatch(Handle);
 }
 
 HRESULT __stdcall WrappedD3DDevice9::CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery)
 {
-  return m_Device->CreateQuery(Type, ppQuery);
+  return m_device->CreateQuery(Type, ppQuery);
 }
 
 HRESULT WrappedD3DDevice9::SetConvolutionMonoKernel(UINT width, UINT height, float *rows,
                                                     float *columns)
 {
-  RDCASSERT(m_DeviceEx != NULL);
-  return m_DeviceEx->SetConvolutionMonoKernel(width, height, rows, columns);
+  RDCASSERT(m_deviceEx != NULL);
+  return m_deviceEx->SetConvolutionMonoKernel(width, height, rows, columns);
 }
 
 HRESULT WrappedD3DDevice9::ComposeRects(IDirect3DSurface9 *pSrc, IDirect3DSurface9 *pDst,
@@ -1069,8 +1068,8 @@ HRESULT WrappedD3DDevice9::ComposeRects(IDirect3DSurface9 *pSrc, IDirect3DSurfac
                                         IDirect3DVertexBuffer9 *pDstRectDescs,
                                         D3DCOMPOSERECTSOP Operation, int Xoffset, int Yoffset)
 {
-  RDCASSERT(m_DeviceEx != NULL);
-  return m_DeviceEx->ComposeRects(pSrc, pDst, pSrcRectDescs, NumRects, pDstRectDescs, Operation,
+  RDCASSERT(m_deviceEx != NULL);
+  return m_deviceEx->ComposeRects(pSrc, pDst, pSrcRectDescs, NumRects, pDstRectDescs, Operation,
                                   Xoffset, Yoffset);
 }
 
@@ -1078,52 +1077,52 @@ HRESULT WrappedD3DDevice9::PresentEx(CONST RECT *pSourceRect, CONST RECT *pDestR
                                      HWND hDestWindowOverride, CONST RGNDATA *pDirtyRegion,
                                      DWORD dwFlags)
 {
-  RDCASSERT(m_DeviceEx != NULL);
+  RDCASSERT(m_deviceEx != NULL);
   RenderOverlay(hDestWindowOverride);
-  return m_DeviceEx->PresentEx(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+  return m_deviceEx->PresentEx(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
 }
 
 HRESULT WrappedD3DDevice9::GetGPUThreadPriority(INT *pPriority)
 {
-  RDCASSERT(m_DeviceEx != NULL);
-  return m_DeviceEx->GetGPUThreadPriority(pPriority);
+  RDCASSERT(m_deviceEx != NULL);
+  return m_deviceEx->GetGPUThreadPriority(pPriority);
 }
 
 HRESULT WrappedD3DDevice9::SetGPUThreadPriority(INT Priority)
 {
-  RDCASSERT(m_DeviceEx != NULL);
-  return m_DeviceEx->SetGPUThreadPriority(Priority);
+  RDCASSERT(m_deviceEx != NULL);
+  return m_deviceEx->SetGPUThreadPriority(Priority);
 }
 
 HRESULT WrappedD3DDevice9::WaitForVBlank(UINT iSwapChain)
 {
-  RDCASSERT(m_DeviceEx != NULL);
-  return m_DeviceEx->WaitForVBlank(iSwapChain);
+  RDCASSERT(m_deviceEx != NULL);
+  return m_deviceEx->WaitForVBlank(iSwapChain);
 }
 
 HRESULT WrappedD3DDevice9::CheckResourceResidency(IDirect3DResource9 **pResourceArray,
                                                   UINT32 NumResources)
 {
-  RDCASSERT(m_DeviceEx != NULL);
-  return m_DeviceEx->CheckResourceResidency(pResourceArray, NumResources);
+  RDCASSERT(m_deviceEx != NULL);
+  return m_deviceEx->CheckResourceResidency(pResourceArray, NumResources);
 }
 
 HRESULT WrappedD3DDevice9::SetMaximumFrameLatency(UINT MaxLatency)
 {
-  RDCASSERT(m_DeviceEx != NULL);
-  return m_DeviceEx->SetMaximumFrameLatency(MaxLatency);
+  RDCASSERT(m_deviceEx != NULL);
+  return m_deviceEx->SetMaximumFrameLatency(MaxLatency);
 }
 
 HRESULT WrappedD3DDevice9::GetMaximumFrameLatency(UINT *pMaxLatency)
 {
-  RDCASSERT(m_DeviceEx != NULL);
-  return m_DeviceEx->GetMaximumFrameLatency(pMaxLatency);
+  RDCASSERT(m_deviceEx != NULL);
+  return m_deviceEx->GetMaximumFrameLatency(pMaxLatency);
 }
 
 HRESULT WrappedD3DDevice9::CheckDeviceState(HWND hDestinationWindow)
 {
-  RDCASSERT(m_DeviceEx != NULL);
-  return m_DeviceEx->CheckDeviceState(hDestinationWindow);
+  RDCASSERT(m_deviceEx != NULL);
+  return m_deviceEx->CheckDeviceState(hDestinationWindow);
 }
 
 HRESULT WrappedD3DDevice9::CreateRenderTargetEx(UINT Width, UINT Height, D3DFORMAT Format,
@@ -1132,8 +1131,8 @@ HRESULT WrappedD3DDevice9::CreateRenderTargetEx(UINT Width, UINT Height, D3DFORM
                                                 IDirect3DSurface9 **ppSurface,
                                                 HANDLE *pSharedHandle, DWORD Usage)
 {
-  RDCASSERT(m_DeviceEx != NULL);
-  return m_DeviceEx->CreateRenderTargetEx(Width, Height, Format, MultiSample, MultisampleQuality,
+  RDCASSERT(m_deviceEx != NULL);
+  return m_deviceEx->CreateRenderTargetEx(Width, Height, Format, MultiSample, MultisampleQuality,
                                           Lockable, ppSurface, pSharedHandle, Usage);
 }
 
@@ -1141,8 +1140,8 @@ HRESULT WrappedD3DDevice9::CreateOffscreenPlainSurfaceEx(UINT Width, UINT Height
                                                          D3DPOOL Pool, IDirect3DSurface9 **ppSurface,
                                                          HANDLE *pSharedHandle, DWORD Usage)
 {
-  RDCASSERT(m_DeviceEx != NULL);
-  return m_DeviceEx->CreateOffscreenPlainSurfaceEx(Width, Height, Format, Pool, ppSurface,
+  RDCASSERT(m_deviceEx != NULL);
+  return m_deviceEx->CreateOffscreenPlainSurfaceEx(Width, Height, Format, Pool, ppSurface,
                                                    pSharedHandle, Usage);
 }
 
@@ -1152,8 +1151,8 @@ HRESULT WrappedD3DDevice9::CreateDepthStencilSurfaceEx(UINT Width, UINT Height, 
                                                        IDirect3DSurface9 **ppSurface,
                                                        HANDLE *pSharedHandle, DWORD Usage)
 {
-  RDCASSERT(m_DeviceEx != NULL);
-  return m_DeviceEx->CreateDepthStencilSurfaceEx(Width, Height, Format, MultiSample,
+  RDCASSERT(m_deviceEx != NULL);
+  return m_deviceEx->CreateDepthStencilSurfaceEx(Width, Height, Format, MultiSample,
                                                  MultisampleQuality, Discard, ppSurface,
                                                  pSharedHandle, Usage);
 }
@@ -1161,15 +1160,15 @@ HRESULT WrappedD3DDevice9::CreateDepthStencilSurfaceEx(UINT Width, UINT Height, 
 HRESULT WrappedD3DDevice9::ResetEx(D3DPRESENT_PARAMETERS *pPresentationParameters,
                                    D3DDISPLAYMODEEX *pFullscreenDisplayMode)
 {
-  RDCASSERT(m_DeviceEx != NULL);
-  return m_DeviceEx->ResetEx(pPresentationParameters, pFullscreenDisplayMode);
+  RDCASSERT(m_deviceEx != NULL);
+  return m_deviceEx->ResetEx(pPresentationParameters, pFullscreenDisplayMode);
 }
 
 HRESULT WrappedD3DDevice9::GetDisplayModeEx(UINT iSwapChain, D3DDISPLAYMODEEX *pMode,
                                             D3DDISPLAYROTATION *pRotation)
 {
-  RDCASSERT(m_DeviceEx != NULL);
-  return m_DeviceEx->GetDisplayModeEx(iSwapChain, pMode, pRotation);
+  RDCASSERT(m_deviceEx != NULL);
+  return m_deviceEx->GetDisplayModeEx(iSwapChain, pMode, pRotation);
 }
 
 /* Wrapped D3D */
@@ -1212,8 +1211,7 @@ HRESULT __stdcall WrappedD3D9::QueryInterface(REFIID riid, void **ppvObj)
   }
   else
   {
-    string guid = ToStr::Get(riid);
-    RDCWARN("Querying IDirect3D9 for interface: %s", guid.c_str());
+    WarnUnknownGUID("IDirect3D9", riid);
   }
 
   return m_Direct3D->QueryInterface(riid, ppvObj);
