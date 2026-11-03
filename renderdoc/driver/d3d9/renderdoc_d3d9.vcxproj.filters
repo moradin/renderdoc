@@ -22,6 +22,9 @@
     <Filter Include="Wrapped">
       <UniqueIdentifier>{7f1b8f2c-3d4e-4a5b-9c6d-1e2f3a4b5c6d}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Serialise">
+      <UniqueIdentifier>{8a2c9e3d-4f5a-4b6c-8d7e-2f3a4b5c6d7e}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="d3d9_hooks.cpp">
@@ -56,6 +59,15 @@
     </ClCompile>
     <ClCompile Include="d3d9_replay.cpp">
       <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_device_serialise.cpp">
+      <Filter>Serialise</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_serialise.cpp">
+      <Filter>Serialise</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_stringise.cpp">
+      <Filter>Serialise</Filter>
     </ClCompile>
     <ClCompile Include="precompiled.cpp">
       <Filter>PCH</Filter>

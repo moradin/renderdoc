@@ -108,6 +108,9 @@
     <ClCompile Include="d3d9_resources.cpp" />
     <ClCompile Include="d3d9_state.cpp" />
     <ClCompile Include="d3d9_swapchain.cpp" />
+    <ClCompile Include="d3d9_device_serialise.cpp" />
+    <ClCompile Include="d3d9_serialise.cpp" />
+    <ClCompile Include="d3d9_stringise.cpp" />
     <ClCompile Include="precompiled.cpp">
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>

@@ -1,0 +1,56 @@
+# D3D9 support status
+
+D3D9 support is being built in phases on this fork. Upstream RenderDoc removed its D3D9 stub in 2023,
+so none of this is upstream.
+
+| Phase | What | State |
+|---|---|---|
+| 0 | Driver project restored on current upstream, overlay working | Done |
+| 1 | Every object wrapped, bindings tracked, state blocks, Reset | Done, Reset needs more testing |
+| 2a | Captures written: every call serialised, resource creation records, structured export | Done, untested |
+| 2b | Full device state at frame start (render/sampler/texture stage states, transforms, lights, constants...) | Not started |
+| 2c | Resource contents: Lock tracking, shadow copies of D3DPOOL_DEFAULT data, initial contents | Not started |
+| 2d | Edge cases: Reset/device loss mid-capture, state block contents, D3DPERF markers in captures | Not started |
+| 3 | Replay | Not started |
+
+## Needs testing
+
+- **Reset / ResetEx with real games.** `D3D9_Wrapping_Check` and `D3D9Ex_Wrapping_Check` exercise
+  Reset in a controlled way, but it hasn't been tested with a real game yet. Things to try: alt-tab
+  out of and back into fullscreen, changing resolution, games that recreate D3DPOOL_DEFAULT
+  resources on device loss. Watch for Reset failing only under RenderDoc (something of ours holding a
+  D3DPOOL_DEFAULT reference), and for crashes after Reset (stale back buffer or depth stencil
+  wrappers).
+- The D3DPERF marker hooks moved to the D3D11 project upstream. They now share `d3d9.dll` with our
+  device creation hooks; check that markers still show up in D3D11 captures of apps that use them.
+- Captures (phase 2a).
+
+## Inspecting a capture
+
+Captures can't be opened in the UI until replay exists, but their contents can be dumped:
+
+```
+renderdoccmd convert -f capture.rdc -o capture.zip.xml -c zip.xml
+```
+
+The XML has every chunk with its parameters. Until 2b and 2c are done, a capture only contains the
+calls made during the frame, the object bindings at the start of the frame, and how each referenced
+object was created - no render states from before the frame and no resource contents.
+
+## Code layout
+
+- `d3d9_hooks.cpp` - hooks Direct3DCreate9/Ex. The D3DPERF hooks live in `driver/d3d11/d3d9_hooks.cpp`.
+- `d3d9_direct3d.cpp` - IDirect3D9(Ex) wrapper, device creation.
+- `d3d9_device.cpp` - device lifetime, device-owned objects, Reset, overlay, capture start/end.
+- `d3d9_device_wrap.cpp` - every IDirect3DDevice9(Ex) method.
+- `d3d9_device_serialise.cpp` - serialisation of every recorded call, reading captures. Most of the
+  `Serialise_` functions and the recording versions of simple device methods were generated from a
+  table of the API, so they follow one pattern; edit them by hand now.
+- `d3d9_resources.*` - the wrapper base class and the resource wrappers. The comment at the top of
+  `d3d9_resources.h` describes the lifetime model (external vs internal references, who holds real
+  references, child objects).
+- `d3d9_state.*` - the object bindings the device tracks itself, which state blocks snapshot.
+- `d3d9_swapchain.*`, `d3d9_manager.*`, `d3d9_serialise.cpp` (struct serialisation),
+  `d3d9_stringise.cpp` (chunk and enum names).
+
+Tests: `util/test/demos/d3d9/`.

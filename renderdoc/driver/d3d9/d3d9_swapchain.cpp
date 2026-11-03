@@ -103,7 +103,10 @@ WrappedD3DSurface9 *WrappedD3DSwapChain9::GetBackBufferWrapper(UINT iBackBuffer)
   }
 
   if(wrapped == NULL)
+  {
     wrapped = new WrappedD3DSurface9(real, m_pDevice, this);
+    m_pDevice->RecordBackBuffer(this, iBackBuffer, wrapped);
+  }
 
   return wrapped;
 }
@@ -160,7 +163,9 @@ HRESULT WrappedD3DSwapChain9::Present(CONST RECT *pSourceRect, CONST RECT *pDest
                                       HWND hDestWindowOverride, CONST RGNDATA *pDirtyRegion,
                                       DWORD dwFlags)
 {
-  m_pDevice->RenderOverlay(m_pReal, hDestWindowOverride);
+  m_pDevice->OnSwapChainPresent(this, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion,
+                                dwFlags);
+  m_pDevice->HandlePresent(m_pReal, hDestWindowOverride);
   return m_pReal->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
 }
 

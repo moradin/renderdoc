@@ -125,6 +125,12 @@ WrappedD3D9Object *GetWrappedObject(IUnknown *ptr);
 // shared implementation of GetDevice()
 HRESULT D3D9GetWrappedDevice(WrappedD3DDevice9 *device, IDirect3DDevice9 **ppDevice);
 
+// recording of calls on base textures, which are templated so can't see the device class
+void D3D9RecordGenerateMipSubLevels(WrappedD3DDevice9 *device, IDirect3DBaseTexture9 *tex);
+void D3D9RecordSetAutoGenFilterType(WrappedD3DDevice9 *device, IDirect3DBaseTexture9 *tex,
+                                    D3DTEXTUREFILTERTYPE filter);
+void D3D9RecordSetLOD(WrappedD3DDevice9 *device, IDirect3DBaseTexture9 *tex, DWORD lod);
+
 template <typename Iface>
 Iface *Unwrap(Iface *obj)
 {
@@ -264,18 +270,30 @@ protected:
   }
 
 public:
-  DWORD STDMETHODCALLTYPE SetLOD(DWORD LODNew) { return this->m_pReal->SetLOD(LODNew); }
+  DWORD STDMETHODCALLTYPE SetLOD(DWORD LODNew)
+  {
+    DWORD ret = this->m_pReal->SetLOD(LODNew);
+    D3D9RecordSetLOD(this->m_pDevice, (NestedType *)this, LODNew);
+    return ret;
+  }
   DWORD STDMETHODCALLTYPE GetLOD() { return this->m_pReal->GetLOD(); }
   DWORD STDMETHODCALLTYPE GetLevelCount() { return this->m_pReal->GetLevelCount(); }
   HRESULT STDMETHODCALLTYPE SetAutoGenFilterType(D3DTEXTUREFILTERTYPE FilterType)
   {
-    return this->m_pReal->SetAutoGenFilterType(FilterType);
+    HRESULT ret = this->m_pReal->SetAutoGenFilterType(FilterType);
+    if(SUCCEEDED(ret))
+      D3D9RecordSetAutoGenFilterType(this->m_pDevice, (NestedType *)this, FilterType);
+    return ret;
   }
   D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE GetAutoGenFilterType()
   {
     return this->m_pReal->GetAutoGenFilterType();
   }
-  void STDMETHODCALLTYPE GenerateMipSubLevels() { this->m_pReal->GenerateMipSubLevels(); }
+  void STDMETHODCALLTYPE GenerateMipSubLevels()
+  {
+    this->m_pReal->GenerateMipSubLevels();
+    D3D9RecordGenerateMipSubLevels(this->m_pDevice, (NestedType *)this);
+  }
 };
 
 class WrappedD3DSurface9 : public WrappedD3D9Resource<IDirect3DSurface9>
@@ -637,7 +655,7 @@ public:
 
   D3DQUERYTYPE STDMETHODCALLTYPE GetType() { return m_pReal->GetType(); }
   DWORD STDMETHODCALLTYPE GetDataSize() { return m_pReal->GetDataSize(); }
-  HRESULT STDMETHODCALLTYPE Issue(DWORD dwIssueFlags) { return m_pReal->Issue(dwIssueFlags); }
+  HRESULT STDMETHODCALLTYPE Issue(DWORD dwIssueFlags);
   HRESULT STDMETHODCALLTYPE GetData(void *pData, DWORD dwSize, DWORD dwGetDataFlags)
   {
     return m_pReal->GetData(pData, dwSize, dwGetDataFlags);
@@ -674,6 +692,7 @@ private:
   D3D9ObjectBindings m_Bindings;
 };
 
+// WrappedD3DSwapChain9 is declared in d3d9_swapchain.h, include it to use this list
 #define ALL_D3D9_POOLED_TYPES                    \
   D3D9_TYPE_MACRO(WrappedD3DSurface9);           \
   D3D9_TYPE_MACRO(WrappedD3DVolume9);            \
@@ -686,4 +705,5 @@ private:
   D3D9_TYPE_MACRO(WrappedD3DVertexShader9);      \
   D3D9_TYPE_MACRO(WrappedD3DPixelShader9);       \
   D3D9_TYPE_MACRO(WrappedD3DQuery9);             \
-  D3D9_TYPE_MACRO(WrappedD3DStateBlock9);
+  D3D9_TYPE_MACRO(WrappedD3DStateBlock9);        \
+  D3D9_TYPE_MACRO(WrappedD3DSwapChain9);

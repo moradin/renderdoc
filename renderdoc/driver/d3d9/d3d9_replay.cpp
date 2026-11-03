@@ -23,6 +23,7 @@
  ******************************************************************************/
 
 #include "d3d9_common.h"
+#include "d3d9_device.h"
 
 // disabled until capture is actually supported, so we can actually tell programmatically that the
 // API is unsupported. E.g. when we detect the API and let the user know, but disable a capture
@@ -38,3 +39,34 @@ ResultDetails D3D9_CreateReplayDevice(RDCFile *rdc, IReplayDriver **driver)
 static DriverRegistration D3D9DriverRegistration(RDCDriver::D3D9, &D3D9_CreateReplayDevice);
 
 #endif
+
+// Structured export (e.g. renderdoccmd convert, or the python API's GetStructuredData) only needs
+// to read the capture, so it works before replay does.
+RDResult D3D9_ProcessStructured(RDCFile *rdc, SDFile &output)
+{
+  int sectionIdx = rdc->SectionIndex(SectionType::FrameCapture);
+
+  if(sectionIdx < 0)
+    RETURN_ERROR_RESULT(ResultCode::FileCorrupted, "File does not contain captured API data");
+
+  uint64_t version = rdc->GetSectionProperties(sectionIdx).version;
+
+  if(!D3D9InitParams::IsSupportedVersion(version))
+    RETURN_ERROR_RESULT(ResultCode::APIIncompatibleVersion,
+                        "D3D9 capture is incompatible version %llu, newest supported by this "
+                        "build of RenderDoc is %llu",
+                        version, D3D9InitParams::CurrentVersion);
+
+  WrappedD3DDevice9 device((D3D9InitParams()));
+
+  device.SetStructuredExport(version);
+  RDResult result = device.ReadLogInitialisation(rdc, true);
+
+  if(result == ResultCode::Succeeded)
+    device.GetStructuredFile()->Swap(output);
+
+  return result;
+}
+
+static StructuredProcessRegistration D3D9ProcessRegistration(RDCDriver::D3D9,
+                                                             &D3D9_ProcessStructured);

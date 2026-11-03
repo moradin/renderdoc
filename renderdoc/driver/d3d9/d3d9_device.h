@@ -25,17 +25,26 @@
 #pragma once
 
 #include "common/threading.h"
+#include "serialise/rdcfile.h"
 #include "d3d9_common.h"
 #include "d3d9_manager.h"
+#include "d3d9_resources.h"
 #include "d3d9_state.h"
 
 class D3D9DebugManager;
 class WrappedD3DSurface9;
+class WrappedD3DVolume9;
+class WrappedD3DTexture9;
+class WrappedD3DCubeTexture9;
+class WrappedD3DVolumeTexture9;
 
 class WrappedD3DDevice9 final : public IDirect3DDevice9Ex, public IFrameCapturer
 {
 public:
-  WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrappedD3D, HWND wnd);
+  WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrappedD3D, HWND wnd,
+                    const D3D9InitParams &params);
+  // a device with no real device behind it, for structured export of captures
+  explicit WrappedD3DDevice9(const D3D9InitParams &params);
   ~WrappedD3DDevice9();
 
   void LazyInit();
@@ -48,13 +57,57 @@ public:
   // protects wrapper creation and the tracked bindings. Recursive, like all CriticalSections.
   Threading::CriticalSection &D3DLock() { return m_D3DLock; }
 
-  // draw the in-application overlay into a real swapchain's first back buffer
-  void RenderOverlay(IDirect3DSwapChain9 *realSwapChain, HWND hDestWindowOverride);
-
   // state block support. Capture copies the device's current bindings selected by mask, Apply
   // copies them back (into the state block being recorded, if any, like the runtime does).
   void CaptureBindings(D3D9ObjectBindings &dst, const D3D9BindingMask &mask);
   void ApplyBindings(const D3D9ObjectBindings &src, const D3D9BindingMask &mask);
+
+  //////////////////////////////
+  // capture
+
+  CaptureState GetState() const { return m_State; }
+  WriteSerialiser &GetScratchSerialiser() { return m_ScratchSerialiser; }
+
+  // create the resource record for a new object, with its creation chunk written by serialise
+  template <typename SerialiseFunc>
+  void RecordCreation(WrappedD3D9Object *obj, D3D9Chunk chunk, SerialiseFunc serialise,
+                      WrappedD3D9Object *parent = NULL);
+
+  // records for objects created on first use by their containers
+  void RecordSurfaceLevel(WrappedD3DTexture9 *tex, UINT level, WrappedD3DSurface9 *surf);
+  void RecordCubeFace(WrappedD3DCubeTexture9 *cube, D3DCUBEMAP_FACES face, UINT level,
+                      WrappedD3DSurface9 *surf);
+  void RecordVolumeLevel(WrappedD3DVolumeTexture9 *tex, UINT level, WrappedD3DVolume9 *vol);
+  void RecordBackBuffer(WrappedD3DSwapChain9 *swap, UINT index, WrappedD3DSurface9 *surf);
+
+  // called when a wrapper dies. Records are kept until the end of a capture in progress, since
+  // its chunks may still be needed.
+  void ReleaseRecord(D3D9ResourceRecord *record);
+
+  // calls on objects other than the device that are recorded into the frame
+  void OnStateBlockCapture(IDirect3DStateBlock9 *sb);
+  void OnStateBlockApply(IDirect3DStateBlock9 *sb);
+  void OnQueryIssue(IDirect3DQuery9 *query, DWORD flags);
+  void OnGenerateMipSubLevels(IDirect3DBaseTexture9 *tex);
+  void OnSetAutoGenFilterType(IDirect3DBaseTexture9 *tex, D3DTEXTUREFILTERTYPE filter);
+  void OnSetLOD(IDirect3DBaseTexture9 *tex, DWORD lod);
+  void OnSwapChainPresent(IDirect3DSwapChain9 *swap, CONST RECT *pSourceRect, CONST RECT *pDestRect,
+                          HWND hDestWindowOverride, CONST RGNDATA *pDirtyRegion, DWORD dwFlags);
+
+  // called by swapchain and device presents, before the real present
+  void HandlePresent(IDirect3DSwapChain9 *realSwapChain, HWND hDestWindowOverride);
+
+  //////////////////////////////
+  // structured export of captures
+
+  void SetStructuredExport(uint64_t sectionVersion)
+  {
+    m_SectionVersion = sectionVersion;
+    m_State = CaptureState::StructuredExport;
+  }
+  RDResult ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers);
+  SDFile *GetStructuredFile() { return m_StructuredFile; }
+  static rdcstr GetChunkName(uint32_t idx);
 
   //////////////////////////////
   // implement IFrameCapturer
@@ -83,6 +136,267 @@ public:
   ULONG STDMETHODCALLTYPE AddRef();
   ULONG STDMETHODCALLTYPE Release();
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject);
+
+  // serialisation, see d3d9_device_serialise.cpp. Phase 2 only writes; replay comes in phase 3.
+  template <typename SerialiserType>
+  bool Serialise_SetRenderTarget(SerialiserType &ser, DWORD RenderTargetIndex,
+                                 IDirect3DSurface9 *pRenderTarget);
+  template <typename SerialiserType>
+  bool Serialise_SetDepthStencilSurface(SerialiserType &ser, IDirect3DSurface9 *pNewZStencil);
+  template <typename SerialiserType>
+  bool Serialise_BeginScene(SerialiserType &ser);
+  template <typename SerialiserType>
+  bool Serialise_EndScene(SerialiserType &ser);
+  template <typename SerialiserType>
+  bool Serialise_Clear(SerialiserType &ser, DWORD Count, CONST D3DRECT *pRects, DWORD Flags,
+                       D3DCOLOR Color, float Z, DWORD Stencil);
+  template <typename SerialiserType>
+  bool Serialise_SetTransform(SerialiserType &ser, D3DTRANSFORMSTATETYPE State,
+                              CONST D3DMATRIX *pMatrix);
+  template <typename SerialiserType>
+  bool Serialise_MultiplyTransform(SerialiserType &ser, D3DTRANSFORMSTATETYPE State,
+                                   CONST D3DMATRIX *pMatrix);
+  template <typename SerialiserType>
+  bool Serialise_SetViewport(SerialiserType &ser, CONST D3DVIEWPORT9 *pViewport);
+  template <typename SerialiserType>
+  bool Serialise_SetMaterial(SerialiserType &ser, CONST D3DMATERIAL9 *pMaterial);
+  template <typename SerialiserType>
+  bool Serialise_SetLight(SerialiserType &ser, DWORD Index, CONST D3DLIGHT9 *pLight);
+  template <typename SerialiserType>
+  bool Serialise_LightEnable(SerialiserType &ser, DWORD Index, BOOL Enable);
+  template <typename SerialiserType>
+  bool Serialise_SetClipPlane(SerialiserType &ser, DWORD Index, CONST float *pPlane);
+  template <typename SerialiserType>
+  bool Serialise_SetRenderState(SerialiserType &ser, D3DRENDERSTATETYPE State, DWORD Value);
+  template <typename SerialiserType>
+  bool Serialise_BeginStateBlock(SerialiserType &ser);
+  template <typename SerialiserType>
+  bool Serialise_SetClipStatus(SerialiserType &ser, CONST D3DCLIPSTATUS9 *pClipStatus);
+  template <typename SerialiserType>
+  bool Serialise_SetTexture(SerialiserType &ser, DWORD Stage, IDirect3DBaseTexture9 *pTexture);
+  template <typename SerialiserType>
+  bool Serialise_SetTextureStageState(SerialiserType &ser, DWORD Stage,
+                                      D3DTEXTURESTAGESTATETYPE Type, DWORD Value);
+  template <typename SerialiserType>
+  bool Serialise_SetSamplerState(SerialiserType &ser, DWORD Sampler, D3DSAMPLERSTATETYPE Type,
+                                 DWORD Value);
+  template <typename SerialiserType>
+  bool Serialise_SetPaletteEntries(SerialiserType &ser, UINT PaletteNumber,
+                                   CONST PALETTEENTRY *pEntries);
+  template <typename SerialiserType>
+  bool Serialise_SetCurrentTexturePalette(SerialiserType &ser, UINT PaletteNumber);
+  template <typename SerialiserType>
+  bool Serialise_SetScissorRect(SerialiserType &ser, CONST RECT *pRect);
+  template <typename SerialiserType>
+  bool Serialise_SetSoftwareVertexProcessing(SerialiserType &ser, BOOL bSoftware);
+  template <typename SerialiserType>
+  bool Serialise_SetNPatchMode(SerialiserType &ser, float nSegments);
+  template <typename SerialiserType>
+  bool Serialise_DrawPrimitive(SerialiserType &ser, D3DPRIMITIVETYPE PrimitiveType,
+                               UINT StartVertex, UINT PrimitiveCount);
+  template <typename SerialiserType>
+  bool Serialise_DrawIndexedPrimitive(SerialiserType &ser, D3DPRIMITIVETYPE PrimitiveType,
+                                      INT BaseVertexIndex, UINT MinVertexIndex, UINT NumVertices,
+                                      UINT startIndex, UINT primCount);
+  template <typename SerialiserType>
+  bool Serialise_ProcessVertices(SerialiserType &ser, UINT SrcStartIndex, UINT DestIndex,
+                                 UINT VertexCount, IDirect3DVertexBuffer9 *pDestBuffer,
+                                 IDirect3DVertexDeclaration9 *pVertexDecl, DWORD Flags);
+  template <typename SerialiserType>
+  bool Serialise_SetVertexDeclaration(SerialiserType &ser, IDirect3DVertexDeclaration9 *pDecl);
+  template <typename SerialiserType>
+  bool Serialise_SetFVF(SerialiserType &ser, DWORD FVF);
+  template <typename SerialiserType>
+  bool Serialise_SetVertexShader(SerialiserType &ser, IDirect3DVertexShader9 *pShader);
+  template <typename SerialiserType>
+  bool Serialise_SetVertexShaderConstantF(SerialiserType &ser, UINT StartRegister,
+                                          CONST float *pConstantData, UINT Vector4fCount);
+  template <typename SerialiserType>
+  bool Serialise_SetVertexShaderConstantI(SerialiserType &ser, UINT StartRegister,
+                                          CONST int *pConstantData, UINT Vector4iCount);
+  template <typename SerialiserType>
+  bool Serialise_SetVertexShaderConstantB(SerialiserType &ser, UINT StartRegister,
+                                          CONST BOOL *pConstantData, UINT BoolCount);
+  template <typename SerialiserType>
+  bool Serialise_SetStreamSource(SerialiserType &ser, UINT StreamNumber,
+                                 IDirect3DVertexBuffer9 *pStreamData, UINT OffsetInBytes,
+                                 UINT Stride);
+  template <typename SerialiserType>
+  bool Serialise_SetStreamSourceFreq(SerialiserType &ser, UINT StreamNumber, UINT Setting);
+  template <typename SerialiserType>
+  bool Serialise_SetIndices(SerialiserType &ser, IDirect3DIndexBuffer9 *pIndexData);
+  template <typename SerialiserType>
+  bool Serialise_SetPixelShader(SerialiserType &ser, IDirect3DPixelShader9 *pShader);
+  template <typename SerialiserType>
+  bool Serialise_SetPixelShaderConstantF(SerialiserType &ser, UINT StartRegister,
+                                         CONST float *pConstantData, UINT Vector4fCount);
+  template <typename SerialiserType>
+  bool Serialise_SetPixelShaderConstantI(SerialiserType &ser, UINT StartRegister,
+                                         CONST int *pConstantData, UINT Vector4iCount);
+  template <typename SerialiserType>
+  bool Serialise_SetPixelShaderConstantB(SerialiserType &ser, UINT StartRegister,
+                                         CONST BOOL *pConstantData, UINT BoolCount);
+  template <typename SerialiserType>
+  bool Serialise_DrawRectPatch(SerialiserType &ser, UINT Handle, CONST float *pNumSegs,
+                               CONST D3DRECTPATCH_INFO *pRectPatchInfo);
+  template <typename SerialiserType>
+  bool Serialise_DrawTriPatch(SerialiserType &ser, UINT Handle, CONST float *pNumSegs,
+                              CONST D3DTRIPATCH_INFO *pTriPatchInfo);
+  template <typename SerialiserType>
+  bool Serialise_DeletePatch(SerialiserType &ser, UINT Handle);
+  template <typename SerialiserType>
+  bool Serialise_UpdateSurface(SerialiserType &ser, IDirect3DSurface9 *pSourceSurface,
+                               CONST RECT *pSourceRect, IDirect3DSurface9 *pDestinationSurface,
+                               CONST POINT *pDestPoint);
+  template <typename SerialiserType>
+  bool Serialise_UpdateTexture(SerialiserType &ser, IDirect3DBaseTexture9 *pSourceTexture,
+                               IDirect3DBaseTexture9 *pDestinationTexture);
+  template <typename SerialiserType>
+  bool Serialise_GetRenderTargetData(SerialiserType &ser, IDirect3DSurface9 *pRenderTarget,
+                                     IDirect3DSurface9 *pDestSurface);
+  template <typename SerialiserType>
+  bool Serialise_StretchRect(SerialiserType &ser, IDirect3DSurface9 *pSourceSurface,
+                             CONST RECT *pSourceRect, IDirect3DSurface9 *pDestSurface,
+                             CONST RECT *pDestRect, D3DTEXTUREFILTERTYPE Filter);
+  template <typename SerialiserType>
+  bool Serialise_ColorFill(SerialiserType &ser, IDirect3DSurface9 *pSurface, CONST RECT *pRect,
+                           D3DCOLOR color);
+  template <typename SerialiserType>
+  bool Serialise_ComposeRects(SerialiserType &ser, IDirect3DSurface9 *pSrc, IDirect3DSurface9 *pDst,
+                              IDirect3DVertexBuffer9 *pSrcRectDescs, UINT NumRects,
+                              IDirect3DVertexBuffer9 *pDstRectDescs, D3DCOMPOSERECTSOP Operation,
+                              int Xoffset, int Yoffset);
+  template <typename SerialiserType>
+  bool Serialise_SetConvolutionMonoKernel(SerialiserType &ser, UINT width, UINT height, float *rows,
+                                          float *columns);
+  template <typename SerialiserType>
+  bool Serialise_StateBlock_Capture(SerialiserType &ser, IDirect3DStateBlock9 *pStateBlock);
+  template <typename SerialiserType>
+  bool Serialise_StateBlock_Apply(SerialiserType &ser, IDirect3DStateBlock9 *pStateBlock);
+  template <typename SerialiserType>
+  bool Serialise_Query_Issue(SerialiserType &ser, IDirect3DQuery9 *pQuery, DWORD dwIssueFlags);
+  template <typename SerialiserType>
+  bool Serialise_BaseTexture_GenerateMipSubLevels(SerialiserType &ser,
+                                                  IDirect3DBaseTexture9 *pTexture);
+  template <typename SerialiserType>
+  bool Serialise_BaseTexture_SetAutoGenFilterType(SerialiserType &ser,
+                                                  IDirect3DBaseTexture9 *pTexture,
+                                                  D3DTEXTUREFILTERTYPE FilterType);
+  template <typename SerialiserType>
+  bool Serialise_BaseTexture_SetLOD(SerialiserType &ser, IDirect3DBaseTexture9 *pTexture,
+                                    DWORD LODNew);
+  template <typename SerialiserType>
+  bool Serialise_CreateTexture(SerialiserType &ser, UINT Width, UINT Height, UINT Levels,
+                               DWORD Usage, D3DFORMAT Format, D3DPOOL Pool,
+                               IDirect3DTexture9 **ppTexture, HANDLE *pSharedHandle);
+  template <typename SerialiserType>
+  bool Serialise_CreateVolumeTexture(SerialiserType &ser, UINT Width, UINT Height, UINT Depth,
+                                     UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool,
+                                     IDirect3DVolumeTexture9 **ppVolumeTexture,
+                                     HANDLE *pSharedHandle);
+  template <typename SerialiserType>
+  bool Serialise_CreateCubeTexture(SerialiserType &ser, UINT EdgeLength, UINT Levels, DWORD Usage,
+                                   D3DFORMAT Format, D3DPOOL Pool,
+                                   IDirect3DCubeTexture9 **ppCubeTexture, HANDLE *pSharedHandle);
+  template <typename SerialiserType>
+  bool Serialise_CreateVertexBuffer(SerialiserType &ser, UINT Length, DWORD Usage, DWORD FVF,
+                                    D3DPOOL Pool, IDirect3DVertexBuffer9 **ppVertexBuffer,
+                                    HANDLE *pSharedHandle);
+  template <typename SerialiserType>
+  bool Serialise_CreateIndexBuffer(SerialiserType &ser, UINT Length, DWORD Usage, D3DFORMAT Format,
+                                   D3DPOOL Pool, IDirect3DIndexBuffer9 **ppIndexBuffer,
+                                   HANDLE *pSharedHandle);
+  template <typename SerialiserType>
+  bool Serialise_CreateRenderTarget(SerialiserType &ser, UINT Width, UINT Height, D3DFORMAT Format,
+                                    D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality,
+                                    BOOL Lockable, IDirect3DSurface9 **ppSurface,
+                                    HANDLE *pSharedHandle);
+  template <typename SerialiserType>
+  bool Serialise_CreateDepthStencilSurface(SerialiserType &ser, UINT Width, UINT Height,
+                                           D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample,
+                                           DWORD MultisampleQuality, BOOL Discard,
+                                           IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle);
+  template <typename SerialiserType>
+  bool Serialise_CreateOffscreenPlainSurface(SerialiserType &ser, UINT Width, UINT Height,
+                                             D3DFORMAT Format, D3DPOOL Pool,
+                                             IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle);
+  template <typename SerialiserType>
+  bool Serialise_CreateRenderTargetEx(SerialiserType &ser, UINT Width, UINT Height, D3DFORMAT Format,
+                                      D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality,
+                                      BOOL Lockable, IDirect3DSurface9 **ppSurface,
+                                      HANDLE *pSharedHandle, DWORD Usage);
+  template <typename SerialiserType>
+  bool Serialise_CreateOffscreenPlainSurfaceEx(SerialiserType &ser, UINT Width, UINT Height,
+                                               D3DFORMAT Format, D3DPOOL Pool,
+                                               IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle,
+                                               DWORD Usage);
+  template <typename SerialiserType>
+  bool Serialise_CreateDepthStencilSurfaceEx(SerialiserType &ser, UINT Width, UINT Height,
+                                             D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample,
+                                             DWORD MultisampleQuality, BOOL Discard,
+                                             IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle,
+                                             DWORD Usage);
+  template <typename SerialiserType>
+  bool Serialise_CreateQuery(SerialiserType &ser, D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery);
+  template <typename SerialiserType>
+  bool Serialise_CreateStateBlock(SerialiserType &ser, D3DSTATEBLOCKTYPE Type,
+                                  IDirect3DStateBlock9 **ppSB);
+  template <typename SerialiserType>
+  bool Serialise_EndStateBlock(SerialiserType &ser, IDirect3DStateBlock9 **ppSB);
+  template <typename SerialiserType>
+  bool Serialise_CreateAdditionalSwapChain(SerialiserType &ser,
+                                           D3DPRESENT_PARAMETERS *pPresentationParameters,
+                                           IDirect3DSwapChain9 **pSwapChain);
+  template <typename SerialiserType>
+  bool Serialise_Texture_GetSurfaceLevel(SerialiserType &ser, IDirect3DTexture9 *pTexture,
+                                         UINT Level, IDirect3DSurface9 *_pSurfaceLevel);
+  template <typename SerialiserType>
+  bool Serialise_CubeTexture_GetCubeMapSurface(SerialiserType &ser,
+                                               IDirect3DCubeTexture9 *pCubeTexture,
+                                               D3DCUBEMAP_FACES FaceType, UINT Level,
+                                               IDirect3DSurface9 *_pCubeMapSurface);
+  template <typename SerialiserType>
+  bool Serialise_VolumeTexture_GetVolumeLevel(SerialiserType &ser,
+                                              IDirect3DVolumeTexture9 *pVolumeTexture, UINT Level,
+                                              IDirect3DVolume9 *_pVolumeLevel);
+  template <typename SerialiserType>
+  bool Serialise_SwapChain_GetBackBuffer(SerialiserType &ser, IDirect3DSwapChain9 *pSwapChain,
+                                         UINT iBackBuffer, IDirect3DSurface9 *_pBackBuffer);
+  template <typename SerialiserType>
+  bool Serialise_DeviceInitialisation(SerialiserType &ser);
+  template <typename SerialiserType>
+  bool Serialise_BeginCaptureFrame(SerialiserType &ser);
+  template <typename SerialiserType>
+  bool Serialise_CreateVertexDeclaration(SerialiserType &ser,
+                                         CONST D3DVERTEXELEMENT9 *pVertexElements,
+                                         IDirect3DVertexDeclaration9 **ppDecl);
+  template <typename SerialiserType>
+  bool Serialise_CreateVertexShader(SerialiserType &ser, CONST DWORD *pFunction,
+                                    IDirect3DVertexShader9 **ppShader);
+  template <typename SerialiserType>
+  bool Serialise_CreatePixelShader(SerialiserType &ser, CONST DWORD *pFunction,
+                                   IDirect3DPixelShader9 **ppShader);
+  template <typename SerialiserType>
+  bool Serialise_DrawPrimitiveUP(SerialiserType &ser, D3DPRIMITIVETYPE PrimitiveType,
+                                 UINT PrimitiveCount, CONST void *pVertexStreamZeroData,
+                                 UINT VertexStreamZeroStride);
+  template <typename SerialiserType>
+  bool Serialise_DrawIndexedPrimitiveUP(SerialiserType &ser, D3DPRIMITIVETYPE PrimitiveType,
+                                        UINT MinVertexIndex, UINT NumVertices, UINT PrimitiveCount,
+                                        CONST void *pIndexData, D3DFORMAT IndexDataFormat,
+                                        CONST void *pVertexStreamZeroData,
+                                        UINT VertexStreamZeroStride);
+  template <typename SerialiserType>
+  bool Serialise_Present(SerialiserType &ser, CONST RECT *pSourceRect, CONST RECT *pDestRect,
+                         HWND hDestWindowOverride, CONST RGNDATA *pDirtyRegion);
+  template <typename SerialiserType>
+  bool Serialise_PresentEx(SerialiserType &ser, CONST RECT *pSourceRect, CONST RECT *pDestRect,
+                           HWND hDestWindowOverride, CONST RGNDATA *pDirtyRegion, DWORD dwFlags);
+  template <typename SerialiserType>
+  bool Serialise_SwapChain_Present(SerialiserType &ser, IDirect3DSwapChain9 *pSwapChain,
+                                   CONST RECT *pSourceRect, CONST RECT *pDestRect,
+                                   HWND hDestWindowOverride, CONST RGNDATA *pDirtyRegion,
+                                   DWORD dwFlags);
 
   /*** IDirect3DDevice9 methods ***/
   virtual HRESULT __stdcall TestCooperativeLevel();
@@ -307,6 +621,31 @@ public:
                                              D3DDISPLAYROTATION *pRotation);
 
 private:
+  bool ProcessChunk(ReadSerialiser &ser, D3D9Chunk chunk);
+
+  template <typename SerialiserType>
+  bool Serialise_CaptureScope(SerialiserType &ser);
+
+  // frame-reference objects used by the call being recorded
+  void MarkReferenced(IUnknown *obj, FrameRefType refType);
+  void MarkDrawReferenced();
+  void MarkRenderTargetsReferenced();
+
+  void ThumbnailFromSwapChain(IDirect3DSwapChain9 *realSwapChain, RenderDoc::FramePixels &fp);
+
+  // the presentation parameters of each implicit swapchain, kept up to date across Reset
+  rdcarray<D3DPRESENT_PARAMETERS> GetImplicitPresentParams();
+  rdcarray<ResourceId> GetImplicitSwapChainIDs();
+
+  // shared setup between the constructors
+  void InitCapture();
+  // a record with no chunks for objects created implicitly by the device
+  void CreateOwnedRecord(WrappedD3D9Object *obj);
+  void FlushDeferredRecordReleases();
+
+  // draw the in-application overlay into a real swapchain's first back buffer
+  void RenderOverlay(IDirect3DSwapChain9 *realSwapChain, DeviceOwnedWindow devWnd);
+
   // wrap the objects the device creates and owns: implicit swapchains and the automatic depth
   // stencil surface, then set up the initial render target bindings to match the real device.
   void InitDeviceOwnedObjects();
@@ -346,7 +685,49 @@ private:
 
   HWND m_Wnd = NULL;
   uint32_t m_FrameCounter = 0;
+
+  // capture
+  D3D9InitParams m_InitParams;
+  uint64_t m_SectionVersion = D3D9InitParams::CurrentVersion;
+  WriteSerialiser m_ScratchSerialiser;
+  ResourceId m_DeviceResourceID;
+  // holds the chunks for a frame being captured
+  D3D9ResourceRecord *m_FrameRecord = NULL;
+  rdcarray<D3D9ResourceRecord *> m_DeferredRecordReleases;
+  rdcarray<FrameDescription> m_CapturedFrames;
+  bool m_AppControlledCapture = false;
+
+  // structured export
+  std::set<rdcstr> m_StringDB;
+  SDFile *m_StructuredFile = NULL;
+  SDFile *m_StoredStructuredData = NULL;
 };
+
+template <typename SerialiseFunc>
+void WrappedD3DDevice9::RecordCreation(WrappedD3D9Object *obj, D3D9Chunk chunk,
+                                       SerialiseFunc serialise, WrappedD3D9Object *parent)
+{
+  if(obj == NULL || !IsCaptureMode(m_State))
+    return;
+
+  SCOPED_LOCK(m_D3DLock);
+
+  D3D9ResourceRecord *record = m_ResourceManager->AddResourceRecord(obj->GetResourceID());
+  record->DataInSerialiser = false;
+  record->Length = 0;
+
+  if(parent && parent->GetResourceRecord())
+    record->AddParent(parent->GetResourceRecord());
+
+  {
+    WriteSerialiser &ser = m_ScratchSerialiser;
+    SCOPED_SERIALISE_CHUNK(chunk);
+    serialise(ser);
+    record->AddChunk(scope.Get());
+  }
+
+  obj->SetResourceRecord(record);
+}
 
 ////////////////////////////////////////////////////////////////////////////
 // WrappedD3D9

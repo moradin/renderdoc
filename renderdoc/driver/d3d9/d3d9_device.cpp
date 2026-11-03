@@ -27,8 +27,12 @@
 #include "d3d9_resources.h"
 #include "d3d9_swapchain.h"
 
-WrappedD3DDevice9::WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrappedD3D, HWND wnd)
-    : m_device(device), m_D3D(wrappedD3D)
+WrappedD3DDevice9::WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrappedD3D, HWND wnd,
+                                     const D3D9InitParams &params)
+    : m_device(device),
+      m_D3D(wrappedD3D),
+      m_InitParams(params),
+      m_ScratchSerialiser(new StreamWriter(1024), Ownership::Stream)
 {
   m_D3D->AddRef();
 
@@ -43,7 +47,7 @@ WrappedD3DDevice9::WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrap
   else
     m_State = CaptureState::BackgroundCapturing;
 
-  m_ResourceManager = new D3D9ResourceManager(m_State, this);
+  InitCapture();
 
   if(!RenderDoc::Inst().IsReplayApp())
   {
@@ -58,9 +62,48 @@ WrappedD3DDevice9::WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrap
   InitDeviceOwnedObjects();
 }
 
+WrappedD3DDevice9::WrappedD3DDevice9(const D3D9InitParams &params)
+    : m_device(NULL),
+      m_D3D(NULL),
+      m_InitParams(params),
+      m_ScratchSerialiser(new StreamWriter(1024), Ownership::Stream)
+{
+  m_State = CaptureState::LoadingReplaying;
+
+  InitCapture();
+}
+
+void WrappedD3DDevice9::InitCapture()
+{
+  m_StructuredFile = m_StoredStructuredData = new SDFile;
+
+  uint32_t flags = WriteSerialiser::ChunkDuration | WriteSerialiser::ChunkTimestamp |
+                   WriteSerialiser::ChunkThreadID;
+
+  if(RenderDoc::Inst().GetCaptureOptions().captureCallstacks)
+    flags |= WriteSerialiser::ChunkCallstack;
+
+  m_ScratchSerialiser.SetChunkMetadataRecording(flags);
+  m_ScratchSerialiser.SetVersion(D3D9InitParams::CurrentVersion);
+
+  m_ResourceManager = new D3D9ResourceManager(m_State, this);
+
+  m_ScratchSerialiser.SetUserData(m_ResourceManager);
+
+  m_DeviceResourceID = ResourceIDGen::GetNewUniqueID();
+
+  if(IsCaptureMode(m_State))
+  {
+    m_FrameRecord = m_ResourceManager->AddResourceRecord(ResourceIDGen::GetNewUniqueID());
+    m_FrameRecord->DataInSerialiser = false;
+    m_FrameRecord->Length = 0;
+    m_FrameRecord->InternalResource = true;
+  }
+}
+
 WrappedD3DDevice9::~WrappedD3DDevice9()
 {
-  if(!RenderDoc::Inst().IsReplayApp())
+  if(m_device && !RenderDoc::Inst().IsReplayApp())
   {
     RenderDoc::Inst().RemoveDeviceFrameCapturer((IDirect3DDevice9 *)this);
 
@@ -87,13 +130,27 @@ WrappedD3DDevice9::~WrappedD3DDevice9()
     swap->IntRelease();
   m_ImplicitSwapChains.clear();
 
+  if(m_FrameRecord)
+  {
+    m_FrameRecord->DeleteChunks();
+    m_FrameRecord->Delete(m_ResourceManager);
+    m_FrameRecord = NULL;
+  }
+
+  FlushDeferredRecordReleases();
+
   if(m_ResourceManager)
     m_ResourceManager->Shutdown();
   SAFE_DELETE(m_ResourceManager);
 
-  ULONG realRefs = m_device->Release();
-  if(realRefs != 0)
-    RDCWARN("Real D3D9 device still has %u references after the wrapper was destroyed", realRefs);
+  SAFE_DELETE(m_StoredStructuredData);
+
+  if(m_device)
+  {
+    ULONG realRefs = m_device->Release();
+    if(realRefs != 0)
+      RDCWARN("Real D3D9 device still has %u references after the wrapper was destroyed", realRefs);
+  }
   m_device = NULL;
   m_deviceEx = NULL;
 
@@ -165,6 +222,7 @@ void WrappedD3DDevice9::InitDeviceOwnedObjects()
 
     WrappedD3DSwapChain9 *wrapped = new WrappedD3DSwapChain9(real, this, true);
     wrapped->IntAddRef();
+    CreateOwnedRecord(wrapped);
     m_ImplicitSwapChains.push_back(wrapped);
   }
 
@@ -212,6 +270,7 @@ void WrappedD3DDevice9::WrapAutoDepthStencil()
   // standalone surface, but with no external references and owned by the device
   WrappedD3DSurface9 *wrapped = new WrappedD3DSurface9(real, this, (WrappedD3D9Object *)NULL);
   wrapped->IntAddRef();
+  CreateOwnedRecord(wrapped);
 
   // the old one stays alive if the application still references it
   if(m_AutoDepthStencil)
@@ -282,10 +341,66 @@ void WrappedD3DDevice9::ApplyBindings(const D3D9ObjectBindings &src, const D3D9B
   }
 }
 
-void WrappedD3DDevice9::RenderOverlay(IDirect3DSwapChain9 *realSwapChain, HWND hDestWindowOverride)
+void WrappedD3DDevice9::RenderOverlay(IDirect3DSwapChain9 *realSwapChain, DeviceOwnedWindow devWnd)
 {
-  RenderDoc::Inst().Tick();
+  uint32_t overlay = RenderDoc::Inst().GetOverlayBits();
 
+  if(devWnd.windowHandle == NULL || realSwapChain == NULL || m_DebugManager == NULL ||
+     !(overlay & eRENDERDOC_Overlay_Enabled))
+    return;
+
+  IDirect3DSurface9 *backBuffer = NULL;
+  if(FAILED(realSwapChain->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) || !backBuffer)
+    return;
+
+  // Everything here goes to the real device so the application's state, and our tracking of it, is
+  // untouched. A D3DSBT_ALL state block restores everything except render targets, which we save
+  // separately.
+  IDirect3DSurface9 *prevRT = NULL;
+  m_device->GetRenderTarget(0, &prevRT);
+
+  IDirect3DStateBlock9 *stateBlock = NULL;
+  m_device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
+
+  m_device->BeginScene();
+  m_device->SetRenderTarget(0, backBuffer);
+
+  D3DSURFACE_DESC bbDesc = {};
+  backBuffer->GetDesc(&bbDesc);
+
+  D3DVIEWPORT9 viewport = {0, 0, bbDesc.Width, bbDesc.Height, 0.f, 1.f};
+  m_device->SetViewport(&viewport);
+
+  m_DebugManager->SetOutputDimensions(bbDesc.Width, bbDesc.Height);
+  m_DebugManager->SetOutputWindow((HWND)devWnd.windowHandle);
+
+  rdcstr overlayText = RenderDoc::Inst().GetOverlayText(RDCDriver::D3D9, devWnd, m_FrameCounter, 0);
+
+  overlayText += "D3D9 support is in development: captures can't be replayed yet\n";
+
+  m_DebugManager->RenderText(0.0f, 0.0f, overlayText.c_str());
+
+  m_device->EndScene();
+
+  // restore the render target first: setting it resets the viewport, which the state block then
+  // restores
+  if(prevRT)
+  {
+    m_device->SetRenderTarget(0, prevRT);
+    prevRT->Release();
+  }
+
+  if(stateBlock)
+  {
+    stateBlock->Apply();
+    stateBlock->Release();
+  }
+
+  backBuffer->Release();
+}
+
+void WrappedD3DDevice9::HandlePresent(IDirect3DSwapChain9 *realSwapChain, HWND hDestWindowOverride)
+{
   D3DPRESENT_PARAMETERS presentParams = {};
   if(realSwapChain)
     realSwapChain->GetPresentParameters(&presentParams);
@@ -296,82 +411,468 @@ void WrappedD3DDevice9::RenderOverlay(IDirect3DSwapChain9 *realSwapChain, HWND h
 
   DeviceOwnedWindow devWnd((IDirect3DDevice9 *)this, wnd);
 
+  if(IsBackgroundCapturing(m_State))
+    RenderDoc::Inst().Tick();
+
+  // the first present becomes frame #1, this is at the end of the frame
   m_FrameCounter++;
 
-  uint32_t overlay = RenderDoc::Inst().GetOverlayBits();
-
-  if(wnd != NULL && realSwapChain != NULL && m_DebugManager && (overlay & eRENDERDOC_Overlay_Enabled))
-  {
-    IDirect3DSurface9 *backBuffer = NULL;
-    if(SUCCEEDED(realSwapChain->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) && backBuffer)
-    {
-      // Everything here goes to the real device so the application's state, and our tracking of
-      // it, is untouched. A D3DSBT_ALL state block restores everything except render targets,
-      // which we save separately.
-      IDirect3DSurface9 *prevRT = NULL;
-      m_device->GetRenderTarget(0, &prevRT);
-
-      IDirect3DStateBlock9 *stateBlock = NULL;
-      m_device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
-
-      m_device->BeginScene();
-      m_device->SetRenderTarget(0, backBuffer);
-
-      D3DSURFACE_DESC bbDesc = {};
-      backBuffer->GetDesc(&bbDesc);
-
-      D3DVIEWPORT9 viewport = {0, 0, bbDesc.Width, bbDesc.Height, 0.f, 1.f};
-      m_device->SetViewport(&viewport);
-
-      m_DebugManager->SetOutputDimensions(bbDesc.Width, bbDesc.Height);
-      m_DebugManager->SetOutputWindow(presentParams.hDeviceWindow);
-
-      rdcstr overlayText = RenderDoc::Inst().GetOverlayText(RDCDriver::D3D9, devWnd, m_FrameCounter,
-                                                            RenderDoc::eOverlay_CaptureDisabled);
-
-      overlayText += "Captures not supported with D3D9\n";
-
-      if(!overlayText.empty())
-        m_DebugManager->RenderText(0.0f, 0.0f, overlayText.c_str());
-
-      m_device->EndScene();
-
-      // restore the render target first: setting it resets the viewport, which the state block
-      // then restores
-      if(prevRT)
-      {
-        m_device->SetRenderTarget(0, prevRT);
-        prevRT->Release();
-      }
-
-      if(stateBlock)
-      {
-        stateBlock->Apply();
-        stateBlock->Release();
-      }
-
-      backBuffer->Release();
-    }
-  }
+  if(IsBackgroundCapturing(m_State))
+    RenderOverlay(realSwapChain, devWnd);
 
   RenderDoc::Inst().AddActiveDriver(RDCDriver::D3D9, true);
-  RenderDoc::Inst().SetDriverUnsupportedMessage(RDCDriver::D3D9,
-                                                "D3D9 capture is not yet supported");
+
+  if(wnd == NULL || !RenderDoc::Inst().IsActiveWindow(devWnd))
+    return;
+
+  // end any capture that isn't application controlled
+  if(IsActiveCapturing(m_State) && !m_AppControlledCapture)
+    RenderDoc::Inst().EndFrameCapture(devWnd);
+
+  if(IsBackgroundCapturing(m_State) && RenderDoc::Inst().ShouldTriggerCapture(m_FrameCounter))
+  {
+    RenderDoc::Inst().StartFrameCapture(devWnd);
+
+    if(IsActiveCapturing(m_State))
+    {
+      m_AppControlledCapture = false;
+      m_CapturedFrames.back().frameNumber = m_FrameCounter;
+    }
+  }
 }
 
 void WrappedD3DDevice9::StartFrameCapture(DeviceOwnedWindow devWnd)
 {
-  RDCERR("Capture not supported on D3D9");
+  SCOPED_LOCK(m_D3DLock);
+
+  if(!IsBackgroundCapturing(m_State))
+    return;
+
+  RDCLOG("Starting capture");
+
+  m_State = CaptureState::ActiveCapturing;
+
+  m_AppControlledCapture = true;
+
+  FrameDescription frame;
+  // for app-controlled captures the frame number is meaningless, it's updated by HandlePresent
+  // when the capture was triggered there.
+  frame.frameNumber = ~0U;
+  frame.captureTime = Timing::GetUnixTimestamp();
+  m_CapturedFrames.push_back(frame);
+
+  m_ResourceManager->ClearReferencedResources();
+
+  m_FrameRecord->DeleteChunks();
+
+  // device-owned objects are always included
+  for(WrappedD3DSwapChain9 *swap : m_ImplicitSwapChains)
+    MarkReferenced((IDirect3DSwapChain9 *)swap, eFrameRef_Read);
+  MarkReferenced((IDirect3DSurface9 *)m_AutoDepthStencil, eFrameRef_Read);
+
+  // as are the objects bound when the frame starts
+  for(IDirect3DBaseTexture9 *tex : m_Bindings.textures)
+    MarkReferenced(tex, eFrameRef_Read);
+  for(const D3D9StreamBinding &s : m_Bindings.streams)
+    MarkReferenced(s.buffer, eFrameRef_Read);
+  MarkReferenced(m_Bindings.indices, eFrameRef_Read);
+  MarkReferenced(m_Bindings.vs, eFrameRef_Read);
+  MarkReferenced(m_Bindings.ps, eFrameRef_Read);
+  MarkReferenced(m_Bindings.decl, eFrameRef_Read);
+  MarkRenderTargetsReferenced();
+
+  {
+    USE_SCRATCH_SERIALISER();
+    SCOPED_SERIALISE_CHUNK(D3D9Chunk::BeginCaptureFrame);
+    Serialise_BeginCaptureFrame(ser);
+    m_FrameRecord->AddChunk(scope.Get());
+  }
+
+  m_ResourceManager->PrepareInitialContents();
 }
 
 bool WrappedD3DDevice9::EndFrameCapture(DeviceOwnedWindow devWnd)
 {
-  RDCERR("Capture not supported on D3D9");
-  return false;
+  SCOPED_LOCK(m_D3DLock);
+
+  if(!IsActiveCapturing(m_State))
+    return true;
+
+  RDCLOG("Finished capture, Frame %u", m_CapturedFrames.back().frameNumber);
+
+  // thumbnail from the swapchain presenting to the window, falling back to the first one
+  IDirect3DSwapChain9 *thumbSwap = NULL;
+  for(WrappedD3DSwapChain9 *swap : m_ImplicitSwapChains)
+  {
+    D3DPRESENT_PARAMETERS params = {};
+    swap->GetReal()->GetPresentParameters(&params);
+    if(thumbSwap == NULL || params.hDeviceWindow == (HWND)devWnd.windowHandle)
+      thumbSwap = swap->GetReal();
+  }
+
+  RenderDoc::FramePixels fp;
+  ThumbnailFromSwapChain(thumbSwap, fp);
+
+  RDCFile *rdc =
+      RenderDoc::Inst().CreateRDC(RDCDriver::D3D9, m_CapturedFrames.back().frameNumber, fp);
+
+  StreamWriter *captureWriter = NULL;
+
+  if(rdc)
+  {
+    SectionProperties props;
+
+    // Compress with LZ4 so that it's fast
+    props.flags = SectionFlags::LZ4Compressed;
+    props.version = m_SectionVersion;
+    props.type = SectionType::FrameCapture;
+
+    captureWriter = rdc->WriteSection(props);
+  }
+  else
+  {
+    captureWriter = new StreamWriter(StreamWriter::InvalidStream);
+  }
+
+  uint64_t captureSectionSize = 0;
+
+  {
+    WriteSerialiser ser(captureWriter, Ownership::Stream);
+
+    ser.SetChunkMetadataRecording(m_ScratchSerialiser.GetChunkMetadataRecording());
+
+    ser.SetUserData(m_ResourceManager);
+
+    {
+      SCOPED_SERIALISE_CHUNK(SystemChunk::DriverInit, sizeof(D3D9InitParams) + 16);
+
+      SERIALISE_ELEMENT(m_InitParams);
+    }
+
+    {
+      SCOPED_SERIALISE_CHUNK(D3D9Chunk::DeviceInitialisation, 256);
+
+      Serialise_DeviceInitialisation(ser);
+    }
+
+    m_ResourceManager->InsertReferencedChunks(ser);
+
+    m_ResourceManager->InsertInitialContentsChunks(ser);
+
+    m_ResourceManager->Serialise_InitialContentsNeeded(ser);
+
+    {
+      SCOPED_SERIALISE_CHUNK(SystemChunk::CaptureScope, 16);
+
+      Serialise_CaptureScope(ser);
+    }
+
+    {
+      std::map<int64_t, Chunk *> recordlist;
+      m_FrameRecord->Insert(recordlist);
+
+      float num = float(recordlist.size());
+      float idx = 0.0f;
+
+      for(auto it = recordlist.begin(); it != recordlist.end(); ++it)
+      {
+        RenderDoc::Inst().SetProgress(CaptureProgress::SerialiseFrameContents, idx / num);
+        idx += 1.0f;
+        it->second->Write(ser);
+      }
+    }
+
+    captureSectionSize = captureWriter->GetOffset();
+  }
+
+  RDCLOG("Captured D3D9 frame with %f MB capture section",
+         double(captureSectionSize) / (1024.0 * 1024.0));
+
+  RenderDoc::Inst().FinishCaptureWriting(rdc, m_CapturedFrames.back().frameNumber);
+
+  m_State = CaptureState::BackgroundCapturing;
+
+  m_FrameRecord->DeleteChunks();
+
+  m_ResourceManager->MarkUnwrittenResources();
+
+  m_ResourceManager->ClearReferencedResources();
+
+  m_ResourceManager->FreeInitialContents();
+
+  FlushDeferredRecordReleases();
+
+  return true;
 }
 
 bool WrappedD3DDevice9::DiscardFrameCapture(DeviceOwnedWindow devWnd)
 {
-  RDCERR("Capture not supported on D3D9");
-  return false;
+  SCOPED_LOCK(m_D3DLock);
+
+  if(!IsActiveCapturing(m_State))
+    return true;
+
+  RenderDoc::Inst().FinishCaptureWriting(NULL, m_CapturedFrames.back().frameNumber);
+
+  m_CapturedFrames.pop_back();
+
+  m_State = CaptureState::BackgroundCapturing;
+
+  m_FrameRecord->DeleteChunks();
+
+  m_ResourceManager->MarkUnwrittenResources();
+
+  m_ResourceManager->ClearReferencedResources();
+
+  m_ResourceManager->FreeInitialContents();
+
+  FlushDeferredRecordReleases();
+
+  return true;
 }
+
+void WrappedD3DDevice9::ThumbnailFromSwapChain(IDirect3DSwapChain9 *realSwapChain,
+                                               RenderDoc::FramePixels &fp)
+{
+  if(realSwapChain == NULL)
+    return;
+
+  IDirect3DSurface9 *backBuffer = NULL;
+  if(FAILED(realSwapChain->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) || !backBuffer)
+    return;
+
+  D3DSURFACE_DESC desc = {};
+  backBuffer->GetDesc(&desc);
+
+  // only the common 8-bit back buffer formats for now
+  if(desc.Format != D3DFMT_A8R8G8B8 && desc.Format != D3DFMT_X8R8G8B8)
+  {
+    RDCWARN("No thumbnail for back buffer format %s", ToStr(desc.Format).c_str());
+    backBuffer->Release();
+    return;
+  }
+
+  IDirect3DSurface9 *source = backBuffer;
+  IDirect3DSurface9 *resolved = NULL;
+
+  // GetRenderTargetData can't read multisampled surfaces, resolve first
+  if(desc.MultiSampleType != D3DMULTISAMPLE_NONE)
+  {
+    HRESULT hr = m_device->CreateRenderTarget(desc.Width, desc.Height, desc.Format,
+                                              D3DMULTISAMPLE_NONE, 0, FALSE, &resolved, NULL);
+    if(SUCCEEDED(hr) && resolved)
+    {
+      m_device->StretchRect(backBuffer, NULL, resolved, NULL, D3DTEXF_NONE);
+      source = resolved;
+    }
+  }
+
+  IDirect3DSurface9 *sysmem = NULL;
+  HRESULT hr = m_device->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format,
+                                                     D3DPOOL_SYSTEMMEM, &sysmem, NULL);
+
+  if(SUCCEEDED(hr) && sysmem && SUCCEEDED(m_device->GetRenderTargetData(source, sysmem)))
+  {
+    D3DLOCKED_RECT locked = {};
+    if(SUCCEEDED(sysmem->LockRect(&locked, NULL, D3DLOCK_READONLY)))
+    {
+      fp.len = (uint32_t)locked.Pitch * desc.Height;
+      fp.data = new uint8_t[fp.len];
+      memcpy(fp.data, locked.pBits, fp.len);
+
+      sysmem->UnlockRect();
+
+      fp.width = desc.Width;
+      fp.height = desc.Height;
+      fp.pitch = (uint32_t)locked.Pitch;
+      fp.stride = 4;
+      fp.bpc = 1;
+      fp.bgra = true;
+      fp.max_width = 2048;
+      fp.pitch_requirement = 8;
+    }
+  }
+  else
+  {
+    RDCWARN("Couldn't read back the back buffer for a thumbnail: %s", ToStr(hr).c_str());
+  }
+
+  SAFE_RELEASE(sysmem);
+  SAFE_RELEASE(resolved);
+  backBuffer->Release();
+}
+
+rdcarray<D3DPRESENT_PARAMETERS> WrappedD3DDevice9::GetImplicitPresentParams()
+{
+  rdcarray<D3DPRESENT_PARAMETERS> ret;
+  for(WrappedD3DSwapChain9 *swap : m_ImplicitSwapChains)
+  {
+    D3DPRESENT_PARAMETERS params = {};
+    swap->GetReal()->GetPresentParameters(&params);
+    ret.push_back(params);
+  }
+  return ret;
+}
+
+rdcarray<ResourceId> WrappedD3DDevice9::GetImplicitSwapChainIDs()
+{
+  rdcarray<ResourceId> ret;
+  for(WrappedD3DSwapChain9 *swap : m_ImplicitSwapChains)
+    ret.push_back(swap->GetResourceID());
+  return ret;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// records and frame references
+
+void WrappedD3DDevice9::CreateOwnedRecord(WrappedD3D9Object *obj)
+{
+  if(obj == NULL || !IsCaptureMode(m_State))
+    return;
+
+  D3D9ResourceRecord *record = m_ResourceManager->AddResourceRecord(obj->GetResourceID());
+  record->DataInSerialiser = false;
+  record->Length = 0;
+  obj->SetResourceRecord(record);
+}
+
+void WrappedD3DDevice9::ReleaseRecord(D3D9ResourceRecord *record)
+{
+  if(record == NULL)
+    return;
+
+  SCOPED_LOCK(m_D3DLock);
+
+  // an object that dies mid-capture may still be needed by the frame
+  if(IsActiveCapturing(m_State))
+    m_DeferredRecordReleases.push_back(record);
+  else
+    record->Delete(m_ResourceManager);
+}
+
+void WrappedD3DDevice9::FlushDeferredRecordReleases()
+{
+  for(D3D9ResourceRecord *record : m_DeferredRecordReleases)
+    record->Delete(m_ResourceManager);
+  m_DeferredRecordReleases.clear();
+}
+
+void WrappedD3DDevice9::MarkReferenced(IUnknown *obj, FrameRefType refType)
+{
+  if(obj == NULL || !IsActiveCapturing(m_State))
+    return;
+
+  WrappedD3D9Object *wrapped = GetWrappedObject(obj);
+  if(wrapped)
+    m_ResourceManager->MarkResourceFrameReferenced(wrapped->GetResourceID(), refType);
+}
+
+void WrappedD3DDevice9::MarkDrawReferenced()
+{
+  for(IDirect3DBaseTexture9 *tex : m_Bindings.textures)
+    MarkReferenced(tex, eFrameRef_Read);
+  for(const D3D9StreamBinding &s : m_Bindings.streams)
+    MarkReferenced(s.buffer, eFrameRef_Read);
+  MarkReferenced(m_Bindings.indices, eFrameRef_Read);
+  MarkReferenced(m_Bindings.vs, eFrameRef_Read);
+  MarkReferenced(m_Bindings.ps, eFrameRef_Read);
+  MarkReferenced(m_Bindings.decl, eFrameRef_Read);
+  MarkRenderTargetsReferenced();
+}
+
+void WrappedD3DDevice9::MarkRenderTargetsReferenced()
+{
+  for(IDirect3DSurface9 *rt : m_RenderTargets)
+    MarkReferenced(rt, eFrameRef_PartialWrite);
+  MarkReferenced(m_DepthStencil, eFrameRef_PartialWrite);
+}
+
+void WrappedD3DDevice9::RecordSurfaceLevel(WrappedD3DTexture9 *tex, UINT level,
+                                           WrappedD3DSurface9 *surf)
+{
+  RecordCreation(
+      surf, D3D9Chunk::Texture_GetSurfaceLevel,
+      [&](WriteSerialiser &ser) { Serialise_Texture_GetSurfaceLevel(ser, tex, level, surf); }, tex);
+}
+
+void WrappedD3DDevice9::RecordCubeFace(WrappedD3DCubeTexture9 *cube, D3DCUBEMAP_FACES face,
+                                       UINT level, WrappedD3DSurface9 *surf)
+{
+  RecordCreation(
+      surf, D3D9Chunk::CubeTexture_GetCubeMapSurface,
+      [&](WriteSerialiser &ser) {
+        Serialise_CubeTexture_GetCubeMapSurface(ser, cube, face, level, surf);
+      },
+      cube);
+}
+
+void WrappedD3DDevice9::RecordVolumeLevel(WrappedD3DVolumeTexture9 *tex, UINT level,
+                                          WrappedD3DVolume9 *vol)
+{
+  RecordCreation(
+      vol, D3D9Chunk::VolumeTexture_GetVolumeLevel,
+      [&](WriteSerialiser &ser) { Serialise_VolumeTexture_GetVolumeLevel(ser, tex, level, vol); },
+      tex);
+}
+
+void WrappedD3DDevice9::RecordBackBuffer(WrappedD3DSwapChain9 *swap, UINT index,
+                                         WrappedD3DSurface9 *surf)
+{
+  RecordCreation(
+      surf, D3D9Chunk::SwapChain_GetBackBuffer,
+      [&](WriteSerialiser &ser) { Serialise_SwapChain_GetBackBuffer(ser, swap, index, surf); }, swap);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// calls on other objects that are recorded into the frame
+
+#define RECORD_OBJECT_CALL(chunk, obj, refType, ...) \
+  if(IsActiveCapturing(m_State))                     \
+  {                                                  \
+    SCOPED_LOCK(m_D3DLock);                          \
+    USE_SCRATCH_SERIALISER();                        \
+    SCOPED_SERIALISE_CHUNK(D3D9Chunk::chunk);        \
+    CONCAT(Serialise_, chunk)(ser, __VA_ARGS__);     \
+    m_FrameRecord->AddChunk(scope.Get());            \
+    MarkReferenced(obj, refType);                    \
+  }
+
+void WrappedD3DDevice9::OnStateBlockCapture(IDirect3DStateBlock9 *sb)
+{
+  RECORD_OBJECT_CALL(StateBlock_Capture, sb, eFrameRef_PartialWrite, sb);
+}
+
+void WrappedD3DDevice9::OnStateBlockApply(IDirect3DStateBlock9 *sb)
+{
+  RECORD_OBJECT_CALL(StateBlock_Apply, sb, eFrameRef_Read, sb);
+}
+
+void WrappedD3DDevice9::OnQueryIssue(IDirect3DQuery9 *query, DWORD flags)
+{
+  RECORD_OBJECT_CALL(Query_Issue, query, eFrameRef_Read, query, flags);
+}
+
+void WrappedD3DDevice9::OnGenerateMipSubLevels(IDirect3DBaseTexture9 *tex)
+{
+  RECORD_OBJECT_CALL(BaseTexture_GenerateMipSubLevels, tex, eFrameRef_PartialWrite, tex);
+}
+
+void WrappedD3DDevice9::OnSetAutoGenFilterType(IDirect3DBaseTexture9 *tex, D3DTEXTUREFILTERTYPE filter)
+{
+  RECORD_OBJECT_CALL(BaseTexture_SetAutoGenFilterType, tex, eFrameRef_Read, tex, filter);
+}
+
+void WrappedD3DDevice9::OnSetLOD(IDirect3DBaseTexture9 *tex, DWORD lod)
+{
+  RECORD_OBJECT_CALL(BaseTexture_SetLOD, tex, eFrameRef_Read, tex, lod);
+}
+
+void WrappedD3DDevice9::OnSwapChainPresent(IDirect3DSwapChain9 *swap, CONST RECT *pSourceRect,
+                                           CONST RECT *pDestRect, HWND hDestWindowOverride,
+                                           CONST RGNDATA *pDirtyRegion, DWORD dwFlags)
+{
+  RECORD_OBJECT_CALL(SwapChain_Present, swap, eFrameRef_Read, swap, pSourceRect, pDestRect,
+                     hDestWindowOverride, pDirtyRegion, dwFlags);
+}
+
+#undef RECORD_OBJECT_CALL

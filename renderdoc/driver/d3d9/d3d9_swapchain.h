@@ -35,6 +35,8 @@
 class WrappedD3DSwapChain9 : public WrappedD3D9DeviceChild<IDirect3DSwapChain9Ex, IDirect3DSwapChain9>
 {
 public:
+  ALLOCATE_WITH_WRAPPED_POOL(WrappedD3DSwapChain9);
+
   WrappedD3DSwapChain9(IDirect3DSwapChain9 *real, WrappedD3DDevice9 *device, bool implicit);
   ~WrappedD3DSwapChain9();
 

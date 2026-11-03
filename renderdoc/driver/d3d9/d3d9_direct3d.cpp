@@ -175,7 +175,14 @@ HRESULT __stdcall WrappedD3D9::CreateDevice(UINT Adapter, D3DDEVTYPE DeviceType,
     if(!wnd)
       RDCWARN("Couldn't find valid non-NULL window at CreateDevice time");
 
-    WrappedD3DDevice9 *wrappedDevice = new WrappedD3DDevice9(device, this, wnd);
+    D3D9InitParams params;
+    params.Adapter = Adapter;
+    params.DeviceType = DeviceType;
+    params.BehaviorFlags = BehaviorFlags;
+    params.Ex = false;
+    m_Direct3D->GetAdapterIdentifier(Adapter, 0, &params.AdapterIdentifier);
+
+    WrappedD3DDevice9 *wrappedDevice = new WrappedD3DDevice9(device, this, wnd, params);
     wrappedDevice->LazyInit();    // TODO this can be moved later probably
     *ppReturnedDeviceInterface = wrappedDevice;
   }
@@ -234,7 +241,14 @@ HRESULT __stdcall WrappedD3D9::CreateDeviceEx(UINT Adapter, D3DDEVTYPE DeviceTyp
     if(!wnd)
       RDCWARN("Couldn't find valid non-NULL window at CreateDevice time");
 
-    WrappedD3DDevice9 *wrappedDevice = new WrappedD3DDevice9(device, this, wnd);
+    D3D9InitParams params;
+    params.Adapter = Adapter;
+    params.DeviceType = DeviceType;
+    params.BehaviorFlags = BehaviorFlags;
+    params.Ex = true;
+    m_Direct3D->GetAdapterIdentifier(Adapter, 0, &params.AdapterIdentifier);
+
+    WrappedD3DDevice9 *wrappedDevice = new WrappedD3DDevice9(device, this, wnd, params);
     wrappedDevice->LazyInit();    // TODO this can be moved later probably
     *ppReturnedDeviceInterface = wrappedDevice;
   }

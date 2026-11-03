@@ -24,6 +24,7 @@
 
 #include "d3d9_resources.h"
 #include "d3d9_device.h"
+#include "d3d9_swapchain.h"
 
 #undef D3D9_TYPE_MACRO
 #define D3D9_TYPE_MACRO(a) WRAPPED_POOL_INST(a)
@@ -72,6 +73,33 @@ WrappedD3D9Object::WrappedD3D9Object(IUnknown *real, WrappedD3DDevice9 *device,
 
 WrappedD3D9Object::~WrappedD3D9Object()
 {
+  if(m_pRecord)
+    m_pDevice->ReleaseRecord(m_pRecord);
+  m_pRecord = NULL;
+}
+
+void D3D9RecordGenerateMipSubLevels(WrappedD3DDevice9 *device, IDirect3DBaseTexture9 *tex)
+{
+  device->OnGenerateMipSubLevels(tex);
+}
+
+void D3D9RecordSetAutoGenFilterType(WrappedD3DDevice9 *device, IDirect3DBaseTexture9 *tex,
+                                    D3DTEXTUREFILTERTYPE filter)
+{
+  device->OnSetAutoGenFilterType(tex, filter);
+}
+
+void D3D9RecordSetLOD(WrappedD3DDevice9 *device, IDirect3DBaseTexture9 *tex, DWORD lod)
+{
+  device->OnSetLOD(tex, lod);
+}
+
+HRESULT WrappedD3DQuery9::Issue(DWORD dwIssueFlags)
+{
+  HRESULT hr = m_pReal->Issue(dwIssueFlags);
+  if(SUCCEEDED(hr))
+    m_pDevice->OnQueryIssue(this, dwIssueFlags);
+  return hr;
 }
 
 ULONG WrappedD3D9Object::ExtAddRef()
@@ -239,6 +267,7 @@ WrappedD3DSurface9 *WrappedD3DTexture9::GetLevel(UINT Level)
     real->Release();
 
     m_Levels[Level] = new WrappedD3DSurface9(real, m_pDevice, this);
+    m_pDevice->RecordSurfaceLevel(this, Level, m_Levels[Level]);
   }
 
   return m_Levels[Level];
@@ -293,6 +322,7 @@ WrappedD3DSurface9 *WrappedD3DCubeTexture9::GetFace(D3DCUBEMAP_FACES FaceType, U
     real->Release();
 
     m_Faces[idx] = new WrappedD3DSurface9(real, m_pDevice, this);
+    m_pDevice->RecordCubeFace(this, FaceType, Level, m_Faces[idx]);
   }
 
   return m_Faces[idx];
@@ -343,6 +373,7 @@ WrappedD3DVolume9 *WrappedD3DVolumeTexture9::GetLevel(UINT Level)
     real->Release();
 
     m_Levels[Level] = new WrappedD3DVolume9(real, m_pDevice, this);
+    m_pDevice->RecordVolumeLevel(this, Level, m_Levels[Level]);
   }
 
   return m_Levels[Level];
@@ -372,7 +403,10 @@ HRESULT WrappedD3DStateBlock9::Capture()
 {
   HRESULT hr = m_pReal->Capture();
   if(SUCCEEDED(hr))
+  {
     m_pDevice->CaptureBindings(m_Bindings, m_Mask);
+    m_pDevice->OnStateBlockCapture(this);
+  }
   return hr;
 }
 
@@ -380,6 +414,9 @@ HRESULT WrappedD3DStateBlock9::Apply()
 {
   HRESULT hr = m_pReal->Apply();
   if(SUCCEEDED(hr))
+  {
     m_pDevice->ApplyBindings(m_Bindings, m_Mask);
+    m_pDevice->OnStateBlockApply(this);
+  }
   return hr;
 }
