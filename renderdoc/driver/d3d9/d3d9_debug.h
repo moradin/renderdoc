@@ -70,5 +70,7 @@ public:
 
   int m_width = 0;
   int m_height = 0;
-  WrappedD3DDevice9 *m_WrappedDevice;
+  // all drawing goes to the real device, so the application never sees our objects or state
+  IDirect3DDevice9 *m_Device;
+  bool m_IsEx;
 };

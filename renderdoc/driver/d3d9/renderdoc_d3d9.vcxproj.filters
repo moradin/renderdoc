@@ -33,11 +33,23 @@
     <ClCompile Include="d3d9_device.cpp">
       <Filter>Wrapped</Filter>
     </ClCompile>
-    <ClCompile Include="d3d9_surface.cpp">
+    <ClCompile Include="d3d9_device_wrap.cpp">
+      <Filter>Wrapped</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_direct3d.cpp">
+      <Filter>Wrapped</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_resources.cpp">
       <Filter>Wrapped</Filter>
     </ClCompile>
     <ClCompile Include="d3d9_swapchain.cpp">
       <Filter>Wrapped</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_state.cpp">
+      <Filter>Wrapped</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_manager.cpp">
+      <Filter>Common</Filter>
     </ClCompile>
     <ClCompile Include="d3d9_common.cpp">
       <Filter>Common</Filter>
@@ -65,11 +77,17 @@
     <ClInclude Include="d3d9_device.h">
       <Filter>Wrapped</Filter>
     </ClInclude>
-    <ClInclude Include="d3d9_surface.h">
+    <ClInclude Include="d3d9_resources.h">
       <Filter>Wrapped</Filter>
     </ClInclude>
     <ClInclude Include="d3d9_swapchain.h">
       <Filter>Wrapped</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_state.h">
+      <Filter>Wrapped</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_manager.h">
+      <Filter>Common</Filter>
     </ClInclude>
     <ClInclude Include="d3d9_common.h">
       <Filter>Common</Filter>

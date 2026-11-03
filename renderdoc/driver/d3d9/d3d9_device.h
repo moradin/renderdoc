@@ -23,14 +23,16 @@
  ******************************************************************************/
 
 #pragma once
-#include "common/timing.h"
+
+#include "common/threading.h"
 #include "d3d9_common.h"
+#include "d3d9_manager.h"
+#include "d3d9_state.h"
 
 class D3D9DebugManager;
-class WrappedD3D9;
-class WrappedD3DSwapChain9;
+class WrappedD3DSurface9;
 
-class WrappedD3DDevice9 : public IDirect3DDevice9Ex, public IFrameCapturer
+class WrappedD3DDevice9 final : public IDirect3DDevice9Ex, public IFrameCapturer
 {
 public:
   WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrappedD3D, HWND wnd);
@@ -38,7 +40,24 @@ public:
 
   void LazyInit();
 
-  void RenderOverlay(HWND hDestWindowOverride);
+  IDirect3DDevice9 *GetReal() const { return m_device; }
+  bool IsExDevice() const { return m_deviceEx != NULL; }
+  D3D9ResourceManager *GetResourceManager() const { return m_ResourceManager; }
+  D3D9DebugManager *GetDebugManager() const { return m_DebugManager; }
+
+  // protects wrapper creation and the tracked bindings. Recursive, like all CriticalSections.
+  Threading::CriticalSection &D3DLock() { return m_D3DLock; }
+
+  // draw the in-application overlay into a real swapchain's first back buffer
+  void RenderOverlay(IDirect3DSwapChain9 *realSwapChain, HWND hDestWindowOverride);
+
+  // state block support. Capture copies the device's current bindings selected by mask, Apply
+  // copies them back (into the state block being recorded, if any, like the runtime does).
+  void CaptureBindings(D3D9ObjectBindings &dst, const D3D9BindingMask &mask);
+  void ApplyBindings(const D3D9ObjectBindings &src, const D3D9BindingMask &mask);
+
+  //////////////////////////////
+  // implement IFrameCapturer
 
   RDCDriver GetFrameCaptureDriver() { return RDCDriver::D3D9; }
   void StartFrameCapture(DeviceOwnedWindow devWnd);
@@ -58,26 +77,11 @@ public:
     return 2;
   }
 
-  void InternalRef() { InterlockedIncrement(&m_InternalRefcount); }
-  void InternalRelease() { InterlockedDecrement(&m_InternalRefcount); }
-  void SoftRef() { m_SoftRefCounter.AddRef(); }
-  void SoftRelease()
-  {
-    m_SoftRefCounter.Release();
-    CheckForDeath();
-  }
+  //////////////////////////////
+  // implement IUnknown
 
-  D3D9DebugManager *GetDebugManager() { return m_DebugManager; }
-  void RemoveSwapchain(UINT index);
-
-  /*** IUnknown methods ***/
-  ULONG STDMETHODCALLTYPE AddRef() { return m_RefCounter.AddRef(); }
-  ULONG STDMETHODCALLTYPE Release()
-  {
-    unsigned int ret = m_RefCounter.Release();
-    CheckForDeath();
-    return ret;
-  }
+  ULONG STDMETHODCALLTYPE AddRef();
+  ULONG STDMETHODCALLTYPE Release();
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject);
 
   /*** IDirect3DDevice9 methods ***/
@@ -303,40 +307,54 @@ public:
                                              D3DDISPLAYROTATION *pRotation);
 
 private:
-  void CheckForDeath();
+  // wrap the objects the device creates and owns: implicit swapchains and the automatic depth
+  // stencil surface, then set up the initial render target bindings to match the real device.
+  void InitDeviceOwnedObjects();
+  void WrapAutoDepthStencil();
+  // after a successful Reset/ResetEx: all state returns to defaults and device-owned objects may
+  // have been recreated.
+  void OnReset();
+
+  // Set* calls for state-block state go to the state block being recorded if there is one,
+  // otherwise to the device's bindings.
+  D3D9ObjectBindings &BindingTarget() { return m_Recording ? *m_Recording : m_Bindings; }
 
   IDirect3DDevice9 *m_device;
-  IDirect3DDevice9Ex *m_deviceEx;
-
-  D3D9DebugManager *m_DebugManager;
+  // no reference held, it's the same object as m_device
+  IDirect3DDevice9Ex *m_deviceEx = NULL;
 
   WrappedD3D9 *m_D3D;
-  rdcarray<WrappedD3DSwapChain9 *> m_SwapChains;
-  UINT m_NumImplicitSwapChains;
+  D3D9DebugManager *m_DebugManager = NULL;
+  D3D9ResourceManager *m_ResourceManager = NULL;
+  CaptureState m_State;
+  Threading::CriticalSection m_D3DLock;
 
-  HWND m_Wnd;
+  int32_t m_RefCount = 1;
 
-  unsigned int m_InternalRefcount;
-  RefCounter9 m_RefCounter;
-  RefCounter9 m_SoftRefCounter;
-  bool m_Alive;
+  // device-owned objects, each holding an internal reference
+  rdcarray<WrappedD3DSwapChain9 *> m_ImplicitSwapChains;
+  WrappedD3DSurface9 *m_AutoDepthStencil = NULL;
 
+  // current bindings (wrapped objects, each holding an internal reference)
+  D3D9ObjectBindings m_Bindings;
+  IDirect3DSurface9 *m_RenderTargets[D3D9_NUM_RENDER_TARGETS] = {};
+  IDirect3DSurface9 *m_DepthStencil = NULL;
+
+  // between BeginStateBlock and EndStateBlock
+  D3D9ObjectBindings *m_Recording = NULL;
+  D3D9BindingMask m_RecordingMask;
+
+  HWND m_Wnd = NULL;
   uint32_t m_FrameCounter = 0;
 };
 
 ////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////
 // WrappedD3D9
 
-class WrappedD3D9 : public IDirect3D9Ex
+class WrappedD3D9 final : public IDirect3D9Ex
 {
 public:
-  WrappedD3D9(IDirect3D9 *direct3D9)
-      : m_Direct3D(direct3D9), m_Direct3DEx(NULL), m_InternalRefcount(1)
-  {
-    m_Direct3D->QueryInterface(__uuidof(IDirect3D9Ex), (void **)&m_Direct3DEx);
-  }
+  WrappedD3D9(IDirect3D9 *direct3D9);
   /*** IUnknown methods ***/
   virtual HRESULT __stdcall QueryInterface(REFIID riid, void **ppvObj);
   virtual ULONG __stdcall AddRef();
@@ -388,7 +406,8 @@ public:
 
 private:
   IDirect3D9 *m_Direct3D;
-  IDirect3D9Ex *m_Direct3DEx;
+  // no reference held, it's the same object as m_Direct3D. NULL if created with Direct3DCreate9
+  IDirect3D9Ex *m_Direct3DEx = NULL;
 
-  unsigned int m_InternalRefcount;
+  int32_t m_RefCount = 1;
 };

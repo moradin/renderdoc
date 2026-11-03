@@ -28,7 +28,7 @@
 #include "strings/string_utils.h"
 
 D3D9DebugManager::D3D9DebugManager(WrappedD3DDevice9 *wrapper)
-    : m_WrappedDevice(wrapper), m_fvf(D3DFVF_XYZ | D3DFVF_TEX1)
+    : m_fvf(D3DFVF_XYZ | D3DFVF_TEX1), m_Device(wrapper->GetReal()), m_IsEx(wrapper->IsExDevice())
 {
   InitFontRendering();
 }
@@ -69,16 +69,20 @@ bool D3D9DebugManager::InitFontRendering()
 
   IDirect3DTexture9 *fontTex = NULL;
 
-  hr = m_WrappedDevice->CreateTexture(width, height, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8,
-                                      D3DPOOL_DEFAULT, &fontTex, NULL);
+  // A D3DPOOL_DEFAULT texture would make the application's Reset fail on non-Ex devices, so use the
+  // managed pool there. Ex devices don't support the managed pool, but don't need it either.
+  hr = m_Device->CreateTexture(width, height, 1, m_IsEx ? D3DUSAGE_DYNAMIC : 0, D3DFMT_A8R8G8B8,
+                               m_IsEx ? D3DPOOL_DEFAULT : D3DPOOL_MANAGED, &fontTex, NULL);
 
-  if(FAILED(hr))
+  if(FAILED(hr) || fontTex == NULL)
   {
     RDCERR("Failed to create font texture HRESULT: %s", ToStr(hr).c_str());
+    delete[] buf;
+    return false;
   }
 
   D3DLOCKED_RECT lockedRegion;
-  hr = fontTex->LockRect(0, &lockedRegion, NULL, D3DLOCK_DISCARD);
+  hr = fontTex->LockRect(0, &lockedRegion, NULL, m_IsEx ? D3DLOCK_DISCARD : 0);
 
   if(FAILED(hr))
   {
@@ -142,7 +146,7 @@ void D3D9DebugManager::RenderText(float x, float y, const rdcstr &text)
 
 void D3D9DebugManager::RenderTextInternal(float x, float y, const rdcstr &text)
 {
-  if(text.empty())
+  if(text.empty() || m_Font.Tex == NULL)
     return;
 
   RDCASSERT(text.size() < FONT_MAX_CHARS);
@@ -172,59 +176,59 @@ void D3D9DebugManager::RenderTextInternal(float x, float y, const rdcstr &text)
                      1.f};
 
   HRESULT res = S_OK;
-  res |= m_WrappedDevice->SetTransform(D3DTS_PROJECTION, &ortho);
-  res |= m_WrappedDevice->SetTransform(D3DTS_WORLD, &identity);
-  res |= m_WrappedDevice->SetTransform(D3DTS_VIEW, &identity);
+  res |= m_Device->SetTransform(D3DTS_PROJECTION, &ortho);
+  res |= m_Device->SetTransform(D3DTS_WORLD, &identity);
+  res |= m_Device->SetTransform(D3DTS_VIEW, &identity);
 
   // enable fixed function pipeline
-  res |= m_WrappedDevice->SetVertexShader(NULL);
-  res |= m_WrappedDevice->SetPixelShader(NULL);
+  res |= m_Device->SetVertexShader(NULL);
+  res |= m_Device->SetPixelShader(NULL);
 
   // default render states
-  res |= m_WrappedDevice->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_LIGHTING, FALSE);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_STENCILENABLE, FALSE);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_CLIPPLANEENABLE, FALSE);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_CLIPPING, FALSE);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_FOGENABLE, FALSE);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0000000F);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_INDEXEDVERTEXBLENDENABLE, FALSE);
-  res |= m_WrappedDevice->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+  res |= m_Device->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+  res |= m_Device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+  res |= m_Device->SetRenderState(D3DRS_LIGHTING, FALSE);
+  res |= m_Device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+  res |= m_Device->SetRenderState(D3DRS_CLIPPLANEENABLE, FALSE);
+  res |= m_Device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+  res |= m_Device->SetRenderState(D3DRS_CLIPPING, FALSE);
+  res |= m_Device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+  res |= m_Device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+  res |= m_Device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
+  res |= m_Device->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0000000F);
+  res |= m_Device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+  res |= m_Device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+  res |= m_Device->SetRenderState(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
+  res |= m_Device->SetRenderState(D3DRS_INDEXEDVERTEXBLENDENABLE, FALSE);
+  res |= m_Device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
 
   // sampler states
-  res |= m_WrappedDevice->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
-  res |= m_WrappedDevice->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
-  res |= m_WrappedDevice->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR /*D3DTEXF_POINT*/);
-  res |= m_WrappedDevice->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR /*D3DTEXF_POINT*/);
-  res |= m_WrappedDevice->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR /*D3DTEXF_POINT*/);
-  res |= m_WrappedDevice->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, 0);
+  res |= m_Device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+  res |= m_Device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+  res |= m_Device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR /*D3DTEXF_POINT*/);
+  res |= m_Device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR /*D3DTEXF_POINT*/);
+  res |= m_Device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR /*D3DTEXF_POINT*/);
+  res |= m_Device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, 0);
 
   // texture stage states
-  res |= m_WrappedDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-  res |= m_WrappedDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-  res |= m_WrappedDevice->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_CURRENT);
-  res |= m_WrappedDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-  res |= m_WrappedDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-  res |= m_WrappedDevice->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_CURRENT);
-  res |= m_WrappedDevice->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
-  res |= m_WrappedDevice->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
-  res |= m_WrappedDevice->SetTextureStageState(0, D3DTSS_COLORARG0, D3DTA_CURRENT);
-  res |= m_WrappedDevice->SetTextureStageState(0, D3DTSS_ALPHAARG0, D3DTA_CURRENT);
-  res |= m_WrappedDevice->SetTextureStageState(0, D3DTSS_RESULTARG, D3DTA_CURRENT);
-  res |= m_WrappedDevice->SetTextureStageState(0, D3DTSS_CONSTANT, 0xffffffff);
+  res |= m_Device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+  res |= m_Device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+  res |= m_Device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_CURRENT);
+  res |= m_Device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+  res |= m_Device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+  res |= m_Device->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_CURRENT);
+  res |= m_Device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+  res |= m_Device->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+  res |= m_Device->SetTextureStageState(0, D3DTSS_COLORARG0, D3DTA_CURRENT);
+  res |= m_Device->SetTextureStageState(0, D3DTSS_ALPHAARG0, D3DTA_CURRENT);
+  res |= m_Device->SetTextureStageState(0, D3DTSS_RESULTARG, D3DTA_CURRENT);
+  res |= m_Device->SetTextureStageState(0, D3DTSS_CONSTANT, 0xffffffff);
 
-  res |= m_WrappedDevice->SetFVF(m_fvf);
-  res |= m_WrappedDevice->SetTexture(0, m_Font.Tex);
+  res |= m_Device->SetFVF(m_fvf);
+  res |= m_Device->SetTexture(0, m_Font.Tex);
   for(uint32_t stage = 1; stage < 8; stage++)
   {
-    res |= m_WrappedDevice->SetTexture(stage, NULL);
+    res |= m_Device->SetTexture(stage, NULL);
   }
 
   struct Vertex
@@ -300,16 +304,15 @@ void D3D9DebugManager::RenderTextInternal(float x, float y, const rdcstr &text)
 
   {
     // overlay render states
-    res |= m_WrappedDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
-    res |= m_WrappedDevice->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, &background, sizeof(Vertex));
+    res |= m_Device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    res |= m_Device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, &background, sizeof(Vertex));
 
     //// overlay render states
-    res |= m_WrappedDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-    res |= m_WrappedDevice->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-    res |= m_WrappedDevice->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    res |= m_Device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    res |= m_Device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    res |= m_Device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
 
-    res |= m_WrappedDevice->DrawPrimitiveUP(D3DPT_TRIANGLELIST, triangleCount, &quads[0],
-                                            sizeof(Vertex));
+    res |= m_Device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, triangleCount, &quads[0], sizeof(Vertex));
     delete[] quads;
   }
 }
