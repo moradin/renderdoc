@@ -184,6 +184,12 @@ public:
   // cube face, for cube textures.
   rdcstr ReadSubresource(WrappedD3D9Object *obj, uint32_t face, uint32_t level,
                          D3D9SubresourceData &sub);
+  // around the replay driver's own drawing on the real device (the texture and mesh viewers, see
+  // d3d9_rendertexture.cpp): saves the device state, and sets it and the tracked bindings back.
+  // Returns false, and nothing may be drawn, while a state block is being recorded: the state
+  // calls would go into it instead of to the device.
+  bool SaveReplayDrawState(D3D9DeviceState &state);
+  void RestoreReplayDrawState(const D3D9DeviceState &state);
 
   //////////////////////////////
   // implement IFrameCapturer

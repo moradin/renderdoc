@@ -12,7 +12,7 @@ so none of this is upstream.
 | 2c | Resource contents: Lock tracking, shadow copies of D3DPOOL_DEFAULT data, initial contents | Done, tested with `D3D9_Resource_Contents` |
 | 2d | Edge cases: Reset/device loss mid-capture, state block contents, D3DPERF markers in captures, depth stencil read back, GDI drawing, front buffer copies, locks spanning the capture start | Done, tested with `D3D9_Capture_Edge_Cases` and `D3D9_Reset_Capture`; device loss needs a real game |
 | 3a | Replay: loading captures, replaying to any event, the event list, resource descriptions, reading texture and buffer data | Written, not built or tested yet |
-| 3b | Texture viewer and buffers: displaying every D3D9 format, pick pixel, min/max, histogram, mesh viewer inputs | Not started |
+| 3b | Texture viewer and buffers: displaying every D3D9 format, pick pixel, min/max, histogram, mesh viewer inputs | Written, not built or tested yet |
 | 3c | D3D9 pipeline state, with its own UI panel and Python bindings | Not started |
 | 3d | Shaders: SM1-3 disassembly, reflection from the constant table | Not started |
 | 3e | Mesh output and overlays | Not started |
@@ -232,6 +232,100 @@ What to look for:
   INTZ).
 - RenderDoc's log has no errors, and no "Couldn't write the contents" warnings except for the
   gaps above.
+
+## Texture viewer (phase 3b)
+
+Written, not built or tested yet. This replaces the 3a notes above about `RenderTexture` and
+`GetOutputWindowData` not being implemented.
+
+How it works:
+- `d3d9_rendertexture.cpp`: `RenderTexture`, `RenderCheckerboard`, `RenderHighlightBox`,
+  `GetOutputWindowData`. All drawing happens on the real device, into the bound output window.
+  `WrappedD3DDevice9::SaveReplayDrawState`/`RestoreReplayDrawState` read the device state before
+  and put it back after, with the render targets and the bindings the wrappers track, the same way
+  `d3d9_depth.cpp` does. The shaders are SM3, compiled with D3DCompile on first use.
+- A subresource is displayed one of three ways (the comment at the top of the file has details):
+  textures in D3DPOOL_DEFAULT whose format the sampler returns as described are sampled directly,
+  with a channel matrix that moves the channels to where the format's description has them (L8
+  samples as LLL1 and shows as L001); render target surfaces in those formats (back buffers,
+  standalone render targets) are copied into a texture with StretchRect, which also resolves
+  multisampled ones; everything else (depth stencils, INTZ/DF16/DF24, P8, A4L4, R3G3B2, L6V5U5,
+  X8L8V8U8, A2W10V10U10, CxV8U8, YUY2/UYVY, the RGBG formats, ATI1/ATI2, R8G8B8, system memory and
+  scratch textures, offscreen plain surfaces) is read with `ReadSubresource`, decoded on the CPU and
+  uploaded to an A32B32G32R32F texture.
+- The display shader is D3D11's in SM3 form: range, channel masks, mip, slice, cube face, volume
+  slice, flip, RGBM, YUV decode, NaN/inf/negative and clipping overlays, gamma, alpha blended over
+  the checkerboard. Output windows are written with `D3DRS_SRGBWRITEENABLE` where X8R8G8B8 supports
+  it (like D3D11's sRGB output windows); otherwise the shader encodes sRGB itself and blending
+  happens in gamma space. `ClearOutputWindowColor` encodes its linear colour to sRGB for the same
+  reason, since `ColorFill` writes it as it is.
+- `d3d9_pixel.cpp`: `PickPixel`, `GetMinMax` and `GetHistogram` run on the CPU over the decoded
+  subresource (decoders for every format listed above, BCn through compressonator). Textures the
+  CPU can't read (D3DPOOL_DEFAULT ones replay couldn't make dynamic) are drawn raw through the
+  display shader into a float render target and read back instead. Decoded data is cached per
+  resource, mip, slice and sample, and dropped on every `ReplayLog`.
+- Decoded values use the channels the format is described with: luminance is red, A8L8 and A4L4
+  alpha is green, L6V5U5 and X8L8V8U8 are (U, V, L, 1), CxV8U8 has its computed C in blue, YUV is
+  (Cr, Y, Cb, 1) which "decode YUV" turns into RGB, depth is red and stencil is green (as
+  stencil / 255, like the other APIs). P8 and A8P8 are indices (and alpha) as integers.
+- `D3D9MakeResourceFormat` now also describes P8/A8P8 (R8/R8G8 UINT), A4L4 (R4G4), CxV8U8
+  (R8G8_SNORM), A2W10V10U10 (R10G10B10A2 SNORM) and D15S1 (depth). The rest that RenderDoc has no
+  format for (R3G3B2, A8R3G3B2, L6V5U5, X8L8V8U8, UYVY, the RGBG formats) are Undefined with four
+  UNORM channels, and still display.
+- `d3d9_rendermesh.cpp`: `RenderMesh` for the mesh viewer's input data. Positions (and the
+  secondary element) are decoded on the CPU with the index buffer expanded, into a vertex buffer of
+  our own, cached per draw until the next replay; D3D9 can't declare every vertex format the viewer
+  is given. Solid, wireframe, lit (face normals from screen space derivatives, D3D9 has no geometry
+  shaders), secondary, exploder, other draws in the pass, the highlighted vertex and primitive, the
+  bounding box and axis markers are drawn. Buffer contents come from 3a's `GetBufferData`.
+
+Known gaps:
+- The mesh viewer needs the vertex inputs from the pipeline state (3c) before it has anything to
+  show. Post-transform data is 3e.
+- Multisampled colour targets are only shown resolved, whichever sample is picked. Multisampled
+  depth stencils show each sample.
+- Custom display shaders aren't supported (a warning is logged), and neither are the overlays
+  (3e); `RenderOverlay` still returns nothing.
+- P8 and A8P8 show their indices, not the palette colours.
+- ATI2 is decoded with its first block as red, like BC5. Some tools swap ATI2's channels; check
+  against a known texture.
+- D32 depth is read back to 24 bits and described as D32_FLOAT by 3a, so its raw data in the
+  buffer view of the texture looks wrong, though display and pick pixel are right. D24FS8 and
+  D3DMULTISAMPLE_NONMASKABLE depth stencils can't be read, so they don't display.
+- The texture viewer and mesh viewer need shader model 3 hardware. Linear filtering when zoomed
+  out is only used for natively sampled formats that support it; decoded ones are always point
+  sampled.
+- Textures in the CPU path are read back and decoded whenever the event changes, which can be slow
+  for big depth stencils (they're read with the depth tests).
+- At an event between `BeginStateBlock` and `EndStateBlock` nothing is drawn (the texture and mesh
+  viewers stay empty, a warning is logged once), since our state calls would be recorded into the
+  application's state block instead of reaching the device. Pick pixel still works for textures
+  the CPU can read, other than depth stencils.
+
+What to test on Windows (all in the UI unless noted):
+- Open the `D3D9_Simple_Triangle` capture, select the Present and open the back buffer: the
+  triangles show on the grey background, the thumbnail strip shows the back buffer, and hovering
+  shows the right colours in the pixel picker (the background picks as 0.2, 0.2, 0.2, 1, which is
+  0x33 in each byte). Zoom, flip, channel toggles, range sliders, the histogram and auto-fit range
+  all work, and Save Texture as PNG works.
+- Step backwards through the events: the back buffer changes with each draw, and the replay is
+  unaffected afterwards (drawing the triangle again at the last event looks the same as before
+  opening the texture viewer).
+- `D3D9_Resource_Contents`: its textures display with the contents its log describes, each mip
+  and cube face selectable, volume slices selectable, and textures in every pool it uses display.
+- `D3D9_Capture_Edge_Cases` at the first event: the automatic depth stencil shows depth in red with
+  pick pixel values 0.25 / stencil 90 (0x4000005A), 0.75 / 165 (0xBFFFFFA5) and 1.0 / 0
+  (0xFFFFFF00); each sample of the multisampled one 0.5 / 51 (0x80000033) and 1.0 / 0; D16 about
+  0.49999 (0x7FFF); INTZ 0.375 / 15 (0x5FFFFF0F). Min/max over the automatic depth stencil gives
+  0.25 to 1.0 for depth.
+- A real game with DXT, A8L8/L8, float render targets and a depth stencil: compressed textures
+  match the game, float targets show values outside 0-1 with the range slider, depth shows with
+  auto-fit. `GetMinMax`/`GetHistogram` and pick pixel agree with what's displayed.
+- From Python (see `d3d9_replay_check.py` above): `controller.PickPixel(tex, x, y, sub, CompType.Typeless)`
+  returns the same values as the UI, and `GetMinMax`/`GetHistogram` return results instead of
+  zeros.
+- RenderDoc's log has no "Couldn't decode", "Couldn't copy" or "debug shaders" errors, except for
+  the formats listed in the gaps.
 
 ## Inspecting a capture
 

@@ -177,10 +177,9 @@ public:
   ResourceId CreateProxyBuffer(const BufferDescription &templateBuf) { return ResourceId(); }
   void SetProxyBufferData(ResourceId bufid, byte *data, size_t dataSize) {}
 
-  void RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondaryDraws, const MeshDisplay &cfg)
-  {
-  }
-  bool RenderTexture(TextureDisplay cfg) { return false; }
+  void RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondaryDraws,
+                  const MeshDisplay &cfg);
+  bool RenderTexture(TextureDisplay cfg);
 
   void SetCustomShaderIncludes(const rdcarray<rdcstr> &directories) {}
   void BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &source, const rdcstr &entry,
@@ -191,9 +190,9 @@ public:
   ResourceId ApplyCustomShader(TextureDisplay &display) { return ResourceId(); }
   void FreeCustomShader(ResourceId id) {}
 
-  void RenderCheckerboard(FloatVector dark, FloatVector light) {}
+  void RenderCheckerboard(FloatVector dark, FloatVector light);
 
-  void RenderHighlightBox(float w, float h, float scale) {}
+  void RenderHighlightBox(float w, float h, float scale);
 
   uint32_t PickVertex(uint32_t eventId, int32_t width, int32_t height, const MeshDisplay &cfg,
                       uint32_t x, uint32_t y)
@@ -219,6 +218,122 @@ private:
   };
 
   bool CreateOutputSwapChain(OutputWindow &outw);
+
+  //////////////////////////////
+  // Texture viewer, pixel queries and mesh viewer (phase 3b): d3d9_rendertexture.cpp,
+  // d3d9_pixel.cpp and d3d9_rendermesh.cpp. Everything draws on the real device, and saves and
+  // restores the replayed state around it.
+
+  // A subresource's contents decoded to floats, in the channels the format is described with.
+  // Used for pixel queries, and for displaying what can't be sampled directly.
+  struct DecodedKey
+  {
+    ResourceId id;
+    uint32_t mip = 0;
+    // the cube face, or the slice of a volume
+    uint32_t slice = 0;
+    uint32_t sample = 0;
+
+    bool operator<(const DecodedKey &o) const
+    {
+      if(id != o.id)
+        return id < o.id;
+      if(mip != o.mip)
+        return mip < o.mip;
+      if(slice != o.slice)
+        return slice < o.slice;
+      return sample < o.sample;
+    }
+  };
+
+  struct DecodedSubresource
+  {
+    // why it couldn't be decoded, when texels is empty
+    rdcstr error;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    rdcarray<FloatVector> texels;
+    // an A32B32G32R32F copy on the real device, made the first time it's displayed
+    IDirect3DTexture9 *upload = NULL;
+  };
+
+  // what the display shader samples, and how the sampled channels map to the described format's
+  struct DisplaySource
+  {
+    // on the real device, not owned
+    IDirect3DBaseTexture9 *tex = NULL;
+    // 0: 2D, 1: cube, 2: volume
+    uint32_t type = 0;
+    float lod = 0.0f;
+    // the cube face, or the volume's w coordinate
+    float slice = 0.0f;
+    bool filterable = false;
+    // rows of the matrix applied to the sampled value, then add
+    Vec4f swizzle[4];
+    Vec4f add;
+  };
+
+  struct OutputTarget
+  {
+    IDirect3DSurface9 *rt = NULL;
+    IDirect3DSurface9 *ds = NULL;
+    int32_t width = 0;
+    int32_t height = 0;
+  };
+
+  // the shaders we draw with, on the real device, created on first use
+  struct DebugRender
+  {
+    bool tried = false;
+    bool ok = false;
+    // whether the output windows' back buffers can be written with sRGB conversion
+    bool srgbWrite = false;
+    IDirect3DVertexShader9 *texDisplayVS = NULL;
+    IDirect3DPixelShader9 *texDisplayPS = NULL;
+    IDirect3DPixelShader9 *checkerPS = NULL;
+    IDirect3DVertexDeclaration9 *quadDecl = NULL;
+    IDirect3DVertexShader9 *meshVS = NULL;
+    IDirect3DPixelShader9 *meshPS = NULL;
+    IDirect3DVertexDeclaration9 *meshDecl = NULL;
+
+    void Release();
+  } m_Debug;
+
+  bool InitDebugRender();
+  // the bound output window's targets, or false if there isn't one
+  bool GetOutputTarget(OutputTarget &target);
+  // what to sample to display a subresource. Without allowDecoded only native sampling is used.
+  bool GetDisplaySource(ResourceId id, const Subresource &sub, bool allowDecoded, DisplaySource &src);
+  // draws the texture display quad into the bound target. posScale is the quad's top left
+  // corner (xy) and size (zw) in clip space.
+  void DrawTextureQuad(const TextureDisplay &cfg, const DisplaySource &src, const Vec4f &posScale,
+                       int32_t targetWidth, int32_t targetHeight, bool blend, bool srgbWrite);
+  DecodedSubresource &GetDecoded(ResourceId id, const Subresource &sub);
+  // reads a subresource back through the display shader, for what can't be read directly
+  bool ReadDecodedFromGPU(ResourceId id, const Subresource &sub, DecodedSubresource &decoded);
+  // cached data is only valid for the event it was read at
+  void ClearReplayCaches();
+  void ReleaseDebugRender();
+
+  std::map<DecodedKey, DecodedSubresource> m_Decoded;
+  // render target surfaces are copied into textures to sample them
+  std::map<ResourceId, IDirect3DTexture9 *> m_SurfaceCopies;
+  // D3DUSAGE_QUERY_FILTER results by format
+  std::map<DWORD, bool> m_Filterable;
+
+  uint64_t m_CurrentOutputWindow = 0;
+
+  // a mesh viewer draw's vertices: positions decoded, indices expanded
+  struct MeshVertices
+  {
+    IDirect3DVertexBuffer9 *vb = NULL;
+    uint32_t numVerts = 0;
+  };
+  std::map<uint64_t, MeshVertices> m_MeshCache;
+  HighlightCache m_HighlightCache;
+
+  const MeshVertices *GetMeshVertices(uint32_t eventId, const MeshFormat &pos,
+                                      const MeshFormat *secondary, uint32_t curInstance);
 
   WrappedD3DDevice9 *m_pDevice = NULL;
   IDirect3D9Ex *m_D3D = NULL;

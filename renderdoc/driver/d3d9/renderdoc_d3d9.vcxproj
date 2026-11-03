@@ -107,6 +107,9 @@
     <ClCompile Include="d3d9_hooks.cpp" />
     <ClCompile Include="d3d9_manager.cpp" />
     <ClCompile Include="d3d9_replay.cpp" />
+    <ClCompile Include="d3d9_pixel.cpp" />
+    <ClCompile Include="d3d9_rendermesh.cpp" />
+    <ClCompile Include="d3d9_rendertexture.cpp" />
     <ClCompile Include="d3d9_replay_device.cpp" />
     <ClCompile Include="d3d9_resources.cpp" />
     <ClCompile Include="d3d9_state.cpp" />

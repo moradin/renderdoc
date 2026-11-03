@@ -25,6 +25,7 @@
 #include "d3d9_replay.h"
 #include "driver/dxgi/dxgi_common.h"
 #include "driver/shaders/dxbc/dxbc_compile.h"
+#include "maths/formatpacking.h"
 #include "replay/dummy_driver.h"
 #include "d3d9_common.h"
 #include "d3d9_device.h"
@@ -107,15 +108,44 @@ ResourceFormat D3D9MakeResourceFormat(D3DFORMAT format)
       ret = MakeResourceFormat(DXGI_FORMAT_R10G10B10A2_UNORM);
       ret.SetBGRAOrder(true);
       return ret;
+    // palette indices, shown as integers. The palette is device state, it isn't applied.
+    case D3DFMT_P8:
+    case D3DFMT_A8P8:
+      ret.type = ResourceFormatType::Regular;
+      ret.compCount = uint8_t(format == D3DFMT_P8 ? 1 : 2);
+      ret.compByteWidth = 1;
+      ret.compType = CompType::UInt;
+      return ret;
+    // luminance in the low nibble shows as red, like L8, and alpha as green, like A8L8
+    case D3DFMT_A4L4:
+      ret.type = ResourceFormatType::R4G4;
+      ret.compCount = 2;
+      ret.compByteWidth = 1;
+      ret.compType = CompType::UNorm;
+      return ret;
+    // the computed third channel isn't stored
+    case D3DFMT_CxV8U8: return MakeResourceFormat(DXGI_FORMAT_R8G8_SNORM);
+    // the 2-bit alpha is unsigned, which RenderDoc's signed 10:10:10:2 can't say
+    case D3DFMT_A2W10V10U10:
+      ret = MakeResourceFormat(DXGI_FORMAT_R10G10B10A2_UNORM);
+      ret.compType = CompType::SNorm;
+      return ret;
+    case D3DFMT_D15S1:
+      ret.type = ResourceFormatType::Undefined;
+      ret.compCount = 2;
+      ret.compByteWidth = 1;
+      ret.compType = CompType::Depth;
+      return ret;
     default: break;
   }
 
-  // formats RenderDoc can't describe: P8, A8P8, A4L4, R3G3B2, A8R3G3B2, L6V5U5, X8L8V8U8,
-  // A2W10V10U10, UYVY, the packed RGBG formats, CxV8U8, A1, D15S1 and vendor FOURCCs
+  // formats RenderDoc can't describe: R3G3B2, A8R3G3B2, L6V5U5, X8L8V8U8, UYVY, the packed RGBG
+  // formats, A1 and vendor FOURCCs. The texture viewer decodes most of them (to the
+  // channels D3D9 samples them as), so they're described as four unsigned normalised channels.
   ret.type = ResourceFormatType::Undefined;
-  ret.compCount = 1;
+  ret.compCount = 4;
   ret.compByteWidth = 1;
-  ret.compType = CompType::Typeless;
+  ret.compType = CompType::UNorm;
   return ret;
 }
 
@@ -150,6 +180,8 @@ uint64_t SubresourceBytes(D3DFORMAT format, uint32_t width, uint32_t height, uin
 D3D9Replay::D3D9Replay(WrappedD3DDevice9 *device, IDirect3D9Ex *d3d, HWND hiddenWindow)
     : m_pDevice(device), m_D3D(d3d), m_HiddenWindow(hiddenWindow)
 {
+  m_HighlightCache.driver = this;
+
   D3DADAPTER_IDENTIFIER9 ident = {};
   if(m_D3D && SUCCEEDED(m_D3D->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &ident)))
   {
@@ -163,6 +195,8 @@ D3D9Replay::D3D9Replay(WrappedD3DDevice9 *device, IDirect3D9Ex *d3d, HWND hidden
 
 void D3D9Replay::Shutdown()
 {
+  ReleaseDebugRender();
+
   for(auto it = m_OutputWindows.begin(); it != m_OutputWindows.end(); ++it)
     it->second.Release();
   m_OutputWindows.clear();
@@ -476,6 +510,7 @@ RDResult D3D9Replay::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuf
 
 void D3D9Replay::ReplayLog(uint32_t endEventID, ReplayLogType replayType)
 {
+  ClearReplayCaches();
   m_pDevice->ReplayLog(0, endEventID, replayType);
 }
 
@@ -705,28 +740,6 @@ IReplayDriver *D3D9Replay::MakeDummyDriver()
   return new DummyDriver(this, {}, m_pDevice->DetachStructuredFile(), {});
 }
 
-bool D3D9Replay::GetMinMax(ResourceId texid, const Subresource &sub, CompType typeCast,
-                           float *minval, float *maxval)
-{
-  *minval = 0.0f;
-  *maxval = 1.0f;
-  return false;
-}
-
-bool D3D9Replay::GetHistogram(ResourceId texid, const Subresource &sub, CompType typeCast,
-                              float minval, float maxval, const rdcfixedarray<bool, 4> &channels,
-                              rdcarray<uint32_t> &histogram)
-{
-  histogram.fill(256, 0);
-  return false;
-}
-
-void D3D9Replay::PickPixel(ResourceId texture, uint32_t x, uint32_t y, const Subresource &sub,
-                           CompType typeCast, float pixel[4])
-{
-  pixel[0] = pixel[1] = pixel[2] = pixel[3] = 0.0f;
-}
-
 void D3D9Replay::BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &source,
                                    const rdcstr &entry, const ShaderCompileFlags &compileFlags,
                                    ShaderStage type, ResourceId &id, rdcstr &errors)
@@ -831,6 +844,9 @@ void D3D9Replay::DestroyOutputWindow(uint64_t id)
 
   it->second.Release();
   m_OutputWindows.erase(it);
+
+  if(m_CurrentOutputWindow == id)
+    m_CurrentOutputWindow = 0;
 }
 
 bool D3D9Replay::CheckResizeOutputWindow(uint64_t id)
@@ -866,20 +882,19 @@ void D3D9Replay::GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h)
   h = it->second.height;
 }
 
-void D3D9Replay::GetOutputWindowData(uint64_t id, bytebuf &retData)
-{
-  retData.clear();
-}
-
 void D3D9Replay::ClearOutputWindowColor(uint64_t id, FloatVector col)
 {
   auto it = m_OutputWindows.find(id);
   if(it == m_OutputWindows.end() || it->second.backBuffer == NULL)
     return;
 
-  // ColorFill doesn't touch the device's state
-  m_pDevice->GetReal()->ColorFill(it->second.backBuffer, NULL,
-                                  D3DCOLOR_COLORVALUE(col.x, col.y, col.z, col.w));
+  // the colour is linear, D3D11's sRGB output windows encode it when they're cleared. The back
+  // buffers here aren't sRGB and ColorFill writes the value as it is, so encode it first (and
+  // clamp it, D3DCOLOR_COLORVALUE doesn't). ColorFill doesn't touch the device's state.
+  auto encode = [](float f) { return ConvertLinearToSRGB(RDCCLAMP(f, 0.0f, 1.0f)); };
+  m_pDevice->GetReal()->ColorFill(
+      it->second.backBuffer, NULL,
+      D3DCOLOR_COLORVALUE(encode(col.x), encode(col.y), encode(col.z), RDCCLAMP(col.w, 0.0f, 1.0f)));
 }
 
 void D3D9Replay::ClearOutputWindowDepth(uint64_t id, float depth, uint8_t stencil)
@@ -912,6 +927,8 @@ void D3D9Replay::ClearOutputWindowDepth(uint64_t id, float depth, uint8_t stenci
 
 void D3D9Replay::BindOutputWindow(uint64_t id, bool depth)
 {
+  // what's drawn next goes to this window, with its depth stencil if it has one
+  m_CurrentOutputWindow = id;
 }
 
 bool D3D9Replay::IsOutputWindowVisible(uint64_t id)
