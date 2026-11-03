@@ -51,6 +51,10 @@ public:
 
   void RenderTextInternal(float x, float y, const rdcstr &text);
 
+  struct SavedState;
+  void SaveState(SavedState &saved);
+  void RestoreState(SavedState &saved);
+
   static const int FONT_TEX_WIDTH = 256;
   static const int FONT_TEX_HEIGHT = 128;
   static const int FONT_MAX_CHARS = 256;

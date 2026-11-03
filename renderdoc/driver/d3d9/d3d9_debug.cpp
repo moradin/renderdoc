@@ -132,8 +132,182 @@ void D3D9DebugManager::SetOutputWindow(HWND w)
   // m_supersamplingY = float(m_height) / float(rect.bottom - rect.top);
 }
 
+namespace
+{
+struct RenderStateValue
+{
+  D3DRENDERSTATETYPE state;
+  DWORD value;
+};
+
+struct SamplerStateValue
+{
+  D3DSAMPLERSTATETYPE state;
+  DWORD value;
+};
+
+struct TextureStageStateValue
+{
+  DWORD stage;
+  D3DTEXTURESTAGESTATETYPE state;
+  DWORD value;
+};
+
+// every state the text rendering sets. RenderText saves each one first and restores it after, so
+// nothing else about the application's state is touched. In particular no state block is used:
+// applying a D3DSBT_ALL state block has been seen to copy shader constants c0-c127 over c128-c255
+// (natively, on NVIDIA), which corrupted any application using the upper constants every frame.
+const RenderStateValue overlayRenderStates[] = {
+    {D3DRS_ZENABLE, D3DZB_FALSE},
+    {D3DRS_ZWRITEENABLE, FALSE},
+    {D3DRS_LIGHTING, FALSE},
+    {D3DRS_STENCILENABLE, FALSE},
+    {D3DRS_CLIPPLANEENABLE, FALSE},
+    {D3DRS_ALPHATESTENABLE, FALSE},
+    {D3DRS_CLIPPING, FALSE},
+    {D3DRS_SCISSORTESTENABLE, FALSE},
+    {D3DRS_FOGENABLE, FALSE},
+    {D3DRS_SEPARATEALPHABLENDENABLE, FALSE},
+    {D3DRS_COLORWRITEENABLE, 0x0000000F},
+    {D3DRS_CULLMODE, D3DCULL_NONE},
+    {D3DRS_FILLMODE, D3DFILL_SOLID},
+    {D3DRS_WRAP0, 0},
+    {D3DRS_BLENDOP, D3DBLENDOP_ADD},
+    {D3DRS_VERTEXBLEND, D3DVBF_DISABLE},
+    {D3DRS_INDEXEDVERTEXBLENDENABLE, FALSE},
+    {D3DRS_SRGBWRITEENABLE, FALSE},
+    {D3DRS_ALPHABLENDENABLE, FALSE},
+    {D3DRS_SRCBLEND, D3DBLEND_SRCALPHA},
+    {D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA},
+};
+
+const SamplerStateValue overlaySamplerStates[] = {
+    {D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP},
+    {D3DSAMP_MINFILTER, D3DTEXF_LINEAR},   {D3DSAMP_MAGFILTER, D3DTEXF_LINEAR},
+    {D3DSAMP_MIPFILTER, D3DTEXF_LINEAR},   {D3DSAMP_SRGBTEXTURE, 0},
+};
+
+const TextureStageStateValue overlayTextureStageStates[] = {
+    {0, D3DTSS_COLOROP, D3DTOP_MODULATE},
+    {0, D3DTSS_COLORARG1, D3DTA_TEXTURE},
+    {0, D3DTSS_COLORARG2, D3DTA_CURRENT},
+    {0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1},
+    {0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE},
+    {0, D3DTSS_ALPHAARG2, D3DTA_CURRENT},
+    {0, D3DTSS_TEXCOORDINDEX, 0},
+    {0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE},
+    {0, D3DTSS_COLORARG0, D3DTA_CURRENT},
+    {0, D3DTSS_ALPHAARG0, D3DTA_CURRENT},
+    {0, D3DTSS_RESULTARG, D3DTA_CURRENT},
+    {0, D3DTSS_CONSTANT, 0xffffffff},
+    // only stage 0 is used
+    {1, D3DTSS_COLOROP, D3DTOP_DISABLE},
+    {1, D3DTSS_ALPHAOP, D3DTOP_DISABLE},
+};
+
+const D3DTRANSFORMSTATETYPE overlayTransforms[] = {D3DTS_PROJECTION, D3DTS_WORLD, D3DTS_VIEW};
+
+const DWORD overlayTextureStages = 8;
+}
+
+// the state RenderText changes, read back from the device before it's changed
+struct D3D9DebugManager::SavedState
+{
+  DWORD renderStates[ARRAY_COUNT(overlayRenderStates)] = {};
+  DWORD samplerStates[ARRAY_COUNT(overlaySamplerStates)] = {};
+  DWORD textureStageStates[ARRAY_COUNT(overlayTextureStageStates)] = {};
+  D3DMATRIX transforms[ARRAY_COUNT(overlayTransforms)] = {};
+  IDirect3DVertexShader9 *vs = NULL;
+  IDirect3DPixelShader9 *ps = NULL;
+  IDirect3DVertexDeclaration9 *decl = NULL;
+  DWORD fvf = 0;
+  IDirect3DBaseTexture9 *textures[overlayTextureStages] = {};
+  // DrawPrimitiveUP unbinds stream 0
+  IDirect3DVertexBuffer9 *stream0 = NULL;
+  UINT stream0Offset = 0;
+  UINT stream0Stride = 0;
+};
+
+void D3D9DebugManager::SaveState(SavedState &saved)
+{
+  for(size_t i = 0; i < ARRAY_COUNT(overlayRenderStates); i++)
+    m_Device->GetRenderState(overlayRenderStates[i].state, &saved.renderStates[i]);
+  for(size_t i = 0; i < ARRAY_COUNT(overlaySamplerStates); i++)
+    m_Device->GetSamplerState(0, overlaySamplerStates[i].state, &saved.samplerStates[i]);
+  for(size_t i = 0; i < ARRAY_COUNT(overlayTextureStageStates); i++)
+    m_Device->GetTextureStageState(overlayTextureStageStates[i].stage,
+                                   overlayTextureStageStates[i].state, &saved.textureStageStates[i]);
+  for(size_t i = 0; i < ARRAY_COUNT(overlayTransforms); i++)
+    m_Device->GetTransform(overlayTransforms[i], &saved.transforms[i]);
+
+  m_Device->GetVertexShader(&saved.vs);
+  m_Device->GetPixelShader(&saved.ps);
+  m_Device->GetVertexDeclaration(&saved.decl);
+  m_Device->GetFVF(&saved.fvf);
+  for(DWORD stage = 0; stage < overlayTextureStages; stage++)
+    m_Device->GetTexture(stage, &saved.textures[stage]);
+  m_Device->GetStreamSource(0, &saved.stream0, &saved.stream0Offset, &saved.stream0Stride);
+}
+
+void D3D9DebugManager::RestoreState(SavedState &saved)
+{
+  for(size_t i = 0; i < ARRAY_COUNT(overlayRenderStates); i++)
+    m_Device->SetRenderState(overlayRenderStates[i].state, saved.renderStates[i]);
+  for(size_t i = 0; i < ARRAY_COUNT(overlaySamplerStates); i++)
+    m_Device->SetSamplerState(0, overlaySamplerStates[i].state, saved.samplerStates[i]);
+  for(size_t i = 0; i < ARRAY_COUNT(overlayTextureStageStates); i++)
+    m_Device->SetTextureStageState(overlayTextureStageStates[i].stage,
+                                   overlayTextureStageStates[i].state, saved.textureStageStates[i]);
+  for(size_t i = 0; i < ARRAY_COUNT(overlayTransforms); i++)
+    m_Device->SetTransform(overlayTransforms[i], &saved.transforms[i]);
+
+  m_Device->SetVertexShader(saved.vs);
+  m_Device->SetPixelShader(saved.ps);
+
+  // the declaration covers both cases. If the application set an FVF, setting it again afterwards
+  // keeps GetFVF returning it.
+  m_Device->SetVertexDeclaration(saved.decl);
+  if(saved.fvf != 0)
+    m_Device->SetFVF(saved.fvf);
+
+  for(DWORD stage = 0; stage < overlayTextureStages; stage++)
+    m_Device->SetTexture(stage, saved.textures[stage]);
+  m_Device->SetStreamSource(0, saved.stream0, saved.stream0Offset, saved.stream0Stride);
+
+  SAFE_RELEASE(saved.vs);
+  SAFE_RELEASE(saved.ps);
+  SAFE_RELEASE(saved.decl);
+  for(DWORD stage = 0; stage < overlayTextureStages; stage++)
+    SAFE_RELEASE(saved.textures[stage]);
+  SAFE_RELEASE(saved.stream0);
+}
+
 void D3D9DebugManager::RenderText(float x, float y, const rdcstr &text)
 {
+  if(m_Font.Tex == NULL)
+    return;
+
+  SavedState saved;
+  SaveState(saved);
+
+  for(size_t i = 0; i < ARRAY_COUNT(overlayRenderStates); i++)
+    m_Device->SetRenderState(overlayRenderStates[i].state, overlayRenderStates[i].value);
+  for(size_t i = 0; i < ARRAY_COUNT(overlaySamplerStates); i++)
+    m_Device->SetSamplerState(0, overlaySamplerStates[i].state, overlaySamplerStates[i].value);
+  for(size_t i = 0; i < ARRAY_COUNT(overlayTextureStageStates); i++)
+    m_Device->SetTextureStageState(overlayTextureStageStates[i].stage,
+                                   overlayTextureStageStates[i].state,
+                                   overlayTextureStageStates[i].value);
+
+  // enable fixed function pipeline
+  m_Device->SetVertexShader(NULL);
+  m_Device->SetPixelShader(NULL);
+
+  m_Device->SetFVF(m_fvf);
+  m_Device->SetTexture(0, m_Font.Tex);
+  for(DWORD stage = 1; stage < overlayTextureStages; stage++)
+    m_Device->SetTexture(stage, NULL);
+
   rdcarray<rdcstr> lines;
   split(text, lines, '\n');
 
@@ -142,11 +316,13 @@ void D3D9DebugManager::RenderText(float x, float y, const rdcstr &text)
     RenderTextInternal(x, y, line);
     y += 1.0f;
   }
+
+  RestoreState(saved);
 }
 
 void D3D9DebugManager::RenderTextInternal(float x, float y, const rdcstr &text)
 {
-  if(text.empty() || m_Font.Tex == NULL)
+  if(text.empty())
     return;
 
   RDCASSERT(text.size() < FONT_MAX_CHARS);
@@ -175,61 +351,9 @@ void D3D9DebugManager::RenderTextInternal(float x, float y, const rdcstr &text)
                      nearPlane / (nearPlane - farPlane),
                      1.f};
 
-  HRESULT res = S_OK;
-  res |= m_Device->SetTransform(D3DTS_PROJECTION, &ortho);
-  res |= m_Device->SetTransform(D3DTS_WORLD, &identity);
-  res |= m_Device->SetTransform(D3DTS_VIEW, &identity);
-
-  // enable fixed function pipeline
-  res |= m_Device->SetVertexShader(NULL);
-  res |= m_Device->SetPixelShader(NULL);
-
-  // default render states
-  res |= m_Device->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
-  res |= m_Device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-  res |= m_Device->SetRenderState(D3DRS_LIGHTING, FALSE);
-  res |= m_Device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
-  res |= m_Device->SetRenderState(D3DRS_CLIPPLANEENABLE, FALSE);
-  res |= m_Device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-  res |= m_Device->SetRenderState(D3DRS_CLIPPING, FALSE);
-  res |= m_Device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
-  res |= m_Device->SetRenderState(D3DRS_FOGENABLE, FALSE);
-  res |= m_Device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
-  res |= m_Device->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0000000F);
-  res |= m_Device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-  res |= m_Device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
-  res |= m_Device->SetRenderState(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
-  res |= m_Device->SetRenderState(D3DRS_INDEXEDVERTEXBLENDENABLE, FALSE);
-  res |= m_Device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
-
-  // sampler states
-  res |= m_Device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
-  res |= m_Device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
-  res |= m_Device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR /*D3DTEXF_POINT*/);
-  res |= m_Device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR /*D3DTEXF_POINT*/);
-  res |= m_Device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR /*D3DTEXF_POINT*/);
-  res |= m_Device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, 0);
-
-  // texture stage states
-  res |= m_Device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-  res |= m_Device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-  res |= m_Device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_CURRENT);
-  res |= m_Device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-  res |= m_Device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-  res |= m_Device->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_CURRENT);
-  res |= m_Device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
-  res |= m_Device->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
-  res |= m_Device->SetTextureStageState(0, D3DTSS_COLORARG0, D3DTA_CURRENT);
-  res |= m_Device->SetTextureStageState(0, D3DTSS_ALPHAARG0, D3DTA_CURRENT);
-  res |= m_Device->SetTextureStageState(0, D3DTSS_RESULTARG, D3DTA_CURRENT);
-  res |= m_Device->SetTextureStageState(0, D3DTSS_CONSTANT, 0xffffffff);
-
-  res |= m_Device->SetFVF(m_fvf);
-  res |= m_Device->SetTexture(0, m_Font.Tex);
-  for(uint32_t stage = 1; stage < 8; stage++)
-  {
-    res |= m_Device->SetTexture(stage, NULL);
-  }
+  m_Device->SetTransform(D3DTS_PROJECTION, &ortho);
+  m_Device->SetTransform(D3DTS_WORLD, &identity);
+  m_Device->SetTransform(D3DTS_VIEW, &identity);
 
   struct Vertex
   {
@@ -303,16 +427,11 @@ void D3D9DebugManager::RenderTextInternal(float x, float y, const rdcstr &text)
   }
 
   {
-    // overlay render states
-    res |= m_Device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
-    res |= m_Device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, &background, sizeof(Vertex));
+    m_Device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    m_Device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, &background, sizeof(Vertex));
 
-    //// overlay render states
-    res |= m_Device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-    res |= m_Device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-    res |= m_Device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-
-    res |= m_Device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, triangleCount, &quads[0], sizeof(Vertex));
+    m_Device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    m_Device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, triangleCount, &quads[0], sizeof(Vertex));
     delete[] quads;
   }
 }

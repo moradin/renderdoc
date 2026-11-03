@@ -29,13 +29,51 @@ RD_TEST(D3D9_Frame_Start_State, D3D9GraphicsTest)
   static constexpr const char *Description =
       "Sets distinctive device state once before the first frame, on a pure device where possible, "
       "then draws the same two triangles as D3D9_Simple_Triangle every frame. A capture's "
-      "BeginCaptureFrame chunk should hold the state set here. None of it changes what's drawn.";
+      "BeginCaptureFrame chunk should hold the state set here. None of it changes what's drawn. "
+      "Also checks that shader constants above c127 survive Present, where that can be read.";
 
   struct FFVertex
   {
     float x, y, z, rhw;
     D3DCOLOR col;
   };
+
+  const float UpperVS[4] = {13.0f, 14.0f, 15.0f, 16.0f};
+  const float UpperPS[4] = {17.0f, 18.0f, 19.0f, 20.0f};
+
+  // checks that nothing between frames has changed the shader constants above c127, or copied
+  // lower constants over them. Pure devices can't read constants back, so this only runs without
+  // one: natively when no pure device is available, or under RenderDoc, whose real device isn't
+  // pure.
+  bool upperConstantsReported = false;
+
+  void CheckUpperConstants()
+  {
+    if(upperConstantsReported)
+      return;
+
+    float vs200[4] = {}, vs138[4] = {}, ps180[4] = {}, ps148[4] = {};
+    if(FAILED(dev->GetVertexShaderConstantF(200, vs200, 1)) ||
+       FAILED(dev->GetVertexShaderConstantF(138, vs138, 1)) ||
+       FAILED(dev->GetPixelShaderConstantF(180, ps180, 1)) ||
+       FAILED(dev->GetPixelShaderConstantF(148, ps148, 1)))
+      return;
+
+    const float zero[4] = {};
+    if(memcmp(vs200, UpperVS, sizeof(vs200)) != 0 || memcmp(vs138, zero, sizeof(vs138)) != 0 ||
+       memcmp(ps180, UpperPS, sizeof(ps180)) != 0 || memcmp(ps148, zero, sizeof(ps148)) != 0)
+    {
+      TEST_ERROR(
+          "Shader constants above c127 changed between frames: VS c200 %f, c138 %f, "
+          "PS c180 %f, c148 %f",
+          vs200[0], vs138[0], ps180[0], ps148[0]);
+    }
+    else
+    {
+      TEST_LOG("Shader constants above c127 survived the first frames");
+    }
+    upperConstantsReported = true;
+  }
 
   static DWORD FloatBits(float f)
   {
@@ -108,6 +146,10 @@ RD_TEST(D3D9_Frame_Start_State, D3D9GraphicsTest)
 
     const float psF[4] = {9.0f, 10.0f, 11.0f, 12.0f};
     dev->SetPixelShaderConstantF(20, psF, 1);
+
+    // constants above c127, which RenderDoc's overlay used to overwrite every frame
+    dev->SetVertexShaderConstantF(200, UpperVS, 1);
+    dev->SetPixelShaderConstantF(180, UpperPS, 1);
 
     // palettes need driver support, so these can fail
     PALETTEENTRY pal[256] = {};
@@ -183,6 +225,10 @@ RD_TEST(D3D9_Frame_Start_State, D3D9GraphicsTest)
       dev->EndScene();
 
       Present();
+
+      // RenderDoc's overlay draws during the first Present, check once a few frames have gone by
+      if(curFrame == 5)
+        CheckUpperConstants();
     }
 
     return 0;

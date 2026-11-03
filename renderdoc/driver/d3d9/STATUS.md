@@ -8,7 +8,7 @@ so none of this is upstream.
 | 0 | Driver project restored on current upstream, overlay working | Done |
 | 1 | Every object wrapped, bindings tracked, state blocks, Reset | Done, Reset needs more testing |
 | 2a | Captures written: every call serialised, resource creation records, structured export | Done, tested with `D3D9_Simple_Triangle` |
-| 2b | Full device state at frame start (render/sampler/texture stage states, transforms, lights, constants...) | Done, untested |
+| 2b | Full device state at frame start (render/sampler/texture stage states, transforms, lights, constants...) | Done, tested with `D3D9_Frame_Start_State` |
 | 2c | Resource contents: Lock tracking, shadow copies of D3DPOOL_DEFAULT data, initial contents | Not started |
 | 2d | Edge cases: Reset/device loss mid-capture, state block contents, D3DPERF markers in captures | Not started |
 | 3 | Replay | Not started |
@@ -23,10 +23,16 @@ so none of this is upstream.
   wrappers).
 - The D3DPERF marker hooks moved to the D3D11 project upstream. They now share `d3d9.dll` with our
   device creation hooks; check that markers still show up in D3D11 captures of apps that use them.
-- The device state at frame start (phase 2b). `D3D9_Frame_Start_State` sets distinctive state before
-  its first frame; its `BeginCaptureFrame` chunk should hold all of it. It runs on a pure device where
-  it can, which RenderDoc creates as a normal device so that the state can be read back.
+- The overlay no longer uses a `D3DSBT_ALL` state block to restore the application's state. Applying
+  one copied shader constants c0-c127 over c128-c255 (natively too, on an RTX 4070 Ti), so every
+  application using upper constants was corrupted each frame. It now saves and restores only what it
+  changes. `D3D9_Frame_Start_State` checks c200/c180 survive, and the `BeginCaptureFrame` chunk
+  shouldn't have copies of c10/c20 at c138/c148. Also worth checking in a game with a visible overlay:
+  nothing in the scene should change when the overlay is toggled.
 - D3DPERF markers don't appear in D3D9 captures yet (phase 2d).
+- Applications' own `D3DSBT_ALL` state blocks have the same constant-copying behaviour natively. We
+  pass them through as they are; replay (phase 3) needs to reproduce it rather than "fix" it.
+- Sampler 256 (`D3DDMAPSAMPLER`) reads back `ADDRESSU` 0xBAADCAFE natively. It's recorded as read.
 
 ## Inspecting a capture
 

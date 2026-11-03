@@ -353,17 +353,28 @@ void WrappedD3DDevice9::RenderOverlay(IDirect3DSwapChain9 *realSwapChain, Device
   if(FAILED(realSwapChain->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) || !backBuffer)
     return;
 
-  // Everything here goes to the real device so the application's state, and our tracking of it, is
-  // untouched. A D3DSBT_ALL state block restores everything except render targets, which we save
-  // separately.
-  IDirect3DSurface9 *prevRT = NULL;
-  m_device->GetRenderTarget(0, &prevRT);
+  // Everything here goes to the real device so our tracking of the application's state is
+  // untouched. The debug manager saves and restores the pipeline state it changes; the targets,
+  // viewport and scissor rect are saved here. Setting render target 0 resets both of those.
+  IDirect3DSurface9 *prevRTs[4] = {};
+  for(DWORD i = 0; i < ARRAY_COUNT(prevRTs); i++)
+    m_device->GetRenderTarget(i, &prevRTs[i]);
+  IDirect3DSurface9 *prevDepth = NULL;
+  m_device->GetDepthStencilSurface(&prevDepth);
+  D3DVIEWPORT9 prevViewport = {};
+  m_device->GetViewport(&prevViewport);
+  RECT prevScissor = {};
+  m_device->GetScissorRect(&prevScissor);
 
-  IDirect3DStateBlock9 *stateBlock = NULL;
-  m_device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
+  // the application shouldn't be inside a scene at Present, but if it is don't end its scene
+  bool ownScene = SUCCEEDED(m_device->BeginScene());
 
-  m_device->BeginScene();
   m_device->SetRenderTarget(0, backBuffer);
+  for(DWORD i = 1; i < ARRAY_COUNT(prevRTs); i++)
+    if(prevRTs[i])
+      m_device->SetRenderTarget(i, NULL);
+  // depth is disabled, but a depth buffer smaller than the back buffer makes drawing invalid
+  m_device->SetDepthStencilSurface(NULL);
 
   D3DSURFACE_DESC bbDesc = {};
   backBuffer->GetDesc(&bbDesc);
@@ -380,21 +391,20 @@ void WrappedD3DDevice9::RenderOverlay(IDirect3DSwapChain9 *realSwapChain, Device
 
   m_DebugManager->RenderText(0.0f, 0.0f, overlayText.c_str());
 
-  m_device->EndScene();
+  if(ownScene)
+    m_device->EndScene();
 
-  // restore the render target first: setting it resets the viewport, which the state block then
-  // restores
-  if(prevRT)
+  // render target 0 first, the others were only unbound if they were set
+  for(DWORD i = 0; i < ARRAY_COUNT(prevRTs); i++)
   {
-    m_device->SetRenderTarget(0, prevRT);
-    prevRT->Release();
+    if(prevRTs[i])
+      m_device->SetRenderTarget(i, prevRTs[i]);
+    SAFE_RELEASE(prevRTs[i]);
   }
-
-  if(stateBlock)
-  {
-    stateBlock->Apply();
-    stateBlock->Release();
-  }
+  m_device->SetDepthStencilSurface(prevDepth);
+  SAFE_RELEASE(prevDepth);
+  m_device->SetViewport(&prevViewport);
+  m_device->SetScissorRect(&prevScissor);
 
   backBuffer->Release();
 }
