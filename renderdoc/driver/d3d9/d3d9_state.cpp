@@ -436,3 +436,160 @@ void D3D9FetchDeviceState(IDirect3DDevice9 *dev, DWORD behaviorFlags, const D3D9
 
   dev->GetClipStatus(&state.ClipStatus);
 }
+
+namespace
+{
+template <typename T>
+bool SameBytes(const T &a, const T &b)
+{
+  return memcmp(&a, &b, sizeof(T)) == 0;
+}
+
+template <typename T>
+bool SameArray(const rdcarray<T> &a, const rdcarray<T> &b)
+{
+  return a.size() == b.size() && (a.empty() || memcmp(a.data(), b.data(), a.byteSize()) == 0);
+}
+
+// states lists are keyed: find the value for a key in the other list
+template <typename T, typename Key>
+const T *FindState(const rdcarray<T> &list, Key key)
+{
+  for(const T &v : list)
+    if(v.State == key)
+      return &v;
+  return NULL;
+}
+};
+
+void D3D9RestoreDeviceState(IDirect3DDevice9 *dev, const D3D9DeviceState &target,
+                            const D3D9DeviceState &current)
+{
+  for(const D3D9RenderStateValue &v : target.RenderStates)
+  {
+    const D3D9RenderStateValue *cur = FindState(current.RenderStates, v.State);
+    if(cur == NULL || cur->Value != v.Value)
+      dev->SetRenderState(v.State, v.Value);
+  }
+
+  for(const D3D9SamplerStates &s : target.SamplerStates)
+  {
+    const D3D9SamplerStates *curSampler = NULL;
+    for(const D3D9SamplerStates &c : current.SamplerStates)
+      if(c.Sampler == s.Sampler)
+        curSampler = &c;
+
+    for(const D3D9SamplerStateValue &v : s.States)
+    {
+      const D3D9SamplerStateValue *cur = curSampler ? FindState(curSampler->States, v.State) : NULL;
+      if(cur == NULL || cur->Value != v.Value)
+        dev->SetSamplerState(s.Sampler, v.State, v.Value);
+    }
+  }
+
+  for(const D3D9TextureStageStates &s : target.TextureStageStates)
+  {
+    const D3D9TextureStageStates *curStage = NULL;
+    for(const D3D9TextureStageStates &c : current.TextureStageStates)
+      if(c.Stage == s.Stage)
+        curStage = &c;
+
+    for(const D3D9TextureStageStateValue &v : s.States)
+    {
+      const D3D9TextureStageStateValue *cur = curStage ? FindState(curStage->States, v.State) : NULL;
+      if(cur == NULL || cur->Value != v.Value)
+        dev->SetTextureStageState(s.Stage, v.State, v.Value);
+    }
+  }
+
+  // world matrices that are the identity are left out of both lists
+  for(const D3D9TransformValue &v : target.Transforms)
+  {
+    const D3D9TransformValue *cur = FindState(current.Transforms, v.State);
+    if(cur == NULL || !SameBytes(cur->Matrix, v.Matrix))
+      dev->SetTransform(v.State, &v.Matrix);
+  }
+  for(const D3D9TransformValue &v : current.Transforms)
+  {
+    if(FindState(target.Transforms, v.State) == NULL)
+    {
+      D3DMATRIX identity = {};
+      identity._11 = identity._22 = identity._33 = identity._44 = 1.0f;
+      dev->SetTransform(v.State, &identity);
+    }
+  }
+
+  if(!SameBytes(target.Viewport, current.Viewport))
+    dev->SetViewport(&target.Viewport);
+  if(!SameBytes(target.ScissorRect, current.ScissorRect))
+    dev->SetScissorRect(&target.ScissorRect);
+  if(!SameBytes(target.Material, current.Material))
+    dev->SetMaterial(&target.Material);
+
+  for(const D3D9LightState &l : target.Lights)
+  {
+    const D3D9LightState *cur = NULL;
+    for(const D3D9LightState &c : current.Lights)
+      if(c.Index == l.Index)
+        cur = &c;
+
+    if(cur == NULL || !SameBytes(cur->Light, l.Light))
+      dev->SetLight(l.Index, &l.Light);
+    if(cur == NULL || (cur->Enabled != 0) != (l.Enabled != 0))
+      dev->LightEnable(l.Index, l.Enabled);
+  }
+  // a light that didn't exist in target can't be removed again, only disabled
+  for(const D3D9LightState &c : current.Lights)
+  {
+    bool found = false;
+    for(const D3D9LightState &l : target.Lights)
+      found |= (l.Index == c.Index);
+    if(!found && c.Enabled)
+      dev->LightEnable(c.Index, FALSE);
+  }
+
+  for(size_t i = 0; i < target.ClipPlanes.size(); i++)
+    if(i >= current.ClipPlanes.size() || !SameBytes(target.ClipPlanes[i], current.ClipPlanes[i]))
+      dev->SetClipPlane((DWORD)i, &target.ClipPlanes[i].x);
+
+  const D3D9ShaderConstants &tvs = target.VertexShaderConstants, &cvs = current.VertexShaderConstants;
+  if(!SameArray(tvs.Float, cvs.Float) && !tvs.Float.empty())
+    dev->SetVertexShaderConstantF(0, &tvs.Float[0].x, (UINT)tvs.Float.size());
+  if(!SameArray(tvs.Int, cvs.Int) && !tvs.Int.empty())
+    dev->SetVertexShaderConstantI(0, (const int *)&tvs.Int[0].x, (UINT)tvs.Int.size());
+  if(!SameArray(tvs.Bool, cvs.Bool) && !tvs.Bool.empty())
+    dev->SetVertexShaderConstantB(0, tvs.Bool.data(), (UINT)tvs.Bool.size());
+
+  const D3D9ShaderConstants &tps = target.PixelShaderConstants, &cps = current.PixelShaderConstants;
+  if(!SameArray(tps.Float, cps.Float) && !tps.Float.empty())
+    dev->SetPixelShaderConstantF(0, &tps.Float[0].x, (UINT)tps.Float.size());
+  if(!SameArray(tps.Int, cps.Int) && !tps.Int.empty())
+    dev->SetPixelShaderConstantI(0, (const int *)&tps.Int[0].x, (UINT)tps.Int.size());
+  if(!SameArray(tps.Bool, cps.Bool) && !tps.Bool.empty())
+    dev->SetPixelShaderConstantB(0, tps.Bool.data(), (UINT)tps.Bool.size());
+
+  for(size_t i = 0; i < target.StreamFrequencies.size(); i++)
+    if(i >= current.StreamFrequencies.size() ||
+       target.StreamFrequencies[i] != current.StreamFrequencies[i])
+      dev->SetStreamSourceFreq((UINT)i, target.StreamFrequencies[i]);
+
+  if(target.NPatchMode != current.NPatchMode)
+    dev->SetNPatchMode(target.NPatchMode);
+  if((target.SoftwareVertexProcessing != 0) != (current.SoftwareVertexProcessing != 0))
+    dev->SetSoftwareVertexProcessing(target.SoftwareVertexProcessing);
+  if(target.CurrentTexturePalette != current.CurrentTexturePalette)
+    dev->SetCurrentTexturePalette(target.CurrentTexturePalette);
+
+  for(const D3D9Palette &p : target.Palettes)
+  {
+    const D3D9Palette *cur = NULL;
+    for(const D3D9Palette &c : current.Palettes)
+      if(c.Number == p.Number)
+        cur = &c;
+    if(cur == NULL || memcmp(cur->Entries.data(), p.Entries.data(), sizeof(PALETTEENTRY) * 256) != 0)
+      dev->SetPaletteEntries(p.Number, p.Entries.data());
+  }
+
+  if(!SameBytes(target.ClipStatus, current.ClipStatus))
+    dev->SetClipStatus(&target.ClipStatus);
+}

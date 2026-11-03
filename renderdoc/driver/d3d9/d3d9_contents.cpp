@@ -279,7 +279,8 @@ bool D3D9HasContents(WrappedD3D9Object *obj)
     case Resource_IndexBuffer:
     case Resource_Texture:
     case Resource_CubeTexture:
-    case Resource_VolumeTexture: return true;
+    case Resource_VolumeTexture:
+    case Resource_StateBlock: return true;
     // surfaces that aren't texture levels: standalone, device-owned, or back buffers
     case Resource_Surface:
       return obj->GetContainer() == NULL ||
@@ -559,9 +560,27 @@ void DoSerialise(SerialiserType &ser, D3D9SubresourceData &el)
 INSTANTIATE_SERIALISE_TYPE(D3D9SubresourceData);
 
 template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9StateBlockContents &el)
+{
+  SERIALISE_MEMBER(Textures);
+  SERIALISE_MEMBER(StreamSources);
+  SERIALISE_MEMBER(StreamOffsets);
+  SERIALISE_MEMBER(StreamStrides);
+  SERIALISE_MEMBER(Indices);
+  SERIALISE_MEMBER(VertexShader);
+  SERIALISE_MEMBER(PixelShader);
+  SERIALISE_MEMBER(VertexDeclaration);
+  SERIALISE_MEMBER(DeclarationFromFVF);
+  SERIALISE_MEMBER(State);
+}
+
+INSTANTIATE_SERIALISE_TYPE(D3D9StateBlockContents);
+
+template <class SerialiserType>
 void DoSerialise(SerialiserType &ser, D3D9InitialContentsData &el)
 {
   SERIALISE_MEMBER(Subresources);
+  SERIALISE_MEMBER(StateBlock);
   SERIALISE_MEMBER(Note);
 }
 
@@ -775,8 +794,81 @@ void WrappedD3DDevice9::ReadContents(WrappedD3D9Object *obj, D3D9InitialContents
                 "so its contents are undefined");
       break;
     }
+    case Resource_StateBlock:
+      ReadStateBlock((WrappedD3DStateBlock9 *)obj, contents);
+      break;
     default: AddNote(contents, "This kind of object has no contents"); break;
   }
+}
+
+void WrappedD3DDevice9::ReadStateBlock(WrappedD3DStateBlock9 *sb, D3D9InitialContentsData &contents)
+{
+  // the state calls would go into the state block being recorded
+  if(m_Recording)
+  {
+    AddNote(contents, "Couldn't read the state block, another one was being recorded");
+    return;
+  }
+
+  D3D9DeviceState before;
+  D3D9FetchDeviceState(m_device, m_InitParams.BehaviorFlags, m_LightIndices, m_PaletteNumbers,
+                       before);
+
+  HRESULT hr = sb->GetReal()->Apply();
+  if(FAILED(hr))
+  {
+    AddNote(contents, StringFormat::Fmt("Couldn't apply the state block: %s", ToStr(hr).c_str()));
+    return;
+  }
+
+  D3D9StateBlockContents sbContents;
+  D3D9FetchDeviceState(m_device, m_InitParams.BehaviorFlags, m_LightIndices, m_PaletteNumbers,
+                       sbContents.State);
+
+  // put the device back. Applying a state block can change any state, including (for D3DSBT_ALL)
+  // copying vertex shader constants c0-c127 over c128-c255, so compare everything.
+  D3D9RestoreDeviceState(m_device, before, sbContents.State);
+  RestoreRealBindings(before.FVF);
+
+  // the bindings after applying it, as we track them
+  {
+    D3D9ObjectBindings applied;
+    applied.CopyFrom(m_Bindings, D3D9BindingMask::All());
+    applied.CopyFrom(sb->GetBindings(), sb->GetMask());
+
+    for(IDirect3DBaseTexture9 *tex : applied.textures)
+      sbContents.Textures.push_back(GetResID(tex));
+    for(const D3D9StreamBinding &s : applied.streams)
+    {
+      sbContents.StreamSources.push_back(GetResID(s.buffer));
+      sbContents.StreamOffsets.push_back(s.offset);
+      sbContents.StreamStrides.push_back(s.stride);
+    }
+    sbContents.Indices = GetResID(applied.indices);
+    sbContents.VertexShader = GetResID(applied.vs);
+    sbContents.PixelShader = GetResID(applied.ps);
+    sbContents.VertexDeclaration = GetResID(applied.decl);
+    sbContents.DeclarationFromFVF = applied.declFromFVF;
+  }
+
+  contents.StateBlock.push_back(std::move(sbContents));
+}
+
+void WrappedD3DDevice9::RestoreRealBindings(DWORD fvf)
+{
+  for(uint32_t slot = 0; slot < D3D9_NUM_TEXTURE_SLOTS; slot++)
+    m_device->SetTexture(D3D9SlotToSampler(slot), Unwrap(m_Bindings.textures[slot]));
+  for(UINT i = 0; i < D3D9_NUM_STREAMS; i++)
+    m_device->SetStreamSource(i, Unwrap(m_Bindings.streams[i].buffer), m_Bindings.streams[i].offset,
+                              m_Bindings.streams[i].stride);
+  m_device->SetIndices(Unwrap(m_Bindings.indices));
+  m_device->SetVertexShader(Unwrap(m_Bindings.vs));
+  m_device->SetPixelShader(Unwrap(m_Bindings.ps));
+  // SetFVF also sets the runtime's declaration for it
+  if(m_Bindings.declFromFVF)
+    m_device->SetFVF(fvf);
+  else
+    m_device->SetVertexDeclaration(Unwrap(m_Bindings.decl));
 }
 
 void WrappedD3DDevice9::PrepareForWrite(WrappedD3D9Object *obj)

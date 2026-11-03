@@ -25,6 +25,7 @@
 #pragma once
 
 #include "d3d9_common.h"
+#include "d3d9_state.h"
 
 // Resource contents
 // -----------------
@@ -44,6 +45,10 @@
 //   through UpdateTexture and UpdateSurface, so we keep a copy of what's uploaded (the shadow).
 // * Depth stencils can only be read if they have a lockable format. Otherwise there are no
 //   contents, and the initial contents say why.
+// * State blocks: their values can't be read directly, so the state block is applied to the real
+//   device, the device state read back, and the device's state set back the way it was. Which
+//   states a state block covers comes from its creation: CreateStateBlock's type, or the calls
+//   made between BeginStateBlock and EndStateBlock, which are kept with its creation chunk.
 //
 // Reading contents can be slow, so it's postponed: each object is read the first time the frame
 // is about to write to it, when it's released, or at the end of the frame, and only if the frame
@@ -80,11 +85,32 @@ struct D3D9SubresourceData
 
 DECLARE_REFLECTION_STRUCT(D3D9SubresourceData);
 
+// The values of a state block: the device's state after applying it. Only the states the state
+// block covers come from it, the rest are whatever the device had when it was read.
+struct D3D9StateBlockContents
+{
+  // indexed by packed slot, like the bindings in BeginCaptureFrame
+  rdcarray<ResourceId> Textures;
+  rdcarray<ResourceId> StreamSources;
+  rdcarray<uint32_t> StreamOffsets;
+  rdcarray<uint32_t> StreamStrides;
+  ResourceId Indices;
+  ResourceId VertexShader;
+  ResourceId PixelShader;
+  ResourceId VertexDeclaration;
+  bool DeclarationFromFVF = false;
+  D3D9DeviceState State;
+};
+
+DECLARE_REFLECTION_STRUCT(D3D9StateBlockContents);
+
 // The contents of an object when the frame started.
 struct D3D9InitialContentsData
 {
   // what each subresource held. Subresources that were never written are left out.
   rdcarray<D3D9SubresourceData> Subresources;
+  // for state blocks, one element with their values
+  rdcarray<D3D9StateBlockContents> StateBlock;
   // why contents are missing, if they are
   rdcstr Note;
 };

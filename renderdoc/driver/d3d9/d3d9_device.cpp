@@ -117,6 +117,7 @@ WrappedD3DDevice9::~WrappedD3DDevice9()
   // Nothing the application can see is alive any more (every externally referenced object holds a
   // reference on the device), so dropping our internal references destroys every wrapper.
   SAFE_DELETE(m_Recording);
+  FreeRecordingRecord();
   m_Bindings.ReleaseAll();
   for(uint32_t i = 0; i < D3D9_NUM_RENDER_TARGETS; i++)
     D3D9SetBound(m_RenderTargets[i], (IDirect3DSurface9 *)NULL);
@@ -288,6 +289,7 @@ void WrappedD3DDevice9::OnReset()
     RDCWARN("Device reset while recording a state block");
     SAFE_DELETE(m_Recording);
   }
+  FreeRecordingRecord();
 
   // all state goes back to defaults
   m_Bindings.ReleaseAll();
@@ -868,6 +870,52 @@ void WrappedD3DDevice9::OnStateBlockCapture(IDirect3DStateBlock9 *sb)
 void WrappedD3DDevice9::OnStateBlockApply(IDirect3DStateBlock9 *sb)
 {
   RECORD_OBJECT_CALL(StateBlock_Apply, sb, eFrameRef_Read, sb);
+  if(IsActiveCapturing(m_State))
+    MarkStateBlockReferenced((WrappedD3DStateBlock9 *)GetWrappedObject(sb));
+}
+
+void WrappedD3DDevice9::MarkStateBlockReferenced(WrappedD3DStateBlock9 *sb)
+{
+  if(sb == NULL)
+    return;
+
+  // the objects applying it binds
+  const D3D9ObjectBindings &b = sb->GetBindings();
+  const D3D9BindingMask &mask = sb->GetMask();
+  for(uint32_t i = 0; i < D3D9_NUM_TEXTURE_SLOTS; i++)
+    if(mask.textures & (1U << i))
+      MarkReferenced(b.textures[i], eFrameRef_Read);
+  for(uint32_t i = 0; i < D3D9_NUM_STREAMS; i++)
+    if(mask.streams & (1U << i))
+      MarkReferenced(b.streams[i].buffer, eFrameRef_Read);
+  if(mask.indices)
+    MarkReferenced(b.indices, eFrameRef_Read);
+  if(mask.vs)
+    MarkReferenced(b.vs, eFrameRef_Read);
+  if(mask.ps)
+    MarkReferenced(b.ps, eFrameRef_Read);
+  if(mask.decl)
+    MarkReferenced(b.decl, eFrameRef_Read);
+}
+
+void WrappedD3DDevice9::AddStateChunk(Chunk *chunk)
+{
+  const bool active = IsActiveCapturing(m_State);
+
+  if(m_RecordingRecord)
+    m_RecordingRecord->AddChunk(active ? chunk->Duplicate() : chunk);
+
+  if(active)
+    m_FrameRecord->AddChunk(chunk);
+  else if(m_RecordingRecord == NULL)
+    chunk->Delete();
+}
+
+void WrappedD3DDevice9::FreeRecordingRecord()
+{
+  if(m_RecordingRecord)
+    m_RecordingRecord->Delete(m_ResourceManager);
+  m_RecordingRecord = NULL;
 }
 
 void WrappedD3DDevice9::OnQueryIssue(IDirect3DQuery9 *query, DWORD flags)

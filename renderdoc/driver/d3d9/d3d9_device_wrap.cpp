@@ -36,6 +36,16 @@
     m_FrameRecord->AddChunk(scope.Get());        \
   }
 
+// the same for state calls, which are also recorded while a state block is being recorded. The
+// caller checks ShouldRecordState() and holds the lock.
+#define RECORD_STATE_CHUNK(chunk, ...)           \
+  {                                              \
+    USE_SCRATCH_SERIALISER();                    \
+    SCOPED_SERIALISE_CHUNK(D3D9Chunk::chunk);    \
+    CONCAT(Serialise_, chunk)(ser, __VA_ARGS__); \
+    AddStateChunk(scope.Get());                  \
+  }
+
 #define RECORD_FRAME_CHUNK0(chunk)            \
   {                                           \
     USE_SCRATCH_SERIALISER();                 \
@@ -168,10 +178,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetTransform(D3DTRANSFORMSTATETYPE State,
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->SetTransform(State, pMatrix));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetTransform, State, pMatrix);
+    RECORD_STATE_CHUNK(SetTransform, State, pMatrix);
   }
 
   return ret;
@@ -188,10 +198,10 @@ HRESULT __stdcall WrappedD3DDevice9::MultiplyTransform(D3DTRANSFORMSTATETYPE Sta
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->MultiplyTransform(State, pMatrix));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(MultiplyTransform, State, pMatrix);
+    RECORD_STATE_CHUNK(MultiplyTransform, State, pMatrix);
   }
 
   return ret;
@@ -202,10 +212,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetViewport(CONST D3DVIEWPORT9 *pViewport)
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->SetViewport(pViewport));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetViewport, pViewport);
+    RECORD_STATE_CHUNK(SetViewport, pViewport);
   }
 
   return ret;
@@ -221,10 +231,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetMaterial(CONST D3DMATERIAL9 *pMaterial)
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->SetMaterial(pMaterial));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetMaterial, pMaterial);
+    RECORD_STATE_CHUNK(SetMaterial, pMaterial);
   }
 
   return ret;
@@ -244,9 +254,9 @@ HRESULT __stdcall WrappedD3DDevice9::SetLight(DWORD Index, CONST D3DLIGHT9 *pLig
   {
     SCOPED_LOCK(m_D3DLock);
     m_LightIndices.Add(Index);
-    if(IsActiveCapturing(m_State))
+    if(ShouldRecordState())
     {
-      RECORD_FRAME_CHUNK(SetLight, Index, pLight);
+      RECORD_STATE_CHUNK(SetLight, Index, pLight);
     }
   }
 
@@ -267,9 +277,9 @@ HRESULT __stdcall WrappedD3DDevice9::LightEnable(DWORD Index, BOOL Enable)
   {
     SCOPED_LOCK(m_D3DLock);
     m_LightIndices.Add(Index);
-    if(IsActiveCapturing(m_State))
+    if(ShouldRecordState())
     {
-      RECORD_FRAME_CHUNK(LightEnable, Index, Enable);
+      RECORD_STATE_CHUNK(LightEnable, Index, Enable);
     }
   }
 
@@ -286,10 +296,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetClipPlane(DWORD Index, CONST float *pPla
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->SetClipPlane(Index, pPlane));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetClipPlane, Index, pPlane);
+    RECORD_STATE_CHUNK(SetClipPlane, Index, pPlane);
   }
 
   return ret;
@@ -305,10 +315,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetRenderState(D3DRENDERSTATETYPE State, DW
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->SetRenderState(State, Value));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetRenderState, State, Value);
+    RECORD_STATE_CHUNK(SetRenderState, State, Value);
   }
 
   return ret;
@@ -350,10 +360,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetTextureStageState(DWORD Stage,
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->SetTextureStageState(Stage, Type, Value));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetTextureStageState, Stage, Type, Value);
+    RECORD_STATE_CHUNK(SetTextureStageState, Stage, Type, Value);
   }
 
   return ret;
@@ -371,10 +381,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetSamplerState(DWORD Sampler, D3DSAMPLERST
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->SetSamplerState(Sampler, Type, Value));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetSamplerState, Sampler, Type, Value);
+    RECORD_STATE_CHUNK(SetSamplerState, Sampler, Type, Value);
   }
 
   return ret;
@@ -414,10 +424,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetCurrentTexturePalette(UINT PaletteNumber
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->SetCurrentTexturePalette(PaletteNumber));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetCurrentTexturePalette, PaletteNumber);
+    RECORD_STATE_CHUNK(SetCurrentTexturePalette, PaletteNumber);
   }
 
   return ret;
@@ -433,10 +443,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetScissorRect(CONST RECT *pRect)
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->SetScissorRect(pRect));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetScissorRect, pRect);
+    RECORD_STATE_CHUNK(SetScissorRect, pRect);
   }
 
   return ret;
@@ -471,10 +481,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetNPatchMode(float nSegments)
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->SetNPatchMode(nSegments));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetNPatchMode, nSegments);
+    RECORD_STATE_CHUNK(SetNPatchMode, nSegments);
   }
 
   return ret;
@@ -537,10 +547,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetVertexShaderConstantF(UINT StartRegister
   SERIALISE_TIME_CALL(
       ret = m_device->SetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetVertexShaderConstantF, StartRegister, pConstantData, Vector4fCount);
+    RECORD_STATE_CHUNK(SetVertexShaderConstantF, StartRegister, pConstantData, Vector4fCount);
   }
 
   return ret;
@@ -561,10 +571,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetVertexShaderConstantI(UINT StartRegister
   SERIALISE_TIME_CALL(
       ret = m_device->SetVertexShaderConstantI(StartRegister, pConstantData, Vector4iCount));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetVertexShaderConstantI, StartRegister, pConstantData, Vector4iCount);
+    RECORD_STATE_CHUNK(SetVertexShaderConstantI, StartRegister, pConstantData, Vector4iCount);
   }
 
   return ret;
@@ -584,10 +594,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetVertexShaderConstantB(UINT StartRegister
   SERIALISE_TIME_CALL(
       ret = m_device->SetVertexShaderConstantB(StartRegister, pConstantData, BoolCount));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetVertexShaderConstantB, StartRegister, pConstantData, BoolCount);
+    RECORD_STATE_CHUNK(SetVertexShaderConstantB, StartRegister, pConstantData, BoolCount);
   }
 
   return ret;
@@ -604,10 +614,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetStreamSourceFreq(UINT StreamNumber, UINT
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->SetStreamSourceFreq(StreamNumber, Setting));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetStreamSourceFreq, StreamNumber, Setting);
+    RECORD_STATE_CHUNK(SetStreamSourceFreq, StreamNumber, Setting);
   }
 
   return ret;
@@ -626,10 +636,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetPixelShaderConstantF(UINT StartRegister,
   SERIALISE_TIME_CALL(
       ret = m_device->SetPixelShaderConstantF(StartRegister, pConstantData, Vector4fCount));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetPixelShaderConstantF, StartRegister, pConstantData, Vector4fCount);
+    RECORD_STATE_CHUNK(SetPixelShaderConstantF, StartRegister, pConstantData, Vector4fCount);
   }
 
   return ret;
@@ -649,10 +659,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetPixelShaderConstantI(UINT StartRegister,
   SERIALISE_TIME_CALL(
       ret = m_device->SetPixelShaderConstantI(StartRegister, pConstantData, Vector4iCount));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetPixelShaderConstantI, StartRegister, pConstantData, Vector4iCount);
+    RECORD_STATE_CHUNK(SetPixelShaderConstantI, StartRegister, pConstantData, Vector4iCount);
   }
 
   return ret;
@@ -672,10 +682,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetPixelShaderConstantB(UINT StartRegister,
   SERIALISE_TIME_CALL(
       ret = m_device->SetPixelShaderConstantB(StartRegister, pConstantData, BoolCount));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetPixelShaderConstantB, StartRegister, pConstantData, BoolCount);
+    RECORD_STATE_CHUNK(SetPixelShaderConstantB, StartRegister, pConstantData, BoolCount);
   }
 
   return ret;
@@ -1402,12 +1412,20 @@ HRESULT __stdcall WrappedD3DDevice9::BeginStateBlock()
     SAFE_DELETE(m_Recording);
     m_Recording = new D3D9ObjectBindings();
     m_RecordingMask = D3D9BindingMask();
-  }
 
-  if(SUCCEEDED(hr) && IsActiveCapturing(m_State))
-  {
-    SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK0(BeginStateBlock);
+    FreeRecordingRecord();
+    if(IsCaptureMode(m_State))
+    {
+      m_RecordingRecord = m_ResourceManager->AddResourceRecord(ResourceIDGen::GetNewUniqueID());
+      m_RecordingRecord->DataInSerialiser = false;
+      m_RecordingRecord->Length = 0;
+      m_RecordingRecord->InternalResource = true;
+
+      USE_SCRATCH_SERIALISER();
+      SCOPED_SERIALISE_CHUNK(D3D9Chunk::BeginStateBlock);
+      Serialise_BeginStateBlock(ser);
+      AddStateChunk(scope.Get());
+    }
   }
 
   return hr;
@@ -1437,22 +1455,52 @@ HRESULT __stdcall WrappedD3DDevice9::EndStateBlock(IDirect3DStateBlock9 **ppSB)
     *ppSB = NULL;
   }
 
-  // recording ends whether or not the state block was returned
-  if(SUCCEEDED(hr))
-    SAFE_DELETE(m_Recording);
-
   if(SUCCEEDED(hr) && ppSB && *ppSB)
   {
-    // the state block's contents come from the calls recorded between BeginStateBlock and here.
-    // Mid-frame, those calls are in the frame too.
+    // The state block's contents come from the calls recorded between BeginStateBlock and here,
+    // which are kept in m_RecordingRecord. Mid-frame, those calls are in the frame too.
     RecordCreation(GetWrappedObject(*ppSB), D3D9Chunk::EndStateBlock,
                    [&](WriteSerialiser &ser) { Serialise_EndStateBlock(ser, ppSB); });
 
-    if(IsActiveCapturing(m_State))
+    WrappedD3DStateBlock9 *sb = (WrappedD3DStateBlock9 *)GetWrappedObject(*ppSB);
+    D3D9ResourceRecord *record = sb->GetResourceRecord();
+    if(record && m_RecordingRecord)
     {
-      RECORD_FRAME_CHUNK(EndStateBlock, ppSB);
-      MarkReferenced(*ppSB, eFrameRef_PartialWrite);
+      // the objects the recorded calls set
+      const D3D9ObjectBindings &b = sb->GetBindings();
+      IUnknown *objs[D3D9_NUM_TEXTURE_SLOTS + D3D9_NUM_STREAMS + 4] = {};
+      size_t n = 0;
+      for(IDirect3DBaseTexture9 *tex : b.textures)
+        objs[n++] = tex;
+      for(const D3D9StreamBinding &stream : b.streams)
+        objs[n++] = stream.buffer;
+      objs[n++] = b.indices;
+      objs[n++] = b.vs;
+      objs[n++] = b.ps;
+      objs[n++] = b.decl;
+      for(IUnknown *o : objs)
+      {
+        WrappedD3D9Object *w = GetWrappedObject(o);
+        if(w && w->GetResourceRecord())
+          m_RecordingRecord->AddParent(w->GetResourceRecord());
+      }
+
+      record->AddParent(m_RecordingRecord);
     }
+  }
+
+  // recording ends whether or not the state block was returned
+  if(SUCCEEDED(hr))
+  {
+    SAFE_DELETE(m_Recording);
+    // the state block's record holds a reference if it took the chunks
+    FreeRecordingRecord();
+  }
+
+  if(SUCCEEDED(hr) && ppSB && *ppSB && IsActiveCapturing(m_State))
+  {
+    RECORD_FRAME_CHUNK(EndStateBlock, ppSB);
+    MarkReferenced(*ppSB, eFrameRef_PartialWrite);
   }
 
   return hr;
@@ -1488,10 +1536,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetTexture(DWORD Stage, IDirect3DBaseTextur
       m_RecordingMask.textures |= (1U << slot);
   }
 
-  if(SUCCEEDED(hr) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(hr) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetTexture, Stage, pTexture);
+    RECORD_STATE_CHUNK(SetTexture, Stage, pTexture);
     MarkReferenced(pTexture, eFrameRef_Read);
   }
 
@@ -1607,10 +1655,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetVertexDeclaration(IDirect3DVertexDeclara
       m_RecordingMask.decl = true;
   }
 
-  if(SUCCEEDED(hr) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(hr) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetVertexDeclaration, pDecl);
+    RECORD_STATE_CHUNK(SetVertexDeclaration, pDecl);
     MarkReferenced(pDecl, eFrameRef_Read);
   }
 
@@ -1671,10 +1719,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetFVF(DWORD FVF)
       m_RecordingMask.decl = true;
   }
 
-  if(SUCCEEDED(hr) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(hr) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetFVF, FVF);
+    RECORD_STATE_CHUNK(SetFVF, FVF);
   }
 
   return hr;
@@ -1708,10 +1756,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetVertexShader(IDirect3DVertexShader9 *pSh
       m_RecordingMask.vs = true;
   }
 
-  if(SUCCEEDED(hr) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(hr) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetVertexShader, pShader);
+    RECORD_STATE_CHUNK(SetVertexShader, pShader);
     MarkReferenced(pShader, eFrameRef_Read);
   }
 
@@ -1742,10 +1790,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetStreamSource(UINT StreamNumber,
       m_RecordingMask.streams |= (1U << StreamNumber);
   }
 
-  if(SUCCEEDED(hr) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(hr) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetStreamSource, StreamNumber, pStreamData, OffsetInBytes, Stride);
+    RECORD_STATE_CHUNK(SetStreamSource, StreamNumber, pStreamData, OffsetInBytes, Stride);
     MarkReferenced(pStreamData, eFrameRef_Read);
   }
 
@@ -1780,10 +1828,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetIndices(IDirect3DIndexBuffer9 *pIndexDat
       m_RecordingMask.indices = true;
   }
 
-  if(SUCCEEDED(hr) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(hr) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetIndices, pIndexData);
+    RECORD_STATE_CHUNK(SetIndices, pIndexData);
     MarkReferenced(pIndexData, eFrameRef_Read);
   }
 
@@ -1828,10 +1876,10 @@ HRESULT __stdcall WrappedD3DDevice9::SetPixelShader(IDirect3DPixelShader9 *pShad
       m_RecordingMask.ps = true;
   }
 
-  if(SUCCEEDED(hr) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(hr) && ShouldRecordState())
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetPixelShader, pShader);
+    RECORD_STATE_CHUNK(SetPixelShader, pShader);
     MarkReferenced(pShader, eFrameRef_Read);
   }
 

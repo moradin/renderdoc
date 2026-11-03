@@ -226,6 +226,12 @@ void D3D9FetchDeviceState(IDirect3DDevice9 *realDevice, DWORD behaviorFlags,
                           const D3D9IndexSet &lights, const D3D9IndexSet &palettes,
                           D3D9DeviceState &state);
 
+// set the real device's state back to target, only setting what differs from current. Both must
+// have been read from the same device with D3D9FetchDeviceState. The FVF isn't set, it's part of
+// the vertex declaration binding.
+void D3D9RestoreDeviceState(IDirect3DDevice9 *realDevice, const D3D9DeviceState &target,
+                            const D3D9DeviceState &current);
+
 DECLARE_REFLECTION_STRUCT(D3D9RenderStateValue);
 DECLARE_REFLECTION_STRUCT(D3D9SamplerStateValue);
 DECLARE_REFLECTION_STRUCT(D3D9TextureStageStateValue);

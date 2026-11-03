@@ -37,6 +37,7 @@ class WrappedD3DVolume9;
 class WrappedD3DTexture9;
 class WrappedD3DCubeTexture9;
 class WrappedD3DVolumeTexture9;
+class WrappedD3DStateBlock9;
 
 class WrappedD3DDevice9 final : public IDirect3DDevice9Ex, public IFrameCapturer
 {
@@ -663,6 +664,22 @@ public:
 
 private:
   bool ProcessChunk(ReadSerialiser &ser, D3D9Chunk chunk);
+
+  // state block contents, see d3d9_contents.h
+  void ReadStateBlock(WrappedD3DStateBlock9 *sb, D3D9InitialContentsData &contents);
+  // set the real device's object bindings to the ones we track, fvf being the FVF to set if the
+  // vertex declaration came from one
+  void RestoreRealBindings(DWORD fvf);
+  void MarkStateBlockReferenced(WrappedD3DStateBlock9 *sb);
+
+  // State calls are recorded into the frame, and also while a state block is being recorded: they
+  // become part of the state block's creation, since that's what decides which states it covers.
+  bool ShouldRecordState() const
+  {
+    return IsActiveCapturing(m_State) || m_RecordingRecord != NULL;
+  }
+  void AddStateChunk(Chunk *chunk);
+  void FreeRecordingRecord();
   bool ProcessUnlockChunk(ReadSerialiser &ser, D3D9Chunk chunk);
 
   template <typename SerialiserType>
@@ -724,6 +741,10 @@ private:
   // between BeginStateBlock and EndStateBlock
   D3D9ObjectBindings *m_Recording = NULL;
   D3D9BindingMask m_RecordingMask;
+  // holds the BeginStateBlock chunk and the state calls made since, while capturing is possible.
+  // EndStateBlock makes it a parent of the new state block's record, so its chunks come before the
+  // EndStateBlock chunk.
+  D3D9ResourceRecord *m_RecordingRecord = NULL;
 
   // the light and palette indices the application has used, protected by m_D3DLock
   D3D9IndexSet m_LightIndices;

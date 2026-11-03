@@ -75,6 +75,8 @@ uint64_t D3D9ResourceManager::GetSize_InitialState(ResourceId id, const D3D9Init
     ret += data.data->Note.size();
     for(const D3D9SubresourceData &sub : data.data->Subresources)
       ret += 64 + sub.Data.size() + WriteSerialiser::GetChunkAlignment();
+    // a generous estimate of a whole device state
+    ret += data.data->StateBlock.size() * 256 * 1024;
   }
 
   return ret;

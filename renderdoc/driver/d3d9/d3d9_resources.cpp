@@ -416,6 +416,8 @@ HRESULT WrappedD3DVolumeTexture9::GetVolumeLevel(UINT Level, IDirect3DVolume9 **
 
 HRESULT WrappedD3DStateBlock9::Capture()
 {
+  // its values when the frame started are read before they're replaced
+  m_pDevice->PrepareForWrite((WrappedD3D9Object *)this);
   HRESULT hr = m_pReal->Capture();
   if(SUCCEEDED(hr))
   {

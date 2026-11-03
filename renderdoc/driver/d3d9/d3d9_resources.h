@@ -731,6 +731,9 @@ public:
   HRESULT STDMETHODCALLTYPE Capture();
   HRESULT STDMETHODCALLTYPE Apply();
 
+  const D3D9BindingMask &GetMask() const { return m_Mask; }
+  const D3D9ObjectBindings &GetBindings() const { return m_Bindings; }
+
 private:
   D3D9BindingMask m_Mask;
   D3D9ObjectBindings m_Bindings;
