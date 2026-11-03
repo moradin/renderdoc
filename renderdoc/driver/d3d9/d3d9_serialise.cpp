@@ -25,6 +25,7 @@
 #include "d3d9_common.h"
 #include "d3d9_manager.h"
 #include "d3d9_resources.h"
+#include "d3d9_state.h"
 
 bool D3D9InitParams::IsSupportedVersion(uint64_t ver)
 {
@@ -322,3 +323,137 @@ void DoSerialise(SerialiserType &ser, POINT &el)
 }
 
 INSTANTIATE_SERIALISE_TYPE(POINT);
+
+// device state, see D3D9DeviceState. State values are serialised as raw DWORDs: some render states
+// hold floats, and which is which depends on the state.
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9RenderStateValue &el)
+{
+  SERIALISE_MEMBER(State);
+  SERIALISE_MEMBER_TYPED(uint32_t, Value);
+}
+
+INSTANTIATE_SERIALISE_TYPE(D3D9RenderStateValue);
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9SamplerStateValue &el)
+{
+  SERIALISE_MEMBER(State);
+  SERIALISE_MEMBER_TYPED(uint32_t, Value);
+}
+
+INSTANTIATE_SERIALISE_TYPE(D3D9SamplerStateValue);
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9TextureStageStateValue &el)
+{
+  SERIALISE_MEMBER(State);
+  SERIALISE_MEMBER_TYPED(uint32_t, Value);
+}
+
+INSTANTIATE_SERIALISE_TYPE(D3D9TextureStageStateValue);
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9SamplerStates &el)
+{
+  SERIALISE_MEMBER_TYPED(uint32_t, Sampler);
+  SERIALISE_MEMBER(States);
+}
+
+INSTANTIATE_SERIALISE_TYPE(D3D9SamplerStates);
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9TextureStageStates &el)
+{
+  SERIALISE_MEMBER_TYPED(uint32_t, Stage);
+  SERIALISE_MEMBER(States);
+}
+
+INSTANTIATE_SERIALISE_TYPE(D3D9TextureStageStates);
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9TransformValue &el)
+{
+  SERIALISE_MEMBER(State);
+  SERIALISE_MEMBER(Matrix);
+}
+
+INSTANTIATE_SERIALISE_TYPE(D3D9TransformValue);
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9LightState &el)
+{
+  SERIALISE_MEMBER_TYPED(uint32_t, Index);
+  SERIALISE_MEMBER(Light);
+  // GetLightEnable returns any non-zero value for enabled, so keep the full BOOL
+  SERIALISE_MEMBER(Enabled);
+}
+
+INSTANTIATE_SERIALISE_TYPE(D3D9LightState);
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Palette &el)
+{
+  SERIALISE_MEMBER(Number);
+  SERIALISE_MEMBER(Entries);
+}
+
+INSTANTIATE_SERIALISE_TYPE(D3D9Palette);
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Vec4f &el)
+{
+  SERIALISE_MEMBER(x);
+  SERIALISE_MEMBER(y);
+  SERIALISE_MEMBER(z);
+  SERIALISE_MEMBER(w);
+}
+
+INSTANTIATE_SERIALISE_TYPE(D3D9Vec4f);
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Vec4i &el)
+{
+  SERIALISE_MEMBER(x);
+  SERIALISE_MEMBER(y);
+  SERIALISE_MEMBER(z);
+  SERIALISE_MEMBER(w);
+}
+
+INSTANTIATE_SERIALISE_TYPE(D3D9Vec4i);
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9ShaderConstants &el)
+{
+  SERIALISE_MEMBER(Float);
+  SERIALISE_MEMBER(Int);
+  SERIALISE_MEMBER(Bool);
+}
+
+INSTANTIATE_SERIALISE_TYPE(D3D9ShaderConstants);
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9DeviceState &el)
+{
+  SERIALISE_MEMBER(RenderStates);
+  SERIALISE_MEMBER(SamplerStates);
+  SERIALISE_MEMBER(TextureStageStates);
+  SERIALISE_MEMBER(Transforms);
+  SERIALISE_MEMBER(Viewport);
+  SERIALISE_MEMBER(ScissorRect).TypedAs("RECT"_lit);
+  SERIALISE_MEMBER(Material);
+  SERIALISE_MEMBER(Lights);
+  SERIALISE_MEMBER(ClipPlanes);
+  SERIALISE_MEMBER(VertexShaderConstants);
+  SERIALISE_MEMBER(PixelShaderConstants);
+  SERIALISE_MEMBER_TYPED(uint32_t, FVF);
+  SERIALISE_MEMBER(StreamFrequencies);
+  SERIALISE_MEMBER(NPatchMode);
+  SERIALISE_MEMBER(SoftwareVertexProcessing);
+  SERIALISE_MEMBER(CurrentTexturePalette);
+  SERIALISE_MEMBER(Palettes);
+  SERIALISE_MEMBER(ClipStatus);
+}
+
+INSTANTIATE_SERIALISE_TYPE(D3D9DeviceState);

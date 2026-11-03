@@ -74,7 +74,12 @@ HRESULT __stdcall WrappedD3DDevice9::GetDisplayMode(UINT iSwapChain, D3DDISPLAYM
 
 HRESULT __stdcall WrappedD3DDevice9::GetCreationParameters(D3DDEVICE_CREATION_PARAMETERS *pParameters)
 {
-  return m_device->GetCreationParameters(pParameters);
+  HRESULT ret = m_device->GetCreationParameters(pParameters);
+  // the real device was created without D3DCREATE_PUREDEVICE, report the flags the application
+  // asked for
+  if(SUCCEEDED(ret) && pParameters)
+    pParameters->BehaviorFlags = m_InitParams.BehaviorFlags;
+  return ret;
 }
 
 void __stdcall WrappedD3DDevice9::SetCursorPosition(int X, int Y, DWORD Flags)
@@ -234,10 +239,14 @@ HRESULT __stdcall WrappedD3DDevice9::SetLight(DWORD Index, CONST D3DLIGHT9 *pLig
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->SetLight(Index, pLight));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret))
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetLight, Index, pLight);
+    m_LightIndices.Add(Index);
+    if(IsActiveCapturing(m_State))
+    {
+      RECORD_FRAME_CHUNK(SetLight, Index, pLight);
+    }
   }
 
   return ret;
@@ -253,10 +262,14 @@ HRESULT __stdcall WrappedD3DDevice9::LightEnable(DWORD Index, BOOL Enable)
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->LightEnable(Index, Enable));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret))
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(LightEnable, Index, Enable);
+    m_LightIndices.Add(Index);
+    if(IsActiveCapturing(m_State))
+    {
+      RECORD_FRAME_CHUNK(LightEnable, Index, Enable);
+    }
   }
 
   return ret;
@@ -377,10 +390,14 @@ HRESULT __stdcall WrappedD3DDevice9::SetPaletteEntries(UINT PaletteNumber,
   HRESULT ret;
   SERIALISE_TIME_CALL(ret = m_device->SetPaletteEntries(PaletteNumber, pEntries));
 
-  if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
+  if(SUCCEEDED(ret))
   {
     SCOPED_LOCK(m_D3DLock);
-    RECORD_FRAME_CHUNK(SetPaletteEntries, PaletteNumber, pEntries);
+    m_PaletteNumbers.Add(PaletteNumber);
+    if(IsActiveCapturing(m_State))
+    {
+      RECORD_FRAME_CHUNK(SetPaletteEntries, PaletteNumber, pEntries);
+    }
   }
 
   return ret;

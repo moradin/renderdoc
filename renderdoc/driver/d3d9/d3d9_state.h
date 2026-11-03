@@ -103,3 +103,137 @@ void D3D9SetBound(T *&slot, T *val)
   slot = val;
   D3D9IntRelease(old);
 }
+
+// The rest of the device state: everything a frame can depend on that isn't an object binding.
+// Captures store this as it was when the frame started.
+//
+// It's read back from the real device with Get* calls rather than tracked as calls are made, so
+// it's right however it was set: directly, by applying a state block, or by a Reset putting
+// everything back to defaults. Get* calls on this state fail on D3DCREATE_PUREDEVICE devices, so
+// the real device is never created with that flag (see WrappedD3D9::CreateDevice).
+struct D3D9RenderStateValue
+{
+  D3DRENDERSTATETYPE State = D3DRS_ZENABLE;
+  DWORD Value = 0;
+};
+
+struct D3D9SamplerStateValue
+{
+  D3DSAMPLERSTATETYPE State = D3DSAMP_ADDRESSU;
+  DWORD Value = 0;
+};
+
+struct D3D9TextureStageStateValue
+{
+  D3DTEXTURESTAGESTATETYPE State = D3DTSS_COLOROP;
+  DWORD Value = 0;
+};
+
+struct D3D9SamplerStates
+{
+  // the sampler as the API numbers it: 0-15, D3DDMAPSAMPLER, or D3DVERTEXTEXTURESAMPLER0-3
+  DWORD Sampler = 0;
+  rdcarray<D3D9SamplerStateValue> States;
+};
+
+struct D3D9TextureStageStates
+{
+  DWORD Stage = 0;
+  rdcarray<D3D9TextureStageStateValue> States;
+};
+
+struct D3D9TransformValue
+{
+  D3DTRANSFORMSTATETYPE State = D3DTS_VIEW;
+  D3DMATRIX Matrix = {};
+};
+
+struct D3D9LightState
+{
+  DWORD Index = 0;
+  D3DLIGHT9 Light = {};
+  BOOL Enabled = FALSE;
+};
+
+struct D3D9Palette
+{
+  UINT Number = 0;
+  rdcfixedarray<PALETTEENTRY, 256> Entries;
+};
+
+struct D3D9Vec4f
+{
+  float x = 0.0f, y = 0.0f, z = 0.0f, w = 0.0f;
+};
+
+struct D3D9Vec4i
+{
+  int32_t x = 0, y = 0, z = 0, w = 0;
+};
+
+struct D3D9ShaderConstants
+{
+  rdcarray<D3D9Vec4f> Float;
+  rdcarray<D3D9Vec4i> Int;
+  rdcarray<BOOL> Bool;
+};
+
+struct D3D9DeviceState
+{
+  rdcarray<D3D9RenderStateValue> RenderStates;
+  rdcarray<D3D9SamplerStates> SamplerStates;
+  rdcarray<D3D9TextureStageStates> TextureStageStates;
+  // view, projection and texture transforms, and the world matrices. World matrices that are the
+  // identity (the default) are left out, except D3DTS_WORLD itself.
+  rdcarray<D3D9TransformValue> Transforms;
+  D3DVIEWPORT9 Viewport = {};
+  RECT ScissorRect = {};
+  D3DMATERIAL9 Material = {};
+  // only the lights that have been set or enabled, see D3D9IndexSet
+  rdcarray<D3D9LightState> Lights;
+  rdcarray<D3D9Vec4f> ClipPlanes;
+  D3D9ShaderConstants VertexShaderConstants;
+  D3D9ShaderConstants PixelShaderConstants;
+  // the FVF, when the vertex declaration came from SetFVF
+  DWORD FVF = 0;
+  rdcarray<UINT> StreamFrequencies;
+  float NPatchMode = 0.0f;
+  BOOL SoftwareVertexProcessing = FALSE;
+  UINT CurrentTexturePalette = 0;
+  rdcarray<D3D9Palette> Palettes;
+  D3DCLIPSTATUS9 ClipStatus = {};
+};
+
+// Lights and palettes are indexed by any number the application likes, and the device can't
+// enumerate them, so the device remembers which indices have been used.
+struct D3D9IndexSet
+{
+  void Add(uint32_t idx)
+  {
+    if(!m_Indices.contains(idx))
+      m_Indices.push_back(idx);
+  }
+  const rdcarray<uint32_t> &Indices() const { return m_Indices; }
+
+private:
+  rdcarray<uint32_t> m_Indices;
+};
+
+// read the device state from the real device. behaviorFlags are the flags the application created
+// the device with, which decide how many vertex shader constants there are.
+void D3D9FetchDeviceState(IDirect3DDevice9 *realDevice, DWORD behaviorFlags,
+                          const D3D9IndexSet &lights, const D3D9IndexSet &palettes,
+                          D3D9DeviceState &state);
+
+DECLARE_REFLECTION_STRUCT(D3D9RenderStateValue);
+DECLARE_REFLECTION_STRUCT(D3D9SamplerStateValue);
+DECLARE_REFLECTION_STRUCT(D3D9TextureStageStateValue);
+DECLARE_REFLECTION_STRUCT(D3D9SamplerStates);
+DECLARE_REFLECTION_STRUCT(D3D9TextureStageStates);
+DECLARE_REFLECTION_STRUCT(D3D9TransformValue);
+DECLARE_REFLECTION_STRUCT(D3D9LightState);
+DECLARE_REFLECTION_STRUCT(D3D9Palette);
+DECLARE_REFLECTION_STRUCT(D3D9Vec4f);
+DECLARE_REFLECTION_STRUCT(D3D9Vec4i);
+DECLARE_REFLECTION_STRUCT(D3D9ShaderConstants);
+DECLARE_REFLECTION_STRUCT(D3D9DeviceState);

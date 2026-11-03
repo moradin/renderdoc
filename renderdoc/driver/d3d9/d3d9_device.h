@@ -683,6 +683,10 @@ private:
   D3D9ObjectBindings *m_Recording = NULL;
   D3D9BindingMask m_RecordingMask;
 
+  // the light and palette indices the application has used, protected by m_D3DLock
+  D3D9IndexSet m_LightIndices;
+  D3D9IndexSet m_PaletteNumbers;
+
   HWND m_Wnd = NULL;
   uint32_t m_FrameCounter = 0;
 
@@ -696,6 +700,8 @@ private:
   rdcarray<D3D9ResourceRecord *> m_DeferredRecordReleases;
   rdcarray<FrameDescription> m_CapturedFrames;
   bool m_AppControlledCapture = false;
+  // the non-object state when the frame being captured started
+  D3D9DeviceState m_FrameStartState;
 
   // structured export
   std::set<rdcstr> m_StringDB;

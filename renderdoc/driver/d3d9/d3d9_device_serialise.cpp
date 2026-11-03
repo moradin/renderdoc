@@ -1526,6 +1526,9 @@ bool WrappedD3DDevice9::Serialise_BeginCaptureFrame(SerialiserType &ser)
   SERIALISE_ELEMENT_LOCAL(RenderTargets, ArrayOf(m_RenderTargets));
   SERIALISE_ELEMENT_LOCAL(DepthStencil, m_DepthStencil);
 
+  // everything else: render states, transforms, lights, shader constants...
+  SERIALISE_ELEMENT_LOCAL(State, m_FrameStartState);
+
   SERIALISE_CHECK_READ_ERRORS();
 
   return true;

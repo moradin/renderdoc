@@ -7,8 +7,8 @@ so none of this is upstream.
 |---|---|---|
 | 0 | Driver project restored on current upstream, overlay working | Done |
 | 1 | Every object wrapped, bindings tracked, state blocks, Reset | Done, Reset needs more testing |
-| 2a | Captures written: every call serialised, resource creation records, structured export | Done, untested |
-| 2b | Full device state at frame start (render/sampler/texture stage states, transforms, lights, constants...) | Not started |
+| 2a | Captures written: every call serialised, resource creation records, structured export | Done, tested with `D3D9_Simple_Triangle` |
+| 2b | Full device state at frame start (render/sampler/texture stage states, transforms, lights, constants...) | Done, untested |
 | 2c | Resource contents: Lock tracking, shadow copies of D3DPOOL_DEFAULT data, initial contents | Not started |
 | 2d | Edge cases: Reset/device loss mid-capture, state block contents, D3DPERF markers in captures | Not started |
 | 3 | Replay | Not started |
@@ -23,7 +23,10 @@ so none of this is upstream.
   wrappers).
 - The D3DPERF marker hooks moved to the D3D11 project upstream. They now share `d3d9.dll` with our
   device creation hooks; check that markers still show up in D3D11 captures of apps that use them.
-- Captures (phase 2a).
+- The device state at frame start (phase 2b). `D3D9_Frame_Start_State` sets distinctive state before
+  its first frame; its `BeginCaptureFrame` chunk should hold all of it. It runs on a pure device where
+  it can, which RenderDoc creates as a normal device so that the state can be read back.
+- D3DPERF markers don't appear in D3D9 captures yet (phase 2d).
 
 ## Inspecting a capture
 
@@ -33,9 +36,9 @@ Captures can't be opened in the UI until replay exists, but their contents can b
 renderdoccmd convert -f capture.rdc -o capture.zip.xml -c zip.xml
 ```
 
-The XML has every chunk with its parameters. Until 2b and 2c are done, a capture only contains the
-calls made during the frame, the object bindings at the start of the frame, and how each referenced
-object was created - no render states from before the frame and no resource contents.
+The XML has every chunk with its parameters. Until 2c is done, a capture contains the calls made
+during the frame, the device state at the start of the frame (in `BeginCaptureFrame`), and how each
+referenced object was created, but no resource contents.
 
 ## Code layout
 

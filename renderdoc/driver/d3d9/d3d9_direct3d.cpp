@@ -153,6 +153,14 @@ HMONITOR __stdcall WrappedD3D9::GetAdapterMonitor(UINT Adapter)
   return m_Direct3D->GetAdapterMonitor(Adapter);
 }
 
+// Pure devices don't keep the state that can be read back with Get* calls. Capture needs to read
+// it, so the real device is never pure. The only difference the application can see is Get* calls
+// working where they would have failed, and GetCreationParameters still reports the flag.
+static DWORD RealBehaviorFlags(DWORD flags)
+{
+  return flags & ~D3DCREATE_PUREDEVICE;
+}
+
 HRESULT __stdcall WrappedD3D9::CreateDevice(UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow,
                                             DWORD BehaviorFlags,
                                             D3DPRESENT_PARAMETERS *pPresentationParameters,
@@ -162,8 +170,9 @@ HRESULT __stdcall WrappedD3D9::CreateDevice(UINT Adapter, D3DDEVTYPE DeviceType,
     return D3DERR_INVALIDCALL;
 
   IDirect3DDevice9 *device = NULL;
-  HRESULT res = m_Direct3D->CreateDevice(Adapter, DeviceType, hFocusWindow, BehaviorFlags,
-                                         pPresentationParameters, &device);
+  HRESULT res =
+      m_Direct3D->CreateDevice(Adapter, DeviceType, hFocusWindow, RealBehaviorFlags(BehaviorFlags),
+                               pPresentationParameters, &device);
   if(SUCCEEDED(res) && device != NULL)
   {
     RDCLOG("App creating d3d9 device");
@@ -227,9 +236,9 @@ HRESULT __stdcall WrappedD3D9::CreateDeviceEx(UINT Adapter, D3DDEVTYPE DeviceTyp
 
   IDirect3DDevice9Ex *device = NULL;
 
-  HRESULT res =
-      m_Direct3DEx->CreateDeviceEx(Adapter, DeviceType, hFocusWindow, BehaviorFlags,
-                                   pPresentationParameters, pFullscreenDisplayMode, &device);
+  HRESULT res = m_Direct3DEx->CreateDeviceEx(
+      Adapter, DeviceType, hFocusWindow, RealBehaviorFlags(BehaviorFlags), pPresentationParameters,
+      pFullscreenDisplayMode, &device);
   if(SUCCEEDED(res) && device != NULL)
   {
     RDCLOG("App creating D3D9 DeviceEx");

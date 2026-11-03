@@ -190,6 +190,9 @@
     <ClCompile Include="d3d9\d3d9ex_wrapping_check.cpp">
       <Filter>D3D9\demos</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9\d3d9_frame_start_state.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
     <ClCompile Include="d3d9\d3d9_simple_triangle.cpp">
       <Filter>D3D9\demos</Filter>
     </ClCompile>

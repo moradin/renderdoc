@@ -228,6 +228,7 @@
     <ClCompile Include="d3d12\d3d12_workgroup_zoo.cpp" />
     <ClCompile Include="d3d12\d3d12_write_subresource.cpp" />
     <ClCompile Include="d3d9\d3d9ex_wrapping_check.cpp" />
+    <ClCompile Include="d3d9\d3d9_frame_start_state.cpp" />
     <ClCompile Include="d3d9\d3d9_simple_triangle.cpp" />
     <ClCompile Include="d3d9\d3d9_test.cpp" />
     <ClCompile Include="d3d9\d3d9_wrapping_check.cpp" />

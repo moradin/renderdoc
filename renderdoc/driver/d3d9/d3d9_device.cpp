@@ -481,6 +481,9 @@ void WrappedD3DDevice9::StartFrameCapture(DeviceOwnedWindow devWnd)
   MarkReferenced(m_Bindings.decl, eFrameRef_Read);
   MarkRenderTargetsReferenced();
 
+  D3D9FetchDeviceState(m_device, m_InitParams.BehaviorFlags, m_LightIndices, m_PaletteNumbers,
+                       m_FrameStartState);
+
   {
     USE_SCRATCH_SERIALISER();
     SCOPED_SERIALISE_CHUNK(D3D9Chunk::BeginCaptureFrame);
