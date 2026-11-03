@@ -32,7 +32,7 @@
 //
 // We track these ourselves rather than asking the real device, because:
 //  - Get* calls must return our wrappers, with the same pointer every time.
-//  - Get* calls on state-block state fail on D3DCREATE_PUREDEVICE devices.
+//  - Get* calls on state-block state aren't guaranteed to work on D3DCREATE_PUREDEVICE devices.
 //  - capture needs the full binding state at the start of a frame.
 struct D3D9StreamBinding
 {
@@ -109,8 +109,9 @@ void D3D9SetBound(T *&slot, T *val)
 //
 // It's read back from the real device with Get* calls rather than tracked as calls are made, so
 // it's right however it was set: directly, by applying a state block, or by a Reset putting
-// everything back to defaults. Get* calls on this state fail on D3DCREATE_PUREDEVICE devices, so
-// the real device is never created with that flag (see WrappedD3D9::CreateDevice).
+// everything back to defaults. Get* calls on this state aren't guaranteed to work on
+// D3DCREATE_PUREDEVICE devices, so the real device is never created with that flag (see
+// WrappedD3D9::CreateDevice).
 struct D3D9RenderStateValue
 {
   D3DRENDERSTATETYPE State = D3DRS_ZENABLE;

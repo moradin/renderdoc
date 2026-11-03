@@ -42,9 +42,9 @@ RD_TEST(D3D9_Frame_Start_State, D3D9GraphicsTest)
   const float UpperPS[4] = {17.0f, 18.0f, 19.0f, 20.0f};
 
   // checks that nothing between frames has changed the shader constants above c127, or copied
-  // lower constants over them. Pure devices can't read constants back, so this only runs without
-  // one: natively when no pure device is available, or under RenderDoc, whose real device isn't
-  // pure.
+  // lower constants over them. Reading constants back isn't guaranteed to work on a pure device, so
+  // the check is skipped if it fails. Some runtimes do return them. Under RenderDoc the real device
+  // is never pure, so it always runs there.
   bool upperConstantsReported = false;
 
   void CheckUpperConstants()

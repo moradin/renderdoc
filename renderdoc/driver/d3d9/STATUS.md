@@ -23,16 +23,22 @@ so none of this is upstream.
   wrappers).
 - The D3DPERF marker hooks moved to the D3D11 project upstream. They now share `d3d9.dll` with our
   device creation hooks; check that markers still show up in D3D11 captures of apps that use them.
-- The overlay no longer uses a `D3DSBT_ALL` state block to restore the application's state. Applying
-  one copied shader constants c0-c127 over c128-c255 (natively too, on an RTX 4070 Ti), so every
-  application using upper constants was corrupted each frame. It now saves and restores only what it
-  changes. `D3D9_Frame_Start_State` checks c200/c180 survive, and the `BeginCaptureFrame` chunk
-  shouldn't have copies of c10/c20 at c138/c148. Also worth checking in a game with a visible overlay:
-  nothing in the scene should change when the overlay is toggled.
+- Toggling the overlay in a real game shouldn't change anything in the scene. The overlay saves and
+  restores only the state it changes; that's tested with `D3D9_Frame_Start_State` and the wrapping
+  checks, but not yet in a game.
 - D3DPERF markers don't appear in D3D9 captures yet (phase 2d).
 - Applications' own `D3DSBT_ALL` state blocks have the same constant-copying behaviour natively. We
   pass them through as they are; replay (phase 3) needs to reproduce it rather than "fix" it.
 - Sampler 256 (`D3DDMAPSAMPLER`) reads back `ADDRESSU` 0xBAADCAFE natively. It's recorded as read.
+
+## Fixed
+
+- The overlay used to restore the application's state with a `D3DSBT_ALL` state block. Applying one
+  copies shader constants c0-c127 over c128-c255 (natively too, on an RTX 4070 Ti), so applications
+  using upper constants were corrupted every frame. It also leaked stage 0 `D3DTSS_CONSTANT`
+  (0xFFFFFFFF), which the state block didn't restore. It now saves and restores only what it changes.
+  Tested: c200/c180 survive in `D3D9_Frame_Start_State`, c138/c148 stay zero, and `D3DTSS_CONSTANT`
+  keeps the application's value. Nothing else in `BeginCaptureFrame` changed.
 
 ## Inspecting a capture
 

@@ -153,9 +153,10 @@ HMONITOR __stdcall WrappedD3D9::GetAdapterMonitor(UINT Adapter)
   return m_Direct3D->GetAdapterMonitor(Adapter);
 }
 
-// Pure devices don't keep the state that can be read back with Get* calls. Capture needs to read
-// it, so the real device is never pure. The only difference the application can see is Get* calls
-// working where they would have failed, and GetCreationParameters still reports the flag.
+// Get* calls aren't guaranteed to work on pure devices. Some runtimes return some state anyway,
+// but capture needs all of it, so the real device is never pure. The only difference the
+// application can see is Get* calls working where they might have failed, and
+// GetCreationParameters still reports the flag.
 static DWORD RealBehaviorFlags(DWORD flags)
 {
   return flags & ~D3DCREATE_PUREDEVICE;
