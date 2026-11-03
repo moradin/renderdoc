@@ -43,8 +43,10 @@
 //   surfaces with StretchRect first.
 // * Other D3DPOOL_DEFAULT textures can't be locked or copied from. Their contents only change
 //   through UpdateTexture and UpdateSurface, so we keep a copy of what's uploaded (the shadow).
-// * Depth stencils can only be read if they have a lockable format. Otherwise there are no
-//   contents, and the initial contents say why.
+// * Depth stencils with a lockable format are locked. Others (including INTZ, DF24 and DF16
+//   textures) are read with the depth and stencil tests, see d3d9_depth.cpp, which needs shader
+//   model 3. D24FS8 and D3DMULTISAMPLE_NONMASKABLE can't be read that way: they have no contents,
+//   and the initial contents say why. Multisampled ones store one slice per sample.
 // * State blocks: their values can't be read directly, so the state block is applied to the real
 //   device, the device state read back, and the device's state set back the way it was. Which
 //   states a state block covers comes from its creation: CreateStateBlock's type, or the calls

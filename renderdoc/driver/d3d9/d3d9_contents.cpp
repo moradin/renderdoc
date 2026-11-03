@@ -605,8 +605,24 @@ void WrappedD3DDevice9::ReadContents(WrappedD3D9Object *obj, D3D9InitialContents
       break;
     case Resource_Surface:
     {
+      IDirect3DSurface9 *surf = ((WrappedD3DSurface9 *)obj)->GetReal();
+      D3DSURFACE_DESC desc = {};
+      surf->GetDesc(&desc);
+
       D3D9SubresourceData sub;
-      rdcstr err = ReadSurface(m_device, ((WrappedD3DSurface9 *)obj)->GetReal(), sub);
+      rdcstr err;
+      if((desc.Usage & D3DUSAGE_DEPTHSTENCIL) && !IsLockableDepth(desc.Format))
+      {
+        rdcstr note;
+        err = ReadDepthStencil(surf, sub, note);
+        if(!note.empty())
+          AddNote(contents, note);
+      }
+      else
+      {
+        err = ReadSurface(m_device, surf, sub);
+      }
+
       if(err.empty())
         contents.Subresources.push_back(std::move(sub));
       else
@@ -664,10 +680,37 @@ void WrappedD3DDevice9::ReadContents(WrappedD3D9Object *obj, D3D9InitialContents
         break;
       }
 
+      // INTZ, DF24 and DF16 textures, read through their surfaces
       if((desc.Usage & D3DUSAGE_DEPTHSTENCIL) && !IsLockableDepth(desc.Format))
       {
-        AddNote(contents, StringFormat::Fmt("Depth-stencil contents in %s can't be read back",
-                                            ToStr(desc.Format).c_str()));
+        for(UINT face = 0; face < faces; face++)
+        {
+          for(UINT level = 0; level < levels; level++)
+          {
+            IDirect3DSurface9 *surf = NULL;
+            HRESULT hr = cube ? cubeTex->GetCubeMapSurface((D3DCUBEMAP_FACES)face, level, &surf)
+                              : tex->GetSurfaceLevel(level, &surf);
+
+            D3D9SubresourceData sub;
+            sub.Face = face;
+            sub.Level = level;
+            rdcstr err, note;
+            if(SUCCEEDED(hr) && surf)
+              err = ReadDepthStencil(surf, sub, note);
+            else
+              err = StringFormat::Fmt("Couldn't get the surface: %s", ToStr(hr).c_str());
+            SAFE_RELEASE(surf);
+
+            if(err.empty())
+              contents.Subresources.push_back(std::move(sub));
+            else
+              AddNote(contents, StringFormat::Fmt("Face %u level %u: %s", face, level, err.c_str()));
+
+            // the note is the same for every level
+            if(!note.empty() && face == 0 && level == 0)
+              AddNote(contents, note);
+          }
+        }
         break;
       }
 

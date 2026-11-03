@@ -696,6 +696,26 @@ private:
   void RestoreRealBindings(DWORD fvf);
   void MarkStateBlockReferenced(WrappedD3DStateBlock9 *sb);
 
+  // reading depth stencils that can't be locked, see d3d9_depth.cpp. note describes how the
+  // contents are laid out, when they were read.
+  rdcstr ReadDepthStencil(IDirect3DSurface9 *realDS, D3D9SubresourceData &sub, rdcstr &note);
+  bool InitDepthReadback(rdcstr &err);
+
+  // the shaders that draw for ReadDepthStencil, on the real device, created on first use
+  struct DepthReadback
+  {
+    bool tried = false;
+    // why they couldn't be created
+    rdcstr error;
+    IDirect3DVertexShader9 *vs = NULL;
+    IDirect3DPixelShader9 *depthTest = NULL;
+    IDirect3DPixelShader9 *stencilTest = NULL;
+    IDirect3DPixelShader9 *combine = NULL;
+    IDirect3DVertexDeclaration9 *decl = NULL;
+
+    void Release();
+  } m_DepthReadback;
+
   // State calls are recorded into the frame, and also while a state block is being recorded: they
   // become part of the state block's creation, since that's what decides which states it covers.
   bool ShouldRecordState() const

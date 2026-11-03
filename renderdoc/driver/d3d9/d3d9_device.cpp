@@ -215,6 +215,7 @@ WrappedD3DDevice9::~WrappedD3DDevice9()
 
   // only uses real objects
   SAFE_DELETE(m_DebugManager);
+  m_DepthReadback.Release();
 
   // Nothing the application can see is alive any more (every externally referenced object holds a
   // reference on the device), so dropping our internal references destroys every wrapper.

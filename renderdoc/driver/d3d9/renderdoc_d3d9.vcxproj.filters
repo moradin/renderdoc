@@ -48,6 +48,9 @@
     <ClCompile Include="d3d9_contents.cpp">
       <Filter>Wrapped</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9_depth.cpp">
+      <Filter>Wrapped</Filter>
+    </ClCompile>
     <ClCompile Include="d3d9_swapchain.cpp">
       <Filter>Wrapped</Filter>
     </ClCompile>

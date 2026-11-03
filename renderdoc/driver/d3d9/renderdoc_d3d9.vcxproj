@@ -100,6 +100,7 @@
     <ClCompile Include="d3d9_common.cpp" />
     <ClCompile Include="d3d9_contents.cpp" />
     <ClCompile Include="d3d9_debug.cpp" />
+    <ClCompile Include="d3d9_depth.cpp" />
     <ClCompile Include="d3d9_device.cpp" />
     <ClCompile Include="d3d9_device_wrap.cpp" />
     <ClCompile Include="d3d9_direct3d.cpp" />
