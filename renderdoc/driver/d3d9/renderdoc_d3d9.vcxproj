@@ -107,6 +107,7 @@
     <ClCompile Include="d3d9_hooks.cpp" />
     <ClCompile Include="d3d9_manager.cpp" />
     <ClCompile Include="d3d9_replay.cpp" />
+    <ClCompile Include="d3d9_replay_device.cpp" />
     <ClCompile Include="d3d9_resources.cpp" />
     <ClCompile Include="d3d9_state.cpp" />
     <ClCompile Include="d3d9_swapchain.cpp" />
@@ -126,6 +127,7 @@
     <ClInclude Include="d3d9_debug.h" />
     <ClInclude Include="d3d9_device.h" />
     <ClInclude Include="d3d9_manager.h" />
+    <ClInclude Include="d3d9_replay.h" />
     <ClInclude Include="d3d9_resources.h" />
     <ClInclude Include="d3d9_state.h" />
     <ClInclude Include="d3d9_swapchain.h" />

@@ -66,6 +66,9 @@
     <ClCompile Include="d3d9_replay.cpp">
       <Filter>Replay</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9_replay_device.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
     <ClCompile Include="d3d9_device_serialise.cpp">
       <Filter>Serialise</Filter>
     </ClCompile>
@@ -106,6 +109,9 @@
     </ClInclude>
     <ClInclude Include="d3d9_state.h">
       <Filter>Wrapped</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_replay.h">
+      <Filter>Replay</Filter>
     </ClInclude>
     <ClInclude Include="d3d9_manager.h">
       <Filter>Common</Filter>

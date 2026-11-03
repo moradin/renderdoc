@@ -91,7 +91,13 @@ bool D3D9ResourceManager::DoSerialise_InitialState(SerialiserType &ser, Resource
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // applying initial contents is part of replay (phase 3)
+  // kept to be written back whenever the frame is replayed from the start
+  if(ser.IsReading() && IsReplayMode(m_State) && HasResource(id))
+  {
+    if(!Contents.Note.empty())
+      RDCLOG("Initial contents of %s: %s", ToStr(id).c_str(), Contents.Note.c_str());
+    SetInitialContents(id, D3D9InitialContents(new D3D9InitialContentsData(std::move(Contents))));
+  }
 
   return true;
 }
@@ -117,8 +123,22 @@ bool D3D9ResourceManager::ReadInitialState(ReadSerialiser &ser)
 
 void D3D9ResourceManager::Create_InitialState(ResourceId id, IUnknown *live, bool hasData)
 {
+  // objects whose contents weren't stored keep whatever they have
 }
 
 void D3D9ResourceManager::Apply_InitialState(IUnknown *live, D3D9InitialContents &data)
 {
+  WrappedD3D9Object *obj = GetWrappedObject(live);
+  if(obj == NULL || data.data == NULL)
+    return;
+
+  if(obj->GetResourceType() == Resource_StateBlock)
+  {
+    if(!data.data->StateBlock.empty())
+      m_Device->ApplyStateBlockContents((WrappedD3DStateBlock9 *)obj, data.data->StateBlock[0]);
+    return;
+  }
+
+  for(const D3D9SubresourceData &sub : data.data->Subresources)
+    m_Device->WriteContents(obj, sub);
 }

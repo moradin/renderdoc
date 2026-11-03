@@ -25,6 +25,7 @@
 #pragma once
 
 #include "common/threading.h"
+#include "replay/replay_driver.h"
 #include "serialise/rdcfile.h"
 #include "d3d9_common.h"
 #include "d3d9_manager.h"
@@ -32,6 +33,7 @@
 #include "d3d9_state.h"
 
 class D3D9DebugManager;
+class D3D9Replay;
 class WrappedD3DSurface9;
 class WrappedD3DVolume9;
 class WrappedD3DTexture9;
@@ -147,6 +149,41 @@ public:
   RDResult ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers);
   SDFile *GetStructuredFile() { return m_StructuredFile; }
   static rdcstr GetChunkName(uint32_t idx);
+
+  //////////////////////////////
+  // replay, see d3d9_replay_device.cpp
+
+  // window is the hidden window the capture's swapchains present to
+  void SetReplay(D3D9Replay *replay, HWND window)
+  {
+    m_Replay = replay;
+    m_ReplayWindow = window;
+  }
+  D3D9Replay *GetReplay() const { return m_Replay; }
+  void ReplayLog(uint32_t startEventID, uint32_t endEventID, ReplayLogType replayType);
+  const ActionDescription *GetAction(uint32_t eventId);
+  SDFile *DetachStructuredFile();
+  // drops the references replay holds on the objects it created
+  void ReleaseReplayObjects();
+  // whether the real device stopped working
+  RDResult FatalErrorCheck();
+
+  // the ID the next wrapper created takes, so that wrappers created during replay have their
+  // captured IDs. Consumed by WrappedD3D9Object's constructor, which otherwise gets a new one.
+  ResourceId TakeWrapperID();
+
+  // the texture a surface belongs to, or the surface itself if it isn't a texture level
+  ResourceId SurfaceTextureID(IDirect3DSurface9 *surf);
+
+  // writes a subresource's data to obj (which holds the contents, or is a texture level or volume
+  // level whose face and level are 0 in sub)
+  void WriteContents(WrappedD3D9Object *obj, const D3D9SubresourceData &sub);
+  // sets the device to the state block's values and captures them into it
+  void ApplyStateBlockContents(WrappedD3DStateBlock9 *sb, const D3D9StateBlockContents &contents);
+  // reads one subresource of a texture, standalone surface or buffer, rows packed. face is the
+  // cube face, for cube textures.
+  rdcstr ReadSubresource(WrappedD3D9Object *obj, uint32_t face, uint32_t level,
+                         D3D9SubresourceData &sub);
 
   //////////////////////////////
   // implement IFrameCapturer
@@ -691,6 +728,46 @@ public:
 private:
   bool ProcessChunk(ReadSerialiser &ser, D3D9Chunk chunk);
 
+  //////////////////////////////
+  // replay, see d3d9_replay_device.cpp
+
+  bool ContextProcessChunk(ReadSerialiser &ser, D3D9Chunk chunk);
+  RDResult ContextReplayLog(CaptureState readType, uint32_t startEventID, uint32_t endEventID,
+                            bool partial);
+  void AddEvent();
+  void AddAction(const ActionDescription &a);
+  const APIEvent &GetEvent(uint32_t eventId);
+  void AddReplayResource(ResourceId id, ResourceType type, const char *prefix);
+  void DerivedReplayResource(ResourceId parent, ResourceId child);
+
+  // Creates an object during replay with its captured ID. create(pool, usage) calls the wrapped
+  // creation function. D3D9Ex devices have no managed pool, so those objects go in the default
+  // pool, and textures that can't be rendered to are made dynamic where possible so they can be
+  // locked to write their contents.
+  template <typename CreateFunc>
+  HRESULT ReplayCreate(ResourceId id, D3DPOOL pool, DWORD usage, bool texture, CreateFunc create);
+  bool CheckReplayCreate(HRESULT hr, IUnknown *obj, ResourceId id, const char *what);
+  // children of other objects (texture levels, back buffers) created on first use
+  template <typename GetFunc>
+  void ReplayGetChild(ResourceId parent, ResourceId child, ResourceType type, const char *prefix,
+                      GetFunc get);
+  void PatchReplayPresentParams(D3DPRESENT_PARAMETERS &params);
+  // draws must be in a scene, which the replayed range might have started outside of
+  void ReplayBeginScene();
+  void ReplayEndScene();
+  void ApplyReplayDeviceState(const D3D9DeviceState &state);
+  void AddDrawAction(ActionFlags flags, uint32_t numIndices, uint32_t indexOffset,
+                     int32_t baseVertex, uint32_t vertexOffset);
+  void AddCopyAction(ActionFlags flags, IUnknown *source, IUnknown *dest);
+  ResourceId ContentsTextureID(IUnknown *obj);
+  // the first back buffer of a swapchain, described as a resource even if the capture never used it
+  ResourceId ReplayBackBufferID(IDirect3DSwapChain9 *swap);
+  rdcstr WriteSurface(IDirect3DSurface9 *surf, const D3D9SubresourceData &sub);
+  rdcstr WriteVolume(IDirect3DVolume9 *vol, const D3D9SubresourceData &sub);
+  // writing depth stencils that can't be locked, see d3d9_depth.cpp
+  rdcstr WriteDepthStencil(IDirect3DSurface9 *realDS, const D3D9SubresourceData &sub);
+  bool InitDepthWrite(rdcstr &err);
+
   // state block contents, see d3d9_contents.h
   void ReadStateBlock(WrappedD3DStateBlock9 *sb, D3D9InitialContentsData &contents);
   // set the real device's object bindings to the ones we track, fvf being the FVF to set if the
@@ -714,16 +791,18 @@ private:
     IDirect3DPixelShader9 *stencilTest = NULL;
     IDirect3DPixelShader9 *combine = NULL;
     IDirect3DVertexDeclaration9 *decl = NULL;
+    // for writing depth stencils back at replay
+    bool triedWrite = false;
+    rdcstr writeError;
+    IDirect3DPixelShader9 *depthWrite = NULL;
+    IDirect3DPixelShader9 *stencilWrite = NULL;
 
     void Release();
   } m_DepthReadback;
 
   // State calls are recorded into the frame, and also while a state block is being recorded: they
   // become part of the state block's creation, since that's what decides which states it covers.
-  bool ShouldRecordState() const
-  {
-    return IsActiveCapturing(m_State) || m_RecordingRecord != NULL;
-  }
+  bool ShouldRecordState() const { return IsActiveCapturing(m_State) || m_RecordingRecord != NULL; }
   void AddStateChunk(Chunk *chunk);
   void FreeRecordingRecord();
   bool ProcessUnlockChunk(ReadSerialiser &ser, D3D9Chunk chunk);
@@ -826,7 +905,86 @@ private:
   std::set<rdcstr> m_StringDB;
   SDFile *m_StructuredFile = NULL;
   SDFile *m_StoredStructuredData = NULL;
+
+  // replay
+  D3D9Replay *m_Replay = NULL;
+  HWND m_ReplayWindow = NULL;
+  ResourceId m_NextWrapperID;
+  // the objects replay created, holding the reference the creation returned
+  rdcarray<IUnknown *> m_ReplayObjects;
+  // the capture's implicit swapchains, created as additional swapchains
+  rdcarray<IDirect3DSwapChain9 *> m_ReplaySwapChains;
+  bool m_ReplayInScene = false;
+  RDResult m_FailedReplayResult = ResultCode::Succeeded;
+  uint64_t m_TimeBase = 0;
+  double m_TimeFrequency = 1.0;
+  StreamReader *m_FrameReader = NULL;
+  uint32_t m_CurEventID = 0;
+  uint32_t m_CurActionID = 0;
+  uint32_t m_FirstEventID = 0;
+  uint32_t m_LastEventID = ~0U;
+  uint64_t m_CurChunkOffset = 0;
+  D3D9Chunk m_LastChunk = D3D9Chunk::Max;
+  bool m_AddedAction = false;
+  rdcarray<APIEvent> m_CurEvents;
+  rdcarray<APIEvent> m_Events;
+  ActionDescription m_ParentAction;
+  rdcarray<ActionDescription *> m_ActionStack;
+  rdcarray<ActionDescription *> m_Actions;
 };
+
+template <typename CreateFunc>
+HRESULT WrappedD3DDevice9::ReplayCreate(ResourceId id, D3DPOOL pool, DWORD usage, bool texture,
+                                        CreateFunc create)
+{
+  if(pool == D3DPOOL_MANAGED)
+    pool = D3DPOOL_DEFAULT;
+
+  HRESULT hr = E_FAIL;
+
+  const DWORD notLockable =
+      D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL | D3DUSAGE_DYNAMIC | D3DUSAGE_AUTOGENMIPMAP;
+  if(texture && pool == D3DPOOL_DEFAULT && (usage & notLockable) == 0)
+  {
+    m_NextWrapperID = id;
+    hr = create(pool, usage | D3DUSAGE_DYNAMIC);
+  }
+
+  if(FAILED(hr))
+  {
+    m_NextWrapperID = id;
+    hr = create(pool, usage);
+  }
+
+  m_NextWrapperID = ResourceId();
+  return hr;
+}
+
+template <typename GetFunc>
+void WrappedD3DDevice9::ReplayGetChild(ResourceId parent, ResourceId child, ResourceType type,
+                                       const char *prefix, GetFunc get)
+{
+  m_NextWrapperID = child;
+  IUnknown *obj = get();
+  m_NextWrapperID = ResourceId();
+
+  if(obj == NULL)
+  {
+    RDCERR("Couldn't get %s %s of %s", prefix, ToStr(child).c_str(), ToStr(parent).c_str());
+    return;
+  }
+
+  WrappedD3D9Object *wrapped = GetWrappedObject(obj);
+  if(wrapped && wrapped->GetResourceID() != child)
+    RDCWARN("%s %s already existed as %s", prefix, ToStr(child).c_str(),
+            ToStr(wrapped->GetResourceID()).c_str());
+
+  // the container owns its children
+  obj->Release();
+
+  AddReplayResource(child, type, prefix);
+  DerivedReplayResource(parent, child);
+}
 
 template <typename SerialiseFunc>
 void WrappedD3DDevice9::RecordCreation(WrappedD3D9Object *obj, D3D9Chunk chunk,

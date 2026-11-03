@@ -43,6 +43,15 @@ rdcarray<WrappedD3DDevice9 *> &LiveDevices()
 }
 };
 
+// D3DPERF colours are 0xAARRGGBB, and applications often leave alpha at 0
+static FloatVector D3D9MarkerColor(D3DCOLOR col)
+{
+  if(col == 0)
+    return FloatVector();
+  return FloatVector(float((col >> 16) & 0xFF) / 255.0f, float((col >> 8) & 0xFF) / 255.0f,
+                     float(col & 0xFF) / 255.0f, 1.0f);
+}
+
 void D3D9_PERF_BeginEvent(DWORD col, const wchar_t *name)
 {
   WrappedD3DDevice9::PerfMarker(D3D9Chunk::D3DPERF_BeginEvent, col, name);
@@ -90,6 +99,17 @@ bool WrappedD3DDevice9::Serialise_D3DPERF_BeginEvent(SerialiserType &ser, D3DCOL
 
   SERIALISE_CHECK_READ_ERRORS();
 
+  if(IsReplayingAndReading() && IsLoading(m_State))
+  {
+    AddEvent();
+
+    ActionDescription action;
+    action.customName = Name;
+    action.flags = ActionFlags::PushMarker;
+    action.markerColor = D3D9MarkerColor(col);
+    AddAction(action);
+  }
+
   return true;
 }
 
@@ -97,6 +117,15 @@ template <typename SerialiserType>
 bool WrappedD3DDevice9::Serialise_D3DPERF_EndEvent(SerialiserType &ser)
 {
   SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading() && IsLoading(m_State))
+  {
+    AddEvent();
+
+    ActionDescription action;
+    action.flags = ActionFlags::PopMarker;
+    AddAction(action);
+  }
 
   return true;
 }
@@ -108,6 +137,17 @@ bool WrappedD3DDevice9::Serialise_D3DPERF_SetMarker(SerialiserType &ser, D3DCOLO
   SERIALISE_ELEMENT(Name).Important();
 
   SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading() && IsLoading(m_State))
+  {
+    AddEvent();
+
+    ActionDescription action;
+    action.customName = Name;
+    action.flags = ActionFlags::SetMarker;
+    action.markerColor = D3D9MarkerColor(col);
+    AddAction(action);
+  }
 
   return true;
 }
@@ -139,9 +179,15 @@ WrappedD3DDevice9::WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrap
     m_deviceEx = NULL;
 
   if(RenderDoc::Inst().IsReplayApp())
+  {
     m_State = CaptureState::LoadingReplaying;
+    // keep the IDs of objects replay creates for itself apart from the captured ones
+    ResourceIDGen::SetReplayResourceIDs();
+  }
   else
+  {
     m_State = CaptureState::BackgroundCapturing;
+  }
 
   InitCapture();
 
@@ -248,6 +294,7 @@ WrappedD3DDevice9::~WrappedD3DDevice9()
   SAFE_DELETE(m_ResourceManager);
 
   SAFE_DELETE(m_StoredStructuredData);
+  SAFE_DELETE(m_FrameReader);
 
   if(m_device)
   {

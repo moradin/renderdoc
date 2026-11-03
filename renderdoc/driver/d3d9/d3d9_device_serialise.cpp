@@ -23,6 +23,7 @@
  ******************************************************************************/
 
 #include "d3d9_device.h"
+#include "d3d9_replay.h"
 #include "d3d9_resources.h"
 #include "d3d9_swapchain.h"
 
@@ -73,7 +74,10 @@ bool WrappedD3DDevice9::Serialise_SetRenderTarget(SerialiserType &ser, DWORD Ren
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetRenderTarget(RenderTargetIndex, pRenderTarget);
+  }
 
   return true;
 }
@@ -89,7 +93,10 @@ bool WrappedD3DDevice9::Serialise_SetDepthStencilSurface(SerialiserType &ser,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetDepthStencilSurface(pNewZStencil);
+  }
 
   return true;
 }
@@ -102,7 +109,10 @@ bool WrappedD3DDevice9::Serialise_BeginScene(SerialiserType &ser)
 {
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    ReplayBeginScene();
+  }
 
   return true;
 }
@@ -115,7 +125,10 @@ bool WrappedD3DDevice9::Serialise_EndScene(SerialiserType &ser)
 {
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    ReplayBeginScene();
+  }
 
   return true;
 }
@@ -136,7 +149,10 @@ bool WrappedD3DDevice9::Serialise_Clear(SerialiserType &ser, DWORD Count, CONST 
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    ReplayEndScene();
+  }
 
   return true;
 }
@@ -153,7 +169,10 @@ bool WrappedD3DDevice9::Serialise_SetTransform(SerialiserType &ser, D3DTRANSFORM
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetTransform(State, pMatrix);
+  }
 
   return true;
 }
@@ -170,7 +189,10 @@ bool WrappedD3DDevice9::Serialise_MultiplyTransform(SerialiserType &ser, D3DTRAN
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    MultiplyTransform(State, pMatrix);
+  }
 
   return true;
 }
@@ -185,7 +207,10 @@ bool WrappedD3DDevice9::Serialise_SetViewport(SerialiserType &ser, CONST D3DVIEW
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetViewport(pViewport);
+  }
 
   return true;
 }
@@ -200,7 +225,10 @@ bool WrappedD3DDevice9::Serialise_SetMaterial(SerialiserType &ser, CONST D3DMATE
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetMaterial(pMaterial);
+  }
 
   return true;
 }
@@ -216,7 +244,10 @@ bool WrappedD3DDevice9::Serialise_SetLight(SerialiserType &ser, DWORD Index, CON
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetLight(Index, pLight);
+  }
 
   return true;
 }
@@ -232,7 +263,10 @@ bool WrappedD3DDevice9::Serialise_LightEnable(SerialiserType &ser, DWORD Index, 
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    LightEnable(Index, Enable);
+  }
 
   return true;
 }
@@ -247,7 +281,10 @@ bool WrappedD3DDevice9::Serialise_SetClipPlane(SerialiserType &ser, DWORD Index,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetClipPlane(Index, pPlane);
+  }
 
   return true;
 }
@@ -264,7 +301,10 @@ bool WrappedD3DDevice9::Serialise_SetRenderState(SerialiserType &ser, D3DRENDERS
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetRenderState(State, Value);
+  }
 
   return true;
 }
@@ -277,7 +317,10 @@ bool WrappedD3DDevice9::Serialise_BeginStateBlock(SerialiserType &ser)
 {
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    BeginStateBlock();
+  }
 
   return true;
 }
@@ -292,7 +335,10 @@ bool WrappedD3DDevice9::Serialise_SetClipStatus(SerialiserType &ser, CONST D3DCL
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    BeginStateBlock();
+  }
 
   return true;
 }
@@ -309,7 +355,10 @@ bool WrappedD3DDevice9::Serialise_SetTexture(SerialiserType &ser, DWORD Stage,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetTexture(Stage, pTexture);
+  }
 
   return true;
 }
@@ -327,7 +376,10 @@ bool WrappedD3DDevice9::Serialise_SetTextureStageState(SerialiserType &ser, DWOR
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetTextureStageState(Stage, Type, Value);
+  }
 
   return true;
 }
@@ -345,7 +397,10 @@ bool WrappedD3DDevice9::Serialise_SetSamplerState(SerialiserType &ser, DWORD Sam
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetSamplerState(Sampler, Type, Value);
+  }
 
   return true;
 }
@@ -362,7 +417,10 @@ bool WrappedD3DDevice9::Serialise_SetPaletteEntries(SerialiserType &ser, UINT Pa
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetPaletteEntries(PaletteNumber, pEntries);
+  }
 
   return true;
 }
@@ -377,7 +435,10 @@ bool WrappedD3DDevice9::Serialise_SetCurrentTexturePalette(SerialiserType &ser, 
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetCurrentTexturePalette(PaletteNumber);
+  }
 
   return true;
 }
@@ -392,7 +453,10 @@ bool WrappedD3DDevice9::Serialise_SetScissorRect(SerialiserType &ser, CONST RECT
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetScissorRect(pRect);
+  }
 
   return true;
 }
@@ -406,7 +470,10 @@ bool WrappedD3DDevice9::Serialise_SetSoftwareVertexProcessing(SerialiserType &se
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetSoftwareVertexProcessing(bSoftware);
+  }
 
   return true;
 }
@@ -421,7 +488,10 @@ bool WrappedD3DDevice9::Serialise_SetNPatchMode(SerialiserType &ser, float nSegm
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetNPatchMode(nSegments);
+  }
 
   return true;
 }
@@ -438,7 +508,14 @@ bool WrappedD3DDevice9::Serialise_DrawPrimitive(SerialiserType &ser, D3DPRIMITIV
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    ReplayBeginScene();
+    DrawPrimitive(PrimitiveType, StartVertex, PrimitiveCount);
+
+    AddDrawAction(ActionFlags::NoFlags, VertexCountForPrimitives(PrimitiveType, PrimitiveCount), 0,
+                  0, StartVertex);
+  }
 
   return true;
 }
@@ -463,7 +540,15 @@ bool WrappedD3DDevice9::Serialise_DrawIndexedPrimitive(SerialiserType &ser,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    ReplayBeginScene();
+    DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex,
+                         primCount);
+
+    AddDrawAction(ActionFlags::Indexed, VertexCountForPrimitives(PrimitiveType, primCount),
+                  startIndex, BaseVertexIndex, 0);
+  }
 
   return true;
 }
@@ -489,7 +574,24 @@ bool WrappedD3DDevice9::Serialise_ProcessVertices(SerialiserType &ser, UINT SrcS
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    ReplayBeginScene();
+    ProcessVertices(SrcStartIndex, DestIndex, VertexCount, pDestBuffer, pVertexDecl, Flags);
+
+    if(IsLoading(m_State))
+    {
+      AddEvent();
+
+      ActionDescription action;
+      action.flags = ActionFlags::Drawcall;
+      action.numIndices = VertexCount;
+      action.vertexOffset = SrcStartIndex;
+      action.numInstances = 1;
+      action.copyDestination = GetResID(pDestBuffer);
+      AddAction(action);
+    }
+  }
 
   return true;
 }
@@ -506,7 +608,10 @@ bool WrappedD3DDevice9::Serialise_SetVertexDeclaration(SerialiserType &ser,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetVertexDeclaration(pDecl);
+  }
 
   return true;
 }
@@ -521,7 +626,10 @@ bool WrappedD3DDevice9::Serialise_SetFVF(SerialiserType &ser, DWORD FVF)
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetFVF(FVF);
+  }
 
   return true;
 }
@@ -535,7 +643,10 @@ bool WrappedD3DDevice9::Serialise_SetVertexShader(SerialiserType &ser, IDirect3D
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetVertexShader(pShader);
+  }
 
   return true;
 }
@@ -554,7 +665,10 @@ bool WrappedD3DDevice9::Serialise_SetVertexShaderConstantF(SerialiserType &ser, 
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount);
+  }
 
   return true;
 }
@@ -573,7 +687,10 @@ bool WrappedD3DDevice9::Serialise_SetVertexShaderConstantI(SerialiserType &ser, 
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetVertexShaderConstantI(StartRegister, pConstantData, Vector4iCount);
+  }
 
   return true;
 }
@@ -591,7 +708,10 @@ bool WrappedD3DDevice9::Serialise_SetVertexShaderConstantB(SerialiserType &ser, 
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetVertexShaderConstantB(StartRegister, pConstantData, BoolCount);
+  }
 
   return true;
 }
@@ -611,7 +731,10 @@ bool WrappedD3DDevice9::Serialise_SetStreamSource(SerialiserType &ser, UINT Stre
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetStreamSource(StreamNumber, pStreamData, OffsetInBytes, Stride);
+  }
 
   return true;
 }
@@ -628,7 +751,10 @@ bool WrappedD3DDevice9::Serialise_SetStreamSourceFreq(SerialiserType &ser, UINT 
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetStreamSourceFreq(StreamNumber, Setting);
+  }
 
   return true;
 }
@@ -643,7 +769,10 @@ bool WrappedD3DDevice9::Serialise_SetIndices(SerialiserType &ser, IDirect3DIndex
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetIndices(pIndexData);
+  }
 
   return true;
 }
@@ -658,7 +787,10 @@ bool WrappedD3DDevice9::Serialise_SetPixelShader(SerialiserType &ser, IDirect3DP
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetPixelShader(pShader);
+  }
 
   return true;
 }
@@ -677,7 +809,10 @@ bool WrappedD3DDevice9::Serialise_SetPixelShaderConstantF(SerialiserType &ser, U
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetPixelShaderConstantF(StartRegister, pConstantData, Vector4fCount);
+  }
 
   return true;
 }
@@ -696,7 +831,10 @@ bool WrappedD3DDevice9::Serialise_SetPixelShaderConstantI(SerialiserType &ser, U
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetPixelShaderConstantI(StartRegister, pConstantData, Vector4iCount);
+  }
 
   return true;
 }
@@ -714,7 +852,10 @@ bool WrappedD3DDevice9::Serialise_SetPixelShaderConstantB(SerialiserType &ser, U
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    SetPixelShaderConstantB(StartRegister, pConstantData, BoolCount);
+  }
 
   return true;
 }
@@ -733,7 +874,13 @@ bool WrappedD3DDevice9::Serialise_DrawRectPatch(SerialiserType &ser, UINT Handle
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    ReplayBeginScene();
+    DrawRectPatch(Handle, pNumSegs, pRectPatchInfo);
+
+    AddDrawAction(ActionFlags::NoFlags, 0, 0, 0, 0);
+  }
 
   return true;
 }
@@ -752,7 +899,13 @@ bool WrappedD3DDevice9::Serialise_DrawTriPatch(SerialiserType &ser, UINT Handle,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    ReplayBeginScene();
+    DrawTriPatch(Handle, pNumSegs, pTriPatchInfo);
+
+    AddDrawAction(ActionFlags::NoFlags, 0, 0, 0, 0);
+  }
 
   return true;
 }
@@ -767,7 +920,10 @@ bool WrappedD3DDevice9::Serialise_DeletePatch(SerialiserType &ser, UINT Handle)
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    DeletePatch(Handle);
+  }
 
   return true;
 }
@@ -788,7 +944,12 @@ bool WrappedD3DDevice9::Serialise_UpdateSurface(SerialiserType &ser,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    UpdateSurface(pSourceSurface, pSourceRect, pDestinationSurface, pDestPoint);
+
+    AddCopyAction(ActionFlags::Copy, pSourceSurface, pDestinationSurface);
+  }
 
   return true;
 }
@@ -807,7 +968,12 @@ bool WrappedD3DDevice9::Serialise_UpdateTexture(SerialiserType &ser,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    UpdateTexture(pSourceTexture, pDestinationTexture);
+
+    AddCopyAction(ActionFlags::Copy, pSourceTexture, pDestinationTexture);
+  }
 
   return true;
 }
@@ -826,7 +992,12 @@ bool WrappedD3DDevice9::Serialise_GetRenderTargetData(SerialiserType &ser,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    GetRenderTargetData(pRenderTarget, pDestSurface);
+
+    AddCopyAction(ActionFlags::Copy, pRenderTarget, pDestSurface);
+  }
 
   return true;
 }
@@ -848,7 +1019,17 @@ bool WrappedD3DDevice9::Serialise_StretchRect(SerialiserType &ser, IDirect3DSurf
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    StretchRect(pSourceSurface, pSourceRect, pDestSurface, pDestRect, Filter);
+
+    D3DSURFACE_DESC srcDesc = {};
+    if(pSourceSurface)
+      pSourceSurface->GetDesc(&srcDesc);
+    AddCopyAction(
+        srcDesc.MultiSampleType != D3DMULTISAMPLE_NONE ? ActionFlags::Resolve : ActionFlags::Copy,
+        pSourceSurface, pDestSurface);
+  }
 
   return true;
 }
@@ -868,7 +1049,20 @@ bool WrappedD3DDevice9::Serialise_ColorFill(SerialiserType &ser, IDirect3DSurfac
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    ColorFill(pSurface, pRect, color);
+
+    if(IsLoading(m_State))
+    {
+      AddEvent();
+
+      ActionDescription action;
+      action.flags = ActionFlags::Clear | ActionFlags::ClearColor;
+      action.copyDestination = ContentsTextureID(pSurface);
+      AddAction(action);
+    }
+  }
 
   return true;
 }
@@ -894,7 +1088,13 @@ bool WrappedD3DDevice9::Serialise_ComposeRects(SerialiserType &ser, IDirect3DSur
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    if(m_deviceEx)
+      ComposeRects(pSrc, pDst, pSrcRectDescs, NumRects, pDstRectDescs, Operation, Xoffset, Yoffset);
+
+    AddCopyAction(ActionFlags::Copy, pSrc, pDst);
+  }
 
   return true;
 }
@@ -915,7 +1115,11 @@ bool WrappedD3DDevice9::Serialise_SetConvolutionMonoKernel(SerialiserType &ser, 
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    if(m_deviceEx)
+      SetConvolutionMonoKernel(width, height, (float *)rows, (float *)columns);
+  }
 
   return true;
 }
@@ -931,7 +1135,11 @@ bool WrappedD3DDevice9::Serialise_StateBlock_Capture(SerialiserType &ser,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    if(pStateBlock)
+      pStateBlock->Capture();
+  }
 
   return true;
 }
@@ -947,7 +1155,11 @@ bool WrappedD3DDevice9::Serialise_StateBlock_Apply(SerialiserType &ser,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    if(pStateBlock)
+      pStateBlock->Apply();
+  }
 
   return true;
 }
@@ -964,7 +1176,11 @@ bool WrappedD3DDevice9::Serialise_Query_Issue(SerialiserType &ser, IDirect3DQuer
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    if(pQuery)
+      pQuery->Issue(dwIssueFlags);
+  }
 
   return true;
 }
@@ -980,7 +1196,21 @@ bool WrappedD3DDevice9::Serialise_BaseTexture_GenerateMipSubLevels(SerialiserTyp
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    if(pTexture)
+      pTexture->GenerateMipSubLevels();
+
+    if(IsLoading(m_State))
+    {
+      AddEvent();
+
+      ActionDescription action;
+      action.flags = ActionFlags::GenMips;
+      action.copyDestination = GetResID(pTexture);
+      AddAction(action);
+    }
+  }
 
   return true;
 }
@@ -998,7 +1228,11 @@ bool WrappedD3DDevice9::Serialise_BaseTexture_SetAutoGenFilterType(SerialiserTyp
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    if(pTexture)
+      pTexture->SetAutoGenFilterType(FilterType);
+  }
 
   return true;
 }
@@ -1015,7 +1249,11 @@ bool WrappedD3DDevice9::Serialise_BaseTexture_SetLOD(SerialiserType &ser,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    if(pTexture)
+      pTexture->SetLOD(LODNew);
+  }
 
   return true;
 }
@@ -1039,7 +1277,20 @@ bool WrappedD3DDevice9::Serialise_CreateTexture(SerialiserType &ser, UINT Width,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    IDirect3DTexture9 *obj = NULL;
+    HRESULT hr = ReplayCreate(pTexture, Pool, Usage, true, [&](D3DPOOL pool, DWORD usage) {
+      return CreateTexture(Width, Height, Levels, usage, Format, pool, &obj, NULL);
+    });
+    if(!CheckReplayCreate(hr, obj, pTexture, "texture"))
+      return false;
+
+    AddReplayResource(pTexture, ResourceType::Texture,
+                      (Usage & D3DUSAGE_RENDERTARGET)   ? "Render Target Texture"
+                      : (Usage & D3DUSAGE_DEPTHSTENCIL) ? "Depth Texture"
+                                                        : "Texture");
+  }
 
   return true;
 }
@@ -1067,7 +1318,17 @@ bool WrappedD3DDevice9::Serialise_CreateVolumeTexture(SerialiserType &ser, UINT 
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    IDirect3DVolumeTexture9 *obj = NULL;
+    HRESULT hr = ReplayCreate(pVolumeTexture, Pool, Usage, true, [&](D3DPOOL pool, DWORD usage) {
+      return CreateVolumeTexture(Width, Height, Depth, Levels, usage, Format, pool, &obj, NULL);
+    });
+    if(!CheckReplayCreate(hr, obj, pVolumeTexture, "volume texture"))
+      return false;
+
+    AddReplayResource(pVolumeTexture, ResourceType::Texture, "Volume Texture");
+  }
 
   return true;
 }
@@ -1093,7 +1354,19 @@ bool WrappedD3DDevice9::Serialise_CreateCubeTexture(SerialiserType &ser, UINT Ed
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    IDirect3DCubeTexture9 *obj = NULL;
+    HRESULT hr = ReplayCreate(pCubeTexture, Pool, Usage, true, [&](D3DPOOL pool, DWORD usage) {
+      return CreateCubeTexture(EdgeLength, Levels, usage, Format, pool, &obj, NULL);
+    });
+    if(!CheckReplayCreate(hr, obj, pCubeTexture, "cube texture"))
+      return false;
+
+    AddReplayResource(
+        pCubeTexture, ResourceType::Texture,
+        (Usage & D3DUSAGE_RENDERTARGET) ? "Render Target Cube Texture" : "Cube Texture");
+  }
 
   return true;
 }
@@ -1117,7 +1390,17 @@ bool WrappedD3DDevice9::Serialise_CreateVertexBuffer(SerialiserType &ser, UINT L
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    IDirect3DVertexBuffer9 *obj = NULL;
+    HRESULT hr = ReplayCreate(pVertexBuffer, Pool, Usage, false, [&](D3DPOOL pool, DWORD usage) {
+      return CreateVertexBuffer(Length, usage & ~D3DUSAGE_WRITEONLY, FVF, pool, &obj, NULL);
+    });
+    if(!CheckReplayCreate(hr, obj, pVertexBuffer, "vertex buffer"))
+      return false;
+
+    AddReplayResource(pVertexBuffer, ResourceType::Buffer, "Vertex Buffer");
+  }
 
   return true;
 }
@@ -1141,7 +1424,17 @@ bool WrappedD3DDevice9::Serialise_CreateIndexBuffer(SerialiserType &ser, UINT Le
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    IDirect3DIndexBuffer9 *obj = NULL;
+    HRESULT hr = ReplayCreate(pIndexBuffer, Pool, Usage, false, [&](D3DPOOL pool, DWORD usage) {
+      return CreateIndexBuffer(Length, usage & ~D3DUSAGE_WRITEONLY, Format, pool, &obj, NULL);
+    });
+    if(!CheckReplayCreate(hr, obj, pIndexBuffer, "index buffer"))
+      return false;
+
+    AddReplayResource(pIndexBuffer, ResourceType::Buffer, "Index Buffer");
+  }
 
   return true;
 }
@@ -1165,7 +1458,18 @@ bool WrappedD3DDevice9::Serialise_CreateRenderTarget(
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    IDirect3DSurface9 *obj = NULL;
+    m_NextWrapperID = pSurface;
+    HRESULT hr = CreateRenderTarget(Width, Height, Format, MultiSample, MultisampleQuality,
+                                    Lockable, &obj, NULL);
+    m_NextWrapperID = ResourceId();
+    if(!CheckReplayCreate(hr, obj, pSurface, "render target"))
+      return false;
+
+    AddReplayResource(pSurface, ResourceType::Texture, "Render Target");
+  }
 
   return true;
 }
@@ -1190,7 +1494,18 @@ bool WrappedD3DDevice9::Serialise_CreateDepthStencilSurface(
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    IDirect3DSurface9 *obj = NULL;
+    m_NextWrapperID = pSurface;
+    HRESULT hr = CreateDepthStencilSurface(Width, Height, Format, MultiSample, MultisampleQuality,
+                                           Discard, &obj, NULL);
+    m_NextWrapperID = ResourceId();
+    if(!CheckReplayCreate(hr, obj, pSurface, "depth stencil"))
+      return false;
+
+    AddReplayResource(pSurface, ResourceType::Texture, "Depth Stencil");
+  }
 
   return true;
 }
@@ -1215,7 +1530,20 @@ bool WrappedD3DDevice9::Serialise_CreateOffscreenPlainSurface(SerialiserType &se
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    if(Pool == D3DPOOL_MANAGED)
+      Pool = D3DPOOL_DEFAULT;
+
+    IDirect3DSurface9 *obj = NULL;
+    m_NextWrapperID = pSurface;
+    HRESULT hr = CreateOffscreenPlainSurface(Width, Height, Format, Pool, &obj, NULL);
+    m_NextWrapperID = ResourceId();
+    if(!CheckReplayCreate(hr, obj, pSurface, "offscreen plain surface"))
+      return false;
+
+    AddReplayResource(pSurface, ResourceType::Texture, "Offscreen Surface");
+  }
 
   return true;
 }
@@ -1243,7 +1571,18 @@ bool WrappedD3DDevice9::Serialise_CreateRenderTargetEx(SerialiserType &ser, UINT
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    IDirect3DSurface9 *obj = NULL;
+    m_NextWrapperID = pSurface;
+    HRESULT hr = CreateRenderTargetEx(Width, Height, Format, MultiSample, MultisampleQuality,
+                                      Lockable, &obj, NULL, Usage);
+    m_NextWrapperID = ResourceId();
+    if(!CheckReplayCreate(hr, obj, pSurface, "render target"))
+      return false;
+
+    AddReplayResource(pSurface, ResourceType::Texture, "Render Target");
+  }
 
   return true;
 }
@@ -1269,7 +1608,17 @@ bool WrappedD3DDevice9::Serialise_CreateOffscreenPlainSurfaceEx(SerialiserType &
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    IDirect3DSurface9 *obj = NULL;
+    m_NextWrapperID = pSurface;
+    HRESULT hr = CreateOffscreenPlainSurfaceEx(Width, Height, Format, Pool, &obj, NULL, Usage);
+    m_NextWrapperID = ResourceId();
+    if(!CheckReplayCreate(hr, obj, pSurface, "offscreen plain surface"))
+      return false;
+
+    AddReplayResource(pSurface, ResourceType::Texture, "Offscreen Surface");
+  }
 
   return true;
 }
@@ -1297,7 +1646,18 @@ bool WrappedD3DDevice9::Serialise_CreateDepthStencilSurfaceEx(SerialiserType &se
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    IDirect3DSurface9 *obj = NULL;
+    m_NextWrapperID = pSurface;
+    HRESULT hr = CreateDepthStencilSurfaceEx(Width, Height, Format, MultiSample, MultisampleQuality,
+                                             Discard, &obj, NULL, Usage);
+    m_NextWrapperID = ResourceId();
+    if(!CheckReplayCreate(hr, obj, pSurface, "depth stencil"))
+      return false;
+
+    AddReplayResource(pSurface, ResourceType::Texture, "Depth Stencil");
+  }
 
   return true;
 }
@@ -1316,7 +1676,25 @@ bool WrappedD3DDevice9::Serialise_CreateQuery(SerialiserType &ser, D3DQUERYTYPE 
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    IDirect3DQuery9 *obj = NULL;
+    m_NextWrapperID = pQuery;
+    HRESULT hr = CreateQuery(Type, &obj);
+    m_NextWrapperID = ResourceId();
+
+    // queries the replay GPU doesn't support aren't needed to replay the frame
+    if(FAILED(hr) || obj == NULL)
+    {
+      RDCWARN("Couldn't create query %s of type %s: %s", ToStr(pQuery).c_str(), ToStr(Type).c_str(),
+              ToStr(hr).c_str());
+    }
+    else
+    {
+      m_ReplayObjects.push_back(obj);
+      AddReplayResource(pQuery, ResourceType::Query, "Query");
+    }
+  }
 
   return true;
 }
@@ -1333,7 +1711,17 @@ bool WrappedD3DDevice9::Serialise_CreateStateBlock(SerialiserType &ser, D3DSTATE
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    IDirect3DStateBlock9 *obj = NULL;
+    m_NextWrapperID = pSB;
+    HRESULT hr = CreateStateBlock(Type, &obj);
+    m_NextWrapperID = ResourceId();
+    if(!CheckReplayCreate(hr, obj, pSB, "state block"))
+      return false;
+
+    AddReplayResource(pSB, ResourceType::StateObject, "State Block");
+  }
 
   return true;
 }
@@ -1348,7 +1736,31 @@ bool WrappedD3DDevice9::Serialise_EndStateBlock(SerialiserType &ser, IDirect3DSt
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    IDirect3DStateBlock9 *obj = NULL;
+
+    // during the frame, the state block already exists: the recording only keeps the calls in it
+    // from changing the device
+    const bool exists = m_ResourceManager->HasResource(pSB);
+
+    if(!exists)
+      m_NextWrapperID = pSB;
+    HRESULT hr = EndStateBlock(&obj);
+    m_NextWrapperID = ResourceId();
+
+    if(exists)
+    {
+      SAFE_RELEASE(obj);
+    }
+    else
+    {
+      if(!CheckReplayCreate(hr, obj, pSB, "state block"))
+        return false;
+
+      AddReplayResource(pSB, ResourceType::StateObject, "State Block");
+    }
+  }
 
   return true;
 }
@@ -1366,7 +1778,22 @@ bool WrappedD3DDevice9::Serialise_CreateAdditionalSwapChain(
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    D3DPRESENT_PARAMETERS params = {};
+    if(pPresentationParameters)
+      params = *pPresentationParameters;
+    PatchReplayPresentParams(params);
+
+    IDirect3DSwapChain9 *obj = NULL;
+    m_NextWrapperID = SwapChain;
+    HRESULT hr = CreateAdditionalSwapChain(&params, &obj);
+    m_NextWrapperID = ResourceId();
+    if(!CheckReplayCreate(hr, obj, SwapChain, "swapchain"))
+      return false;
+
+    AddReplayResource(SwapChain, ResourceType::Unknown, "Swapchain");
+  }
 
   return true;
 }
@@ -1387,7 +1814,16 @@ bool WrappedD3DDevice9::Serialise_Texture_GetSurfaceLevel(SerialiserType &ser,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    if(pTexture)
+      ReplayGetChild(GetResID(pTexture), pSurfaceLevel, ResourceType::Texture, "Surface",
+                     [&]() -> IUnknown * {
+                       IDirect3DSurface9 *obj = NULL;
+                       pTexture->GetSurfaceLevel(Level, &obj);
+                       return obj;
+                     });
+  }
 
   return true;
 }
@@ -1410,7 +1846,16 @@ bool WrappedD3DDevice9::Serialise_CubeTexture_GetCubeMapSurface(SerialiserType &
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    if(pCubeTexture)
+      ReplayGetChild(GetResID(pCubeTexture), pCubeMapSurface, ResourceType::Texture, "Surface",
+                     [&]() -> IUnknown * {
+                       IDirect3DSurface9 *obj = NULL;
+                       pCubeTexture->GetCubeMapSurface(FaceType, Level, &obj);
+                       return obj;
+                     });
+  }
 
   return true;
 }
@@ -1431,7 +1876,16 @@ bool WrappedD3DDevice9::Serialise_VolumeTexture_GetVolumeLevel(SerialiserType &s
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    if(pVolumeTexture)
+      ReplayGetChild(GetResID(pVolumeTexture), pVolumeLevel, ResourceType::Texture, "Volume",
+                     [&]() -> IUnknown * {
+                       IDirect3DVolume9 *obj = NULL;
+                       pVolumeTexture->GetVolumeLevel(Level, &obj);
+                       return obj;
+                     });
+  }
 
   return true;
 }
@@ -1452,7 +1906,16 @@ bool WrappedD3DDevice9::Serialise_SwapChain_GetBackBuffer(SerialiserType &ser,
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+  {
+    if(pSwapChain)
+      ReplayGetChild(GetResID(pSwapChain), pBackBuffer, ResourceType::SwapchainImage, "Backbuffer",
+                     [&]() -> IUnknown * {
+                       IDirect3DSurface9 *obj = NULL;
+                       pSwapChain->GetBackBuffer(iBackBuffer, D3DBACKBUFFER_TYPE_MONO, &obj);
+                       return obj;
+                     });
+  }
 
   return true;
 }
@@ -1470,6 +1933,12 @@ bool WrappedD3DDevice9::Serialise_CaptureScope(SerialiserType &ser)
   SERIALISE_ELEMENT_LOCAL(frameNumber, m_CapturedFrames.back().frameNumber);
 
   SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading() && m_Replay)
+  {
+    m_Replay->WriteFrameRecord().frameInfo.frameNumber = frameNumber;
+    RDCEraseEl(m_Replay->WriteFrameRecord().frameInfo.stats);
+  }
 
   return true;
 }
@@ -1489,6 +1958,48 @@ bool WrappedD3DDevice9::Serialise_DeviceInitialisation(SerialiserType &ser)
       .TypedAs("IDirect3DSurface9 *"_lit);
 
   SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
+  {
+    AddReplayResource(Device, ResourceType::Device, "Device");
+
+    // the implicit swapchains become additional swapchains on the hidden window
+    for(size_t i = 0; i < ImplicitSwapChains.size() && i < PresentParameters.size(); i++)
+    {
+      D3DPRESENT_PARAMETERS params = PresentParameters[i];
+      PatchReplayPresentParams(params);
+
+      IDirect3DSwapChain9 *obj = NULL;
+      m_NextWrapperID = ImplicitSwapChains[i];
+      HRESULT hr = CreateAdditionalSwapChain(&params, &obj);
+      m_NextWrapperID = ResourceId();
+      if(!CheckReplayCreate(hr, obj, ImplicitSwapChains[i], "implicit swapchain"))
+        return false;
+
+      m_ReplaySwapChains.push_back(obj);
+      AddReplayResource(ImplicitSwapChains[i], ResourceType::Unknown, "Swapchain");
+      DerivedReplayResource(Device, ImplicitSwapChains[i]);
+    }
+
+    // and the automatic depth stencil a standalone one
+    if(AutoDepthStencil != ResourceId() && !PresentParameters.empty())
+    {
+      const D3DPRESENT_PARAMETERS &params = PresentParameters[0];
+
+      IDirect3DSurface9 *obj = NULL;
+      m_NextWrapperID = AutoDepthStencil;
+      HRESULT hr = CreateDepthStencilSurface(
+          params.BackBufferWidth, params.BackBufferHeight, params.AutoDepthStencilFormat,
+          params.MultiSampleType, params.MultiSampleQuality,
+          (params.Flags & D3DPRESENTFLAG_DISCARD_DEPTHSTENCIL) ? TRUE : FALSE, &obj, NULL);
+      m_NextWrapperID = ResourceId();
+      if(!CheckReplayCreate(hr, obj, AutoDepthStencil, "automatic depth stencil"))
+        return false;
+
+      AddReplayResource(AutoDepthStencil, ResourceType::Texture, "Auto Depth Stencil");
+      DerivedReplayResource(Device, AutoDepthStencil);
+    }
+  }
 
   return true;
 }
@@ -1531,6 +2042,31 @@ bool WrappedD3DDevice9::Serialise_BeginCaptureFrame(SerialiserType &ser)
 
   SERIALISE_CHECK_READ_ERRORS();
 
+  if(IsReplayingAndReading())
+  {
+    // targets first, since setting render target 0 resets the viewport and scissor rect. It can't
+    // be NULL.
+    for(size_t i = 0; i < RenderTargets.size() && i < D3D9_NUM_RENDER_TARGETS; i++)
+      if(i > 0 || RenderTargets[i] != NULL)
+        SetRenderTarget((DWORD)i, RenderTargets[i]);
+    SetDepthStencilSurface(DepthStencil);
+
+    ApplyReplayDeviceState(State);
+
+    for(size_t slot = 0; slot < Textures.size() && slot < D3D9_NUM_TEXTURE_SLOTS; slot++)
+      SetTexture(D3D9SlotToSampler((uint32_t)slot), Textures[slot]);
+    for(size_t i = 0; i < StreamSources.size() && i < D3D9_NUM_STREAMS; i++)
+      SetStreamSource((UINT)i, StreamSources[i], i < StreamOffsets.size() ? StreamOffsets[i] : 0,
+                      i < StreamStrides.size() ? StreamStrides[i] : 0);
+    SetIndices(Indices);
+    SetVertexShader(VertexShader);
+    SetPixelShader(PixelShader);
+    if(DeclarationFromFVF)
+      SetFVF(State.FVF);
+    else
+      SetVertexDeclaration(VertexDeclaration);
+  }
+
   return true;
 }
 
@@ -1556,6 +2092,18 @@ bool WrappedD3DDevice9::Serialise_CreateVertexDeclaration(SerialiserType &ser,
 
   SERIALISE_CHECK_READ_ERRORS();
 
+  if(IsReplayingAndReading())
+  {
+    IDirect3DVertexDeclaration9 *obj = NULL;
+    m_NextWrapperID = pDecl;
+    HRESULT hr = CreateVertexDeclaration(pVertexElements, &obj);
+    m_NextWrapperID = ResourceId();
+    if(!CheckReplayCreate(hr, obj, pDecl, "vertex declaration"))
+      return false;
+
+    AddReplayResource(pDecl, ResourceType::StateObject, "Vertex Declaration");
+  }
+
   return true;
 }
 
@@ -1565,7 +2113,7 @@ INSTANTIATE_FUNCTION_SERIALISED(HRESULT, WrappedD3DDevice9, CreateVertexDeclarat
 
 // shader bytecode has no explicit length, so take it back from the created shader
 template <typename SerialiserType, typename ShaderType>
-static void SerialiseShaderBytecode(SerialiserType &ser, ShaderType *shader)
+static void SerialiseShaderBytecode(SerialiserType &ser, ShaderType *shader, rdcarray<DWORD> &read)
 {
   rdcarray<byte> storage;
   const void *Bytecode = NULL;
@@ -1583,16 +2131,35 @@ static void SerialiseShaderBytecode(SerialiserType &ser, ShaderType *shader)
   }
 
   SERIALISE_ELEMENT_ARRAY(Bytecode, BytecodeLength).Important();
+
+  if(ser.IsReading() && Bytecode && BytecodeLength >= sizeof(DWORD))
+  {
+    read.resize(size_t(BytecodeLength / sizeof(DWORD)));
+    memcpy(read.data(), Bytecode, read.byteSize());
+  }
 }
 
 template <typename SerialiserType>
 bool WrappedD3DDevice9::Serialise_CreateVertexShader(SerialiserType &ser, CONST DWORD *pFunction,
                                                      IDirect3DVertexShader9 **ppShader)
 {
-  SerialiseShaderBytecode(ser, ser.IsWriting() ? *ppShader : (IDirect3DVertexShader9 *)NULL);
+  rdcarray<DWORD> code;
+  SerialiseShaderBytecode(ser, ser.IsWriting() ? *ppShader : (IDirect3DVertexShader9 *)NULL, code);
   SERIALISE_ELEMENT_LOCAL(pShader, GetResID(*ppShader)).TypedAs("IDirect3DVertexShader9 *"_lit);
 
   SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
+  {
+    IDirect3DVertexShader9 *obj = NULL;
+    m_NextWrapperID = pShader;
+    HRESULT hr = code.empty() ? E_INVALIDARG : CreateVertexShader(code.data(), &obj);
+    m_NextWrapperID = ResourceId();
+    if(!CheckReplayCreate(hr, obj, pShader, "vertex shader"))
+      return false;
+
+    AddReplayResource(pShader, ResourceType::Shader, "Vertex Shader");
+  }
 
   return true;
 }
@@ -1604,10 +2171,23 @@ template <typename SerialiserType>
 bool WrappedD3DDevice9::Serialise_CreatePixelShader(SerialiserType &ser, CONST DWORD *pFunction,
                                                     IDirect3DPixelShader9 **ppShader)
 {
-  SerialiseShaderBytecode(ser, ser.IsWriting() ? *ppShader : (IDirect3DPixelShader9 *)NULL);
+  rdcarray<DWORD> code;
+  SerialiseShaderBytecode(ser, ser.IsWriting() ? *ppShader : (IDirect3DPixelShader9 *)NULL, code);
   SERIALISE_ELEMENT_LOCAL(pShader, GetResID(*ppShader)).TypedAs("IDirect3DPixelShader9 *"_lit);
 
   SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
+  {
+    IDirect3DPixelShader9 *obj = NULL;
+    m_NextWrapperID = pShader;
+    HRESULT hr = code.empty() ? E_INVALIDARG : CreatePixelShader(code.data(), &obj);
+    m_NextWrapperID = ResourceId();
+    if(!CheckReplayCreate(hr, obj, pShader, "pixel shader"))
+      return false;
+
+    AddReplayResource(pShader, ResourceType::Shader, "Pixel Shader");
+  }
 
   return true;
 }
@@ -1633,6 +2213,16 @@ bool WrappedD3DDevice9::Serialise_DrawPrimitiveUP(SerialiserType &ser,
   SERIALISE_ELEMENT_ARRAY(pVertexStreamZeroData, VertexDataLength);
 
   SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
+  {
+    ReplayBeginScene();
+    if(pVertexStreamZeroData)
+      DrawPrimitiveUP(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride);
+
+    AddDrawAction(ActionFlags::NoFlags, VertexCountForPrimitives(PrimitiveType, PrimitiveCount), 0,
+                  0, 0);
+  }
 
   return true;
 }
@@ -1670,6 +2260,17 @@ bool WrappedD3DDevice9::Serialise_DrawIndexedPrimitiveUP(
 
   SERIALISE_CHECK_READ_ERRORS();
 
+  if(IsReplayingAndReading())
+  {
+    ReplayBeginScene();
+    if(pIndexData && pVertexStreamZeroData)
+      DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices, PrimitiveCount, pIndexData,
+                             IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride);
+
+    AddDrawAction(ActionFlags::Indexed, VertexCountForPrimitives(PrimitiveType, PrimitiveCount), 0,
+                  0, 0);
+  }
+
   return true;
 }
 
@@ -1692,6 +2293,17 @@ bool WrappedD3DDevice9::Serialise_Present(SerialiserType &ser, CONST RECT *pSour
 
   SERIALISE_CHECK_READ_ERRORS();
 
+  if(IsReplayingAndReading() && IsLoading(m_State))
+  {
+    AddEvent();
+
+    ActionDescription action;
+    action.flags = ActionFlags::Present;
+    action.copyDestination =
+        ReplayBackBufferID(m_ReplaySwapChains.empty() ? NULL : m_ReplaySwapChains[0]);
+    AddAction(action);
+  }
+
   return true;
 }
 
@@ -1711,6 +2323,17 @@ bool WrappedD3DDevice9::Serialise_PresentEx(SerialiserType &ser, CONST RECT *pSo
   SERIALISE_ELEMENT_TYPED(uint32_t, dwFlags);
 
   SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading() && IsLoading(m_State))
+  {
+    AddEvent();
+
+    ActionDescription action;
+    action.flags = ActionFlags::Present;
+    action.copyDestination =
+        ReplayBackBufferID(m_ReplaySwapChains.empty() ? NULL : m_ReplaySwapChains[0]);
+    AddAction(action);
+  }
 
   return true;
 }
@@ -1734,6 +2357,16 @@ bool WrappedD3DDevice9::Serialise_SwapChain_Present(SerialiserType &ser,
   SERIALISE_ELEMENT_TYPED(uint32_t, dwFlags);
 
   SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading() && IsLoading(m_State))
+  {
+    AddEvent();
+
+    ActionDescription action;
+    action.flags = ActionFlags::Present;
+    action.copyDestination = ReplayBackBufferID(pSwapChain);
+    AddAction(action);
+  }
 
   return true;
 }
@@ -1946,75 +2579,9 @@ bool WrappedD3DDevice9::ProcessUnlockChunk(ReadSerialiser &ser, D3D9Chunk chunk)
     case D3D9Chunk::Volume_UnlockBox:
       return Serialise_Unlock(ser, (IDirect3DVolume9 *)NULL, 0, Contents);
     case D3D9Chunk::Surface_ReleaseDC: return Serialise_Surface_ReleaseDC(ser, NULL, Contents);
-    case D3D9Chunk::GetFrontBufferData:
-      return Serialise_GetFrontBufferData(ser, 0, NULL, Contents);
+    case D3D9Chunk::GetFrontBufferData: return Serialise_GetFrontBufferData(ser, 0, NULL, Contents);
     case D3D9Chunk::SwapChain_GetFrontBufferData:
       return Serialise_SwapChain_GetFrontBufferData(ser, NULL, NULL, Contents);
     default: return false;
   }
-}
-
-RDResult WrappedD3DDevice9::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers)
-{
-  int sectionIdx = rdc->SectionIndex(SectionType::FrameCapture);
-
-  if(sectionIdx < 0)
-    RETURN_ERROR_RESULT(ResultCode::FileCorrupted, "File does not contain captured API data");
-
-  StreamReader *reader = rdc->ReadSection(sectionIdx);
-
-  if(reader->IsErrored())
-  {
-    RDResult result = reader->GetError();
-    delete reader;
-    return result;
-  }
-
-  ReadSerialiser ser(reader, Ownership::Stream);
-
-  ser.SetStringDatabase(&m_StringDB);
-  ser.SetUserData(m_ResourceManager);
-
-  // only structured export is supported so far, which doesn't do any timebase conversion
-  ser.ConfigureStructuredExport(&GetChunkName, storeStructuredBuffers, 0, 1.0);
-
-  m_StructuredFile = &ser.GetStructuredFile();
-
-  m_StoredStructuredData->version = m_StructuredFile->version = m_SectionVersion;
-
-  ser.SetVersion(m_SectionVersion);
-
-  // everything, including the frame, is processed in one pass
-  for(;;)
-  {
-    D3D9Chunk chunk = ser.ReadChunk<D3D9Chunk>();
-
-    if(reader->IsErrored())
-      return RDResult(ResultCode::APIDataCorrupted, ser.GetError().message);
-
-    bool success = ProcessChunk(ser, chunk);
-
-    ser.EndChunk();
-
-    if(reader->IsErrored())
-      return RDResult(ResultCode::APIDataCorrupted, ser.GetError().message);
-
-    if(!success)
-      RETURN_ERROR_RESULT(ResultCode::APIReplayFailed, "Failed to process chunk %s",
-                          GetChunkName((uint32_t)chunk).c_str());
-
-    RenderDoc::Inst().SetProgress(LoadProgress::FileInitialRead,
-                                  float(reader->GetOffset()) / float(reader->GetSize()));
-
-    if(reader->AtEnd())
-      break;
-  }
-
-  // steal the structured data for ourselves
-  m_StructuredFile->Swap(*m_StoredStructuredData);
-
-  // and in future use this file.
-  m_StructuredFile = m_StoredStructuredData;
-
-  return ResultCode::Succeeded;
 }

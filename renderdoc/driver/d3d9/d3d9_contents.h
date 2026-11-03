@@ -124,6 +124,11 @@ DECLARE_REFLECTION_STRUCT(D3D9InitialContentsData);
 void D3D9CopyFromLocked(D3D9SubresourceData &dst, D3DFORMAT format, const void *src,
                         uint32_t srcRowPitch, uint32_t srcSlicePitch);
 
+// reads a whole surface that isn't a depth stencil (or is a lockable one): locked if it can be,
+// copied to system memory if it's a render target (resolving it if it's multisampled)
+rdcstr D3D9ReadSurfaceContents(IDirect3DDevice9 *dev, IDirect3DSurface9 *surf,
+                               D3D9SubresourceData &sub);
+
 // A level-0 region the runtime considers dirty, for UpdateTexture. Locks on level 0 and
 // AddDirtyRect/AddDirtyBox grow it, UpdateTexture clears it. A new texture is entirely dirty.
 struct D3D9DirtyRegion

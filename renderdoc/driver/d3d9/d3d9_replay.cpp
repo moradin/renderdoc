@@ -22,26 +22,1055 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+#include "d3d9_replay.h"
+#include "driver/dxgi/dxgi_common.h"
+#include "driver/shaders/dxbc/dxbc_compile.h"
+#include "replay/dummy_driver.h"
 #include "d3d9_common.h"
 #include "d3d9_device.h"
+#include "d3d9_resources.h"
 
-// disabled until capture is actually supported, so we can actually tell programmatically that the
-// API is unsupported. E.g. when we detect the API and let the user know, but disable a capture
-// button.
-#if 0
-
-ResultDetails D3D9_CreateReplayDevice(RDCFile *rdc, IReplayDriver **driver)
+namespace
 {
-  RDCERR("D3D9 captures are not currently supported");
-  return ResultCode::APIUnsupported;
+// D3D9 formats as RenderDoc describes them, through their DXGI equivalents where there are any
+ResourceFormat D3D9MakeResourceFormat(D3DFORMAT format)
+{
+  DXGI_FORMAT dxgi = DXGI_FORMAT_UNKNOWN;
+
+  switch((DWORD)format)
+  {
+    case D3DFMT_A8R8G8B8: dxgi = DXGI_FORMAT_B8G8R8A8_UNORM; break;
+    case D3DFMT_X8R8G8B8: dxgi = DXGI_FORMAT_B8G8R8X8_UNORM; break;
+    case D3DFMT_A8B8G8R8:
+    case D3DFMT_X8B8G8R8: dxgi = DXGI_FORMAT_R8G8B8A8_UNORM; break;
+    case D3DFMT_R5G6B5: dxgi = DXGI_FORMAT_B5G6R5_UNORM; break;
+    case D3DFMT_A1R5G5B5:
+    case D3DFMT_X1R5G5B5: dxgi = DXGI_FORMAT_B5G5R5A1_UNORM; break;
+    case D3DFMT_A4R4G4B4:
+    case D3DFMT_X4R4G4B4: dxgi = DXGI_FORMAT_B4G4R4A4_UNORM; break;
+    case D3DFMT_A2B10G10R10: dxgi = DXGI_FORMAT_R10G10B10A2_UNORM; break;
+    case D3DFMT_G16R16: dxgi = DXGI_FORMAT_R16G16_UNORM; break;
+    case D3DFMT_A16B16G16R16: dxgi = DXGI_FORMAT_R16G16B16A16_UNORM; break;
+    case D3DFMT_R16F: dxgi = DXGI_FORMAT_R16_FLOAT; break;
+    case D3DFMT_G16R16F: dxgi = DXGI_FORMAT_R16G16_FLOAT; break;
+    case D3DFMT_A16B16G16R16F: dxgi = DXGI_FORMAT_R16G16B16A16_FLOAT; break;
+    case D3DFMT_R32F: dxgi = DXGI_FORMAT_R32_FLOAT; break;
+    case D3DFMT_G32R32F: dxgi = DXGI_FORMAT_R32G32_FLOAT; break;
+    case D3DFMT_A32B32G32R32F: dxgi = DXGI_FORMAT_R32G32B32A32_FLOAT; break;
+    case D3DFMT_A8: dxgi = DXGI_FORMAT_A8_UNORM; break;
+    // luminance shows as red
+    case D3DFMT_L8: dxgi = DXGI_FORMAT_R8_UNORM; break;
+    case D3DFMT_A8L8: dxgi = DXGI_FORMAT_R8G8_UNORM; break;
+    case D3DFMT_L16: dxgi = DXGI_FORMAT_R16_UNORM; break;
+    case D3DFMT_V8U8: dxgi = DXGI_FORMAT_R8G8_SNORM; break;
+    case D3DFMT_Q8W8V8U8: dxgi = DXGI_FORMAT_R8G8B8A8_SNORM; break;
+    case D3DFMT_V16U16: dxgi = DXGI_FORMAT_R16G16_SNORM; break;
+    case D3DFMT_Q16W16V16U16: dxgi = DXGI_FORMAT_R16G16B16A16_SNORM; break;
+    case D3DFMT_DXT1: dxgi = DXGI_FORMAT_BC1_UNORM; break;
+    case D3DFMT_DXT2:
+    case D3DFMT_DXT3: dxgi = DXGI_FORMAT_BC2_UNORM; break;
+    case D3DFMT_DXT4:
+    case D3DFMT_DXT5: dxgi = DXGI_FORMAT_BC3_UNORM; break;
+    case MAKEFOURCC('A', 'T', 'I', '1'): dxgi = DXGI_FORMAT_BC4_UNORM; break;
+    case MAKEFOURCC('A', 'T', 'I', '2'): dxgi = DXGI_FORMAT_BC5_UNORM; break;
+    case D3DFMT_YUY2: dxgi = DXGI_FORMAT_YUY2; break;
+    case D3DFMT_D16:
+    case D3DFMT_D16_LOCKABLE:
+    case MAKEFOURCC('D', 'F', '1', '6'): dxgi = DXGI_FORMAT_D16_UNORM; break;
+    case D3DFMT_D24S8:
+    case D3DFMT_D24X8:
+    case D3DFMT_D24X4S4:
+    case D3DFMT_D24FS8:
+    case MAKEFOURCC('I', 'N', 'T', 'Z'):
+    case MAKEFOURCC('D', 'F', '2', '4'): dxgi = DXGI_FORMAT_D24_UNORM_S8_UINT; break;
+    case D3DFMT_D32:
+    case D3DFMT_D32F_LOCKABLE:
+    case D3DFMT_D32_LOCKABLE: dxgi = DXGI_FORMAT_D32_FLOAT; break;
+    default: break;
+  }
+
+  if(dxgi != DXGI_FORMAT_UNKNOWN)
+    return MakeResourceFormat(dxgi);
+
+  ResourceFormat ret;
+
+  switch((DWORD)format)
+  {
+    case D3DFMT_R8G8B8:
+      ret.type = ResourceFormatType::Regular;
+      ret.compCount = 3;
+      ret.compByteWidth = 1;
+      ret.compType = CompType::UNorm;
+      ret.SetBGRAOrder(true);
+      return ret;
+    case D3DFMT_A2R10G10B10:
+      ret = MakeResourceFormat(DXGI_FORMAT_R10G10B10A2_UNORM);
+      ret.SetBGRAOrder(true);
+      return ret;
+    default: break;
+  }
+
+  // formats RenderDoc can't describe: P8, A8P8, A4L4, R3G3B2, A8R3G3B2, L6V5U5, X8L8V8U8,
+  // A2W10V10U10, UYVY, the packed RGBG formats, CxV8U8, A1, D15S1 and vendor FOURCCs
+  ret.type = ResourceFormatType::Undefined;
+  ret.compCount = 1;
+  ret.compByteWidth = 1;
+  ret.compType = CompType::Typeless;
+  return ret;
+}
+
+bool IsDepthFormat(D3DFORMAT format)
+{
+  switch((DWORD)format)
+  {
+    case D3DFMT_D16:
+    case D3DFMT_D15S1:
+    case D3DFMT_D24S8:
+    case D3DFMT_D24X8:
+    case D3DFMT_D24X4S4:
+    case D3DFMT_D24FS8:
+    case D3DFMT_D32:
+    case MAKEFOURCC('I', 'N', 'T', 'Z'):
+    case MAKEFOURCC('D', 'F', '2', '4'):
+    case MAKEFOURCC('D', 'F', '1', '6'): return true;
+    default: return false;
+  }
+}
+
+uint64_t SubresourceBytes(D3DFORMAT format, uint32_t width, uint32_t height, uint32_t depth)
+{
+  D3D9FormatBlock block = D3D9GetFormatBlock(format);
+  if(block.Bytes == 0)
+    return uint64_t(width) * height * depth * 4;
+  return uint64_t((width + block.Width - 1) / block.Width) *
+         ((height + block.Height - 1) / block.Height) * block.Bytes * depth;
+}
+};
+
+D3D9Replay::D3D9Replay(WrappedD3DDevice9 *device, IDirect3D9Ex *d3d, HWND hiddenWindow)
+    : m_pDevice(device), m_D3D(d3d), m_HiddenWindow(hiddenWindow)
+{
+  D3DADAPTER_IDENTIFIER9 ident = {};
+  if(m_D3D && SUCCEEDED(m_D3D->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &ident)))
+  {
+    m_DriverInfo.vendor = GPUVendorFromPCIVendor(ident.VendorId);
+    const uint64_t ver = (uint64_t)ident.DriverVersion.QuadPart;
+    snprintf(m_DriverInfo.version, sizeof(m_DriverInfo.version), "%s %u.%u.%u.%u",
+             ident.Description, uint32_t(ver >> 48) & 0xFFFF, uint32_t(ver >> 32) & 0xFFFF,
+             uint32_t(ver >> 16) & 0xFFFF, uint32_t(ver) & 0xFFFF);
+  }
+}
+
+void D3D9Replay::Shutdown()
+{
+  for(auto it = m_OutputWindows.begin(); it != m_OutputWindows.end(); ++it)
+    it->second.Release();
+  m_OutputWindows.clear();
+
+  m_pDevice->ReleaseReplayObjects();
+
+  // the last reference: everything replay created has been released
+  ULONG refs = m_pDevice->Release();
+  if(refs != 0)
+    RDCWARN("D3D9 replay device still has %u references at shutdown", refs);
+  m_pDevice = NULL;
+
+  if(m_HiddenWindow)
+    DestroyWindow(m_HiddenWindow);
+  m_HiddenWindow = NULL;
+
+  delete this;
+}
+
+APIProperties D3D9Replay::GetAPIProperties()
+{
+  APIProperties ret;
+
+  // Until D3D9 has its own pipeline state (phase 3c), it presents itself as D3D11 with an empty
+  // pipeline state.
+  ret.pipelineType = GraphicsAPI::D3D11;
+  ret.localRenderer = GraphicsAPI::D3D11;
+  ret.vendor = m_DriverInfo.vendor;
+  ret.degraded = false;
+  ret.shaderDebugging = false;
+  ret.pixelHistory = false;
+
+  return ret;
+}
+
+ResourceDescription &D3D9Replay::GetResourceDesc(ResourceId id)
+{
+  auto it = m_ResourceIdx.find(id);
+  if(it == m_ResourceIdx.end())
+  {
+    m_ResourceIdx[id] = m_Resources.size();
+    m_Resources.push_back(ResourceDescription());
+    m_Resources.back().resourceId = id;
+    return m_Resources.back();
+  }
+
+  return m_Resources[it->second];
+}
+
+rdcarray<ResourceDescription> D3D9Replay::GetResources()
+{
+  return m_Resources;
+}
+
+rdcarray<DescriptorStoreDescription> D3D9Replay::GetDescriptorStores()
+{
+  return {};
+}
+
+rdcarray<BufferDescription> D3D9Replay::GetBuffers()
+{
+  rdcarray<BufferDescription> ret;
+
+  for(const ResourceDescription &descr : m_Resources)
+  {
+    if(descr.type != ResourceType::Buffer)
+      continue;
+
+    BufferDescription buf = GetBuffer(descr.resourceId);
+    if(buf.resourceId != ResourceId())
+      ret.push_back(buf);
+  }
+
+  return ret;
+}
+
+BufferDescription D3D9Replay::GetBuffer(ResourceId id)
+{
+  BufferDescription ret;
+
+  D3D9ResourceManager *rm = m_pDevice->GetResourceManager();
+  if(!rm->HasResource(id))
+    return ret;
+
+  WrappedD3D9Object *obj = GetWrappedObject(rm->GetResource(id));
+  if(obj == NULL)
+    return ret;
+
+  if(obj->GetResourceType() == Resource_VertexBuffer)
+  {
+    D3DVERTEXBUFFER_DESC desc = {};
+    ((WrappedD3DVertexBuffer9 *)obj)->GetReal()->GetDesc(&desc);
+    ret.resourceId = id;
+    ret.creationFlags = BufferCategory::Vertex;
+    ret.length = desc.Size;
+  }
+  else if(obj->GetResourceType() == Resource_IndexBuffer)
+  {
+    D3DINDEXBUFFER_DESC desc = {};
+    ((WrappedD3DIndexBuffer9 *)obj)->GetReal()->GetDesc(&desc);
+    ret.resourceId = id;
+    ret.creationFlags = BufferCategory::Index;
+    ret.length = desc.Size;
+  }
+
+  return ret;
+}
+
+rdcarray<TextureDescription> D3D9Replay::GetTextures()
+{
+  rdcarray<TextureDescription> ret;
+
+  for(const ResourceDescription &descr : m_Resources)
+  {
+    if(descr.type != ResourceType::Texture && descr.type != ResourceType::SwapchainImage)
+      continue;
+
+    TextureDescription tex = GetTexture(descr.resourceId);
+    if(tex.resourceId != ResourceId())
+      ret.push_back(tex);
+  }
+
+  return ret;
+}
+
+TextureDescription D3D9Replay::GetTexture(ResourceId id)
+{
+  TextureDescription ret = {};
+  ret.resourceId = ResourceId();
+
+  D3D9ResourceManager *rm = m_pDevice->GetResourceManager();
+  if(!rm->HasResource(id))
+    return ret;
+
+  WrappedD3D9Object *obj = GetWrappedObject(rm->GetResource(id));
+  if(obj == NULL)
+    return ret;
+
+  D3DSURFACE_DESC desc = {};
+  D3DVOLUME_DESC volDesc = {};
+  uint32_t mips = 1;
+
+  switch(obj->GetResourceType())
+  {
+    case Resource_Texture:
+    {
+      IDirect3DTexture9 *tex = ((WrappedD3DTexture9 *)obj)->GetReal();
+      tex->GetLevelDesc(0, &desc);
+      mips = tex->GetLevelCount();
+      ret.type = TextureType::Texture2D;
+      ret.arraysize = 1;
+      break;
+    }
+    case Resource_CubeTexture:
+    {
+      IDirect3DCubeTexture9 *tex = ((WrappedD3DCubeTexture9 *)obj)->GetReal();
+      tex->GetLevelDesc(0, &desc);
+      mips = tex->GetLevelCount();
+      ret.type = TextureType::TextureCube;
+      ret.cubemap = true;
+      ret.arraysize = 6;
+      break;
+    }
+    case Resource_VolumeTexture:
+    {
+      IDirect3DVolumeTexture9 *tex = ((WrappedD3DVolumeTexture9 *)obj)->GetReal();
+      tex->GetLevelDesc(0, &volDesc);
+      mips = tex->GetLevelCount();
+      ret.type = TextureType::Texture3D;
+      ret.arraysize = 1;
+      break;
+    }
+    case Resource_Surface:
+    {
+      // texture levels are part of their texture
+      WrappedD3D9Object *container = obj->GetContainer();
+      if(container && container->GetResourceType() != Resource_SwapChain)
+        return ret;
+
+      ((WrappedD3DSurface9 *)obj)->GetReal()->GetDesc(&desc);
+      ret.type = desc.MultiSampleType != D3DMULTISAMPLE_NONE ? TextureType::Texture2DMS
+                                                             : TextureType::Texture2D;
+      ret.arraysize = 1;
+      if(container)
+        ret.creationFlags |= TextureCategory::SwapBuffer;
+      break;
+    }
+    default: return ret;
+  }
+
+  ret.resourceId = id;
+  ret.mips = mips;
+
+  if(obj->GetResourceType() == Resource_VolumeTexture)
+  {
+    ret.format = D3D9MakeResourceFormat(volDesc.Format);
+    ret.dimension = 3;
+    ret.width = volDesc.Width;
+    ret.height = volDesc.Height;
+    ret.depth = volDesc.Depth;
+    ret.msSamp = 1;
+    ret.creationFlags |= TextureCategory::ShaderRead;
+
+    for(uint32_t m = 0; m < mips; m++)
+      ret.byteSize += SubresourceBytes(volDesc.Format, RDCMAX(1U, ret.width >> m),
+                                       RDCMAX(1U, ret.height >> m), RDCMAX(1U, ret.depth >> m));
+    return ret;
+  }
+
+  ret.format = D3D9MakeResourceFormat(desc.Format);
+  ret.dimension = 2;
+  ret.width = desc.Width;
+  ret.height = desc.Height;
+  ret.depth = 1;
+  ret.msSamp = RDCMAX(1U, (uint32_t)desc.MultiSampleType);
+  ret.msQual = desc.MultiSampleQuality;
+
+  if(obj->GetResourceType() != Resource_Surface)
+    ret.creationFlags |= TextureCategory::ShaderRead;
+  if(desc.Usage & D3DUSAGE_RENDERTARGET)
+    ret.creationFlags |= TextureCategory::ColorTarget;
+  if((desc.Usage & D3DUSAGE_DEPTHSTENCIL) || IsDepthFormat(desc.Format))
+    ret.creationFlags |= TextureCategory::DepthTarget;
+
+  for(uint32_t m = 0; m < mips; m++)
+    ret.byteSize +=
+        SubresourceBytes(desc.Format, RDCMAX(1U, ret.width >> m), RDCMAX(1U, ret.height >> m), 1) *
+        ret.arraysize * ret.msSamp;
+
+  return ret;
+}
+
+rdcarray<DebugMessage> D3D9Replay::GetDebugMessages()
+{
+  return {};
+}
+
+rdcarray<ShaderEntryPoint> D3D9Replay::GetShaderEntryPoints(ResourceId shader)
+{
+  return {};
+}
+
+const ShaderReflection *D3D9Replay::GetShader(ResourceId pipeline, ResourceId shader,
+                                              ShaderEntryPoint entry)
+{
+  return NULL;
+}
+
+rdcarray<rdcstr> D3D9Replay::GetDisassemblyTargets(bool withPipeline)
+{
+  return {"Disassembly"};
+}
+
+rdcstr D3D9Replay::DisassembleShader(ResourceId pipeline, const ShaderReflection *refl,
+                                     const rdcstr &target)
+{
+  return "; D3D9 shader disassembly isn't supported yet";
+}
+
+rdcarray<EventUsage> D3D9Replay::GetUsage(ResourceId id)
+{
+  return {};
+}
+
+void D3D9Replay::SetPipelineStates(D3D11Pipe::State *d3d11, D3D12Pipe::State *d3d12,
+                                   GLPipe::State *gl, VKPipe::State *vk)
+{
+}
+
+void D3D9Replay::SavePipelineState(uint32_t eventId)
+{
+}
+
+rdcarray<Descriptor> D3D9Replay::GetDescriptors(ResourceId descriptorStore,
+                                                const rdcarray<DescriptorRange> &ranges)
+{
+  size_t count = 0;
+  for(const DescriptorRange &r : ranges)
+    count += r.count;
+  rdcarray<Descriptor> ret;
+  ret.resize(count);
+  return ret;
+}
+
+rdcarray<SamplerDescriptor> D3D9Replay::GetSamplerDescriptors(ResourceId descriptorStore,
+                                                              const rdcarray<DescriptorRange> &ranges)
+{
+  size_t count = 0;
+  for(const DescriptorRange &r : ranges)
+    count += r.count;
+  rdcarray<SamplerDescriptor> ret;
+  ret.resize(count);
+  return ret;
+}
+
+rdcarray<DescriptorAccess> D3D9Replay::GetDescriptorAccess(uint32_t eventId)
+{
+  return {};
+}
+
+rdcarray<DescriptorLogicalLocation> D3D9Replay::GetDescriptorLocations(
+    ResourceId descriptorStore, const rdcarray<DescriptorRange> &ranges)
+{
+  return {};
+}
+
+RDResult D3D9Replay::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers)
+{
+  return m_pDevice->ReadLogInitialisation(rdc, storeStructuredBuffers);
+}
+
+void D3D9Replay::ReplayLog(uint32_t endEventID, ReplayLogType replayType)
+{
+  m_pDevice->ReplayLog(0, endEventID, replayType);
+}
+
+SDFile *D3D9Replay::GetStructuredFile()
+{
+  return m_pDevice->GetStructuredFile();
+}
+
+rdcarray<uint32_t> D3D9Replay::GetPassEvents(uint32_t eventId)
+{
+  return {eventId};
+}
+
+void D3D9Replay::InitPostVSBuffers(uint32_t eventId)
+{
+}
+
+void D3D9Replay::InitPostVSBuffers(const rdcarray<uint32_t> &passEvents)
+{
+}
+
+MeshFormat D3D9Replay::GetPostVSBuffers(uint32_t eventId, uint32_t instID, uint32_t viewID,
+                                        MeshDataStage stage)
+{
+  return {};
+}
+
+void D3D9Replay::GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, bytebuf &retData)
+{
+  retData.clear();
+
+  D3D9ResourceManager *rm = m_pDevice->GetResourceManager();
+  if(!rm->HasResource(buff))
+    return;
+
+  D3D9SubresourceData sub;
+  rdcstr err = m_pDevice->ReadSubresource(GetWrappedObject(rm->GetResource(buff)), 0, 0, sub);
+  if(!err.empty())
+  {
+    RDCWARN("Couldn't read buffer %s: %s", ToStr(buff).c_str(), err.c_str());
+    return;
+  }
+
+  if(offset >= sub.Data.size())
+    return;
+
+  uint64_t size = sub.Data.size() - offset;
+  if(len > 0)
+    size = RDCMIN(size, len);
+
+  retData.assign(sub.Data.data() + offset, (size_t)size);
+}
+
+void D3D9Replay::GetTextureData(ResourceId tex, const Subresource &sub,
+                                const GetTextureDataParams &params, bytebuf &data)
+{
+  data.clear();
+
+  D3D9ResourceManager *rm = m_pDevice->GetResourceManager();
+  if(!rm->HasResource(tex))
+    return;
+
+  WrappedD3D9Object *obj = GetWrappedObject(rm->GetResource(tex));
+  if(obj == NULL)
+    return;
+
+  const TextureDescription desc = GetTexture(tex);
+
+  D3D9SubresourceData contents;
+  rdcstr err = m_pDevice->ReadSubresource(
+      obj, obj->GetResourceType() == Resource_CubeTexture ? sub.slice : 0, sub.mip, contents);
+  if(!err.empty())
+  {
+    RDCWARN("Couldn't read texture %s: %s", ToStr(tex).c_str(), err.c_str());
+    return;
+  }
+
+  // read back depth stencils have one slice per sample, in D3D9's layout with depth in the high
+  // bits. RenderDoc's D24S8 has the stencil in the high byte.
+  if(desc.creationFlags & TextureCategory::DepthTarget)
+  {
+    const size_t slicePitch = size_t(contents.RowPitch) * contents.RowCount;
+    const uint32_t slice = params.resolve ? 0 : RDCMIN(sub.sample, contents.Depth - 1);
+    if(contents.Depth > 1 && slicePitch * (slice + 1) <= contents.Data.size())
+      contents.Data = bytebuf(contents.Data.data() + slicePitch * slice, slicePitch);
+
+    if(desc.format.type == ResourceFormatType::D24S8)
+    {
+      uint32_t *values = (uint32_t *)contents.Data.data();
+      for(size_t i = 0; i < contents.Data.size() / 4; i++)
+        values[i] = (values[i] >> 8) | (values[i] << 24);
+    }
+  }
+
+  data.swap(contents.Data);
+
+  if(params.remap == RemapTexture::RGBA8 && desc.format.compByteWidth == 1 &&
+     desc.format.compCount == 4 && desc.format.BGRAOrder())
+  {
+    for(size_t i = 0; i + 3 < data.size(); i += 4)
+      std::swap(data[i], data[i + 2]);
+  }
+  else if(params.remap != RemapTexture::NoRemap &&
+          !(params.remap == RemapTexture::RGBA8 && desc.format.compByteWidth == 1 &&
+            desc.format.compCount == 4))
+  {
+    RDCWARN("Converting %s textures for saving isn't supported yet", desc.format.Name().c_str());
+  }
+}
+
+void D3D9Replay::BuildTargetShader(ShaderEncoding sourceEncoding, const bytebuf &source,
+                                   const rdcstr &entry, const ShaderCompileFlags &compileFlags,
+                                   ShaderStage type, ResourceId &id, rdcstr &errors)
+{
+  id = ResourceId();
+  errors = "Editing D3D9 shaders isn't supported yet";
+}
+
+rdcarray<ShaderEncoding> D3D9Replay::GetTargetShaderEncodings()
+{
+  return {};
+}
+
+void D3D9Replay::ReplaceResource(ResourceId from, ResourceId to)
+{
+}
+
+void D3D9Replay::RemoveReplacement(ResourceId id)
+{
+}
+
+void D3D9Replay::FreeTargetResource(ResourceId id)
+{
+}
+
+void D3D9Replay::ClearReplayCache()
+{
+}
+
+void D3D9Replay::ReloadShaderDebugInformation()
+{
+}
+
+rdcarray<GPUCounter> D3D9Replay::EnumerateCounters()
+{
+  return {};
+}
+
+CounterDescription D3D9Replay::DescribeCounter(GPUCounter counterID)
+{
+  CounterDescription ret = {};
+  ret.counter = counterID;
+  return ret;
+}
+
+rdcarray<CounterResult> D3D9Replay::FetchCounters(const rdcarray<GPUCounter> &counterID)
+{
+  return {};
+}
+
+void D3D9Replay::FillCBufferVariables(ResourceId pipeline, ResourceId shader, ShaderStage stage,
+                                      rdcstr entryPoint, uint32_t cbufSlot,
+                                      rdcarray<ShaderVariable> &outvars, const bytebuf &data)
+{
+  outvars.clear();
+}
+
+rdcarray<PixelModification> D3D9Replay::PixelHistory(rdcarray<EventUsage> events, ResourceId target,
+                                                     uint32_t x, uint32_t y, const Subresource &sub,
+                                                     CompType typeCast)
+{
+  return {};
+}
+
+ShaderDebugTrace *D3D9Replay::DebugVertex(uint32_t eventId, uint32_t vertid, uint32_t instid,
+                                          uint32_t idx, uint32_t view)
+{
+  return new ShaderDebugTrace;
+}
+
+ShaderDebugTrace *D3D9Replay::DebugPixel(uint32_t eventId, uint32_t x, uint32_t y,
+                                         const DebugPixelInputs &inputs)
+{
+  return new ShaderDebugTrace;
+}
+
+ShaderDebugTrace *D3D9Replay::DebugThread(uint32_t eventId, const rdcfixedarray<uint32_t, 3> &groupid,
+                                          const rdcfixedarray<uint32_t, 3> &threadid)
+{
+  return new ShaderDebugTrace;
+}
+
+ShaderDebugTrace *D3D9Replay::DebugMeshThread(uint32_t eventId,
+                                              const rdcfixedarray<uint32_t, 3> &groupid,
+                                              const rdcfixedarray<uint32_t, 3> &threadid)
+{
+  return new ShaderDebugTrace;
+}
+
+rdcarray<ShaderDebugState> D3D9Replay::ContinueDebug(ShaderDebugger *debugger)
+{
+  return {};
+}
+
+void D3D9Replay::FreeDebugger(ShaderDebugger *debugger)
+{
+}
+
+ResourceId D3D9Replay::RenderOverlay(ResourceId texid, FloatVector clearCol, DebugOverlay overlay,
+                                     uint32_t eventId, const rdcarray<uint32_t> &passEvents)
+{
+  return ResourceId();
+}
+
+bool D3D9Replay::IsRenderOutput(ResourceId id)
+{
+  return false;
+}
+
+RDResult D3D9Replay::FatalErrorCheck()
+{
+  return m_pDevice->FatalErrorCheck();
+}
+
+IReplayDriver *D3D9Replay::MakeDummyDriver()
+{
+  return new DummyDriver(this, {}, m_pDevice->DetachStructuredFile(), {});
+}
+
+bool D3D9Replay::GetMinMax(ResourceId texid, const Subresource &sub, CompType typeCast,
+                           float *minval, float *maxval)
+{
+  *minval = 0.0f;
+  *maxval = 1.0f;
+  return false;
+}
+
+bool D3D9Replay::GetHistogram(ResourceId texid, const Subresource &sub, CompType typeCast,
+                              float minval, float maxval, const rdcfixedarray<bool, 4> &channels,
+                              rdcarray<uint32_t> &histogram)
+{
+  histogram.fill(256, 0);
+  return false;
+}
+
+void D3D9Replay::PickPixel(ResourceId texture, uint32_t x, uint32_t y, const Subresource &sub,
+                           CompType typeCast, float pixel[4])
+{
+  pixel[0] = pixel[1] = pixel[2] = pixel[3] = 0.0f;
+}
+
+void D3D9Replay::BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &source,
+                                   const rdcstr &entry, const ShaderCompileFlags &compileFlags,
+                                   ShaderStage type, ResourceId &id, rdcstr &errors)
+{
+  id = ResourceId();
+  errors = "Custom shaders aren't supported for D3D9 captures yet";
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// output windows, as swapchains on the real device
+
+void D3D9Replay::OutputWindow::Release()
+{
+  SAFE_RELEASE(depthStencil);
+  SAFE_RELEASE(backBuffer);
+  SAFE_RELEASE(swap);
+}
+
+bool D3D9Replay::CreateOutputSwapChain(OutputWindow &outw)
+{
+  outw.Release();
+
+  if(outw.width <= 0 || outw.height <= 0)
+    return false;
+
+  IDirect3DDevice9 *dev = m_pDevice->GetReal();
+  HRESULT hr = S_OK;
+
+  if(outw.wnd)
+  {
+    D3DPRESENT_PARAMETERS params = {};
+    params.BackBufferWidth = (UINT)outw.width;
+    params.BackBufferHeight = (UINT)outw.height;
+    params.BackBufferFormat = D3DFMT_X8R8G8B8;
+    params.BackBufferCount = 1;
+    params.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    params.hDeviceWindow = outw.wnd;
+    params.Windowed = TRUE;
+    params.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+
+    hr = dev->CreateAdditionalSwapChain(&params, &outw.swap);
+    if(SUCCEEDED(hr))
+      hr = outw.swap->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &outw.backBuffer);
+  }
+  else
+  {
+    hr = dev->CreateRenderTarget((UINT)outw.width, (UINT)outw.height, D3DFMT_X8R8G8B8,
+                                 D3DMULTISAMPLE_NONE, 0, FALSE, &outw.backBuffer, NULL);
+  }
+
+  if(SUCCEEDED(hr) && outw.depth)
+    hr = dev->CreateDepthStencilSurface((UINT)outw.width, (UINT)outw.height, D3DFMT_D24S8,
+                                        D3DMULTISAMPLE_NONE, 0, FALSE, &outw.depthStencil, NULL);
+
+  if(FAILED(hr))
+  {
+    RDCERR("Couldn't create the output window's swapchain: %s", ToStr(hr).c_str());
+    outw.Release();
+    return false;
+  }
+
+  return true;
+}
+
+uint64_t D3D9Replay::MakeOutputWindow(WindowingData window, bool depth)
+{
+  OutputWindow outw;
+  outw.depth = depth;
+
+  if(window.system == WindowingSystem::Win32)
+  {
+    outw.wnd = window.win32.window;
+
+    RECT rect = {};
+    GetClientRect(outw.wnd, &rect);
+    outw.width = rect.right - rect.left;
+    outw.height = rect.bottom - rect.top;
+  }
+  else if(window.system == WindowingSystem::Headless)
+  {
+    outw.width = window.headless.width;
+    outw.height = window.headless.height;
+  }
+  else
+  {
+    RDCERR("Unexpected window system %u", window.system);
+    return 0;
+  }
+
+  CreateOutputSwapChain(outw);
+
+  uint64_t id = m_OutputWindowID++;
+  m_OutputWindows[id] = outw;
+  return id;
+}
+
+void D3D9Replay::DestroyOutputWindow(uint64_t id)
+{
+  auto it = m_OutputWindows.find(id);
+  if(it == m_OutputWindows.end())
+    return;
+
+  it->second.Release();
+  m_OutputWindows.erase(it);
+}
+
+bool D3D9Replay::CheckResizeOutputWindow(uint64_t id)
+{
+  auto it = m_OutputWindows.find(id);
+  if(it == m_OutputWindows.end() || it->second.wnd == NULL)
+    return false;
+
+  OutputWindow &outw = it->second;
+
+  RECT rect = {};
+  GetClientRect(outw.wnd, &rect);
+  const int32_t w = rect.right - rect.left, h = rect.bottom - rect.top;
+
+  if(w == outw.width && h == outw.height)
+    return false;
+
+  outw.width = w;
+  outw.height = h;
+  CreateOutputSwapChain(outw);
+  return true;
+}
+
+void D3D9Replay::GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h)
+{
+  w = h = 0;
+
+  auto it = m_OutputWindows.find(id);
+  if(it == m_OutputWindows.end())
+    return;
+
+  w = it->second.width;
+  h = it->second.height;
+}
+
+void D3D9Replay::GetOutputWindowData(uint64_t id, bytebuf &retData)
+{
+  retData.clear();
+}
+
+void D3D9Replay::ClearOutputWindowColor(uint64_t id, FloatVector col)
+{
+  auto it = m_OutputWindows.find(id);
+  if(it == m_OutputWindows.end() || it->second.backBuffer == NULL)
+    return;
+
+  // ColorFill doesn't touch the device's state
+  m_pDevice->GetReal()->ColorFill(it->second.backBuffer, NULL,
+                                  D3DCOLOR_COLORVALUE(col.x, col.y, col.z, col.w));
+}
+
+void D3D9Replay::ClearOutputWindowDepth(uint64_t id, float depth, uint8_t stencil)
+{
+  auto it = m_OutputWindows.find(id);
+  if(it == m_OutputWindows.end() || it->second.depthStencil == NULL)
+    return;
+
+  IDirect3DDevice9 *dev = m_pDevice->GetReal();
+
+  IDirect3DSurface9 *prevRT = NULL, *prevDS = NULL;
+  D3DVIEWPORT9 prevViewport = {};
+  RECT prevScissor = {};
+  dev->GetRenderTarget(0, &prevRT);
+  dev->GetDepthStencilSurface(&prevDS);
+  dev->GetViewport(&prevViewport);
+  dev->GetScissorRect(&prevScissor);
+
+  dev->SetRenderTarget(0, it->second.backBuffer);
+  dev->SetDepthStencilSurface(it->second.depthStencil);
+  dev->Clear(0, NULL, D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, 0, depth, stencil);
+
+  dev->SetRenderTarget(0, prevRT);
+  dev->SetDepthStencilSurface(prevDS);
+  dev->SetViewport(&prevViewport);
+  dev->SetScissorRect(&prevScissor);
+  SAFE_RELEASE(prevRT);
+  SAFE_RELEASE(prevDS);
+}
+
+void D3D9Replay::BindOutputWindow(uint64_t id, bool depth)
+{
+}
+
+bool D3D9Replay::IsOutputWindowVisible(uint64_t id)
+{
+  auto it = m_OutputWindows.find(id);
+  if(it == m_OutputWindows.end())
+    return false;
+
+  return it->second.wnd == NULL || IsWindowVisible(it->second.wnd) == TRUE;
+}
+
+void D3D9Replay::FlipOutputWindow(uint64_t id)
+{
+  auto it = m_OutputWindows.find(id);
+  if(it == m_OutputWindows.end() || it->second.swap == NULL)
+    return;
+
+  it->second.swap->Present(NULL, NULL, NULL, NULL, 0);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// creating the replay device
+
+namespace
+{
+const wchar_t *HiddenWindowClass = L"renderdoc_d3d9_replay";
+
+HWND CreateHiddenWindow()
+{
+  static bool registered = false;
+  if(!registered)
+  {
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.lpszClassName = HiddenWindowClass;
+    registered = RegisterClassExW(&wc) != 0;
+  }
+
+  return CreateWindowExW(0, HiddenWindowClass, L"RenderDoc D3D9 replay", WS_OVERLAPPEDWINDOW, 0, 0,
+                         64, 64, NULL, NULL, GetModuleHandleW(NULL), NULL);
+}
+};
+
+RDResult D3D9_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IReplayDriver **driver)
+{
+  RDCDEBUG("Creating a D3D9 replay device");
+
+  if(rdc == NULL)
+    RETURN_ERROR_RESULT(ResultCode::APIUnsupported,
+                        "D3D9 can't be used to replay captures made with other APIs");
+
+  int sectionIdx = rdc->SectionIndex(SectionType::FrameCapture);
+  if(sectionIdx < 0)
+    RETURN_ERROR_RESULT(ResultCode::FileCorrupted, "File does not contain captured API data");
+
+  const uint64_t ver = rdc->GetSectionProperties(sectionIdx).version;
+  if(!D3D9InitParams::IsSupportedVersion(ver))
+    RETURN_ERROR_RESULT(ResultCode::APIIncompatibleVersion,
+                        "D3D9 capture is incompatible version %llu, newest supported by this "
+                        "build of RenderDoc is %llu",
+                        ver, D3D9InitParams::CurrentVersion);
+
+  D3D9InitParams initParams;
+  {
+    StreamReader *reader = rdc->ReadSection(sectionIdx);
+    ReadSerialiser ser(reader, Ownership::Stream);
+    ser.SetVersion(ver);
+
+    SystemChunk chunk = ser.ReadChunk<SystemChunk>();
+    if(chunk != SystemChunk::DriverInit)
+      RETURN_ERROR_RESULT(ResultCode::FileCorrupted,
+                          "Expected to get a DriverInit chunk, instead got %u", chunk);
+
+    SERIALISE_ELEMENT(initParams);
+
+    if(ser.IsErrored())
+      return ser.GetError();
+  }
+
+  if(initParams.AdapterIdentifier.Description[0])
+    RDCLOG("Capture was made on %s", initParams.AdapterIdentifier.Description);
+
+  if(GetD3DCompiler() == NULL)
+    RDCWARN("Couldn't load d3dcompiler_47.dll, depth stencils won't be written back");
+
+  HMODULE lib = LoadLibraryA("d3d9.dll");
+  if(lib == NULL)
+    RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Failed to load d3d9.dll");
+
+  typedef HRESULT(WINAPI * PFN_Direct3DCreate9Ex)(UINT, IDirect3D9Ex **);
+  PFN_Direct3DCreate9Ex create9Ex = (PFN_Direct3DCreate9Ex)GetProcAddress(lib, "Direct3DCreate9Ex");
+  if(create9Ex == NULL)
+    RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "d3d9.dll has no Direct3DCreate9Ex");
+
+  IDirect3D9Ex *d3d = NULL;
+  HRESULT hr = create9Ex(D3D_SDK_VERSION, &d3d);
+  if(FAILED(hr) || d3d == NULL)
+    RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Direct3DCreate9Ex failed: %s", ToStr(hr).c_str());
+
+  HWND wnd = CreateHiddenWindow();
+  if(wnd == NULL)
+  {
+    d3d->Release();
+    RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Couldn't create the replay window");
+  }
+
+  // the device's own swapchain is never used, the capture's are created separately
+  D3DPRESENT_PARAMETERS params = {};
+  params.BackBufferWidth = 16;
+  params.BackBufferHeight = 16;
+  params.BackBufferFormat = D3DFMT_UNKNOWN;
+  params.BackBufferCount = 1;
+  params.SwapEffect = D3DSWAPEFFECT_DISCARD;
+  params.hDeviceWindow = wnd;
+  params.Windowed = TRUE;
+  params.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+
+  // mixed vertex processing, so that captures from software vertex processing devices (with
+  // their larger constant files) replay
+  const DWORD commonFlags =
+      D3DCREATE_FPU_PRESERVE | D3DCREATE_MULTITHREADED | D3DCREATE_NOWINDOWCHANGES;
+
+  IDirect3DDevice9Ex *dev = NULL;
+  hr = d3d->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, wnd,
+                           D3DCREATE_MIXED_VERTEXPROCESSING | commonFlags, &params, NULL, &dev);
+  if(FAILED(hr))
+  {
+    RDCWARN("Couldn't create a mixed vertex processing device (%s), trying hardware",
+            ToStr(hr).c_str());
+    hr = d3d->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, wnd,
+                             D3DCREATE_HARDWARE_VERTEXPROCESSING | commonFlags, &params, NULL, &dev);
+  }
+
+  if(FAILED(hr) || dev == NULL)
+  {
+    DestroyWindow(wnd);
+    d3d->Release();
+    RETURN_ERROR_RESULT(ResultCode::APIHardwareUnsupported,
+                        "Couldn't create a D3D9Ex device to replay with: %s", ToStr(hr).c_str());
+  }
+
+  // the wrapped interfaces take over the references
+  WrappedD3D9 *wrappedD3D = new WrappedD3D9(d3d);
+  WrappedD3DDevice9 *wrapped = new WrappedD3DDevice9(dev, wrappedD3D, wnd, initParams);
+  wrappedD3D->Release();
+
+  D3D9Replay *replay = new D3D9Replay(wrapped, d3d, wnd);
+  wrapped->SetReplay(replay, wnd);
+
+  *driver = replay;
+  return ResultCode::Succeeded;
 }
 
 static DriverRegistration D3D9DriverRegistration(RDCDriver::D3D9, &D3D9_CreateReplayDevice);
 
-#endif
-
 // Structured export (e.g. renderdoccmd convert, or the python API's GetStructuredData) only needs
-// to read the capture, so it works before replay does.
+// to read the capture
 RDResult D3D9_ProcessStructured(RDCFile *rdc, SDFile &output)
 {
   int sectionIdx = rdc->SectionIndex(SectionType::FrameCapture);

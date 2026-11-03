@@ -62,7 +62,8 @@ WrappedD3D9Object::WrappedD3D9Object(IUnknown *real, WrappedD3DDevice9 *device,
       m_Container(container),
       m_pRealUnknown(real),
       m_Ownership(ownership),
-      m_ID(ResourceIDGen::GetNewUniqueID()),
+      // during replay, wrappers take their captured ID
+      m_ID(device->TakeWrapperID()),
       m_ExtRef(container == NULL && ownership == RealOwnership::WhileExternal ? 1 : 0)
 {
   // a new standalone object starts with the application's reference, which holds a reference on the

@@ -22,7 +22,6 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-
 #include "driver/dx/official/d3dcompiler.h"
 #include "driver/shaders/dxbc/dxbc_compile.h"
 #include "d3d9_contents.h"
@@ -53,6 +52,11 @@
 // The results are stored in the depth stencil's own layout (depth in the high bits, stencil in the
 // low ones), with one slice per sample. Everything is drawn on the real device and its state is
 // set back afterwards.
+//
+// Replay writes them back the other way round: a full-screen draw with ZFUNC ALWAYS outputs
+// oDepth = l * (1 / max), computed exactly as it was read, then stencil is drawn one bit at a time
+// with STENCILPASS REPLACE and a write mask of that bit, discarding the pixels without it.
+// Multisampled ones are drawn a sample at a time with D3DRS_MULTISAMPLEMASK.
 
 namespace
 {
@@ -80,6 +84,37 @@ bool GetDepthFormatInfo(D3DFORMAT format, DepthFormatInfo &info)
     case D3DFMT_D32: info = {24, 0, 4}; return true;
     // D24FS8's depth is a 20e4 float, which isn't handled
     default: return false;
+  }
+}
+
+// the depth and stencil integers in a stored value
+void UnpackDepthStencil(D3DFORMAT format, uint32_t v, uint32_t &depth, uint32_t &stencil)
+{
+  switch((DWORD)format)
+  {
+    case D3DFMT_D15S1:
+      depth = v >> 1;
+      stencil = v & 0x1;
+      return;
+    case D3DFMT_D24S8:
+    case MAKEFOURCC('I', 'N', 'T', 'Z'):
+      depth = v >> 8;
+      stencil = v & 0xFF;
+      return;
+    case D3DFMT_D24X4S4:
+      depth = v >> 8;
+      stencil = v & 0xF;
+      return;
+    case D3DFMT_D24X8:
+    case MAKEFOURCC('D', 'F', '2', '4'):
+    case D3DFMT_D32:
+      depth = v >> 8;
+      stencil = 0;
+      return;
+    default:
+      depth = v;
+      stencil = 0;
+      return;
   }
 }
 
@@ -143,6 +178,33 @@ float4 main(float2 vpos : VPOS) : COLOR0
   float a = tex2Dlod(acc, float4(uv, 0, 0)).r;
   float p = tex2Dlod(passed, float4(uv, 0, 0)).r * params.y;
   return a + (p > 0.5f ? params.x : 0.0f);
+}
+)";
+
+// c0: x = 0, y = 1 / the largest depth value, zw = 1 / size. The depth is computed exactly as
+// DepthTestPS computes it, so the same integer gives the same depth.
+const char *DepthWritePS = R"(
+sampler2D values : register(s0);
+float4 params : register(c0);
+
+float4 main(float2 vpos : VPOS, out float depth : DEPTH) : COLOR0
+{
+  float l = tex2Dlod(values, float4((vpos + 0.5f) * params.zw, 0, 0)).r;
+  depth = (l + params.x) * params.y;
+  return 0.0f;
+}
+)";
+
+// c0: x = the stencil bit being written, zw = 1 / size. Keeps the pixels that have the bit.
+const char *StencilWritePS = R"(
+sampler2D values : register(s0);
+float4 params : register(c0);
+
+float4 main(float2 vpos : VPOS) : COLOR0
+{
+  float s = tex2Dlod(values, float4((vpos + 0.5f) * params.zw, 0, 0)).r;
+  clip(fmod(floor(s / params.x + 0.25f), 2.0f) - 0.5f);
+  return 0.0f;
 }
 )";
 
@@ -258,6 +320,255 @@ void WrappedD3DDevice9::DepthReadback::Release()
   SAFE_RELEASE(stencilTest);
   SAFE_RELEASE(combine);
   SAFE_RELEASE(decl);
+  SAFE_RELEASE(depthWrite);
+  SAFE_RELEASE(stencilWrite);
+}
+
+bool WrappedD3DDevice9::InitDepthWrite(rdcstr &err)
+{
+  // the vertex shader and declaration are shared with reading
+  if(!InitDepthReadback(err))
+    return false;
+
+  if(m_DepthReadback.triedWrite)
+  {
+    err = m_DepthReadback.writeError;
+    return err.empty();
+  }
+
+  m_DepthReadback.triedWrite = true;
+
+  rdcarray<DWORD> depthPS, stencilPS;
+  err = CompileShader(DepthWritePS, "ps_3_0", depthPS);
+  if(err.empty())
+    err = CompileShader(StencilWritePS, "ps_3_0", stencilPS);
+
+  if(err.empty())
+  {
+    HRESULT hr = m_device->CreatePixelShader(depthPS.data(), &m_DepthReadback.depthWrite);
+    if(SUCCEEDED(hr))
+      hr = m_device->CreatePixelShader(stencilPS.data(), &m_DepthReadback.stencilWrite);
+    if(FAILED(hr))
+      err = StringFormat::Fmt("Couldn't create the depth write shaders: %s", ToStr(hr).c_str());
+  }
+
+  if(!err.empty())
+  {
+    RDCWARN("%s", err.c_str());
+    m_DepthReadback.writeError = err;
+    SAFE_RELEASE(m_DepthReadback.depthWrite);
+    SAFE_RELEASE(m_DepthReadback.stencilWrite);
+    return false;
+  }
+
+  return true;
+}
+
+rdcstr WrappedD3DDevice9::WriteDepthStencil(IDirect3DSurface9 *ds, const D3D9SubresourceData &sub)
+{
+  D3DSURFACE_DESC desc = {};
+  ds->GetDesc(&desc);
+
+  DepthFormatInfo info;
+  if(!GetDepthFormatInfo(desc.Format, info))
+    return StringFormat::Fmt("Depth-stencil contents in %s can't be written back",
+                             ToStr(desc.Format).c_str());
+
+  if(desc.MultiSampleType == D3DMULTISAMPLE_NONMASKABLE)
+    return "Depth-stencil contents with D3DMULTISAMPLE_NONMASKABLE can't be written back";
+
+  const UINT samples = desc.MultiSampleType != D3DMULTISAMPLE_NONE ? (UINT)desc.MultiSampleType : 1;
+  const UINT width = desc.Width, height = desc.Height;
+
+  if(sub.Width != width || sub.Height != height || sub.Depth != samples ||
+     sub.RowPitch < width * info.bytes ||
+     sub.Data.size() < size_t(sub.RowPitch) * sub.RowCount * samples || sub.RowCount < height)
+    return "The stored contents don't match the depth stencil";
+
+  rdcstr err;
+  if(!InitDepthWrite(err))
+    return err;
+
+  IDirect3DTexture9 *sysmem[2] = {}, *values[2] = {};
+  IDirect3DSurface9 *colour = NULL;
+
+  // [0] is depth, [1] stencil
+  HRESULT hr = S_OK;
+  for(int i = 0; i < 2 && SUCCEEDED(hr); i++)
+  {
+    hr = m_device->CreateTexture(width, height, 1, 0, D3DFMT_R32F, D3DPOOL_SYSTEMMEM, &sysmem[i],
+                                 NULL);
+    if(SUCCEEDED(hr))
+      hr = m_device->CreateTexture(width, height, 1, 0, D3DFMT_R32F, D3DPOOL_DEFAULT, &values[i],
+                                   NULL);
+  }
+  // a colour target to go with the depth stencil, nothing is written to it
+  if(SUCCEEDED(hr))
+    hr = m_device->CreateRenderTarget(width, height, D3DFMT_X8R8G8B8, desc.MultiSampleType,
+                                      desc.MultiSampleQuality, FALSE, &colour, NULL);
+
+  if(FAILED(hr))
+    err = StringFormat::Fmt("Couldn't create the textures to write the depth stencil back: %s",
+                            ToStr(hr).c_str());
+
+  // uploads one sample's depth or stencil integers as floats
+  auto upload = [&](int which, UINT sample) -> HRESULT {
+    D3DLOCKED_RECT locked = {};
+    HRESULT res = sysmem[which]->LockRect(0, &locked, NULL, 0);
+    if(FAILED(res))
+      return res;
+
+    for(UINT y = 0; y < height; y++)
+    {
+      const byte *src = sub.Data.data() + (size_t(sub.RowCount) * sample + y) * sub.RowPitch;
+      float *dst = (float *)((byte *)locked.pBits + y * locked.Pitch);
+      for(UINT x = 0; x < width; x++)
+      {
+        const uint32_t v = info.bytes == 2 ? ((const uint16_t *)src)[x] : ((const uint32_t *)src)[x];
+        uint32_t depth = 0, stencil = 0;
+        UnpackDepthStencil(desc.Format, v, depth, stencil);
+        dst[x] = float(which == 0 ? depth : stencil);
+      }
+    }
+
+    sysmem[which]->UnlockRect(0);
+    return m_device->UpdateTexture(sysmem[which], values[which]);
+  };
+
+  if(err.empty())
+  {
+    D3D9DeviceState before;
+    D3D9FetchDeviceState(m_device, m_InitParams.BehaviorFlags, m_LightIndices, m_PaletteNumbers,
+                         before);
+
+    const bool ownScene = SUCCEEDED(m_device->BeginScene());
+
+    for(DWORD i = 1; i < D3D9_NUM_RENDER_TARGETS; i++)
+      if(m_RenderTargets[i])
+        m_device->SetRenderTarget(i, NULL);
+    for(uint32_t slot = 0; slot < D3D9_NUM_TEXTURE_SLOTS; slot++)
+      if(m_Bindings.textures[slot])
+        m_device->SetTexture(D3D9SlotToSampler(slot), NULL);
+
+    m_device->SetRenderTarget(0, colour);
+    m_device->SetDepthStencilSurface(ds);
+    const D3DVIEWPORT9 viewport = {0, 0, width, height, 0.0f, 1.0f};
+    m_device->SetViewport(&viewport);
+
+    m_device->SetVertexShader(m_DepthReadback.vs);
+    m_device->SetVertexDeclaration(m_DepthReadback.decl);
+    m_device->SetStreamSourceFreq(0, 1);
+
+    m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+    m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    m_device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+    m_device->SetRenderState(D3DRS_ZFUNC, D3DCMP_ALWAYS);
+    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_COLORWRITEENABLE, 0);
+    m_device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
+    m_device->SetRenderState(D3DRS_DEPTHBIAS, 0);
+    m_device->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, 0);
+    m_device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_TWOSIDEDSTENCILMODE, FALSE);
+    m_device->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_ALWAYS);
+    m_device->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
+    m_device->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_REPLACE);
+    m_device->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_REPLACE);
+    m_device->SetRenderState(D3DRS_STENCILREF, 0xFF);
+    m_device->SetRenderState(D3DRS_STENCILMASK, 0xFF);
+    m_device->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
+    // NVIDIA's alpha to coverage switch
+    m_device->SetRenderState(D3DRS_ADAPTIVETESS_Y, D3DFMT_UNKNOWN);
+
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+    m_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+    m_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+    m_device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    m_device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
+    m_device->SetSamplerState(0, D3DSAMP_MAXMIPLEVEL, 0);
+    m_device->SetSamplerState(0, D3DSAMP_MIPMAPLODBIAS, 0);
+
+    const float halfPixel[4] = {-1.0f / float(width), 1.0f / float(height), 0.0f, 0.0f};
+    m_device->SetVertexShaderConstantF(0, halfPixel, 1);
+
+    // the stencil bits are each set where they're stored, so everything starts at 0
+    if(info.stencilBits > 0)
+      m_device->Clear(0, NULL, D3DCLEAR_STENCIL, 0, 1.0f, 0);
+
+    const float maxValue = float((1U << info.depthBits) - 1);
+
+    for(UINT sample = 0; sample < samples && SUCCEEDED(hr); sample++)
+    {
+      m_device->SetRenderState(D3DRS_MULTISAMPLEMASK, samples > 1 ? (1U << sample) : 0xFFFFFFFF);
+
+      hr = upload(0, sample);
+      if(FAILED(hr))
+        break;
+
+      const float depthParams[4] = {0.0f, 1.0f / maxValue, 1.0f / float(width), 1.0f / float(height)};
+      m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+      m_device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+      m_device->SetPixelShader(m_DepthReadback.depthWrite);
+      m_device->SetPixelShaderConstantF(0, depthParams, 1);
+      m_device->SetTexture(0, values[0]);
+      m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, FullscreenQuad, sizeof(FullscreenVertex));
+
+      if(info.stencilBits == 0)
+        continue;
+
+      hr = upload(1, sample);
+      if(FAILED(hr))
+        break;
+
+      m_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+      m_device->SetRenderState(D3DRS_STENCILENABLE, TRUE);
+      m_device->SetPixelShader(m_DepthReadback.stencilWrite);
+      m_device->SetTexture(0, values[1]);
+
+      for(uint32_t k = 0; k < info.stencilBits; k++)
+      {
+        const uint32_t bit = 1U << k;
+        const float stencilParams[4] = {float(bit), 0.0f, 1.0f / float(width), 1.0f / float(height)};
+        m_device->SetRenderState(D3DRS_STENCILWRITEMASK, bit);
+        m_device->SetPixelShaderConstantF(0, stencilParams, 1);
+        m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, FullscreenQuad, sizeof(FullscreenVertex));
+      }
+    }
+
+    m_device->SetTexture(0, NULL);
+
+    if(FAILED(hr))
+      err = StringFormat::Fmt("Couldn't write the depth stencil back: %s", ToStr(hr).c_str());
+
+    if(ownScene)
+      m_device->EndScene();
+
+    // put everything back, the targets first since setting render target 0 resets the viewport
+    for(DWORD i = 0; i < D3D9_NUM_RENDER_TARGETS; i++)
+      if(m_RenderTargets[i] || i == 0)
+        m_device->SetRenderTarget(i, Unwrap(m_RenderTargets[i]));
+    m_device->SetDepthStencilSurface(Unwrap(m_DepthStencil));
+
+    D3D9DeviceState after;
+    D3D9FetchDeviceState(m_device, m_InitParams.BehaviorFlags, m_LightIndices, m_PaletteNumbers,
+                         after);
+    D3D9RestoreDeviceState(m_device, before, after);
+    RestoreRealBindings(before.FVF);
+  }
+
+  for(int i = 0; i < 2; i++)
+  {
+    SAFE_RELEASE(sysmem[i]);
+    SAFE_RELEASE(values[i]);
+  }
+  SAFE_RELEASE(colour);
+
+  return err;
 }
 
 rdcstr WrappedD3DDevice9::ReadDepthStencil(IDirect3DSurface9 *ds, D3D9SubresourceData &sub,
@@ -311,7 +622,7 @@ rdcstr WrappedD3DDevice9::ReadDepthStencil(IDirect3DSurface9 *ds, D3D9Subresourc
                                       desc.MultiSampleQuality, FALSE, &msTarget, NULL);
   if(SUCCEEDED(hr))
     hr = m_device->CreateOffscreenPlainSurface(width, height, D3DFMT_R32F, D3DPOOL_SYSTEMMEM,
-                                              &sysmem, NULL);
+                                               &sysmem, NULL);
 
   if(FAILED(hr))
     err = StringFormat::Fmt(samples > 1 ? "Couldn't create multisampled R32F targets to read the "
@@ -388,8 +699,7 @@ rdcstr WrappedD3DDevice9::ReadDepthStencil(IDirect3DSurface9 *ds, D3D9Subresourc
 
     // Draws the test for one sample, with whatever depth or stencil test is set up, into passed.
     // For depth tests the fragment's depth is (lo + bit) / maxValue.
-    auto test = [&](bool depth, IDirect3DTexture9 *loTex, uint32_t bit, float maxValue,
-                    UINT sample) {
+    auto test = [&](bool depth, IDirect3DTexture9 *loTex, uint32_t bit, float maxValue, UINT sample) {
       m_device->SetRenderTarget(0, samples > 1 ? msTarget : passedSurf);
       m_device->SetDepthStencilSurface(ds);
       m_device->SetViewport(&viewport);

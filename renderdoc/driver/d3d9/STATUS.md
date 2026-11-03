@@ -11,7 +11,11 @@ so none of this is upstream.
 | 2b | Full device state at frame start (render/sampler/texture stage states, transforms, lights, constants...) | Done, tested with `D3D9_Frame_Start_State` |
 | 2c | Resource contents: Lock tracking, shadow copies of D3DPOOL_DEFAULT data, initial contents | Done, tested with `D3D9_Resource_Contents` |
 | 2d | Edge cases: Reset/device loss mid-capture, state block contents, D3DPERF markers in captures, depth stencil read back, GDI drawing, front buffer copies, locks spanning the capture start | Done, tested with `D3D9_Capture_Edge_Cases` and `D3D9_Reset_Capture`; device loss needs a real game |
-| 3 | Replay | Not started |
+| 3a | Replay: loading captures, replaying to any event, the event list, resource descriptions, reading texture and buffer data | Written, not built or tested yet |
+| 3b | Texture viewer and buffers: displaying every D3D9 format, pick pixel, min/max, histogram, mesh viewer inputs | Not started |
+| 3c | D3D9 pipeline state, with its own UI panel and Python bindings | Not started |
+| 3d | Shaders: SM1-3 disassembly, reflection from the constant table | Not started |
+| 3e | Mesh output and overlays | Not started |
 
 ## Needs testing
 
@@ -61,8 +65,8 @@ so none of this is upstream.
     nearest. There's no lockable D16 or D24 on that GPU (D16_LOCKABLE fails), so the true bits
     can't be checked directly.
   - Reading needs multisampled R32F render targets for multisampled depth stencils.
-  - Replay writes them back with `oDepth` and ZFUNC ALWAYS, and stencil with 8 draws using REPLACE
-    and a write mask per bit (phase 3).
+  - Replay writes them back with `oDepth` and ZFUNC ALWAYS, and the stencil with a draw per bit
+    using REPLACE and a write mask of that bit (`WriteDepthStencil`, phase 3a).
   - Not considered: creating the application's depth stencils as INTZ textures behind its back. D16
     would become 24-bit, it can't be multisampled, and it changes behaviour even without a capture.
 - State blocks are read by applying them to the real device, reading the whole device state back
@@ -86,7 +90,9 @@ so none of this is upstream.
 - The back buffer's initial contents include the overlay text, since the overlay is drawn into
   the back buffer before the Present the capture starts at.
 - UpdateTexture copies the source's dirty region, which we track but don't store in captures yet.
-  Replay needs it to reproduce in-frame UpdateTexture calls (phase 3).
+  At replay the source's dirty region is whatever writing its initial contents and the frame's
+  locks made dirty, which can be more than the capture's, so an in-frame UpdateTexture can copy more
+  than it did.
 
 ## Checking `D3D9_Resource_Contents` captures
 
@@ -173,9 +179,63 @@ where they're cleared to 1.0.
   Tested: c200/c180 survive in `D3D9_Frame_Start_State`, c138/c148 stay zero, and `D3DTSS_CONSTANT`
   keeps the application's value. Nothing else in `BeginCaptureFrame` changed.
 
+## Replay (phase 3a)
+
+How it works is described at the top of `d3d9_replay_device.cpp`. In short: a D3D9Ex device on a
+hidden window replays through the same wrappers the application used, and wrappers created during
+replay keep their captured IDs. The capture's implicit swapchains become additional swapchains,
+windowed, and its automatic depth stencil a standalone one. D3D9Ex has no managed pool, so managed
+objects go in the default pool, and textures that can't be rendered to are made D3DUSAGE_DYNAMIC
+where the driver allows, so they can be locked to write and read them. Buffers lose
+D3DUSAGE_WRITEONLY. Depth stencils are written back with `oDepth` and the stencil a bit at a time
+(`d3d9_depth.cpp`).
+
+Until 3b and 3c, the UI's texture viewer shows nothing (`RenderTexture` isn't implemented), and
+captures present themselves as D3D11 with an empty pipeline state. The event browser, the resource
+list and the structured data work, and so does fetching data from Python.
+
+Known gaps:
+- Multisampled render targets are written back by copying their resolved contents into a
+  non-multisampled render target and StretchRect-ing that into the multisampled one. If the driver
+  doesn't allow that, a warning is logged and the contents stay as they are.
+- Default pool volume textures that can't be made dynamic can't be written or read.
+- Textures replay made dynamic are the destination of any in-frame UpdateTexture and UpdateSurface
+  calls. That's allowed as far as I know, but hasn't been tried.
+- In-frame UpdateTexture copies the dirty region replay has (see above).
+- D24FS8 and D3DMULTISAMPLE_NONMASKABLE depth stencils aren't written back (they weren't read
+  either), and the 0.375 D24 value lands one level off.
+- Output window screenshots (`GetOutputWindowData`) aren't implemented.
+
+### Checking replay
+
+`util/test/d3d9_replay_check.py` opens a capture with the Python module, prints its events and
+textures, saves the back buffer at the first and last events as `<capture>_first.png` and
+`<capture>_last.png`, and prints the depth stencils' values at the first event, which are their
+initial contents as written back at replay (in D3D9's layout, depth << 8 | stencil, as listed
+above). `--all` also steps through every action. To run it from a build:
+
+```
+set PYTHONPATH=<build>\x64\Release\pymodules
+set PATH=<build>\x64\Release;%PATH%
+python util\test\d3d9_replay_check.py capture.rdc --all
+```
+
+What to look for:
+- every demo's capture loads, in the script and in the UI, and the event browser shows its calls
+  with draws, clears, copies and presents as actions, and D3DPERF markers as regions
+  (`D3D9_Capture_Edge_Cases` has "Depth" and "State blocks").
+- `<capture>_last.png` looks like the application's window when it was captured, without the
+  overlay text. `<capture>_first.png` is the previous frame, with the overlay text.
+- `D3D9_Capture_Edge_Cases`: the depth values at the first event match the ones listed for its
+  initial contents above (0x4000005A, 0xBFFFFFA5 and 0xFFFFFF00 for the automatic depth stencil,
+  0x80000033 and 0xFFFFFF00 in each sample of the multisampled one, 0x7FFF for D16, 0x5FFFFF0F for
+  INTZ).
+- RenderDoc's log has no errors, and no "Couldn't write the contents" warnings except for the
+  gaps above.
+
 ## Inspecting a capture
 
-Captures can't be opened in the UI until replay exists, but their contents can be dumped:
+Captures can also be dumped without replaying them:
 
 ```
 renderdoccmd convert -f capture.rdc -o capture.zip.xml -c zip.xml
@@ -198,7 +258,11 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
   table of the API, so they follow one pattern; edit them by hand now.
 - `d3d9_contents.*` - resource contents: reading them back, shadow copies, lock tracking. The
   comment at the top of `d3d9_contents.h` describes how each kind of object is read.
-- `d3d9_depth.cpp` - reading back depth stencils that can't be locked.
+- `d3d9_depth.cpp` - reading back depth stencils that can't be locked, and writing them at replay.
+- `d3d9_replay.*` - the replay driver the replay controller talks to (`D3D9Replay`), and creating
+  the replay device.
+- `d3d9_replay_device.cpp` - the replay side of the device: loading, replaying the frame, the
+  event list, writing contents.
 - `d3d9_resources.*` - the wrapper base class and the resource wrappers. The comment at the top of
   `d3d9_resources.h` describes the lifetime model (external vs internal references, who holds real
   references, child objects).

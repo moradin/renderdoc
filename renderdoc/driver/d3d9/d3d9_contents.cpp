@@ -473,6 +473,12 @@ rdcstr ReadSurface(IDirect3DDevice9 *dev, IDirect3DSurface9 *surf, D3D9Subresour
 
 };
 
+rdcstr D3D9ReadSurfaceContents(IDirect3DDevice9 *dev, IDirect3DSurface9 *surf,
+                               D3D9SubresourceData &sub)
+{
+  return ReadSurface(dev, surf, sub);
+}
+
 void D3D9CopyFromLocked(D3D9SubresourceData &dst, D3DFORMAT format, const void *src,
                         uint32_t srcRowPitch, uint32_t srcSlicePitch)
 {
@@ -837,9 +843,7 @@ void WrappedD3DDevice9::ReadContents(WrappedD3D9Object *obj, D3D9InitialContents
                 "so its contents are undefined");
       break;
     }
-    case Resource_StateBlock:
-      ReadStateBlock((WrappedD3DStateBlock9 *)obj, contents);
-      break;
+    case Resource_StateBlock: ReadStateBlock((WrappedD3DStateBlock9 *)obj, contents); break;
     default: AddNote(contents, "This kind of object has no contents"); break;
   }
 }
@@ -961,6 +965,10 @@ void WrappedD3DDevice9::OnLastExternalRelease(WrappedD3D9Object *obj)
 void WrappedD3DDevice9::UpdateShadowFromTexture(IDirect3DBaseTexture9 *pSourceTexture,
                                                 IDirect3DBaseTexture9 *pDestinationTexture)
 {
+  // replay writes contents itself
+  if(IsReplayMode(m_State))
+    return;
+
   WrappedD3D9Object *src = GetWrappedObject(pSourceTexture);
   WrappedD3D9Object *dst = GetWrappedObject(pDestinationTexture);
   if(src == NULL || dst == NULL || src->GetResourceType() != dst->GetResourceType())
@@ -1099,6 +1107,10 @@ void WrappedD3DDevice9::UpdateShadowFromSurface(IDirect3DSurface9 *pSourceSurfac
                                                 IDirect3DSurface9 *pDestinationSurface,
                                                 CONST POINT *pDestPoint)
 {
+  // replay writes contents itself
+  if(IsReplayMode(m_State))
+    return;
+
   WrappedD3D9Object *dstSurf = GetWrappedObject(pDestinationSurface);
   WrappedD3D9Object *srcSurf = GetWrappedObject(pSourceSurface);
   if(dstSurf == NULL || srcSurf == NULL)
@@ -1176,6 +1188,10 @@ void WrappedD3DDevice9::UpdateShadowFromSurface(IDirect3DSurface9 *pSourceSurfac
 void WrappedD3DDevice9::OnLock(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *region,
                                DWORD flags)
 {
+  // replay writes contents itself
+  if(IsReplayMode(m_State))
+    return;
+
   if(flags & D3DLOCK_READONLY)
     return;
 
@@ -1197,6 +1213,10 @@ void WrappedD3DDevice9::OnLock(WrappedD3D9Object *obj, UINT face, UINT level, co
 void WrappedD3DDevice9::OnLocked(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *region,
                                  DWORD flags, void *data, UINT rowPitch, UINT slicePitch)
 {
+  // replay writes contents itself
+  if(IsReplayMode(m_State))
+    return;
+
   // Only locks that write are recorded. They're tracked whether or not a capture is running, so
   // that a lock taken before the capture starts is recorded when it ends during the capture.
   if(flags & D3DLOCK_READONLY)
@@ -1458,7 +1478,8 @@ bool WrappedD3DDevice9::Serialise_Unlock(SerialiserType &ser, Iface *pResource, 
 
   SERIALISE_CHECK_READ_ERRORS();
 
-  // replay is implemented in phase 3
+  if(IsReplayingAndReading())
+    WriteContents(GetWrappedObject(pResource), Contents);
 
   return true;
 }
@@ -1487,6 +1508,12 @@ bool WrappedD3DDevice9::Serialise_Surface_ReleaseDC(SerialiserType &ser, IDirect
 
   SERIALISE_CHECK_READ_ERRORS();
 
+  if(IsReplayingAndReading())
+  {
+    WriteContents(GetWrappedObject(pSurface), Contents);
+    AddCopyAction(ActionFlags::Copy, NULL, pSurface);
+  }
+
   return true;
 }
 
@@ -1502,6 +1529,12 @@ bool WrappedD3DDevice9::Serialise_GetFrontBufferData(SerialiserType &ser, UINT i
 
   SERIALISE_CHECK_READ_ERRORS();
 
+  if(IsReplayingAndReading())
+  {
+    WriteContents(GetWrappedObject(pDestSurface), Contents);
+    AddCopyAction(ActionFlags::Copy, NULL, pDestSurface);
+  }
+
   return true;
 }
 
@@ -1516,6 +1549,12 @@ bool WrappedD3DDevice9::Serialise_SwapChain_GetFrontBufferData(SerialiserType &s
   SERIALISE_ELEMENT(Contents);
 
   SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
+  {
+    WriteContents(GetWrappedObject(pDestSurface), Contents);
+    AddCopyAction(ActionFlags::Copy, NULL, pDestSurface);
+  }
 
   return true;
 }
@@ -1549,6 +1588,9 @@ bool WrappedD3DDevice9::Serialise_Texture_AddDirtyRect(SerialiserType &ser,
 
   SERIALISE_CHECK_READ_ERRORS();
 
+  if(IsReplayingAndReading() && pTexture)
+    pTexture->AddDirtyRect(pDirtyRect);
+
   return true;
 }
 
@@ -1564,6 +1606,9 @@ bool WrappedD3DDevice9::Serialise_CubeTexture_AddDirtyRect(SerialiserType &ser,
 
   SERIALISE_CHECK_READ_ERRORS();
 
+  if(IsReplayingAndReading() && pCubeTexture)
+    pCubeTexture->AddDirtyRect(FaceType, pDirtyRect);
+
   return true;
 }
 
@@ -1576,6 +1621,9 @@ bool WrappedD3DDevice9::Serialise_VolumeTexture_AddDirtyBox(SerialiserType &ser,
   SERIALISE_ELEMENT_OPT(pDirtyBox);
 
   SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading() && pVolumeTexture)
+    pVolumeTexture->AddDirtyBox(pDirtyBox);
 
   return true;
 }
