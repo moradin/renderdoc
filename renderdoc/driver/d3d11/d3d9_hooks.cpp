@@ -26,6 +26,11 @@
 #include "driver/d3d11/d3d11_device.h"
 #include "hooks/hooks.h"
 
+// D3D9 devices record the markers too, see driver/d3d9/d3d9_device.cpp
+void D3D9_PERF_BeginEvent(DWORD col, const wchar_t *name);
+void D3D9_PERF_EndEvent();
+void D3D9_PERF_SetMarker(DWORD col, const wchar_t *name);
+
 typedef int(WINAPI *PFN_BEGIN_EVENT)(DWORD, WCHAR *);
 typedef int(WINAPI *PFN_END_EVENT)();
 typedef int(WINAPI *PFN_SET_MARKER_EVENT)(DWORD, WCHAR *);
@@ -61,6 +66,7 @@ private:
   static int WINAPI PERF_BeginEvent_hook(DWORD col, WCHAR *wszName)
   {
     int ret = WrappedID3D11Device::BeginEvent((uint32_t)col, wszName);
+    D3D9_PERF_BeginEvent(col, wszName);
 
     d3d9hooks.PERF_BeginEvent()(col, wszName);
 
@@ -70,6 +76,7 @@ private:
   static int WINAPI PERF_EndEvent_hook()
   {
     int ret = WrappedID3D11Device::EndEvent();
+    D3D9_PERF_EndEvent();
 
     d3d9hooks.PERF_EndEvent()();
 
@@ -79,6 +86,7 @@ private:
   static void WINAPI PERF_SetMarker_hook(DWORD col, WCHAR *wszName)
   {
     WrappedID3D11Device::SetMarker((uint32_t)col, wszName);
+    D3D9_PERF_SetMarker(col, wszName);
 
     d3d9hooks.PERF_SetMarker()(col, wszName);
   }

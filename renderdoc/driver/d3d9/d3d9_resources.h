@@ -371,13 +371,13 @@ public:
   HRESULT STDMETHODCALLTYPE GetDesc(D3DSURFACE_DESC *pDesc) { return m_pReal->GetDesc(pDesc); }
   HRESULT STDMETHODCALLTYPE LockRect(D3DLOCKED_RECT *pLockedRect, CONST RECT *pRect, DWORD Flags);
   HRESULT STDMETHODCALLTYPE UnlockRect();
-  // GDI drawing isn't recorded, but the initial contents are read before it happens
+  // GDI drawing can't be recorded, so the surface is read back at ReleaseDC
   HRESULT STDMETHODCALLTYPE GetDC(HDC *phdc)
   {
     D3D9PrepareForWrite(this);
     return m_pReal->GetDC(phdc);
   }
-  HRESULT STDMETHODCALLTYPE ReleaseDC(HDC hdc) { return m_pReal->ReleaseDC(hdc); }
+  HRESULT STDMETHODCALLTYPE ReleaseDC(HDC hdc);
 };
 
 class WrappedD3DVolume9 : public WrappedD3D9DeviceChild<IDirect3DVolume9>

@@ -1155,8 +1155,9 @@ void WrappedD3DDevice9::OnLock(WrappedD3D9Object *obj, UINT face, UINT level, co
 void WrappedD3DDevice9::OnLocked(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *region,
                                  DWORD flags, void *data, UINT rowPitch, UINT slicePitch)
 {
-  // only locks that write during a capture are recorded
-  if((flags & D3DLOCK_READONLY) || !IsActiveCapturing(m_State))
+  // Only locks that write are recorded. They're tracked whether or not a capture is running, so
+  // that a lock taken before the capture starts is recorded when it ends during the capture.
+  if(flags & D3DLOCK_READONLY)
     return;
 
   D3D9LockInfo info;
@@ -1305,6 +1306,100 @@ void WrappedD3DDevice9::OnAddDirtyRegion(WrappedD3D9Object *obj, UINT face, cons
   MarkReferenced(obj->GetWrappedUnknown(), eFrameRef_Read);
 }
 
+namespace
+{
+// the whole of a surface as it is now, with the face and level of the texture it belongs to
+rdcstr ReadWholeSurface(IDirect3DDevice9 *dev, WrappedD3D9Object *surf, D3D9SubresourceData &data)
+{
+  UINT face = 0, level = 0;
+  ContentsOwner(surf, face, level);
+  data.Face = face;
+  data.Level = level;
+  return ReadSurface(dev, ((WrappedD3DSurface9 *)surf)->GetReal(), data);
+}
+};
+
+void WrappedD3DDevice9::OnReleaseDC(WrappedD3D9Object *surf)
+{
+  if(!IsActiveCapturing(m_State))
+    return;
+
+  SCOPED_LOCK(m_D3DLock);
+
+  D3D9SubresourceData data;
+  rdcstr err = ReadWholeSurface(m_device, surf, data);
+  if(!err.empty())
+  {
+    RDCWARN("Couldn't read %s after GDI drawing: %s", ToStr(surf->GetResourceID()).c_str(),
+            err.c_str());
+    return;
+  }
+
+  {
+    USE_SCRATCH_SERIALISER();
+    SCOPED_SERIALISE_CHUNK(D3D9Chunk::Surface_ReleaseDC, data.Data.size() + 256);
+    Serialise_Surface_ReleaseDC(ser, (IDirect3DSurface9 *)surf->GetWrappedUnknown(), data);
+    m_FrameRecord->AddChunk(scope.Get());
+  }
+
+  MarkReferenced(surf->GetWrappedUnknown(), eFrameRef_PartialWrite);
+}
+
+void WrappedD3DDevice9::OnGetFrontBufferData(UINT iSwapChain, IDirect3DSurface9 *pDestSurface)
+{
+  WrappedD3D9Object *dst = GetWrappedObject(pDestSurface);
+  if(!IsActiveCapturing(m_State) || dst == NULL)
+    return;
+
+  SCOPED_LOCK(m_D3DLock);
+
+  // the front buffer is what's on screen, which replay can't reproduce, so keep what was copied
+  D3D9SubresourceData data;
+  rdcstr err = ReadWholeSurface(m_device, dst, data);
+  if(!err.empty())
+  {
+    RDCWARN("Couldn't read GetFrontBufferData's destination: %s", err.c_str());
+    return;
+  }
+
+  {
+    USE_SCRATCH_SERIALISER();
+    SCOPED_SERIALISE_CHUNK(D3D9Chunk::GetFrontBufferData, data.Data.size() + 256);
+    Serialise_GetFrontBufferData(ser, iSwapChain, pDestSurface, data);
+    m_FrameRecord->AddChunk(scope.Get());
+  }
+
+  MarkReferenced(pDestSurface, eFrameRef_PartialWrite);
+}
+
+void WrappedD3DDevice9::OnSwapChainGetFrontBufferData(IDirect3DSwapChain9 *swap,
+                                                      IDirect3DSurface9 *pDestSurface)
+{
+  WrappedD3D9Object *dst = GetWrappedObject(pDestSurface);
+  if(!IsActiveCapturing(m_State) || dst == NULL)
+    return;
+
+  SCOPED_LOCK(m_D3DLock);
+
+  D3D9SubresourceData data;
+  rdcstr err = ReadWholeSurface(m_device, dst, data);
+  if(!err.empty())
+  {
+    RDCWARN("Couldn't read GetFrontBufferData's destination: %s", err.c_str());
+    return;
+  }
+
+  {
+    USE_SCRATCH_SERIALISER();
+    SCOPED_SERIALISE_CHUNK(D3D9Chunk::SwapChain_GetFrontBufferData, data.Data.size() + 256);
+    Serialise_SwapChain_GetFrontBufferData(ser, swap, pDestSurface, data);
+    m_FrameRecord->AddChunk(scope.Get());
+  }
+
+  MarkReferenced(swap, eFrameRef_Read);
+  MarkReferenced(pDestSurface, eFrameRef_PartialWrite);
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // serialisation of the chunks above
 
@@ -1336,6 +1431,68 @@ INSTANTIATE_UNLOCK(IDirect3DCubeTexture9);
 INSTANTIATE_UNLOCK(IDirect3DVolumeTexture9);
 INSTANTIATE_UNLOCK(IDirect3DSurface9);
 INSTANTIATE_UNLOCK(IDirect3DVolume9);
+
+template <typename SerialiserType>
+bool WrappedD3DDevice9::Serialise_Surface_ReleaseDC(SerialiserType &ser, IDirect3DSurface9 *pSurface,
+                                                    D3D9SubresourceData &Contents)
+{
+  SERIALISE_ELEMENT(pSurface).Important();
+  // the whole surface after GDI drew to it
+  SERIALISE_ELEMENT(Contents);
+
+  SERIALISE_CHECK_READ_ERRORS();
+
+  return true;
+}
+
+template <typename SerialiserType>
+bool WrappedD3DDevice9::Serialise_GetFrontBufferData(SerialiserType &ser, UINT iSwapChain,
+                                                     IDirect3DSurface9 *pDestSurface,
+                                                     D3D9SubresourceData &Contents)
+{
+  SERIALISE_ELEMENT(iSwapChain);
+  SERIALISE_ELEMENT(pDestSurface).Important();
+  // what was copied, since replay can't reproduce what was on screen
+  SERIALISE_ELEMENT(Contents);
+
+  SERIALISE_CHECK_READ_ERRORS();
+
+  return true;
+}
+
+template <typename SerialiserType>
+bool WrappedD3DDevice9::Serialise_SwapChain_GetFrontBufferData(SerialiserType &ser,
+                                                               IDirect3DSwapChain9 *pSwapChain,
+                                                               IDirect3DSurface9 *pDestSurface,
+                                                               D3D9SubresourceData &Contents)
+{
+  SERIALISE_ELEMENT(pSwapChain);
+  SERIALISE_ELEMENT(pDestSurface).Important();
+  SERIALISE_ELEMENT(Contents);
+
+  SERIALISE_CHECK_READ_ERRORS();
+
+  return true;
+}
+
+template bool WrappedD3DDevice9::Serialise_Surface_ReleaseDC(ReadSerialiser &ser,
+                                                             IDirect3DSurface9 *pSurface,
+                                                             D3D9SubresourceData &Contents);
+template bool WrappedD3DDevice9::Serialise_Surface_ReleaseDC(WriteSerialiser &ser,
+                                                             IDirect3DSurface9 *pSurface,
+                                                             D3D9SubresourceData &Contents);
+template bool WrappedD3DDevice9::Serialise_GetFrontBufferData(ReadSerialiser &ser, UINT iSwapChain,
+                                                              IDirect3DSurface9 *pDestSurface,
+                                                              D3D9SubresourceData &Contents);
+template bool WrappedD3DDevice9::Serialise_GetFrontBufferData(WriteSerialiser &ser, UINT iSwapChain,
+                                                              IDirect3DSurface9 *pDestSurface,
+                                                              D3D9SubresourceData &Contents);
+template bool WrappedD3DDevice9::Serialise_SwapChain_GetFrontBufferData(
+    ReadSerialiser &ser, IDirect3DSwapChain9 *pSwapChain, IDirect3DSurface9 *pDestSurface,
+    D3D9SubresourceData &Contents);
+template bool WrappedD3DDevice9::Serialise_SwapChain_GetFrontBufferData(
+    WriteSerialiser &ser, IDirect3DSwapChain9 *pSwapChain, IDirect3DSurface9 *pDestSurface,
+    D3D9SubresourceData &Contents);
 
 template <typename SerialiserType>
 bool WrappedD3DDevice9::Serialise_Texture_AddDirtyRect(SerialiserType &ser,
@@ -1435,6 +1592,14 @@ HRESULT WrappedD3DSurface9::UnlockRect()
 {
   D3D9BeforeUnlock(this, 0, 0);
   return m_pReal->UnlockRect();
+}
+
+HRESULT WrappedD3DSurface9::ReleaseDC(HDC hdc)
+{
+  HRESULT hr = m_pReal->ReleaseDC(hdc);
+  if(SUCCEEDED(hr))
+    m_pDevice->OnReleaseDC(this);
+  return hr;
 }
 
 HRESULT WrappedD3DVolume9::LockBox(D3DLOCKED_BOX *pLockedVolume, CONST D3DBOX *pBox, DWORD Flags)

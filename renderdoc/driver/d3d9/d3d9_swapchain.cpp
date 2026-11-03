@@ -171,7 +171,11 @@ HRESULT WrappedD3DSwapChain9::Present(CONST RECT *pSourceRect, CONST RECT *pDest
 
 HRESULT WrappedD3DSwapChain9::GetFrontBufferData(IDirect3DSurface9 *pDestSurface)
 {
-  return m_pReal->GetFrontBufferData(Unwrap(pDestSurface));
+  m_pDevice->PrepareForWrite(pDestSurface);
+  HRESULT hr = m_pReal->GetFrontBufferData(Unwrap(pDestSurface));
+  if(SUCCEEDED(hr))
+    m_pDevice->OnSwapChainGetFrontBufferData(this, pDestSurface);
+  return hr;
 }
 
 HRESULT WrappedD3DSwapChain9::GetBackBuffer(UINT iBackBuffer, D3DBACKBUFFER_TYPE Type,

@@ -28,7 +28,7 @@
 template <>
 rdcstr DoStringise(const D3D9Chunk &el)
 {
-  RDCCOMPILE_ASSERT((uint32_t)D3D9Chunk::Max == 94 + (uint32_t)SystemChunk::FirstDriverChunk,
+  RDCCOMPILE_ASSERT((uint32_t)D3D9Chunk::Max == 100 + (uint32_t)SystemChunk::FirstDriverChunk,
                     "Chunks changed without updating names");
 
   BEGIN_ENUM_STRINGISE(D3D9Chunk)
@@ -146,6 +146,13 @@ rdcstr DoStringise(const D3D9Chunk &el)
     STRINGISE_ENUM_CLASS_NAMED(Texture_AddDirtyRect, "IDirect3DTexture9::AddDirtyRect");
     STRINGISE_ENUM_CLASS_NAMED(CubeTexture_AddDirtyRect, "IDirect3DCubeTexture9::AddDirtyRect");
     STRINGISE_ENUM_CLASS_NAMED(VolumeTexture_AddDirtyBox, "IDirect3DVolumeTexture9::AddDirtyBox");
+    STRINGISE_ENUM_CLASS_NAMED(Surface_ReleaseDC, "IDirect3DSurface9::ReleaseDC");
+    STRINGISE_ENUM_CLASS_NAMED(GetFrontBufferData, "IDirect3DDevice9::GetFrontBufferData");
+    STRINGISE_ENUM_CLASS_NAMED(SwapChain_GetFrontBufferData,
+                               "IDirect3DSwapChain9::GetFrontBufferData");
+    STRINGISE_ENUM_CLASS_NAMED(D3DPERF_BeginEvent, "D3DPERF_BeginEvent");
+    STRINGISE_ENUM_CLASS_NAMED(D3DPERF_EndEvent, "D3DPERF_EndEvent");
+    STRINGISE_ENUM_CLASS_NAMED(D3DPERF_SetMarker, "D3DPERF_SetMarker");
   }
   END_ENUM_STRINGISE();
 }

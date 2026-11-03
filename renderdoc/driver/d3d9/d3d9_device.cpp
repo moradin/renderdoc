@@ -27,6 +27,102 @@
 #include "d3d9_resources.h"
 #include "d3d9_swapchain.h"
 
+namespace
+{
+// the devices capturing is possible on, for D3DPERF markers
+Threading::CriticalSection &LiveDevicesLock()
+{
+  static Threading::CriticalSection lock;
+  return lock;
+}
+
+rdcarray<WrappedD3DDevice9 *> &LiveDevices()
+{
+  static rdcarray<WrappedD3DDevice9 *> devices;
+  return devices;
+}
+};
+
+void D3D9_PERF_BeginEvent(DWORD col, const wchar_t *name)
+{
+  WrappedD3DDevice9::PerfMarker(D3D9Chunk::D3DPERF_BeginEvent, col, name);
+}
+
+void D3D9_PERF_EndEvent()
+{
+  WrappedD3DDevice9::PerfMarker(D3D9Chunk::D3DPERF_EndEvent, 0, NULL);
+}
+
+void D3D9_PERF_SetMarker(DWORD col, const wchar_t *name)
+{
+  WrappedD3DDevice9::PerfMarker(D3D9Chunk::D3DPERF_SetMarker, col, name);
+}
+
+void WrappedD3DDevice9::PerfMarker(D3D9Chunk chunk, DWORD col, const wchar_t *name)
+{
+  SCOPED_LOCK(LiveDevicesLock());
+
+  for(WrappedD3DDevice9 *dev : LiveDevices())
+  {
+    if(!IsActiveCapturing(dev->m_State))
+      continue;
+
+    rdcstr Name = name ? StringFormat::Wide2UTF8(name) : rdcstr();
+
+    SCOPED_LOCK(dev->m_D3DLock);
+    WriteSerialiser &ser = dev->m_ScratchSerialiser;
+    SCOPED_SERIALISE_CHUNK(chunk);
+    if(chunk == D3D9Chunk::D3DPERF_BeginEvent)
+      dev->Serialise_D3DPERF_BeginEvent(ser, col, Name);
+    else if(chunk == D3D9Chunk::D3DPERF_EndEvent)
+      dev->Serialise_D3DPERF_EndEvent(ser);
+    else
+      dev->Serialise_D3DPERF_SetMarker(ser, col, Name);
+    dev->m_FrameRecord->AddChunk(scope.Get());
+  }
+}
+
+template <typename SerialiserType>
+bool WrappedD3DDevice9::Serialise_D3DPERF_BeginEvent(SerialiserType &ser, D3DCOLOR col, rdcstr Name)
+{
+  SERIALISE_ELEMENT_TYPED(uint32_t, col);
+  SERIALISE_ELEMENT(Name).Important();
+
+  SERIALISE_CHECK_READ_ERRORS();
+
+  return true;
+}
+
+template <typename SerialiserType>
+bool WrappedD3DDevice9::Serialise_D3DPERF_EndEvent(SerialiserType &ser)
+{
+  SERIALISE_CHECK_READ_ERRORS();
+
+  return true;
+}
+
+template <typename SerialiserType>
+bool WrappedD3DDevice9::Serialise_D3DPERF_SetMarker(SerialiserType &ser, D3DCOLOR col, rdcstr Name)
+{
+  SERIALISE_ELEMENT_TYPED(uint32_t, col);
+  SERIALISE_ELEMENT(Name).Important();
+
+  SERIALISE_CHECK_READ_ERRORS();
+
+  return true;
+}
+
+template bool WrappedD3DDevice9::Serialise_D3DPERF_BeginEvent(ReadSerialiser &ser, D3DCOLOR col,
+                                                              rdcstr Name);
+template bool WrappedD3DDevice9::Serialise_D3DPERF_BeginEvent(WriteSerialiser &ser, D3DCOLOR col,
+                                                              rdcstr Name);
+template bool WrappedD3DDevice9::Serialise_D3DPERF_EndEvent(ReadSerialiser &ser);
+template bool WrappedD3DDevice9::Serialise_D3DPERF_EndEvent(WriteSerialiser &ser);
+template bool WrappedD3DDevice9::Serialise_D3DPERF_SetMarker(ReadSerialiser &ser, D3DCOLOR col,
+                                                             rdcstr Name);
+template bool WrappedD3DDevice9::Serialise_D3DPERF_SetMarker(WriteSerialiser &ser, D3DCOLOR col,
+                                                             rdcstr Name);
+
 WrappedD3DDevice9::WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrappedD3D, HWND wnd,
                                      const D3D9InitParams &params)
     : m_device(device),
@@ -57,6 +153,9 @@ WrappedD3DDevice9::WrappedD3DDevice9(IDirect3DDevice9 *device, WrappedD3D9 *wrap
 
     if(wnd != NULL)
       RenderDoc::Inst().AddFrameCapturer(DeviceOwnedWindow((IDirect3DDevice9 *)this, wnd), this);
+
+    SCOPED_LOCK(LiveDevicesLock());
+    LiveDevices().push_back(this);
   }
 
   InitDeviceOwnedObjects();
@@ -109,6 +208,9 @@ WrappedD3DDevice9::~WrappedD3DDevice9()
 
     if(m_Wnd != NULL)
       RenderDoc::Inst().RemoveFrameCapturer(DeviceOwnedWindow((IDirect3DDevice9 *)this, m_Wnd));
+
+    SCOPED_LOCK(LiveDevicesLock());
+    LiveDevices().removeOne(this);
   }
 
   // only uses real objects
@@ -437,12 +539,23 @@ void WrappedD3DDevice9::HandlePresent(IDirect3DSwapChain9 *realSwapChain, HWND h
   if(wnd == NULL || !RenderDoc::Inst().IsActiveWindow(devWnd))
     return;
 
-  // end any capture that isn't application controlled
+  // end any capture that isn't application controlled. It fails if the device was lost during the
+  // frame, try again on the next one.
   if(IsActiveCapturing(m_State) && !m_AppControlledCapture)
-    RenderDoc::Inst().EndFrameCapture(devWnd);
+  {
+    if(!RenderDoc::Inst().EndFrameCapture(devWnd))
+      RenderDoc::Inst().TriggerCapture(1);
+  }
 
   if(IsBackgroundCapturing(m_State) && RenderDoc::Inst().ShouldTriggerCapture(m_FrameCounter))
   {
+    // wait until the device is usable again
+    if(IsDeviceLost(wnd))
+    {
+      RenderDoc::Inst().TriggerCapture(1);
+      return;
+    }
+
     RenderDoc::Inst().StartFrameCapture(devWnd);
 
     if(IsActiveCapturing(m_State))
@@ -465,6 +578,10 @@ void WrappedD3DDevice9::StartFrameCapture(DeviceOwnedWindow devWnd)
   m_State = CaptureState::ActiveCapturing;
 
   m_AppControlledCapture = true;
+  // the application's capture API can leave the device or window out
+  m_CaptureWindow = devWnd;
+  if(m_CaptureWindow.device == NULL)
+    m_CaptureWindow.device = (IDirect3DDevice9 *)this;
 
   FrameDescription frame;
   // for app-controlled captures the frame number is meaningless, it's updated by HandlePresent
@@ -512,6 +629,13 @@ bool WrappedD3DDevice9::EndFrameCapture(DeviceOwnedWindow devWnd)
 
   if(!IsActiveCapturing(m_State))
     return true;
+
+  if(IsDeviceLost((HWND)devWnd.windowHandle))
+  {
+    RDCWARN("Device was lost during the captured frame, discarding the capture");
+    DiscardFrameCapture(devWnd);
+    return false;
+  }
 
   RDCLOG("Finished capture, Frame %u", m_CapturedFrames.back().frameNumber);
 
@@ -644,6 +768,47 @@ bool WrappedD3DDevice9::DiscardFrameCapture(DeviceOwnedWindow devWnd)
   FlushDeferredRecordReleases();
 
   return true;
+}
+
+bool WrappedD3DDevice9::IsDeviceLost(HWND wnd)
+{
+  if(m_deviceEx)
+  {
+    // D3D9Ex devices aren't lost the same way, but can hang or be removed
+    HRESULT hr = m_deviceEx->CheckDeviceState(wnd);
+    return hr == D3DERR_DEVICELOST || hr == D3DERR_DEVICEHUNG || hr == D3DERR_DEVICEREMOVED;
+  }
+
+  return m_device->TestCooperativeLevel() != D3D_OK;
+}
+
+bool WrappedD3DDevice9::DiscardCaptureForReset(bool &appControlled)
+{
+  if(!IsActiveCapturing(m_State))
+    return false;
+
+  appControlled = m_AppControlledCapture;
+
+  RDCWARN("Device reset during a capture, discarding it and trying again after the reset");
+  RenderDoc::Inst().DiscardFrameCapture(m_CaptureWindow);
+  return true;
+}
+
+void WrappedD3DDevice9::AfterResetDiscard(bool appControlled, bool resetSucceeded)
+{
+  if(!appControlled)
+  {
+    // captures triggered at a Present start again at the next one
+    RenderDoc::Inst().TriggerCapture(1);
+    return;
+  }
+
+  // The application asked for this capture and will end it itself, so capture what's left of it:
+  // everything after the reset.
+  if(resetSucceeded)
+    RenderDoc::Inst().StartFrameCapture(m_CaptureWindow);
+  else
+    RDCWARN("Reset failed, the application's capture can't be restarted");
 }
 
 void WrappedD3DDevice9::ThumbnailFromSwapChain(IDirect3DSwapChain9 *realSwapChain,

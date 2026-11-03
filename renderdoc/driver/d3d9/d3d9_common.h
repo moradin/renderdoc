@@ -218,6 +218,16 @@ enum class D3D9Chunk : uint32_t
   Texture_AddDirtyRect,
   CubeTexture_AddDirtyRect,
   VolumeTexture_AddDirtyBox,
+  // data written other than by locks: GDI drawing between GetDC and ReleaseDC, and copies of the
+  // front buffer
+  Surface_ReleaseDC,
+  GetFrontBufferData,
+  SwapChain_GetFrontBufferData,
+
+  // D3DPERF markers
+  D3DPERF_BeginEvent,
+  D3DPERF_EndEvent,
+  D3DPERF_SetMarker,
 
   Max,
 };

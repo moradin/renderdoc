@@ -117,11 +117,19 @@ public:
   void OnUnlock(WrappedD3D9Object *obj, UINT face, UINT level);
   void OnAddDirtyRegion(WrappedD3D9Object *obj, UINT face, const D3DBOX *box);
 
+  // writes that aren't locks, called after they succeed
+  void OnReleaseDC(WrappedD3D9Object *surf);
+  void OnSwapChainGetFrontBufferData(IDirect3DSwapChain9 *swap, IDirect3DSurface9 *pDestSurface);
+  void OnGetFrontBufferData(UINT iSwapChain, IDirect3DSurface9 *pDestSurface);
+
   // keep the shadows of D3DPOOL_DEFAULT textures up to date, after a successful copy
   void UpdateShadowFromTexture(IDirect3DBaseTexture9 *pSourceTexture,
                                IDirect3DBaseTexture9 *pDestinationTexture);
   void UpdateShadowFromSurface(IDirect3DSurface9 *pSourceSurface, CONST RECT *pSourceRect,
                                IDirect3DSurface9 *pDestinationSurface, CONST POINT *pDestPoint);
+
+  // D3DPERF markers, which aren't tied to a device: every device that's capturing records them
+  static void PerfMarker(D3D9Chunk chunk, DWORD col, const wchar_t *name);
 
   // called by swapchain and device presents, before the real present
   void HandlePresent(IDirect3DSwapChain9 *realSwapChain, HWND hDestWindowOverride);
@@ -301,6 +309,22 @@ public:
   template <typename SerialiserType, typename Iface>
   bool Serialise_Unlock(SerialiserType &ser, Iface *pResource, DWORD Flags,
                         D3D9SubresourceData &Contents);
+  template <typename SerialiserType>
+  bool Serialise_Surface_ReleaseDC(SerialiserType &ser, IDirect3DSurface9 *pSurface,
+                                   D3D9SubresourceData &Contents);
+  template <typename SerialiserType>
+  bool Serialise_GetFrontBufferData(SerialiserType &ser, UINT iSwapChain,
+                                    IDirect3DSurface9 *pDestSurface, D3D9SubresourceData &Contents);
+  template <typename SerialiserType>
+  bool Serialise_SwapChain_GetFrontBufferData(SerialiserType &ser, IDirect3DSwapChain9 *pSwapChain,
+                                              IDirect3DSurface9 *pDestSurface,
+                                              D3D9SubresourceData &Contents);
+  template <typename SerialiserType>
+  bool Serialise_D3DPERF_BeginEvent(SerialiserType &ser, D3DCOLOR col, rdcstr Name);
+  template <typename SerialiserType>
+  bool Serialise_D3DPERF_EndEvent(SerialiserType &ser);
+  template <typename SerialiserType>
+  bool Serialise_D3DPERF_SetMarker(SerialiserType &ser, D3DCOLOR col, rdcstr Name);
   template <typename SerialiserType>
   bool Serialise_Texture_AddDirtyRect(SerialiserType &ser, IDirect3DTexture9 *pTexture,
                                       CONST RECT *pDirtyRect);
@@ -702,6 +726,14 @@ private:
   void CreateOwnedRecord(WrappedD3D9Object *obj);
   void FlushDeferredRecordReleases();
 
+  // a lost (or hung or removed) device drops everything it's asked to do, so a frame captured
+  // while it's lost is useless. wnd is the window being presented to, for D3D9Ex devices.
+  bool IsDeviceLost(HWND wnd);
+  // Reset discards a capture in progress: the frame's objects in D3DPOOL_DEFAULT are gone. Returns
+  // whether a capture was discarded, and whether it was application controlled.
+  bool DiscardCaptureForReset(bool &appControlled);
+  void AfterResetDiscard(bool appControlled, bool resetSucceeded);
+
   // draw the in-application overlay into a real swapchain's first back buffer
   void RenderOverlay(IDirect3DSwapChain9 *realSwapChain, DeviceOwnedWindow devWnd);
 
@@ -763,6 +795,8 @@ private:
   rdcarray<D3D9ResourceRecord *> m_DeferredRecordReleases;
   rdcarray<FrameDescription> m_CapturedFrames;
   bool m_AppControlledCapture = false;
+  // the window the capture in progress was started for
+  DeviceOwnedWindow m_CaptureWindow;
   // the non-object state when the frame being captured started
   D3D9DeviceState m_FrameStartState;
 

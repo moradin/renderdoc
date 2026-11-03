@@ -1829,6 +1829,12 @@ bool WrappedD3DDevice9::ProcessChunk(ReadSerialiser &ser, D3D9Chunk chunk)
       return Serialise_CubeTexture_AddDirtyRect(ser, {}, {}, {});
     case D3D9Chunk::VolumeTexture_AddDirtyBox:
       return Serialise_VolumeTexture_AddDirtyBox(ser, {}, {});
+    case D3D9Chunk::Surface_ReleaseDC:
+    case D3D9Chunk::GetFrontBufferData:
+    case D3D9Chunk::SwapChain_GetFrontBufferData: return ProcessUnlockChunk(ser, chunk);
+    case D3D9Chunk::D3DPERF_BeginEvent: return Serialise_D3DPERF_BeginEvent(ser, {}, {});
+    case D3D9Chunk::D3DPERF_EndEvent: return Serialise_D3DPERF_EndEvent(ser);
+    case D3D9Chunk::D3DPERF_SetMarker: return Serialise_D3DPERF_SetMarker(ser, {}, {});
     case D3D9Chunk::CreateTexture:
       return Serialise_CreateTexture(ser, {}, {}, {}, {}, {}, {}, {}, {});
     case D3D9Chunk::CreateVolumeTexture:
@@ -1939,6 +1945,11 @@ bool WrappedD3DDevice9::ProcessUnlockChunk(ReadSerialiser &ser, D3D9Chunk chunk)
       return Serialise_Unlock(ser, (IDirect3DSurface9 *)NULL, 0, Contents);
     case D3D9Chunk::Volume_UnlockBox:
       return Serialise_Unlock(ser, (IDirect3DVolume9 *)NULL, 0, Contents);
+    case D3D9Chunk::Surface_ReleaseDC: return Serialise_Surface_ReleaseDC(ser, NULL, Contents);
+    case D3D9Chunk::GetFrontBufferData:
+      return Serialise_GetFrontBufferData(ser, 0, NULL, Contents);
+    case D3D9Chunk::SwapChain_GetFrontBufferData:
+      return Serialise_SwapChain_GetFrontBufferData(ser, NULL, NULL, Contents);
     default: return false;
   }
 }

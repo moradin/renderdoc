@@ -27,8 +27,9 @@
 #include "d3d9_device.h"
 
 // The D3DPERF_* marker functions are also exported from d3d9.dll, but they are hooked by the D3D11
-// driver (driver/d3d11/d3d9_hooks.cpp) since D3D11 programs commonly use them for annotation. This
-// hook only intercepts device creation. Both register d3d9.dll, which is fine since library hooks
+// driver (driver/d3d11/d3d9_hooks.cpp) since D3D11 programs commonly use them for annotation. That
+// hook passes them on to D3D9 devices too (D3D9_PERF_BeginEvent etc.). This hook only intercepts
+// device creation. Both register d3d9.dll, which is fine since library hooks
 // can have multiple registrations.
 
 typedef IDirect3D9 *(WINAPI *PFN_D3D9_CREATE)(UINT);

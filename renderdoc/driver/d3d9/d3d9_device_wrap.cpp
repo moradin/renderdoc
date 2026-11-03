@@ -903,9 +903,13 @@ HRESULT __stdcall WrappedD3DDevice9::GetSwapChain(UINT iSwapChain, IDirect3DSwap
 
 HRESULT __stdcall WrappedD3DDevice9::Reset(D3DPRESENT_PARAMETERS *pPresentationParameters)
 {
+  bool appControlled = false;
+  bool discarded = DiscardCaptureForReset(appControlled);
   HRESULT hr = m_device->Reset(pPresentationParameters);
   if(SUCCEEDED(hr))
     OnReset();
+  if(discarded)
+    AfterResetDiscard(appControlled, SUCCEEDED(hr));
   return hr;
 }
 
@@ -913,9 +917,13 @@ HRESULT WrappedD3DDevice9::ResetEx(D3DPRESENT_PARAMETERS *pPresentationParameter
                                    D3DDISPLAYMODEEX *pFullscreenDisplayMode)
 {
   RDCASSERT(m_deviceEx != NULL);
+  bool appControlled = false;
+  bool discarded = DiscardCaptureForReset(appControlled);
   HRESULT hr = m_deviceEx->ResetEx(pPresentationParameters, pFullscreenDisplayMode);
   if(SUCCEEDED(hr))
     OnReset();
+  if(discarded)
+    AfterResetDiscard(appControlled, SUCCEEDED(hr));
   return hr;
 }
 
@@ -1273,9 +1281,11 @@ HRESULT __stdcall WrappedD3DDevice9::GetRenderTargetData(IDirect3DSurface9 *pRen
 HRESULT __stdcall WrappedD3DDevice9::GetFrontBufferData(UINT iSwapChain,
                                                         IDirect3DSurface9 *pDestSurface)
 {
-  // not recorded yet (phase 2d), but the initial contents are read before it overwrites them
   PrepareForWrite(pDestSurface);
-  return m_device->GetFrontBufferData(iSwapChain, Unwrap(pDestSurface));
+  HRESULT hr = m_device->GetFrontBufferData(iSwapChain, Unwrap(pDestSurface));
+  if(SUCCEEDED(hr))
+    OnGetFrontBufferData(iSwapChain, pDestSurface);
+  return hr;
 }
 
 HRESULT __stdcall WrappedD3DDevice9::StretchRect(IDirect3DSurface9 *pSourceSurface,
