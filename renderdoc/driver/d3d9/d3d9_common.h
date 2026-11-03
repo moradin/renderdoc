@@ -206,6 +206,19 @@ enum class D3D9Chunk : uint32_t
   BaseTexture_SetAutoGenFilterType,
   BaseTexture_SetLOD,
 
+  // data written by locks during the frame
+  VertexBuffer_Unlock,
+  IndexBuffer_Unlock,
+  Texture_UnlockRect,
+  CubeTexture_UnlockRect,
+  VolumeTexture_UnlockBox,
+  Surface_UnlockRect,
+  Volume_UnlockBox,
+  // dirty regions, which decide what UpdateTexture copies
+  Texture_AddDirtyRect,
+  CubeTexture_AddDirtyRect,
+  VolumeTexture_AddDirtyBox,
+
   Max,
 };
 

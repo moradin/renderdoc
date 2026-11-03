@@ -76,6 +76,14 @@ WrappedD3D9Object::~WrappedD3D9Object()
   if(m_pRecord)
     m_pDevice->ReleaseRecord(m_pRecord);
   m_pRecord = NULL;
+  SAFE_DELETE(m_Contents);
+}
+
+D3D9ObjectContents &WrappedD3D9Object::GetContents()
+{
+  if(m_Contents == NULL)
+    m_Contents = new D3D9ObjectContents;
+  return *m_Contents;
 }
 
 void D3D9RecordGenerateMipSubLevels(WrappedD3DDevice9 *device, IDirect3DBaseTexture9 *tex)
@@ -145,6 +153,10 @@ ULONG WrappedD3D9Object::ExtRelease()
   if(ref == 0)
   {
     WrappedD3DDevice9 *dev = m_pDevice;
+
+    // a capture in progress may still need the contents, read them while the real object is
+    // certainly alive
+    dev->OnLastExternalRelease(this);
 
     if(m_Ownership == RealOwnership::WhileExternal)
       m_pRealUnknown->Release();
@@ -267,6 +279,7 @@ WrappedD3DSurface9 *WrappedD3DTexture9::GetLevel(UINT Level)
     real->Release();
 
     m_Levels[Level] = new WrappedD3DSurface9(real, m_pDevice, this);
+    m_Levels[Level]->SetChildSubresource(0, Level);
     m_pDevice->RecordSurfaceLevel(this, Level, m_Levels[Level]);
   }
 
@@ -322,6 +335,7 @@ WrappedD3DSurface9 *WrappedD3DCubeTexture9::GetFace(D3DCUBEMAP_FACES FaceType, U
     real->Release();
 
     m_Faces[idx] = new WrappedD3DSurface9(real, m_pDevice, this);
+    m_Faces[idx]->SetChildSubresource((uint32_t)FaceType, Level);
     m_pDevice->RecordCubeFace(this, FaceType, Level, m_Faces[idx]);
   }
 
@@ -373,6 +387,7 @@ WrappedD3DVolume9 *WrappedD3DVolumeTexture9::GetLevel(UINT Level)
     real->Release();
 
     m_Levels[Level] = new WrappedD3DVolume9(real, m_pDevice, this);
+    m_Levels[Level]->SetChildSubresource(0, Level);
     m_pDevice->RecordVolumeLevel(this, Level, m_Levels[Level]);
   }
 

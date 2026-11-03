@@ -23,6 +23,7 @@
  ******************************************************************************/
 
 #include "d3d9_manager.h"
+#include "d3d9_device.h"
 #include "d3d9_resources.h"
 
 ResourceId D3D9ResourceManager::GetID(IUnknown *res)
@@ -39,23 +40,77 @@ bool D3D9ResourceManager::ResourceTypeRelease(IUnknown *res)
   return true;
 }
 
-// Initial state handling is implemented with capture support (phase 2).
+// see d3d9_contents.h for how initial contents are read
+
+bool D3D9ResourceManager::IsResourceTrackedForPersistency(IUnknown *const &res)
+{
+  // reading is postponed for every object with contents, which the frame then only reads if it
+  // references them. Objects the application has released but that are still bound are the
+  // exception: they can die mid-frame without passing through OnLastExternalRelease, so they're
+  // read when the frame starts.
+  WrappedD3D9Object *obj = GetWrappedObject(res);
+  return obj && obj->GetExtRefCount() > 0;
+}
 
 bool D3D9ResourceManager::Prepare_InitialState(IUnknown *res)
 {
-  return false;
+  WrappedD3D9Object *obj = GetWrappedObject(res);
+  if(obj == NULL)
+    return false;
+
+  D3D9InitialContentsData *data = new D3D9InitialContentsData;
+  m_Device->ReadContents(obj, *data);
+
+  SetInitialContents(obj->GetResourceID(), D3D9InitialContents(data));
+
+  return true;
 }
 
 uint64_t D3D9ResourceManager::GetSize_InitialState(ResourceId id, const D3D9InitialContents &data)
 {
-  return 128;
+  uint64_t ret = 128;
+
+  if(data.data)
+  {
+    ret += data.data->Note.size();
+    for(const D3D9SubresourceData &sub : data.data->Subresources)
+      ret += 64 + sub.Data.size() + WriteSerialiser::GetChunkAlignment();
+  }
+
+  return ret;
+}
+
+template <typename SerialiserType>
+bool D3D9ResourceManager::DoSerialise_InitialState(SerialiserType &ser, ResourceId id,
+                                                   D3D9InitialContentsData &Contents)
+{
+  SERIALISE_ELEMENT(id).TypedAs("IDirect3DResource9 *"_lit);
+  SERIALISE_ELEMENT(Contents);
+
+  SERIALISE_CHECK_READ_ERRORS();
+
+  // applying initial contents is part of replay (phase 3)
+
+  return true;
 }
 
 bool D3D9ResourceManager::Serialise_InitialState(WriteSerialiser &ser, ResourceId id,
                                                  D3D9ResourceRecord *record,
                                                  const D3D9InitialContents *data)
 {
-  return false;
+  if(data && data->data)
+    return DoSerialise_InitialState(ser, id, *data->data);
+
+  // referenced but never read, which shouldn't happen
+  D3D9InitialContentsData empty;
+  empty.Note = "Contents weren't read";
+  return DoSerialise_InitialState(ser, id, empty);
+}
+
+bool D3D9ResourceManager::ReadInitialState(ReadSerialiser &ser)
+{
+  D3D9InitialContentsData contents;
+  return DoSerialise_InitialState(ser, ResourceId(), contents);
 }
 
 void D3D9ResourceManager::Create_InitialState(ResourceId id, IUnknown *live, bool hasData)

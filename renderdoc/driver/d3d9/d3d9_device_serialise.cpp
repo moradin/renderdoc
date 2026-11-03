@@ -1817,6 +1817,18 @@ bool WrappedD3DDevice9::ProcessChunk(ReadSerialiser &ser, D3D9Chunk chunk)
     case D3D9Chunk::BaseTexture_SetAutoGenFilterType:
       return Serialise_BaseTexture_SetAutoGenFilterType(ser, {}, {});
     case D3D9Chunk::BaseTexture_SetLOD: return Serialise_BaseTexture_SetLOD(ser, {}, {});
+    case D3D9Chunk::VertexBuffer_Unlock:
+    case D3D9Chunk::IndexBuffer_Unlock:
+    case D3D9Chunk::Texture_UnlockRect:
+    case D3D9Chunk::CubeTexture_UnlockRect:
+    case D3D9Chunk::VolumeTexture_UnlockBox:
+    case D3D9Chunk::Surface_UnlockRect:
+    case D3D9Chunk::Volume_UnlockBox: return ProcessUnlockChunk(ser, chunk);
+    case D3D9Chunk::Texture_AddDirtyRect: return Serialise_Texture_AddDirtyRect(ser, {}, {});
+    case D3D9Chunk::CubeTexture_AddDirtyRect:
+      return Serialise_CubeTexture_AddDirtyRect(ser, {}, {}, {});
+    case D3D9Chunk::VolumeTexture_AddDirtyBox:
+      return Serialise_VolumeTexture_AddDirtyBox(ser, {}, {});
     case D3D9Chunk::CreateTexture:
       return Serialise_CreateTexture(ser, {}, {}, {}, {}, {}, {}, {}, {});
     case D3D9Chunk::CreateVolumeTexture:
@@ -1877,6 +1889,10 @@ bool WrappedD3DDevice9::ProcessChunk(ReadSerialiser &ser, D3D9Chunk chunk)
 
     SERIALISE_CHECK_READ_ERRORS();
   }
+  else if(system == SystemChunk::InitialContents)
+  {
+    return m_ResourceManager->ReadInitialState(ser);
+  }
   else if(system == SystemChunk::InitialContentsList)
   {
     m_ResourceManager->CreateInitialContents(ser);
@@ -1901,6 +1917,30 @@ bool WrappedD3DDevice9::ProcessChunk(ReadSerialiser &ser, D3D9Chunk chunk)
   }
 
   return true;
+}
+
+bool WrappedD3DDevice9::ProcessUnlockChunk(ReadSerialiser &ser, D3D9Chunk chunk)
+{
+  D3D9SubresourceData Contents;
+
+  switch(chunk)
+  {
+    case D3D9Chunk::VertexBuffer_Unlock:
+      return Serialise_Unlock(ser, (IDirect3DVertexBuffer9 *)NULL, 0, Contents);
+    case D3D9Chunk::IndexBuffer_Unlock:
+      return Serialise_Unlock(ser, (IDirect3DIndexBuffer9 *)NULL, 0, Contents);
+    case D3D9Chunk::Texture_UnlockRect:
+      return Serialise_Unlock(ser, (IDirect3DTexture9 *)NULL, 0, Contents);
+    case D3D9Chunk::CubeTexture_UnlockRect:
+      return Serialise_Unlock(ser, (IDirect3DCubeTexture9 *)NULL, 0, Contents);
+    case D3D9Chunk::VolumeTexture_UnlockBox:
+      return Serialise_Unlock(ser, (IDirect3DVolumeTexture9 *)NULL, 0, Contents);
+    case D3D9Chunk::Surface_UnlockRect:
+      return Serialise_Unlock(ser, (IDirect3DSurface9 *)NULL, 0, Contents);
+    case D3D9Chunk::Volume_UnlockBox:
+      return Serialise_Unlock(ser, (IDirect3DVolume9 *)NULL, 0, Contents);
+    default: return false;
+  }
 }
 
 RDResult WrappedD3DDevice9::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers)

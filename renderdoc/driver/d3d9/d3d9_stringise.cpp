@@ -28,7 +28,7 @@
 template <>
 rdcstr DoStringise(const D3D9Chunk &el)
 {
-  RDCCOMPILE_ASSERT((uint32_t)D3D9Chunk::Max == 84 + (uint32_t)SystemChunk::FirstDriverChunk,
+  RDCCOMPILE_ASSERT((uint32_t)D3D9Chunk::Max == 94 + (uint32_t)SystemChunk::FirstDriverChunk,
                     "Chunks changed without updating names");
 
   BEGIN_ENUM_STRINGISE(D3D9Chunk)
@@ -136,6 +136,16 @@ rdcstr DoStringise(const D3D9Chunk &el)
     STRINGISE_ENUM_CLASS_NAMED(BaseTexture_SetAutoGenFilterType,
                                "IDirect3DBaseTexture9::SetAutoGenFilterType");
     STRINGISE_ENUM_CLASS_NAMED(BaseTexture_SetLOD, "IDirect3DBaseTexture9::SetLOD");
+    STRINGISE_ENUM_CLASS_NAMED(VertexBuffer_Unlock, "IDirect3DVertexBuffer9::Unlock");
+    STRINGISE_ENUM_CLASS_NAMED(IndexBuffer_Unlock, "IDirect3DIndexBuffer9::Unlock");
+    STRINGISE_ENUM_CLASS_NAMED(Texture_UnlockRect, "IDirect3DTexture9::UnlockRect");
+    STRINGISE_ENUM_CLASS_NAMED(CubeTexture_UnlockRect, "IDirect3DCubeTexture9::UnlockRect");
+    STRINGISE_ENUM_CLASS_NAMED(VolumeTexture_UnlockBox, "IDirect3DVolumeTexture9::UnlockBox");
+    STRINGISE_ENUM_CLASS_NAMED(Surface_UnlockRect, "IDirect3DSurface9::UnlockRect");
+    STRINGISE_ENUM_CLASS_NAMED(Volume_UnlockBox, "IDirect3DVolume9::UnlockBox");
+    STRINGISE_ENUM_CLASS_NAMED(Texture_AddDirtyRect, "IDirect3DTexture9::AddDirtyRect");
+    STRINGISE_ENUM_CLASS_NAMED(CubeTexture_AddDirtyRect, "IDirect3DCubeTexture9::AddDirtyRect");
+    STRINGISE_ENUM_CLASS_NAMED(VolumeTexture_AddDirtyBox, "IDirect3DVolumeTexture9::AddDirtyBox");
   }
   END_ENUM_STRINGISE();
 }

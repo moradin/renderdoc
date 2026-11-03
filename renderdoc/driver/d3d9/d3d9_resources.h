@@ -25,6 +25,7 @@
 #pragma once
 
 #include "d3d9_common.h"
+#include "d3d9_contents.h"
 #include "d3d9_manager.h"
 #include "d3d9_state.h"
 
@@ -78,6 +79,20 @@ public:
   int32_t GetExtRefCount() const { return m_ExtRef; }
   int32_t GetIntRefCount() const { return m_IntRef; }
 
+  // contents tracking (see d3d9_contents.h), created on first use. The caller holds the device's
+  // D3DLock.
+  D3D9ObjectContents &GetContents();
+  bool HasContentsTracking() const { return m_Contents != NULL; }
+
+  // which level (and cube face) of the container a child is
+  uint32_t GetChildFace() const { return m_ChildFace; }
+  uint32_t GetChildLevel() const { return m_ChildLevel; }
+  void SetChildSubresource(uint32_t face, uint32_t level)
+  {
+    m_ChildFace = face;
+    m_ChildLevel = level;
+  }
+
 protected:
   enum class RealOwnership
   {
@@ -116,6 +131,9 @@ private:
   D3D9ResourceRecord *m_pRecord = NULL;
   int32_t m_ExtRef;
   int32_t m_IntRef = 0;
+  D3D9ObjectContents *m_Contents = NULL;
+  uint32_t m_ChildFace = 0;
+  uint32_t m_ChildLevel = 0;
 };
 
 // look up the wrapper for a pointer the application gave us. Returns NULL for NULL or for pointers
@@ -130,6 +148,32 @@ void D3D9RecordGenerateMipSubLevels(WrappedD3DDevice9 *device, IDirect3DBaseText
 void D3D9RecordSetAutoGenFilterType(WrappedD3DDevice9 *device, IDirect3DBaseTexture9 *tex,
                                     D3DTEXTUREFILTERTYPE filter);
 void D3D9RecordSetLOD(WrappedD3DDevice9 *device, IDirect3DBaseTexture9 *tex, DWORD lod);
+
+// contents tracking, see d3d9_contents.cpp. face and level are the subresource of obj being locked
+// (0 for buffers and surfaces), region is NULL for all of it.
+bool D3D9IsActiveCapturing(WrappedD3DDevice9 *device);
+// whether obj holds contents itself, rather than being part of an object that does
+bool D3D9HasContents(WrappedD3D9Object *obj);
+void D3D9PrepareForWrite(WrappedD3D9Object *obj);
+void D3D9BeforeLock(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *region, DWORD flags);
+void D3D9AfterLock(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *region, DWORD flags,
+                   void *data, UINT rowPitch, UINT slicePitch);
+void D3D9BeforeUnlock(WrappedD3D9Object *obj, UINT face, UINT level);
+void D3D9AddDirtyRegion(WrappedD3D9Object *obj, UINT face, const D3DBOX *box);
+
+// a RECT as a box one slice deep, NULL for NULL
+inline const D3DBOX *D3D9RectToBox(const RECT *rect, D3DBOX &box)
+{
+  if(rect == NULL)
+    return NULL;
+  box.Left = (UINT)rect->left;
+  box.Top = (UINT)rect->top;
+  box.Right = (UINT)rect->right;
+  box.Bottom = (UINT)rect->bottom;
+  box.Front = 0;
+  box.Back = 1;
+  return &box;
+}
 
 template <typename Iface>
 Iface *Unwrap(Iface *obj)
@@ -291,6 +335,7 @@ public:
   }
   void STDMETHODCALLTYPE GenerateMipSubLevels()
   {
+    D3D9PrepareForWrite(this);
     this->m_pReal->GenerateMipSubLevels();
     D3D9RecordGenerateMipSubLevels(this->m_pDevice, (NestedType *)this);
   }
@@ -324,12 +369,14 @@ public:
 
   HRESULT STDMETHODCALLTYPE GetContainer(REFIID riid, void **ppContainer);
   HRESULT STDMETHODCALLTYPE GetDesc(D3DSURFACE_DESC *pDesc) { return m_pReal->GetDesc(pDesc); }
-  HRESULT STDMETHODCALLTYPE LockRect(D3DLOCKED_RECT *pLockedRect, CONST RECT *pRect, DWORD Flags)
+  HRESULT STDMETHODCALLTYPE LockRect(D3DLOCKED_RECT *pLockedRect, CONST RECT *pRect, DWORD Flags);
+  HRESULT STDMETHODCALLTYPE UnlockRect();
+  // GDI drawing isn't recorded, but the initial contents are read before it happens
+  HRESULT STDMETHODCALLTYPE GetDC(HDC *phdc)
   {
-    return m_pReal->LockRect(pLockedRect, pRect, Flags);
+    D3D9PrepareForWrite(this);
+    return m_pReal->GetDC(phdc);
   }
-  HRESULT STDMETHODCALLTYPE UnlockRect() { return m_pReal->UnlockRect(); }
-  HRESULT STDMETHODCALLTYPE GetDC(HDC *phdc) { return m_pReal->GetDC(phdc); }
   HRESULT STDMETHODCALLTYPE ReleaseDC(HDC hdc) { return m_pReal->ReleaseDC(hdc); }
 };
 
@@ -367,11 +414,8 @@ public:
   }
   HRESULT STDMETHODCALLTYPE GetContainer(REFIID riid, void **ppContainer);
   HRESULT STDMETHODCALLTYPE GetDesc(D3DVOLUME_DESC *pDesc) { return m_pReal->GetDesc(pDesc); }
-  HRESULT STDMETHODCALLTYPE LockBox(D3DLOCKED_BOX *pLockedVolume, CONST D3DBOX *pBox, DWORD Flags)
-  {
-    return m_pReal->LockBox(pLockedVolume, pBox, Flags);
-  }
-  HRESULT STDMETHODCALLTYPE UnlockBox() { return m_pReal->UnlockBox(); }
+  HRESULT STDMETHODCALLTYPE LockBox(D3DLOCKED_BOX *pLockedVolume, CONST D3DBOX *pBox, DWORD Flags);
+  HRESULT STDMETHODCALLTYPE UnlockBox();
 };
 
 class WrappedD3DTexture9 : public WrappedD3D9BaseTexture<IDirect3DTexture9>
@@ -402,15 +446,9 @@ public:
   }
   HRESULT STDMETHODCALLTYPE GetSurfaceLevel(UINT Level, IDirect3DSurface9 **ppSurfaceLevel);
   HRESULT STDMETHODCALLTYPE LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, CONST RECT *pRect,
-                                     DWORD Flags)
-  {
-    return m_pReal->LockRect(Level, pLockedRect, pRect, Flags);
-  }
-  HRESULT STDMETHODCALLTYPE UnlockRect(UINT Level) { return m_pReal->UnlockRect(Level); }
-  HRESULT STDMETHODCALLTYPE AddDirtyRect(CONST RECT *pDirtyRect)
-  {
-    return m_pReal->AddDirtyRect(pDirtyRect);
-  }
+                                     DWORD Flags);
+  HRESULT STDMETHODCALLTYPE UnlockRect(UINT Level);
+  HRESULT STDMETHODCALLTYPE AddDirtyRect(CONST RECT *pDirtyRect);
 
 private:
   rdcarray<WrappedD3DSurface9 *> m_Levels;
@@ -444,18 +482,9 @@ public:
   HRESULT STDMETHODCALLTYPE GetCubeMapSurface(D3DCUBEMAP_FACES FaceType, UINT Level,
                                               IDirect3DSurface9 **ppCubeMapSurface);
   HRESULT STDMETHODCALLTYPE LockRect(D3DCUBEMAP_FACES FaceType, UINT Level,
-                                     D3DLOCKED_RECT *pLockedRect, CONST RECT *pRect, DWORD Flags)
-  {
-    return m_pReal->LockRect(FaceType, Level, pLockedRect, pRect, Flags);
-  }
-  HRESULT STDMETHODCALLTYPE UnlockRect(D3DCUBEMAP_FACES FaceType, UINT Level)
-  {
-    return m_pReal->UnlockRect(FaceType, Level);
-  }
-  HRESULT STDMETHODCALLTYPE AddDirtyRect(D3DCUBEMAP_FACES FaceType, CONST RECT *pDirtyRect)
-  {
-    return m_pReal->AddDirtyRect(FaceType, pDirtyRect);
-  }
+                                     D3DLOCKED_RECT *pLockedRect, CONST RECT *pRect, DWORD Flags);
+  HRESULT STDMETHODCALLTYPE UnlockRect(D3DCUBEMAP_FACES FaceType, UINT Level);
+  HRESULT STDMETHODCALLTYPE AddDirtyRect(D3DCUBEMAP_FACES FaceType, CONST RECT *pDirtyRect);
 
 private:
   // indexed by level * 6 + face
@@ -489,15 +518,9 @@ public:
   }
   HRESULT STDMETHODCALLTYPE GetVolumeLevel(UINT Level, IDirect3DVolume9 **ppVolumeLevel);
   HRESULT STDMETHODCALLTYPE LockBox(UINT Level, D3DLOCKED_BOX *pLockedVolume, CONST D3DBOX *pBox,
-                                    DWORD Flags)
-  {
-    return m_pReal->LockBox(Level, pLockedVolume, pBox, Flags);
-  }
-  HRESULT STDMETHODCALLTYPE UnlockBox(UINT Level) { return m_pReal->UnlockBox(Level); }
-  HRESULT STDMETHODCALLTYPE AddDirtyBox(CONST D3DBOX *pDirtyBox)
-  {
-    return m_pReal->AddDirtyBox(pDirtyBox);
-  }
+                                    DWORD Flags);
+  HRESULT STDMETHODCALLTYPE UnlockBox(UINT Level);
+  HRESULT STDMETHODCALLTYPE AddDirtyBox(CONST D3DBOX *pDirtyBox);
 
 private:
   rdcarray<WrappedD3DVolume9 *> m_Levels;
@@ -519,9 +542,30 @@ public:
 
   HRESULT STDMETHODCALLTYPE Lock(UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWORD Flags)
   {
-    return this->m_pReal->Lock(OffsetToLock, SizeToLock, ppbData, Flags);
+    // locks are only tracked while capturing, so that they can be recorded. Buffers have no dirty
+    // regions to keep up to date.
+    if(!D3D9IsActiveCapturing(this->m_pDevice))
+      return this->m_pReal->Lock(OffsetToLock, SizeToLock, ppbData, Flags);
+
+    // a size of 0 locks to the end of the buffer
+    DescType desc = {};
+    this->m_pReal->GetDesc(&desc);
+    if(SizeToLock == 0)
+      SizeToLock = desc.Size > OffsetToLock ? desc.Size - OffsetToLock : 0;
+
+    D3DBOX region = {OffsetToLock, 0, OffsetToLock + SizeToLock, 1, 0, 1};
+
+    D3D9BeforeLock(this, 0, 0, &region, Flags);
+    HRESULT hr = this->m_pReal->Lock(OffsetToLock, SizeToLock, ppbData, Flags);
+    if(SUCCEEDED(hr) && ppbData)
+      D3D9AfterLock(this, 0, 0, &region, Flags, *ppbData, SizeToLock, SizeToLock);
+    return hr;
   }
-  HRESULT STDMETHODCALLTYPE Unlock() { return this->m_pReal->Unlock(); }
+  HRESULT STDMETHODCALLTYPE Unlock()
+  {
+    D3D9BeforeUnlock(this, 0, 0);
+    return this->m_pReal->Unlock();
+  }
   HRESULT STDMETHODCALLTYPE GetDesc(DescType *pDesc) { return this->m_pReal->GetDesc(pDesc); }
 };
 

@@ -149,6 +149,7 @@ HRESULT __stdcall WrappedD3DDevice9::Clear(DWORD Count, CONST D3DRECT *pRects, D
                                            D3DCOLOR Color, float Z, DWORD Stencil)
 {
   HRESULT ret;
+  PrepareRenderTargetsForWrite();
   SERIALISE_TIME_CALL(ret = m_device->Clear(Count, pRects, Flags, Color, Z, Stencil));
 
   if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
@@ -488,6 +489,7 @@ HRESULT __stdcall WrappedD3DDevice9::DrawPrimitive(D3DPRIMITIVETYPE PrimitiveTyp
                                                    UINT PrimitiveCount)
 {
   HRESULT ret;
+  PrepareRenderTargetsForWrite();
   SERIALISE_TIME_CALL(ret = m_device->DrawPrimitive(PrimitiveType, StartVertex, PrimitiveCount));
 
   if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
@@ -506,6 +508,7 @@ HRESULT __stdcall WrappedD3DDevice9::DrawIndexedPrimitive(D3DPRIMITIVETYPE Primi
                                                           UINT primCount)
 {
   HRESULT ret;
+  PrepareRenderTargetsForWrite();
   SERIALISE_TIME_CALL(ret = m_device->DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex,
                                                            MinVertexIndex, NumVertices, startIndex,
                                                            primCount));
@@ -688,6 +691,7 @@ HRESULT __stdcall WrappedD3DDevice9::DrawRectPatch(UINT Handle, CONST float *pNu
                                                    CONST D3DRECTPATCH_INFO *pRectPatchInfo)
 {
   HRESULT ret;
+  PrepareRenderTargetsForWrite();
   SERIALISE_TIME_CALL(ret = m_device->DrawRectPatch(Handle, pNumSegs, pRectPatchInfo));
 
   if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
@@ -704,6 +708,7 @@ HRESULT __stdcall WrappedD3DDevice9::DrawTriPatch(UINT Handle, CONST float *pNum
                                                   CONST D3DTRIPATCH_INFO *pTriPatchInfo)
 {
   HRESULT ret;
+  PrepareRenderTargetsForWrite();
   SERIALISE_TIME_CALL(ret = m_device->DrawTriPatch(Handle, pNumSegs, pTriPatchInfo));
 
   if(SUCCEEDED(ret) && IsActiveCapturing(m_State))
@@ -1200,8 +1205,12 @@ HRESULT __stdcall WrappedD3DDevice9::UpdateSurface(IDirect3DSurface9 *pSourceSur
                                                    IDirect3DSurface9 *pDestinationSurface,
                                                    CONST POINT *pDestPoint)
 {
+  PrepareForWrite(pDestinationSurface);
   HRESULT hr = m_device->UpdateSurface(Unwrap(pSourceSurface), pSourceRect,
                                        Unwrap(pDestinationSurface), pDestPoint);
+
+  if(SUCCEEDED(hr))
+    UpdateShadowFromSurface(pSourceSurface, pSourceRect, pDestinationSurface, pDestPoint);
 
   if(SUCCEEDED(hr) && IsActiveCapturing(m_State))
   {
@@ -1217,7 +1226,11 @@ HRESULT __stdcall WrappedD3DDevice9::UpdateSurface(IDirect3DSurface9 *pSourceSur
 HRESULT __stdcall WrappedD3DDevice9::UpdateTexture(IDirect3DBaseTexture9 *pSourceTexture,
                                                    IDirect3DBaseTexture9 *pDestinationTexture)
 {
+  PrepareForWrite(pDestinationTexture);
   HRESULT hr = m_device->UpdateTexture(Unwrap(pSourceTexture), Unwrap(pDestinationTexture));
+
+  if(SUCCEEDED(hr))
+    UpdateShadowFromTexture(pSourceTexture, pDestinationTexture);
 
   if(SUCCEEDED(hr) && IsActiveCapturing(m_State))
   {
@@ -1233,6 +1246,7 @@ HRESULT __stdcall WrappedD3DDevice9::UpdateTexture(IDirect3DBaseTexture9 *pSourc
 HRESULT __stdcall WrappedD3DDevice9::GetRenderTargetData(IDirect3DSurface9 *pRenderTarget,
                                                          IDirect3DSurface9 *pDestSurface)
 {
+  PrepareForWrite(pDestSurface);
   HRESULT hr = m_device->GetRenderTargetData(Unwrap(pRenderTarget), Unwrap(pDestSurface));
 
   if(SUCCEEDED(hr) && IsActiveCapturing(m_State))
@@ -1249,6 +1263,8 @@ HRESULT __stdcall WrappedD3DDevice9::GetRenderTargetData(IDirect3DSurface9 *pRen
 HRESULT __stdcall WrappedD3DDevice9::GetFrontBufferData(UINT iSwapChain,
                                                         IDirect3DSurface9 *pDestSurface)
 {
+  // not recorded yet (phase 2d), but the initial contents are read before it overwrites them
+  PrepareForWrite(pDestSurface);
   return m_device->GetFrontBufferData(iSwapChain, Unwrap(pDestSurface));
 }
 
@@ -1257,6 +1273,7 @@ HRESULT __stdcall WrappedD3DDevice9::StretchRect(IDirect3DSurface9 *pSourceSurfa
                                                  IDirect3DSurface9 *pDestSurface,
                                                  CONST RECT *pDestRect, D3DTEXTUREFILTERTYPE Filter)
 {
+  PrepareForWrite(pDestSurface);
   HRESULT hr = m_device->StretchRect(Unwrap(pSourceSurface), pSourceRect, Unwrap(pDestSurface),
                                      pDestRect, Filter);
 
@@ -1274,6 +1291,7 @@ HRESULT __stdcall WrappedD3DDevice9::StretchRect(IDirect3DSurface9 *pSourceSurfa
 HRESULT __stdcall WrappedD3DDevice9::ColorFill(IDirect3DSurface9 *pSurface, CONST RECT *pRect,
                                                D3DCOLOR color)
 {
+  PrepareForWrite(pSurface);
   HRESULT hr = m_device->ColorFill(Unwrap(pSurface), pRect, color);
 
   if(SUCCEEDED(hr) && IsActiveCapturing(m_State))
@@ -1485,6 +1503,7 @@ HRESULT __stdcall WrappedD3DDevice9::DrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveT
                                                      CONST void *pVertexStreamZeroData,
                                                      UINT VertexStreamZeroStride)
 {
+  PrepareRenderTargetsForWrite();
   HRESULT hr = m_device->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, pVertexStreamZeroData,
                                          VertexStreamZeroStride);
 
@@ -1511,6 +1530,7 @@ HRESULT __stdcall WrappedD3DDevice9::DrawIndexedPrimitiveUP(
     CONST void *pIndexData, D3DFORMAT IndexDataFormat, CONST void *pVertexStreamZeroData,
     UINT VertexStreamZeroStride)
 {
+  PrepareRenderTargetsForWrite();
   HRESULT hr = m_device->DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
                                                 PrimitiveCount, pIndexData, IndexDataFormat,
                                                 pVertexStreamZeroData, VertexStreamZeroStride);
@@ -1541,6 +1561,7 @@ HRESULT __stdcall WrappedD3DDevice9::ProcessVertices(UINT SrcStartIndex, UINT De
                                                      IDirect3DVertexDeclaration9 *pVertexDecl,
                                                      DWORD Flags)
 {
+  PrepareForWrite(pDestBuffer);
   HRESULT hr = m_device->ProcessVertices(SrcStartIndex, DestIndex, VertexCount, Unwrap(pDestBuffer),
                                          Unwrap(pVertexDecl), Flags);
 
@@ -1848,6 +1869,7 @@ HRESULT WrappedD3DDevice9::ComposeRects(IDirect3DSurface9 *pSrc, IDirect3DSurfac
                                         D3DCOMPOSERECTSOP Operation, int Xoffset, int Yoffset)
 {
   RDCASSERT(m_deviceEx != NULL);
+  PrepareForWrite(pDst);
   HRESULT hr = m_deviceEx->ComposeRects(Unwrap(pSrc), Unwrap(pDst), Unwrap(pSrcRectDescs), NumRects,
                                         Unwrap(pDstRectDescs), Operation, Xoffset, Yoffset);
 

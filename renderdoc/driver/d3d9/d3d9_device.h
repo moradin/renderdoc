@@ -94,6 +94,34 @@ public:
   void OnSwapChainPresent(IDirect3DSwapChain9 *swap, CONST RECT *pSourceRect, CONST RECT *pDestRect,
                           HWND hDestWindowOverride, CONST RGNDATA *pDirtyRegion, DWORD dwFlags);
 
+  //////////////////////////////
+  // resource contents, see d3d9_contents.h
+
+  // reads an object's current contents, for its initial contents
+  void ReadContents(WrappedD3D9Object *obj, D3D9InitialContentsData &contents);
+
+  // called before anything writes to obj (or the object holding its contents) during a capture,
+  // so that its initial contents are read first
+  void PrepareForWrite(WrappedD3D9Object *obj);
+  void PrepareForWrite(IUnknown *obj);
+  void PrepareRenderTargetsForWrite();
+
+  // the application released its last reference to obj
+  void OnLastExternalRelease(WrappedD3D9Object *obj);
+
+  // locks and dirty regions on obj's subresource face/level. region is NULL for all of it.
+  void OnLock(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *region, DWORD flags);
+  void OnLocked(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *region, DWORD flags,
+                void *data, UINT rowPitch, UINT slicePitch);
+  void OnUnlock(WrappedD3D9Object *obj, UINT face, UINT level);
+  void OnAddDirtyRegion(WrappedD3D9Object *obj, UINT face, const D3DBOX *box);
+
+  // keep the shadows of D3DPOOL_DEFAULT textures up to date, after a successful copy
+  void UpdateShadowFromTexture(IDirect3DBaseTexture9 *pSourceTexture,
+                               IDirect3DBaseTexture9 *pDestinationTexture);
+  void UpdateShadowFromSurface(IDirect3DSurface9 *pSourceSurface, CONST RECT *pSourceRect,
+                               IDirect3DSurface9 *pDestinationSurface, CONST POINT *pDestPoint);
+
   // called by swapchain and device presents, before the real present
   void HandlePresent(IDirect3DSwapChain9 *realSwapChain, HWND hDestWindowOverride);
 
@@ -269,6 +297,19 @@ public:
   template <typename SerialiserType>
   bool Serialise_SetConvolutionMonoKernel(SerialiserType &ser, UINT width, UINT height, float *rows,
                                           float *columns);
+  template <typename SerialiserType, typename Iface>
+  bool Serialise_Unlock(SerialiserType &ser, Iface *pResource, DWORD Flags,
+                        D3D9SubresourceData &Contents);
+  template <typename SerialiserType>
+  bool Serialise_Texture_AddDirtyRect(SerialiserType &ser, IDirect3DTexture9 *pTexture,
+                                      CONST RECT *pDirtyRect);
+  template <typename SerialiserType>
+  bool Serialise_CubeTexture_AddDirtyRect(SerialiserType &ser, IDirect3DCubeTexture9 *pCubeTexture,
+                                          D3DCUBEMAP_FACES FaceType, CONST RECT *pDirtyRect);
+  template <typename SerialiserType>
+  bool Serialise_VolumeTexture_AddDirtyBox(SerialiserType &ser,
+                                           IDirect3DVolumeTexture9 *pVolumeTexture,
+                                           CONST D3DBOX *pDirtyBox);
   template <typename SerialiserType>
   bool Serialise_StateBlock_Capture(SerialiserType &ser, IDirect3DStateBlock9 *pStateBlock);
   template <typename SerialiserType>
@@ -622,6 +663,7 @@ public:
 
 private:
   bool ProcessChunk(ReadSerialiser &ser, D3D9Chunk chunk);
+  bool ProcessUnlockChunk(ReadSerialiser &ser, D3D9Chunk chunk);
 
   template <typename SerialiserType>
   bool Serialise_CaptureScope(SerialiserType &ser);
@@ -733,6 +775,10 @@ void WrappedD3DDevice9::RecordCreation(WrappedD3D9Object *obj, D3D9Chunk chunk,
   }
 
   obj->SetResourceRecord(record);
+
+  // anything could happen to the contents before a capture, so they always need reading
+  if(D3D9HasContents(obj))
+    m_ResourceManager->MarkDirtyResource(obj->GetResourceID());
 }
 
 ////////////////////////////////////////////////////////////////////////////

@@ -45,6 +45,9 @@
     <ClCompile Include="d3d9_resources.cpp">
       <Filter>Wrapped</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9_contents.cpp">
+      <Filter>Wrapped</Filter>
+    </ClCompile>
     <ClCompile Include="d3d9_swapchain.cpp">
       <Filter>Wrapped</Filter>
     </ClCompile>
@@ -90,6 +93,9 @@
       <Filter>Wrapped</Filter>
     </ClInclude>
     <ClInclude Include="d3d9_resources.h">
+      <Filter>Wrapped</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_contents.h">
       <Filter>Wrapped</Filter>
     </ClInclude>
     <ClInclude Include="d3d9_swapchain.h">

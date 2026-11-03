@@ -747,6 +747,9 @@ void WrappedD3DDevice9::CreateOwnedRecord(WrappedD3D9Object *obj)
   record->DataInSerialiser = false;
   record->Length = 0;
   obj->SetResourceRecord(record);
+
+  if(D3D9HasContents(obj))
+    m_ResourceManager->MarkDirtyResource(obj->GetResourceID());
 }
 
 void WrappedD3DDevice9::ReleaseRecord(D3D9ResourceRecord *record)
@@ -776,8 +779,15 @@ void WrappedD3DDevice9::MarkReferenced(IUnknown *obj, FrameRefType refType)
     return;
 
   WrappedD3D9Object *wrapped = GetWrappedObject(obj);
-  if(wrapped)
-    m_ResourceManager->MarkResourceFrameReferenced(wrapped->GetResourceID(), refType);
+  if(wrapped == NULL)
+    return;
+
+  m_ResourceManager->MarkResourceFrameReferenced(wrapped->GetResourceID(), refType);
+
+  // texture levels have no contents of their own, their texture's contents are what's used
+  WrappedD3D9Object *container = wrapped->GetContainer();
+  if(container && container->GetResourceType() != Resource_SwapChain)
+    m_ResourceManager->MarkResourceFrameReferenced(container->GetResourceID(), refType);
 }
 
 void WrappedD3DDevice9::MarkDrawReferenced()

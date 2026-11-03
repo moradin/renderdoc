@@ -29,6 +29,7 @@
 #include "core/resource_manager.h"
 #include "serialise/serialiser.h"
 #include "d3d9_common.h"
+#include "d3d9_contents.h"
 
 enum D3D9ResourceType
 {
@@ -58,13 +59,20 @@ struct D3D9ResourceRecord : public ResourceRecord
   D3D9ResourceRecord(ResourceId id) : ResourceRecord(id, true) {}
 };
 
-// initial contents are captured in phase 2, for now this is empty
+// The resource manager copies these around by value, so the contents live behind a pointer that
+// Free deletes.
 struct D3D9InitialContents
 {
+  D3D9InitialContents() = default;
+  explicit D3D9InitialContents(D3D9InitialContentsData *d) : data(d) {}
+
   template <typename Configuration>
   void Free(ResourceManager<Configuration> *rm)
   {
+    SAFE_DELETE(data);
   }
+
+  D3D9InitialContentsData *data = NULL;
 };
 
 struct D3D9ResourceManagerConfiguration
@@ -83,7 +91,20 @@ public:
   {
   }
 
+  // Initial contents are postponed (see d3d9_contents.h). This reads them now if they still need
+  // reading, before something changes them.
+  void PrepareIfPostponed(ResourceId id) { Prepare_InitialStateIfPostponed(id, true); }
+
+  // reads an InitialContents chunk, for structured export
+  bool ReadInitialState(ReadSerialiser &ser);
+
+  bool IsResourceTrackedForPersistency(IUnknown *const &res);
+
 private:
+  template <typename SerialiserType>
+  bool DoSerialise_InitialState(SerialiserType &ser, ResourceId id,
+                                D3D9InitialContentsData &Contents);
+
   ResourceId GetID(IUnknown *res);
 
   bool ResourceTypeRelease(IUnknown *res);
