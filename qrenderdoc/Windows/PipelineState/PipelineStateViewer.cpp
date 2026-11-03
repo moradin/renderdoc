@@ -38,6 +38,7 @@
 #include "toolwindowmanager/ToolWindowManager.h"
 #include "D3D11PipelineStateViewer.h"
 #include "D3D12PipelineStateViewer.h"
+#include "D3D9PipelineStateViewer.h"
 #include "GLPipelineStateViewer.h"
 #include "VulkanPipelineStateViewer.h"
 #include "ui_PipelineStateViewer.h"
@@ -202,6 +203,7 @@ PipelineStateViewer::PipelineStateViewer(ICaptureContext &ctx, QWidget *parent)
   m_D3D12 = NULL;
   m_GL = NULL;
   m_Vulkan = NULL;
+  m_D3D9 = NULL;
 
   m_Current = NULL;
 
@@ -233,6 +235,8 @@ void PipelineStateViewer::OnCaptureLoaded()
     setToGL();
   else if(m_Ctx.APIProps().pipelineType == GraphicsAPI::Vulkan)
     setToVulkan();
+  else if(m_Ctx.APIProps().pipelineType == GraphicsAPI::D3D9)
+    setToD3D9();
 
   if(m_Current)
     m_Current->OnCaptureLoaded();
@@ -283,6 +287,8 @@ void PipelineStateViewer::OnEventChanged(uint32_t eventId)
     setToGL();
   else if(m_Ctx.APIProps().pipelineType == GraphicsAPI::Vulkan)
     setToVulkan();
+  else if(m_Ctx.APIProps().pipelineType == GraphicsAPI::D3D9)
+    setToD3D9();
 
   if(m_Current)
     m_Current->OnEventChanged(eventId);
@@ -298,6 +304,8 @@ QString PipelineStateViewer::GetCurrentAPI()
     return lit("OpenGL");
   else if(m_Current == m_Vulkan)
     return lit("Vulkan");
+  else if(m_Current == m_D3D9)
+    return lit("D3D9");
 
   return lit("");
 }
@@ -323,6 +331,8 @@ void PipelineStateViewer::setPersistData(const QVariant &persistData)
     setToGL();
   else if(str == lit("Vulkan"))
     setToVulkan();
+  else if(str == lit("D3D9"))
+    setToD3D9();
 }
 
 void PipelineStateViewer::reset()
@@ -331,11 +341,13 @@ void PipelineStateViewer::reset()
   delete m_D3D12;
   delete m_GL;
   delete m_Vulkan;
+  delete m_D3D9;
 
   m_D3D11 = NULL;
   m_D3D12 = NULL;
   m_GL = NULL;
   m_Vulkan = NULL;
+  m_D3D9 = NULL;
 
   m_Current = NULL;
 }
@@ -386,6 +398,18 @@ void PipelineStateViewer::setToVulkan()
   m_Vulkan = new VulkanPipelineStateViewer(m_Ctx, *this, this);
   ui->layout->addWidget(m_Vulkan);
   m_Current = m_Vulkan;
+}
+
+void PipelineStateViewer::setToD3D9()
+{
+  if(m_D3D9)
+    return;
+
+  reset();
+
+  m_D3D9 = new D3D9PipelineStateViewer(m_Ctx, *this, this);
+  ui->layout->addWidget(m_D3D9);
+  m_Current = m_D3D9;
 }
 
 QXmlStreamWriter *PipelineStateViewer::beginHTMLExport()
@@ -1221,6 +1245,8 @@ ResourceId PipelineStateViewer::updateThumbnail(QWidget *widget, QModelIndex idx
         id = m_GL->GetResource(item);
       else if(m_Vulkan)
         id = m_Vulkan->GetResource(item);
+      else if(m_D3D9)
+        id = m_D3D9->GetResource(item);
     }
 
     TextureDescription *tex = m_Ctx.GetTexture(id);
@@ -1268,6 +1294,8 @@ bool PipelineStateViewer::hasThumbnail(QWidget *widget, QModelIndex idx)
         id = m_GL->GetResource(item);
       else if(m_Vulkan)
         id = m_Vulkan->GetResource(item);
+      else if(m_D3D9)
+        id = m_D3D9->GetResource(item);
     }
 
     if(id != ResourceId() && m_Ctx.GetTexture(id))
@@ -1292,6 +1320,8 @@ void PipelineStateViewer::SetupResourceView(RDTreeWidget *widget)
       id = m_GL->GetResource(item);
     else if(m_Vulkan)
       id = m_Vulkan->GetResource(item);
+    else if(m_D3D9)
+      id = m_D3D9->GetResource(item);
 
     if(id != ResourceId())
     {
@@ -1546,6 +1576,8 @@ void PipelineStateViewer::SelectPipelineStage(PipelineStage stage)
     m_GL->SelectPipelineStage(stage);
   else if(m_Vulkan)
     m_Vulkan->SelectPipelineStage(stage);
+  else if(m_D3D9)
+    m_D3D9->SelectPipelineStage(stage);
 }
 
 ScopedTreeUpdater::ScopedTreeUpdater(RDTreeWidget *widget) : m_Widget(widget)

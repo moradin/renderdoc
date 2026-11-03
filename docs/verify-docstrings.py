@@ -91,6 +91,8 @@ def make_c_typeval(ret: str, pattern: bool, typelist: List[str]):
         ret = 'GLPipe::State'
     elif ret == 'VKState':
         ret = 'VKPipe::State'
+    elif ret == 'D3D9State':
+        ret = 'D3D9Pipe::State'
 
     if ret in ['bool', 'void']:
         pass
@@ -318,6 +320,13 @@ for mod_name in check_mods:
             if source is None and objname[0:5] in ['D3D11', 'D3D12']:
                 pipe = objname[0:5] + 'Pipe'
                 objname = objname[5:]
+
+                namespace = re.search('namespace ' + pipe + '.* namespace ' + pipe, headers, re.MULTILINE | re.DOTALL)
+                namespace = namespace.group(0)
+
+            if source is None and objname[0:4] == 'D3D9':
+                pipe = objname[0:4] + 'Pipe'
+                objname = objname[4:]
 
                 namespace = re.search('namespace ' + pipe + '.* namespace ' + pipe, headers, re.MULTILINE | re.DOTALL)
                 namespace = namespace.group(0)

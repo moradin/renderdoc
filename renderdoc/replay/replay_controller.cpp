@@ -118,6 +118,13 @@ const VKPipe::State *ReplayController::GetVulkanPipelineState()
   return m_APIProps.pipelineType == GraphicsAPI::Vulkan ? &m_VulkanPipelineState : NULL;
 }
 
+const D3D9Pipe::State *ReplayController::GetD3D9PipelineState()
+{
+  CHECK_REPLAY_THREAD();
+
+  return m_APIProps.pipelineType == GraphicsAPI::D3D9 ? &m_D3D9PipelineState : NULL;
+}
+
 const PipeState &ReplayController::GetPipelineState()
 {
   CHECK_REPLAY_THREAD();
@@ -1991,6 +1998,7 @@ bool ReplayController::FatalErrorCheck()
     m_D3D12PipelineState = D3D12Pipe::State();
     m_GLPipelineState = GLPipe::State();
     m_VulkanPipelineState = VKPipe::State();
+    m_D3D9PipelineState = D3D9Pipe::State();
 
     m_PipeState.SetDescriptorAccess({}, {}, {});
 
@@ -2223,7 +2231,7 @@ RDResult ReplayController::PostCreateInit(IReplayDriver *device, RDCFile *rdc)
     return m_FatalError;
 
   m_pDevice->SetPipelineStates(&m_D3D11PipelineState, &m_D3D12PipelineState, &m_GLPipelineState,
-                               &m_VulkanPipelineState);
+                               &m_VulkanPipelineState, &m_D3D9PipelineState);
 
   GCNISA::GetTargets(m_APIProps.pipelineType, m_pDevice->GetDriverInfo(), m_GCNTargets);
 
@@ -2313,6 +2321,8 @@ void ReplayController::FetchPipelineState(uint32_t eventId)
     m_PipeState.SetState(&m_GLPipelineState);
   else if(m_APIProps.pipelineType == GraphicsAPI::Vulkan)
     m_PipeState.SetState(&m_VulkanPipelineState);
+  else if(m_APIProps.pipelineType == GraphicsAPI::D3D9)
+    m_PipeState.SetState(&m_D3D9PipelineState);
 
   rdcarray<DescriptorAccess> access = m_pDevice->GetDescriptorAccess(eventId);
   rdcarray<Descriptor> descs;

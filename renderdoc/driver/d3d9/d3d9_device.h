@@ -168,6 +168,21 @@ public:
   // whether the real device stopped working
   RDResult FatalErrorCheck();
 
+  // the state the pipeline state is built from (d3d9_pipestate.cpp): the tracked bindings, and the
+  // rest of the device state read back from the real device
+  const D3D9ObjectBindings &GetBindings() const { return m_Bindings; }
+  IDirect3DSurface9 *GetBoundRenderTarget(uint32_t i) const
+  {
+    return i < D3D9_NUM_RENDER_TARGETS ? m_RenderTargets[i] : NULL;
+  }
+  IDirect3DSurface9 *GetBoundDepthStencil() const { return m_DepthStencil; }
+  void FetchDeviceState(D3D9DeviceState &state)
+  {
+    SCOPED_LOCK(m_D3DLock);
+    D3D9FetchDeviceState(m_device, m_InitParams.BehaviorFlags, m_LightIndices, m_PaletteNumbers,
+                         state);
+  }
+
   // the ID the next wrapper created takes, so that wrappers created during replay have their
   // captured IDs. Consumed by WrappedD3D9Object's constructor, which otherwise gets a new one.
   ResourceId TakeWrapperID();

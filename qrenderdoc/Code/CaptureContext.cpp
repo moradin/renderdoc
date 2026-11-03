@@ -83,6 +83,7 @@ CaptureContext::CaptureContext(PersistentConfig &cfg) : m_Config(cfg)
   m_CurD3D12PipelineState = NULL;
   m_CurGLPipelineState = NULL;
   m_CurVulkanPipelineState = NULL;
+  m_CurD3D9PipelineState = NULL;
   m_CurPipelineState = &m_DummyPipelineState;
 
   m_Actions = &m_EmptyActions;
@@ -1199,6 +1200,7 @@ void CaptureContext::LoadCaptureThreaded(const QString &captureFile, const Repla
     m_CurD3D12PipelineState = r->GetD3D12PipelineState();
     m_CurGLPipelineState = r->GetGLPipelineState();
     m_CurVulkanPipelineState = r->GetVulkanPipelineState();
+    m_CurD3D9PipelineState = r->GetD3D9PipelineState();
     m_CurPipelineState = &r->GetPipelineState();
 
     m_UnreadMessageCount = 0;
@@ -1588,6 +1590,7 @@ void CaptureContext::CloseCapture()
   m_CurD3D12PipelineState = NULL;
   m_CurGLPipelineState = NULL;
   m_CurVulkanPipelineState = NULL;
+  m_CurD3D9PipelineState = NULL;
   m_CurPipelineState = &m_DummyPipelineState;
 
   m_StructuredFile = &m_DummySDFile;
@@ -1751,6 +1754,7 @@ void CaptureContext::SetEventID(const rdcarray<ICaptureViewer *> &exclude, uint3
     m_CurD3D12PipelineState = r->GetD3D12PipelineState();
     m_CurGLPipelineState = r->GetGLPipelineState();
     m_CurVulkanPipelineState = r->GetVulkanPipelineState();
+    m_CurD3D9PipelineState = r->GetD3D9PipelineState();
     m_CurPipelineState = &r->GetPipelineState();
 
     done = true;

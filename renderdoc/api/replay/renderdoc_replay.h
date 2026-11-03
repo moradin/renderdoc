@@ -534,6 +534,18 @@ See also :meth:`GetPipelineState`.
 )");
   virtual const VKPipe::State *GetVulkanPipelineState() = 0;
 
+  DOCUMENT(R"(Retrieve the current :class:`D3D9State` pipeline state.
+
+The return value will be ``None`` if the capture is not using the D3D9 API.
+You should use :meth:`GetAPIProperties` to determine the API of the capture.
+
+See also :meth:`GetPipelineState`.
+
+:return: The current D3D9 pipeline state.
+:rtype: Optional[D3D9State]
+)");
+  virtual const D3D9Pipe::State *GetD3D9PipelineState() = 0;
+
   DOCUMENT(R"(Retrieve the current :class:`PipeState` pipeline state abstraction.
 
 This pipeline state will always be valid, and allows queries that will work regardless of the

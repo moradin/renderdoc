@@ -13,7 +13,7 @@ so none of this is upstream.
 | 2d | Edge cases: Reset/device loss mid-capture, state block contents, D3DPERF markers in captures, depth stencil read back, GDI drawing, front buffer copies, locks spanning the capture start | Done, tested with `D3D9_Capture_Edge_Cases` and `D3D9_Reset_Capture`; device loss needs a real game |
 | 3a | Replay: loading captures, replaying to any event, the event list, resource descriptions, reading texture and buffer data | Written, not built or tested yet |
 | 3b | Texture viewer and buffers: displaying every D3D9 format, pick pixel, min/max, histogram, mesh viewer inputs | Written, not built or tested yet |
-| 3c | D3D9 pipeline state, with its own UI panel and Python bindings | Not started |
+| 3c | D3D9 pipeline state, with its own UI panel and Python bindings | Written, not built or tested yet |
 | 3d | Shaders: SM1-3 disassembly, reflection from the constant table | Not started |
 | 3e | Mesh output and overlays | Not started |
 
@@ -190,9 +190,8 @@ where the driver allows, so they can be locked to write and read them. Buffers l
 D3DUSAGE_WRITEONLY. Depth stencils are written back with `oDepth` and the stencil a bit at a time
 (`d3d9_depth.cpp`).
 
-Until 3b and 3c, the UI's texture viewer shows nothing (`RenderTexture` isn't implemented), and
-captures present themselves as D3D11 with an empty pipeline state. The event browser, the resource
-list and the structured data work, and so does fetching data from Python.
+On its own, 3a gives the event browser, the resource list, the structured data and fetching data
+from Python. The texture viewer is phase 3b and the D3D9 pipeline state phase 3c, below.
 
 Known gaps:
 - Multisampled render targets are written back by copying their resolved contents into a
@@ -326,6 +325,97 @@ What to test on Windows (all in the UI unless noted):
   zeros.
 - RenderDoc's log has no "Couldn't decode", "Couldn't copy" or "debug shaders" errors, except for
   the formats listed in the gaps.
+
+## Pipeline state (phase 3c)
+
+Captures now present themselves as `GraphicsAPI.D3D9` (`IsD3D()` is true for it, so the UI uses
+D3D naming and HLSL packing), with their own pipeline state, `D3D9Pipe::State`
+(`renderdoc/api/replay/d3d9_pipestate.h`, `renderdoc.D3D9State` in Python, from
+`ReplayController.GetD3D9PipelineState()` and `CaptureContext.CurD3D9PipelineState()`), and their
+own pipeline state panel (`qrenderdoc/Windows/PipelineState/D3D9PipelineStateViewer.*`).
+
+How it works (`d3d9_pipestate.cpp`):
+- `SavePipelineState` builds the state from the replay device after the replay controller has
+  replayed to the event. Object bindings (textures, streams, index buffer, shaders, vertex
+  declaration, render targets, depth stencil) come from the wrapper's tracked bindings, so they
+  carry the captured IDs. Everything else is read back from the real device with
+  `D3D9FetchDeviceState`, the same function capture uses. A declaration made by `SetFVF` is read
+  from the declaration the runtime made for it, and the FVF code is listed too.
+- The topology is the `PrimitiveType` of the draw at the event, read from its chunk in the
+  structured data, and `Unknown` for events that aren't draws.
+- D3D9-specific enums (texture stage operations and arguments, fog modes, declaration types and
+  usages...) are strings without their prefix, e.g. `MODULATE`, `TEXTURE | COMPLEMENT`, `FLOAT3`,
+  `TEXCOORD`. Generic ones use RenderDoc's enums (CompareFunction, BlendMultiplier...). Front faces
+  are clockwise, so `D3DCULL_CCW` is `CullMode.Back` and `D3DCULL_CW` is `CullMode.Front`.
+  `renderStates` lists every render state with its raw value.
+- The descriptors live in one virtual descriptor store, like D3D11: descriptors 0-20 are the
+  samplers (texture and sampler states together) numbered like `D3D9SamplerToSlot` (pixel 0-15,
+  DMAP 16, vertex 17-20), 21-26 the shader constants.
+- Shader constants are presented as six pseudo buffers, listed as resources: "VS float constants
+  (c#)", "VS integer constants (i#)", "VS boolean constants (b#)", and the same for PS. Each holds
+  the stage's whole register file from register 0: a float4 per c#, an int4 per i#, a uint32 (0 or
+  1) per b#. `GetBufferData` on them reads the replay device's current constants, so
+  `GetCBufferVariableContents` works unchanged: the constant block descriptors point at them.
+  `D3D9Shader.floatConstantsBuffer` etc. give their IDs directly.
+- Descriptor accesses (`GetDescriptorAccess`): with reflection (phase 3d), the shader's constant
+  blocks map to the pseudo buffer of their register set, which is the block's `fixedBindNumber` (0
+  float, 1 integer, 2 boolean), and its samplers and read-only resources to their sampler register
+  (`fixedBindNumber`; a SM3 vertex shader's s0-s3 are the vertex texture samplers). Without reflection, every sampler with a texture bound that the stage can use is
+  listed with the sampler register as its index. Without a pixel shader, the texture stages up to
+  the first disabled one are listed. A texture on the displacement map sampler is listed for the
+  vertex stage.
+
+Known gaps:
+- Until phase 3d, `GetShader` returns NULL: there's no reflection, shaders can't be viewed or saved
+  from the panel, all bound textures count as used, every vertex element counts as used, and the
+  constants rows open the raw registers in the buffer viewer (`float4 c;`, `int4 i;`, `uint b;` per
+  row) instead of the shader's variables.
+- `GetUsage` isn't implemented, so the resource context menu's usage list is empty.
+- The buffers' sizes are the register counts `D3D9FetchDeviceState` found at load time: the
+  device's VS float constants (256 with hardware vertex processing, 8192 for software vertex
+  processing devices while in software mode), 224 PS float constants on SM3 hardware, 16 int and
+  16 bool (2048 VS ones in software mode). Reading them always returns what the device has at the
+  time, so a capture that switches software vertex processing mid-frame can read a different size.
+- Shader editing isn't offered (D3D9 can't build replacement shaders yet).
+- Remote replay presents `localRenderer` D3D9, which has no proxy texture support, so remote
+  replay of D3D9 captures probably won't display textures.
+- `SetLOD` on managed textures isn't reflected in the descriptors' first mip.
+
+### Checking the pipeline state
+
+`util/test/d3d9_pipestate_check.py capture.rdc [eventId]` prints the D3D9 pipeline state at every
+draw (or only at `eventId`, with every render state too), through both `D3D9State` and the generic
+`PipeState`, and reads the constants. Run it like `d3d9_replay_check.py`.
+
+What to look for, in the UI's Pipeline State window and in the script:
+- the capture's API shows as D3D9, the Pipeline State window shows the D3D9 panel with IA, VS, RS,
+  PS, OM and an isolated "Render States" stage, and nothing errors in RenderDoc's log.
+- `D3D9_Simple_Triangle`: at the draw, the topology is TriangleList with the triangle diagram, the
+  vertex elements match the demo's declaration (or its FVF, with "From FVF 0x..."), the stream 0
+  row shows its vertex buffer with the demo's stride, and double-clicking it opens the buffer viewer
+  showing the vertices. The mesh viewer shows the triangle's inputs (PipeState.GetVertexInputs).
+- shaders: the VS and PS rows name the shader objects with their shader model (e.g. `vs_3_0`) and
+  "no reflection available". The Constants rows list the three register sets (256 float, 16
+  integer and 16 boolean registers for a hardware VS, 224/16/16 for a SM3 PS); double-clicking
+  the float row opens the buffer viewer, and the values match what the demo set
+  (`D3D9_Frame_Start_State` sets c200 and c180, which should show there).
+- `D3D9_Frame_Start_State`: the render, sampler and texture stage states, transforms, lights,
+  material and clip planes it sets at frame start show up in the matching tables (and in the Render
+  States list with their raw values), including D3DTSS_CONSTANT on stage 0.
+- textures: the textures bound to sampled slots show in the VS/PS Textures tables with their sizes
+  and formats, and in the texture viewer's inputs strip (once 3b displays textures). Double-clicking
+  opens them in the texture viewer. Sampler states match what the demo set.
+- output merger: render target 0 is the back buffer (or the render target texture, with its mip),
+  the depth row the depth stencil, and the blend, alpha test, depth and two-sided stencil states
+  match the demo's. The texture viewer's "follow" outputs show the same targets.
+- fixed function draws: with no pixel shader, the Texture Stages table shows the enabled stages and
+  the texture viewer's inputs strip shows their textures; with no vertex shader the lighting,
+  transform and light tables aren't in italics.
+- Python: `controller.GetD3D9PipelineState()` is a `renderdoc.D3D9State`, `GetD3D11PipelineState()`
+  is None, and `controller.GetPipelineState().GetOutputTargets()`, `GetVertexInputs()`,
+  `GetVBuffers()`, `GetIBuffer()` and `GetPrimitiveTopology()` agree with it. In the UI's Python
+  shell `pyrenderdoc.CurD3D9PipelineState()` returns the same state.
+- the Export button writes an HTML file with a section per stage.
 
 ## Inspecting a capture
 

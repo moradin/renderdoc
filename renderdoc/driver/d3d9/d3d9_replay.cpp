@@ -216,22 +216,6 @@ void D3D9Replay::Shutdown()
   delete this;
 }
 
-APIProperties D3D9Replay::GetAPIProperties()
-{
-  APIProperties ret;
-
-  // Until D3D9 has its own pipeline state (phase 3c), it presents itself as D3D11 with an empty
-  // pipeline state.
-  ret.pipelineType = GraphicsAPI::D3D11;
-  ret.localRenderer = GraphicsAPI::D3D11;
-  ret.vendor = m_DriverInfo.vendor;
-  ret.degraded = false;
-  ret.shaderDebugging = false;
-  ret.pixelHistory = false;
-
-  return ret;
-}
-
 ResourceDescription &D3D9Replay::GetResourceDesc(ResourceId id)
 {
   auto it = m_ResourceIdx.find(id);
@@ -276,6 +260,10 @@ rdcarray<BufferDescription> D3D9Replay::GetBuffers()
 BufferDescription D3D9Replay::GetBuffer(ResourceId id)
 {
   BufferDescription ret;
+
+  // the shader constant registers, presented as buffers (see d3d9_pipestate.cpp)
+  if(ConstantsBufferIndex(id) >= 0)
+    return GetConstantsBuffer(id);
 
   D3D9ResourceManager *rm = m_pDevice->GetResourceManager();
   if(!rm->HasResource(id))
@@ -456,56 +444,12 @@ rdcstr D3D9Replay::DisassembleShader(ResourceId pipeline, const ShaderReflection
   return "; D3D9 shader disassembly isn't supported yet";
 }
 
-rdcarray<EventUsage> D3D9Replay::GetUsage(ResourceId id)
-{
-  return {};
-}
-
-void D3D9Replay::SetPipelineStates(D3D11Pipe::State *d3d11, D3D12Pipe::State *d3d12,
-                                   GLPipe::State *gl, VKPipe::State *vk)
-{
-}
-
-void D3D9Replay::SavePipelineState(uint32_t eventId)
-{
-}
-
-rdcarray<Descriptor> D3D9Replay::GetDescriptors(ResourceId descriptorStore,
-                                                const rdcarray<DescriptorRange> &ranges)
-{
-  size_t count = 0;
-  for(const DescriptorRange &r : ranges)
-    count += r.count;
-  rdcarray<Descriptor> ret;
-  ret.resize(count);
-  return ret;
-}
-
-rdcarray<SamplerDescriptor> D3D9Replay::GetSamplerDescriptors(ResourceId descriptorStore,
-                                                              const rdcarray<DescriptorRange> &ranges)
-{
-  size_t count = 0;
-  for(const DescriptorRange &r : ranges)
-    count += r.count;
-  rdcarray<SamplerDescriptor> ret;
-  ret.resize(count);
-  return ret;
-}
-
-rdcarray<DescriptorAccess> D3D9Replay::GetDescriptorAccess(uint32_t eventId)
-{
-  return {};
-}
-
-rdcarray<DescriptorLogicalLocation> D3D9Replay::GetDescriptorLocations(
-    ResourceId descriptorStore, const rdcarray<DescriptorRange> &ranges)
-{
-  return {};
-}
-
 RDResult D3D9Replay::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers)
 {
-  return m_pDevice->ReadLogInitialisation(rdc, storeStructuredBuffers);
+  RDResult ret = m_pDevice->ReadLogInitialisation(rdc, storeStructuredBuffers);
+  if(ret == ResultCode::Succeeded)
+    CreatePipelineStateResources();
+  return ret;
 }
 
 void D3D9Replay::ReplayLog(uint32_t endEventID, ReplayLogType replayType)
@@ -541,6 +485,12 @@ MeshFormat D3D9Replay::GetPostVSBuffers(uint32_t eventId, uint32_t instID, uint3
 void D3D9Replay::GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, bytebuf &retData)
 {
   retData.clear();
+
+  if(ConstantsBufferIndex(buff) >= 0)
+  {
+    GetConstantsData(buff, offset, len, retData);
+    return;
+  }
 
   D3D9ResourceManager *rm = m_pDevice->GetResourceManager();
   if(!rm->HasResource(buff))

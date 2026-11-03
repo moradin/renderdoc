@@ -237,9 +237,11 @@ ReplayProxy::ReplayProxy(ReadSerialiser &reader, WriteSerialiser &writer, IRemot
     m_GLPipelineState = new GLPipe::State;
   else if(m_APIProps.pipelineType == GraphicsAPI::Vulkan)
     m_VulkanPipelineState = new VKPipe::State;
+  else if(m_APIProps.pipelineType == GraphicsAPI::D3D9)
+    m_D3D9PipelineState = new D3D9Pipe::State;
 
   m_Remote->SetPipelineStates(m_D3D11PipelineState, m_D3D12PipelineState, m_GLPipelineState,
-                              m_VulkanPipelineState);
+                              m_VulkanPipelineState, m_D3D9PipelineState);
 }
 
 ReplayProxy::ReplayProxy(ReadSerialiser &reader, WriteSerialiser &writer, IReplayDriver *proxy)
@@ -265,6 +267,7 @@ ReplayProxy::~ReplayProxy()
     SAFE_DELETE(m_D3D12PipelineState);
     SAFE_DELETE(m_GLPipelineState);
     SAFE_DELETE(m_VulkanPipelineState);
+    SAFE_DELETE(m_D3D9PipelineState);
   }
 
   ShutdownRemoteExecutionThread();
@@ -1899,6 +1902,10 @@ void ReplayProxy::Proxied_SavePipelineState(ParamSerialiser &paramser, ReturnSer
     {
       SERIALISE_ELEMENT(*m_VulkanPipelineState);
     }
+    else if(m_APIProps.pipelineType == GraphicsAPI::D3D9)
+    {
+      SERIALISE_ELEMENT(*m_D3D9PipelineState);
+    }
     SERIALISE_ELEMENT(packet);
     ser.EndChunk();
 
@@ -1945,6 +1952,18 @@ void ReplayProxy::Proxied_SavePipelineState(ParamSerialiser &paramser, ReturnSer
             &m_GLPipelineState->vertexShader,   &m_GLPipelineState->tessControlShader,
             &m_GLPipelineState->tessEvalShader, &m_GLPipelineState->geometryShader,
             &m_GLPipelineState->fragmentShader, &m_GLPipelineState->computeShader,
+        };
+
+        for(size_t i = 0; i < ARRAY_COUNT(stages); i++)
+          if(stages[i]->reflection != 0)
+            stages[i]->reflection =
+                GetShaderReflectionByPointer((uint64_t)(uintptr_t)stages[i]->reflection);
+      }
+      else if(m_APIProps.pipelineType == GraphicsAPI::D3D9 && m_D3D9PipelineState)
+      {
+        D3D9Pipe::Shader *stages[] = {
+            &m_D3D9PipelineState->vertexShader,
+            &m_D3D9PipelineState->pixelShader,
         };
 
         for(size_t i = 0; i < ARRAY_COUNT(stages); i++)

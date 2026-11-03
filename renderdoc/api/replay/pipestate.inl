@@ -250,6 +250,10 @@ Viewport PipeState::GetViewport(uint32_t index) const
     {
       return m_D3D11->rasterizer.viewports[index];
     }
+    else if(IsCaptureD3D9() && index == 0)
+    {
+      return m_D3D9->rasterizer.viewport;
+    }
     else if(IsCaptureD3D12() && index < m_D3D12->rasterizer.viewports.size())
     {
       return m_D3D12->rasterizer.viewports[index];
@@ -276,6 +280,10 @@ Scissor PipeState::GetScissor(uint32_t index) const
     if(IsCaptureD3D11() && index < m_D3D11->rasterizer.viewports.size())
     {
       return m_D3D11->rasterizer.scissors[index];
+    }
+    else if(IsCaptureD3D9() && index == 0)
+    {
+      return m_D3D9->rasterizer.scissor;
     }
     else if(IsCaptureD3D12() && index < m_D3D12->rasterizer.viewports.size())
     {
@@ -308,6 +316,15 @@ const ShaderReflection *PipeState::GetShaderReflection(ShaderStage stage) const
         case ShaderStage::Geometry: return m_D3D11->geometryShader.reflection;
         case ShaderStage::Pixel: return m_D3D11->pixelShader.reflection;
         case ShaderStage::Compute: return m_D3D11->computeShader.reflection;
+        default: break;
+      }
+    }
+    else if(IsCaptureD3D9())
+    {
+      switch(stage)
+      {
+        case ShaderStage::Vertex: return m_D3D9->vertexShader.reflection;
+        case ShaderStage::Pixel: return m_D3D9->pixelShader.reflection;
         default: break;
       }
     }
@@ -435,6 +452,15 @@ ResourceId PipeState::GetShader(ShaderStage stage) const
         default: break;
       }
     }
+    else if(IsCaptureD3D9())
+    {
+      switch(stage)
+      {
+        case ShaderStage::Vertex: return m_D3D9->vertexShader.resourceId;
+        case ShaderStage::Pixel: return m_D3D9->pixelShader.resourceId;
+        default: break;
+      }
+    }
     else if(IsCaptureD3D12())
     {
       switch(stage)
@@ -494,6 +520,14 @@ BoundVBuffer PipeState::GetIBuffer() const
       ret.resourceId = m_D3D11->inputAssembly.indexBuffer.resourceId;
       ret.byteOffset = m_D3D11->inputAssembly.indexBuffer.byteOffset;
       ret.byteStride = m_D3D11->inputAssembly.indexBuffer.byteStride;
+      ret.byteSize = ~0ULL;
+    }
+    else if(IsCaptureD3D9())
+    {
+      // D3D9 has no index buffer offset, draws start at an index instead
+      ret.resourceId = m_D3D9->inputAssembly.indexBuffer.resourceId;
+      ret.byteOffset = 0;
+      ret.byteStride = m_D3D9->inputAssembly.indexBuffer.byteStride;
       ret.byteSize = ~0ULL;
     }
     else if(IsCaptureD3D12())
@@ -590,6 +624,17 @@ rdcarray<BoundVBuffer> PipeState::GetVBuffers() const
         ret[i].byteSize = ~0ULL;
       }
     }
+    else if(IsCaptureD3D9())
+    {
+      ret.resize(m_D3D9->inputAssembly.streams.count());
+      for(int i = 0; i < m_D3D9->inputAssembly.streams.count(); i++)
+      {
+        ret[i].resourceId = m_D3D9->inputAssembly.streams[i].resourceId;
+        ret[i].byteOffset = m_D3D9->inputAssembly.streams[i].byteOffset;
+        ret[i].byteStride = m_D3D9->inputAssembly.streams[i].byteStride;
+        ret[i].byteSize = ~0ULL;
+      }
+    }
     else if(IsCaptureD3D12())
     {
       ret.resize(m_D3D12->inputAssembly.vertexBuffers.count());
@@ -635,6 +680,10 @@ Topology PipeState::GetPrimitiveTopology() const
     if(IsCaptureD3D11())
     {
       return m_D3D11->inputAssembly.topology;
+    }
+    else if(IsCaptureD3D9())
+    {
+      return m_D3D9->inputAssembly.topology;
     }
     else if(IsCaptureD3D12())
     {
@@ -716,6 +765,63 @@ rdcarray<VertexInputAttribute> PipeState::GetVertexInputs() const
           {
             if(striequal(semName, sig[ia].semanticName) &&
                sig[ia].semanticIndex == layouts[i].semanticIndex)
+            {
+              ret[i].used = true;
+              break;
+            }
+          }
+        }
+      }
+
+      return ret;
+    }
+    else if(IsCaptureD3D9())
+    {
+      const rdcarray<D3D9Pipe::VertexElement> &elems = m_D3D9->inputAssembly.vertexElements;
+      const rdcarray<D3D9Pipe::StreamSource> &streams = m_D3D9->inputAssembly.streams;
+      const ShaderReflection *vsRefl = m_D3D9->vertexShader.reflection;
+
+      rdcarray<VertexInputAttribute> ret;
+      ret.resize(elems.size());
+      for(int i = 0; i < elems.count(); i++)
+      {
+        const rdcstr &semName = elems[i].semanticName;
+
+        bool needsSemanticIdx = false;
+        for(int j = 0; j < elems.count(); j++)
+        {
+          if(i != j && striequal(semName, elems[j].semanticName))
+          {
+            needsSemanticIdx = true;
+            break;
+          }
+        }
+
+        const uint32_t stream = elems[i].stream;
+        const bool perInstance = stream < streams.size() && streams[stream].instanceData;
+
+        ret[i].name = semName + (needsSemanticIdx ? ToStr(elems[i].semanticIndex) : "");
+        ret[i].vertexBuffer = (int)stream;
+        ret[i].byteOffset = elems[i].byteOffset;
+        ret[i].perInstance = perInstance;
+        ret[i].instanceRate = perInstance ? (int)streams[stream].frequency : 0;
+        ret[i].format = elems[i].format;
+        memset(&ret[i].genericValue, 0, sizeof(PixelValue));
+        ret[i].genericEnabled = false;
+
+        // without a vertex shader the fixed function pipeline reads every element. Without
+        // reflection for the vertex shader we can't tell, so assume it's used.
+        ret[i].used = true;
+
+        if(m_D3D9->vertexShader.resourceId != ResourceId() && vsRefl != NULL)
+        {
+          ret[i].used = false;
+
+          const rdcarray<SigParameter> &sig = vsRefl->inputSignature;
+          for(int ia = 0; ia < sig.count(); ia++)
+          {
+            if(striequal(semName, sig[ia].semanticName) &&
+               sig[ia].semanticIndex == elems[i].semanticIndex)
             {
               ret[i].used = true;
               break;
@@ -1088,6 +1194,10 @@ Descriptor PipeState::GetDepthTarget() const
     {
       return m_D3D11->outputMerger.depthTarget;
     }
+    else if(IsCaptureD3D9())
+    {
+      return m_D3D9->outputMerger.depthTarget;
+    }
     else if(IsCaptureD3D12())
     {
       return m_D3D12->outputMerger.depthTarget;
@@ -1143,6 +1253,10 @@ rdcarray<Descriptor> PipeState::GetOutputTargets() const
     if(IsCaptureD3D11())
     {
       return m_D3D11->outputMerger.renderTargets;
+    }
+    else if(IsCaptureD3D9())
+    {
+      return m_D3D9->outputMerger.renderTargets;
     }
     else if(IsCaptureD3D12())
     {
@@ -1202,6 +1316,10 @@ rdcfixedarray<float, 4> PipeState::GetBlendFactor() const
     {
       return m_D3D11->outputMerger.blendState.blendFactor;
     }
+    else if(IsCaptureD3D9())
+    {
+      return m_D3D9->outputMerger.blendState.blendFactor;
+    }
     else if(IsCaptureD3D12())
     {
       return m_D3D12->outputMerger.blendState.blendFactor;
@@ -1230,6 +1348,12 @@ DepthTestState PipeState::GetDepthTestState() const
       ret.depthEnable = m_D3D11->outputMerger.depthStencilState.depthEnable;
       ret.depthWrites = m_D3D11->outputMerger.depthStencilState.depthWrites;
       ret.depthFunction = m_D3D11->outputMerger.depthStencilState.depthFunction;
+    }
+    else if(IsCaptureD3D9())
+    {
+      ret.depthEnable = m_D3D9->outputMerger.depthStencilState.depthEnable;
+      ret.depthWrites = m_D3D9->outputMerger.depthStencilState.depthWrites;
+      ret.depthFunction = m_D3D9->outputMerger.depthStencilState.depthFunction;
     }
     else if(IsCaptureD3D12())
     {
@@ -1275,6 +1399,13 @@ RasterState PipeState::GetRasterState() const
       ret.fillMode = m_D3D11->rasterizer.state.fillMode;
       ret.frontCCW = m_D3D11->rasterizer.state.frontCCW;
     }
+    else if(IsCaptureD3D9())
+    {
+      // D3D9 front faces are always clockwise, culling is described in those terms
+      ret.cullMode = m_D3D9->rasterizer.cullMode;
+      ret.fillMode = m_D3D9->rasterizer.fillMode;
+      ret.frontCCW = false;
+    }
     else if(IsCaptureD3D12())
     {
       ret.cullMode = m_D3D12->rasterizer.state.cullMode;
@@ -1312,6 +1443,11 @@ rdcarray<ColorBlend> PipeState::GetColorBlends() const
                m_D3D11->outputMerger.blendState.blends[0]);
       return ret;
     }
+    else if(IsCaptureD3D9())
+    {
+      // the blend equation is shared, the write masks are per target and already in each
+      return m_D3D9->outputMerger.blendState.blends;
+    }
     else if(IsCaptureD3D12())
     {
       if(m_D3D12->outputMerger.blendState.independentBlend)
@@ -1343,6 +1479,10 @@ bool PipeState::IsStencilTestEnabled() const
     {
       return m_D3D11->outputMerger.depthStencilState.stencilEnable;
     }
+    else if(IsCaptureD3D9())
+    {
+      return m_D3D9->outputMerger.depthStencilState.stencilEnable;
+    }
     else if(IsCaptureD3D12())
     {
       return m_D3D12->outputMerger.depthStencilState.stencilEnable;
@@ -1368,6 +1508,12 @@ rdcpair<StencilFace, StencilFace> PipeState::GetStencilFaces() const
     {
       return {m_D3D11->outputMerger.depthStencilState.frontFace,
               m_D3D11->outputMerger.depthStencilState.backFace};
+    }
+    else if(IsCaptureD3D9())
+    {
+      // without two-sided stencil both faces use the front face's state
+      const D3D9Pipe::DepthStencilState &ds = m_D3D9->outputMerger.depthStencilState;
+      return {ds.frontFace, ds.twoSidedStencil ? ds.backFace : ds.frontFace};
     }
     else if(IsCaptureD3D12())
     {
@@ -1409,6 +1555,11 @@ bool PipeState::IsIndependentBlendingEnabled() const
     if(IsCaptureD3D11())
     {
       return m_D3D11->outputMerger.blendState.independentBlend;
+    }
+    else if(IsCaptureD3D9())
+    {
+      // only the write masks can differ between targets
+      return false;
     }
     else if(IsCaptureD3D12())
     {

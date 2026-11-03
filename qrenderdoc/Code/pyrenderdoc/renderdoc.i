@@ -69,6 +69,7 @@ inline PyObject *PyWeakref_GetObject_emu(PyObject *ref)
 // (not that we follow python naming perfectly)
 %rename("%(regex:/^D3D11Pipe::(.*)/D3D11\\1/)s", regextarget=1, fullname=1, %$isclass) "D3D11Pipe::.*";
 %rename("%(regex:/^D3D12Pipe::(.*)/D3D12\\1/)s", regextarget=1, fullname=1, %$isclass) "D3D12Pipe::.*";
+%rename("%(regex:/^D3D9Pipe::(.*)/D3D9\\1/)s", regextarget=1, fullname=1, %$isclass) "D3D9Pipe::.*";
 %rename("%(regex:/^GLPipe::(.*)/GL\\1/)s", regextarget=1, fullname=1, %$isclass) "GLPipe::.*";
 %rename("%(regex:/^VKPipe::(.*)/VK\\1/)s", regextarget=1, fullname=1, %$isclass) "VKPipe::.*";
 
@@ -301,6 +302,7 @@ TEMPLATE_FIXEDARRAY_DECLARE(rdcfixedarray);
 %include "common_pipestate.h"
 %include "d3d11_pipestate.h"
 %include "d3d12_pipestate.h"
+%include "d3d9_pipestate.h"
 %include "data_types.h"
 %include "gl_pipestate.h"
 %include "replay_enums.h"
@@ -484,6 +486,14 @@ TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, VertexBuffer)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, RootTableRange)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, RootParam)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, StaticSampler)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, VertexElement)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, StreamSource)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, Sampler)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, TextureStage)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, Transform)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, Light)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, ClipPlane)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, RenderState)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, GLPipe, VertexBuffer)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, GLPipe, VertexAttribute)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, GLPipe, TextureCompleteness)

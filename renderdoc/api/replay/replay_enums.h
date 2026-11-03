@@ -1981,6 +1981,10 @@ DOCUMENT(R"(Identifies a Graphics API.
 
   Vulkan.
 
+.. data:: D3D9
+
+  Direct3D 9.
+
 )");
 enum class GraphicsAPI : uint32_t
 {
@@ -1988,6 +1992,7 @@ enum class GraphicsAPI : uint32_t
   D3D12,
   OpenGL,
   Vulkan,
+  D3D9,
 };
 
 DECLARE_REFLECTION_ENUM(GraphicsAPI);
@@ -2000,7 +2005,7 @@ DOCUMENT(R"(Check if an API is D3D or not
 )");
 constexpr inline bool IsD3D(GraphicsAPI api)
 {
-  return api == GraphicsAPI::D3D11 || api == GraphicsAPI::D3D12;
+  return api == GraphicsAPI::D3D11 || api == GraphicsAPI::D3D12 || api == GraphicsAPI::D3D9;
 }
 
 DOCUMENT(R"(Identifies a shader encoding used to pass shader code to an API.

@@ -106,6 +106,7 @@
     <ClCompile Include="d3d9_direct3d.cpp" />
     <ClCompile Include="d3d9_hooks.cpp" />
     <ClCompile Include="d3d9_manager.cpp" />
+    <ClCompile Include="d3d9_pipestate.cpp" />
     <ClCompile Include="d3d9_replay.cpp" />
     <ClCompile Include="d3d9_pixel.cpp" />
     <ClCompile Include="d3d9_rendermesh.cpp" />

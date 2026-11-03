@@ -6,6 +6,7 @@ This is the API reference for the functions, classes, and enums in the ``renderd
 .. toctree::
 	:maxdepth: 1
 
+	d3d9
 	d3d11
 	d3d12
 	gl

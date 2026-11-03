@@ -78,6 +78,9 @@
     <ClCompile Include="d3d9_pixel.cpp">
       <Filter>Replay</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9_pipestate.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
     <ClCompile Include="d3d9_device_serialise.cpp">
       <Filter>Serialise</Filter>
     </ClCompile>

@@ -1436,6 +1436,313 @@ void DoSerialise(SerialiserType &ser, D3D11Pipe::State &el)
 
 #pragma endregion D3D11 pipeline state
 
+#pragma region D3D9 pipeline state
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::VertexElement &el)
+{
+  SERIALISE_MEMBER(stream);
+  SERIALISE_MEMBER(byteOffset);
+  SERIALISE_MEMBER(format);
+  SERIALISE_MEMBER(declType);
+  SERIALISE_MEMBER(method);
+  SERIALISE_MEMBER(semanticName);
+  SERIALISE_MEMBER(semanticIndex);
+
+  SIZE_CHECK(96);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::StreamSource &el)
+{
+  SERIALISE_MEMBER(resourceId);
+  SERIALISE_MEMBER(byteOffset);
+  SERIALISE_MEMBER(byteStride);
+  SERIALISE_MEMBER(frequency);
+  SERIALISE_MEMBER(indexedData);
+  SERIALISE_MEMBER(instanceData);
+
+  SIZE_CHECK(24);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::IndexBuffer &el)
+{
+  SERIALISE_MEMBER(resourceId);
+  SERIALISE_MEMBER(byteStride);
+
+  SIZE_CHECK(16);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::InputAssembly &el)
+{
+  SERIALISE_MEMBER(vertexElements);
+  SERIALISE_MEMBER(declarationId);
+  SERIALISE_MEMBER(fvf);
+  SERIALISE_MEMBER(streams);
+  SERIALISE_MEMBER(indexBuffer);
+  SERIALISE_MEMBER(topology);
+
+  SIZE_CHECK(88);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::Shader &el)
+{
+  SERIALISE_MEMBER(resourceId);
+  // Serialise the reflection pointer as an opaque remote lookup token. It is resolved to a valid
+  // local reflection after the pipeline state is deserialised.
+  SERIALISE_SHADER_REFLECTION(reflection);
+  SERIALISE_MEMBER(stage);
+  SERIALISE_MEMBER(shaderModel);
+  SERIALISE_MEMBER(floatConstantsBuffer);
+  SERIALISE_MEMBER(floatConstantCount);
+  SERIALISE_MEMBER(intConstantsBuffer);
+  SERIALISE_MEMBER(intConstantCount);
+  SERIALISE_MEMBER(boolConstantsBuffer);
+  SERIALISE_MEMBER(boolConstantCount);
+
+  SIZE_CHECK(96);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::Sampler &el)
+{
+  SERIALISE_MEMBER(samplerIndex);
+  SERIALISE_MEMBER(resourceId);
+  SERIALISE_MEMBER(addressU);
+  SERIALISE_MEMBER(addressV);
+  SERIALISE_MEMBER(addressW);
+  SERIALISE_MEMBER(borderColor);
+  SERIALISE_MEMBER(magFilter);
+  SERIALISE_MEMBER(minFilter);
+  SERIALISE_MEMBER(mipFilter);
+  SERIALISE_MEMBER(mipLODBias);
+  SERIALISE_MEMBER(maxMipLevel);
+  SERIALISE_MEMBER(maxAnisotropy);
+  SERIALISE_MEMBER(srgbTexture);
+  SERIALISE_MEMBER(elementIndex);
+  SERIALISE_MEMBER(dmapOffset);
+
+  SIZE_CHECK(64);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::TextureStage &el)
+{
+  SERIALISE_MEMBER(stage);
+  SERIALISE_MEMBER(colorOp);
+  SERIALISE_MEMBER(colorArg0);
+  SERIALISE_MEMBER(colorArg1);
+  SERIALISE_MEMBER(colorArg2);
+  SERIALISE_MEMBER(alphaOp);
+  SERIALISE_MEMBER(alphaArg0);
+  SERIALISE_MEMBER(alphaArg1);
+  SERIALISE_MEMBER(alphaArg2);
+  SERIALISE_MEMBER(resultArg);
+  SERIALISE_MEMBER(texCoordIndex);
+  SERIALISE_MEMBER(texCoordGeneration);
+  SERIALISE_MEMBER(textureTransformFlags);
+  SERIALISE_MEMBER(bumpEnvMatrix);
+  SERIALISE_MEMBER(bumpEnvLScale);
+  SERIALISE_MEMBER(bumpEnvLOffset);
+  SERIALISE_MEMBER(constant);
+
+  SIZE_CHECK(320);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::Transform &el)
+{
+  SERIALISE_MEMBER(name);
+  SERIALISE_MEMBER(matrix);
+
+  SIZE_CHECK(88);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::Light &el)
+{
+  SERIALISE_MEMBER(index);
+  SERIALISE_MEMBER(enabled);
+  SERIALISE_MEMBER(type);
+  SERIALISE_MEMBER(diffuse);
+  SERIALISE_MEMBER(specular);
+  SERIALISE_MEMBER(ambient);
+  SERIALISE_MEMBER(position);
+  SERIALISE_MEMBER(direction);
+  SERIALISE_MEMBER(range);
+  SERIALISE_MEMBER(falloff);
+  SERIALISE_MEMBER(attenuation0);
+  SERIALISE_MEMBER(attenuation1);
+  SERIALISE_MEMBER(attenuation2);
+  SERIALISE_MEMBER(theta);
+  SERIALISE_MEMBER(phi);
+
+  SIZE_CHECK(144);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::Material &el)
+{
+  SERIALISE_MEMBER(diffuse);
+  SERIALISE_MEMBER(ambient);
+  SERIALISE_MEMBER(specular);
+  SERIALISE_MEMBER(emissive);
+  SERIALISE_MEMBER(power);
+
+  SIZE_CHECK(68);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::Fog &el)
+{
+  SERIALISE_MEMBER(enabled);
+  SERIALISE_MEMBER(color);
+  SERIALISE_MEMBER(tableMode);
+  SERIALISE_MEMBER(vertexMode);
+  SERIALISE_MEMBER(start);
+  SERIALISE_MEMBER(end);
+  SERIALISE_MEMBER(density);
+  SERIALISE_MEMBER(rangeFog);
+
+  SIZE_CHECK(88);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::ClipPlane &el)
+{
+  SERIALISE_MEMBER(enabled);
+  SERIALISE_MEMBER(plane);
+
+  SIZE_CHECK(20);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::FixedFunction &el)
+{
+  SERIALISE_MEMBER(textureStages);
+  SERIALISE_MEMBER(transforms);
+  SERIALISE_MEMBER(lights);
+  SERIALISE_MEMBER(material);
+  SERIALISE_MEMBER(lighting);
+  SERIALISE_MEMBER(ambient);
+  SERIALISE_MEMBER(specularEnable);
+  SERIALISE_MEMBER(normalizeNormals);
+  SERIALISE_MEMBER(localViewer);
+  SERIALISE_MEMBER(colorVertex);
+  SERIALISE_MEMBER(diffuseMaterialSource);
+  SERIALISE_MEMBER(ambientMaterialSource);
+  SERIALISE_MEMBER(specularMaterialSource);
+  SERIALISE_MEMBER(emissiveMaterialSource);
+  SERIALISE_MEMBER(vertexBlend);
+  SERIALISE_MEMBER(indexedVertexBlend);
+  SERIALISE_MEMBER(shadeMode);
+  SERIALISE_MEMBER(textureFactor);
+  SERIALISE_MEMBER(fog);
+  SERIALISE_MEMBER(clipPlanes);
+
+  SIZE_CHECK(448);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::Rasterizer &el)
+{
+  SERIALISE_MEMBER(fillMode);
+  SERIALISE_MEMBER(cullMode);
+  SERIALISE_MEMBER(viewport);
+  SERIALISE_MEMBER(scissor);
+  SERIALISE_MEMBER(depthBias);
+  SERIALISE_MEMBER(slopeScaledDepthBias);
+  SERIALISE_MEMBER(multisampleEnable);
+  SERIALISE_MEMBER(multisampleMask);
+  SERIALISE_MEMBER(antialiasedLines);
+  SERIALISE_MEMBER(clipping);
+
+  SIZE_CHECK(76);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::DepthStencilState &el)
+{
+  SERIALISE_MEMBER(depthEnable);
+  SERIALISE_MEMBER(wBuffer);
+  SERIALISE_MEMBER(depthWrites);
+  SERIALISE_MEMBER(depthFunction);
+  SERIALISE_MEMBER(stencilEnable);
+  SERIALISE_MEMBER(twoSidedStencil);
+  SERIALISE_MEMBER(frontFace);
+  SERIALISE_MEMBER(backFace);
+
+  SIZE_CHECK(64);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::AlphaTest &el)
+{
+  SERIALISE_MEMBER(enabled);
+  SERIALISE_MEMBER(function);
+  SERIALISE_MEMBER(reference);
+
+  SIZE_CHECK(8);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::BlendState &el)
+{
+  SERIALISE_MEMBER(blends);
+  SERIALISE_MEMBER(separateAlphaBlend);
+  SERIALISE_MEMBER(blendFactor);
+
+  SIZE_CHECK(48);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::OutputMerger &el)
+{
+  SERIALISE_MEMBER(depthStencilState);
+  SERIALISE_MEMBER(blendState);
+  SERIALISE_MEMBER(alphaTest);
+  SERIALISE_MEMBER(srgbWrite);
+  SERIALISE_MEMBER(dither);
+  SERIALISE_MEMBER(renderTargets);
+  SERIALISE_MEMBER(depthTarget);
+
+  SIZE_CHECK(232);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::RenderState &el)
+{
+  SERIALISE_MEMBER(name);
+  SERIALISE_MEMBER(value);
+
+  SIZE_CHECK(32);
+}
+
+template <typename SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9Pipe::State &el)
+{
+  SERIALISE_MEMBER(inputAssembly);
+  SERIALISE_MEMBER(vertexShader);
+  SERIALISE_MEMBER(pixelShader);
+  SERIALISE_MEMBER(pixelSamplers);
+  SERIALISE_MEMBER(vertexSamplers);
+  SERIALISE_MEMBER(displacementMapSampler);
+  SERIALISE_MEMBER(fixedFunction);
+  SERIALISE_MEMBER(rasterizer);
+  SERIALISE_MEMBER(outputMerger);
+  SERIALISE_MEMBER(renderStates);
+  SERIALISE_MEMBER(descriptorStore);
+  SERIALISE_MEMBER(descriptorCount);
+  SERIALISE_MEMBER(descriptorByteSize);
+
+  SIZE_CHECK(1192);
+}
+
+#pragma endregion D3D9 pipeline state
+
 #pragma region D3D12 pipeline state
 
 template <typename SerialiserType>
@@ -2425,6 +2732,26 @@ INSTANTIATE_SERIALISE_TYPE(D3D11Pipe::Shader)
 INSTANTIATE_SERIALISE_TYPE(D3D11Pipe::Rasterizer)
 INSTANTIATE_SERIALISE_TYPE(D3D11Pipe::OutputMerger)
 INSTANTIATE_SERIALISE_TYPE(D3D11Pipe::State)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::VertexElement)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::StreamSource)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::IndexBuffer)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::InputAssembly)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::Shader)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::Sampler)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::TextureStage)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::Transform)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::Light)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::Material)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::Fog)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::ClipPlane)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::FixedFunction)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::Rasterizer)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::DepthStencilState)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::AlphaTest)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::BlendState)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::OutputMerger)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::RenderState)
+INSTANTIATE_SERIALISE_TYPE(D3D9Pipe::State)
 INSTANTIATE_SERIALISE_TYPE(D3D12Pipe::Layout)
 INSTANTIATE_SERIALISE_TYPE(D3D12Pipe::InputAssembly)
 INSTANTIATE_SERIALISE_TYPE(D3D12Pipe::Shader)

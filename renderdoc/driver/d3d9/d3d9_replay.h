@@ -34,8 +34,8 @@ class WrappedD3DDevice9;
 // capture, see d3d9_replay_device.cpp), and answers the replay controller's questions about it.
 //
 // Phase 3a: loading, replaying to any event, the event list, resource descriptions, and fetching
-// texture and buffer data. Displaying textures, pipeline state and shaders come later, until then
-// those functions return nothing.
+// texture and buffer data. Phase 3c: the pipeline state and descriptors (d3d9_pipestate.cpp).
+// Displaying textures and shaders come later, until then those functions return nothing.
 class D3D9Replay final : public IReplayDriver
 {
 public:
@@ -69,7 +69,7 @@ public:
   rdcarray<EventUsage> GetUsage(ResourceId id);
 
   void SetPipelineStates(D3D11Pipe::State *d3d11, D3D12Pipe::State *d3d12, GLPipe::State *gl,
-                         VKPipe::State *vk);
+                         VKPipe::State *vk, D3D9Pipe::State *d3d9);
   void SavePipelineState(uint32_t eventId);
   rdcarray<Descriptor> GetDescriptors(ResourceId descriptorStore,
                                       const rdcarray<DescriptorRange> &ranges);
@@ -334,6 +334,22 @@ private:
 
   const MeshVertices *GetMeshVertices(uint32_t eventId, const MeshFormat &pos,
                                       const MeshFormat *secondary, uint32_t curInstance);
+
+  // pipeline state, see d3d9_pipestate.cpp
+  void CreatePipelineStateResources();
+  int ConstantsBufferIndex(ResourceId id) const;
+  BufferDescription GetConstantsBuffer(ResourceId id);
+  void GetConstantsData(ResourceId id, uint64_t offset, uint64_t len, bytebuf &retData);
+  Descriptor MakeSurfaceDescriptor(IDirect3DSurface9 *surf);
+  Topology GetEventTopology(uint32_t eventId);
+
+  D3D9Pipe::State *m_D3D9PipelineState = NULL;
+  // the virtual descriptor store the bindings are presented in
+  ResourceId m_DescriptorStore;
+  // pseudo buffers for the shader constants: VS float, int, bool, then PS float, int, bool. Their
+  // contents are read from the device when they're fetched.
+  ResourceId m_ConstantsBuffers[6];
+  uint32_t m_ConstantCounts[6] = {};
 
   WrappedD3DDevice9 *m_pDevice = NULL;
   IDirect3D9Ex *m_D3D = NULL;

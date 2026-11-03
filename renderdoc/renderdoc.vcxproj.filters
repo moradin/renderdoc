@@ -216,6 +216,9 @@
     <ClInclude Include="api\replay\d3d11_pipestate.h">
       <Filter>API\Replay</Filter>
     </ClInclude>
+    <ClInclude Include="api\replay\d3d9_pipestate.h">
+      <Filter>API\Replay</Filter>
+    </ClInclude>
     <ClInclude Include="api\replay\data_types.h">
       <Filter>API\Replay</Filter>
     </ClInclude>
