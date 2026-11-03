@@ -227,6 +227,10 @@
     <ClCompile Include="d3d12\d3d12_vrs.cpp" />
     <ClCompile Include="d3d12\d3d12_workgroup_zoo.cpp" />
     <ClCompile Include="d3d12\d3d12_write_subresource.cpp" />
+    <ClCompile Include="d3d9\d3d9ex_wrapping_check.cpp" />
+    <ClCompile Include="d3d9\d3d9_simple_triangle.cpp" />
+    <ClCompile Include="d3d9\d3d9_test.cpp" />
+    <ClCompile Include="d3d9\d3d9_wrapping_check.cpp" />
     <ClCompile Include="dx\d3d_helpers.cpp" />
     <ClCompile Include="3rdparty\glad\glad.c" />
     <ClCompile Include="3rdparty\glad\glad_egl.c">
@@ -402,6 +406,8 @@
     <ClInclude Include="d3d11\d3d11_test.h" />
     <ClInclude Include="d3d12\d3d12_helpers.h" />
     <ClInclude Include="d3d12\d3d12_test.h" />
+    <ClInclude Include="d3d9\d3d9_test.h" />
+    <ClInclude Include="d3d9\d3d9_wrapping_check.h" />
     <ClInclude Include="dx\d3d_helpers.h" />
     <ClInclude Include="dx\official\d3d11.h" />
     <ClInclude Include="dx\official\d3d11sdklayers.h" />

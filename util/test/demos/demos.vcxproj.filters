@@ -187,6 +187,18 @@
     <ClCompile Include="d3d12\d3d12_simple_triangle.cpp">
       <Filter>D3D12\demos</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9\d3d9ex_wrapping_check.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9\d3d9_simple_triangle.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9\d3d9_test.cpp">
+      <Filter>D3D9</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9\d3d9_wrapping_check.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
     <ClCompile Include="dx\d3d_helpers.cpp">
       <Filter>D3D</Filter>
     </ClCompile>
@@ -801,6 +813,12 @@
     <Filter Include="Linux">
       <UniqueIdentifier>{9c5ec0e8-32a9-45b7-8cbc-e6507dfff362}</UniqueIdentifier>
     </Filter>
+    <Filter Include="D3D9">
+      <UniqueIdentifier>{5b0d3c8e-1f2a-4c6b-9e7d-3a4f5b6c7d8e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="D3D9\demos">
+      <UniqueIdentifier>{6c1e4d9f-2a3b-4d7c-8f8e-4b5a6c7d8e9f}</UniqueIdentifier>
+    </Filter>
     <Filter Include="D3D12">
       <UniqueIdentifier>{1ce198b8-2024-4567-b8e2-086dd27725e4}</UniqueIdentifier>
     </Filter>
@@ -955,6 +973,12 @@
     </ClInclude>
     <ClInclude Include="dx\official\winapifamily.h">
       <Filter>D3D\official</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9\d3d9_test.h">
+      <Filter>D3D9</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9\d3d9_wrapping_check.h">
+      <Filter>D3D9</Filter>
     </ClInclude>
     <ClInclude Include="dx\d3d_helpers.h">
       <Filter>D3D</Filter>
