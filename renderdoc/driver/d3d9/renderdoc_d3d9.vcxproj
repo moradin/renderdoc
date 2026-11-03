@@ -97,6 +97,9 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="d3d9_bytecode.cpp" />
+    <ClCompile Include="d3d9_shader_reflect.cpp" />
+    <ClCompile Include="d3d9_shaders.cpp" />
     <ClCompile Include="d3d9_common.cpp" />
     <ClCompile Include="d3d9_contents.cpp" />
     <ClCompile Include="d3d9_debug.cpp" />
@@ -126,6 +129,9 @@
     <ClInclude Include="..\dx\official\d3d9.h" />
     <ClInclude Include="..\dx\official\d3d9caps.h" />
     <ClInclude Include="..\dx\official\d3d9types.h" />
+    <ClInclude Include="d3d9_bytecode.h" />
+    <ClInclude Include="d3d9_bytecode_test.h" />
+    <ClInclude Include="d3d9_shader_reflect.h" />
     <ClInclude Include="d3d9_common.h" />
     <ClInclude Include="d3d9_contents.h" />
     <ClInclude Include="d3d9_debug.h" />

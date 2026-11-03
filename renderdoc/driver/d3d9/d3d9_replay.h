@@ -27,15 +27,21 @@
 #include <map>
 #include "replay/replay_driver.h"
 #include "d3d9_common.h"
+#include "d3d9_shader_reflect.h"
 
 class WrappedD3DDevice9;
 
 // The replay side of the driver. It owns the replay device (a WrappedD3DDevice9 replaying the
 // capture, see d3d9_replay_device.cpp), and answers the replay controller's questions about it.
 //
-// Phase 3a: loading, replaying to any event, the event list, resource descriptions, and fetching
-// texture and buffer data. Phase 3c: the pipeline state and descriptors (d3d9_pipestate.cpp).
-// Displaying textures and shaders come later, until then those functions return nothing.
+// Where things are:
+// - loading, replaying to any event, the event list, resource descriptions, and fetching texture
+//   and buffer data: here and d3d9_replay_device.cpp (phase 3a)
+// - the texture viewer, pixel queries and mesh viewer inputs: d3d9_rendertexture.cpp,
+//   d3d9_pixel.cpp and d3d9_rendermesh.cpp (phase 3b)
+// - the pipeline state and descriptors: d3d9_pipestate.cpp (phase 3c)
+// - shader reflection, disassembly and constants: d3d9_shaders.cpp (phase 3d)
+// Mesh output and overlays aren't implemented yet (phase 3e).
 class D3D9Replay final : public IReplayDriver
 {
 public:
@@ -43,6 +49,10 @@ public:
 
   ResourceDescription &GetResourceDesc(ResourceId id);
   FrameRecord &WriteFrameRecord() { return m_FrameRecord; }
+
+  // keeps a shader's bytecode as it's created at replay, for reflection and disassembly
+  // (d3d9_shaders.cpp)
+  void AddShader(ResourceId id, const uint32_t *tokens, size_t numTokens);
 
   void Shutdown();
 
@@ -364,4 +374,8 @@ private:
 
   std::map<uint64_t, OutputWindow> m_OutputWindows;
   uint64_t m_OutputWindowID = 1;
+
+  // every vertex and pixel shader, by ID. The replay controller holds on to pointers to their
+  // reflection, which a map keeps where they are.
+  std::map<ResourceId, D3D9BC::ShaderInfo> m_Shaders;
 };

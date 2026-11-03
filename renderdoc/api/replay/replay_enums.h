@@ -2056,6 +2056,11 @@ DOCUMENT(R"(Identifies a shader encoding used to pass shader code to an API.
 
   Slang in string format, used by the slang compiler for compilation to multiple backend formats.
 
+.. data:: D3D9Bytecode
+
+  D3D9 shader bytecode, shader models 1 to 3, as passed to ``CreateVertexShader`` and
+  ``CreatePixelShader``. It's a stream of DWORD tokens with no container around it.
+
 )");
 enum class ShaderEncoding : uint32_t
 {
@@ -2070,6 +2075,7 @@ enum class ShaderEncoding : uint32_t
   OpenGLSPIRV,
   OpenGLSPIRVAsm,
   Slang,
+  D3D9Bytecode,
   Count,
 };
 

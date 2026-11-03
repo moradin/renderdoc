@@ -1529,6 +1529,7 @@ bool PipelineStateViewer::SaveShaderFile(const ShaderReflection *shader)
     case ShaderEncoding::OpenGLSPIRVAsm: filter = tr("SPIR-V assembly files (*.spvasm)"); break;
     case ShaderEncoding::DXIL: filter = tr("DXIL Shader files (*.dxbc)"); break;
     case ShaderEncoding::Slang: filter = tr("Slang Shader files (*.slang)"); break;
+    case ShaderEncoding::D3D9Bytecode: filter = tr("D3D9 Shader files (*.fxo)"); break;
     case ShaderEncoding::Unknown:
     case ShaderEncoding::Count: filter = tr("All files (*.*)"); break;
   }

@@ -422,28 +422,6 @@ rdcarray<DebugMessage> D3D9Replay::GetDebugMessages()
   return {};
 }
 
-rdcarray<ShaderEntryPoint> D3D9Replay::GetShaderEntryPoints(ResourceId shader)
-{
-  return {};
-}
-
-const ShaderReflection *D3D9Replay::GetShader(ResourceId pipeline, ResourceId shader,
-                                              ShaderEntryPoint entry)
-{
-  return NULL;
-}
-
-rdcarray<rdcstr> D3D9Replay::GetDisassemblyTargets(bool withPipeline)
-{
-  return {"Disassembly"};
-}
-
-rdcstr D3D9Replay::DisassembleShader(ResourceId pipeline, const ShaderReflection *refl,
-                                     const rdcstr &target)
-{
-  return "; D3D9 shader disassembly isn't supported yet";
-}
-
 RDResult D3D9Replay::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers)
 {
   RDResult ret = m_pDevice->ReadLogInitialisation(rdc, storeStructuredBuffers);
@@ -619,13 +597,6 @@ CounterDescription D3D9Replay::DescribeCounter(GPUCounter counterID)
 rdcarray<CounterResult> D3D9Replay::FetchCounters(const rdcarray<GPUCounter> &counterID)
 {
   return {};
-}
-
-void D3D9Replay::FillCBufferVariables(ResourceId pipeline, ResourceId shader, ShaderStage stage,
-                                      rdcstr entryPoint, uint32_t cbufSlot,
-                                      rdcarray<ShaderVariable> &outvars, const bytebuf &data)
-{
-  outvars.clear();
 }
 
 rdcarray<PixelModification> D3D9Replay::PixelHistory(rdcarray<EventUsage> events, ResourceId target,

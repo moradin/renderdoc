@@ -2159,6 +2159,8 @@ bool WrappedD3DDevice9::Serialise_CreateVertexShader(SerialiserType &ser, CONST 
       return false;
 
     AddReplayResource(pShader, ResourceType::Shader, "Vertex Shader");
+    if(m_Replay)
+      m_Replay->AddShader(pShader, (const uint32_t *)code.data(), code.size());
   }
 
   return true;
@@ -2187,6 +2189,8 @@ bool WrappedD3DDevice9::Serialise_CreatePixelShader(SerialiserType &ser, CONST D
       return false;
 
     AddReplayResource(pShader, ResourceType::Shader, "Pixel Shader");
+    if(m_Replay)
+      m_Replay->AddShader(pShader, (const uint32_t *)code.data(), code.size());
   }
 
   return true;
