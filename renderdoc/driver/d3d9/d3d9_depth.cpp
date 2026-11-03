@@ -37,10 +37,12 @@
 // * Depth, a bisection per bit: lo[] holds each pixel's lower bound as an integer, in an R32F
 //   texture. For each bit, from the top, a full-screen draw outputs oDepth = (lo + bit) / max with
 //   ZFUNC LESSEQUAL and writes 1 where it passes, then a second draw adds the bit to lo there.
-//   A value written by a draw is one of the format's levels, but one written by Clear may not be:
-//   some GPUs keep a cleared value as a float and compare against that, so the bisection finds the
-//   level just below it. Two more tests find those, ZFUNC LESS at lo (it's above lo) and LESSEQUAL
-//   halfway to the next level (it's nearer the next one), and add 1 where both pass.
+//   The GPU rounds the fragment's depth to one of the format's levels before comparing (and Clear
+//   stores one of the levels too), so this finds the largest l whose fp32 (l * (1 / max)) ends up
+//   at or below the stored level. That's the value stored: writing it back with the same formula
+//   gives the same level (424/424 D16 and 423/424 D24 values on an RTX 4070 Ti), so replay must use
+//   exactly this formula. It's not always the level's index: fp32 (1 / max) rounds up, so for D24
+//   depths above about 0.4 l is often one below it.
 // * Stencil, a draw per bit: STENCILFUNC EQUAL with the reference and mask both the bit, writing 1
 //   where it passes, then the bit is added the same way.
 // * Multisampled depth stencils are read a sample at a time: D3DRS_MULTISAMPLEMASK restricts the
@@ -109,21 +111,16 @@ float4 main(float4 pos : POSITION) : POSITION
 }
 )";
 
-// c0: x = added to lo, y = 1 / the largest depth value, zw = 1 / size
-// c1: the output is x, plus y where prev passed (prev is scaled by z) and lo is below w
+// c0: x = the bit being tested, y = 1 / the largest depth value, zw = 1 / size
 const char *DepthTestPS = R"(
 sampler2D lo : register(s0);
-sampler2D prev : register(s1);
 float4 params : register(c0);
-float4 outParams : register(c1);
 
 float4 main(float2 vpos : VPOS, out float depth : DEPTH) : COLOR0
 {
-  float2 uv = (vpos + 0.5f) * params.zw;
-  float l = tex2Dlod(lo, float4(uv, 0, 0)).r;
+  float l = tex2Dlod(lo, float4((vpos + 0.5f) * params.zw, 0, 0)).r;
   depth = (l + params.x) * params.y;
-  float p = tex2Dlod(prev, float4(uv, 0, 0)).r * outParams.z;
-  return outParams.x + (p > 0.5f && l < outParams.w ? outParams.y : 0.0f);
+  return 1.0f;
 }
 )";
 
@@ -292,9 +289,9 @@ rdcstr WrappedD3DDevice9::ReadDepthStencil(IDirect3DSurface9 *ds, D3D9Subresourc
   const UINT width = desc.Width, height = desc.Height;
 
   // lo[] ping-pongs between two textures, passed holds where the test passed (resolved, if
-  // multisampled), and a second one for tests that depend on an earlier one
-  IDirect3DTexture9 *lo[2] = {}, *passed[2] = {};
-  IDirect3DSurface9 *loSurf[2] = {}, *passedSurf[2] = {}, *msTarget = NULL, *sysmem = NULL;
+  // multisampled)
+  IDirect3DTexture9 *lo[2] = {}, *passed = NULL;
+  IDirect3DSurface9 *loSurf[2] = {}, *passedSurf = NULL, *msTarget = NULL, *sysmem = NULL;
 
   HRESULT hr = S_OK;
   for(int i = 0; i < 2 && SUCCEEDED(hr); i++)
@@ -303,12 +300,12 @@ rdcstr WrappedD3DDevice9::ReadDepthStencil(IDirect3DSurface9 *ds, D3D9Subresourc
                                  D3DPOOL_DEFAULT, &lo[i], NULL);
     if(SUCCEEDED(hr))
       hr = lo[i]->GetSurfaceLevel(0, &loSurf[i]);
-    if(SUCCEEDED(hr))
-      hr = m_device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F,
-                                   D3DPOOL_DEFAULT, &passed[i], NULL);
-    if(SUCCEEDED(hr))
-      hr = passed[i]->GetSurfaceLevel(0, &passedSurf[i]);
   }
+  if(SUCCEEDED(hr))
+    hr = m_device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F,
+                                 D3DPOOL_DEFAULT, &passed, NULL);
+  if(SUCCEEDED(hr))
+    hr = passed->GetSurfaceLevel(0, &passedSurf);
   if(SUCCEEDED(hr) && samples > 1)
     hr = m_device->CreateRenderTarget(width, height, D3DFMT_R32F, desc.MultiSampleType,
                                       desc.MultiSampleQuality, FALSE, &msTarget, NULL);
@@ -389,12 +386,11 @@ rdcstr WrappedD3DDevice9::ReadDepthStencil(IDirect3DSurface9 *ds, D3D9Subresourc
     const D3DVIEWPORT9 viewport = {0, 0, width, height, 0.0f, 1.0f};
     const float halfPixel[4] = {-1.0f / float(width), 1.0f / float(height), 0.0f, 0.0f};
 
-    // Draws the test for one sample, with whatever depth or stencil test is set up, into passed[p].
-    // For depth tests the fragment's depth is (lo + loOffset) / maxValue, and the output is
-    // outConst, plus outScale where passed[prev] passed and lo is below loLimit.
-    auto test = [&](int p, bool depth, IDirect3DTexture9 *loTex, float loOffset, float maxValue,
-                    float outConst, float outScale, int prev, float loLimit, UINT sample) {
-      m_device->SetRenderTarget(0, samples > 1 ? msTarget : passedSurf[p]);
+    // Draws the test for one sample, with whatever depth or stencil test is set up, into passed.
+    // For depth tests the fragment's depth is (lo + bit) / maxValue.
+    auto test = [&](bool depth, IDirect3DTexture9 *loTex, uint32_t bit, float maxValue,
+                    UINT sample) {
+      m_device->SetRenderTarget(0, samples > 1 ? msTarget : passedSurf);
       m_device->SetDepthStencilSurface(ds);
       m_device->SetViewport(&viewport);
       m_device->Clear(0, NULL, D3DCLEAR_TARGET, 0, 1.0f, 0);
@@ -402,25 +398,21 @@ rdcstr WrappedD3DDevice9::ReadDepthStencil(IDirect3DSurface9 *ds, D3D9Subresourc
       m_device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
       m_device->SetRenderState(D3DRS_MULTISAMPLEMASK, samples > 1 ? (1U << sample) : 0xFFFFFFFF);
 
-      const float testParams[8] = {
-          loOffset, 1.0f / maxValue, 1.0f / float(width), 1.0f / float(height),
-          outConst, outScale, float(samples), loLimit,
-      };
+      const float testParams[4] = {float(bit), 1.0f / maxValue, 1.0f / float(width),
+                                   1.0f / float(height)};
       m_device->SetVertexShaderConstantF(0, halfPixel, 1);
       m_device->SetPixelShader(depth ? m_DepthReadback.depthTest : m_DepthReadback.stencilTest);
-      m_device->SetPixelShaderConstantF(0, testParams, 2);
+      m_device->SetPixelShaderConstantF(0, testParams, 1);
       m_device->SetTexture(0, depth ? loTex : NULL);
-      m_device->SetTexture(1, prev >= 0 ? passed[prev] : NULL);
       m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, FullscreenQuad, sizeof(FullscreenVertex));
       m_device->SetTexture(0, NULL);
-      m_device->SetTexture(1, NULL);
 
       if(samples > 1)
-        m_device->StretchRect(msTarget, NULL, passedSurf[p], NULL, D3DTEXF_NONE);
+        m_device->StretchRect(msTarget, NULL, passedSurf, NULL, D3DTEXF_NONE);
     };
 
-    // writes lo[from] + bit where passed[p] passed into lo[1 - from]
-    auto combine = [&](int from, int p, uint32_t bit) {
+    // writes lo[from] + bit where the test passed into lo[1 - from]
+    auto combine = [&](int from, uint32_t bit) {
       m_device->SetRenderTarget(0, loSurf[1 - from]);
       m_device->SetDepthStencilSurface(NULL);
       m_device->SetViewport(&viewport);
@@ -434,7 +426,7 @@ rdcstr WrappedD3DDevice9::ReadDepthStencil(IDirect3DSurface9 *ds, D3D9Subresourc
       m_device->SetPixelShader(m_DepthReadback.combine);
       m_device->SetPixelShaderConstantF(0, combineParams, 1);
       m_device->SetTexture(0, lo[from]);
-      m_device->SetTexture(1, passed[p]);
+      m_device->SetTexture(1, passed);
       m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, FullscreenQuad, sizeof(FullscreenVertex));
       m_device->SetTexture(0, NULL);
       m_device->SetTexture(1, NULL);
@@ -461,23 +453,9 @@ rdcstr WrappedD3DDevice9::ReadDepthStencil(IDirect3DSurface9 *ds, D3D9Subresourc
         m_device->SetRenderState(D3DRS_STENCILENABLE, depth ? FALSE : TRUE);
         m_device->SetRenderState(D3DRS_STENCILREF, bit);
         m_device->SetRenderState(D3DRS_STENCILMASK, bit);
-        test(0, depth, lo[cur], float(bit), maxValue, 1.0f, 0.0f, -1, 0.0f, sample);
+        test(depth, lo[cur], bit, maxValue, sample);
 
-        combine(cur, 0, bit);
-        cur = 1 - cur;
-      }
-
-      if(depth)
-      {
-        // A value between lo and the next level: above lo, and at least halfway to the next one.
-        // From 2^23 up fp32 can't hold lo + 0.5, but there it also has hardly any values between
-        // two levels, so lo is kept.
-        m_device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESS);
-        test(0, true, lo[cur], 0.0f, maxValue, 1.0f, 0.0f, -1, 0.0f, sample);
-        m_device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
-        test(1, true, lo[cur], 0.5f, maxValue, 0.0f, 1.0f, 0, 8388608.0f, sample);
-
-        combine(cur, 1, 1);
+        combine(cur, bit);
         cur = 1 - cur;
       }
 
@@ -542,9 +520,9 @@ rdcstr WrappedD3DDevice9::ReadDepthStencil(IDirect3DSurface9 *ds, D3D9Subresourc
   {
     SAFE_RELEASE(loSurf[i]);
     SAFE_RELEASE(lo[i]);
-    SAFE_RELEASE(passedSurf[i]);
-    SAFE_RELEASE(passed[i]);
   }
+  SAFE_RELEASE(passedSurf);
+  SAFE_RELEASE(passed);
   SAFE_RELEASE(msTarget);
   SAFE_RELEASE(sysmem);
 

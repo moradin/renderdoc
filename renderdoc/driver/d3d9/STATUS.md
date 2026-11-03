@@ -10,7 +10,7 @@ so none of this is upstream.
 | 2a | Captures written: every call serialised, resource creation records, structured export | Done, tested with `D3D9_Simple_Triangle` |
 | 2b | Full device state at frame start (render/sampler/texture stage states, transforms, lights, constants...) | Done, tested with `D3D9_Frame_Start_State` |
 | 2c | Resource contents: Lock tracking, shadow copies of D3DPOOL_DEFAULT data, initial contents | Done, tested with `D3D9_Resource_Contents` |
-| 2d | Edge cases: Reset/device loss mid-capture, state block contents, D3DPERF markers in captures, depth stencil read back, GDI drawing, front buffer copies, locks spanning the capture start | Done, needs testing with `D3D9_Capture_Edge_Cases` and `D3D9_Reset_Capture` |
+| 2d | Edge cases: Reset/device loss mid-capture, state block contents, D3DPERF markers in captures, depth stencil read back, GDI drawing, front buffer copies, locks spanning the capture start | Done, tested with `D3D9_Capture_Edge_Cases` and `D3D9_Reset_Capture`; device loss needs a real game |
 | 3 | Replay | Not started |
 
 ## Needs testing
@@ -46,10 +46,20 @@ so none of this is upstream.
   - D24FS8 (its depth is a 20e4 float) and D3DMULTISAMPLE_NONMASKABLE still can't be read, and
     keep a note saying so. D32 is read to 24 bits.
   - It needs shader model 3 and d3dcompiler_47.dll, which RenderDoc ships.
-  - A depth written by Clear may not be one of the format's levels: the RTX 4070 Ti compares
-    against the cleared float, so the bisection found the level below it (D16 cleared to 0.5 read
-    0x7FFF). Two more tests round those to the nearest level, ties up, below 2^23 (D24 depths under
-    0.5); above that fp32 can't test halfway between levels. Values written by draws read exactly.
+  - What's stored is the integer l whose depth, computed in the shader as fp32 `l * (1 / max)`,
+    the GPU rounds to the stored level. Replay has to write it back with exactly that formula.
+    Tested on an RTX 4070 Ti, which rounds fragment depths to the format's levels before comparing,
+    and stores Clear's value as one of the levels too: for 848 D16 values (cleared and drawn) the
+    value read back is exact and writing it back gives the same level, and for 424 D24 values
+    (D24S8, D24X8 and INTZ behave the same) writing it back gives the same level in 423. The
+    exception is 0.375: neither 0x5FFFFF nor 0x600000 written back gives its level. If that shows
+    up in games, replay could check what it wrote with ZFUNC EQUAL and nudge the depth.
+  - The integers aren't always the level's index: fp32 `1 / max` rounds up, so for about 70% of D24
+    depths above about 0.4 they're one below it. D16 cleared to 0.5 reads 0x7FFF, which is its
+    level (natively, every depth from 0.49999237 to 0.5 compares EQUAL to it). Computing the depth
+    more precisely (`l * 2^-24 + l * 2^-48`) made it worse near 1.0, as shader adds don't round to
+    nearest. There's no lockable D16 or D24 on that GPU (D16_LOCKABLE fails), so the true bits
+    can't be checked directly.
   - Reading needs multisampled R32F render targets for multisampled depth stencils.
   - Replay writes them back with `oDepth` and ZFUNC ALWAYS, and stencil with 8 draws using REPLACE
     and a write mask per bit (phase 3).
@@ -120,7 +130,8 @@ reading changed the application's state. In a capture:
 - multisampled depth stencil (64x64, if 4x MSAA is supported): Depth 4, one slice per sample. Below
   the diagonal 0x80000033 in every sample, including the top row and left column; above it
   0xFFFFFF00, and pixels on the diagonal differ between slices.
-- D16 surface (32x32): every pixel 0x8000. INTZ texture (32x32, if supported): 0x6000000F.
+- D16 surface (32x32): every pixel 0x7FFF. INTZ texture (32x32, if supported): 0x5FFFFF0F (one
+  below 0.375's nominal level, see the known gaps).
 - the recorded state block: before the frame, its `BeginStateBlock`, `SetRenderState`
   (D3DRS_TEXTUREFACTOR), `SetTexture` and `SetVertexShaderConstantF` chunks come just before its
   `EndStateBlock`. Its initial contents have one StateBlock element with D3DRS_TEXTUREFACTOR
@@ -146,6 +157,12 @@ should say "Device reset during a capture" twice:
 - a capture of frame 61. The triggered capture of frame 60 was reset half way through, so it's
   discarded and the next frame is captured instead. It has a single "Frame" marker, a red Clear and
   no reset.
+
+Tested (fb546b03e, Release x64, RTX 4070 Ti): both demos matched, with no errors natively, under
+RenderDoc or in the captured frame. That version also rounded depths written by Clear to the nearest
+level, which only changed INTZ to 0x6000000F; it's since been removed, since the GPU doesn't keep
+Clear's value as a float after all. The existing demos' automatic depth stencils read 0xFFFFFF00
+where they're cleared to 1.0.
 
 ## Fixed
 
