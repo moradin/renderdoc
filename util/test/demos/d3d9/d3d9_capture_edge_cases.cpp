@@ -319,8 +319,8 @@ RD_TEST(D3D9_Capture_Edge_Cases, D3D9GraphicsTest)
       CheckRenderState("After capturing the pixel state block", D3DRS_ALPHAREF, alphaRef);
       CheckRenderState("After capturing the pixel state block", D3DRS_TEXTUREFACTOR, 0xFF040506);
 
-      // Reading a D3DSBT_ALL state block applies it, which copies c0-c127 over c128-c255. The
-      // capture has to put c200 back.
+      // Reading a D3DSBT_ALL state block applies it, which sets every constant. The capture has to
+      // put c200 back.
       dev->SetVertexShaderConstantF(200, sentinel, 1);
       allSB->Capture();
       CheckVSConstant("After capturing the D3DSBT_ALL state block", 200, sentinel);

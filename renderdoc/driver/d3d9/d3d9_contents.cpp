@@ -868,8 +868,7 @@ void WrappedD3DDevice9::ReadStateBlock(WrappedD3DStateBlock9 *sb, D3D9InitialCon
   D3D9FetchDeviceState(m_device, m_InitParams.BehaviorFlags, m_LightIndices, m_PaletteNumbers,
                        sbContents.State);
 
-  // put the device back. Applying a state block can change any state, including (for D3DSBT_ALL)
-  // copying vertex shader constants c0-c127 over c128-c255, so compare everything.
+  // put the device back. Applying a state block can change any state, so compare everything.
   D3D9RestoreDeviceState(m_device, before, sbContents.State);
   RestoreRealBindings(before.FVF);
 
@@ -1226,12 +1225,12 @@ void WrappedD3DDevice9::OnLocked(WrappedD3D9Object *obj, UINT face, UINT level, 
   obj->GetContents().Locks.push_back(info);
 }
 
-void WrappedD3DDevice9::OnUnlock(WrappedD3D9Object *obj, UINT face, UINT level)
+bool WrappedD3DDevice9::OnUnlock(WrappedD3D9Object *obj, UINT face, UINT level)
 {
   SCOPED_LOCK(m_D3DLock);
 
   if(!obj->HasContentsTracking())
-    return;
+    return false;
 
   rdcarray<D3D9LockInfo> &locks = obj->GetContents().Locks;
 
@@ -1246,18 +1245,18 @@ void WrappedD3DDevice9::OnUnlock(WrappedD3D9Object *obj, UINT face, UINT level)
   }
 
   if(idx < 0)
-    return;
+    return false;
 
   D3D9LockInfo info = locks[idx];
   locks.erase(idx);
 
   if(!IsActiveCapturing(m_State))
-    return;
+    return false;
 
   D3DFORMAT format;
   D3DBOX whole;
   if(!GetSubresourceDesc(obj, face, level, format, whole))
-    return;
+    return false;
 
   D3D9SubresourceData data;
   data.Face = face;
@@ -1291,11 +1290,14 @@ void WrappedD3DDevice9::OnUnlock(WrappedD3D9Object *obj, UINT face, UINT level)
       RECORD_UNLOCK(Resource_Surface, Surface_UnlockRect, IDirect3DSurface9);
       RECORD_UNLOCK(Resource_Volume, Volume_UnlockBox, IDirect3DVolume9);
 #undef RECORD_UNLOCK
-      default: return;
+      default: return false;
     }
   }
 
-  MarkReferenced(obj->GetWrappedUnknown(), eFrameRef_PartialWrite);
+  // The write is marked once the real object is unlocked: marking it can read the initial contents,
+  // which fails while it's locked. That happens when the lock was taken before the capture started,
+  // and the contents read then include this write, which the chunk writes again anyway.
+  return true;
 }
 
 void WrappedD3DDevice9::OnAddDirtyRegion(WrappedD3D9Object *obj, UINT face, const D3DBOX *box)
@@ -1599,6 +1601,11 @@ void D3D9PrepareForWrite(WrappedD3D9Object *obj)
   obj->GetWrappedDevice()->PrepareForWrite(obj);
 }
 
+void WrappedD3DDevice9::OnUnlocked(WrappedD3D9Object *obj)
+{
+  MarkReferenced(obj->GetWrappedUnknown(), eFrameRef_PartialWrite);
+}
+
 void D3D9BeforeLock(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *region, DWORD flags)
 {
   obj->GetWrappedDevice()->OnLock(obj, face, level, region, flags);
@@ -1610,9 +1617,15 @@ void D3D9AfterLock(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *
   obj->GetWrappedDevice()->OnLocked(obj, face, level, region, flags, data, rowPitch, slicePitch);
 }
 
-void D3D9BeforeUnlock(WrappedD3D9Object *obj, UINT face, UINT level)
+bool D3D9BeforeUnlock(WrappedD3D9Object *obj, UINT face, UINT level)
 {
-  obj->GetWrappedDevice()->OnUnlock(obj, face, level);
+  return obj->GetWrappedDevice()->OnUnlock(obj, face, level);
+}
+
+void D3D9AfterUnlock(WrappedD3D9Object *obj, bool recorded)
+{
+  if(recorded)
+    obj->GetWrappedDevice()->OnUnlocked(obj);
 }
 
 void D3D9AddDirtyRegion(WrappedD3D9Object *obj, UINT face, const D3DBOX *box)
@@ -1633,8 +1646,10 @@ HRESULT WrappedD3DSurface9::LockRect(D3DLOCKED_RECT *pLockedRect, CONST RECT *pR
 
 HRESULT WrappedD3DSurface9::UnlockRect()
 {
-  D3D9BeforeUnlock(this, 0, 0);
-  return m_pReal->UnlockRect();
+  const bool recorded = D3D9BeforeUnlock(this, 0, 0);
+  HRESULT hr = m_pReal->UnlockRect();
+  D3D9AfterUnlock(this, recorded);
+  return hr;
 }
 
 HRESULT WrappedD3DSurface9::ReleaseDC(HDC hdc)
@@ -1657,8 +1672,10 @@ HRESULT WrappedD3DVolume9::LockBox(D3DLOCKED_BOX *pLockedVolume, CONST D3DBOX *p
 
 HRESULT WrappedD3DVolume9::UnlockBox()
 {
-  D3D9BeforeUnlock(this, 0, 0);
-  return m_pReal->UnlockBox();
+  const bool recorded = D3D9BeforeUnlock(this, 0, 0);
+  HRESULT hr = m_pReal->UnlockBox();
+  D3D9AfterUnlock(this, recorded);
+  return hr;
 }
 
 HRESULT WrappedD3DTexture9::LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, CONST RECT *pRect,
@@ -1675,8 +1692,10 @@ HRESULT WrappedD3DTexture9::LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, CO
 
 HRESULT WrappedD3DTexture9::UnlockRect(UINT Level)
 {
-  D3D9BeforeUnlock(this, 0, Level);
-  return m_pReal->UnlockRect(Level);
+  const bool recorded = D3D9BeforeUnlock(this, 0, Level);
+  HRESULT hr = m_pReal->UnlockRect(Level);
+  D3D9AfterUnlock(this, recorded);
+  return hr;
 }
 
 HRESULT WrappedD3DTexture9::AddDirtyRect(CONST RECT *pDirtyRect)
@@ -1705,8 +1724,10 @@ HRESULT WrappedD3DCubeTexture9::LockRect(D3DCUBEMAP_FACES FaceType, UINT Level,
 
 HRESULT WrappedD3DCubeTexture9::UnlockRect(D3DCUBEMAP_FACES FaceType, UINT Level)
 {
-  D3D9BeforeUnlock(this, (UINT)FaceType, Level);
-  return m_pReal->UnlockRect(FaceType, Level);
+  const bool recorded = D3D9BeforeUnlock(this, (UINT)FaceType, Level);
+  HRESULT hr = m_pReal->UnlockRect(FaceType, Level);
+  D3D9AfterUnlock(this, recorded);
+  return hr;
 }
 
 HRESULT WrappedD3DCubeTexture9::AddDirtyRect(D3DCUBEMAP_FACES FaceType, CONST RECT *pDirtyRect)
@@ -1733,8 +1754,10 @@ HRESULT WrappedD3DVolumeTexture9::LockBox(UINT Level, D3DLOCKED_BOX *pLockedVolu
 
 HRESULT WrappedD3DVolumeTexture9::UnlockBox(UINT Level)
 {
-  D3D9BeforeUnlock(this, 0, Level);
-  return m_pReal->UnlockBox(Level);
+  const bool recorded = D3D9BeforeUnlock(this, 0, Level);
+  HRESULT hr = m_pReal->UnlockBox(Level);
+  D3D9AfterUnlock(this, recorded);
+  return hr;
 }
 
 HRESULT WrappedD3DVolumeTexture9::AddDirtyBox(CONST D3DBOX *pDirtyBox)

@@ -28,8 +28,11 @@ so none of this is upstream.
   checks, but not yet in a game.
 - Device loss during a capture: the capture is discarded and retried when the device works again.
   Only tested by reading the code, losing a device on purpose needs a real fullscreen game.
-- Applications' own `D3DSBT_ALL` state blocks have the same constant-copying behaviour natively. We
-  pass them through as they are; replay (phase 3) needs to reproduce it rather than "fix" it.
+- Applications' own `D3DSBT_ALL` state blocks have the same constant-copying behaviour natively:
+  `CreateStateBlock(D3DSBT_ALL)` stores copies of c0-c127 as c128-c255 (with hardware and pure
+  vertex processing), while one refilled with `Capture()` holds the right values. We pass them
+  through as they are; replay (phase 3) creates them the same way, and the creation's values are
+  replaced by the initial contents anyway.
 - Sampler 256 (`D3DDMAPSAMPLER`) reads back `ADDRESSU` 0xBAADCAFE natively. It's recorded as read.
 - Capture time and memory use with resource contents in a real game. Contents are read during the
   captured frame, and the shadow copies (below) cost memory in 32-bit games.
@@ -43,9 +46,10 @@ so none of this is upstream.
   - D24FS8 (its depth is a 20e4 float) and D3DMULTISAMPLE_NONMASKABLE still can't be read, and
     keep a note saying so. D32 is read to 24 bits.
   - It needs shader model 3 and d3dcompiler_47.dll, which RenderDoc ships.
-  - D24 depth comes from `(lo + bit) / (2^24 - 1)` in fp32, which is about as precise as D24 near
-    1.0. Depending on how the GPU rounds, values there could be one off. Replay writes them back
-    with the same calculation, so it should end up with the same values.
+  - A depth written by Clear may not be one of the format's levels: the RTX 4070 Ti compares
+    against the cleared float, so the bisection found the level below it (D16 cleared to 0.5 read
+    0x7FFF). Two more tests round those to the nearest level, ties up, below 2^23 (D24 depths under
+    0.5); above that fp32 can't test halfway between levels. Values written by draws read exactly.
   - Reading needs multisampled R32F render targets for multisampled depth stencils.
   - Replay writes them back with `oDepth` and ZFUNC ALWAYS, and stencil with 8 draws using REPLACE
     and a write mask per bit (phase 3).
@@ -112,22 +116,21 @@ and state block calls that make a capture read something fail only in the captur
 reading changed the application's state. In a capture:
 - automatic depth stencil (D24S8): one subresource with a note that it was read back with the depth
   and stencil tests. DWORDs are depth << 8 | stencil: 0x4000005A at (0,0)-(100,100), 0xBFFFFFA5 at
-  (100,0)-(200,100) (0xC00000A5 if the GPU scales by 2^24), 0xFFFFFF00 everywhere else.
+  (100,0)-(200,100), 0xFFFFFF00 everywhere else.
 - multisampled depth stencil (64x64, if 4x MSAA is supported): Depth 4, one slice per sample. Below
-  the diagonal 0x80000033 (or 0x7FFFFF33), above it 0xFFFFFF00, and pixels on the diagonal differ
-  between slices.
-- D16 surface (32x32): every pixel 0x8000 or 0x7FFF. INTZ texture (32x32, if supported):
-  0x6000000F.
+  the diagonal 0x80000033 in every sample, including the top row and left column; above it
+  0xFFFFFF00, and pixels on the diagonal differ between slices.
+- D16 surface (32x32): every pixel 0x8000. INTZ texture (32x32, if supported): 0x6000000F.
 - the recorded state block: before the frame, its `BeginStateBlock`, `SetRenderState`
   (D3DRS_TEXTUREFACTOR), `SetTexture` and `SetVertexShaderConstantF` chunks come just before its
   `EndStateBlock`. Its initial contents have one StateBlock element with D3DRS_TEXTUREFACTOR
   0xFF336699, Textures[0] the 4x4 texture and VertexShaderConstants.Float[20] (1, 2, 3, 4).
 - the D3DSBT_PIXELSTATE state block: D3DRS_ALPHAREF 0x10 or 0x20, from the previous frame. The
   frame's `SetRenderState` before its `Capture` has the other one.
-- the D3DSBT_ALL state block: VertexShaderConstants.Float[128-255] are copies of Float[0-127]
-  (what applying it does, see above), so Float[200] is Float[72], not (200, 201, 202, 203).
+- the D3DSBT_ALL state block: VertexShaderConstants.Float[200] is (200, 201, 202, 203), since the
+  demo refills it with `Capture()` every frame.
 - the 4x4 texture locked across Present: one of the first chunks is its `UnlockRect`, with 16
-  pixels of 0xFF00FF00 or 0xFF0000FF. Its initial contents are the same.
+  pixels of 0xFF00FF00 or 0xFF0000FF. Its initial contents (read once it's unlocked) are the same.
 - `IDirect3DSurface9::ReleaseDC`: the 32x32 surface, 0x00123456 or 0x00654321 in the top-left
   16x16 (alternating between frames; GDI might leave the top byte 0) and 0x00808080 elsewhere.
 - `GetFrontBufferData`: the display-sized surface, holding a copy of the screen.
@@ -146,9 +149,9 @@ should say "Device reset during a capture" twice:
 
 ## Fixed
 
-- The overlay used to restore the application's state with a `D3DSBT_ALL` state block. Applying one
-  copies shader constants c0-c127 over c128-c255 (natively too, on an RTX 4070 Ti), so applications
-  using upper constants were corrupted every frame. It also leaked stage 0 `D3DTSS_CONSTANT`
+- The overlay used to restore the application's state with a `D3DSBT_ALL` state block it created
+  each frame. Creating one stores copies of shader constants c0-c127 as c128-c255 (natively too, on
+  an RTX 4070 Ti), so applying it corrupted applications using upper constants every frame. It also leaked stage 0 `D3DTSS_CONSTANT`
   (0xFFFFFFFF), which the state block didn't restore. It now saves and restores only what it changes.
   Tested: c200/c180 survive in `D3D9_Frame_Start_State`, c138/c148 stay zero, and `D3DTSS_CONSTANT`
   keeps the application's value. Nothing else in `BeginCaptureFrame` changed.

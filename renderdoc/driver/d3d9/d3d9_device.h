@@ -114,7 +114,9 @@ public:
   void OnLock(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *region, DWORD flags);
   void OnLocked(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *region, DWORD flags,
                 void *data, UINT rowPitch, UINT slicePitch);
-  void OnUnlock(WrappedD3D9Object *obj, UINT face, UINT level);
+  // records the unlock's data, returning whether it did. OnUnlocked is called after the real unlock.
+  bool OnUnlock(WrappedD3D9Object *obj, UINT face, UINT level);
+  void OnUnlocked(WrappedD3D9Object *obj);
   void OnAddDirtyRegion(WrappedD3D9Object *obj, UINT face, const D3DBOX *box);
 
   // writes that aren't locks, called after they succeed

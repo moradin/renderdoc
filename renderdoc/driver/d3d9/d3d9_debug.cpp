@@ -155,8 +155,9 @@ struct TextureStageStateValue
 
 // every state the text rendering sets. RenderText saves each one first and restores it after, so
 // nothing else about the application's state is touched. In particular no state block is used:
-// applying a D3DSBT_ALL state block has been seen to copy shader constants c0-c127 over c128-c255
-// (natively, on NVIDIA), which corrupted any application using the upper constants every frame.
+// a state block made with CreateStateBlock(D3DSBT_ALL) has been seen to hold copies of shader
+// constants c0-c127 as c128-c255 (natively, on NVIDIA), so applying it corrupted any application
+// using the upper constants every frame.
 const RenderStateValue overlayRenderStates[] = {
     {D3DRS_ZENABLE, D3DZB_FALSE},
     {D3DRS_ZWRITEENABLE, FALSE},

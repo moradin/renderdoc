@@ -158,7 +158,10 @@ void D3D9PrepareForWrite(WrappedD3D9Object *obj);
 void D3D9BeforeLock(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *region, DWORD flags);
 void D3D9AfterLock(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *region, DWORD flags,
                    void *data, UINT rowPitch, UINT slicePitch);
-void D3D9BeforeUnlock(WrappedD3D9Object *obj, UINT face, UINT level);
+// returns whether the unlock was recorded, which D3D9AfterUnlock needs once the real object is
+// unlocked
+bool D3D9BeforeUnlock(WrappedD3D9Object *obj, UINT face, UINT level);
+void D3D9AfterUnlock(WrappedD3D9Object *obj, bool recorded);
 void D3D9AddDirtyRegion(WrappedD3D9Object *obj, UINT face, const D3DBOX *box);
 
 // a RECT as a box one slice deep, NULL for NULL
@@ -563,8 +566,10 @@ public:
   }
   HRESULT STDMETHODCALLTYPE Unlock()
   {
-    D3D9BeforeUnlock(this, 0, 0);
-    return this->m_pReal->Unlock();
+    const bool recorded = D3D9BeforeUnlock(this, 0, 0);
+    HRESULT hr = this->m_pReal->Unlock();
+    D3D9AfterUnlock(this, recorded);
+    return hr;
   }
   HRESULT STDMETHODCALLTYPE GetDesc(DescType *pDesc) { return this->m_pReal->GetDesc(pDesc); }
 };
