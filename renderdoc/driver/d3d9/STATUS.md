@@ -10,7 +10,7 @@ so none of this is upstream.
 | 2a | Captures written: every call serialised, resource creation records, structured export | Done, tested with `D3D9_Simple_Triangle` |
 | 2b | Full device state at frame start (render/sampler/texture stage states, transforms, lights, constants...) | Done, tested with `D3D9_Frame_Start_State` |
 | 2c | Resource contents: Lock tracking, shadow copies of D3DPOOL_DEFAULT data, initial contents | Done, tested with `D3D9_Resource_Contents` |
-| 2d | Edge cases: Reset/device loss mid-capture, state block contents, D3DPERF markers in captures, depth stencil read back, the contents gaps below | Not started |
+| 2d | Edge cases: Reset/device loss mid-capture, state block contents, D3DPERF markers in captures, depth stencil read back, GDI drawing, front buffer copies, locks spanning the capture start | Done, needs testing with `D3D9_Capture_Edge_Cases` and `D3D9_Reset_Capture` |
 | 3 | Replay | Not started |
 
 ## Needs testing
@@ -26,7 +26,8 @@ so none of this is upstream.
 - Toggling the overlay in a real game shouldn't change anything in the scene. The overlay saves and
   restores only the state it changes; that's tested with `D3D9_Frame_Start_State` and the wrapping
   checks, but not yet in a game.
-- D3DPERF markers don't appear in D3D9 captures yet (phase 2d).
+- Device loss during a capture: the capture is discarded and retried when the device works again.
+  Only tested by reading the code, losing a device on purpose needs a real fullscreen game.
 - Applications' own `D3DSBT_ALL` state blocks have the same constant-copying behaviour natively. We
   pass them through as they are; replay (phase 3) needs to reproduce it rather than "fix" it.
 - Sampler 256 (`D3DDMAPSAMPLER`) reads back `ADDRESSU` 0xBAADCAFE natively. It's recorded as read.
@@ -35,38 +36,39 @@ so none of this is upstream.
 
 ## Known gaps in resource contents
 
-- Depth stencils can't be read back unless their format is lockable (D3DFMT_D16_LOCKABLE,
-  D3DFMT_D32F_LOCKABLE...). Their initial contents are empty with a note saying why. D3D9 has no copy
-  that helps: GetRenderTargetData doesn't take depth stencils, and StretchRect between them needs
-  matching formats, so it can't copy into a lockable format or INTZ. Plan for 2d, reading them with
-  the depth and stencil tests (no change to the application's resources):
-  - Depth, a bisection per bit: keep each pixel's lower bound `lo` in an R32F texture. For bit k, a
-    full-screen draw with ZFUNC ALWAYS copies `lo`, then one with ZFUNC LESSEQUAL (no depth writes)
-    outputs `oDepth = (lo + 2^(23-k)) / (2^24 - 1)` and writes the raised bound where it passes. 24
-    rounds give exact D24 values, 16 exact D16. D24FS8 and D32 need about 32 rounds; D32 comes out
-    close rather than exact. Needs fp32 shaders (SM3 hardware).
-  - Stencil, 8 draws: stencil mask and reference `1<<b` with EQUAL, adding `2^b/255` into an
-    A8R8G8B8 target with additive blending, which ends up holding the stencil byte.
-  - INTZ, DF24 and DF16 textures can be sampled for depth directly; stencil still uses the draws.
-  - Multisampled: write one sample at a time with D3DRS_MULTISAMPLEMASK into a multisampled R32F
-    target (other samples 0) and resolve, which divides by the sample count exactly. Needs
-    multisampled R32F support, and D3DMULTISAMPLE_NONMASKABLE ignores the mask, so those keep the
-    note (or get one value for every sample).
-  - The draws change device state, so they need the overlay's save and restore, plus a full
-    viewport (MinZ 0, MaxZ 1) with scissor, clip planes, depth bias and alpha test off.
-  - Replay writes them back the same way: `oDepth` with ZFUNC ALWAYS, and stencil in 8 draws with
-    REPLACE and a write mask per bit, discarding pixels with `clip()`.
+- Depth stencils that can't be locked are read with the depth and stencil tests
+  (`d3d9_depth.cpp`): a bisection per depth bit with `oDepth` and ZFUNC LESSEQUAL, and a test per
+  stencil bit with STENCILFUNC EQUAL. Multisampled ones are read a sample at a time with
+  D3DRS_MULTISAMPLEMASK and stored with one slice per sample. What's left:
+  - D24FS8 (its depth is a 20e4 float) and D3DMULTISAMPLE_NONMASKABLE still can't be read, and
+    keep a note saying so. D32 is read to 24 bits.
+  - It needs shader model 3 and d3dcompiler_47.dll, which RenderDoc ships.
+  - D24 depth comes from `(lo + bit) / (2^24 - 1)` in fp32, which is about as precise as D24 near
+    1.0. Depending on how the GPU rounds, values there could be one off. Replay writes them back
+    with the same calculation, so it should end up with the same values.
+  - Reading needs multisampled R32F render targets for multisampled depth stencils.
+  - Replay writes them back with `oDepth` and ZFUNC ALWAYS, and stencil with 8 draws using REPLACE
+    and a write mask per bit (phase 3).
   - Not considered: creating the application's depth stencils as INTZ textures behind its back. D16
     would become 24-bit, it can't be multisampled, and it changes behaviour even without a capture.
+- State blocks are read by applying them to the real device, reading the whole device state back
+  and setting back whatever changed, so their initial contents are a full device state. Which
+  states a state block covers comes from its creation: the type for CreateStateBlock, and the calls
+  between BeginStateBlock and EndStateBlock, which are kept with its creation chunk even when they
+  happen outside a capture. A state block (or depth stencil) that has to be read while the
+  application is recording a state block gets a note instead, since our calls would be recorded.
 - D3DPOOL_DEFAULT textures without RENDERTARGET, DEPTHSTENCIL or DYNAMIC usage can't be locked or
   copied from, so we keep a copy of what UpdateTexture and UpdateSurface upload to them (the shadow).
   That costs as much memory as the textures themselves, all the time, which matters for 32-bit
   games. Formats whose layout we don't know get no shadow.
 - D3DUSAGE_WRITEONLY buffers are read back by locking them read-only, which works on current
   drivers but is slow, and isn't guaranteed to return the data.
-- Not recorded yet (phase 2d): GDI drawing between GetDC and ReleaseDC, GetFrontBufferData, and
-  locks that started before the capture and end during it. Initial contents are still read before
-  the first two write, so only the data they write is missing.
+- GDI drawing is recorded as the whole surface after ReleaseDC, and GetFrontBufferData as the
+  whole destination surface, since replay can't redo either.
+- A lock taken before the capture and released during it is recorded at its Unlock. The object's
+  initial contents are read after the Unlock (they can't be read while it's locked), which is fine
+  because the Unlock chunk then writes the same data again. An object still locked when the frame
+  ends can't be read and gets a note.
 - The back buffer's initial contents include the overlay text, since the overlay is drawn into
   the back buffer before the Present the capture starts at.
 - UpdateTexture copies the source's dirty region, which we track but don't store in captures yet.
@@ -103,6 +105,45 @@ covers the whole 840 bytes because the demo locks (0, 0); its last 168 bytes are
 data. The wrapping checks, `D3D9_Simple_Triangle` and `D3D9_Frame_Start_State` were unchanged apart
 from the new `InitialContents` chunks.
 
+## Checking `D3D9_Capture_Edge_Cases` captures
+
+The demo should log no errors, natively or under RenderDoc. The checks it makes after the draws
+and state block calls that make a capture read something fail only in the captured frame, if
+reading changed the application's state. In a capture:
+- automatic depth stencil (D24S8): one subresource with a note that it was read back with the depth
+  and stencil tests. DWORDs are depth << 8 | stencil: 0x4000005A at (0,0)-(100,100), 0xBFFFFFA5 at
+  (100,0)-(200,100) (0xC00000A5 if the GPU scales by 2^24), 0xFFFFFF00 everywhere else.
+- multisampled depth stencil (64x64, if 4x MSAA is supported): Depth 4, one slice per sample. Below
+  the diagonal 0x80000033 (or 0x7FFFFF33), above it 0xFFFFFF00, and pixels on the diagonal differ
+  between slices.
+- D16 surface (32x32): every pixel 0x8000 or 0x7FFF. INTZ texture (32x32, if supported):
+  0x6000000F.
+- the recorded state block: before the frame, its `BeginStateBlock`, `SetRenderState`
+  (D3DRS_TEXTUREFACTOR), `SetTexture` and `SetVertexShaderConstantF` chunks come just before its
+  `EndStateBlock`. Its initial contents have one StateBlock element with D3DRS_TEXTUREFACTOR
+  0xFF336699, Textures[0] the 4x4 texture and VertexShaderConstants.Float[20] (1, 2, 3, 4).
+- the D3DSBT_PIXELSTATE state block: D3DRS_ALPHAREF 0x10 or 0x20, from the previous frame. The
+  frame's `SetRenderState` before its `Capture` has the other one.
+- the D3DSBT_ALL state block: VertexShaderConstants.Float[128-255] are copies of Float[0-127]
+  (what applying it does, see above), so Float[200] is Float[72], not (200, 201, 202, 203).
+- the 4x4 texture locked across Present: one of the first chunks is its `UnlockRect`, with 16
+  pixels of 0xFF00FF00 or 0xFF0000FF. Its initial contents are the same.
+- `IDirect3DSurface9::ReleaseDC`: the 32x32 surface, 0x00123456 or 0x00654321 in the top-left
+  16x16 (alternating between frames; GDI might leave the top byte 0) and 0x00808080 elsewhere.
+- `GetFrontBufferData`: the display-sized surface, holding a copy of the screen.
+- markers: `D3DPERF_BeginEvent` "Depth", `D3DPERF_SetMarker` "Multisampled", `D3DPERF_EndEvent`,
+  `D3DPERF_BeginEvent` "State blocks", `D3DPERF_EndEvent`.
+
+## Checking `D3D9_Reset_Capture`
+
+Run it under RenderDoc for 70 frames or more. It should make two captures, and RenderDoc's log
+should say "Device reset during a capture" twice:
+- the in-app API capture of frame 30, which only has what came after the reset: the "After the
+  reset" marker, a blue Clear and the triangle.
+- a capture of frame 61. The triggered capture of frame 60 was reset half way through, so it's
+  discarded and the next frame is captured instead. It has a single "Frame" marker, a red Clear and
+  no reset.
+
 ## Fixed
 
 - The overlay used to restore the application's state with a `D3DSBT_ALL` state block. Applying one
@@ -127,7 +168,8 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
 
 ## Code layout
 
-- `d3d9_hooks.cpp` - hooks Direct3DCreate9/Ex. The D3DPERF hooks live in `driver/d3d11/d3d9_hooks.cpp`.
+- `d3d9_hooks.cpp` - hooks Direct3DCreate9/Ex. The D3DPERF hooks live in `driver/d3d11/d3d9_hooks.cpp`
+  and pass the markers on to D3D9 devices (`WrappedD3DDevice9::PerfMarker`).
 - `d3d9_direct3d.cpp` - IDirect3D9(Ex) wrapper, device creation.
 - `d3d9_device.cpp` - device lifetime, device-owned objects, Reset, overlay, capture start/end.
 - `d3d9_device_wrap.cpp` - every IDirect3DDevice9(Ex) method.
@@ -136,6 +178,7 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
   table of the API, so they follow one pattern; edit them by hand now.
 - `d3d9_contents.*` - resource contents: reading them back, shadow copies, lock tracking. The
   comment at the top of `d3d9_contents.h` describes how each kind of object is read.
+- `d3d9_depth.cpp` - reading back depth stencils that can't be locked.
 - `d3d9_resources.*` - the wrapper base class and the resource wrappers. The comment at the top of
   `d3d9_resources.h` describes the lifetime model (external vs internal references, who holds real
   references, child objects).
