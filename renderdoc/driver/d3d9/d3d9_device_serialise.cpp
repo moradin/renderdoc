@@ -388,7 +388,7 @@ INSTANTIATE_FUNCTION_SERIALISED(HRESULT, WrappedD3DDevice9, SetCurrentTexturePal
 template <typename SerialiserType>
 bool WrappedD3DDevice9::Serialise_SetScissorRect(SerialiserType &ser, CONST RECT *pRect)
 {
-  SERIALISE_ELEMENT_OPT(pRect);
+  SERIALISE_ELEMENT_OPT(pRect).TypedAs("RECT"_lit);
 
   SERIALISE_CHECK_READ_ERRORS();
 
@@ -782,7 +782,7 @@ bool WrappedD3DDevice9::Serialise_UpdateSurface(SerialiserType &ser,
                                                 CONST POINT *pDestPoint)
 {
   SERIALISE_ELEMENT(pSourceSurface);
-  SERIALISE_ELEMENT_OPT(pSourceRect);
+  SERIALISE_ELEMENT_OPT(pSourceRect).TypedAs("RECT"_lit);
   SERIALISE_ELEMENT(pDestinationSurface);
   SERIALISE_ELEMENT_OPT(pDestPoint);
 
@@ -841,9 +841,9 @@ bool WrappedD3DDevice9::Serialise_StretchRect(SerialiserType &ser, IDirect3DSurf
                                               CONST RECT *pDestRect, D3DTEXTUREFILTERTYPE Filter)
 {
   SERIALISE_ELEMENT(pSourceSurface);
-  SERIALISE_ELEMENT_OPT(pSourceRect);
+  SERIALISE_ELEMENT_OPT(pSourceRect).TypedAs("RECT"_lit);
   SERIALISE_ELEMENT(pDestSurface);
-  SERIALISE_ELEMENT_OPT(pDestRect);
+  SERIALISE_ELEMENT_OPT(pDestRect).TypedAs("RECT"_lit);
   SERIALISE_ELEMENT(Filter);
 
   SERIALISE_CHECK_READ_ERRORS();
@@ -863,7 +863,7 @@ bool WrappedD3DDevice9::Serialise_ColorFill(SerialiserType &ser, IDirect3DSurfac
                                             CONST RECT *pRect, D3DCOLOR color)
 {
   SERIALISE_ELEMENT(pSurface);
-  SERIALISE_ELEMENT_OPT(pRect);
+  SERIALISE_ELEMENT_OPT(pRect).TypedAs("RECT"_lit);
   SERIALISE_ELEMENT_TYPED(uint32_t, color);
 
   SERIALISE_CHECK_READ_ERRORS();
@@ -1681,8 +1681,8 @@ bool WrappedD3DDevice9::Serialise_Present(SerialiserType &ser, CONST RECT *pSour
                                           CONST RECT *pDestRect, HWND hDestWindowOverride,
                                           CONST RGNDATA *pDirtyRegion)
 {
-  SERIALISE_ELEMENT_OPT(pSourceRect);
-  SERIALISE_ELEMENT_OPT(pDestRect);
+  SERIALISE_ELEMENT_OPT(pSourceRect).TypedAs("RECT"_lit);
+  SERIALISE_ELEMENT_OPT(pDestRect).TypedAs("RECT"_lit);
   // for information only
   SERIALISE_ELEMENT_LOCAL(DestWindowOverride, (uint64_t)(uintptr_t)hDestWindowOverride);
   SERIALISE_ELEMENT_LOCAL(HasDirtyRegion, pDirtyRegion != NULL);
@@ -1701,8 +1701,8 @@ bool WrappedD3DDevice9::Serialise_PresentEx(SerialiserType &ser, CONST RECT *pSo
                                             CONST RECT *pDestRect, HWND hDestWindowOverride,
                                             CONST RGNDATA *pDirtyRegion, DWORD dwFlags)
 {
-  SERIALISE_ELEMENT_OPT(pSourceRect);
-  SERIALISE_ELEMENT_OPT(pDestRect);
+  SERIALISE_ELEMENT_OPT(pSourceRect).TypedAs("RECT"_lit);
+  SERIALISE_ELEMENT_OPT(pDestRect).TypedAs("RECT"_lit);
   SERIALISE_ELEMENT_LOCAL(DestWindowOverride, (uint64_t)(uintptr_t)hDestWindowOverride);
   SERIALISE_ELEMENT_LOCAL(HasDirtyRegion, pDirtyRegion != NULL);
   SERIALISE_ELEMENT_TYPED(uint32_t, dwFlags);
@@ -1724,8 +1724,8 @@ bool WrappedD3DDevice9::Serialise_SwapChain_Present(SerialiserType &ser,
                                                     CONST RGNDATA *pDirtyRegion, DWORD dwFlags)
 {
   SERIALISE_ELEMENT(pSwapChain);
-  SERIALISE_ELEMENT_OPT(pSourceRect);
-  SERIALISE_ELEMENT_OPT(pDestRect);
+  SERIALISE_ELEMENT_OPT(pSourceRect).TypedAs("RECT"_lit);
+  SERIALISE_ELEMENT_OPT(pDestRect).TypedAs("RECT"_lit);
   SERIALISE_ELEMENT_LOCAL(DestWindowOverride, (uint64_t)(uintptr_t)hDestWindowOverride);
   SERIALISE_ELEMENT_LOCAL(HasDirtyRegion, pDirtyRegion != NULL);
   SERIALISE_ELEMENT_TYPED(uint32_t, dwFlags);
