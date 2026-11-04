@@ -229,8 +229,14 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
     d->SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
     d->SetRenderState(D3DRS_RANGEFOGENABLE, FALSE);
     d->SetRenderState(D3DRS_POINTSCALEENABLE, FALSE);
-    float one = 1.0f;
+    // the defaults, which the "FFP point size" case changes
+    float one = 1.0f, zero = 0.0f, maxSize = 64.0f;
     d->SetRenderState(D3DRS_POINTSIZE, *(DWORD *)&one);
+    d->SetRenderState(D3DRS_POINTSIZE_MIN, *(DWORD *)&one);
+    d->SetRenderState(D3DRS_POINTSIZE_MAX, *(DWORD *)&maxSize);
+    d->SetRenderState(D3DRS_POINTSCALE_A, *(DWORD *)&one);
+    d->SetRenderState(D3DRS_POINTSCALE_B, *(DWORD *)&zero);
+    d->SetRenderState(D3DRS_POINTSCALE_C, *(DWORD *)&zero);
     d->SetRenderState(D3DRS_TEXTUREFACTOR, 0xFFFFFFFF);
     for(DWORD i = 0; i < 8; i++)
     {
@@ -567,6 +573,7 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
             float one = 1.0f;
             d->SetRenderState(D3DRS_POINTSCALEENABLE, FALSE);
             d->SetRenderState(D3DRS_POINTSIZE, *(DWORD *)&one);
+            d->SetRenderState(D3DRS_POINTSIZE_MIN, *(DWORD *)&one);
             d->SetRenderState(D3DRS_SPECULARENABLE, specular);
             d->SetRenderState(D3DRS_TEXTUREFACTOR, 0xFF000000);
             d->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
@@ -693,7 +700,9 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
     op("rcp r0.z, v2.z", 6, {Dst(RTemp, 0, 0x4), Src(RInput, 2, Z)});
     op("rsq r0.w, v2.z", 7, {Dst(RTemp, 0, 0x8), Src(RInput, 2, Z)});
     op("mov oT5, r0", 1, {Dst(RTex, 5), Src(RTemp, 0)});
-    op("mov oFog, v2.z", 1, {Dst(RRast, 1, 0x1), Src(RInput, 2, Z)});
+    // oFog is written with the full mask and a replicated source, as fxc writes it. The .x mask
+    // alone is rejected.
+    op("mov oFog, v2.z", 1, {Dst(RRast, 1), Src(RInput, 2, Z)});
     op("mov r2, c12", 1, {Dst(RTemp, 2), Src(RConst, 12)});
     op("mad oD1, v1, c11, r2", 4, {Dst(RAttr, 1), Src(RInput, 1), Src(RConst, 11), Src(RTemp, 2)});
     t.push_back(0x0000FFFF);
@@ -735,6 +744,38 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
       return {};
     const DWORD *p = (const DWORD *)blob->GetBufferPointer();
     return std::vector<DWORD>(p, p + blob->GetBufferSize() / 4);
+  }
+
+  // fxc won't compile a loop over an int uniform bound to an i register, so the loops have a
+  // literal count. This removes the defi fxc writes for it, so that the count comes from
+  // SetVertexShaderConstantI(0, ...) as it would with a uniform. The app sets the same count.
+  std::vector<DWORD> CompileLoopVS(const char *src, const char *profile)
+  {
+    std::vector<DWORD> t = CompileVS(src, profile);
+    if(t.empty())
+      return t;
+    std::vector<DWORD> ret = {t[0]};
+    bool found = false;
+    for(size_t i = 1; i < t.size();)
+    {
+      const DWORD op = t[i] & 0xFFFF;
+      // comments give their length in bits 16-30, instructions in bits 24-27 from vs_2_0 on
+      size_t len = op == 0xFFFE ? ((t[i] >> 16) & 0x7FFF) : ((t[i] >> 24) & 0xF);
+      if(op == 0xFFFF)
+        len = 0;
+      // defi (48): its destination is the integer constant register (type 7)
+      const bool defi = op == 48 && i + 1 < t.size() && ((t[i + 1] >> 28) & 0x7) == 7;
+      if(defi && (t[i + 1] & 0x7FF) == 0)
+        found = true;
+      else if(defi)
+        TEST_WARN("The %s loop shader defines i%u, not i0", profile, t[i + 1] & 0x7FF);
+      if(!(defi && (t[i + 1] & 0x7FF) == 0))
+        ret.insert(ret.end(), t.begin() + i, t.begin() + std::min(t.size(), i + 1 + len));
+      i += 1 + len;
+    }
+    if(!found)
+      TEST_WARN("The %s loop shader has no defi i0, so its loop count is fixed", profile);
+    return ret;
   }
 
   int main()
@@ -1153,12 +1194,11 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
       c.prim = D3DPT_TRIANGLESTRIP;
       c.primCount = 7;
       c.shader = true;
-      c.vsTokens = CompileVS(R"(
+      c.vsTokens = CompileLoopVS(R"(
 row_major float4x4 mvp : register(c0);
 float4 tint[2] : register(c4);
 bool useTint : register(b0);
 bool other : register(b1);
-int count : register(i0);
 
 struct VOut
 {
@@ -1173,10 +1213,10 @@ VOut main(float4 pos : POSITION, float2 uv : TEXCOORD0)
   VOut o;
   o.pos = mul(pos, mvp);
   float4 acc = 0;
-  // the loop counter isn't used in arithmetic: vs_2_0 can't, and the compiler would then want
-  // count in a float register too
+  // 3 is the count the app sets in i0 (see CompileLoopVS). The loop counter isn't used in
+  // arithmetic, which vs_2_0 can't do.
   float k = 1.0f;
-  [loop] for(int i = 0; i < count; i++)
+  [loop] for(int i = 0; i < 3; i++)
   {
     acc += float4(uv, 0.25f, 0.5f) * k;
     k += 1.0f;
@@ -1194,7 +1234,7 @@ VOut main(float4 pos : POSITION, float2 uv : TEXCOORD0)
   return o;
 }
 )",
-                             "vs_2_0");
+                                 "vs_2_0");
       M wvp = viewProj;
       c.state = [wvp](IDirect3DDevice9 *d) {
         d->SetVertexShaderConstantF(0, wvp.m, 4);
@@ -1252,10 +1292,9 @@ VOut main(float4 pos : POSITION, float2 uv : TEXCOORD0)
       c.primCount = 8;
       c.vertexTexture = true;
       c.shader = true;
-      c.vsTokens = CompileVS(R"(
+      c.vsTokens = CompileLoopVS(R"(
 row_major float4x4 mvp : register(c0);
 float4 offsets[8] : register(c4);
-int count : register(i0);
 sampler2D heights : register(s0);
 
 struct VOut
@@ -1269,9 +1308,10 @@ VOut main(float4 pos : POSITION, float2 uv : TEXCOORD0)
 {
   VOut o;
   float4 acc = 0;
-  // the loop counter only indexes, as aL can
+  // 5 is the count the app sets in i0 (see CompileLoopVS). The loop counter only indexes, as aL
+  // can.
   float k = 1.0f;
-  [loop] for(int i = 0; i < count; i++)
+  [loop] for(int i = 0; i < 5; i++)
   {
     acc += offsets[i] * k;
     k += 1.0f;
@@ -1287,7 +1327,7 @@ VOut main(float4 pos : POSITION, float2 uv : TEXCOORD0)
   return o;
 }
 )",
-                             "vs_3_0");
+                                 "vs_3_0");
       float offsets[8][4];
       for(int i = 0; i < 8; i++)
         for(int k = 0; k < 4; k++)

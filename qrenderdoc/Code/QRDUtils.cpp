@@ -920,7 +920,7 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
   if(font != linkedText->doc.defaultFont())
     linkedText->doc.setDefaultFont(font);
 
-  // vertical align to the centre, if there's spare room.
+  // vertical align to the centre
   int diff = rect.height() - linkedText->doc.size().height();
 
   if(RichTextLogRow())
@@ -942,15 +942,14 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
                       << QGuiApplication::primaryScreen()->devicePixelRatio();
   }
 
-  if(diff > 0)
-    painter->translate(1, diff / 2);
-  else
-    painter->translate(1, 0);
+  // a document taller than the row is centred too, so that its text stays in the middle and only
+  // the cells' padding and the icons' edges are cut off
+  painter->translate(1, diff / 2);
 
   QAbstractTextDocumentLayout::PaintContext docCtx;
   docCtx.palette = palette;
 
-  docCtx.clip = QRectF(0, 0, rect.width() - 1, rect.height());
+  docCtx.clip = QRectF(0, -(diff / 2), rect.width() - 1, rect.height());
 
   if(state & QStyle::State_Selected)
   {
@@ -977,10 +976,7 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
     QAbstractTextDocumentLayout *layout = linkedText->doc.documentLayout();
 
     QPoint p = mousePos - rect.topLeft();
-    if(diff > 0)
-      p -= QPoint(1, diff / 2);
-    else
-      p -= QPoint(1, 0);
+    p -= QPoint(1, diff / 2);
 
     int pos = layout->hitTest(p, Qt::FuzzyHit);
 
@@ -1233,14 +1229,11 @@ bool RichResourceTextMouseEvent(const QWidget *owner, const QVariant &var, QRect
 
   QAbstractTextDocumentLayout *layout = linkedText->doc.documentLayout();
 
-  // vertical align to the centre, if there's spare room.
+  // vertical align to the centre
   int diff = rect.height() - linkedText->doc.size().height();
 
   QPoint p = event->pos() - rect.topLeft();
-  if(diff > 0)
-    p -= QPoint(1, diff / 2);
-  else
-    p -= QPoint(1, 0);
+  p -= QPoint(1, diff / 2);
 
   int pos = layout->hitTest(p, Qt::FuzzyHit);
 

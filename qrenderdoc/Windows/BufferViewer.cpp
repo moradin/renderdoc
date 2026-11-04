@@ -5549,6 +5549,32 @@ void BufferViewer::updateLabelsAndLayout()
   {
     setWindowTitle(tr("Mesh Viewer"));
 
+    // D3D9 has no geometry, hull or domain shaders, so there's no GS/DS output table or preview
+    const bool noGSOut =
+        m_Ctx.IsCaptureLoaded() && m_Ctx.APIProps().pipelineType == GraphicsAPI::D3D9;
+
+    const int gsTab = ui->outputTabs->indexOf(ui->out2Tab);
+    if(noGSOut && gsTab >= 0)
+      ui->outputTabs->removeTab(gsTab);
+    else if(!noGSOut && gsTab < 0)
+      ui->outputTabs->addTab(ui->out2Tab, tr("GS/DS Out"));
+
+    if(ui->dockarea->toolWindows().contains(m_Containers[2]))
+    {
+      ToolWindowManagerArea *gsArea = ui->dockarea->areaOf(m_Containers[2]);
+      if(noGSOut && gsArea)
+      {
+        ui->dockarea->hideToolWindow(m_Containers[2]);
+      }
+      else if(!noGSOut && !gsArea && ui->dockarea->areaOf(m_Containers[1]))
+      {
+        ui->dockarea->moveToolWindow(
+            m_Containers[2], ToolWindowManager::AreaReference(
+                                 ToolWindowManager::AddTo, ui->dockarea->areaOf(m_Containers[1])));
+        ToolWindowManager::raiseToolWindow(m_Containers[1]);
+      }
+    }
+
     ui->filterCBuffer->setVisible(false);
 
     if(m_Ctx.IsCaptureLoaded())

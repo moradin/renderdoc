@@ -15,8 +15,8 @@ so none of this is upstream.
 | 3b | Texture viewer and buffers: displaying every D3D9 format, pick pixel, min/max, histogram, mesh viewer inputs | Tested from Python on Windows; the UI isn't checked yet |
 | 3c | D3D9 pipeline state, with its own UI panel and Python bindings | Tested from Python on Windows; the UI panel isn't checked yet |
 | 3d | Shaders: SM1-3 disassembly, reflection from the constant table | Tested on Windows against fxc; the shader viewer UI isn't checked yet |
-| 3e | Texture viewer overlays | Tested from Python and the UI on Windows (`d3d9_phase3e_test.md`). The triangle size overlays and the transparent quad overdraw overlay came after, not tested yet (see below) |
-| 3e | Mesh output (post-transform vertices, VS Out) | Tested on Windows: the UI works and most draws match. The demo's failures are fixed and need a retest (see "Phase 3e test results") |
+| 3e | Texture viewer overlays | Tested from Python and the UI on Windows (`d3d9_phase3e_test.md`, `d3d9_phase3e_retest.md`), triangle size and quad overdraw included |
+| 3e | Mesh output (post-transform vertices, VS Out) | Tested on Windows: the UI works and most draws match. The retest's failures (demo shaders, spot light, sphere map) are fixed and need another run (see "Phase 3e test results") |
 
 ## Needs testing
 
@@ -243,9 +243,14 @@ Retest 2 (`d3d9_phase3_retest2.md`) passed everything except two UI items, now f
   when Show parameter names is on) are drawn low and clipped at this machine's DPI. D3D11
   captures do the same, so it's an existing qrenderdoc issue and not D3D9's. Neither attempted
   fix (a minimum row height, then a line height from the font) changed it in retest 3, so both
-  were removed. The standalone probe (`util/test/richtext_probe`) didn't reproduce it: it laid
-  text out at 72 DPI with an 8pt font 10 pixels high, so it doesn't measure what qrenderdoc does.
-  qrenderdoc itself now has two environment variables for finding a fix without rebuilding:
+  were removed. The phase 3e retest's log found it: the rows are 14 pixels high (the font is 10),
+  but the rich text document is 18 (the cells' 14px line height plus padding), or 20 with a
+  resource link (its 16 pixel icon). RichResourceTextPaint only centred a document shorter than
+  the row, and drew a taller one from the top, so its text sat low and its bottom was cut off. A
+  taller document is now centred too (and mouse hit testing matches), so the text is in the
+  middle and only padding and the icon's top and bottom pixel are cut off. The probe
+  (`util/test/richtext_probe`) had the same fonts, but rows 18 pixels high. Until the fix is
+  confirmed, qrenderdoc keeps two environment variables for trying changes without rebuilding:
   - `RENDERDOC_RICHTEXT_LOG=1` logs the first 60 rich text rows painted (row height, the
     QTextDocument's height, the font's metrics, the painter's and screen's DPI) to the diagnostic
     log (Help > View Diagnostic Log File, lines starting `QTRD`).
@@ -913,7 +918,10 @@ Known gaps:
   D3DTOP_DISABLE output a texture coordinate. ProcessVertices does this (the phase 3e test showed
   no coordinates for disabled stages that had texgen set), and so does Wine. With a pixel shader,
   every stage can.
-- Sphere map coordinates are Wine's: r / (2 |r + (0, 0, 1)|) + 0.5 with r the reflection vector.
+- Sphere map coordinates are r / (2 |r - (0, 0, 1)|) + 0.5 with r the reflection vector, which
+  is n.xy / 2 + 0.5 without the local viewer. ProcessVertices gave exactly that in the phase 3e
+  retest. Wine adds (0, 0, 1) instead, as OpenGL does with its camera looking down -z. With the
+  local viewer it's the same formula, which isn't tested.
 - Specular is only added where N.L > 0, and only with D3DRS_SPECULARENABLE (COLOR1 is (0, 0, 0)
   otherwise). COLOR1's alpha is the specular source's alpha when lit, the vertex's otherwise. Fog
   is its own `FOG` output, not COLOR1's alpha.
@@ -924,10 +932,11 @@ Known gaps:
   Missing diffuse is white, missing specular black.
 - Vertex fog uses camera space |z|, or the distance with D3DRS_RANGEFOGENABLE.
 - `PSIZE` is output for point lists and for vertices that have a size.
-- The spot light factor is 1 inside the inner cone (cos of the angle to the spot direction above
-  cos(Theta / 2)), as documented. ProcessVertices doesn't clamp it there: the phase 3e test's
-  vertex inside the inner cone came out about 1.13 times brighter. What the GPU does is checked
-  now (see below).
+- The spot light factor isn't clamped to 1 inside the inner cone (cos of the angle to the spot
+  direction above cos(Theta / 2)), although the documentation says it's 1 there. The falloff
+  formula keeps applying, so it's above 1 towards the axis. ProcessVertices and the GPU (an
+  RTX 4070 Ti, in the phase 3e retest) both do this: the vertex inside the inner cone came out
+  about 1.13 times brighter in both.
 - Blend indices in D3DCOLOR or UBYTE4N elements are scaled back by 255.
 - The pretransformed position keeps the system value Position, so the mesh viewer still finds it,
   but its semantic is POSITIONT and the MeshFormat doesn't unproject it.
@@ -997,6 +1006,22 @@ blending, both DrawPrimitiveUP draws' VS In, and vs_3_0 instancing. What failed,
 - FFP point size: ProcessVertices doesn't write the point size. The demo now measures each point's
   size as the GPU draws it, and its sizes are between the clamps (about 8 to 16, clamped to 9 and
   14) instead of all at the maximum.
+
+The retest (`d3d9_phase3e_retest.md`) passed the overlays, the GPU readback of the spot light and
+point sizes, and the texgen stages other than the sphere map. What failed, and what changed:
+- vs_1_1 was rejected at `mov oFog, v2.z`, with the .x write mask. It now has the full mask, as
+  fxc writes oFog.
+- vs_2_0 flow control and vs_3_0 loops still didn't compile: fxc rejects a loop over
+  `int count : register(i0)` however it's used. The loops now have a literal count, and the demo
+  removes the `defi` fxc writes for it, so the count still comes from SetVertexShaderConstantI
+  (the same 3 and 5). It warns if there's no `defi i0` to remove.
+- The vertex blending draws' 1x1 readback points were 9x9: the "FFP point size" case's
+  D3DRS_POINTSIZE_MIN was never reset. Every case now starts with the default point size states.
+- FFP spot light: the GPU doesn't clamp the spot factor either, so RenderDoc no longer does (see
+  the decisions above).
+- FFP texgen and fog: the sphere map used Wine's |r + (0, 0, 1)|; it's |r - (0, 0, 1)| now.
+- The mesh viewer showed a GS/DS Output table and GS/DS Out preview tab. They're hidden for D3D9
+  captures (and come back for other APIs).
 
 ## Inspecting a capture
 

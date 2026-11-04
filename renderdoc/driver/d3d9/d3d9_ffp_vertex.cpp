@@ -464,10 +464,12 @@ void FFPProcess(const FFPState &state, const FFPInputs &inputs, const FFPOutputL
           const float rho = -Dot3(axis, ldir);
           const float cosTheta = cosf(light.theta * 0.5f);
           const float cosPhi = cosf(light.phi * 0.5f);
-          if(rho > cosTheta)
-            spot = 1.0f;
-          else if(rho <= cosPhi)
+          // The falloff isn't clamped to 1 inside the inner cone: ProcessVertices and the GPU both
+          // keep applying it there, so it's above 1 towards the axis.
+          if(rho <= cosPhi)
             spot = 0.0f;
+          else if(cosTheta <= cosPhi)
+            spot = 1.0f;
           else
             spot = powf((rho - cosPhi) / (cosTheta - cosPhi), light.falloff);
         }
@@ -553,7 +555,10 @@ void FFPProcess(const FFPState &state, const FFPInputs &inputs, const FFPOutputL
       {
         float r[3];
         Reflection(state, v, n, r);
-        float m = 2.0f * sqrtf(r[0] * r[0] + r[1] * r[1] + (r[2] + 1.0f) * (r[2] + 1.0f));
+        // r / (2 * |r - (0, 0, 1)|) + 0.5, which is n.xy / 2 + 0.5 without the local viewer. Wine
+        // adds (0, 0, 1) instead, as OpenGL does with its camera looking down -z.
+        const float rz = r[2] + NonLocalViewer[2];
+        float m = 2.0f * sqrtf(r[0] * r[0] + r[1] * r[1] + rz * rz);
         if(m == 0.0f)
           m = 1.0f;
         tc = Vec4(r[0] / m + 0.5f, r[1] / m + 0.5f, 0.0f, 1.0f);
@@ -888,8 +893,10 @@ TEST_CASE("D3D9 fixed function vertex processing - lighting", "[d3d9][ffp]")
     r.state.material.emissive = Vec4();
     r.state.lights.push_back(light);
 
-    // on the axis, inside theta
-    CheckFFPVec(r.Run().diffuse, 0.5f, 0.25f, 0.0f, 0.25f);
+    // on the axis, inside theta/2: the falloff still applies, so it's above 1
+    const float axisSpot = powf((1.0f - cosf(0.5f)) / (cosf(0.25f) - cosf(0.5f)), 2.0f);
+    CHECK(axisSpot > 1.0f);
+    CheckFFPVec(r.Run().diffuse, 0.5f * axisSpot, 0.25f * axisSpot, 0.0f, 0.25f);
 
     // 0.4 radians off the axis, between theta/2 and phi/2, with the normal facing the light
     const float a = 0.4f;
@@ -998,11 +1005,16 @@ TEST_CASE("D3D9 fixed function vertex processing - texture coordinates", "[d3d9]
     r.vertex.normal = Vec4(0.70710678f, 0.0f, -0.70710678f, 0.0f);
     CheckFFPVec(r.Run().texcoords[0], 1.0f, 0.0f, 0.0f, 1.0f);
 
-    // sphere map: r / (2 * |r + (0, 0, 1)|) + 0.5
+    // sphere map: r / (2 * |r - (0, 0, 1)|) + 0.5
     r.state.texCoordIndex[0] = TexGenSphereMap;
     r.Run();
     CHECK(r.layout.texcoordDims[0] == 2);
     CheckFFPVec(r.out.texcoords[0], 1.0f / (2.0f * sqrtf(2.0f)) + 0.5f, 0.5f, 0.0f, 1.0f);
+
+    // without the local viewer that's n.xy / 2 + 0.5: r = (0.96, 0, -0.28), |r - (0, 0, 1)| = 1.6
+    r.vertex.normal = Vec4(0.6f, 0.0f, -0.8f, 0.0f);
+    CheckFFPVec(r.Run().texcoords[0], 0.8f, 0.5f, 0.0f, 1.0f);
+    r.vertex.normal = Vec4(0.70710678f, 0.0f, -0.70710678f, 0.0f);
 
     // the local viewer reflects the direction to the vertex instead
     r.state.localViewer = true;
