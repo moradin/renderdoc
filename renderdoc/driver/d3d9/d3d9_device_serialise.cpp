@@ -152,6 +152,22 @@ bool WrappedD3DDevice9::Serialise_Clear(SerialiserType &ser, DWORD Count, CONST 
   if(IsReplayingAndReading())
   {
     ReplayEndScene();
+
+    // WORKAROUND (phase 3 testing): the clear was neither replayed nor listed as an action
+    Clear(Count, pRects, Flags, Color, Z, Stencil);
+
+    if(IsLoading(m_State))
+    {
+      AddEvent();
+
+      ActionDescription action;
+      action.flags = ActionFlags::Clear;
+      if(Flags & D3DCLEAR_TARGET)
+        action.flags |= ActionFlags::ClearColor;
+      if(Flags & (D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL))
+        action.flags |= ActionFlags::ClearDepthStencil;
+      AddAction(action);
+    }
   }
 
   return true;
@@ -2130,6 +2146,7 @@ static void SerialiseShaderBytecode(SerialiserType &ser, ShaderType *shader, rdc
     BytecodeLength = size;
   }
 
+  SERIALISE_ELEMENT(BytecodeLength);
   SERIALISE_ELEMENT_ARRAY(Bytecode, BytecodeLength).Important();
 
   if(ser.IsReading() && Bytecode && BytecodeLength >= sizeof(DWORD))

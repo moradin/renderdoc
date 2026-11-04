@@ -203,7 +203,7 @@ float4 params : register(c0);
 float4 main(float2 vpos : VPOS) : COLOR0
 {
   float s = tex2Dlod(values, float4((vpos + 0.5f) * params.zw, 0, 0)).r;
-  clip(fmod(floor(s / params.x + 0.25f), 2.0f) - 0.5f);
+  clip(fmod(floor((s + 0.25f) / params.x), 2.0f) - 0.5f);
   return 0.0f;
 }
 )";

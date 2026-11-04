@@ -238,7 +238,12 @@ void WrappedD3DDevice9::ApplyReplayDeviceState(const D3D9DeviceState &state)
     for(const D3D9LightState &l : state.Lights)
       m_LightIndices.Add(l.Index);
     for(const D3D9Palette &p : state.Palettes)
+    {
+      // WORKAROUND (phase 3 testing): GetPaletteEntries crashes in d3d9 on a palette that was
+      // never set, so set it before the fetch below asks for it
+      m_device->SetPaletteEntries(p.Number, p.Entries.data());
       m_PaletteNumbers.Add(p.Number);
+    }
   }
 
   // only setting what differs from the device's state takes care of the state that's left out
