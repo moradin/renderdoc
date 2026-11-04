@@ -279,12 +279,17 @@ How it works:
   bounding box and axis markers are drawn. Buffer contents come from 3a's `GetBufferData`.
 
 Known gaps:
-- The mesh viewer needs the vertex inputs from the pipeline state (3c) before it has anything to
-  show. Post-transform data is 3e.
+- The mesh viewer's inputs come from the pipeline state (3c): the vertex declaration's elements,
+  the streams' offsets and strides, and the index buffer, with the draw's start index and base
+  vertex from its action. Post-transform data is 3e.
+- `DrawPrimitiveUP` and `DrawIndexedPrimitiveUP` draws show nothing in the mesh viewer: their
+  vertices and indices are only in the capture's chunk, and the runtime unbinds stream 0 (and
+  the index buffer, for the indexed one) after them, so the pipeline state has no buffers for them.
 - Multisampled colour targets are only shown resolved, whichever sample is picked. Multisampled
   depth stencils show each sample.
-- Custom display shaders aren't supported (a warning is logged), and neither are the overlays
-  (3e); `RenderOverlay` still returns nothing.
+- Custom display shaders aren't supported: `GetCustomShaderEncodings` is empty, so the texture
+  viewer doesn't list or offer to create any. Neither are the overlays (3e); `RenderOverlay` still
+  returns nothing.
 - P8 and A8P8 show their indices, not the palette colours.
 - ATI2 is decoded with its first block as red, like BC5. Some tools swap ATI2's channels; check
   against a known texture.
@@ -297,9 +302,9 @@ Known gaps:
 - Textures in the CPU path are read back and decoded whenever the event changes, which can be slow
   for big depth stencils (they're read with the depth tests).
 - At an event between `BeginStateBlock` and `EndStateBlock` nothing is drawn (the texture and mesh
-  viewers stay empty, a warning is logged once), since our state calls would be recorded into the
-  application's state block instead of reaching the device. Pick pixel still works for textures
-  the CPU can read, other than depth stencils.
+  viewers stay empty and their depth isn't cleared, a warning is logged once), since our state
+  calls would be recorded into the application's state block instead of reaching the device.
+  Pick pixel still works for textures the CPU can read, other than depth stencils.
 
 What to test on Windows (all in the UI unless noted):
 - Open the `D3D9_Simple_Triangle` capture, select the Present and open the back buffer: the
@@ -329,7 +334,7 @@ What to test on Windows (all in the UI unless noted):
 ## Pipeline state (phase 3c)
 
 Captures now present themselves as `GraphicsAPI.D3D9` (`IsD3D()` is true for it, so the UI uses
-D3D naming and HLSL packing), with their own pipeline state, `D3D9Pipe::State`
+D3D naming), with their own pipeline state, `D3D9Pipe::State`
 (`renderdoc/api/replay/d3d9_pipestate.h`, `renderdoc.D3D9State` in Python, from
 `ReplayController.GetD3D9PipelineState()` and `CaptureContext.CurD3D9PipelineState()`), and their
 own pipeline state panel (`qrenderdoc/Windows/PipelineState/D3D9PipelineStateViewer.*`).
@@ -348,6 +353,11 @@ How it works (`d3d9_pipestate.cpp`):
   `TEXCOORD`. Generic ones use RenderDoc's enums (CompareFunction, BlendMultiplier...). Front faces
   are clockwise, so `D3DCULL_CCW` is `CullMode.Back` and `D3DCULL_CW` is `CullMode.Front`.
   `renderStates` lists every render state with its raw value.
+- Blending: each of the four `blends` has the shared blend state with that target's write mask
+  (`D3DRS_COLORWRITEENABLE` to `D3DRS_COLORWRITEENABLE3`). `PipeState.GetColorBlends()` returns
+  them as they are, and `PipeState.IsIndependentBlendingEnabled()` is true when the write masks
+  differ between targets, so a script that only reads the first entry when it's false doesn't miss
+  them.
 - The descriptors live in one virtual descriptor store, like D3D11: descriptors 0-20 are the
   samplers (texture and sampler states together) numbered like `D3D9SamplerToSlot` (pixel 0-15,
   DMAP 16, vertex 17-20), 21-26 the shader constants.
@@ -459,7 +469,10 @@ Reflection, which is what phase 3c's pipeline state builds on:
   register * 4 for booleans, and `FillCBufferVariables` takes that set's whole register file from
   register 0 (float4s, int4s, or a uint32 0/1 per boolean). The shader's `def`, `defi` and `defb`
   literals are applied on top of the data, since the shader reads them rather than the device's
-  constants, and padded out if the data is shorter.
+  constants, and padded out if the data is shorter. The blocks aren't buffer backed, so the buffer
+  viewer shows these variables as `FillCBufferVariables` returns them, without byte offsets, and
+  doesn't offer a custom format for them; D3D11's constant buffer packing it picks for D3D APIs
+  isn't used to lay them out.
 - With a constant table, variables have their HLSL names and types: structs, arrays, matrices
   (`row_major` ones are row major, otherwise each register is a column), and default values for
   ones of up to 64 bits. A variable's base type is what its register set holds, so an `int` or
@@ -490,6 +503,9 @@ Known gaps:
   does; that hasn't been checked against a real table, nor have integer and boolean defaults.
 - Without a constant table, how far a relatively addressed constant array goes is a guess.
 - No shader debugging, editing (`BuildTargetShader`) or source-level debug info.
+  `GetTargetShaderEncodings` is empty and the "Edit Generated Stub" option is left out for
+  D3D9 bytecode. AMD's GCN ISA disassembly isn't offered either: AMD's plugins only take
+  DXBC/DXIL, SPIR-V and GLSL.
 - `channelUsedMask` is approximate for instructions that aren't per component.
 
 Tested: the unit tests in `d3d9_bytecode.cpp` and `d3d9_shader_reflect.cpp` (Catch, `[d3d9]`)

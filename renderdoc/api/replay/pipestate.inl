@@ -1558,7 +1558,14 @@ bool PipeState::IsIndependentBlendingEnabled() const
     }
     else if(IsCaptureD3D9())
     {
-      // only the write masks can differ between targets
+      // the blend equation is shared between targets but the write masks are per target
+      // (D3DRS_COLORWRITEENABLE1-3). Each target's entry in the blends is already complete, so
+      // report independent blending whenever the targets differ, so that the masks aren't taken
+      // from the first target for all of them.
+      const rdcarray<ColorBlend> &blends = m_D3D9->outputMerger.blendState.blends;
+      for(size_t i = 1; i < blends.size(); i++)
+        if(blends[i].writeMask != blends[0].writeMask)
+          return true;
       return false;
     }
     else if(IsCaptureD3D12())

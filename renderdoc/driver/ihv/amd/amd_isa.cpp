@@ -94,9 +94,15 @@ static bool CheckForSupport(ShaderEncoding encoding)
   return false;
 }
 
+// the AMD plugins can't compile D3D9's SM1-3 bytecode, so it has no ISA targets
+static bool HasISATargets(GraphicsAPI api)
+{
+  return api != GraphicsAPI::D3D9;
+}
+
 static void GetEncodings(GraphicsAPI api, ShaderEncoding &primary, ShaderEncoding &secondary)
 {
-  if(IsD3D(api))
+  if(api == GraphicsAPI::D3D11 || api == GraphicsAPI::D3D12)
   {
     primary = ShaderEncoding::DXBC;
     secondary = ShaderEncoding::DXIL;
@@ -154,6 +160,9 @@ static bool IsSupported(ShaderEncoding encoding)
 
 void CacheSupport(GraphicsAPI api)
 {
+  if(!HasISATargets(api))
+    return;
+
   ShaderEncoding primary = ShaderEncoding::SPIRV, secondary = ShaderEncoding::SPIRV;
   GetEncodings(api, primary, secondary);
 
@@ -162,6 +171,9 @@ void CacheSupport(GraphicsAPI api)
 
 void GetTargets(GraphicsAPI api, const DriverInformation &driver, rdcarray<rdcstr> &targets)
 {
+  if(!HasISATargets(api))
+    return;
+
   targets.reserve(asicCount + 1);
 
   ShaderEncoding primary = ShaderEncoding::SPIRV, secondary = ShaderEncoding::SPIRV;

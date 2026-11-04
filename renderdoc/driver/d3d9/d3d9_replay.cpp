@@ -821,29 +821,32 @@ void D3D9Replay::ClearOutputWindowColor(uint64_t id, FloatVector col)
 void D3D9Replay::ClearOutputWindowDepth(uint64_t id, float depth, uint8_t stencil)
 {
   auto it = m_OutputWindows.find(id);
-  if(it == m_OutputWindows.end() || it->second.depthStencil == NULL)
+  if(it == m_OutputWindows.end() || it->second.depthStencil == NULL || it->second.backBuffer == NULL)
+    return;
+
+  // binding our targets changes device state, which would be recorded into the application's state
+  // block if one is being recorded at this event. Nothing is drawn then (see SaveReplayDrawState),
+  // so there's nothing to clear either.
+  D3D9DeviceState state;
+  if(!m_pDevice->SaveReplayDrawState(state))
     return;
 
   IDirect3DDevice9 *dev = m_pDevice->GetReal();
 
-  IDirect3DSurface9 *prevRT = NULL, *prevDS = NULL;
-  D3DVIEWPORT9 prevViewport = {};
-  RECT prevScissor = {};
-  dev->GetRenderTarget(0, &prevRT);
-  dev->GetDepthStencilSurface(&prevDS);
-  dev->GetViewport(&prevViewport);
-  dev->GetScissorRect(&prevScissor);
-
   dev->SetRenderTarget(0, it->second.backBuffer);
   dev->SetDepthStencilSurface(it->second.depthStencil);
+
+  // Clear is limited to the viewport and, when it's enabled, the scissor rect
+  D3DVIEWPORT9 viewport = {};
+  viewport.Width = (DWORD)it->second.width;
+  viewport.Height = (DWORD)it->second.height;
+  viewport.MaxZ = 1.0f;
+  dev->SetViewport(&viewport);
+  dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+
   dev->Clear(0, NULL, D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, 0, depth, stencil);
 
-  dev->SetRenderTarget(0, prevRT);
-  dev->SetDepthStencilSurface(prevDS);
-  dev->SetViewport(&prevViewport);
-  dev->SetScissorRect(&prevScissor);
-  SAFE_RELEASE(prevRT);
-  SAFE_RELEASE(prevDS);
+  m_pDevice->RestoreReplayDrawState(state);
 }
 
 void D3D9Replay::BindOutputWindow(uint64_t id, bool depth)

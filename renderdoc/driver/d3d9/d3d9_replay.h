@@ -195,7 +195,8 @@ public:
   void BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &source, const rdcstr &entry,
                          const ShaderCompileFlags &compileFlags, ShaderStage type, ResourceId &id,
                          rdcstr &errors);
-  rdcarray<ShaderEncoding> GetCustomShaderEncodings() { return {ShaderEncoding::HLSL}; }
+  // custom display shaders aren't supported, so none are offered
+  rdcarray<ShaderEncoding> GetCustomShaderEncodings() { return {}; }
   rdcarray<ShaderSourcePrefix> GetCustomShaderSourcePrefixes() { return {}; }
   ResourceId ApplyCustomShader(TextureDisplay &display) { return ResourceId(); }
   void FreeCustomShader(ResourceId id) {}

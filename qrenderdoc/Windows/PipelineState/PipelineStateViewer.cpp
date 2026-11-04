@@ -1105,8 +1105,9 @@ void PipelineStateViewer::SetupShaderEditButton(QToolButton *button, ResourceId 
   }
 
   // if all else fails we can generate a stub for editing. Skip this for GLSL as it always has
-  // source above which is preferred.
-  if(shaderDetails->encoding != ShaderEncoding::GLSL)
+  // source above which is preferred, and for D3D9 bytecode which has no stub or pseudocode.
+  if(shaderDetails->encoding != ShaderEncoding::GLSL &&
+     shaderDetails->encoding != ShaderEncoding::D3D9Bytecode)
   {
     QString label = tr("Edit Generated Stub");
 
