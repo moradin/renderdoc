@@ -404,8 +404,8 @@ What to look for, in the UI's Pipeline State window and in the script:
   vertex elements match the demo's declaration (or its FVF, with "From FVF 0x..."), the stream 0
   row shows its vertex buffer with the demo's stride, and double-clicking it opens the buffer viewer
   showing the vertices. The mesh viewer shows the triangle's inputs (PipeState.GetVertexInputs).
-- shaders: the VS and PS rows name the shader objects with their shader model (e.g. `vs_3_0`) and
-  "no reflection available". The Constants rows list the three register sets (256 float, 16
+- shaders: the VS and PS rows name the shader objects with their shader model (e.g. `vs_3_0`),
+  and clicking them opens the disassembly with reflection (phase 3d). The Constants rows list the three register sets (256 float, 16
   integer and 16 boolean registers for a hardware VS, 224/16/16 for a SM3 PS); double-clicking
   the float row opens the buffer viewer, and the values match what the demo set
   (`D3D9_Frame_Start_State` sets c200 and c180, which should show there).
