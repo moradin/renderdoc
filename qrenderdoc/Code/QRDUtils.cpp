@@ -249,11 +249,12 @@ static QRegularExpression htmlRE(lit("<[^>]*>"));
 
 // resource link and shader message icons are sized to the font rather than always being 16 pixels,
 // which is taller than the text and than compact rows. 1.25x the ascent centres the icon on the
-// capitals, and it's kept within one line so it stays clear of the row separators.
+// capitals, and it's kept within one line (rounded up, a fractional line spacing such as 9.64 still
+// fits a 10 pixel icon) so it stays clear of the row separators.
 static int RichResourceIconSize(const QFont &font)
 {
   QFontMetricsF fm(font);
-  return qBound(8, qMin(qRound(fm.ascent() * 1.25), qFloor(fm.lineSpacing())), 16);
+  return qBound(8, qMin(qRound(fm.ascent() * 1.25), qCeil(fm.lineSpacing())), 16);
 }
 
 // this is an opaque struct that contains the data to render, hit-test, etc for some text that
@@ -903,30 +904,30 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
     painter->setPen(foreBrush.color());
     painter->drawText(rect, Qt::AlignLeft | Qt::AlignVCenter, name);
 
-    QRect textRect =
-        painter->fontMetrics().boundingRect(rect, Qt::AlignLeft | Qt::AlignVCenter, name);
+    const QFontMetrics fm = painter->fontMetrics();
+    QRect textRect = fm.boundingRect(rect, Qt::AlignLeft | Qt::AlignVCenter, name);
+    // the underline goes where the font puts underlines, as with rich text rows
+    const int underline_y = textRect.top() + fm.ascent() + qMax(1, fm.underlinePos());
 
     const QPixmap &px = Pixmaps::link(owner->devicePixelRatio());
     const int iconSize = RichResourceIconSize(font);
 
     painter->setClipRect(rect);
 
-    // the icon follows the name, centred on it, and the hover area covers both.
+    // the icon follows the name, centred on it. The hover area covers both over the full cell
+    // height, the same as rich text cells.
     QRect iconRect(textRect.right() + 1 + margin, textRect.center().y() - iconSize / 2, iconSize,
                    iconSize);
 
-    textRect.setLeft(rect.left());
-    textRect = textRect.united(iconRect);
+    QRect hoverRect(rect.left(), rect.top(), iconRect.right() - rect.left() + 1, rect.height());
 
     painter->setRenderHint(QPainter::SmoothPixmapTransform);
     painter->drawPixmap(iconRect, px, px.rect());
 
-    if((state & QStyle::State_MouseOver) && textRect.contains(mousePos) && valid)
+    if((state & QStyle::State_MouseOver) && hoverRect.contains(mousePos) && valid)
     {
-      int underline_y = textRect.bottom() - margin;
-
       painter->setPen(QPen(foreBrush, 1.0));
-      painter->drawLine(QPoint(textRect.left(), underline_y), QPoint(textRect.right(), underline_y));
+      painter->drawLine(QPoint(rect.left(), underline_y), QPoint(iconRect.right(), underline_y));
     }
 
     painter->restore();
@@ -1167,13 +1168,12 @@ bool RichResourceTextMouseEvent(const QWidget *owner, const QVariant &var, QRect
 
     QRect textRect = QFontMetrics(f).boundingRect(rect, Qt::AlignLeft | Qt::AlignVCenter, name);
 
-    // the same name and icon area that RichResourceTextPaint draws and underlines.
+    // the same name and icon area, over the full cell height, that RichResourceTextPaint underlines.
     const int iconSize = RichResourceIconSize(font);
     QRect iconRect(textRect.right() + 1 + margin, textRect.center().y() - iconSize / 2, iconSize,
                    iconSize);
 
-    textRect.setLeft(rect.left());
-    rect = textRect.united(iconRect);
+    rect.setRight(iconRect.right());
 
     if(rect.contains(event->pos()))
     {

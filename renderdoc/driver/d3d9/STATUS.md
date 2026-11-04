@@ -263,7 +263,12 @@ Retest 2 (`d3d9_phase3_retest2.md`) passed everything except two UI items, now f
   measured the sizes: 1.25 times the ascent (10 pixels at the 8pt UI font) centres the icon on
   the capitals, so it's that, kept within one line and between 8 and 16 pixels. Cells holding only
   a ResourceId or GPU address used the 16 pixel icon, twice the rich text one in retest 3, so they
-  now use the same size, centred on the name, and their row height hint follows it. The probe
+  now use the same size, centred on the name, and their row height hint follows it. Retest 4
+  (`d3d9_phase3e_retest4.md`) measured 9 pixels, because the one line cap rounded the 9.64 line
+  spacing down; it rounds up now. It also found those cells' hover area had shrunk to the text,
+  which put the underline through the glyphs and left the top and bottom of the row dead. They now
+  hover and click over the full cell height and underline at the font's underline position, as
+  rich text does. The probe
   (`util/test/richtext_probe`) had the same fonts, but rows 18 pixels high. The
   `RENDERDOC_RICHTEXT_LOG` and `RENDERDOC_RICHTEXT_STYLE` debugging variables used to find this
   have been removed.
@@ -1037,7 +1042,9 @@ Retest 2 (`d3d9_phase3e_retest2.md`, of 493802b34) passed everything except the 
 rows: the demo log is clean, `d3d9_mesh_check.py` passes all 18 checks, the GS/DS table and tab
 are hidden for D3D9 and back for D3D11, the unit tests pass, and the overlay and replay checks
 match the previous round. The rows are covered under "Event Browser rows" above, and retest 3
-(`d3d9_phase3e_retest3.md`, of e409786bd) passed all of them.
+(`d3d9_phase3e_retest3.md`, of e409786bd) passed all of them. Retest 4 (of 22ba5031c) checked
+the icon sizes and failed on the 9 pixel icon and the resource cells' underline and hover area,
+both fixed since.
 
 ## Inspecting a capture
 
