@@ -493,11 +493,6 @@ SDFile *D3D9Replay::GetStructuredFile()
   return m_pDevice->GetStructuredFile();
 }
 
-rdcarray<uint32_t> D3D9Replay::GetPassEvents(uint32_t eventId)
-{
-  return {eventId};
-}
-
 void D3D9Replay::InitPostVSBuffers(uint32_t eventId)
 {
 }
@@ -747,17 +742,6 @@ rdcarray<ShaderDebugState> D3D9Replay::ContinueDebug(ShaderDebugger *debugger)
 
 void D3D9Replay::FreeDebugger(ShaderDebugger *debugger)
 {
-}
-
-ResourceId D3D9Replay::RenderOverlay(ResourceId texid, FloatVector clearCol, DebugOverlay overlay,
-                                     uint32_t eventId, const rdcarray<uint32_t> &passEvents)
-{
-  return ResourceId();
-}
-
-bool D3D9Replay::IsRenderOutput(ResourceId id)
-{
-  return false;
 }
 
 RDResult D3D9Replay::FatalErrorCheck()

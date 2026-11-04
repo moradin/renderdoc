@@ -16,6 +16,7 @@ so none of this is upstream.
 | 3c | D3D9 pipeline state, with its own UI panel and Python bindings | Tested from Python on Windows; the UI panel isn't checked yet |
 | 3d | Shaders: SM1-3 disassembly, reflection from the constant table | Tested on Windows against fxc; the shader viewer UI isn't checked yet |
 | 3e | Mesh output and overlays | Not started |
+| 3e (overlays) | Texture viewer overlays | Implemented, not tested on Windows yet (see below) |
 
 ## Needs testing
 
@@ -363,8 +364,7 @@ Known gaps:
 - Multisampled colour targets are only shown resolved, whichever sample is picked. Multisampled
   depth stencils show each sample.
 - Custom display shaders aren't supported: `GetCustomShaderEncodings` is empty, so the texture
-  viewer doesn't list or offer to create any. Neither are the overlays (3e); `RenderOverlay` still
-  returns nothing.
+  viewer doesn't list or offer to create any. The overlays are in phase 3e (below).
 - P8 and A8P8 show their indices, not the palette colours.
 - ATI2 is decoded with its first block as red, like BC5. Some tools swap ATI2's channels; check
   against a known texture.
@@ -618,6 +618,141 @@ To check, with the demos under `util/test/demos/d3d9/`:
   constants with their literal values.
 - RenderDoc's log has no "Couldn't fully parse shader" warnings for real shaders.
 
+## Overlays (phase 3e)
+
+`d3d9_overlay.cpp`: `RenderOverlay`, `IsRenderOutput` and `GetPassEvents`. Each overlay means the
+same and uses the same colours as D3D11's (`d3d11_overlay.cpp`).
+
+How it works:
+- The overlay texture is an A8R8G8B8 render target texture created through the wrapped device, so
+  it has a ResourceId and `GetTexture`, `GetDisplaySource`, `PickPixel` and `GetTextureData` treat
+  it like any other texture. It has the viewed target's size and mip count, and is a cube texture
+  when the target is a cube face, so it lines up with the subresource the texture viewer shows.
+  It's recreated when those change, and released at shutdown or when the device stops working
+  (`FatalErrorCheck`). Every subresource is cleared to transparent before each overlay, and pick
+  pixel's decoded copy of it is dropped.
+- `IsRenderOutput` (which was always false, so no overlay was ever asked for) is true for the
+  textures bound as render targets or the depth stencil at the event. `GetPassEvents` returned
+  only the event; it's now D3D11's: the draws before the event back to the last clear, or to
+  where the targets change.
+- The replay controller calls `RenderOverlay` with the frame replayed up to the event without its
+  draw, and replays the draw after it (as for D3D11). The draw overlays save the state
+  (`SaveReplayDrawState`), bind the overlay as render target 0 (1-3 unbound) with the
+  application's depth stencil, and replay the draw (`eReplay_OnlyDraw`) once or twice with a
+  constant colour pixel shader and some render states changed. Every pass has ZWRITEENABLE FALSE,
+  a stencil write mask of 0 and KEEP stencil ops, so the depth stencil isn't touched and every
+  test sees what the draw saw. Alpha test, blending, fog and sRGB writes are off and
+  COLORWRITEENABLE is 0xF. Then the state is restored, so the controller's replay of the draw
+  does what it did. `DrawPrimitiveUP` and `DrawIndexedPrimitiveUP` replay the same way, from the
+  vertices in their chunk.
+  - Drawcall: (0.8, 0.1, 0.8) over a (0, 0, 0, 0.5) background, solid, with no culling, depth,
+    stencil or scissor.
+  - Wireframe: D3DFILL_WIREFRAME, no culling, depth or stencil, the application's scissor, in
+    (200, 255, 0) over the same colour transparent.
+  - Depth: the draw with depth, stencil and culling off in red, then with the application's
+    ZENABLE, ZFUNC, depth bias and cull mode (stencil still off) in green. Without a depth
+    stencil, or with ZENABLE off, everything passes.
+  - Stencil: the same, with depth off and the application's stencil states (two-sided too) in the
+    green pass.
+  - BackfaceCull: CULL_NONE in red, then the application's cull mode in green.
+  - ViewportScissor: the draw without the scissor test in red, then with it in green, then D3D11's
+    rectangles alpha blended over them: the viewport filled with (0.2, 0.2, 0.9, 0.4) inside a
+    3 pixel (0.1, 0.1, 0.1) border, and, if the scissor test is on, the scissor rect's black and
+    white checkered border. They're drawn with a vs_3_0 quad and a ps_3_0 shader reading VPOS.
+- D3D9 only links ps_3_0 with vs_3_0, so the constant colour shader is ps_3_0 when the draw's
+  vertex shader is vs_3_0 and ps_2_0 otherwise (fixed function, vs_1_1 to vs_2_x).
+- Multisampled targets: the depth stencil must match the render target's multisample type, so
+  the passes draw into a multisampled A8R8G8B8 render target of the depth stencil's type (or the
+  target's, without one), which is resolved into the overlay texture with StretchRect.
+- ClearBeforeDraw clears every bound render target to the background colour (all of it: the
+  viewport and scissor test are set aside for the Clear) just before the draw. ClearBeforePass
+  replays up to the pass's first draw, clears there, and replays the pass's draws and what's
+  between them, up to the event without its draw.
+  The depth (and stencil) is cleared too when the viewed texture is the depth stencil: to 1.0 for
+  LESS and LESSEQUAL, 0.0 for the others, and not at all for EQUAL, NOTEQUAL and ALWAYS, as D3D11
+  does. These change the application's targets, as on the other APIs; the replay controller
+  replays again when they're turned off. The overlay texture stays transparent.
+- At events that aren't draws only the overlay's background is drawn.
+- At an event between BeginStateBlock and EndStateBlock nothing is drawn and no overlay is
+  returned (`SaveReplayDrawState` warns once), as in the texture viewer.
+
+Not supported, so `RenderOverlay` returns no texture and the texture viewer shows the target as
+it is (and picks and saves the target, not an overlay):
+- Quad overdraw (pass and draw): it needs UAVs, which D3D9 doesn't have.
+- Triangle size (pass and draw): it needs the post-transform positions from `GetPostVSBuffers`,
+  which is being added separately (the TODO is in `RenderOverlay`).
+
+Known gaps:
+- The constant colour shader replaces the application's pixel shader, so pixels it would discard
+  (texkill, clip) or whose depth it would change (oDepth) show as the rasterised primitive passes
+  or fails. D3D11 handles oDepth with an extra stencil pass on a copy of the depth stencil; there's
+  no copy here.
+- Alpha test is off in the overlay passes, so alpha tested pixels show as drawn.
+- D3D9 has no depth clip control, so geometry clipped by the near and far planes isn't shown the
+  way D3D11 shows it.
+- A depth stencil smaller than the target (which D3D9 doesn't allow anyway) is left out, so the
+  tests show as passing, with a warning.
+- Old hardware that needs a depth stencil of the same bit depth as the render target
+  (`CheckDepthStencilMatch`) may refuse the A8R8G8B8 overlay with a 16-bit depth stencil.
+- ClearBeforePass replays the frame from the start up to the pass's first draw, on top of the
+  controller's replays.
+
+Decisions:
+- The depth stencil isn't copied: the controller has already replayed up to the event without the
+  draw, and the overlay passes draw with depth and stencil writes off. That's what the draw tests
+  against, and nothing has to copy D3D9 depth stencils, which mostly can't be copied or locked.
+  (The task's design said to replay without the draw first; the controller already does that,
+  and replays the draw afterwards, so the overlay doesn't replay either itself. Replaying the draw
+  in the overlay too would apply it twice, which matters for blending and stencil increments.)
+- Unlike D3D11, ClearBeforeDraw and ClearBeforePass don't replay the event's draw themselves,
+  for the same reason: D3D11 ends up drawing it twice.
+- The overlay texture is created through the wrapper (`WrappedD3DDevice9::CreateTexture`) rather
+  than registered by hand, so it gets a ResourceId and every existing path (display, pick pixel,
+  texture data, save) works without special cases. It isn't added to the resource list.
+- It's A8R8G8B8, which every D3D9 GPU renders to and multisamples, rather than D3D11's
+  R16G16B16A16_FLOAT. The overlay colours don't need more precision.
+- It has the target's mips and is a cube for cube faces, so the subresource the texture viewer
+  shows lines up. Volume textures can't be render targets in D3D9.
+- Unsupported overlays return no texture: that's how the replay controller and texture viewer
+  already handle a missing overlay (they show the target as it is). There's no API property for
+  which overlays are supported.
+- `GetPassEvents` and `IsRenderOutput` moved from `d3d9_replay.cpp` to `d3d9_overlay.cpp`, and
+  `GetPassEvents` is D3D11's. The mesh viewer's "whole pass" uses it too.
+- The clear before overlays use `Clear` (all bound render targets) with the viewport set to render
+  target 0 and the scissor test off, since D3D9's Clear is limited by both.
+- The draw is replayed for each overlay pass into our target only, rather than saving and
+  restoring the application's targets: the application's targets and depth stencil are never
+  written by the passes.
+- The viewport and scissor rectangles use VPOS, which is the pixel's integer position in D3D9
+  (D3D11's SV_Position is its centre), so 0.5 is added to match D3D11's borders.
+- The shaders are HLSL compiled with D3DCompile on first use, like the texture viewer's
+  (`D3D9CompileDebugShader` exposes its compile helper). The overlays need shader model 3
+  hardware, like the texture viewer.
+
+### Checking the overlays
+
+Capture `D3D9_Overlay_Test` (a new demo) and run `util/test/d3d9_overlay_check.py capture.rdc`
+like `d3d9_replay_check.py`. It renders overlays at each of the demo's markers through a headless
+ReplayOutput, as the texture viewer does, saves each overlay as `<capture>_<marker>_<overlay>.png`,
+and prints PASS or FAIL per check, then the totals. What it checks (the demo's layout is at the
+top of `d3d9_overlay_test.cpp`):
+- each overlay texture exists, has the target's size, and has the expected colours at known
+  pixels: Drawcall magenta inside and dark outside; Wireframe's edge; Depth red where the test
+  fails and green where it passes, for a vs_3_0 draw ("Depth Test", ps_3_0 overlay shader) and a
+  fixed function `DrawPrimitiveUP` draw that only fails because of its depth bias ("Depth Bias",
+  ps_2_0); Stencil green and red; the kept and culled triangles of "Backface Cull"; the
+  viewport and scissor colours and borders; and a 4x MSAA target ("MSAA").
+- the quad overdraw and triangle size overlays return no texture.
+- the target is the same after rendering overlays as before.
+- ClearBeforeDraw and ClearBeforePass change the back buffer (to the blue background colour where
+  nothing in the draw or pass drew), and turning them off puts it back.
+
+Also check in the UI, at the same events: each overlay in the texture viewer's list shows over the
+target as on D3D11 captures, with nothing for quad overdraw and triangle size; switching overlays
+and events doesn't change the target, the pipeline state or what later events show; Save Texture's
+"save overlay instead" writes the overlay; and RenderDoc's log has no errors (one warning each for
+the unsupported overlays is expected). If a check fails, the saved PNGs show what was drawn.
+
 ## Inspecting a capture
 
 Captures can also be dumped without replaying them:
@@ -648,6 +783,8 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
   the replay device.
 - `d3d9_replay_device.cpp` - the replay side of the device: loading, replaying the frame, the
   event list, writing contents.
+- `d3d9_overlay.cpp` - the texture viewer's overlays, `IsRenderOutput` and `GetPassEvents` (phase
+  3e).
 - `d3d9_resources.*` - the wrapper base class and the resource wrappers. The comment at the top of
   `d3d9_resources.h` describes the lifetime model (external vs internal references, who holds real
   references, child objects).

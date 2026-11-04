@@ -404,6 +404,14 @@ bool IsDepthUsage(D3DFORMAT format, DWORD usage)
 
 };
 
+// compiles one of the debug shaders, for the overlays (d3d9_overlay.cpp). Returns an error, or an
+// empty string.
+rdcstr D3D9CompileDebugShader(const char *source, const char *profile, DWORD flags,
+                              rdcarray<DWORD> &bytecode)
+{
+  return CompileShader(source, profile, flags, bytecode);
+}
+
 // state that affects our draws, beyond what each draw sets itself. The mesh viewer uses it too.
 void D3D9SetDebugDrawState(IDirect3DDevice9 *dev)
 {
@@ -624,6 +632,8 @@ void D3D9Replay::ReleaseDebugRender()
   for(auto it = m_SurfaceCopies.begin(); it != m_SurfaceCopies.end(); ++it)
     SAFE_RELEASE(it->second);
   m_SurfaceCopies.clear();
+
+  ReleaseOverlay();
 
   m_Debug.Release();
 }

@@ -41,7 +41,8 @@ class WrappedD3DDevice9;
 //   d3d9_pixel.cpp and d3d9_rendermesh.cpp (phase 3b)
 // - the pipeline state and descriptors: d3d9_pipestate.cpp (phase 3c)
 // - shader reflection, disassembly and constants: d3d9_shaders.cpp (phase 3d)
-// Mesh output and overlays aren't implemented yet (phase 3e).
+// - the texture viewer's overlays and the pass events: d3d9_overlay.cpp (phase 3e)
+// Mesh output isn't implemented yet (phase 3e).
 class D3D9Replay final : public IReplayDriver
 {
 public:
@@ -345,6 +346,48 @@ private:
 
   const MeshVertices *GetMeshVertices(uint32_t eventId, const MeshFormat &pos,
                                       const MeshFormat *secondary, uint32_t curInstance);
+
+  //////////////////////////////
+  // Overlays (phase 3e): d3d9_overlay.cpp
+
+  struct OverlayRender
+  {
+    bool tried = false;
+    bool ok = false;
+    // constant colour pixel shaders: ps_2_0 for fixed function and vs_1_1 to vs_2_x draws, ps_3_0
+    // for vs_3_0 draws, as D3D9 only links ps_3_0 with vs_3_0
+    IDirect3DPixelShader9 *colourPS2 = NULL;
+    IDirect3DPixelShader9 *colourPS3 = NULL;
+    // the viewport and scissor overlay's rectangles
+    IDirect3DVertexShader9 *quadVS = NULL;
+    IDirect3DPixelShader9 *borderPS = NULL;
+
+    // the overlay texture, created through the wrapped device so it has a ResourceId that the
+    // texture viewer (GetTexture, GetDisplaySource, PickPixel) finds like any other texture.
+    // A 2D texture, or a cube texture when the target is a cube face, with the target's mips.
+    IDirect3DBaseTexture9 *tex = NULL;
+    ResourceId id;
+    bool cube = false;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t mips = 0;
+    // on the real device: drawn into instead of the texture when the target is multisampled, then
+    // resolved into it with StretchRect
+    IDirect3DSurface9 *msTarget = NULL;
+
+    void ReleaseShaders();
+    void ReleaseTextures();
+  } m_Overlay;
+
+  bool InitOverlayRender();
+  void ReleaseOverlay();
+  // the overlays that clear the targets and replay the draws, and the ones that draw the event
+  // again into overlaySurf (the overlay texture's subresource for targetSurf, both real)
+  ResourceId RenderClearBeforeOverlay(const TextureDescription &texDesc, FloatVector clearCol,
+                                      DebugOverlay overlay, uint32_t eventId,
+                                      const rdcarray<uint32_t> &passEvents);
+  ResourceId RenderDrawOverlay(IDirect3DSurface9 *targetSurf, IDirect3DSurface9 *overlaySurf,
+                               DebugOverlay overlay, uint32_t eventId);
 
   // pipeline state, see d3d9_pipestate.cpp
   void CreatePipelineStateResources();
