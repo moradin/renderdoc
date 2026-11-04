@@ -25,6 +25,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <map>
 #include "../win32/win32_window.h"
@@ -131,6 +132,8 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
     std::vector<uint16_t> indices;
 
     std::vector<DWORD> vsTokens;
+    // whether the draw has a vertex shader, so it's left out if the shader didn't compile
+    bool shader = false;
 
     // sets the draw's state on a device
     std::function<void(IDirect3DDevice9 *)> state;
@@ -226,9 +229,19 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
     d->SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
     d->SetRenderState(D3DRS_RANGEFOGENABLE, FALSE);
     d->SetRenderState(D3DRS_POINTSCALEENABLE, FALSE);
+    float one = 1.0f;
+    d->SetRenderState(D3DRS_POINTSIZE, *(DWORD *)&one);
+    d->SetRenderState(D3DRS_TEXTUREFACTOR, 0xFFFFFFFF);
     for(DWORD i = 0; i < 8; i++)
     {
       d->LightEnable(i, FALSE);
+      // the defaults: stage 0 modulates the texture and the diffuse colour, the rest are disabled
+      d->SetTextureStageState(i, D3DTSS_COLOROP, i == 0 ? D3DTOP_MODULATE : D3DTOP_DISABLE);
+      d->SetTextureStageState(i, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+      d->SetTextureStageState(i, D3DTSS_COLORARG2, D3DTA_CURRENT);
+      d->SetTextureStageState(i, D3DTSS_ALPHAOP, i == 0 ? D3DTOP_SELECTARG1 : D3DTOP_DISABLE);
+      d->SetTextureStageState(i, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+      d->SetTextureStageState(i, D3DTSS_ALPHAARG2, D3DTA_CURRENT);
       d->SetTextureStageState(i, D3DTSS_TEXCOORDINDEX, i);
       d->SetTextureStageState(i, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
       d->SetTransform(D3DTRANSFORMSTATETYPE(D3DTS_TEXTURE0 + i), M());
@@ -348,11 +361,11 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
     float tex[8][4];
   };
 
-  static const DWORD PVFVF = (DWORD)(D3DFVF_XYZRHW | D3DFVF_PSIZE | D3DFVF_DIFFUSE | D3DFVF_SPECULAR |
-                             D3DFVF_TEX8 | D3DFVF_TEXCOORDSIZE4(0) | D3DFVF_TEXCOORDSIZE4(1) |
-                             D3DFVF_TEXCOORDSIZE4(2) | D3DFVF_TEXCOORDSIZE4(3) |
-                             D3DFVF_TEXCOORDSIZE4(4) | D3DFVF_TEXCOORDSIZE4(5) |
-                             D3DFVF_TEXCOORDSIZE4(6) | D3DFVF_TEXCOORDSIZE4(7));
+  static const DWORD PVFVF =
+      (DWORD)(D3DFVF_XYZRHW | D3DFVF_PSIZE | D3DFVF_DIFFUSE | D3DFVF_SPECULAR | D3DFVF_TEX8 |
+              D3DFVF_TEXCOORDSIZE4(0) | D3DFVF_TEXCOORDSIZE4(1) | D3DFVF_TEXCOORDSIZE4(2) |
+              D3DFVF_TEXCOORDSIZE4(3) | D3DFVF_TEXCOORDSIZE4(4) | D3DFVF_TEXCOORDSIZE4(5) |
+              D3DFVF_TEXCOORDSIZE4(6) | D3DFVF_TEXCOORDSIZE4(7));
 
   static std::vector<float> Color(D3DCOLOR c)
   {
@@ -364,6 +377,7 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
   void WriteReference(FILE * f, IDirect3DDevice9 * sw, const Case &c)
   {
     std::vector<UINT> rows = Rows(c);
+    std::vector<std::array<float, 2>> screen;
     fprintf(f, "draw %s\n", c.name.c_str());
 
     if(c.pvOutputs.empty())
@@ -431,6 +445,7 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
     for(size_t r = 0; r < rows.size(); r++)
     {
       const PVVertex &v = pv[rows[r] - minV];
+      screen.push_back({v.pos[0], v.pos[1]});
       Outputs out;
       out["POSITION.0"] = {v.pos[0], v.pos[1], v.pos[2], v.pos[3]};
       for(const std::string &o : c.pvOutputs)
@@ -464,7 +479,148 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
       fprintf(f, "\n");
     }
     dest->Unlock();
+    WriteHardware(f, c, rows, screen);
     fprintf(f, "end\n");
+  }
+
+  // a render target to draw single vertices into, and a copy of it to read
+  IDirect3DSurface9Ptr hwTarget, hwRead;
+
+  struct Pixel
+  {
+    int x, y;
+    DWORD c;
+  };
+
+  // draws vertex v of a case as a point on its own, with extra state, and returns the pixels it
+  // covers. The extra state has to make the alpha 1, which tells them from the cleared ones.
+  std::vector<Pixel> DrawVertex(const Case &c, const Bound &b, UINT v,
+                                std::function<void(IDirect3DDevice9 *)> extra)
+  {
+    std::vector<Pixel> ret;
+    IDirect3DSurface9Ptr old;
+    dev->GetRenderTarget(0, &old);
+    dev->ColorFill(hwTarget, NULL, 0);
+    dev->SetRenderTarget(0, hwTarget);
+    Apply(dev, c, b);
+    extra(dev);
+    dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+    dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TFACTOR);
+    dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+    dev->BeginScene();
+    dev->DrawPrimitive(D3DPT_POINTLIST, v, 1);
+    dev->EndScene();
+    dev->SetRenderTarget(0, old);
+
+    D3DLOCKED_RECT lr = {};
+    if(FAILED(dev->GetRenderTargetData(hwTarget, hwRead)) ||
+       FAILED(hwRead->LockRect(&lr, NULL, D3DLOCK_READONLY)))
+      return ret;
+    for(int y = 0; y < screenHeight; y++)
+    {
+      const DWORD *row = (const DWORD *)((const byte *)lr.pBits + y * lr.Pitch);
+      for(int x = 0; x < screenWidth; x++)
+        if((row[x] >> 24) == 0xFF)
+          ret.push_back({x, y, row[x]});
+    }
+    hwRead->UnlockRect();
+    return ret;
+  }
+
+  // what the GPU draws for the vertices of lit draws (their colours) and scaled points (their
+  // sizes), each vertex drawn as a point on its own. ProcessVertices is the runtime's software
+  // vertex processing, so this is what the mesh output is checked against where they differ.
+  void WriteHardware(FILE * f, const Case &c, const std::vector<UINT> &rows,
+                     const std::vector<std::array<float, 2>> &screen)
+  {
+    if(!hwTarget || c.kind == Case::UP || c.kind == Case::IndexedUP || c.instances > 1 ||
+       !c.vsTokens.empty())
+      return;
+
+    Bound b;
+    if(!Bind(dev, c, false, b))
+      return;
+
+    DWORD lighting = FALSE, pointScale = FALSE;
+    Apply(dev, c, b);
+    dev->GetRenderState(D3DRS_LIGHTING, &lighting);
+    dev->GetRenderState(D3DRS_POINTSCALEENABLE, &pointScale);
+    const bool points = c.prim == D3DPT_POINTLIST && pointScale;
+    if(!lighting && !points)
+      return;
+
+    auto colourOf = [](DWORD p) {
+      return std::vector<float>{float((p >> 16) & 0xFF) / 255.0f, float((p >> 8) & 0xFF) / 255.0f,
+                                float(p & 0xFF) / 255.0f};
+    };
+
+    for(size_t r = 0; r < rows.size(); r++)
+    {
+      Outputs out;
+      if(lighting)
+      {
+        // the colour comes from one stage 0 argument, with a 1x1 point
+        auto pass = [&](DWORD arg, BOOL specular) {
+          return DrawVertex(c, b, rows[r], [arg, specular](IDirect3DDevice9 *d) {
+            float one = 1.0f;
+            d->SetRenderState(D3DRS_POINTSCALEENABLE, FALSE);
+            d->SetRenderState(D3DRS_POINTSIZE, *(DWORD *)&one);
+            d->SetRenderState(D3DRS_SPECULARENABLE, specular);
+            d->SetRenderState(D3DRS_TEXTUREFACTOR, 0xFF000000);
+            d->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+            d->SetTextureStageState(0, D3DTSS_COLORARG1, arg);
+          });
+        };
+        std::vector<Pixel> diffuse = pass(D3DTA_DIFFUSE, FALSE);
+        std::vector<Pixel> alpha = pass(D3DTA_DIFFUSE | D3DTA_ALPHAREPLICATE, FALSE);
+        // black from the texture factor, and the specular colour added after the stages
+        std::vector<Pixel> specular = pass(D3DTA_TFACTOR, TRUE);
+        if(diffuse.size() == 1 && alpha.size() == 1 && specular.size() == 1)
+        {
+          out["COLOR.0"] = colourOf(diffuse[0].c);
+          out["COLOR.0"].push_back(colourOf(alpha[0].c)[0]);
+          out["COLOR.1"] = colourOf(specular[0].c);
+        }
+        else
+        {
+          TEST_WARN("%s row %u: the point at (%.1f, %.1f) covers %u, %u and %u pixels, not 1",
+                    c.name.c_str(), (UINT)r, screen[r][0], screen[r][1], (UINT)diffuse.size(),
+                    (UINT)alpha.size(), (UINT)specular.size());
+        }
+      }
+      if(points)
+      {
+        std::vector<Pixel> px = DrawVertex(c, b, rows[r], [](IDirect3DDevice9 *d) {
+          d->SetRenderState(D3DRS_TEXTUREFACTOR, 0xFFFFFFFF);
+          d->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+          d->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TFACTOR);
+        });
+        if(!px.empty())
+        {
+          int x0 = px[0].x, x1 = px[0].x, y0 = px[0].y, y1 = px[0].y;
+          for(const Pixel &p : px)
+          {
+            x0 = std::min(x0, p.x);
+            x1 = std::max(x1, p.x);
+            y0 = std::min(y0, p.y);
+            y1 = std::max(y1, p.y);
+          }
+          out["PSIZE.0"] = {float(std::max(x1 - x0 + 1, y1 - y0 + 1))};
+        }
+      }
+      if(out.empty())
+        continue;
+      fprintf(f, "hw 0 %u", (UINT)r);
+      for(auto it = out.begin(); it != out.end(); ++it)
+      {
+        fprintf(f, " %s=", it->first.c_str());
+        for(size_t i = 0; i < it->second.size(); i++)
+          fprintf(f, "%s%.9g", i ? "," : "", it->second[i]);
+      }
+      fprintf(f, "\n");
+    }
   }
 
   // vs_1_1 tokens: register types, opcodes and parameters
@@ -492,43 +648,84 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
     return Reg(type, idx) | (swz << 16);
   }
 
-  std::vector<DWORD> VS11()
+  // a vs_1_1 token stream, with where each instruction starts, to find which one the runtime
+  // rejects
+  struct Tokens
+  {
+    std::vector<DWORD> t;
+    std::vector<size_t> starts;
+    std::vector<std::string> names;
+  };
+
+  static Tokens VS11Tokens()
   {
     const DWORD X = 0x00, Y = 0x55, Z = 0xAA;
-    std::vector<DWORD> t = {0xFFFE0101};
-    auto op = [&t](DWORD opcode, std::initializer_list<DWORD> params) {
-      t.push_back(opcode);
-      t.insert(t.end(), params.begin(), params.end());
+    Tokens ret;
+    std::vector<DWORD> &t = ret.t;
+    t.push_back(0xFFFE0101);
+    auto op = [&ret](const char *name, DWORD opcode, std::initializer_list<DWORD> params) {
+      ret.starts.push_back(ret.t.size());
+      ret.names.push_back(name);
+      ret.t.push_back(opcode);
+      ret.t.insert(ret.t.end(), params.begin(), params.end());
     };
-    // dcl_position v0, dcl_color v1, dcl_texcoord v2
-    op(31, {0x80000000 | 0, Dst(RInput, 0)});
-    op(31, {0x80000000 | 10, Dst(RInput, 1)});
-    op(31, {0x80000000 | 5, Dst(RInput, 2)});
-    // m4x4 oPos, v0, c0 (c0-c3 the transposed world view projection)
-    op(20, {Dst(RRast, 0), Src(RInput, 0), Src(RConst, 0)});
-    // mov oD0, v1
-    op(1, {Dst(RAttr, 0), Src(RInput, 1)});
-    // mov a0.x, v2.x (rounds down), mov oT0, c5[a0.x]
-    op(1, {Dst(RAddr, 0, 0x1), Src(RInput, 2, X)});
-    op(1, {Dst(RTex, 0), Src(RConst, 5) | 0x2000});
-    // expp oT1, v2.y, logp oT2, v2.y
-    op(78, {Dst(RTex, 1), Src(RInput, 2, Y)});
-    op(79, {Dst(RTex, 2), Src(RInput, 2, Y)});
-    // lit oT3, c8 and dst oT4, r1, c10 (vs_1_1 reads one constant per instruction)
-    op(16, {Dst(RTex, 3), Src(RConst, 8)});
-    op(1, {Dst(RTemp, 1), Src(RConst, 9)});
-    op(17, {Dst(RTex, 4), Src(RTemp, 1), Src(RConst, 10)});
-    // frc r0.xy, v0, rcp r0.z, v2.z, rsq r0.w, v2.z, mov oT5, r0
-    op(19, {Dst(RTemp, 0, 0x3), Src(RInput, 0)});
-    op(6, {Dst(RTemp, 0, 0x4), Src(RInput, 2, Z)});
-    op(7, {Dst(RTemp, 0, 0x8), Src(RInput, 2, Z)});
-    op(1, {Dst(RTex, 5), Src(RTemp, 0)});
-    // mov oFog, v2.z and mad oD1, v1, c11, r2 (r2 = c12)
-    op(1, {Dst(RRast, 1, 0x1), Src(RInput, 2, Z)});
-    op(1, {Dst(RTemp, 2), Src(RConst, 12)});
-    op(4, {Dst(RAttr, 1), Src(RInput, 1), Src(RConst, 11), Src(RTemp, 2)});
+    op("dcl_position v0", 31, {0x80000000 | 0, Dst(RInput, 0)});
+    op("dcl_color v1", 31, {0x80000000 | 10, Dst(RInput, 1)});
+    op("dcl_texcoord v2", 31, {0x80000000 | 5, Dst(RInput, 2)});
+    // c0-c3: the transposed world view projection
+    op("m4x4 oPos, v0, c0", 20, {Dst(RRast, 0), Src(RInput, 0), Src(RConst, 0)});
+    // a0.x rounds down. Another instruction comes before a0 is read.
+    op("mov a0.x, v2.x", 1, {Dst(RAddr, 0, 0x1), Src(RInput, 2, X)});
+    op("mov oD0, v1", 1, {Dst(RAttr, 0), Src(RInput, 1)});
+    op("mov oT0, c5[a0.x]", 1, {Dst(RTex, 0), Src(RConst, 5) | 0x2000});
+    // expp, logp, lit and dst write temporaries, which are then moved to the outputs
+    op("expp r3, v2.y", 78, {Dst(RTemp, 3), Src(RInput, 2, Y)});
+    op("mov oT1, r3", 1, {Dst(RTex, 1), Src(RTemp, 3)});
+    op("logp r4, v2.y", 79, {Dst(RTemp, 4), Src(RInput, 2, Y)});
+    op("mov oT2, r4", 1, {Dst(RTex, 2), Src(RTemp, 4)});
+    op("lit r5, c8", 16, {Dst(RTemp, 5), Src(RConst, 8)});
+    op("mov oT3, r5", 1, {Dst(RTex, 3), Src(RTemp, 5)});
+    // vs_1_1 reads one constant per instruction
+    op("mov r1, c9", 1, {Dst(RTemp, 1), Src(RConst, 9)});
+    op("dst r6, r1, c10", 17, {Dst(RTemp, 6), Src(RTemp, 1), Src(RConst, 10)});
+    op("mov oT4, r6", 1, {Dst(RTex, 4), Src(RTemp, 6)});
+    op("frc r0.xy, v0", 19, {Dst(RTemp, 0, 0x3), Src(RInput, 0)});
+    op("rcp r0.z, v2.z", 6, {Dst(RTemp, 0, 0x4), Src(RInput, 2, Z)});
+    op("rsq r0.w, v2.z", 7, {Dst(RTemp, 0, 0x8), Src(RInput, 2, Z)});
+    op("mov oT5, r0", 1, {Dst(RTex, 5), Src(RTemp, 0)});
+    op("mov oFog, v2.z", 1, {Dst(RRast, 1, 0x1), Src(RInput, 2, Z)});
+    op("mov r2, c12", 1, {Dst(RTemp, 2), Src(RConst, 12)});
+    op("mad oD1, v1, c11, r2", 4, {Dst(RAttr, 1), Src(RInput, 1), Src(RConst, 11), Src(RTemp, 2)});
     t.push_back(0x0000FFFF);
-    return t;
+    return ret;
+  }
+
+  std::vector<DWORD> VS11()
+  {
+    Tokens tokens = VS11Tokens();
+
+    IDirect3DVertexShader9Ptr vs;
+    if(SUCCEEDED(dev->CreateVertexShader(tokens.t.data(), &vs)))
+      return tokens.t;
+
+    // find the first instruction the runtime rejects: every shader has to write oPos, so the
+    // shortest one tried ends at the m4x4
+    for(size_t n = 4; n <= tokens.starts.size(); n++)
+    {
+      std::vector<DWORD> prefix(
+          tokens.t.begin(),
+          tokens.t.begin() + (n < tokens.starts.size() ? tokens.starts[n] : tokens.t.size() - 1));
+      prefix.push_back(0x0000FFFF);
+      vs = NULL;
+      if(FAILED(dev->CreateVertexShader(prefix.data(), &vs)))
+      {
+        TEST_ERROR("The vs_1_1 shader is rejected at instruction %u, '%s'", (uint32_t)n,
+                   tokens.names[n - 1].c_str());
+        return {};
+      }
+    }
+    TEST_ERROR("The vs_1_1 shader is rejected, but every part of it is accepted");
+    return {};
   }
 
   std::vector<DWORD> CompileVS(const char *src, const char *profile)
@@ -717,6 +914,14 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
         d->SetTextureStageState(2, D3DTSS_TEXCOORDINDEX, D3DTSS_TCI_CAMERASPACENORMAL);
         d->SetTextureStageState(3, D3DTSS_TEXCOORDINDEX, D3DTSS_TCI_SPHEREMAP);
         d->SetTextureStageState(4, D3DTSS_TEXCOORDINDEX, D3DTSS_TCI_CAMERASPACEPOSITION);
+        // stages after a disabled one output no texture coordinate, so 1-4 pass the colour on
+        for(DWORD i = 1; i <= 4; i++)
+        {
+          d->SetTextureStageState(i, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+          d->SetTextureStageState(i, D3DTSS_COLORARG1, D3DTA_CURRENT);
+          d->SetTextureStageState(i, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+          d->SetTextureStageState(i, D3DTSS_ALPHAARG1, D3DTA_CURRENT);
+        }
         d->SetRenderState(D3DRS_FOGENABLE, TRUE);
         d->SetRenderState(D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR);
         d->SetRenderState(D3DRS_RANGEFOGENABLE, TRUE);
@@ -748,7 +953,9 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
         d->SetTransform(D3DTS_VIEW, view);
         d->SetTransform(D3DTS_PROJECTION, proj);
         d->SetRenderState(D3DRS_POINTSCALEENABLE, TRUE);
-        float a = 0.0f, b = 0.5f, cc = 0.1f, mn = 1.0f, mx = 50.0f;
+        // with the 400x300 window the sizes are about 8.3, 10.9, 12.8, 14.3, 15 and 15.8, so
+        // the first is clamped to the minimum and the last three to the maximum
+        float a = 1.0f, b = 2.0f, cc = 200.0f, mn = 9.0f, mx = 14.0f;
         d->SetRenderState(D3DRS_POINTSCALE_A, *(DWORD *)&a);
         d->SetRenderState(D3DRS_POINTSCALE_B, *(DWORD *)&b);
         d->SetRenderState(D3DRS_POINTSCALE_C, *(DWORD *)&cc);
@@ -759,7 +966,8 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
         float density = 0.15f;
         d->SetRenderState(D3DRS_FOGDENSITY, *(DWORD *)&density);
       };
-      c.pvOutputs = {"COLOR.0", "PSIZE.0", "FOG.0"};
+      // ProcessVertices doesn't write the point size: it's measured on the hardware instead
+      c.pvOutputs = {"COLOR.0", "FOG.0"};
       cases.push_back(c);
     }
 
@@ -911,6 +1119,7 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
       c.baseVertex = 2;
       c.primCount = 8;
       c.vsTokens = VS11();
+      c.shader = true;
       M wvp = Transpose(Mul(RotY(0.2f), viewProj));
       c.state = [wvp](IDirect3DDevice9 *d) {
         d->SetVertexShaderConstantF(0, wvp.m, 4);
@@ -943,6 +1152,7 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
       };
       c.prim = D3DPT_TRIANGLESTRIP;
       c.primCount = 7;
+      c.shader = true;
       c.vsTokens = CompileVS(R"(
 row_major float4x4 mvp : register(c0);
 float4 tint[2] : register(c4);
@@ -963,8 +1173,14 @@ VOut main(float4 pos : POSITION, float2 uv : TEXCOORD0)
   VOut o;
   o.pos = mul(pos, mvp);
   float4 acc = 0;
+  // the loop counter isn't used in arithmetic: vs_2_0 can't, and the compiler would then want
+  // count in a float register too
+  float k = 1.0f;
   [loop] for(int i = 0; i < count; i++)
-    acc += float4(uv, 0.25f, 0.5f) * (float)(i + 1);
+  {
+    acc += float4(uv, 0.25f, 0.5f) * k;
+    k += 1.0f;
+  }
   if(useTint)
     o.col = saturate(tint[0] + acc * 0.1f);
   else
@@ -1035,6 +1251,7 @@ VOut main(float4 pos : POSITION, float2 uv : TEXCOORD0)
       c.kind = Case::Indexed;
       c.primCount = 8;
       c.vertexTexture = true;
+      c.shader = true;
       c.vsTokens = CompileVS(R"(
 row_major float4x4 mvp : register(c0);
 float4 offsets[8] : register(c4);
@@ -1052,8 +1269,13 @@ VOut main(float4 pos : POSITION, float2 uv : TEXCOORD0)
 {
   VOut o;
   float4 acc = 0;
+  // the loop counter only indexes, as aL can
+  float k = 1.0f;
   [loop] for(int i = 0; i < count; i++)
-    acc += offsets[i] * (float)(i + 1);
+  {
+    acc += offsets[i] * k;
+    k += 1.0f;
+  }
   // the grid's uvs are 0, 0.5 and 1, so this samples at 0.2, 0.45 and 0.7: away from the
   // edges between the 2x2 texture's texels
   float4 h = tex2Dlod(heights, float4(uv * 0.5f + 0.2f, 0, 0));
@@ -1136,6 +1358,7 @@ VOut main(float4 pos : POSITION, float2 uv : TEXCOORD0)
       c.kind = Case::Indexed;
       c.primCount = 2;
       c.instances = 3;
+      c.shader = true;
       c.vsTokens = CompileVS(R"(
 row_major float4x4 mvp : register(c0);
 
@@ -1183,6 +1406,19 @@ VOut main(float3 pos : POSITION, float4 col : COLOR0, float4 inst : TEXCOORD1)
       cases.push_back(c);
     }
 
+    for(size_t i = 0; i < cases.size();)
+    {
+      if(cases[i].shader && cases[i].vsTokens.empty())
+      {
+        TEST_ERROR("Leaving out %s: its shader didn't compile", cases[i].name.c_str());
+        cases.erase(cases.begin() + i);
+      }
+      else
+      {
+        i++;
+      }
+    }
+
     // the references, from a software vertex processing device on a window of its own
     {
       std::string path = "D3D9_Mesh_Output_reference.txt";
@@ -1204,6 +1440,16 @@ VOut main(float3 pos : POSITION, float4 col : COLOR0, float4 inst : TEXCOORD1)
       if(FAILED(hr))
         TEST_WARN("Couldn't create a software vertex processing device: %x", hr);
 
+      // for WriteHardware
+      if(FAILED(dev->CreateRenderTarget(screenWidth, screenHeight, D3DFMT_A8R8G8B8,
+                                        D3DMULTISAMPLE_NONE, 0, FALSE, &hwTarget, NULL)) ||
+         FAILED(dev->CreateOffscreenPlainSurface(screenWidth, screenHeight, D3DFMT_A8R8G8B8,
+                                                 D3DPOOL_SYSTEMMEM, &hwRead, NULL)))
+      {
+        TEST_WARN("Couldn't create the surfaces to read the hardware's vertices back");
+        hwTarget = NULL;
+      }
+
       FILE *f = NULL;
       fopen_s(&f, path.c_str(), "w");
       if(f)
@@ -1213,6 +1459,12 @@ VOut main(float3 pos : POSITION, float4 col : COLOR0, float4 inst : TEXCOORD1)
           WriteReference(f, sw, c);
         fclose(f);
         TEST_LOG("Wrote the reference to %s", path.c_str());
+        D3DDEVICE_CREATION_PARAMETERS params = {};
+        dev->GetCreationParameters(&params);
+        if(params.BehaviorFlags & D3DCREATE_SOFTWARE_VERTEXPROCESSING)
+          TEST_WARN(
+              "The main device has software vertex processing, so the hw lines aren't "
+              "from the hardware");
       }
       else
       {
@@ -1220,6 +1472,8 @@ VOut main(float3 pos : POSITION, float4 col : COLOR0, float4 inst : TEXCOORD1)
       }
 
       sw = NULL;
+      hwTarget = NULL;
+      hwRead = NULL;
       delete win;
     }
 

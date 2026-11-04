@@ -161,6 +161,9 @@ struct FFPState
   // D3DTSS_TEXCOORDINDEX and D3DTSS_TEXTURETRANSFORMFLAGS per stage
   uint32_t texCoordIndex[MaxTextureStages] = {0, 1, 2, 3, 4, 5, 6, 7};
   uint32_t textureTransformFlags[MaxTextureStages] = {};
+  // how many stages output a texture coordinate. With no pixel shader it's the stages before the
+  // first one whose D3DTSS_COLOROP is D3DTOP_DISABLE, as ProcessVertices does.
+  uint32_t outputStages = MaxTextureStages;
 };
 
 // what the vertex declaration gives the fixed function pipeline. It reads the elements with

@@ -272,6 +272,11 @@ bool D3D9Replay::ReadFFPState(const D3D9DeviceState &state, Topology topology, D
   ffp.viewportHeight = float(state.Viewport.Height);
   ffp.points = topology == Topology::PointList;
 
+  // the defaults: stage 0 modulates, the rest are disabled
+  DWORD colorOp[D3D9Emu::MaxTextureStages] = {D3DTOP_MODULATE};
+  for(uint32_t i = 1; i < D3D9Emu::MaxTextureStages; i++)
+    colorOp[i] = D3DTOP_DISABLE;
+
   for(const D3D9TextureStageStates &stage : state.TextureStageStates)
   {
     if(stage.Stage >= D3D9Emu::MaxTextureStages)
@@ -282,7 +287,18 @@ bool D3D9Replay::ReadFFPState(const D3D9DeviceState &state, Topology topology, D
         ffp.texCoordIndex[stage.Stage] = v.Value;
       else if(v.State == D3DTSS_TEXTURETRANSFORMFLAGS)
         ffp.textureTransformFlags[stage.Stage] = v.Value;
+      else if(v.State == D3DTSS_COLOROP)
+        colorOp[stage.Stage] = v.Value;
     }
+  }
+
+  // with no pixel shader, the stages from the first disabled one on have no texture coordinate.
+  // A pixel shader can read any of them.
+  if(m_pDevice->GetBindings().ps == NULL)
+  {
+    ffp.outputStages = 0;
+    while(ffp.outputStages < D3D9Emu::MaxTextureStages && colorOp[ffp.outputStages] != D3DTOP_DISABLE)
+      ffp.outputStages++;
   }
 
   return true;

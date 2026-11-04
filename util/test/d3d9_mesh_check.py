@@ -13,6 +13,10 @@
 # counts. References from ProcessVertices are screen space (the viewport applied), and their
 # colours are 8 bits; ours are converted to match. It also checks the VS In data of
 # DrawPrimitiveUP draws can be read.
+#
+# For lit fixed function draws and scaled points the reference also has 'hw' rows: the colours
+# and point sizes the GPU drew, from each vertex drawn on its own. Where they're given, ours are
+# compared with those, and ProcessVertices' values are only noted if they differ from the GPU's.
 
 import os
 import struct
@@ -33,18 +37,18 @@ def parse_reference(path):
             if parts[0] == 'viewport':
                 viewport = [float(x) for x in parts[1:7]]
             elif parts[0] == 'draw':
-                cur = {'name': line[5:].strip(), 'space': 'clip', 'rows': {}, 'error': None}
+                cur = {'name': line[5:].strip(), 'space': 'clip', 'rows': {}, 'hw': {}, 'error': None}
                 draws.append(cur)
             elif parts[0] == 'space':
                 cur['space'] = parts[1]
             elif parts[0] == 'error':
                 cur['error'] = line[6:].strip()
-            elif parts[0] == 'row':
+            elif parts[0] in ('row', 'hw'):
                 vals = {}
                 for kv in parts[3:]:
                     k, v = kv.split('=')
                     vals[k] = [float(x) for x in v.split(',')]
-                cur['rows'][(int(parts[1]), int(parts[2]))] = vals
+                cur['rows' if parts[0] == 'row' else 'hw'][(int(parts[1]), int(parts[2]))] = vals
     return viewport, draws
 
 
@@ -73,10 +77,17 @@ def close(a, b, rel, absolute):
     return abs(a - b) <= absolute + rel * max(abs(a), abs(b))
 
 
-def compare(key, ours, ref, space, vp):
+def compare(key, ours, ref, space, vp, hw=False):
     # returns None if they match, otherwise a description
     n = min(len(ours), len(ref))
-    if key.startswith('POSITION.') and space == 'screen':
+    if hw and key == 'PSIZE.0':
+        # the width of the square the GPU drew, in whole pixels
+        tols = [(0.0, 1.0)]
+    elif hw:
+        # 8-bit colours, which the GPU may round differently
+        ours = saturate(ours)
+        tols = [(0.0, 2.5 / 255.0)] * 4
+    elif key.startswith('POSITION.') and space == 'screen':
         ours = to_screen(ours, vp)
         tols = [(0.0, 0.05), (0.0, 0.05), (1e-4, 1e-5), (1e-4, 1e-6)]
     elif key.startswith('COLOR.') or key == 'FOG.0':
@@ -145,6 +156,7 @@ def check_draw(controller, action, ref, vp):
     sig = list(refl.outputSignature)
 
     problems = []
+    notes = []
     counts = ''
     for inst in range(max(1, action.numInstances)):
         mesh = controller.GetPostVSData(inst, 0, rd.MeshDataStage.VSOut)
@@ -164,23 +176,40 @@ def check_draw(controller, action, ref, vp):
             if r >= len(rows):
                 problems.append('row {} missing'.format(r))
                 continue
-            for key, val in expected.items():
+            hw = ref['hw'].get((rinst, r), {})
+            for key, val in list(expected.items()) + [(k, v) for k, v in hw.items() if k not in expected]:
                 if key not in rows[r]:
                     problems.append('instance {} row {}: no {} output (have {})'.format(
                         inst, r, key, sorted(rows[r].keys())))
+                    continue
+                if key in hw:
+                    err = compare(key, rows[r][key], hw[key], ref['space'], vp, hw=True)
+                    if err:
+                        problems.append('instance {} row {}: (GPU) {}'.format(inst, r, err))
+                    if key in expected:
+                        pverr = compare(key, hw[key], val, ref['space'], vp)
+                        if pverr:
+                            notes.append('instance {} row {}: ProcessVertices differs from the GPU: {}'.format(
+                                inst, r, pverr.replace('ours', 'GPU', 1)))
                     continue
                 err = compare(key, rows[r][key], val, ref['space'], vp)
                 if err:
                     problems.append('instance {} row {}: {}'.format(inst, r, err))
 
+    if ref['hw']:
+        counts += ', {} rows checked against the GPU'.format(len(ref['hw']))
+
     if problems:
         print('FAIL {} ({}): {} problems'.format(name, counts, len(problems)))
         for p in problems[:8]:
             print('    ' + p)
-        return False
-
-    print('PASS {} ({})'.format(name, counts))
-    return True
+    else:
+        print('PASS {} ({})'.format(name, counts))
+    for n in notes[:4]:
+        print('    NOTE ' + n)
+    if len(notes) > 4:
+        print('    NOTE ... {} more rows where ProcessVertices differs from the GPU'.format(len(notes) - 4))
+    return not problems
 
 
 def check_vs_in(controller, action, name):

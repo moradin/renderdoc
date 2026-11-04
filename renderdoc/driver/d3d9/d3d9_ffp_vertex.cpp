@@ -245,7 +245,7 @@ FFPOutputLayout FFPLayout(const FFPState &state, const FFPInputs &inputs)
   ret.fog = state.fogEnable && state.fogTableMode == FogMode::None;
   ret.psize = state.points || inputs.psize;
 
-  for(uint32_t i = 0; i < MaxTextureStages; i++)
+  for(uint32_t i = 0; i < MaxTextureStages && i < state.outputStages; i++)
   {
     const uint32_t idx = state.texCoordIndex[i] & 0xFFFF;
     uint32_t gen = state.texCoordIndex[i] & 0xFFFF0000;

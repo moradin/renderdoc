@@ -16,7 +16,7 @@ so none of this is upstream.
 | 3c | D3D9 pipeline state, with its own UI panel and Python bindings | Tested from Python on Windows; the UI panel isn't checked yet |
 | 3d | Shaders: SM1-3 disassembly, reflection from the constant table | Tested on Windows against fxc; the shader viewer UI isn't checked yet |
 | 3e | Texture viewer overlays | Implemented, not tested on Windows yet (see below) |
-| 3e | Mesh output (post-transform vertices, VS Out) | Built and unit tested on Linux, not yet tested on Windows (see below) |
+| 3e | Mesh output (post-transform vertices, VS Out) | Tested on Windows: the UI works and most draws match. The demo's failures are fixed and need a retest (see "Phase 3e test results") |
 
 ## Needs testing
 
@@ -243,7 +243,15 @@ Retest 2 (`d3d9_phase3_retest2.md`) passed everything except two UI items, now f
   when Show parameter names is on) are drawn low and clipped at this machine's DPI. D3D11
   captures do the same, so it's an existing qrenderdoc issue and not D3D9's. Neither attempted
   fix (a minimum row height, then a line height from the font) changed it in retest 3, so both
-  were removed. Left as is for now.
+  were removed. The standalone probe (`util/test/richtext_probe`) didn't reproduce it: it laid
+  text out at 72 DPI with an 8pt font 10 pixels high, so it doesn't measure what qrenderdoc does.
+  qrenderdoc itself now has two environment variables for finding a fix without rebuilding:
+  - `RENDERDOC_RICHTEXT_LOG=1` logs the first 60 rich text rows painted (row height, the
+    QTextDocument's height, the font's metrics, the painter's and screen's DPI) to the diagnostic
+    log (Help > View Diagnostic Log File, lines starting `QTRD`).
+  - `RENDERDOC_RICHTEXT_STYLE` replaces each cell's `style="line-height: 14px"` with
+    `style="<value>"`, or removes it with the value `none`. For example
+    `set RENDERDOC_RICHTEXT_STYLE=line-height: 100%` before starting qrenderdoc.
 - The white backgrounds on the `Depth` and `State blocks` markers are expected: the demo passes
   0xffffffff as their colour.
 - The "Real D3D9 object ... already has a wrapper, replacing it" warning in one Reset run came from
@@ -851,8 +859,12 @@ Known gaps:
   report an error instead of data.
 - The fixed function pipeline's direction to the viewer without D3DRS_LOCALVIEWER is (0, 0, -1)
   in camera space (the camera looks down +z, and Wine does the same). The documentation writes
-  (0, 0, 1); ProcessVertices in `D3D9_Mesh_Output` will tell which is right. It's one constant,
-  `NonLocalViewer` in `d3d9_ffp_vertex.cpp`, and the reflection vector uses the same direction.
+  (0, 0, 1), but ProcessVertices agrees with (0, 0, -1): the phase 3e test's camera space
+  reflection vectors matched it. It's one constant, `NonLocalViewer` in `d3d9_ffp_vertex.cpp`.
+- With no pixel shader, only the texture stages before the first one whose D3DTSS_COLOROP is
+  D3DTOP_DISABLE output a texture coordinate. ProcessVertices does this (the phase 3e test showed
+  no coordinates for disabled stages that had texgen set), and so does Wine. With a pixel shader,
+  every stage can.
 - Sphere map coordinates are Wine's: r / (2 |r + (0, 0, 1)|) + 0.5 with r the reflection vector.
 - Specular is only added where N.L > 0, and only with D3DRS_SPECULARENABLE (COLOR1 is (0, 0, 0)
   otherwise). COLOR1's alpha is the specular source's alpha when lit, the vertex's otherwise. Fog
@@ -864,6 +876,10 @@ Known gaps:
   Missing diffuse is white, missing specular black.
 - Vertex fog uses camera space |z|, or the distance with D3DRS_RANGEFOGENABLE.
 - `PSIZE` is output for point lists and for vertices that have a size.
+- The spot light factor is 1 inside the inner cone (cos of the angle to the spot direction above
+  cos(Theta / 2)), as documented. ProcessVertices doesn't clamp it there: the phase 3e test's
+  vertex inside the inner cone came out about 1.13 times brighter. What the GPU does is checked
+  now (see below).
 - Blend indices in D3DCOLOR or UBYTE4N elements are scaled back by 255.
 - The pretransformed position keeps the system value Position, so the mesh viewer still finds it,
   but its semantic is POSITIONT and the MeshFormat doesn't unproject it.
@@ -907,6 +923,32 @@ On Windows, with `D3D9_Mesh_Output` (in the demos project):
    one of those outputs, the decision is probably wrong; say which values came out. The indexed
    vertex blending draw only exists if the GPU supports indexed blending with hardware vertex
    processing (`MaxVertexBlendMatrixIndex` >= 7).
+
+### Phase 3e test results
+
+From `d3d9_phase3e_test.md`. The UI (VS Out columns, the preview, vertex picking) works, and these
+draws matched: FFP transform, the pretransformed ones, directional and point lights, vertex
+blending, both DrawPrimitiveUP draws' VS In, and vs_3_0 instancing. What failed, and what changed:
+- vs_2_0 flow control, vs_2_0 DrawPrimitiveUP and vs_3_0 loops and texldl: their shaders didn't
+  compile (X4509 on `int count : register(i0)`), so the draws ran without a shader. The loop
+  counter was used in arithmetic, which neither aL nor a rep counter can do, so fxc wanted a float
+  copy of `count` too. The shaders now only count with it. The demo also leaves out a draw whose
+  shader doesn't compile, with an error, instead of drawing it with fixed function.
+- vs_1_1: the hand assembled tokens were rejected by CreateVertexShader. `expp`, `logp`, `lit`
+  and `dst` now write temporaries that are moved to the outputs, and an instruction separates
+  writing a0 from reading it. If it's still rejected, the demo logs the first instruction the
+  runtime rejects, by trying the shader cut short at each instruction.
+- FFP spot light: one vertex, inside the inner cone, differed: ProcessVertices doesn't clamp the
+  spot factor to 1 there. Which one the GPU does is what matters, so the demo now also draws each
+  vertex of the lit draws on its own, as a 1x1 point, and reads back its diffuse colour, diffuse
+  alpha and specular colour (the `hw` lines in the reference). The check compares ours with those,
+  and only notes where ProcessVertices differs from the GPU.
+- FFP texgen and fog: ProcessVertices gave no coordinates for stages 1-4, which were disabled.
+  RenderDoc now does the same (see the decisions above), and the demo enables stages 1-4 so their
+  coordinates are tested.
+- FFP point size: ProcessVertices doesn't write the point size. The demo now measures each point's
+  size as the GPU draws it, and its sizes are between the clamps (about 8 to 16, clamped to 9 and
+  14) instead of all at the maximum.
 
 ## Inspecting a capture
 

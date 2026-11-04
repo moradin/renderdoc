@@ -48,6 +48,7 @@
 #include <QProgressDialog>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
+#include <QScreen>
 #include <QStandardPaths>
 #include <QTextBlock>
 #include <QTextBoundaryFinder>
@@ -245,6 +246,34 @@ struct ShaderMessageLink
 Q_DECLARE_METATYPE(ShaderMessageLink);
 
 static QRegularExpression htmlRE(lit("<[^>]*>"));
+
+// Debugging aids for rich text rows that are drawn low and clipped (D3D9 STATUS.md, "Event Browser
+// rows"). RENDERDOC_RICHTEXT_STYLE replaces the cells' style="line-height: 14px" (the value
+// "none" removes it), and RENDERDOC_RICHTEXT_LOG logs the sizes of the first rows painted.
+static const QString *RichTextStyleOverride()
+{
+  static QString style;
+  static bool read = false, set = false;
+  if(!read)
+  {
+    read = true;
+    set = qEnvironmentVariableIsSet("RENDERDOC_RICHTEXT_STYLE");
+    if(set)
+    {
+      QString v = QString::fromLocal8Bit(qgetenv("RENDERDOC_RICHTEXT_STYLE"));
+      style = v == lit("none") ? QString() : lit(" style=\"%1\"").arg(v);
+      qInfo() << "Rich text cells use" << (style.isEmpty() ? lit("no style") : style);
+    }
+  }
+  return set ? &style : NULL;
+}
+
+static bool RichTextLogRow()
+{
+  static int logged = 0;
+  static bool enabled = qEnvironmentVariableIsSet("RENDERDOC_RICHTEXT_LOG");
+  return enabled && logged++ < 60;
+}
 
 // this is an opaque struct that contains the data to render, hit-test, etc for some text that
 // contains links to resources. It will update and cache the names of the resources.
@@ -447,6 +476,9 @@ struct RichResourceText
     fragmentIndexFromBlockIndex.push_back(-1);
 
     html += lit("</tr></table>");
+
+    if(const QString *style = RichTextStyleOverride())
+      html.replace(lit(" style=\"line-height: 14px\""), *style);
 
     doc.setDocumentMargin(0);
     doc.setHtml(html);
@@ -890,6 +922,25 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
 
   // vertical align to the centre, if there's spare room.
   int diff = rect.height() - linkedText->doc.size().height();
+
+  if(RichTextLogRow())
+  {
+    QFontMetrics fm(font);
+    QFontMetrics docfm(linkedText->doc.defaultFont());
+    qInfo().nospace() << "Rich text row '" << linkedText->text.left(60) << "': rect height "
+                      << rect.height() << ", doc height " << linkedText->doc.size().height()
+                      << ", lines " << linkedText->numLines << ", blocks "
+                      << linkedText->doc.blockCount() << ", font " << font.family() << " "
+                      << font.pointSizeF() << "pt height " << fm.height() << " lineSpacing "
+                      << fm.lineSpacing() << " ascent " << fm.ascent() << ", doc font "
+                      << docfm.height() << ", painter DPR "
+                      << (painter->device() ? painter->device()->devicePixelRatioF() : 0.0)
+                      << " logical DPI "
+                      << (painter->device() ? painter->device()->logicalDpiY() : 0)
+                      << ", primary screen logical DPI "
+                      << QGuiApplication::primaryScreen()->logicalDotsPerInchY() << " DPR "
+                      << QGuiApplication::primaryScreen()->devicePixelRatio();
+  }
 
   if(diff > 0)
     painter->translate(1, diff / 2);
