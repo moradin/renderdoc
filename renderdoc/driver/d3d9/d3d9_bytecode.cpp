@@ -399,26 +399,19 @@ rdcstr WriteMaskString(uint8_t mask)
   return ret;
 }
 
-rdcstr SwizzleString(const Version &version, const SrcParam &src)
+rdcstr SwizzleString(const SrcParam &src)
 {
   if(src.IdentitySwizzle())
     return rdcstr();
 
   // fxc prints one letter for a replicate swizzle (.x) and all four otherwise (.xyww, .yxxx),
-  // never two or three. The exception is ps_1_4's texcrd/texld, the only readers of t#, whose
-  // source selectors are documented as .xyz and .xyw: those leave off the repeated last component.
-  // (That exception hasn't been compared against fxc.)
+  // never two or three. That holds for ps_1_4's t# source selectors too: the documented .xyz and
+  // .xyw come out as .xyzz and .xyww.
   int len = 4;
   if(src.swizzle[0] == src.swizzle[1] && src.swizzle[1] == src.swizzle[2] &&
      src.swizzle[2] == src.swizzle[3])
   {
     len = 1;
-  }
-  else if(version.IsPS() && version.major == 1 && version.minor == 4 &&
-          src.type == RegType::AddrOrTexture)
-  {
-    while(len > 1 && src.swizzle[len - 1] == src.swizzle[len - 2])
-      len--;
   }
 
   rdcstr ret = ".";
@@ -489,7 +482,7 @@ rdcstr SrcString(const Version &version, const SrcParam &src)
   }
 
   return prefix + RegisterName(version, src.type, src.index) + RelativeString(version, src.rel) +
-         suffix + SwizzleString(version, src);
+         suffix + SwizzleString(src);
 }
 
 rdcstr FloatString(uint32_t bits)
@@ -1426,7 +1419,7 @@ TEST_CASE("D3D9 bytecode parsing and disassembly", "[d3d9][shader]")
         Inst(Opcode::Tex, 0, 0),
         Dst(RegType::Temp, 0),
         Src(RegType::AddrOrTexture, 0),
-        // texcrd r1.xyz, t1_dw.xyw
+        // texcrd r1.xyz, t1_dw.xyww
         Inst(Opcode::TexCoord, 0, 0),
         Dst(RegType::Temp, 1, 0x7),
         Src(RegType::AddrOrTexture, 1, Swz(0, 1, 3, 3), SrcMod::DW),
@@ -1455,8 +1448,10 @@ TEST_CASE("D3D9 bytecode parsing and disassembly", "[d3d9][shader]")
     INFO(disasm.c_str());
     CHECK(prog.error.empty());
     rdcarray<rdcstr> expected = {
-        "texld r0, t0", "texcrd r1.xyz, t1_dw.xyw", "bem r2.xy, r0, r1", "phase", "texld r3, r2_dz",
-        "texdepth r5",  "mul_x8 r0, r3, c7",
+        "texld r0, t0",      "texcrd r1.xyz, t1_dw.xyww",
+        "bem r2.xy, r0, r1", "phase",
+        "texld r3, r2_dz",   "texdepth r5",
+        "mul_x8 r0, r3, c7",
     };
     CHECK(InstructionLines(disasm) == expected);
   };

@@ -415,8 +415,8 @@ void WrappedD3DDevice9::WrapAutoDepthStencil()
   // the device owns the automatic depth stencil surface
   real->Release();
 
-  if(m_AutoDepthStencil && m_AutoDepthStencil->GetReal() == real)
-    return;
+  // after Reset this is a new surface even if it has the old one's address, so it gets a new
+  // wrapper: keeping the old one would keep its ID and creation record from before the reset
 
   // standalone surface, but with no external references and owned by the device
   WrappedD3DSurface9 *wrapped = new WrappedD3DSurface9(real, this, (WrappedD3D9Object *)NULL);

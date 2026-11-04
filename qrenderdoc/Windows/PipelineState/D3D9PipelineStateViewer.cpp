@@ -111,6 +111,24 @@ D3D9PipelineStateViewer::D3D9PipelineStateViewer(ICaptureContext &ctx, PipelineS
   // input assembly
 
   {
+    // the topology and its diagram on their own row, left aligned like D3D11's, so the
+    // declaration's width doesn't push the diagram to the far side of the page
+    QWidget *topoRow = new QWidget(this);
+    QHBoxLayout *topoLayout = new QHBoxLayout(topoRow);
+    topoLayout->setContentsMargins(2, 2, 2, 2);
+
+    m_Topology = new QLabel(topoRow);
+    m_Topology->setFont(Formatter::PreferredFont());
+
+    m_TopologyDiagram = new QLabel(topoRow);
+    m_TopologyDiagram->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+
+    topoLayout->addWidget(new QLabel(tr("Topology:"), topoRow));
+    topoLayout->addWidget(m_Topology);
+    topoLayout->addSpacing(8);
+    topoLayout->addWidget(m_TopologyDiagram);
+    topoLayout->addStretch(1);
+
     QWidget *declRow = new QWidget(this);
     QHBoxLayout *declLayout = new QHBoxLayout(declRow);
     declLayout->setContentsMargins(2, 2, 2, 2);
@@ -122,17 +140,10 @@ D3D9PipelineStateViewer::D3D9PipelineStateViewer(ICaptureContext &ctx, PipelineS
     m_Declaration->setFont(Formatter::PreferredFont());
     m_Declaration->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
-    m_Topology = new QLabel(declRow);
-    m_Topology->setFont(Formatter::PreferredFont());
-
-    m_TopologyDiagram = new QLabel(declRow);
-
     declLayout->addWidget(new QLabel(tr("Vertex Declaration:"), declRow));
     declLayout->addWidget(m_Declaration, 1);
-    declLayout->addWidget(new QLabel(tr("Topology:"), declRow));
-    declLayout->addWidget(m_Topology);
-    declLayout->addWidget(m_TopologyDiagram);
 
+    m_PageLayouts[Page_IA]->addWidget(topoRow);
     m_PageLayouts[Page_IA]->addWidget(declRow);
   }
 

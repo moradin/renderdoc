@@ -6,8 +6,9 @@
 #   python d3d9_replay_check.py capture.rdc [--all]
 #
 # It prints the event list and the textures, saves the back buffer at the start of the frame (event
-# 0, before any call in it has replayed) and at the last event as PNGs next to the capture, and
-# prints the depth stencils' values at the start of the frame (their initial contents, written back
+# 0, before any call in it has replayed) and at the last event as PNGs next to the capture, saves it
+# again at the last event with SaveTexture (printing the saved alpha range: 255-255 for an X8R8G8B8
+# back buffer), and prints the depth stencils' values at the start of the frame (their initial contents, written back
 # at replay). With --all it also steps through every action,
 # which replays from the start for each one.
 
@@ -32,6 +33,67 @@ def write_png(path, width, height, rows):
     png += chunk(b'IEND', b'')
     with open(path, 'wb') as f:
         f.write(png)
+
+
+def read_png_alpha(path):
+    # the alpha values of an 8-bit RGBA PNG, as SaveTexture writes them
+    with open(path, 'rb') as f:
+        data = f.read()
+    pos = 8
+    idat = b''
+    width = height = 0
+    while pos < len(data):
+        length, kind = struct.unpack('>I4s', data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        if kind == b'IHDR':
+            width, height, depth, colour = struct.unpack('>IIBB', body[:10])
+            if depth != 8 or colour != 6:
+                return None
+        elif kind == b'IDAT':
+            idat += body
+        pos += 12 + length
+    raw = zlib.decompress(idat)
+    stride = width * 4
+    prev = bytearray(stride)
+    alphas = []
+    for y in range(height):
+        filt = raw[y * (stride + 1)]
+        line = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            a = line[i - 4] if i >= 4 else 0
+            b = prev[i]
+            c = prev[i - 4] if i >= 4 else 0
+            if filt == 1:
+                line[i] = (line[i] + a) & 0xFF
+            elif filt == 2:
+                line[i] = (line[i] + b) & 0xFF
+            elif filt == 3:
+                line[i] = (line[i] + (a + b) // 2) & 0xFF
+            elif filt == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                pred = a if pa <= pb and pa <= pc else (b if pb <= pc else c)
+                line[i] = (line[i] + pred) & 0xFF
+        alphas += line[3::4]
+        prev = line
+    return alphas
+
+
+def check_save_texture(controller, tex, path):
+    # SaveTexture remaps to RGBA8 for PNG. X8R8G8B8 back buffers have to come out opaque.
+    save = rd.TextureSave()
+    save.resourceId = tex.resourceId
+    save.destType = rd.FileType.PNG
+    save.alpha = rd.AlphaMapping.Preserve
+    result = controller.SaveTexture(save, path)
+    if not result.OK():
+        print('  SaveTexture failed: ' + str(result.Message()))
+        return
+    alphas = read_png_alpha(path)
+    if alphas is None:
+        print('  saved ' + path + ' (not 8-bit RGBA, alpha not checked)')
+        return
+    print('  saved {} with SaveTexture, alpha {}-{}'.format(path, min(alphas), max(alphas)))
 
 
 def print_actions(actions, sdfile, depth=0):
@@ -166,6 +228,7 @@ def main():
     controller.SetFrameEvent(last, True)
     if backbuffer:
         save_bgra(controller, backbuffer, base + '_last.png')
+        check_save_texture(controller, backbuffer, base + '_saved.png')
     else:
         print('  no presented back buffer found')
 

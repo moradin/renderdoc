@@ -175,6 +175,52 @@ uint64_t SubresourceBytes(D3DFORMAT format, uint32_t width, uint32_t height, uin
   return uint64_t((width + block.Width - 1) / block.Width) *
          ((height + block.Height - 1) / block.Height) * block.Bytes * depth;
 }
+
+// the format of a texture's top level, or of a surface
+D3DFORMAT TextureFormat(WrappedD3D9Object *obj)
+{
+  D3DSURFACE_DESC desc = {};
+  switch(obj->GetResourceType())
+  {
+    case Resource_Texture: ((WrappedD3DTexture9 *)obj)->GetReal()->GetLevelDesc(0, &desc); break;
+    case Resource_CubeTexture:
+      ((WrappedD3DCubeTexture9 *)obj)->GetReal()->GetLevelDesc(0, &desc);
+      break;
+    case Resource_VolumeTexture:
+    {
+      D3DVOLUME_DESC volDesc = {};
+      ((WrappedD3DVolumeTexture9 *)obj)->GetReal()->GetLevelDesc(0, &volDesc);
+      return volDesc.Format;
+    }
+    case Resource_Surface: ((WrappedD3DSurface9 *)obj)->GetReal()->GetDesc(&desc); break;
+    default: return D3DFMT_UNKNOWN;
+  }
+  return desc.Format;
+}
+
+// An X format's unused bits hold whatever was last written there, usually 0. RenderDoc describes
+// these formats with alpha in those bits (B8G8R8X8 reads its X as alpha too), so they're set to
+// what sampling the texture returns: 1.
+void SetUnusedAlpha(D3DFORMAT format, bytebuf &data)
+{
+  switch((DWORD)format)
+  {
+    case D3DFMT_X8R8G8B8:
+    case D3DFMT_X8B8G8R8:
+      for(size_t i = 0; i + 3 < data.size(); i += 4)
+        data[i + 3] = 0xff;
+      break;
+    case D3DFMT_X1R5G5B5:
+      for(size_t i = 0; i + 1 < data.size(); i += 2)
+        data[i + 1] |= 0x80;
+      break;
+    case D3DFMT_X4R4G4B4:
+      for(size_t i = 0; i + 1 < data.size(); i += 2)
+        data[i + 1] |= 0xf0;
+      break;
+    default: break;
+  }
+}
 };
 
 D3D9Replay::D3D9Replay(WrappedD3DDevice9 *device, IDirect3D9Ex *d3d, HWND hiddenWindow)
@@ -202,6 +248,12 @@ void D3D9Replay::Shutdown()
   m_OutputWindows.clear();
 
   m_pDevice->ReleaseReplayObjects();
+
+  for(SDObject *&annotation : m_ConstantsAnnotations)
+  {
+    delete annotation;
+    annotation = NULL;
+  }
 
   // the last reference: everything replay created has been released
   ULONG refs = m_pDevice->Release();
@@ -535,18 +587,75 @@ void D3D9Replay::GetTextureData(ResourceId tex, const Subresource &sub,
 
   data.swap(contents.Data);
 
-  if(params.remap == RemapTexture::RGBA8 && desc.format.compByteWidth == 1 &&
-     desc.format.compCount == 4 && desc.format.BGRAOrder())
+  SetUnusedAlpha(TextureFormat(obj), data);
+
+  if(params.remap == RemapTexture::NoRemap)
+    return;
+
+  const ResourceFormat &fmt = desc.format;
+  const bool defaultRange = params.blackPoint == 0.0f && params.whitePoint == 1.0f;
+
+  // 8-bit RGBA only needs its channels put in order
+  if(params.remap == RemapTexture::RGBA8 && defaultRange && fmt.type == ResourceFormatType::Regular &&
+     fmt.compByteWidth == 1 && fmt.compCount == 4 && fmt.compType == CompType::UNorm)
   {
-    for(size_t i = 0; i + 3 < data.size(); i += 4)
-      std::swap(data[i], data[i + 2]);
+    if(fmt.BGRAOrder())
+    {
+      for(size_t i = 0; i + 3 < data.size(); i += 4)
+        std::swap(data[i], data[i + 2]);
+    }
+    return;
   }
-  else if(params.remap != RemapTexture::NoRemap &&
-          !(params.remap == RemapTexture::RGBA8 && desc.format.compByteWidth == 1 &&
-            desc.format.compCount == 4))
+
+  // everything else is converted texel by texel on the CPU. D3D9 has no sRGB formats, and the depth
+  // formats were put in RenderDoc's layout above.
+  const uint32_t srcSize = fmt.ElementSize();
+  if(fmt.BlockFormat() || fmt.type == ResourceFormatType::Undefined ||
+     fmt.type == ResourceFormatType::YUV8 || srcSize == 0)
   {
-    RDCWARN("Converting %s textures for saving isn't supported yet", desc.format.Name().c_str());
+    RDCWARN("Converting %s textures for saving isn't supported yet", fmt.Name().c_str());
+    return;
   }
+
+  ResourceFormat dstFmt;
+  dstFmt.type = ResourceFormatType::Regular;
+  dstFmt.compCount = 4;
+  if(params.remap == RemapTexture::RGBA8)
+  {
+    dstFmt.compByteWidth = 1;
+    dstFmt.compType = CompType::UNorm;
+  }
+  else
+  {
+    dstFmt.compByteWidth = params.remap == RemapTexture::RGBA16 ? 2 : 4;
+    dstFmt.compType = CompType::Float;
+  }
+  const uint32_t dstSize = dstFmt.ElementSize();
+
+  // the same mapping as the texture display, which other APIs remap through
+  const float rangeSize = params.whitePoint - params.blackPoint;
+  const float invRange = rangeSize != 0.0f ? 1.0f / rangeSize : 1.0f;
+
+  const size_t count = data.size() / srcSize;
+  bytebuf converted;
+  converted.resize(count * dstSize);
+  for(size_t i = 0; i < count; i++)
+  {
+    FloatVector v = DecodeFormattedComponents(fmt, data.data() + i * srcSize);
+    // a missing alpha samples as 1, the decode leaves it 0 for the palette index formats
+    if(fmt.type == ResourceFormatType::Regular && fmt.compCount < 4)
+      v.w = 1.0f;
+    float *comps = &v.x;
+    for(int c = 0; c < 4; c++)
+    {
+      comps[c] = (comps[c] - params.blackPoint) * invRange;
+      if(params.remap == RemapTexture::RGBA8)
+        comps[c] = RDCCLAMP(comps[c], 0.0f, 1.0f);
+    }
+    EncodeFormattedComponents(dstFmt, v, converted.data() + i * dstSize);
+  }
+
+  data.swap(converted);
 }
 
 void D3D9Replay::BuildTargetShader(ShaderEncoding sourceEncoding, const bytebuf &source,

@@ -361,6 +361,9 @@ private:
   // contents are read from the device when they're fetched.
   ResourceId m_ConstantsBuffers[6];
   uint32_t m_ConstantCounts[6] = {};
+  // each constants buffer's __rd_format annotation, so viewing it from the Resource Inspector shows
+  // one register per row
+  SDObject *m_ConstantsAnnotations[6] = {};
 
   WrappedD3DDevice9 *m_pDevice = NULL;
   IDirect3D9Ex *m_D3D = NULL;

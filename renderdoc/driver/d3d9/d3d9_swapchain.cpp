@@ -132,16 +132,12 @@ void WrappedD3DSwapChain9::OnDeviceReset(IDirect3DSwapChain9 *newReal)
     if(wrapped == NULL)
       continue;
 
-    IDirect3DSurface9 *real = NULL;
-    if(i < numBuffers && SUCCEEDED(m_pReal->GetBackBuffer(i, D3DBACKBUFFER_TYPE_MONO, &real)) && real)
-      real->Release();
-
-    // still the same surface, keep the wrapper
-    if(real == wrapped->GetReal())
-      continue;
-
-    // the real back buffer was recreated. If nothing references the old wrapper we can free it,
-    // otherwise keep it around (it's dead, but the application may still release it).
+    // Reset recreates the back buffers, so the old wrapper is replaced even when the new real
+    // surface has the same address: a new surface can be allocated where the old one was, and
+    // keeping the wrapper would keep the old surface's ID and creation record (its size and format
+    // from before the reset). The next GetBackBufferWrapper wraps the new one.
+    // If nothing references the old wrapper we can free it, otherwise keep it around (it's dead,
+    // but the application may still release it).
     if(wrapped->GetExtRefCount() == 0 && wrapped->GetIntRefCount() == 0)
     {
       DestroyChild(wrapped);
