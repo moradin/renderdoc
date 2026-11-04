@@ -235,10 +235,21 @@ loads (the crash is now 1 in 18) and the UI checklist, except for these, now fix
   replayed correctly only because the demo resets to the same size. Reset now always wraps them
   again.
 
-These need a retest: saving the back buffer as PNG (`d3d9_replay_check.py` now does it with
-`SaveTexture` and prints the alpha range, which should be 255-255), the ps_1_4 shader against fxc,
-the panel layout and Event Browser rows by eye, View Contents on a constants buffer from the
-Resource Inspector, and `D3D9_Reset_Capture` a few times (frame 30 should always have the new IDs).
+Retest 2 (`d3d9_phase3_retest2.md`) passed everything except two UI items, now fixed:
+- The IA topology diagram was still drawn at its SVG size. The D3D9 panel now scales it to two
+  lines of text, keeping its aspect ratio.
+- Event Browser rows with resource links were still drawn low and clipped. This happens with D3D11
+  captures too, so it isn't D3D9's. The bundled Qt 5.9 treats RichResourceText's
+  `line-height: 14px` as a fixed line height, so any font taller than 14px (here, from the DPI
+  scaling) overflows each line. The text was drawn shifted down and clipped by the row below.
+  RichResourceText now uses the font's line spacing when it's taller than 14px (`QRDUtils.cpp`),
+  which changes how resource links lay out across the whole UI. The Event Browser's minimum row
+  height from the earlier fix stays; it keeps rows a pixel or two taller than the link text.
+- The white backgrounds on the `Depth` and `State blocks` markers are expected: the demo passes
+  0xffffffff as their colour.
+
+Retest by eye: the IA page diagram, and rows with links in the Event Browser of a D3D9 and a D3D11
+capture.
 
 ## Replay (phase 3a)
 

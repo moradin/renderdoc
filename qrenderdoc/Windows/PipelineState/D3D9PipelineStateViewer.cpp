@@ -122,6 +122,8 @@ D3D9PipelineStateViewer::D3D9PipelineStateViewer(ICaptureContext &ctx, PipelineS
 
     m_TopologyDiagram = new QLabel(topoRow);
     m_TopologyDiagram->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    // scaled down to the row's height when it's set, see setState
+    m_TopologyDiagram->setScaledContents(true);
 
     topoLayout->addWidget(new QLabel(tr("Topology:"), topoRow));
     topoLayout->addWidget(m_Topology);
@@ -705,6 +707,19 @@ void D3D9PipelineStateViewer::setState()
 
     m_Topology->setText(ToQStr(ia.topology));
     m_Common.setTopologyDiagram(m_TopologyDiagram, ia.topology);
+
+    // the diagrams are drawn at their SVG size, which is much taller than this row. Scale them to
+    // about two lines of text, keeping each one's aspect ratio.
+    {
+      const QPixmap *px = m_TopologyDiagram->pixmap();
+      if(px && !px->isNull())
+      {
+        const qreal dpr = px->devicePixelRatio();
+        const qreal pw = px->width() / dpr, ph = px->height() / dpr;
+        const int h = qMin(int(ph), QFontMetrics(m_Topology->font()).lineSpacing() * 2);
+        m_TopologyDiagram->setFixedSize(qMax(1, int(pw * h / ph)), h);
+      }
+    }
 
     rdcarray<VertexInputAttribute> inputs = m_Ctx.CurPipelineState().GetVertexInputs();
 
