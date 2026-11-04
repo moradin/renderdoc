@@ -383,6 +383,15 @@ private:
     // resolved into it with StretchRect
     IDirect3DSurface9 *msTarget = NULL;
 
+    // the triangle size overlay's shaders and vertices: each triangle's clip space positions with
+    // its area in pixels (TriSizeVertex in d3d9_overlay.cpp)
+    IDirect3DVertexShader9 *triSizeVS = NULL;
+    IDirect3DPixelShader9 *triSizePS = NULL;
+    IDirect3DVertexDeclaration9 *triSizeDecl = NULL;
+    // on the real device, dynamic, triSizeVBSize bytes
+    IDirect3DVertexBuffer9 *triSizeVB = NULL;
+    uint32_t triSizeVBSize = 0;
+
     void ReleaseShaders();
     void ReleaseTextures();
   } m_Overlay;
@@ -396,6 +405,19 @@ private:
                                       const rdcarray<uint32_t> &passEvents);
   ResourceId RenderDrawOverlay(IDirect3DSurface9 *targetSurf, IDirect3DSurface9 *overlaySurf,
                                DebugOverlay overlay, uint32_t eventId);
+  // the triangle size overlays, drawn from the post-transform vertices of the draw, or of each
+  // draw in the pass
+  ResourceId RenderTriangleSizeOverlay(IDirect3DSurface9 *targetSurf,
+                                       IDirect3DSurface9 *overlaySurf, DebugOverlay overlay,
+                                       uint32_t eventId, const rdcarray<uint32_t> &passEvents);
+  // draws the triangle sizes of the draw at eventId, which the device is at with state, into
+  // drawTarget (cleared first if clear is set)
+  void DrawTriangleSizes(uint32_t eventId, const D3D9DeviceState &state,
+                         IDirect3DSurface9 *drawTarget, IDirect3DSurface9 *ds, bool clear);
+  // the surface the overlay passes at the event draw into (overlaySurf, or the multisampled
+  // target resolved into it), and in ds the depth stencil they test against, or NULL
+  IDirect3DSurface9 *OverlayDrawTarget(IDirect3DSurface9 *targetSurf, IDirect3DSurface9 *overlaySurf,
+                                       uint32_t eventId, IDirect3DSurface9 *&ds);
 
   // Post-transform vertices (phase 3e): d3d9_postvs.cpp
 

@@ -37,6 +37,9 @@
 //   (0.25, 0.8), kept, and a counter-clockwise one around (0.75, 0.8), culled.
 // - "Viewport Scissor": a vs_3_0 quad covering the viewport, which is the bottom right quarter
 //   (x 0.5-1, y 0.5-1), with the scissor rect at x 0.6-0.9, y 0.6-0.9.
+// - "Triangle Size": a fixed function triangle strip of three small triangles, in pixels from
+//   (int(0.1 * width), int(0.92 * height)), where no other draw is: (0,0) (0,4) (5,0) (12,4)
+//   (8.5,0), so the triangles have areas of 10, 24 and 7 pixels.
 // - "MSAA": a 256x256 4x multisampled target and depth stencil, cleared, then a fixed function
 //   triangle (128,20) (236,236) (20,236) at depth 0.5 with ZFUNC LESS. Skipped without 4x MSAA.
 RD_TEST(D3D9_Overlay_Test, D3D9GraphicsTest)
@@ -44,7 +47,8 @@ RD_TEST(D3D9_Overlay_Test, D3D9GraphicsTest)
   static constexpr const char *Description =
       "Draws for checking the texture viewer's overlays: a depth test that fails and passes, one "
       "that only fails because of the depth bias, a stencil test, backface culling, a viewport "
-      "with a scissor rect, and a multisampled target. Each is in its own marker.";
+      "with a scissor rect, small triangles of known areas, and a multisampled target. Each is in "
+      "its own marker.";
 
   struct FFVertex
   {
@@ -218,6 +222,20 @@ RD_TEST(D3D9_Overlay_Test, D3D9GraphicsTest)
         dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
         const D3DVIEWPORT9 full = {0, 0, (DWORD)screenWidth, (DWORD)screenHeight, 0.0f, 1.0f};
         dev->SetViewport(&full);
+      }
+      popMarker();
+
+      pushMarker("Triangle Size");
+      {
+        SetFixedFunction();
+        const float x = float(int(0.1f * w)), y = float(int(0.92f * h));
+        const D3DCOLOR col = D3DCOLOR_COLORVALUE(1.0f, 1.0f, 0.0f, 1.0f);
+        const FFVertex strip[5] = {
+            {x, y, 0.5f, 1.0f, col},        {x, y + 4.0f, 0.5f, 1.0f, col},
+            {x + 5.0f, y, 0.5f, 1.0f, col}, {x + 12.0f, y + 4.0f, 0.5f, 1.0f, col},
+            {x + 8.5f, y, 0.5f, 1.0f, col},
+        };
+        dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 3, strip, sizeof(FFVertex));
       }
       popMarker();
 

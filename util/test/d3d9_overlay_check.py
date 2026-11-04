@@ -13,6 +13,7 @@
 # util/test/demos/d3d9/d3d9_overlay_test.cpp), and that rendering an overlay leaves the target as
 # it was. It ends with the number of failures, and returns 1 if there were any.
 
+import math
 import os
 import struct
 import sys
@@ -128,6 +129,28 @@ RED = [1.0, 0.0, 0.0, 1.0]
 GREEN = [0.0, 1.0, 0.0, 1.0]
 NONE = [0.0, 0.0, 0.0, 0.0]
 
+# the triangle size overlay's colour ramp (colorRamp in renderdoc/replay/replay_driver.cpp)
+COLOR_RAMP = [
+    [0.000000, 0.000000, 0.000000, 0.0], [0.250980, 0.000000, 0.250980, 1.0],
+    [0.250980, 0.000000, 0.752941, 1.0], [0.000000, 0.250980, 1.000000, 1.0],
+    [0.000000, 0.501961, 1.000000, 1.0], [0.000000, 0.627451, 1.000000, 1.0],
+    [0.250980, 0.752941, 1.000000, 1.0], [0.250980, 0.878431, 1.000000, 1.0],
+    [0.250980, 1.000000, 1.000000, 1.0], [0.250980, 1.000000, 0.752941, 1.0],
+    [0.250980, 1.000000, 0.250980, 1.0], [0.501961, 1.000000, 0.250980, 1.0],
+    [0.752941, 1.000000, 0.250980, 1.0], [1.000000, 1.000000, 0.250980, 1.0],
+    [1.000000, 0.878431, 0.250980, 1.0], [1.000000, 0.627451, 0.250980, 1.0],
+    [1.000000, 0.376471, 0.250980, 1.0], [1.000000, 0.125490, 0.250980, 1.0],
+    [1.000000, 0.376471, 0.752941, 1.0], [1.000000, 0.627451, 1.000000, 1.0],
+    [1.000000, 0.878431, 1.000000, 1.0], [1.000000, 1.000000, 1.000000, 1.0],
+]
+
+
+def tri_size_colour(area):
+    # the texture display's HEATMAP_TRISIZE (renderdoc/data/hlsl/texdisplay.hlsl), which the D3D9
+    # overlay's pixel shader does itself
+    area = max(area, 0.001)
+    return COLOR_RAMP[2 + int(math.floor(20.0 - 20.1 * (1.0 - math.exp(-0.4 * area))))]
+
 
 def main():
     if len(sys.argv) < 2:
@@ -213,11 +236,30 @@ def main():
         if oid:
             c.expect(oid, 'Stencil with the test off passes', *inTop, GREEN)
 
-        for overlay in (rd.DebugOverlay.QuadOverdrawDraw, rd.DebugOverlay.QuadOverdrawPass,
-                        rd.DebugOverlay.TriangleSizeDraw, rd.DebugOverlay.TriangleSizePass):
-            oid = c.render(target, overlay, 'Depth Test')
-            check('{} isn\'t supported, no overlay texture'.format(str(overlay).split('.')[-1]),
-                  oid == rd.ResourceId.Null())
+        # quad overdraw isn't supported: a transparent overlay, so the viewer doesn't keep the last
+        for overlay in (rd.DebugOverlay.QuadOverdrawDraw, rd.DebugOverlay.QuadOverdrawPass):
+            oid = c.overlay(target, overlay, 'Depth Test', W, H)
+            if oid:
+                data = bytes(controller.GetTextureData(oid, rd.Subresource(0, 0, 0)))
+                check('{} is transparent'.format(str(overlay).split('.')[-1]),
+                      len(data) > 0 and not any(data),
+                      '{} non-zero bytes'.format(sum(b != 0 for b in data)))
+
+        # The quad's triangles (0.25 x 0.8 of the window, halved) and the setup draw's (the top
+        # half, halved) are big, so they're the ramp's first colour. The draw shows where it
+        # passes the depth test, and the pass the setup draw in the top half too.
+        quadColour = tri_size_colour(0.1 * W * H)
+        setupColour = tri_size_colour(0.25 * W * H)
+        oid = c.overlay(target, rd.DebugOverlay.TriangleSizeDraw, 'Depth Test', W, H)
+        if oid:
+            c.expect(oid, 'TriangleSizeDraw fails the depth test in the top half', *inTop, NONE)
+            c.expect(oid, 'TriangleSizeDraw in the bottom half', *inBottom, quadColour)
+            c.expect(oid, 'TriangleSizeDraw outside the draw', *outside, NONE)
+        oid = c.overlay(target, rd.DebugOverlay.TriangleSizePass, 'Depth Test', W, H)
+        if oid:
+            c.expect(oid, 'TriangleSizePass has the setup draw in the top half', *inTop, setupColour)
+            c.expect(oid, 'TriangleSizePass in the bottom half', *inBottom, quadColour)
+            c.expect(oid, 'TriangleSizePass outside the pass', *outside, NONE)
 
         c.render(target, rd.DebugOverlay.NoOverlay, 'Depth Test')
         afterData = bytes(controller.GetTextureData(target, rd.Subresource(0, 0, 0)))
@@ -304,6 +346,63 @@ def main():
             check('the scissor rect\'s border is black or white',
                   close(v, [1.0] * 4) or close(v, [0.0, 0.0, 0.0, 1.0]), fmt(v))
 
+        # the triangle sizes are in pixels of the viewport, and keep the scissor test, as on D3D11
+        oid = c.overlay(target, rd.DebugOverlay.TriangleSizeDraw, 'Viewport Scissor', W, H)
+        if oid:
+            c.expect(oid, 'TriangleSizeDraw inside the scissor rect', 0.75 * W, 0.75 * H,
+                     tri_size_colour(0.125 * W * H))
+            c.expect(oid, 'TriangleSizeDraw scissored out', 0.55 * W, 0.95 * H, NONE)
+            c.expect(oid, 'TriangleSizeDraw outside the viewport', 0.25 * W, 0.75 * H, NONE)
+
+    # Triangle Size: a fixed function (pretransformed) strip of triangles with areas of 10, 24 and
+    # 7 pixels, from (int(0.1 * W), int(0.92 * H)): (0,0) (0,4) (5,0), then (5,0) (0,4) (12,4),
+    # then (5,0) (12,4) (8.5,0)
+    target, tex = at('Triangle Size')
+    if target:
+        W, H = tex.width, tex.height
+        bx, by = int(0.1 * W), int(0.92 * H)
+        tris = [((bx + 1, by + 1), 10.0), ((bx + 5, by + 3), 24.0), ((bx + 8, by + 1), 7.0)]
+        print('  expected ramp entries: ' + ', '.join(
+            '{} for {} pixels'.format(COLOR_RAMP.index(tri_size_colour(a)), a) for _, a in tris))
+
+        oid = c.overlay(target, rd.DebugOverlay.TriangleSizeDraw, 'Triangle Size', W, H)
+        if oid:
+            for (x, y), area in tris:
+                c.expect(oid, 'TriangleSizeDraw of a {} pixel triangle'.format(area), x, y,
+                         tri_size_colour(area))
+            c.expect(oid, 'TriangleSizeDraw outside the strip', bx + 2, by + 6, NONE)
+            c.expect(oid, 'TriangleSizeDraw leaves out the earlier draws', 0.175 * W, 0.7 * H, NONE)
+
+            # every pixel the draw covers, and only those, has one of the ramp's colours
+            triData = bytes(controller.GetTextureData(oid, rd.Subresource(0, 0, 0)))
+            oid = c.overlay(target, rd.DebugOverlay.Drawcall, 'Triangle Size', W, H)
+            if oid:
+                drawData = bytes(controller.GetTextureData(oid, rd.Subresource(0, 0, 0)))
+                ramp = set(tuple(int(round(v * 255.0)) for v in col) for col in COLOR_RAMP[1:])
+                covered = mismatched = notRamp = 0
+                for i in range(0, min(len(triData), len(drawData)), 4):
+                    # BGRA
+                    tri = (triData[i + 2], triData[i + 1], triData[i], triData[i + 3])
+                    inDraw = drawData[i + 3] == 255
+                    covered += inDraw
+                    mismatched += inDraw != (tri[3] != 0)
+                    notRamp += tri[3] != 0 and tri not in ramp
+                # pretransformed positions go through clip space here, so a pixel centre exactly
+                # on an edge can come out either way
+                check('TriangleSizeDraw covers what Drawcall does', covered > 0 and mismatched <= 3,
+                      '{} pixels covered, {} differ'.format(covered, mismatched))
+                check('TriangleSizeDraw only has ramp colours', notRamp == 0,
+                      '{} pixels aren\'t'.format(notRamp))
+
+        oid = c.overlay(target, rd.DebugOverlay.TriangleSizePass, 'Triangle Size', W, H)
+        if oid:
+            for (x, y), area in tris:
+                c.expect(oid, 'TriangleSizePass of a {} pixel triangle'.format(area), x, y,
+                         tri_size_colour(area))
+            c.expect(oid, 'TriangleSizePass has the Depth Test draw', 0.175 * W, 0.7 * H,
+                     tri_size_colour(0.1 * W * H))
+            c.expect(oid, 'TriangleSizePass outside the pass', bx + 2, by + 6, NONE)
+
     # MSAA: a 256x256 4x target with a triangle (128,20) (236,236) (20,236)
     target, tex = at('MSAA')
     if target:
@@ -316,6 +415,11 @@ def main():
         oid = c.overlay(target, rd.DebugOverlay.Drawcall, 'MSAA', W, H)
         if oid:
             c.expect(oid, 'Drawcall inside the triangle', 128, 180, [0.8, 0.1, 0.8, 1.0])
+        oid = c.overlay(target, rd.DebugOverlay.TriangleSizeDraw, 'MSAA', W, H)
+        if oid:
+            c.expect(oid, 'TriangleSizeDraw inside the triangle', 128, 180,
+                     tri_size_colour(216.0 * 216.0 / 2.0))
+            c.expect(oid, 'TriangleSizeDraw outside the triangle', 20, 20, NONE)
     else:
         print('  (the demo skips MSAA when 4x isn\'t supported)')
 

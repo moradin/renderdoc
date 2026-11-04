@@ -646,9 +646,23 @@ void D3D9Replay::ReadVertexTexture(uint32_t sampler, const D3D9DeviceState &stat
 
 void D3D9Replay::InitPostVSBuffers(const rdcarray<uint32_t> &passEvents)
 {
-  // only the current event is in a pass (GetPassEvents), and the device is at it
-  if(!passEvents.empty())
-    InitPostVSBuffers(passEvents.back());
+  // The pass's draws before the current event (GetPassEvents), as D3D11 does: each draw's inputs
+  // are read from the device at it, so replay to each one that isn't cached yet. The caller
+  // replays back to its event afterwards.
+  uint32_t prev = 0;
+  for(uint32_t eventId : passEvents)
+  {
+    if(m_PostVS.find(eventId) != m_PostVS.end())
+      continue;
+
+    // a partial replay includes its first event: from prev's draw up to this one without its draw
+    m_pDevice->ReplayLog(prev, eventId, eReplay_WithoutDraw);
+    prev = eventId;
+    // vertex textures are decoded from what they hold here
+    ClearReplayCaches();
+
+    InitPostVSBuffers(eventId);
+  }
 }
 
 const D3D9Emu::PostVSResult *D3D9Replay::GetPostVSResult(uint32_t eventId, uint32_t instance)

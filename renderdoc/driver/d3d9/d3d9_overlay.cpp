@@ -26,6 +26,7 @@
 #include "d3d9_device.h"
 #include "d3d9_replay.h"
 #include "d3d9_resources.h"
+#include "d3d9_vs_emulate.h"
 
 // The texture viewer's overlays
 // -----------------------------
@@ -52,6 +53,13 @@
 //   off.
 // * Nothing is drawn at an event between BeginStateBlock and EndStateBlock, as in the texture
 //   viewer: our state calls would be recorded into the application's state block.
+// * The triangle size overlays have no geometry shader to work out each triangle's area, as
+//   D3D11's do, so they're drawn from the CPU post-transform vertices (d3d9_postvs.cpp), expanded
+//   to a triangle list with each triangle's area in a vertex attribute. The pixel shader maps the
+//   area through D3D11's colour ramp itself: D3D11 writes the area and the texture display maps it
+//   (HEATMAP_TRISIZE), but D3D9's texture display has no heatmaps.
+// * Quad overdraw needs UAVs, which D3D9 doesn't have. It returns a transparent overlay, so the
+//   texture viewer doesn't keep showing the previous one.
 
 // d3d9_rendertexture.cpp
 rdcstr D3D9CompileDebugShader(const char *source, const char *profile, DWORD flags,
@@ -105,6 +113,165 @@ float4 main(float2 vpos : VPOS) : COLOR0
   return first ? primary : secondary;
 }
 )";
+
+// the triangle size overlay: the clip space position, and the area in pixels of its triangle
+const char *TriangleSizeVS = R"(
+struct v2f
+{
+  float4 pos : POSITION;
+  float area : TEXCOORD0;
+};
+
+v2f main(float4 pos : POSITION, float area : TEXCOORD0)
+{
+  v2f OUT;
+  OUT.pos = pos;
+  OUT.area = area;
+  return OUT;
+}
+)";
+
+// RENDERDOC_TriangleSizePS (mesh.hlsl) and the texture display's HEATMAP_TRISIZE (texdisplay.hlsl)
+// in one: the area through the colour ramp.
+// c0-c21: the colour ramp (colorRamp in replay_driver.cpp)
+const char *TriangleSizePS = R"(
+float4 ramp[22] : register(c0);
+
+float4 main(float area : TEXCOORD0) : COLOR0
+{
+  area = max(area, 0.001f);
+
+  float bucket = 2.0f + floor(20.0f - 20.1f * (1.0f - exp(-0.4f * area)));
+
+  // ps_3_0 can only index constants with the loop counter
+  float4 col = ramp[0];
+  [unroll] for(int i = 1; i < 22; i++)
+    col = (bucket == (float)i) ? ramp[i] : col;
+  return col;
+}
+)";
+
+// a vertex of the triangle size overlay, TriangleSizeVS's input
+struct TriSizeVertex
+{
+  Vec4f pos;
+  float area;
+};
+
+// The triangles of a draw's post-transform vertices as a list, each vertex with the area of its
+// triangle, as RENDERDOC_TriangleSizeGS (mesh.hlsl) works it out: after the perspective divide, in
+// pixels of the viewport. Pretransformed positions are replaced by the clip space positions that
+// the viewport maps to them. Points and lines have no triangles, as D3D11's geometry shader takes
+// triangles.
+void TriangleSizeVertices(const D3D9Emu::PostVSResult &res, uint32_t posComps, Topology topo,
+                          const D3DVIEWPORT9 &vp, rdcarray<TriSizeVertex> &out)
+{
+  const uint32_t rows = res.numRows;
+  uint32_t numTris = 0;
+  switch(topo)
+  {
+    case Topology::TriangleList: numTris = rows / 3; break;
+    case Topology::TriangleStrip:
+    case Topology::TriangleFan: numTris = rows >= 3 ? rows - 2 : 0; break;
+    default: return;
+  }
+
+  if(numTris == 0 || res.stride < sizeof(float))
+    return;
+
+  const uint32_t numVerts = uint32_t(res.vertexData.size() / res.stride);
+  posComps = RDCMIN(posComps, RDCMIN(4U, res.stride / (uint32_t)sizeof(float)));
+
+  const float vpW = float(vp.Width), vpH = float(vp.Height);
+  const float depthRange = vp.MaxZ - vp.MinZ;
+
+  auto position = [&](uint32_t row, Vec4f &pos) -> bool {
+    uint32_t v = row;
+    if(res.indexed)
+      v = row < res.indices.size() ? res.indices[row] : ~0U;
+    if(v >= numVerts)
+      return false;
+
+    float p[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    memcpy(p, res.vertexData.data() + size_t(v) * res.stride, posComps * sizeof(float));
+
+    if(res.clipSpace)
+    {
+      pos = Vec4f(p[0], p[1], p[2], p[3]);
+      return true;
+    }
+
+    // pretransformed: x and y in pixels (pixel centres at integers, as the viewport maps clip
+    // space), z the depth and the reciprocal of w
+    const float w = (p[3] != 0.0f && RDCISFINITE(p[3])) ? 1.0f / p[3] : 1.0f;
+    const float x = vpW > 0.0f ? (p[0] - float(vp.X)) / vpW * 2.0f - 1.0f : 0.0f;
+    const float y = vpH > 0.0f ? 1.0f - (p[1] - float(vp.Y)) / vpH * 2.0f : 0.0f;
+    const float z = depthRange != 0.0f ? (p[2] - vp.MinZ) / depthRange : 0.0f;
+    pos = Vec4f(x * w, y * w, z * w, w);
+    return true;
+  };
+
+  out.reserve(out.size() + numTris * 3);
+
+  for(uint32_t t = 0; t < numTris; t++)
+  {
+    uint32_t idx[3];
+    if(topo == Topology::TriangleList)
+    {
+      idx[0] = t * 3;
+      idx[1] = t * 3 + 1;
+      idx[2] = t * 3 + 2;
+    }
+    else if(topo == Topology::TriangleStrip)
+    {
+      // odd triangles swap their first two vertices, which keeps the winding, as a geometry
+      // shader sees them
+      idx[0] = (t & 1) ? t + 1 : t;
+      idx[1] = (t & 1) ? t : t + 1;
+      idx[2] = t + 2;
+    }
+    else
+    {
+      idx[0] = 0;
+      idx[1] = t + 1;
+      idx[2] = t + 2;
+    }
+
+    TriSizeVertex tri[3];
+    if(!position(idx[0], tri[0].pos) || !position(idx[1], tri[1].pos) ||
+       !position(idx[2], tri[2].pos))
+      continue;
+
+    float sx[3], sy[3];
+    for(int i = 0; i < 3; i++)
+    {
+      sx[i] = (tri[i].pos.x / tri[i].pos.w * 0.5f + 0.5f) * vpW;
+      sy[i] = (tri[i].pos.y / tri[i].pos.w * 0.5f + 0.5f) * vpH;
+    }
+
+    auto length = [&](int a, int b) {
+      return sqrtf((sx[a] - sx[b]) * (sx[a] - sx[b]) + (sy[a] - sy[b]) * (sy[a] - sy[b]));
+    };
+
+    const float ab = length(0, 1);
+    const float bc = length(1, 2);
+    const float ca = length(2, 0);
+    const float s = (ab + bc + ca) / 2.0f;
+    float area = sqrtf(s * (s - ab) * (s - bc) * (s - ca));
+
+    // the pixel shader takes max(area, 0.001), which turns NaN into 0.001 on D3D11. An infinite
+    // area becomes a large one, so it interpolates.
+    if(!(area >= 0.001f))
+      area = 0.001f;
+    area = RDCMIN(area, 1.0e30f);
+
+    for(int i = 0; i < 3; i++)
+    {
+      tri[i].area = area;
+      out.push_back(tri[i]);
+    }
+  }
+}
 
 // a quad covering the viewport, as a triangle strip
 const Vec4f ViewportQuad[4] = {
@@ -240,6 +407,9 @@ void D3D9Replay::OverlayRender::ReleaseShaders()
   SAFE_RELEASE(colourPS3);
   SAFE_RELEASE(quadVS);
   SAFE_RELEASE(borderPS);
+  SAFE_RELEASE(triSizeVS);
+  SAFE_RELEASE(triSizePS);
+  SAFE_RELEASE(triSizeDecl);
   tried = ok = false;
 }
 
@@ -251,6 +421,8 @@ void D3D9Replay::OverlayRender::ReleaseTextures()
   cube = false;
   width = height = mips = 0;
   SAFE_RELEASE(msTarget);
+  SAFE_RELEASE(triSizeVB);
+  triSizeVBSize = 0;
 }
 
 void D3D9Replay::ReleaseOverlay()
@@ -268,7 +440,7 @@ bool D3D9Replay::InitOverlayRender()
 
   IDirect3DDevice9 *dev = m_pDevice->GetReal();
 
-  rdcarray<DWORD> ps2, ps3, vs, border;
+  rdcarray<DWORD> ps2, ps3, vs, border, triVS, triPS;
   rdcstr err = D3D9CompileDebugShader(OverlayColourPS, "ps_2_0", 0, ps2);
   if(err.empty())
     err = D3D9CompileDebugShader(OverlayColourPS, "ps_3_0", 0, ps3);
@@ -276,6 +448,10 @@ bool D3D9Replay::InitOverlayRender()
     err = D3D9CompileDebugShader(OverlayQuadVS, "vs_3_0", 0, vs);
   if(err.empty())
     err = D3D9CompileDebugShader(OverlayBorderPS, "ps_3_0", 0, border);
+  if(err.empty())
+    err = D3D9CompileDebugShader(TriangleSizeVS, "vs_3_0", 0, triVS);
+  if(err.empty())
+    err = D3D9CompileDebugShader(TriangleSizePS, "ps_3_0", 0, triPS);
 
   if(!err.empty())
   {
@@ -290,6 +466,19 @@ bool D3D9Replay::InitOverlayRender()
     hr = dev->CreateVertexShader(vs.data(), &m_Overlay.quadVS);
   if(SUCCEEDED(hr))
     hr = dev->CreatePixelShader(border.data(), &m_Overlay.borderPS);
+  if(SUCCEEDED(hr))
+    hr = dev->CreateVertexShader(triVS.data(), &m_Overlay.triSizeVS);
+  if(SUCCEEDED(hr))
+    hr = dev->CreatePixelShader(triPS.data(), &m_Overlay.triSizePS);
+
+  RDCCOMPILE_ASSERT(sizeof(TriSizeVertex) == 20, "TriSizeVertex doesn't match its declaration");
+  const D3DVERTEXELEMENT9 triSizeElements[] = {
+      {0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+      {0, 16, D3DDECLTYPE_FLOAT1, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
+      D3DDECL_END(),
+  };
+  if(SUCCEEDED(hr))
+    hr = dev->CreateVertexDeclaration(triSizeElements, &m_Overlay.triSizeDecl);
 
   if(FAILED(hr))
   {
@@ -358,8 +547,8 @@ ResourceId D3D9Replay::RenderOverlay(ResourceId texid, FloatVector clearCol, Deb
     case DebugOverlay::NoOverlay:
     case DebugOverlay::NaN:
     case DebugOverlay::Clipping: return ResourceId();
-    // With no overlay texture the texture viewer shows the target as it is, and picks and saves
-    // the target instead of the overlay.
+    // Unsupported, so the overlay is left transparent. With no overlay texture at all the texture
+    // viewer would keep showing the previous overlay.
     case DebugOverlay::QuadOverdrawDraw:
     case DebugOverlay::QuadOverdrawPass:
     {
@@ -367,16 +556,7 @@ ResourceId D3D9Replay::RenderOverlay(ResourceId texid, FloatVector clearCol, Deb
       WarnOnce(warned,
                "The quad overdraw overlays aren't supported for D3D9 captures: they need "
                "UAVs, which D3D9 doesn't have");
-      return ResourceId();
-    }
-    case DebugOverlay::TriangleSizeDraw:
-    case DebugOverlay::TriangleSizePass:
-    {
-      // TODO: the triangle size overlays need the post-transform positions, which come with
-      // GetPostVSBuffers (phase 3e mesh output). Draw them like D3D11 does once that's in.
-      static bool warned = false;
-      WarnOnce(warned, "The triangle size overlays aren't supported for D3D9 captures yet");
-      return ResourceId();
+      break;
     }
     default: break;
   }
@@ -506,9 +686,18 @@ ResourceId D3D9Replay::RenderOverlay(ResourceId texid, FloatVector clearCol, Deb
 
   ResourceId ret;
 
-  if(overlay == DebugOverlay::ClearBeforeDraw || overlay == DebugOverlay::ClearBeforePass)
+  if(overlay == DebugOverlay::QuadOverdrawDraw || overlay == DebugOverlay::QuadOverdrawPass)
+  {
+    // transparent (see above)
+    ret = m_Overlay.id;
+  }
+  else if(overlay == DebugOverlay::ClearBeforeDraw || overlay == DebugOverlay::ClearBeforePass)
   {
     ret = RenderClearBeforeOverlay(texDesc, clearCol, overlay, eventId, passEvents);
+  }
+  else if(overlay == DebugOverlay::TriangleSizeDraw || overlay == DebugOverlay::TriangleSizePass)
+  {
+    ret = RenderTriangleSizeOverlay(target.surf, overlaySurf, overlay, eventId, passEvents);
   }
   else
   {
@@ -644,58 +833,8 @@ ResourceId D3D9Replay::RenderDrawOverlay(IDirect3DSurface9 *targetSurf,
   D3DSURFACE_DESC targetDesc = {};
   targetSurf->GetDesc(&targetDesc);
 
-  // the application's depth stencil stays bound. D3D9 needs it to be at least as big as the
-  // target and to have the same multisample type, so we draw at the target's size and with the
-  // depth stencil's multisample type.
   IDirect3DSurface9 *ds = NULL;
-  dev->GetDepthStencilSurface(&ds);
-
-  D3DMULTISAMPLE_TYPE msType = targetDesc.MultiSampleType;
-  DWORD msQuality = targetDesc.MultiSampleQuality;
-  if(ds)
-  {
-    D3DSURFACE_DESC dsDesc = {};
-    ds->GetDesc(&dsDesc);
-    if(dsDesc.Width < targetDesc.Width || dsDesc.Height < targetDesc.Height)
-    {
-      RDCWARN(
-          "The depth stencil at event %u is smaller than the target, it's left out of the "
-          "overlay",
-          eventId);
-      SAFE_RELEASE(ds);
-    }
-    else
-    {
-      msType = dsDesc.MultiSampleType;
-      msQuality = dsDesc.MultiSampleQuality;
-    }
-  }
-
-  IDirect3DSurface9 *drawTarget = overlaySurf;
-  if(msType != D3DMULTISAMPLE_NONE)
-  {
-    if(m_Overlay.msTarget)
-    {
-      D3DSURFACE_DESC msDesc = {};
-      m_Overlay.msTarget->GetDesc(&msDesc);
-      if(msDesc.Width != targetDesc.Width || msDesc.Height != targetDesc.Height ||
-         msDesc.MultiSampleType != msType || msDesc.MultiSampleQuality != msQuality)
-        SAFE_RELEASE(m_Overlay.msTarget);
-    }
-
-    if(m_Overlay.msTarget == NULL)
-    {
-      HRESULT hr = dev->CreateRenderTarget(targetDesc.Width, targetDesc.Height, D3DFMT_A8R8G8B8,
-                                           msType, msQuality, FALSE, &m_Overlay.msTarget, NULL);
-      if(FAILED(hr))
-      {
-        RDCERR("Couldn't create a multisampled render target for the overlay: %s", ToStr(hr).c_str());
-        m_Overlay.msTarget = NULL;
-      }
-    }
-
-    drawTarget = m_Overlay.msTarget;
-  }
+  IDirect3DSurface9 *drawTarget = OverlayDrawTarget(targetSurf, overlaySurf, eventId, ds);
 
   if(drawTarget == NULL)
   {
@@ -892,4 +1031,267 @@ ResourceId D3D9Replay::RenderDrawOverlay(IDirect3DSurface9 *targetSurf,
   m_pDevice->RestoreReplayDrawState(state);
 
   return m_Overlay.id;
+}
+
+IDirect3DSurface9 *D3D9Replay::OverlayDrawTarget(IDirect3DSurface9 *targetSurf,
+                                                 IDirect3DSurface9 *overlaySurf, uint32_t eventId,
+                                                 IDirect3DSurface9 *&ds)
+{
+  IDirect3DDevice9 *dev = m_pDevice->GetReal();
+
+  D3DSURFACE_DESC targetDesc = {};
+  targetSurf->GetDesc(&targetDesc);
+
+  // the application's depth stencil stays bound. D3D9 needs it to be at least as big as the
+  // target and to have the same multisample type, so we draw at the target's size and with the
+  // depth stencil's multisample type.
+  ds = NULL;
+  dev->GetDepthStencilSurface(&ds);
+
+  D3DMULTISAMPLE_TYPE msType = targetDesc.MultiSampleType;
+  DWORD msQuality = targetDesc.MultiSampleQuality;
+  if(ds)
+  {
+    D3DSURFACE_DESC dsDesc = {};
+    ds->GetDesc(&dsDesc);
+    if(dsDesc.Width < targetDesc.Width || dsDesc.Height < targetDesc.Height)
+    {
+      RDCWARN(
+          "The depth stencil at event %u is smaller than the target, it's left out of the "
+          "overlay",
+          eventId);
+      SAFE_RELEASE(ds);
+    }
+    else
+    {
+      msType = dsDesc.MultiSampleType;
+      msQuality = dsDesc.MultiSampleQuality;
+    }
+  }
+
+  if(msType == D3DMULTISAMPLE_NONE)
+    return overlaySurf;
+
+  if(m_Overlay.msTarget)
+  {
+    D3DSURFACE_DESC msDesc = {};
+    m_Overlay.msTarget->GetDesc(&msDesc);
+    if(msDesc.Width != targetDesc.Width || msDesc.Height != targetDesc.Height ||
+       msDesc.MultiSampleType != msType || msDesc.MultiSampleQuality != msQuality)
+      SAFE_RELEASE(m_Overlay.msTarget);
+  }
+
+  if(m_Overlay.msTarget == NULL)
+  {
+    HRESULT hr = dev->CreateRenderTarget(targetDesc.Width, targetDesc.Height, D3DFMT_A8R8G8B8,
+                                         msType, msQuality, FALSE, &m_Overlay.msTarget, NULL);
+    if(FAILED(hr))
+    {
+      RDCERR("Couldn't create a multisampled render target for the overlay: %s", ToStr(hr).c_str());
+      m_Overlay.msTarget = NULL;
+    }
+  }
+
+  return m_Overlay.msTarget;
+}
+
+ResourceId D3D9Replay::RenderTriangleSizeOverlay(IDirect3DSurface9 *targetSurf,
+                                                 IDirect3DSurface9 *overlaySurf,
+                                                 DebugOverlay overlay, uint32_t eventId,
+                                                 const rdcarray<uint32_t> &passEvents)
+{
+  rdcarray<uint32_t> events;
+  if(overlay == DebugOverlay::TriangleSizePass)
+    events = passEvents;
+  events.push_back(eventId);
+
+  // the replay is at the event without its draw. For the pass, go back to its first draw.
+  if(events.size() > 1)
+  {
+    m_pDevice->ReplayLog(0, events[0], eReplay_WithoutDraw);
+    ClearReplayCaches();
+  }
+
+  // the multisampled target drawn into, once it's been cleared, to resolve into the overlay
+  IDirect3DSurface9 *msDrawn = NULL;
+
+  for(size_t i = 0; i < events.size(); i++)
+  {
+    const ActionDescription *action = m_pDevice->GetAction(events[i]);
+    if(action && (action->flags & ActionFlags::Drawcall))
+    {
+      // the draw's inputs are read from the device while it's at the event (unless they're
+      // cached), and its vertices computed from them
+      InitPostVSBuffers(events[i]);
+
+      // as in RenderDrawOverlay, the state is put back before the draw is replayed. Nothing is
+      // drawn while a state block is recorded (SaveReplayDrawState warned).
+      D3D9DeviceState state;
+      if(m_pDevice->SaveReplayDrawState(state))
+      {
+        IDirect3DSurface9 *ds = NULL;
+        IDirect3DSurface9 *drawTarget = OverlayDrawTarget(targetSurf, overlaySurf, events[i], ds);
+        if(drawTarget)
+        {
+          // a multisampled target starts out transparent, as the overlay texture does
+          const bool clear = drawTarget != overlaySurf && drawTarget != msDrawn;
+          if(drawTarget != overlaySurf)
+            msDrawn = drawTarget;
+          DrawTriangleSizes(events[i], state, drawTarget, ds, clear);
+        }
+        SAFE_RELEASE(ds);
+        m_pDevice->RestoreReplayDrawState(state);
+      }
+    }
+
+    // the pass's draws and what's between them, up to the event without its draw, which the
+    // replay controller replays after the overlay
+    if(i + 1 < events.size())
+    {
+      m_pDevice->ReplayLog(0, events[i], eReplay_OnlyDraw);
+      m_pDevice->ReplayLog(events[i] + 1, events[i + 1], eReplay_WithoutDraw);
+      // the post-transform data decodes vertex textures from what they hold at the event
+      ClearReplayCaches();
+    }
+  }
+
+  // multisampled targets are resolved into the overlay texture
+  if(msDrawn && msDrawn == m_Overlay.msTarget)
+  {
+    HRESULT hr = m_pDevice->GetReal()->StretchRect(msDrawn, NULL, overlaySurf, NULL, D3DTEXF_NONE);
+    if(FAILED(hr))
+      RDCWARN("Couldn't resolve the multisampled overlay: %s", ToStr(hr).c_str());
+  }
+
+  return m_Overlay.id;
+}
+
+void D3D9Replay::DrawTriangleSizes(uint32_t eventId, const D3D9DeviceState &state,
+                                   IDirect3DSurface9 *drawTarget, IDirect3DSurface9 *ds, bool clear)
+{
+  IDirect3DDevice9 *dev = m_pDevice->GetReal();
+
+  const ActionDescription *action = m_pDevice->GetAction(eventId);
+  if(action == NULL)
+    return;
+
+  // every instance's triangles, drawn in order. Hardware instancing only applies to indexed
+  // draws, as in the post-transform data. Instances without data are left out.
+  rdcarray<TriSizeVertex> verts;
+  const uint32_t numInstances =
+      (action->flags & ActionFlags::Indexed) ? RDCMAX(1U, action->numInstances) : 1U;
+  for(uint32_t inst = 0; inst < numInstances; inst++)
+  {
+    MeshFormat fmt = GetPostVSBuffers(eventId, inst, 0, MeshDataStage::VSOut);
+    if(fmt.vertexResourceId == ResourceId())
+      continue;
+
+    const D3D9Emu::PostVSResult *res = GetPostVSResult(eventId, inst);
+    if(res == NULL || !res->hasPosition)
+      continue;
+
+    TriangleSizeVertices(*res, fmt.format.compCount, fmt.topology, state.Viewport, verts);
+  }
+
+  if(verts.empty() && !clear)
+    return;
+
+  // the application's rasterizer states and depth and stencil tests, which D3D11 keeps too, with
+  // the writes off
+  const D3DRENDERSTATETYPE kept[] = {
+      D3DRS_FILLMODE,          D3DRS_CULLMODE,
+      D3DRS_ZENABLE,           D3DRS_ZFUNC,
+      D3DRS_STENCILENABLE,     D3DRS_TWOSIDEDSTENCILMODE,
+      D3DRS_DEPTHBIAS,         D3DRS_SLOPESCALEDEPTHBIAS,
+      D3DRS_SCISSORTESTENABLE, D3DRS_MULTISAMPLEANTIALIAS,
+  };
+  DWORD keptValues[ARRAY_COUNT(kept)] = {};
+  for(size_t i = 0; i < ARRAY_COUNT(kept); i++)
+    dev->GetRenderState(kept[i], &keptValues[i]);
+
+  dev->SetRenderTarget(0, drawTarget);
+  dev->SetDepthStencilSurface(ds);
+
+  D3D9SetDebugDrawState(dev);
+
+  // SetRenderTarget set the viewport to all of the target, and the scissor test is off
+  if(clear)
+    dev->Clear(0, NULL, D3DCLEAR_TARGET, 0, 1.0f, 0);
+
+  if(verts.empty())
+    return;
+
+  for(size_t i = 0; i < ARRAY_COUNT(kept); i++)
+    dev->SetRenderState(kept[i], keptValues[i]);
+
+  if(ds == NULL)
+  {
+    dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+    dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+  }
+
+  dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+  dev->SetRenderState(D3DRS_STENCILWRITEMASK, 0);
+  dev->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
+  dev->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
+  dev->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_KEEP);
+  dev->SetRenderState(D3DRS_CCW_STENCILFAIL, D3DSTENCILOP_KEEP);
+  dev->SetRenderState(D3DRS_CCW_STENCILZFAIL, D3DSTENCILOP_KEEP);
+  dev->SetRenderState(D3DRS_CCW_STENCILPASS, D3DSTENCILOP_KEEP);
+
+  if(FAILED(dev->SetViewport(&state.Viewport)))
+    RDCWARN("Couldn't set the viewport at event %u for its overlay", eventId);
+  dev->SetScissorRect(&state.ScissorRect);
+
+  D3DCAPS9 caps = {};
+  dev->GetDeviceCaps(&caps);
+  // whole triangles, as many as one draw can have
+  const uint32_t maxTris =
+      RDCMAX(1U, RDCMIN((uint32_t)caps.MaxPrimitiveCount, (uint32_t)caps.MaxVertexIndex / 3U));
+  const uint32_t numTris = uint32_t(verts.size() / 3);
+  const uint32_t vbSize = RDCMIN(numTris, maxTris) * 3 * (uint32_t)sizeof(TriSizeVertex);
+
+  if(m_Overlay.triSizeVB == NULL || m_Overlay.triSizeVBSize < vbSize)
+  {
+    SAFE_RELEASE(m_Overlay.triSizeVB);
+    m_Overlay.triSizeVBSize = 0;
+    HRESULT hr = dev->CreateVertexBuffer(vbSize, D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, 0,
+                                         D3DPOOL_DEFAULT, &m_Overlay.triSizeVB, NULL);
+    if(FAILED(hr))
+    {
+      RDCERR("Couldn't create the triangle size overlay's vertex buffer: %s", ToStr(hr).c_str());
+      m_Overlay.triSizeVB = NULL;
+      return;
+    }
+    m_Overlay.triSizeVBSize = vbSize;
+  }
+
+  const bool ownScene = SUCCEEDED(dev->BeginScene());
+
+  dev->SetVertexDeclaration(m_Overlay.triSizeDecl);
+  dev->SetVertexShader(m_Overlay.triSizeVS);
+  dev->SetPixelShader(m_Overlay.triSizePS);
+  dev->SetPixelShaderConstantF(0, &colorRamp[0].x, ARRAY_COUNT(colorRamp));
+  dev->SetStreamSource(0, m_Overlay.triSizeVB, 0, sizeof(TriSizeVertex));
+
+  for(uint32_t first = 0; first < numTris; first += maxTris)
+  {
+    const uint32_t count = RDCMIN(maxTris, numTris - first);
+    const UINT bytes = count * 3 * (UINT)sizeof(TriSizeVertex);
+
+    void *dst = NULL;
+    HRESULT hr = m_Overlay.triSizeVB->Lock(0, bytes, &dst, D3DLOCK_DISCARD);
+    if(FAILED(hr) || dst == NULL)
+    {
+      RDCERR("Couldn't write the triangle size overlay's vertices: %s", ToStr(hr).c_str());
+      break;
+    }
+    memcpy(dst, verts.data() + size_t(first) * 3, bytes);
+    m_Overlay.triSizeVB->Unlock();
+
+    dev->DrawPrimitive(D3DPT_TRIANGLELIST, 0, count);
+  }
+
+  if(ownScene)
+    dev->EndScene();
 }

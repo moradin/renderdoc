@@ -15,7 +15,7 @@ so none of this is upstream.
 | 3b | Texture viewer and buffers: displaying every D3D9 format, pick pixel, min/max, histogram, mesh viewer inputs | Tested from Python on Windows; the UI isn't checked yet |
 | 3c | D3D9 pipeline state, with its own UI panel and Python bindings | Tested from Python on Windows; the UI panel isn't checked yet |
 | 3d | Shaders: SM1-3 disassembly, reflection from the constant table | Tested on Windows against fxc; the shader viewer UI isn't checked yet |
-| 3e | Texture viewer overlays | Implemented, not tested on Windows yet (see below) |
+| 3e | Texture viewer overlays | Tested from Python and the UI on Windows (`d3d9_phase3e_test.md`). The triangle size overlays and the transparent quad overdraw overlay came after, not tested yet (see below) |
 | 3e | Mesh output (post-transform vertices, VS Out) | Tested on Windows: the UI works and most draws match. The demo's failures are fixed and need a retest (see "Phase 3e test results") |
 
 ## Needs testing
@@ -680,17 +680,36 @@ How it works:
   does. These change the application's targets, as on the other APIs; the replay controller
   replays again when they're turned off. The overlay texture stays transparent.
 - At events that aren't draws only the overlay's background is drawn.
+- Triangle size (draw and pass): D3D11 works out each triangle's area in a geometry shader, which
+  D3D9 doesn't have, so it's done on the CPU from the post-transform vertices (`GetPostVSBuffers`,
+  see the mesh output below). For each instance of the draw, or of each draw in the pass, the
+  vertices are expanded to a triangle list (strips and fans too, keeping their winding; points and
+  lines have no triangles and are left out, as D3D11's geometry shader leaves them out), and each
+  vertex gets its triangle's area: D3D11's, after the perspective divide, in pixels of the event's
+  viewport. Pretransformed (XYZRHW) vertices are first turned back into the clip space positions
+  the viewport maps to them. They're drawn from a dynamic vertex buffer with a vs_3_0 shader that
+  passes the position and area through and a ps_3_0 shader that maps the area through D3D11's
+  colour ramp (the texture display's `HEATMAP_TRISIZE`). The draw keeps the application's fill
+  mode, cull mode, depth bias, scissor test, multisample antialiasing and depth and stencil tests,
+  as D3D11 keeps its rasterizer and depth stencil states, with depth and stencil writes off.
+  Everything else is the debug draws' state (`D3D9SetDebugDrawState`); the state is saved and
+  restored around it as for the other overlays. The pass replays up to its first draw and then
+  each draw and what's between them, as ClearBeforePass does, drawing the triangle sizes at each
+  draw before replaying it, so each draw's depth test sees the depth buffer as it was. A draw
+  without post-transform data (or no positions) is left out. Multisampled targets draw into the
+  multisampled render target and are resolved once at the end.
+- Quad overdraw (draw and pass) needs UAVs, which D3D9 doesn't have. It returns the overlay texture
+  cleared to transparent, with a warning (once), so the target shows as it is. Returning no
+  texture, as it did before, left the texture viewer showing the previous overlay.
 - At an event between BeginStateBlock and EndStateBlock nothing is drawn and no overlay is
   returned (`SaveReplayDrawState` warns once), as in the texture viewer.
 
-Not supported, so `RenderOverlay` returns no texture and the texture viewer shows the target as
-it is (and picks and saves the target, not an overlay):
-- Quad overdraw (pass and draw): it needs UAVs, which D3D9 doesn't have.
-- Triangle size (pass and draw): it needs the post-transform positions from `GetPostVSBuffers`,
-  which phase 3e's mesh output now has, but the overlay doesn't use them yet (the TODO is in
-  `RenderOverlay`).
-
 Known gaps:
+- Quad overdraw isn't supported (see above).
+- The triangle sizes come from the CPU post-transform data, so a draw whose vertex shader the
+  interpreter can't run, or a very big draw, shows nothing or takes a while (the mesh output's
+  known gaps apply). Positions that differ from the GPU's in the last bits can change which
+  pixels on a triangle's edge are covered.
 - The constant colour shader replaces the application's pixel shader, so pixels it would discard
   (texkill, clip) or whose depth it would change (oDepth) show as the rasterised primitive passes
   or fails. D3D11 handles oDepth with an extra stencil pass on a copy of the depth stencil; there's
@@ -721,11 +740,28 @@ Decisions:
   R16G16B16A16_FLOAT. The overlay colours don't need more precision.
 - It has the target's mips and is a cube for cube faces, so the subresource the texture viewer
   shows lines up. Volume textures can't be render targets in D3D9.
-- Unsupported overlays return no texture: that's how the replay controller and texture viewer
-  already handle a missing overlay (they show the target as it is). There's no API property for
-  which overlays are supported.
+- Quad overdraw returns a transparent overlay rather than no texture: with no texture the texture
+  viewer kept showing the previous overlay, which looked like a working one. There's no API
+  property for which overlays are supported.
+- The triangle size overlay holds the ramp's colours, not the areas D3D11's holds (an
+  R16G16B16A16_FLOAT texture its texture display maps through the ramp). D3D9's texture display
+  has no heatmap mode, and the overlay texture is A8R8G8B8, which the ramp's colours fit exactly.
+  So picking a pixel of the overlay gives its colour, not the area.
+- Each triangle's area is worked out on the CPU and put in a vertex attribute of a non-indexed
+  triangle list, rather than with a geometry shader. The ramp is still done in the pixel shader,
+  so its rounding is the GPU's, as on D3D11.
+- The triangle size draw keeps the application's rasterizer states (fill and cull mode, depth
+  bias, scissor test) as well as the depth and stencil tests, because D3D11 does: it changes only
+  the shaders, input layout, blend state and targets, and turns off depth and stencil writes.
+  User clip planes are off: D3D11's mesh vertex shader doesn't output clip distances.
+- The area uses the viewport at each event, where D3D11 takes the viewport of the pass's first
+  event for every draw in it.
 - `GetPassEvents` and `IsRenderOutput` moved from `d3d9_replay.cpp` to `d3d9_overlay.cpp`, and
   `GetPassEvents` is D3D11's. The mesh viewer's "whole pass" uses it too.
+- `InitPostVSBuffers` for a pass read only the last of the pass's draws, with the device at the
+  current event, so it cached the current event's inputs for that draw, and the others had no
+  data. It now replays to each draw that isn't cached, as D3D11's does. The triangle size pass and
+  the mesh viewer's "whole pass" need it.
 - The clear before overlays use `Clear` (all bound render targets) with the viewport set to render
   target 0 and the scissor test off, since D3D9's Clear is limited by both.
 - The draw is replayed for each overlay pass into our target only, rather than saving and
@@ -739,27 +775,39 @@ Decisions:
 
 ### Checking the overlays
 
-Capture `D3D9_Overlay_Test` (a new demo) and run `util/test/d3d9_overlay_check.py capture.rdc`
-like `d3d9_replay_check.py`. It renders overlays at each of the demo's markers through a headless
-ReplayOutput, as the texture viewer does, saves each overlay as `<capture>_<marker>_<overlay>.png`,
-and prints PASS or FAIL per check, then the totals. What it checks (the demo's layout is at the
-top of `d3d9_overlay_test.cpp`):
+Capture `D3D9_Overlay_Test` and run `util/test/d3d9_overlay_check.py capture.rdc` like
+`d3d9_replay_check.py`. The demo has a new "Triangle Size" marker, so captures made before it
+fail those checks: capture it again. The script renders overlays at each of the demo's markers
+through a headless ReplayOutput, as the texture viewer does, saves each overlay as
+`<capture>_<marker>_<overlay>.png`, and prints PASS or FAIL per check, then the totals. What it
+checks (the demo's layout is at the top of `d3d9_overlay_test.cpp`):
 - each overlay texture exists, has the target's size, and has the expected colours at known
   pixels: Drawcall magenta inside and dark outside; Wireframe's edge; Depth red where the test
   fails and green where it passes, for a vs_3_0 draw ("Depth Test", ps_3_0 overlay shader) and a
   fixed function `DrawPrimitiveUP` draw that only fails because of its depth bias ("Depth Bias",
   ps_2_0); Stencil green and red; the kept and culled triangles of "Backface Cull"; the
   viewport and scissor colours and borders; and a 4x MSAA target ("MSAA").
-- the quad overdraw and triangle size overlays return no texture.
+- the quad overdraw overlays return a texture that's transparent everywhere.
+- triangle size: the ramp's colour for the triangle's area (computed in the script with D3D11's
+  formula) at known pixels. "Depth Test": the big quad's colour only where it passes the depth
+  test with TriangleSizeDraw, and the setup draw's in the top half too with TriangleSizePass.
+  "Viewport Scissor": inside the scissor rect, nothing where it's scissored out or outside the
+  viewport. "Triangle Size": a pretransformed triangle strip whose triangles are 10, 24 and 7
+  pixels, the ramp's entries 2, 1 and 3; the covered pixels match the Drawcall overlay's (3
+  pixels may differ, on edges) and all have ramp colours; TriangleSizePass also has the
+  "Depth Test" quad. "MSAA": inside the triangle.
 - the target is the same after rendering overlays as before.
 - ClearBeforeDraw and ClearBeforePass change the back buffer (to the blue background colour where
   nothing in the draw or pass drew), and turning them off puts it back.
 
 Also check in the UI, at the same events: each overlay in the texture viewer's list shows over the
-target as on D3D11 captures, with nothing for quad overdraw and triangle size; switching overlays
-and events doesn't change the target, the pipeline state or what later events show; Save Texture's
-"save overlay instead" writes the overlay; and RenderDoc's log has no errors (one warning each for
-the unsupported overlays is expected). If a check fails, the saved PNGs show what was drawn.
+target as on D3D11 captures; quad overdraw shows the target with no overlay (not the previous
+one); triangle size and triangle size (pass) show the ramp's colours (dark purple for the big
+triangles; at "Triangle Size", zoomed in, the strip's three triangles in violet, dark purple
+and blue), compared with a D3D11 capture if there's one to hand; switching overlays and events
+doesn't change the target, the pipeline state or what later events show; Save Texture's "save
+overlay instead" writes the overlay; and RenderDoc's log has no errors (one warning for quad
+overdraw is expected). If a check fails, the saved PNGs show what was drawn.
 
 ## Mesh output (phase 3e)
 
