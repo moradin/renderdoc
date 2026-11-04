@@ -193,30 +193,6 @@ static uint32_t GetEffectiveEID(QModelIndex idx)
   return idx.data(ROLE_EFFECTIVE_EID).toUInt();
 }
 
-// The event list has uniform row heights, which Qt takes from the first row. A row that links
-// resources is taller than a plain one, so when the first row is plain (a D3D9 Clear, say) the
-// rows with links are clipped. Every row is made at least as tall as a single line with links.
-class EventRowDelegate : public RichTextViewDelegate
-{
-public:
-  explicit EventRowDelegate(QAbstractItemView *parent)
-      : RichTextViewDelegate(parent), m_View(parent), m_LinkLine(lit("<rdhtml>.</rdhtml>"))
-  {
-    RichResourceTextInitialise(m_LinkLine);
-  }
-
-  QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
-  {
-    QSize ret = RichTextViewDelegate::sizeHint(option, index);
-    ret.setHeight(qMax(ret.height(), RichResourceTextHeightHint(m_View, option.font, m_LinkLine)));
-    return ret;
-  }
-
-private:
-  QAbstractItemView *m_View;
-  QVariant m_LinkLine;
-};
-
 struct EventItemModel : public QAbstractItemModel
 {
   EventItemModel(QAbstractItemView *view, ICaptureContext &ctx) : m_View(view), m_Ctx(ctx)
@@ -3805,7 +3781,7 @@ EventBrowser::EventBrowser(ICaptureContext &ctx, QWidget *parent)
 
   ui->events->setModel(m_FilterModel);
 
-  m_delegate = new EventRowDelegate(ui->events);
+  m_delegate = new RichTextViewDelegate(ui->events);
   ui->events->setItemDelegate(m_delegate);
 
   ui->find->setFont(Formatter::PreferredFont());

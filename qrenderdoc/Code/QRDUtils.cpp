@@ -448,17 +448,6 @@ struct RichResourceText
 
     html += lit("</tr></table>");
 
-    // Qt before 5.14 treats a px line-height as a fixed height, so a font taller than 14px (high
-    // DPI, or a bigger font) overflowed each line and was drawn shifted down and clipped. Use the
-    // font's own line spacing when it's taller.
-    {
-      const int lineHeight =
-          qMax(14, QFontMetrics(widget ? widget->font() : QApplication::font()).lineSpacing());
-      if(lineHeight != 14)
-        html.replace(lit("style=\"line-height: 14px\""),
-                     lit("style=\"line-height: %1px\"").arg(lineHeight));
-    }
-
     doc.setDocumentMargin(0);
     doc.setHtml(html);
     if(widget)

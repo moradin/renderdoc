@@ -224,8 +224,8 @@ loads (the crash is now 1 in 18) and the UI checklist, except for these, now fix
 - Event Browser rows that link resources (`ReleaseDC(Offscreen Surface 32)`) were clipped. The
   list has uniform row heights, which Qt takes from the first row, and D3D9's first rows are plain
   text (Clear has no resource parameter), which is shorter than a row with links. The Event
-  Browser's delegate now makes every row at least as tall as a line with links. This is a
-  qrenderdoc change and affects every API, though the others usually start with a row with links.
+  Browser's delegate made every row at least as tall as a line with links (removed again after
+  retest 3, see below).
 - Viewing a constants buffer (`VS float constants (c#)`) from the Resource Inspector didn't use
   the `float4` format the Pipeline State's Go button does. The buffers now carry the
   `__rd_format` annotation the Resource Inspector looks for.
@@ -238,23 +238,19 @@ loads (the crash is now 1 in 18) and the UI checklist, except for these, now fix
 Retest 2 (`d3d9_phase3_retest2.md`) passed everything except two UI items, now fixed:
 - The IA topology diagram was still drawn at its SVG size. The D3D9 panel now scales it to two
   lines of text, keeping its aspect ratio.
-- Event Browser rows with resource links were still drawn low and clipped. This happens with D3D11
-  captures too, so it isn't D3D9's. The bundled Qt 5.9 treats RichResourceText's
-  `line-height: 14px` as a fixed line height, so any font taller than 14px (here, from the DPI
-  scaling) overflows each line. The text was drawn shifted down and clipped by the row below.
-  RichResourceText now uses the font's line spacing when it's taller than 14px (`QRDUtils.cpp`),
-  which changes how resource links lay out across the whole UI. The Event Browser's minimum row
-  height from the earlier fix stays; it keeps rows a pixel or two taller than the link text.
+- Event Browser rows drawn through RichResourceText (resource links, or any row with parameters
+  when Show parameter names is on) are drawn low and clipped at this machine's DPI. D3D11
+  captures do the same, so it's an existing qrenderdoc issue and not D3D9's. Neither attempted
+  fix (a minimum row height, then a line height from the font) changed it in retest 3, so both
+  were removed. Left as is for now.
 - The white backgrounds on the `Depth` and `State blocks` markers are expected: the demo passes
   0xffffffff as their colour.
-
 - The "Real D3D9 object ... already has a wrapper, replacing it" warning in one Reset run came from
   the automatic depth stencil. After Reset the new wrapper was made before the old one was
   released, so when the new surface reused the old address the old wrapper was still registered.
   Replay was fine (the newer wrapper wins), but the old wrapper is now released first.
 
-Retest by eye: the IA page diagram, and rows with links in the Event Browser of a D3D9 and a D3D11
-capture.
+Retest 3 (`d3d9_phase3_retest3.md`): the IA diagram and the Reset warning are fixed.
 
 ## Replay (phase 3a)
 
