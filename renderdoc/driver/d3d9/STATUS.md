@@ -16,7 +16,7 @@ so none of this is upstream.
 | 3c | D3D9 pipeline state, with its own UI panel and Python bindings | Tested from Python on Windows; the UI panel isn't checked yet |
 | 3d | Shaders: SM1-3 disassembly, reflection from the constant table | Tested on Windows against fxc; the shader viewer UI isn't checked yet |
 | 3e | Texture viewer overlays | Tested from Python and the UI on Windows (`d3d9_phase3e_test.md`, `d3d9_phase3e_retest.md`), triangle size and quad overdraw included |
-| 3e | Mesh output (post-transform vertices, VS Out) | Tested on Windows: the UI works and most draws match. The retest's failures (demo shaders, spot light, sphere map) are fixed and need another run (see "Phase 3e test results") |
+| 3e | Mesh output (post-transform vertices, VS Out) | Tested from Python and the UI on Windows (`d3d9_phase3e_retest2.md`): all 18 checks pass, including vs_1_1, flow control, loops, FFP lighting, texgen and fog |
 
 ## Needs testing
 
@@ -1032,6 +1032,11 @@ point sizes, and the texgen stages other than the sphere map. What failed, and w
 - FFP texgen and fog: the sphere map used Wine's |r + (0, 0, 1)|; it's |r - (0, 0, 1)| now.
 - The mesh viewer showed a GS/DS Output table and GS/DS Out preview tab. They're hidden for D3D9
   captures (and come back for other APIs).
+
+Retest 2 (`d3d9_phase3e_retest2.md`, of 493802b34) passed everything except the Event Browser
+rows: the demo log is clean, `d3d9_mesh_check.py` passes all 18 checks, the GS/DS table and tab
+are hidden for D3D9 and back for D3D11, the unit tests pass, and the overlay and replay checks
+match the previous round. The rows are covered under "Event Browser rows" above.
 
 ## Inspecting a capture
 
