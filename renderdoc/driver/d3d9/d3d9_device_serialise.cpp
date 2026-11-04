@@ -153,19 +153,27 @@ bool WrappedD3DDevice9::Serialise_Clear(SerialiserType &ser, DWORD Count, CONST 
   {
     ReplayEndScene();
 
-    // WORKAROUND (phase 3 testing): the clear was neither replayed nor listed as an action
     Clear(Count, pRects, Flags, Color, Z, Stencil);
 
     if(IsLoading(m_State))
     {
       AddEvent();
 
+      // AddAction fills in the bound targets as the outputs. The copy destination is what the
+      // texture viewer jumps to: render target 0 for a colour clear, otherwise the depth stencil.
       ActionDescription action;
       action.flags = ActionFlags::Clear;
       if(Flags & D3DCLEAR_TARGET)
+      {
         action.flags |= ActionFlags::ClearColor;
+        action.copyDestination = SurfaceTextureID(m_RenderTargets[0]);
+      }
       if(Flags & (D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL))
+      {
         action.flags |= ActionFlags::ClearDepthStencil;
+        if(action.copyDestination == ResourceId())
+          action.copyDestination = SurfaceTextureID(m_DepthStencil);
+      }
       AddAction(action);
     }
   }
@@ -2127,7 +2135,9 @@ INSTANTIATE_FUNCTION_SERIALISED(HRESULT, WrappedD3DDevice9, CreateVertexDeclarat
                                 CONST D3DVERTEXELEMENT9 *pVertexElements,
                                 IDirect3DVertexDeclaration9 **ppDecl);
 
-// shader bytecode has no explicit length, so take it back from the created shader
+// shader bytecode has no explicit length, so take it back from the created shader. The length is
+// serialised on its own because SERIALISE_ELEMENT_ARRAY takes the count by value, and the replay
+// needs it back.
 template <typename SerialiserType, typename ShaderType>
 static void SerialiseShaderBytecode(SerialiserType &ser, ShaderType *shader, rdcarray<DWORD> &read)
 {
@@ -2146,7 +2156,7 @@ static void SerialiseShaderBytecode(SerialiserType &ser, ShaderType *shader, rdc
     BytecodeLength = size;
   }
 
-  SERIALISE_ELEMENT(BytecodeLength);
+  SERIALISE_ELEMENT(BytecodeLength).Hidden();
   SERIALISE_ELEMENT_ARRAY(Bytecode, BytecodeLength).Important();
 
   if(ser.IsReading() && Bytecode && BytecodeLength >= sizeof(DWORD))

@@ -195,7 +195,9 @@ float4 main(float2 vpos : VPOS, out float depth : DEPTH) : COLOR0
 }
 )";
 
-// c0: x = the stencil bit being written, zw = 1 / size. Keeps the pixels that have the bit.
+// c0: x = the stencil bit being written, zw = 1 / size. Keeps the pixels that have the bit. The
+// values are whole stencil values, so the 0.25 goes on before the divide: after it, a value whose
+// quotient has a fraction of 0.75 or more would round up into the next bit.
 const char *StencilWritePS = R"(
 sampler2D values : register(s0);
 float4 params : register(c0);

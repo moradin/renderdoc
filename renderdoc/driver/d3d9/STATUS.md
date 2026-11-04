@@ -11,10 +11,10 @@ so none of this is upstream.
 | 2b | Full device state at frame start (render/sampler/texture stage states, transforms, lights, constants...) | Done, tested with `D3D9_Frame_Start_State` |
 | 2c | Resource contents: Lock tracking, shadow copies of D3DPOOL_DEFAULT data, initial contents | Done, tested with `D3D9_Resource_Contents` |
 | 2d | Edge cases: Reset/device loss mid-capture, state block contents, D3DPERF markers in captures, depth stencil read back, GDI drawing, front buffer copies, locks spanning the capture start | Done, tested with `D3D9_Capture_Edge_Cases` and `D3D9_Reset_Capture`; device loss needs a real game |
-| 3a | Replay: loading captures, replaying to any event, the event list, resource descriptions, reading texture and buffer data | Written, not built or tested yet |
-| 3b | Texture viewer and buffers: displaying every D3D9 format, pick pixel, min/max, histogram, mesh viewer inputs | Written, not built or tested yet |
-| 3c | D3D9 pipeline state, with its own UI panel and Python bindings | Written, not built or tested yet |
-| 3d | Shaders: SM1-3 disassembly, reflection from the constant table | Written, unit tested on Linux, not built on Windows yet |
+| 3a | Replay: loading captures, replaying to any event, the event list, resource descriptions, reading texture and buffer data | Tested from Python on Windows (see below); the UI isn't checked yet |
+| 3b | Texture viewer and buffers: displaying every D3D9 format, pick pixel, min/max, histogram, mesh viewer inputs | Tested from Python on Windows; the UI isn't checked yet |
+| 3c | D3D9 pipeline state, with its own UI panel and Python bindings | Tested from Python on Windows; the UI panel isn't checked yet |
+| 3d | Shaders: SM1-3 disassembly, reflection from the constant table | Tested on Windows against fxc; the shader viewer UI isn't checked yet |
 | 3e | Mesh output and overlays | Not started |
 
 ## Needs testing
@@ -179,6 +179,37 @@ where they're cleared to 1.0.
   Tested: c200/c180 survive in `D3D9_Frame_Start_State`, c138/c148 stay zero, and `D3DTSS_CONSTANT`
   keeps the application's value. Nothing else in `BeginCaptureFrame` changed.
 
+## Phase 3 test round
+
+Phases 3a-3d were built (Development x64, no build errors) and tested from Python on Windows with an
+RTX 4070 Ti; the report is `d3d9_phase3_report.md` at the root of the repository. Four bugs blocked
+testing; they were tested with workarounds, now replaced by these fixes:
+- Shader bytecode came back empty on replay, so no capture loaded: `SERIALISE_ELEMENT_ARRAY` takes
+  its count by value, so the length has to be serialised on its own. **This changes the capture
+  format: captures made before it don't load.**
+- `GetPaletteEntries` on a palette that was never set crashes inside d3d9 (on a D3D9Ex mixed-VP
+  device) instead of failing, which crashed loading `D3D9_Frame_Start_State`. The replay now sets
+  each captured palette before fetching the device's state, so only palettes that were set are
+  ever read.
+- Stencil was written back wrong (90 became 122): `StencilWritePS` added its 0.25 after dividing by
+  the bit instead of before.
+- Clears weren't replayed or listed. They now are, with render target 0 (or the depth stencil, for
+  a depth-only clear) as the copy destination.
+
+Since then:
+- `d3d9_replay_check.py` saves `_first.png` and reads the depths at event 0, the frame's initial
+  state, since the first event is often a Clear now that Clears replay.
+- The disassembly matches fxc's three formatting differences (see phase 3d).
+
+Still open from the test round:
+- One crash (a call through a null pointer) loading or first replaying `D3D9Ex_Wrapping_Check`,
+  seen once and not reproduced in 7 more runs. No stack.
+- `GetCBufferVariableContents` with a length of 0 reads zeros (the replay controller skips the
+  data), so scripts have to pass the descriptor's size. The UI does.
+
+These need a retest: the four fixes as written (rather than the workarounds), the `_first.png`
+change, and the disassembly changes. The UI checks are listed at the end of the report.
+
 ## Replay (phase 3a)
 
 How it works is described at the top of `d3d9_replay_device.cpp`. In short: a D3D9Ex device on a
@@ -208,8 +239,9 @@ Known gaps:
 ### Checking replay
 
 `util/test/d3d9_replay_check.py` opens a capture with the Python module, prints its events and
-textures, saves the back buffer at the first and last events as `<capture>_first.png` and
-`<capture>_last.png`, and prints the depth stencils' values at the first event, which are their
+textures, saves the back buffer at the start of the frame (event 0, before anything in it has
+replayed) and at the last event as `<capture>_first.png` and `<capture>_last.png`, and prints the
+depth stencils' values at the start of the frame, which are their
 initial contents as written back at replay (in D3D9's layout, depth << 8 | stencil, as listed
 above). `--all` also steps through every action. To run it from a build:
 
@@ -225,7 +257,7 @@ What to look for:
   (`D3D9_Capture_Edge_Cases` has "Depth" and "State blocks").
 - `<capture>_last.png` looks like the application's window when it was captured, without the
   overlay text. `<capture>_first.png` is the previous frame, with the overlay text.
-- `D3D9_Capture_Edge_Cases`: the depth values at the first event match the ones listed for its
+- `D3D9_Capture_Edge_Cases`: the depth values at the start of the frame match the ones listed for its
   initial contents above (0x4000005A, 0xBFFFFFA5 and 0xFFFFFF00 for the automatic depth stencil,
   0x80000033 and 0xFFFFFF00 in each sample of the multisampled one, 0x7FFF for D16, 0x5FFFFF0F for
   INTZ).
@@ -234,7 +266,7 @@ What to look for:
 
 ## Texture viewer (phase 3b)
 
-Written, not built or tested yet. This replaces the 3a notes above about `RenderTexture` and
+This replaces the 3a notes above about `RenderTexture` and
 `GetOutputWindowData` not being implemented.
 
 How it works:
@@ -457,8 +489,11 @@ Shaders have their own encoding, `ShaderEncoding::D3D9Bytecode`.
 
 The disassembly is in the fxc / D3DXDisassembleShader style: the constant table as fxc prints it
 ("Generated by", "Parameters", "Registers"), then the version and one instruction per line,
-indented 4 spaces and 2 more inside `if`, `loop` and `rep`. Swizzles drop trailing repeats
-(`.xyzz` is `.xyz`, `.xxxx` is `.x`), `dcl` leaves off usage index 0 (`dcl_texcoord`), relatively
+indented 4 spaces and 2 more inside `if`, `loop` and `rep`, with a co-issued instruction's `+` two
+columns to the left (`  + mov r0.w, ...`). As fxc prints them, source swizzles have one letter when
+they replicate a component (`.xxxx` is `.x`) and all four otherwise (`.xyww`), except that ps_1_4's
+`t#` sources keep their documented `.xyz` and `.xyw` (not compared against fxc). The complement
+modifier is `1-v0.w`. `dcl` leaves off usage index 0 (`dcl_texcoord`), relatively
 addressed registers are `c4[a0.x]` and `v0[aL]`, and `def` floats have 9 significant digits.
 
 Reflection, which is what phase 3c's pipeline state builds on:
@@ -522,7 +557,7 @@ with clang and the MinGW headers.
 
 ### Checking shaders on Windows
 
-Not built with MSVC yet. To check, with the demos under `util/test/demos/d3d9/`:
+To check, with the demos under `util/test/demos/d3d9/`:
 - Capture `D3D9_Simple_Triangle` and open it. In the pipeline state (once 3c is in) or with the
   Python API (`controller.GetShader`, `controller.DisassembleShader`), the vertex and pixel shaders
   should have reflection: `POSITION`, `COLOR` and `TEXCOORD` inputs for the vertex shader, matching

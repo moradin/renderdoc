@@ -5,9 +5,10 @@
 #   set PATH=<build>\x64\Release;%PATH%
 #   python d3d9_replay_check.py capture.rdc [--all]
 #
-# It prints the event list and the textures, saves the back buffer at the first event and at the
-# last one as PNGs next to the capture, and prints the depth stencils' values at the first event
-# (their initial contents, written back at replay). With --all it also steps through every action,
+# It prints the event list and the textures, saves the back buffer at the start of the frame (event
+# 0, before any call in it has replayed) and at the last event as PNGs next to the capture, and
+# prints the depth stencils' values at the start of the frame (their initial contents, written back
+# at replay). With --all it also steps through every action,
 # which replays from the start for each one.
 
 import os
@@ -149,11 +150,12 @@ def main():
             backbuffer = texById[a.copyDestination]
             break
 
-    first = actions[0].events[0].eventId if actions[0].events else actions[0].eventId
     last = actions[-1].eventId
 
-    print('\nAt the first event ({}):'.format(first))
-    controller.SetFrameEvent(first, True)
+    # event 0 is the frame's initial state: nothing in the frame has replayed yet. The first event
+    # can be a Clear, which would hide the initial contents.
+    print('\nAt the start of the frame (event 0):')
+    controller.SetFrameEvent(0, True)
     if backbuffer:
         save_bgra(controller, backbuffer, base + '_first.png')
     for t in textures:

@@ -399,16 +399,27 @@ rdcstr WriteMaskString(uint8_t mask)
   return ret;
 }
 
-rdcstr SwizzleString(const SrcParam &src)
+rdcstr SwizzleString(const Version &version, const SrcParam &src)
 {
   if(src.IdentitySwizzle())
     return rdcstr();
 
-  // as fxc does, leave off trailing components that repeat the last one, since a shorter
-  // swizzle replicates its last component
+  // fxc prints one letter for a replicate swizzle (.x) and all four otherwise (.xyww, .yxxx),
+  // never two or three. The exception is ps_1_4's texcrd/texld, the only readers of t#, whose
+  // source selectors are documented as .xyz and .xyw: those leave off the repeated last component.
+  // (That exception hasn't been compared against fxc.)
   int len = 4;
-  while(len > 1 && src.swizzle[len - 1] == src.swizzle[len - 2])
-    len--;
+  if(src.swizzle[0] == src.swizzle[1] && src.swizzle[1] == src.swizzle[2] &&
+     src.swizzle[2] == src.swizzle[3])
+  {
+    len = 1;
+  }
+  else if(version.IsPS() && version.major == 1 && version.minor == 4 &&
+          src.type == RegType::AddrOrTexture)
+  {
+    while(len > 1 && src.swizzle[len - 1] == src.swizzle[len - 2])
+      len--;
+  }
 
   rdcstr ret = ".";
   for(int i = 0; i < len; i++)
@@ -460,7 +471,7 @@ rdcstr SrcString(const Version &version, const SrcParam &src)
       prefix = "-";
       suffix = "_bx2";
       break;
-    case SrcMod::Comp: prefix = "1 - "; break;
+    case SrcMod::Comp: prefix = "1-"; break;
     case SrcMod::X2: suffix = "_x2"; break;
     case SrcMod::X2Neg:
       prefix = "-";
@@ -478,7 +489,7 @@ rdcstr SrcString(const Version &version, const SrcParam &src)
   }
 
   return prefix + RegisterName(version, src.type, src.index) + RelativeString(version, src.rel) +
-         suffix + SwizzleString(src);
+         suffix + SwizzleString(version, src);
 }
 
 rdcstr FloatString(uint32_t bits)
@@ -852,12 +863,10 @@ rdcstr Disassemble(const Program &prog)
        inst.op == Opcode::EndRep)
       indent = RDCMAX(indent - 1, 0);
 
-    rdcstr line = "    ";
+    // fxc puts a co-issued instruction's + two columns left of the opcode, then a space
+    rdcstr line = inst.coissue ? "  + " : "    ";
     for(int i = 0; i < indent; i++)
       line += "  ";
-
-    if(inst.coissue)
-      line += "+";
 
     if(inst.predicated)
       line += "(" + SrcString(version, inst.predicate) + ") ";
@@ -1053,7 +1062,7 @@ TEST_CASE("D3D9 bytecode parsing and disassembly", "[d3d9][shader]")
         "def c95, 1, 0.5, -2, 0.25",
         "dp4 oPos.x, v0, c0",
         "mov a0.x, v7.y",
-        "mad oD0, c10[a0.x], -v3.xyz, c95.w",
+        "mad oD0, c10[a0.x], -v3.xyzz, c95.w",
         "mov oT0.xy, v7",
         "expp oFog.x, v0.z",
         "mov oPts.x, c1.x",
@@ -1328,7 +1337,7 @@ TEST_CASE("D3D9 bytecode parsing and disassembly", "[d3d9][shader]")
         Dst(RegType::Temp, 0, 0x7, 0, 1),
         Src(RegType::AddrOrTexture, 0),
         Src(RegType::Input, 0, Swz(0, 1, 2, 3), SrcMod::Bias),
-        // +mov_d2 r0.w, 1 - v1.w (co-issued)
+        // + mov_d2 r0.w, 1-v1.w (co-issued)
         Inst(Opcode::Mov, 0, 0) | CoIssue,
         Dst(RegType::Temp, 0, 0x8, 0, -1),
         Src(RegType::Input, 1, Swz(3, 3, 3, 3), SrcMod::Comp),
@@ -1360,7 +1369,7 @@ TEST_CASE("D3D9 bytecode parsing and disassembly", "[d3d9][shader]")
         "texm3x2tex t3, t0_bx2",
         "texkill t1",
         "mul_x2 r0.xyz, t0, v0_bias",
-        "+mov_d2 r0.w, 1 - v1.w",
+        "+ mov_d2 r0.w, 1-v1.w",
         "cnd r0, r0.w, t3, -c0_bx2",
         "lrp_sat r0, v0_x2, r0, -t0_x2",
     };
