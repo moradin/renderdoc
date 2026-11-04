@@ -247,32 +247,13 @@ Q_DECLARE_METATYPE(ShaderMessageLink);
 
 static QRegularExpression htmlRE(lit("<[^>]*>"));
 
-// Debugging aids for rich text rows that are drawn low and clipped (D3D9 STATUS.md, "Event Browser
-// rows"). RENDERDOC_RICHTEXT_STYLE replaces the cells' style="line-height: 14px" (the value
-// "none" removes it), and RENDERDOC_RICHTEXT_LOG logs the sizes of the first rows painted.
-static const QString *RichTextStyleOverride()
+// resource link and shader message icons are sized to the font rather than always being 16 pixels,
+// which is taller than the text and than compact rows. 1.25x the ascent centres the icon on the
+// capitals, and it's kept within one line so it stays clear of the row separators.
+static int RichResourceIconSize(const QFont &font)
 {
-  static QString style;
-  static bool read = false, set = false;
-  if(!read)
-  {
-    read = true;
-    set = qEnvironmentVariableIsSet("RENDERDOC_RICHTEXT_STYLE");
-    if(set)
-    {
-      QString v = QString::fromLocal8Bit(qgetenv("RENDERDOC_RICHTEXT_STYLE"));
-      style = v == lit("none") ? QString() : lit(" style=\"%1\"").arg(v);
-      qInfo() << "Rich text cells use" << (style.isEmpty() ? lit("no style") : style);
-    }
-  }
-  return set ? &style : NULL;
-}
-
-static bool RichTextLogRow()
-{
-  static int logged = 0;
-  static bool enabled = qEnvironmentVariableIsSet("RENDERDOC_RICHTEXT_LOG");
-  return enabled && logged++ < 60;
+  QFontMetricsF fm(font);
+  return qBound(8, qMin(qRound(fm.ascent() * 1.25), qFloor(fm.lineSpacing())), 16);
 }
 
 // this is an opaque struct that contains the data to render, hit-test, etc for some text that
@@ -381,10 +362,7 @@ struct RichResourceText
 
     bool highdpi = widget && widget->devicePixelRatioF() > 1.0;
 
-    // the link and message icons are sized to the text, 1.5x its cap height, rather than always
-    // being 16 pixels which is taller than the text and than compact rows.
-    int iconSize = qBound(
-        8, qRound(QFontMetricsF(widget ? widget->font() : doc.defaultFont()).capHeight() * 1.5), 16);
+    int iconSize = RichResourceIconSize(widget ? widget->font() : doc.defaultFont());
 
     QVector<int> fragmentIndexFromBlockIndex;
 
@@ -483,9 +461,6 @@ struct RichResourceText
     fragmentIndexFromBlockIndex.push_back(-1);
 
     html += lit("</tr></table>");
-
-    if(const QString *style = RichTextStyleOverride())
-      html.replace(lit(" style=\"line-height: 14px\""), *style);
 
     doc.setDocumentMargin(0);
     doc.setHtml(html);
@@ -932,18 +907,19 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
         painter->fontMetrics().boundingRect(rect, Qt::AlignLeft | Qt::AlignVCenter, name);
 
     const QPixmap &px = Pixmaps::link(owner->devicePixelRatio());
+    const int iconSize = RichResourceIconSize(font);
 
     painter->setClipRect(rect);
 
+    // the icon follows the name, centred on it, and the hover area covers both.
+    QRect iconRect(textRect.right() + 1 + margin, textRect.center().y() - iconSize / 2, iconSize,
+                   iconSize);
+
     textRect.setLeft(rect.left());
-    textRect.setWidth(textRect.width() + margin + px.width());
-    textRect.setHeight(qMax(textRect.height(), px.height()));
+    textRect = textRect.united(iconRect);
 
-    QPoint pos;
-    pos.setX(textRect.right() - px.width() + 1);
-    pos.setY(textRect.center().y() - px.height() / 2);
-
-    painter->drawPixmap(pos, px, px.rect());
+    painter->setRenderHint(QPainter::SmoothPixmapTransform);
+    painter->drawPixmap(iconRect, px, px.rect());
 
     if((state & QStyle::State_MouseOver) && textRect.contains(mousePos) && valid)
     {
@@ -969,26 +945,6 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
 
   qreal baseline = -1.0;
   qreal yoffset = RichResourceTextYOffset(linkedText.data(), font, rect.height(), &baseline);
-
-  if(RichTextLogRow())
-  {
-    QFontMetrics fm(font);
-    QFontMetrics docfm(linkedText->doc.defaultFont());
-    qInfo().nospace() << "Rich text row '" << linkedText->text.left(60) << "': rect height "
-                      << rect.height() << ", doc height " << linkedText->doc.size().height()
-                      << ", lines " << linkedText->numLines << ", blocks "
-                      << linkedText->doc.blockCount() << ", font " << font.family() << " "
-                      << font.pointSizeF() << "pt height " << fm.height() << " lineSpacing "
-                      << fm.lineSpacing() << " ascent " << fm.ascent() << ", doc font "
-                      << docfm.height() << ", painter DPR "
-                      << (painter->device() ? painter->device()->devicePixelRatioF() : 0.0)
-                      << " logical DPI "
-                      << (painter->device() ? painter->device()->logicalDpiY() : 0)
-                      << ", primary screen logical DPI "
-                      << QGuiApplication::primaryScreen()->logicalDotsPerInchY() << " DPR "
-                      << QGuiApplication::primaryScreen()->devicePixelRatio() << ", baseline "
-                      << baseline << ", y offset " << yoffset;
-  }
 
   painter->translate(1, yoffset);
 
@@ -1115,10 +1071,8 @@ int RichResourceTextWidthHint(const QWidget *owner, const QFont &font, const QVa
         name = lit("NULL");
     }
 
-    // this calculation is in device independent sizes so use a ratio of 1 for the pixmap
-    const QPixmap &px = Pixmaps::link(1);
-
-    int ret = margin + metrics.boundingRect(name).width() + margin + px.width() + margin;
+    int ret =
+        margin + metrics.boundingRect(name).width() + margin + RichResourceIconSize(font) + margin;
     return ret;
   }
 
@@ -1144,10 +1098,7 @@ int RichResourceTextHeightHint(const QWidget *owner, const QFont &font, const QV
     return linkedText->numLines * (metrics.lineSpacing() + margin * 2);
   }
 
-  // this calculation is in device independent sizes so use a ratio of 1 for the pixmap
-  const QPixmap &px = Pixmaps::link(1);
-
-  return qMax(metrics.height(), px.height() + margin * 2);
+  return qMax(metrics.height(), RichResourceIconSize(font) + margin * 2);
 }
 
 bool RichResourceTextMouseEvent(const QWidget *owner, const QVariant &var, QRect rect,
@@ -1216,11 +1167,13 @@ bool RichResourceTextMouseEvent(const QWidget *owner, const QVariant &var, QRect
 
     QRect textRect = QFontMetrics(f).boundingRect(rect, Qt::AlignLeft | Qt::AlignVCenter, name);
 
-    const QPixmap &px = Pixmaps::link(owner->devicePixelRatio());
+    // the same name and icon area that RichResourceTextPaint draws and underlines.
+    const int iconSize = RichResourceIconSize(font);
+    QRect iconRect(textRect.right() + 1 + margin, textRect.center().y() - iconSize / 2, iconSize,
+                   iconSize);
 
-    rect.setTop(textRect.top());
-    rect.setWidth(textRect.width() + margin + px.width());
-    rect.setHeight(qMax(textRect.height(), px.height()));
+    textRect.setLeft(rect.left());
+    rect = textRect.united(iconRect);
 
     if(rect.contains(event->pos()))
     {

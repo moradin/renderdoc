@@ -255,18 +255,18 @@ Retest 2 (`d3d9_phase3_retest2.md`) passed everything except two UI items, now f
   text's baseline is where a plain row in the same font puts it, with fractional offsets. An
   offscreen Qt 5.15 test matched plain rows exactly in 45 of 48 font, row height and scale
   combinations, and was 1 pixel off in the rest. Documents with several lines are still centred.
-  The link and message icons are 1.5 times the font's cap height (8 to 16 pixels) and drawn
-  smoothly, and a hovered link is underlined at the font's underline position. Mouse hit testing
-  uses the same offset. The probe (`util/test/richtext_probe`) had the same fonts, but rows 18
-  pixels high. Until the fix is confirmed, qrenderdoc keeps two environment variables for trying
-  changes without rebuilding:
-  - `RENDERDOC_RICHTEXT_LOG=1` logs the first 60 rich text rows painted (row height, the
-    QTextDocument's height, the font's metrics, the painter's and screen's DPI, the baseline and
-    the offset used) to the diagnostic
-    log (Help > View Diagnostic Log File, lines starting `QTRD`).
-  - `RENDERDOC_RICHTEXT_STYLE` replaces each cell's `style="line-height: 14px"` with
-    `style="<value>"`, or removes it with the value `none`. For example
-    `set RENDERDOC_RICHTEXT_STYLE=line-height: 100%` before starting qrenderdoc.
+  Mouse hit testing uses the same offset, and a hovered link is underlined at the font's
+  underline position. Retest 3 (`d3d9_phase3e_retest3.md`) confirmed it in D3D9 and D3D11: rich
+  rows have the same baseline as plain rows, descenders are whole, and hover and clicks work
+  anywhere on the row.
+  The link and message icons in rich text are sized to the font and drawn smoothly. Retest 3
+  measured the sizes: 1.25 times the ascent (10 pixels at the 8pt UI font) centres the icon on
+  the capitals, so it's that, kept within one line and between 8 and 16 pixels. Cells holding only
+  a ResourceId or GPU address used the 16 pixel icon, twice the rich text one in retest 3, so they
+  now use the same size, centred on the name, and their row height hint follows it. The probe
+  (`util/test/richtext_probe`) had the same fonts, but rows 18 pixels high. The
+  `RENDERDOC_RICHTEXT_LOG` and `RENDERDOC_RICHTEXT_STYLE` debugging variables used to find this
+  have been removed.
 - The white backgrounds on the `Depth` and `State blocks` markers are expected: the demo passes
   0xffffffff as their colour.
 - The "Real D3D9 object ... already has a wrapper, replacing it" warning in one Reset run came from
@@ -1036,7 +1036,8 @@ point sizes, and the texgen stages other than the sphere map. What failed, and w
 Retest 2 (`d3d9_phase3e_retest2.md`, of 493802b34) passed everything except the Event Browser
 rows: the demo log is clean, `d3d9_mesh_check.py` passes all 18 checks, the GS/DS table and tab
 are hidden for D3D9 and back for D3D11, the unit tests pass, and the overlay and replay checks
-match the previous round. The rows are covered under "Event Browser rows" above.
+match the previous round. The rows are covered under "Event Browser rows" above, and retest 3
+(`d3d9_phase3e_retest3.md`, of e409786bd) passed all of them.
 
 ## Inspecting a capture
 
