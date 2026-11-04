@@ -25,11 +25,21 @@
 #pragma once
 
 #include <map>
+#include <memory>
 #include "replay/replay_driver.h"
 #include "d3d9_common.h"
 #include "d3d9_shader_reflect.h"
 
 class WrappedD3DDevice9;
+struct D3D9DeviceState;
+
+namespace D3D9Emu
+{
+struct FFPState;
+struct InputElement;
+struct VSTexture;
+struct PostVSResult;
+};
 
 // The replay side of the driver. It owns the replay device (a WrappedD3DDevice9 replaying the
 // capture, see d3d9_replay_device.cpp), and answers the replay controller's questions about it.
@@ -42,7 +52,8 @@ class WrappedD3DDevice9;
 // - the pipeline state and descriptors: d3d9_pipestate.cpp (phase 3c)
 // - shader reflection, disassembly and constants: d3d9_shaders.cpp (phase 3d)
 // - the texture viewer's overlays and the pass events: d3d9_overlay.cpp (phase 3e)
-// Mesh output isn't implemented yet (phase 3e).
+// - post-transform vertices for the mesh viewer, computed on the CPU: d3d9_postvs.cpp, with
+//   d3d9_vs_emulate.cpp and d3d9_ffp_vertex.cpp (phase 3e)
 class D3D9Replay final : public IReplayDriver
 {
 public:
@@ -207,10 +218,7 @@ public:
   void RenderHighlightBox(float w, float h, float scale);
 
   uint32_t PickVertex(uint32_t eventId, int32_t width, int32_t height, const MeshDisplay &cfg,
-                      uint32_t x, uint32_t y)
-  {
-    return ~0U;
-  }
+                      uint32_t x, uint32_t y);
 
 private:
   ~D3D9Replay() = default;
@@ -388,6 +396,38 @@ private:
                                       const rdcarray<uint32_t> &passEvents);
   ResourceId RenderDrawOverlay(IDirect3DSurface9 *targetSurf, IDirect3DSurface9 *overlaySurf,
                                DebugOverlay overlay, uint32_t eventId);
+
+  // Post-transform vertices (phase 3e): d3d9_postvs.cpp
+
+  // a draw's inputs and vertex processing, read at its event, and its results by instance
+  struct PostVSEvent;
+  std::map<uint32_t, std::shared_ptr<PostVSEvent>> m_PostVS;
+  // the pseudo buffers the results are read from
+  struct PostVSBufferRef
+  {
+    uint32_t eventId;
+    uint32_t instance;
+    bool index;
+  };
+  std::map<ResourceId, PostVSBufferRef> m_PostVSBuffers;
+  // made up reflections for fixed function vertex processing, by output layout. The replay
+  // controller holds on to them, so they're never freed.
+  std::map<rdcstr, std::shared_ptr<ShaderReflection>> m_FFPReflections;
+  // DrawPrimitiveUP's vertices and DrawIndexedPrimitiveUP's indices at m_PipelineEvent, as buffers
+  ResourceId m_UPVertexBuffer, m_UPIndexBuffer;
+  uint32_t m_PipelineEvent = 0;
+
+  void CreatePostVSResources();
+  bool IsPostVSBuffer(ResourceId id) const;
+  BufferDescription GetPostVSBuffer(ResourceId id);
+  void GetPostVSBufferData(ResourceId id, uint64_t offset, uint64_t len, bytebuf &retData);
+  const D3D9Emu::PostVSResult *GetPostVSResult(uint32_t eventId, uint32_t instance);
+  bool ReadFFPState(const D3D9DeviceState &state, Topology topology, D3D9Emu::FFPState &ffp);
+  void ReadVertexElements(rdcarray<D3D9Emu::InputElement> &elements);
+  void ReadVertexTexture(uint32_t sampler, const D3D9DeviceState &state, D3D9Emu::VSTexture &tex);
+  // the fixed function pipeline's reflection at a draw, for its output signature
+  const ShaderReflection *GetFFPReflection(uint32_t eventId, const D3D9DeviceState &state);
+  void ClearPostVSCache();
 
   // pipeline state, see d3d9_pipestate.cpp
   void CreatePipelineStateResources();

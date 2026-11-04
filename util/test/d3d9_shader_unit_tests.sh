@@ -1,6 +1,7 @@
 #!/bin/bash
-# Builds and runs the D3D9 shader bytecode unit tests (the Catch tests in
-# renderdoc/driver/d3d9/d3d9_bytecode.cpp and d3d9_shader_reflect.cpp) on Linux, without building
+# Builds and runs the D3D9 shader bytecode and vertex emulation unit tests (the Catch tests in
+# renderdoc/driver/d3d9/d3d9_bytecode.cpp, d3d9_shader_reflect.cpp, d3d9_vs_emulate.cpp and
+# d3d9_ffp_vertex.cpp) on Linux, without building
 # the rest of RenderDoc. On Windows they're part of the normal build: run
 # `renderdoccmd test unit "[d3d9]"` from a Development build.
 #
@@ -123,7 +124,8 @@ EOF
 } > "$OUT/fill.cpp"
 
 OBJS=""
-for s in "$ROOT/renderdoc/driver/d3d9/d3d9_bytecode.cpp" "$ROOT/renderdoc/driver/d3d9/d3d9_shader_reflect.cpp"; do
+for s in "$ROOT/renderdoc/driver/d3d9/d3d9_bytecode.cpp" "$ROOT/renderdoc/driver/d3d9/d3d9_shader_reflect.cpp" \
+  "$ROOT/renderdoc/driver/d3d9/d3d9_vs_emulate.cpp" "$ROOT/renderdoc/driver/d3d9/d3d9_ffp_vertex.cpp"; do
   o="$OUT/$(basename "$s" .cpp).o"
   g++ $FLAGS -c "$s" -o "$o"
   OBJS="$OBJS $o"

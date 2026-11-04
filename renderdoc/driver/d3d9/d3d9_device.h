@@ -41,6 +41,17 @@ class WrappedD3DCubeTexture9;
 class WrappedD3DVolumeTexture9;
 class WrappedD3DStateBlock9;
 
+// a DrawPrimitiveUP or DrawIndexedPrimitiveUP's data, which is only in its chunk. Kept at load so
+// the mesh viewer can read it (see d3d9_postvs.cpp).
+struct D3D9UserPrimitiveData
+{
+  bytebuf vertices;
+  uint32_t stride = 0;
+  bool indexed = false;
+  bytebuf indices;
+  bool index32 = false;
+};
+
 class WrappedD3DDevice9 final : public IDirect3DDevice9Ex, public IFrameCapturer
 {
 public:
@@ -162,6 +173,12 @@ public:
   D3D9Replay *GetReplay() const { return m_Replay; }
   void ReplayLog(uint32_t startEventID, uint32_t endEventID, ReplayLogType replayType);
   const ActionDescription *GetAction(uint32_t eventId);
+  // a DrawPrimitiveUP or DrawIndexedPrimitiveUP event's data, or NULL for other events
+  const D3D9UserPrimitiveData *GetUserPrimitives(uint32_t eventId) const
+  {
+    auto it = m_UserPrimitives.find(eventId);
+    return it == m_UserPrimitives.end() ? NULL : &it->second;
+  }
   SDFile *DetachStructuredFile();
   // drops the references replay holds on the objects it created
   void ReleaseReplayObjects();
@@ -929,6 +946,7 @@ private:
 
   // replay
   D3D9Replay *m_Replay = NULL;
+  std::map<uint32_t, D3D9UserPrimitiveData> m_UserPrimitives;
   HWND m_ReplayWindow = NULL;
   ResourceId m_NextWrapperID;
   // the objects replay created, holding the reference the creation returned

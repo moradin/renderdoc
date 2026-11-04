@@ -615,6 +615,9 @@ void D3D9Replay::CreatePipelineStateResources()
       descr.annotations = annotation;
     }
   }
+
+  // DrawPrimitiveUP's data, and post-transform vertices (d3d9_postvs.cpp)
+  CreatePostVSResources();
 }
 
 int D3D9Replay::ConstantsBufferIndex(ResourceId id) const
@@ -773,6 +776,9 @@ void D3D9Replay::SavePipelineState(uint32_t eventId)
   D3D9Pipe::State &ret = *m_D3D9PipelineState;
   ret = D3D9Pipe::State();
 
+  // the DrawPrimitiveUP pseudo buffers read this event's data
+  m_PipelineEvent = eventId;
+
   IDirect3DDevice9 *dev = m_pDevice->GetReal();
   const D3D9ObjectBindings &bind = m_pDevice->GetBindings();
 
@@ -869,6 +875,22 @@ void D3D9Replay::SavePipelineState(uint32_t eventId)
         ia.indexBuffer.byteStride = desc.Format == D3DFMT_INDEX32 ? 4 : 2;
     }
 
+    // DrawPrimitiveUP and DrawIndexedPrimitiveUP data is only in their chunks, and the runtime
+    // unbinds stream 0 and the indices after them. Their copy is presented as pseudo buffers.
+    if(const D3D9UserPrimitiveData *up = m_pDevice->GetUserPrimitives(eventId))
+    {
+      ia.streams[0].resourceId = m_UPVertexBuffer;
+      ia.streams[0].byteOffset = 0;
+      ia.streams[0].byteStride = up->stride;
+      ia.streams[0].indexedData = ia.streams[0].instanceData = false;
+      ia.streams[0].frequency = 1;
+      if(up->indexed)
+      {
+        ia.indexBuffer.resourceId = m_UPIndexBuffer;
+        ia.indexBuffer.byteStride = up->index32 ? 4 : 2;
+      }
+    }
+
     ia.topology = GetEventTopology(eventId);
   }
 
@@ -888,6 +910,9 @@ void D3D9Replay::SavePipelineState(uint32_t eventId)
 
       if(sh.resourceId != ResourceId())
         sh.reflection = GetShader(ResourceId(), sh.resourceId, ShaderEntryPoint("main", sh.stage));
+      // fixed function vertex processing gets a reflection with its outputs, for the mesh viewer
+      else if(s == 0)
+        sh.reflection = GetFFPReflection(eventId, state);
 
       uint32_t base = s * D3D9Constants_Count;
       sh.floatConstantsBuffer = m_ConstantsBuffers[base + D3D9Constants_Float];

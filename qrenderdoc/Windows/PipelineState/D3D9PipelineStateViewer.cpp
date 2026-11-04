@@ -556,8 +556,11 @@ void D3D9PipelineStateViewer::setShaderState(const D3D9Pipe::Shader &sh,
     widgets.shader->setText(text);
   }
 
-  widgets.view->setEnabled(refl != NULL);
-  widgets.save->setEnabled(refl != NULL);
+  // fixed function vertex processing has a reflection for its outputs (the mesh viewer's VS Out
+  // columns), but nothing to view or save
+  const bool hasShader = refl != NULL && sh.resourceId != ResourceId();
+  widgets.view->setEnabled(hasShader);
+  widgets.save->setEnabled(hasShader);
 
   // textures and sampler states
   {

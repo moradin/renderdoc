@@ -15,8 +15,8 @@ so none of this is upstream.
 | 3b | Texture viewer and buffers: displaying every D3D9 format, pick pixel, min/max, histogram, mesh viewer inputs | Tested from Python on Windows; the UI isn't checked yet |
 | 3c | D3D9 pipeline state, with its own UI panel and Python bindings | Tested from Python on Windows; the UI panel isn't checked yet |
 | 3d | Shaders: SM1-3 disassembly, reflection from the constant table | Tested on Windows against fxc; the shader viewer UI isn't checked yet |
-| 3e | Mesh output and overlays | Not started |
-| 3e (overlays) | Texture viewer overlays | Implemented, not tested on Windows yet (see below) |
+| 3e | Texture viewer overlays | Implemented, not tested on Windows yet (see below) |
+| 3e | Mesh output (post-transform vertices, VS Out) | Built and unit tested on Linux, not yet tested on Windows (see below) |
 
 ## Needs testing
 
@@ -357,10 +357,9 @@ How it works:
 Known gaps:
 - The mesh viewer's inputs come from the pipeline state (3c): the vertex declaration's elements,
   the streams' offsets and strides, and the index buffer, with the draw's start index and base
-  vertex from its action. Post-transform data is 3e.
-- `DrawPrimitiveUP` and `DrawIndexedPrimitiveUP` draws show nothing in the mesh viewer: their
-  vertices and indices are only in the capture's chunk, and the runtime unbinds stream 0 (and
-  the index buffer, for the indexed one) after them, so the pipeline state has no buffers for them.
+  vertex from its action. Post-transform data is 3e, below.
+- (Fixed in 3e: `DrawPrimitiveUP` and `DrawIndexedPrimitiveUP` data is now kept at load and
+  presented as pseudo buffers, see "Mesh output" below.)
 - Multisampled colour targets are only shown resolved, whichever sample is picked. Multisampled
   depth stencils show each sample.
 - Custom display shaders aren't supported: `GetCustomShaderEncodings` is empty, so the texture
@@ -680,7 +679,8 @@ Not supported, so `RenderOverlay` returns no texture and the texture viewer show
 it is (and picks and saves the target, not an overlay):
 - Quad overdraw (pass and draw): it needs UAVs, which D3D9 doesn't have.
 - Triangle size (pass and draw): it needs the post-transform positions from `GetPostVSBuffers`,
-  which is being added separately (the TODO is in `RenderOverlay`).
+  which phase 3e's mesh output now has, but the overlay doesn't use them yet (the TODO is in
+  `RenderOverlay`).
 
 Known gaps:
 - The constant colour shader replaces the application's pixel shader, so pixels it would discard
@@ -753,6 +753,161 @@ and events doesn't change the target, the pipeline state or what later events sh
 "save overlay instead" writes the overlay; and RenderDoc's log has no errors (one warning each for
 the unsupported overlays is expected). If a check fails, the saved PNGs show what was drawn.
 
+## Mesh output (phase 3e)
+
+The mesh viewer's VS Out stage and Python's `GetPostVSData` work for D3D9. D3D9 has no stream
+out, so the post-transform vertices are computed on the CPU.
+
+How it works (`d3d9_postvs.cpp`, the comment at its top has more):
+- `InitPostVSBuffers` reads what the draw needs from the replay device at the event: the vertex
+  declaration (or the one the runtime made for the FVF), the streams' contents, strides and
+  frequencies, the indices, and either the vertex shader with its float, integer and boolean
+  constants (the shader's `def`/`defi`/`defb` literals override them, as in 3d's reflection) and
+  its vertex textures, or the fixed function state. That snapshot is kept per event.
+- `GetPostVSBuffers` computes an instance's vertices from it the first time they're asked for,
+  and caches them. Programmable vertex shaders run in an interpreter (`d3d9_vs_emulate.cpp`) on
+  the program 3d's parser makes; fixed function vertex processing is emulated
+  (`d3d9_ffp_vertex.cpp`). Both are portable files with their own state structs, filled from the
+  device in `d3d9_postvs.cpp`.
+- The results are pseudo buffers (IDs with nothing behind them, like 3c's constants buffers) that
+  `GetBufferData` reads: a vertex buffer per instance and, for indexed draws, a 32-bit index
+  buffer into it. An indexed draw's unique vertices (index + BaseVertexIndex) are each computed
+  once, in sorted order, and the index buffer maps the draw's indices to them. Rows are laid out
+  as the mesh viewer expects VS Out columns: the position first, then the rest of the vertex
+  shader reflection's output signature in order, each `compCount` floats, packed.
+- The position is clip space (oPos, or the fixed function projection) and the MeshFormat asks to
+  unproject it, with near and far planes estimated as D3D11 does. Pretransformed (XYZRHW)
+  vertices are output as they were given (`POSITIONT`, still the position system value), with
+  `unproject` false, like any other non-projected data.
+- Fixed function vertex processing has no reflection, so the pipeline state's vertex shader
+  `reflection` at a fixed function draw is one made up from its outputs (its `resourceId` stays
+  null, so the D3D9 panel still says fixed function, and View/Save stay disabled): `POSITION`
+  (`POSITIONT` for pretransformed vertices), `COLOR0`, `COLOR1`, `TEXCOORDn` for each texture
+  stage that has a coordinate (its size is the input's, 3 for generated ones, 2 for sphere maps,
+  or the `D3DTTFF_COUNTn` count), `FOG` with vertex fog, `PSIZE` for point lists or vertices with
+  a size. The input signature lists the declaration's elements. The replay controller and the mesh
+  viewer take the VS Out columns from the reflection, so this is how they see them.
+- `DrawPrimitiveUP` and `DrawIndexedPrimitiveUP`: their data is only in the chunk and the runtime
+  unbinds stream 0 (and the indices) after them, so the device keeps a copy of each one's vertices
+  and indices at load (`WrappedD3DDevice9::GetUserPrimitives`). Post-transform data reads that,
+  and the pipeline state presents it as two pseudo buffers listed as resources,
+  "DrawPrimitiveUP vertices" and "DrawIndexedPrimitiveUP indices", holding the data of the event
+  the pipeline state is at. So VS In works for them too.
+- `PickVertex` runs on the CPU with the same tests as D3D11's picking compute shader: a ray cast
+  against triangles (unprojected through the guessed projection for VS Out), the vertex of the hit
+  triangle closest to the hit, or for points and lines the closest vertex within 35 pixels.
+- `RenderMesh` draws VS Out like VS In: the positions are read from the pseudo buffers through
+  `GetBufferData`, and its existing unproject path handles the rest.
+- Caching: the snapshots and results stay until `ClearReplayCache`, not cleared by every replay
+  as the texture caches are: a draw's post-transform data can't change.
+
+The interpreter covers every vs_1_1 to vs_3_0 instruction: arithmetic, `lit`/`dst`/`exp`/`log`/
+`expp`/`logp`/`frc`/`sincos`/`nrm`/`pow`/`crs`/`sgn`/`lrp`, the `m4x4` family, `if`/`ifc`/`else`,
+`loop` (with `aL`) and `rep`, `break`/`breakc`/`breakp`, `call`/`callnz`/`ret`/`label`, `setp` and
+predicated instructions, relative addressing by `a0` and `aL` on constants, inputs and vs_3_0
+outputs, source and destination modifiers, and `texldl`.
+
+Known gaps:
+- `texldl` point samples the nearest mip level to the LOD (plus `D3DSAMP_MIPMAPLODBIAS`, from
+  `D3DSAMP_MAXMIPLEVEL` down), whatever the sampler's filters are, with the wrap, mirror, clamp,
+  border and mirror once address modes. Linear filtering isn't emulated. The texture is decoded
+  with phase 3b's `GetDecoded`, so it works for the formats that can display.
+- Shaders run at full fp32 precision; partial precision hints are ignored, except where the
+  documentation defines a reduced result (`expp`, `logp`). Transcendentals use the C library, so
+  results can differ from a GPU's in the last bits.
+- Stream source frequencies only apply to indexed draws (hardware instancing). The divider mode
+  of non-indexed draws with software vertex processing isn't used.
+- Fixed function: N-patches, `D3DRS_CLIPPLANEENABLE` (user clip planes don't change vertices),
+  `D3DDECLMETHOD` other than default, displacement mapping, and more than 8 enabled lights aren't
+  handled. Vertex blending uses the world matrices `D3DTS_WORLDMATRIX(0-255)`.
+- A shader the interpreter can't run (malformed, or a pixel shader instruction) gives no VS Out
+  data, with the reason in the MeshFormat's `status` and the log.
+- Big draws with long shaders are slow, as each vertex is interpreted. Results are cached.
+- Outputs follow the reflection's output signature, which has one element per register: a vs_3_0
+  shader that packs two semantics into one `o#` register (`dcl_texcoord0 o1.xy`,
+  `dcl_texcoord1 o1.zw`) shows only one of them.
+- The made up fixed function reflections are kept until the replay closes (the replay controller
+  holds pointers to them), one per distinct output layout.
+
+### Decisions
+
+- Post-transform data is computed on the CPU rather than with ProcessVertices or by running the
+  draw on the GPU: D3D9 has no stream out, ProcessVertices only works on software vertex
+  processing devices, gives screen space and can't do vs_3_0 instancing, and the CPU path can be
+  unit tested.
+- Scalar instructions (`rcp`, `rsq`, `exp`, `log`, `expp`, `logp`, `pow`, `sincos`) read the w of
+  the swizzled source. SM2 and later require a replicate swizzle, so it only matters for vs_1_1,
+  where the documentation says w is used when no component is given.
+- `log` and `logp` of 0 give -FLT_MAX (the documentation's MINUS_MAX), `rcp`/`rsq` of 0 +inf, of 1
+  exactly 1. `nrm` of a zero vector gives 0 instead of NaN (the documentation scales by FLT_MAX).
+- vs_2_0's partial precision `expp`/`logp` are cut like vs_1_1's z (low 8 mantissa bits cleared).
+- mova rounds to nearest with floor(x + 0.5); vs_1_1's `mov a0` uses floor. a0 is clamped to
+  +-65536 before converting, and NaN becomes 0.
+- Out of range reads (relatively addressed constants, inputs, unbound vertex samplers) give 0 (or
+  (0, 0, 0, 1) for samplers and missing vertex elements, as the input assembler fills them).
+  Out of range writes are dropped.
+- Unwritten output components are 0.
+- An instruction budget of 2^20 per vertex and a call depth of 16 stop runaway shaders, which then
+  report an error instead of data.
+- The fixed function pipeline's direction to the viewer without D3DRS_LOCALVIEWER is (0, 0, -1)
+  in camera space (the camera looks down +z, and Wine does the same). The documentation writes
+  (0, 0, 1); ProcessVertices in `D3D9_Mesh_Output` will tell which is right. It's one constant,
+  `NonLocalViewer` in `d3d9_ffp_vertex.cpp`, and the reflection vector uses the same direction.
+- Sphere map coordinates are Wine's: r / (2 |r + (0, 0, 1)|) + 0.5 with r the reflection vector.
+- Specular is only added where N.L > 0, and only with D3DRS_SPECULARENABLE (COLOR1 is (0, 0, 0)
+  otherwise). COLOR1's alpha is the specular source's alpha when lit, the vertex's otherwise. Fog
+  is its own `FOG` output, not COLOR1's alpha.
+- Texture coordinates get a 1 after their last component before the texture transform (so a 2D
+  coordinate's translation is the matrix's third row), as Wine does. `D3DTTFF_PROJECTED` doesn't
+  change the vertex's output: the divide happens per pixel.
+- Without normals, lighting uses a zero normal (only ambient and emissive light the vertex).
+  Missing diffuse is white, missing specular black.
+- Vertex fog uses camera space |z|, or the distance with D3DRS_RANGEFOGENABLE.
+- `PSIZE` is output for point lists and for vertices that have a size.
+- Blend indices in D3DCOLOR or UBYTE4N elements are scaled back by 255.
+- The pretransformed position keeps the system value Position, so the mesh viewer still finds it,
+  but its semantic is POSITIONT and the MeshFormat doesn't unproject it.
+- Post-transform vertex buffers are one pseudo buffer per instance, computed on demand, rather
+  than all instances in one buffer like D3D11, since computing every instance up front on the
+  CPU can be slow.
+- The DrawPrimitiveUP pseudo buffers hold the data of the event the pipeline state is at (like
+  the constants buffers), so there are only two resources rather than two per draw.
+- `PickVertex` doesn't divide by w for data that isn't unprojected, as D3D11's and Vulkan's
+  picking shaders don't.
+
+### Testing the mesh output
+
+Unit tests: `util/test/d3d9_shader_unit_tests.sh` builds and runs the `[d3d9]` tests, now
+including `[vsemu]` (the interpreter per opcode, flow control, relative addressing, texldl,
+vertex fetch, whole draws) and `[ffp]` (transforms, blending, each light type, material sources,
+texgen, texture transforms, fog, point size, the output signature). They pass on Linux with
+AddressSanitizer and UBSan. On Windows: `renderdoccmd test unit "[d3d9]"`.
+
+On Windows, with `D3D9_Mesh_Output` (in the demos project):
+1. Run it natively once (or under RenderDoc): before drawing it writes
+   `D3D9_Mesh_Output_reference.txt` next to the executable, and logs where. Its references come
+   from `ProcessVertices` on a second, software vertex processing device for the fixed function,
+   vs_1_1 and vs_2_0 draws (screen space), and from C++ for pretransformed vertices, vs_3_0 with
+   texldl and instancing (clip space). Check its log for "Couldn't" or "ProcessVertices failed"
+   warnings: a draw whose reference failed is skipped by the check.
+2. Capture a frame and run
+   `python util\test\d3d9_mesh_check.py capture.rdc path\to\D3D9_Mesh_Output_reference.txt`
+   (set up as for `d3d9_replay_check.py`). It prints PASS or FAIL per draw (with the first
+   mismatches), the VS In and VS Out vertex counts, and checks VS In of the DrawPrimitiveUP draws.
+   Every draw should pass.
+3. In the UI, at each draw: the mesh viewer's VS Out tab shows columns matching the shader's
+   outputs (or the fixed function ones), the preview shows the transformed mesh in the guessed
+   frustum, and picking a vertex in the preview selects a row. The DrawPrimitiveUP draws show VS
+   In data now. The Pipeline State panel still says "Fixed function vertex processing" for the
+   fixed function draws.
+4. Things to watch for, which the decisions above flag as unverified: specular and reflection
+   vectors without the local viewer ("FFP directional light", "FFP texgen and fog"), sphere maps,
+   texture transforms on 2D coordinates, vs_1_1's `expp`/`logp` precision, and whether
+   ProcessVertices writes the vertex fog to specular alpha. If a fixed function draw fails only in
+   one of those outputs, the decision is probably wrong; say which values came out. The indexed
+   vertex blending draw only exists if the GPU supports indexed blending with hardware vertex
+   processing (`MaxVertexBlendMatrixIndex` >= 7).
+
 ## Inspecting a capture
 
 Captures can also be dumped without replaying them:
@@ -781,6 +936,10 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
 - `d3d9_depth.cpp` - reading back depth stencils that can't be locked, and writing them at replay.
 - `d3d9_replay.*` - the replay driver the replay controller talks to (`D3D9Replay`), and creating
   the replay device.
+- `d3d9_postvs.cpp` - post-transform vertices for the mesh viewer (3e), on the CPU with
+  `d3d9_vs_emulate.*` (vertex shader interpreter, vertex fetch, running a draw) and
+  `d3d9_ffp_vertex.*` (fixed function vertex processing). The last two are portable and unit
+  tested.
 - `d3d9_replay_device.cpp` - the replay side of the device: loading, replaying the frame, the
   event list, writing contents.
 - `d3d9_overlay.cpp` - the texture viewer's overlays, `IsRenderOutput` and `GetPassEvents` (phase

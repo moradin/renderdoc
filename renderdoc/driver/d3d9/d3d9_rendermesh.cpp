@@ -37,8 +37,12 @@
 // topology, and works the same for any format.
 //
 // D3D9 has no geometry shaders, so lit shading gets its face normal from the derivatives of the
-// view space position in the pixel shader instead of D3D11's geometry shader. Only the input
-// vertex data (the VS input stage) is shown, post-transform data comes with phase 3e.
+// view space position in the pixel shader instead of D3D11's geometry shader.
+//
+// Post-transform data (VS Out, phase 3e) is drawn the same way: cfg.position then points at the
+// pseudo buffers d3d9_postvs.cpp computes on the CPU, which GetBufferData reads like any other,
+// and its unproject flag draws it through the guessed projection's inverse as D3D11 does.
+// PickVertex runs on the CPU too, with the same tests as D3D11's picking compute shader.
 
 // in d3d9_rendertexture.cpp
 void D3D9SetDebugDrawState(IDirect3DDevice9 *dev);
@@ -656,4 +660,264 @@ void D3D9Replay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &second
     dev->EndScene();
 
   m_pDevice->RestoreReplayDrawState(state);
+}
+
+namespace
+{
+// m * v, with Matrix4f's layout (Matrix4f::Transform without the divide)
+Vec4f Transform4(const Matrix4f &m, const FloatVector &v)
+{
+  const float *f = m.Data();
+  return Vec4f(f[0] * v.x + f[4] * v.y + f[8] * v.z + f[12] * v.w,
+               f[1] * v.x + f[5] * v.y + f[9] * v.z + f[13] * v.w,
+               f[2] * v.x + f[6] * v.y + f[10] * v.z + f[14] * v.w,
+               f[3] * v.x + f[7] * v.y + f[11] * v.z + f[15] * v.w);
+}
+
+// as TriangleRayIntersect in mesh.hlsl: backfaces count, the hit position is returned
+bool TriangleRayIntersect(const Vec3f &A, const Vec3f &B, const Vec3f &C, const Vec3f &rayPos,
+                          const Vec3f &rayDir, Vec3f &hit)
+{
+  auto same = [](const Vec3f &a, const Vec3f &b) { return a.x == b.x && a.y == b.y && a.z == b.z; };
+  if(same(A, B) || same(A, C) || same(B, C))
+    return false;
+
+  const Vec3f v0v1 = B - A;
+  const Vec3f v0v2 = C - A;
+  const Vec3f pvec = rayDir.Cross(v0v2);
+  const float det = v0v1.Dot(pvec);
+  if(fabsf(det) <= 0.0f)
+    return false;
+
+  const float invDet = 1.0f / det;
+  const Vec3f tvec = rayPos - A;
+  const Vec3f qvec = tvec.Cross(v0v1);
+  const float u = tvec.Dot(pvec) * invDet;
+  const float v = rayDir.Dot(qvec) * invDet;
+  if(u < 0.0f || u > 1.0f || v < 0.0f || u + v > 1.0f)
+    return false;
+
+  const float t = v0v2.Dot(qvec) * invDet;
+  if(t < 0.0f)
+    return false;
+
+  hit = rayPos + rayDir * t;
+  return true;
+}
+};    // namespace
+
+uint32_t D3D9Replay::PickVertex(uint32_t eventId, int32_t width, int32_t height,
+                                const MeshDisplay &cfg, uint32_t x, uint32_t y)
+{
+  // the same picking as D3D11Replay::PickVertex and its compute shader (mesh.hlsl), on the CPU
+  if(cfg.position.numIndices == 0 || cfg.position.vertexResourceId == ResourceId() || width <= 0 ||
+     height <= 0)
+    return ~0U;
+
+  const float nearPlane = cfg.cam ? ((Camera *)cfg.cam)->GetNear() : 0.1f;
+  const float farPlane = cfg.cam ? ((Camera *)cfg.cam)->GetFar() : 100000.0f;
+
+  const Matrix4f projMat =
+      Matrix4f::Perspective(90.0f, nearPlane, farPlane, float(width) / float(height));
+  const Matrix4f camMat = cfg.cam ? ((Camera *)cfg.cam)->GetMatrix() : Matrix4f::Identity();
+
+  Matrix4f pickMVP = projMat.Mul(camMat);
+  if(!cfg.position.unproject)
+    pickMVP = pickMVP.Mul(Matrix4f(cfg.axisMapping));
+
+  bool reverseProjection = false;
+  Matrix4f guessProj, guessProjInverse;
+  if(cfg.position.unproject)
+  {
+    if(cfg.position.farPlane != FLT_MAX)
+    {
+      guessProj =
+          Matrix4f::Perspective(cfg.fov, cfg.position.nearPlane, cfg.position.farPlane, cfg.aspect);
+    }
+    else
+    {
+      reverseProjection = true;
+      guessProj = Matrix4f::ReversePerspective(cfg.fov, cfg.position.nearPlane, cfg.aspect);
+    }
+    if(cfg.ortho)
+      guessProj = Matrix4f::Orthographic(cfg.position.nearPlane, cfg.position.farPlane);
+    if(cfg.position.flipY)
+      guessProj[5] *= -1.0f;
+    guessProjInverse = guessProj.Inverse();
+  }
+
+  // the mouse position as a world space ray
+  Vec3f rayPos, rayDir;
+  {
+    const float pickX = float(x) / float(width);
+    float pickXCanonical = RDCLERP(-1.0f, 1.0f, pickX);
+    const float pickY = float(y) / float(height);
+    float pickYCanonical = RDCLERP(1.0f, -1.0f, pickY);
+    if(cfg.position.flipY && !cfg.ortho)
+      pickYCanonical = -pickYCanonical;
+    if(cfg.position.unproject && !cfg.ortho)
+      pickXCanonical *= (float(width) / float(height)) / cfg.aspect;
+
+    Vec3f nearPosNDC(pickXCanonical, pickYCanonical, 0);
+    Vec3f farPosNDC(pickXCanonical, pickYCanonical, 1);
+
+    if(cfg.position.unproject && cfg.ortho)
+    {
+      const Matrix4f inversePickMVP = pickMVP.Inverse();
+      Vec3f testDir =
+          inversePickMVP.Transform(farPosNDC, 1) - inversePickMVP.Transform(nearPosNDC, 1);
+      testDir.Normalise();
+      const Matrix4f m = guessProj.Mul(inversePickMVP);
+      const Vec3f nearPosProj = m.Transform(nearPosNDC, 1);
+      rayDir = m.Transform(farPosNDC, 1) - nearPosProj;
+      rayDir.Normalise();
+      if(testDir.z < 0)
+        rayDir = -rayDir;
+      rayPos = nearPosProj;
+    }
+    else if(cfg.position.unproject)
+    {
+      if(reverseProjection)
+      {
+        farPosNDC.z = 1e-6f;
+        nearPosNDC.z = 1e+6f;
+      }
+      const Vec3f nearPosCamera = guessProjInverse.Transform(nearPosNDC, 1.0f);
+      Vec3f dir = guessProjInverse.Transform(farPosNDC, 1.0f) - nearPosCamera;
+      dir.Normalise();
+      const Matrix4f inverseCamera = camMat.Inverse();
+      const Vec3f nearPosWorld = inverseCamera.Transform(nearPosCamera, 1);
+      rayDir = inverseCamera.Transform(nearPosCamera + dir, 1) - nearPosWorld;
+      rayDir.Normalise();
+      rayPos = nearPosWorld;
+    }
+    else
+    {
+      const Matrix4f inversePickMVP = pickMVP.Inverse();
+      const Vec3f nearPosCamera = inversePickMVP.Transform(nearPosNDC, 1);
+      rayDir = inversePickMVP.Transform(farPosNDC, 1) - nearPosCamera;
+      rayDir.Normalise();
+      rayPos = nearPosCamera;
+    }
+  }
+
+  bool triangles = true;
+  switch(cfg.position.topology)
+  {
+    case Topology::TriangleList:
+    case Topology::TriangleStrip:
+    case Topology::TriangleFan: break;
+    default: triangles = false; break;
+  }
+
+  // the positions, one per row (indices applied)
+  HighlightCache cache;
+  cache.driver = this;
+  cache.CacheHighlightingData(eventId, cfg);
+  const byte *begin = cache.vertexData.data();
+  const byte *end = begin + cache.vertexData.size();
+
+  const uint32_t numVerts = cfg.position.numIndices;
+  rdcarray<FloatVector> pos;
+  pos.resize(numVerts);
+  for(uint32_t i = 0; i < numVerts; i++)
+  {
+    bool valid = true;
+    pos[i] = cache.InterpretVertex(begin, i, cfg, end, true, valid);
+  }
+
+  if(triangles)
+  {
+    // projected triangles go back to world space through the guessed projection, ortho ones are
+    // raycast in NDC
+    const bool transform = cfg.position.unproject && !cfg.ortho;
+    rdcarray<Vec3f> p;
+    p.resize(numVerts);
+    for(uint32_t i = 0; i < numVerts; i++)
+    {
+      Vec4f v = transform ? Transform4(guessProjInverse, pos[i])
+                          : Vec4f(pos[i].x, pos[i].y, pos[i].z, pos[i].w);
+      if(cfg.position.unproject && v.w != 0.0f)
+        p[i] = Vec3f(v.x / v.w, v.y / v.w, v.z / v.w);
+      else
+        p[i] = Vec3f(v.x, v.y, v.z);
+    }
+
+    uint32_t numPrims = 0;
+    if(cfg.position.topology == Topology::TriangleList)
+      numPrims = numVerts / 3;
+    else if(numVerts >= 3)
+      numPrims = numVerts - 2;
+
+    uint32_t best = ~0U;
+    float bestDist = FLT_MAX;
+    for(uint32_t t = 0; t < numPrims; t++)
+    {
+      uint32_t v0 = t * 3, v1 = t * 3 + 1, v2 = t * 3 + 2;
+      if(cfg.position.topology == Topology::TriangleStrip)
+      {
+        v0 = t;
+        v1 = t + 1;
+        v2 = t + 2;
+      }
+      else if(cfg.position.topology == Topology::TriangleFan)
+      {
+        v0 = 0;
+        v1 = t + 1;
+        v2 = t + 2;
+      }
+
+      Vec3f hit;
+      if(!TriangleRayIntersect(p[v0], p[v1], p[v2], rayPos, rayDir, hit))
+        continue;
+
+      // the vertex of the triangle closest to the hit
+      const float d0 = (p[v0] - hit).Length(), d1 = (p[v1] - hit).Length(),
+                  d2 = (p[v2] - hit).Length();
+      uint32_t vert = v0;
+      if(d1 < d0 && d1 < d2)
+        vert = v1;
+      else if(d2 < d0 && d2 < d1)
+        vert = v2;
+
+      const float dist = (hit - rayPos).Length();
+      if(dist < bestDist)
+      {
+        bestDist = dist;
+        best = vert;
+      }
+    }
+    return best;
+  }
+
+  // points and lines: the closest vertex on screen within 35 pixels, then the nearest
+  const Matrix4f m = cfg.position.unproject ? pickMVP.Mul(guessProjInverse) : pickMVP;
+  uint32_t best = ~0U;
+  float bestLen = FLT_MAX, bestDepth = FLT_MAX;
+  for(uint32_t i = 0; i < numVerts; i++)
+  {
+    Vec4f w = Transform4(m, pos[i]);
+    if(cfg.position.unproject && w.w != 0.0f)
+    {
+      w.x /= w.w;
+      w.y /= w.w;
+      w.z /= w.w;
+    }
+    if(!cfg.position.flipY)
+      w.y = -w.y;
+
+    const float sx = (w.x + 1.0f) * 0.5f * float(width);
+    const float sy = (w.y + 1.0f) * 0.5f * float(height);
+    const float len = sqrtf((sx - float(x)) * (sx - float(x)) + (sy - float(y)) * (sy - float(y)));
+    if(len >= 35.0f)
+      continue;
+
+    if(len < bestLen || (len == bestLen && w.z < bestDepth))
+    {
+      best = i;
+      bestLen = len;
+      bestDepth = w.z;
+    }
+  }
+  return best;
 }

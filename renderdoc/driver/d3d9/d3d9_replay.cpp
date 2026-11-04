@@ -317,6 +317,10 @@ BufferDescription D3D9Replay::GetBuffer(ResourceId id)
   if(ConstantsBufferIndex(id) >= 0)
     return GetConstantsBuffer(id);
 
+  // post-transform vertices and DrawPrimitiveUP data (see d3d9_postvs.cpp)
+  if(IsPostVSBuffer(id))
+    return GetPostVSBuffer(id);
+
   D3D9ResourceManager *rm = m_pDevice->GetResourceManager();
   if(!rm->HasResource(id))
     return ret;
@@ -493,20 +497,6 @@ SDFile *D3D9Replay::GetStructuredFile()
   return m_pDevice->GetStructuredFile();
 }
 
-void D3D9Replay::InitPostVSBuffers(uint32_t eventId)
-{
-}
-
-void D3D9Replay::InitPostVSBuffers(const rdcarray<uint32_t> &passEvents)
-{
-}
-
-MeshFormat D3D9Replay::GetPostVSBuffers(uint32_t eventId, uint32_t instID, uint32_t viewID,
-                                        MeshDataStage stage)
-{
-  return {};
-}
-
 void D3D9Replay::GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, bytebuf &retData)
 {
   retData.clear();
@@ -514,6 +504,12 @@ void D3D9Replay::GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, b
   if(ConstantsBufferIndex(buff) >= 0)
   {
     GetConstantsData(buff, offset, len, retData);
+    return;
+  }
+
+  if(IsPostVSBuffer(buff))
+  {
+    GetPostVSBufferData(buff, offset, len, retData);
     return;
   }
 
@@ -680,6 +676,7 @@ void D3D9Replay::FreeTargetResource(ResourceId id)
 
 void D3D9Replay::ClearReplayCache()
 {
+  ClearPostVSCache();
 }
 
 void D3D9Replay::ReloadShaderDebugInformation()

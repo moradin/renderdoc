@@ -33,6 +33,15 @@
     <ClCompile Include="d3d9_shader_reflect.cpp">
       <Filter>Replay</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9_vs_emulate.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_ffp_vertex.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_postvs.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
     <ClCompile Include="d3d9_shaders.cpp">
       <Filter>Replay</Filter>
     </ClCompile>
@@ -114,6 +123,12 @@
       <Filter>Replay</Filter>
     </ClInclude>
     <ClInclude Include="d3d9_shader_reflect.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_vs_emulate.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_ffp_vertex.h">
       <Filter>Replay</Filter>
     </ClInclude>
     <ClInclude Include="..\dx\official\d3d9.h">

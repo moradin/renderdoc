@@ -99,6 +99,9 @@
   <ItemGroup>
     <ClCompile Include="d3d9_bytecode.cpp" />
     <ClCompile Include="d3d9_shader_reflect.cpp" />
+    <ClCompile Include="d3d9_vs_emulate.cpp" />
+    <ClCompile Include="d3d9_ffp_vertex.cpp" />
+    <ClCompile Include="d3d9_postvs.cpp" />
     <ClCompile Include="d3d9_shaders.cpp" />
     <ClCompile Include="d3d9_common.cpp" />
     <ClCompile Include="d3d9_contents.cpp" />
@@ -133,6 +136,8 @@
     <ClInclude Include="d3d9_bytecode.h" />
     <ClInclude Include="d3d9_bytecode_test.h" />
     <ClInclude Include="d3d9_shader_reflect.h" />
+    <ClInclude Include="d3d9_vs_emulate.h" />
+    <ClInclude Include="d3d9_ffp_vertex.h" />
     <ClInclude Include="d3d9_common.h" />
     <ClInclude Include="d3d9_contents.h" />
     <ClInclude Include="d3d9_debug.h" />

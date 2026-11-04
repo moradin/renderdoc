@@ -2251,6 +2251,18 @@ bool WrappedD3DDevice9::Serialise_DrawPrimitiveUP(SerialiserType &ser,
     if(pVertexStreamZeroData)
       DrawPrimitiveUP(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride);
 
+    // the data is only in the chunk, keep it for the mesh viewer. The array's length isn't read
+    // back (SERIALISE_ELEMENT_ARRAY takes it by value), so it's worked out as it was written.
+    if(IsLoading(m_State))
+    {
+      D3D9UserPrimitiveData &up = m_UserPrimitives[m_CurEventID];
+      up.stride = VertexStreamZeroStride;
+      if(pVertexStreamZeroData)
+        up.vertices.assign((const byte *)pVertexStreamZeroData,
+                           size_t(VertexCountForPrimitives(PrimitiveType, PrimitiveCount)) *
+                               VertexStreamZeroStride);
+    }
+
     AddDrawAction(ActionFlags::NoFlags, VertexCountForPrimitives(PrimitiveType, PrimitiveCount), 0,
                   0, 0);
   }
@@ -2297,6 +2309,21 @@ bool WrappedD3DDevice9::Serialise_DrawIndexedPrimitiveUP(
     if(pIndexData && pVertexStreamZeroData)
       DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices, PrimitiveCount, pIndexData,
                              IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride);
+
+    if(IsLoading(m_State))
+    {
+      D3D9UserPrimitiveData &up = m_UserPrimitives[m_CurEventID];
+      up.stride = VertexStreamZeroStride;
+      up.indexed = true;
+      up.index32 = IndexDataFormat == D3DFMT_INDEX32;
+      if(pVertexStreamZeroData)
+        up.vertices.assign((const byte *)pVertexStreamZeroData,
+                           size_t(MinVertexIndex + NumVertices) * VertexStreamZeroStride);
+      if(pIndexData)
+        up.indices.assign(
+            (const byte *)pIndexData,
+            size_t(VertexCountForPrimitives(PrimitiveType, PrimitiveCount)) * (up.index32 ? 4 : 2));
+    }
 
     AddDrawAction(ActionFlags::Indexed, VertexCountForPrimitives(PrimitiveType, PrimitiveCount), 0,
                   0, 0);

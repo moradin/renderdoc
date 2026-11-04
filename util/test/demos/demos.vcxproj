@@ -231,6 +231,7 @@
     <ClCompile Include="d3d9\d3d9_capture_edge_cases.cpp" />
     <ClCompile Include="d3d9\d3d9_frame_start_state.cpp" />
     <ClCompile Include="d3d9\d3d9_overlay_test.cpp" />
+    <ClCompile Include="d3d9\d3d9_mesh_output.cpp" />
     <ClCompile Include="d3d9\d3d9_resource_contents.cpp" />
     <ClCompile Include="d3d9\d3d9_reset_capture.cpp" />
     <ClCompile Include="d3d9\d3d9_simple_triangle.cpp" />
