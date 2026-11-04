@@ -381,6 +381,11 @@ struct RichResourceText
 
     bool highdpi = widget && widget->devicePixelRatioF() > 1.0;
 
+    // the link and message icons are sized to the text, 1.5x its cap height, rather than always
+    // being 16 pixels which is taller than the text and than compact rows.
+    int iconSize = qBound(
+        8, qRound(QFontMetricsF(widget ? widget->font() : doc.defaultFont()).capHeight() * 1.5), 16);
+
     QVector<int> fragmentIndexFromBlockIndex;
 
     // there's an empty block at the start.
@@ -397,9 +402,10 @@ struct RichResourceText
         QString resname = GetTruncatedResourceName(ctx, v.value<ResourceId>()).toHtmlEscaped();
         html += lit("<td valign=\"middle\" style=\"line-height: 14px\"><b>%1</b></td>"
                     "<td valign=\"middle\" style=\"line-height: 14px\">"
-                    "<img width=\"16\" src=':/link%3.png'></td>")
+                    "<img width=\"%4\" height=\"%4\" src=':/link%3.png'></td>")
                     .arg(resname)
-                    .arg(highdpi ? lit("@2x") : QString());
+                    .arg(highdpi ? lit("@2x") : QString())
+                    .arg(iconSize);
         text += resname;
 
         // these generate two blocks (one for each cell)
@@ -414,10 +420,11 @@ struct RichResourceText
             QApplication::translate("qrenderdoc", "%n msg(s)", "Shader messages", link.numMessages);
 
         html += lit("<td valign=\"middle\" style=\"line-height: 14px\">"
-                    "<img width=\"16\" src=':/text_add%3.png'></td>"
+                    "<img width=\"%4\" height=\"%4\" src=':/text_add%3.png'></td>"
                     "<td valign=\"middle\" style=\"line-height: 14px\">%1</td>")
                     .arg(msgstr)
-                    .arg(highdpi ? lit("@2x") : QString());
+                    .arg(highdpi ? lit("@2x") : QString())
+                    .arg(iconSize);
         text += msgstr;
 
         fragmentIndexFromBlockIndex.push_back(i);
@@ -814,6 +821,46 @@ bool RichResourceTextCheck(const QVariant &var)
 // the rich text case.
 static const int RichResourceTextMargin = 2;
 
+// The vertical offset to draw a rich text document at, in a row of the given height. A single line
+// document is placed so that its text's baseline is where a plain text row in the same font puts
+// it, so its text lines up with plain rows. Centring the whole document doesn't do that: its height
+// includes the table cells' padding and the icons, and how a line-height style shifts the text
+// inside its line differs between Qt versions. If baseline is given, it's set to the baseline in
+// document coordinates, or to -1 for a document with several lines, which is centred.
+static qreal RichResourceTextYOffset(RichResourceText *linkedText, const QFont &font, int height,
+                                     qreal *baseline = NULL)
+{
+  if(baseline)
+    *baseline = -1.0;
+
+  QTextDocument &doc = linkedText->doc;
+
+  if(linkedText->numLines == 1)
+  {
+    for(QTextBlock block = doc.begin(); block.isValid(); block = block.next())
+    {
+      // skip empty blocks and the blocks that only hold an icon
+      QString text = block.text();
+      text.remove(QChar::ObjectReplacementCharacter);
+      if(text.isEmpty() || !block.layout() || block.layout()->lineCount() == 0)
+        continue;
+
+      QTextLine line = block.layout()->lineAt(0);
+      qreal docBaseline =
+          doc.documentLayout()->blockBoundingRect(block).top() + line.y() + line.ascent();
+
+      if(baseline)
+        *baseline = docBaseline;
+
+      QFontMetricsF fm(font);
+      return (height - fm.height()) / 2.0 + fm.ascent() - docBaseline;
+    }
+  }
+
+  int diff = height - doc.size().height();
+  return diff / 2;
+}
+
 void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, QFont font,
                            QPalette palette, QStyle::State state, QPoint mousePos,
                            const QVariant &var)
@@ -920,8 +967,8 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
   if(font != linkedText->doc.defaultFont())
     linkedText->doc.setDefaultFont(font);
 
-  // vertical align to the centre
-  int diff = rect.height() - linkedText->doc.size().height();
+  qreal baseline = -1.0;
+  qreal yoffset = RichResourceTextYOffset(linkedText.data(), font, rect.height(), &baseline);
 
   if(RichTextLogRow())
   {
@@ -939,17 +986,16 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
                       << (painter->device() ? painter->device()->logicalDpiY() : 0)
                       << ", primary screen logical DPI "
                       << QGuiApplication::primaryScreen()->logicalDotsPerInchY() << " DPR "
-                      << QGuiApplication::primaryScreen()->devicePixelRatio();
+                      << QGuiApplication::primaryScreen()->devicePixelRatio() << ", baseline "
+                      << baseline << ", y offset " << yoffset;
   }
 
-  // a document taller than the row is centred too, so that its text stays in the middle and only
-  // the cells' padding and the icons' edges are cut off
-  painter->translate(1, diff / 2);
+  painter->translate(1, yoffset);
 
   QAbstractTextDocumentLayout::PaintContext docCtx;
   docCtx.palette = palette;
 
-  docCtx.clip = QRectF(0, -(diff / 2), rect.width() - 1, rect.height());
+  docCtx.clip = QRectF(0, -yoffset, rect.width() - 1, rect.height());
 
   if(state & QStyle::State_Selected)
   {
@@ -967,6 +1013,9 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
 
   painter->setClipRect(docCtx.clip);
 
+  // the icons are scaled to the text's size
+  painter->setRenderHint(QPainter::SmoothPixmapTransform);
+
   linkedText->doc.documentLayout()->draw(painter, docCtx);
 
   if(state & QStyle::State_MouseOver)
@@ -975,8 +1024,8 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
 
     QAbstractTextDocumentLayout *layout = linkedText->doc.documentLayout();
 
-    QPoint p = mousePos - rect.topLeft();
-    p -= QPoint(1, diff / 2);
+    QPointF p = mousePos - rect.topLeft();
+    p -= QPointF(1, yoffset);
 
     int pos = layout->hitTest(p, Qt::FuzzyHit);
 
@@ -1004,7 +1053,15 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
             blockrect = blockrect.united(layout->blockBoundingRect(block.next()));
           }
 
-          if(v.userType() != qMetaTypeId<QUrl>())
+          if(baseline >= 0.0)
+          {
+            // a single line is underlined where its font puts underlines, the bottom of its cells
+            // can be below the row
+            qreal underline = baseline + qMax(1.0, QFontMetricsF(font).underlinePos());
+            blockrect.setTop(underline);
+            blockrect.setBottom(underline);
+          }
+          else if(v.userType() != qMetaTypeId<QUrl>())
           {
             blockrect.translate(0.0, -2.0);
           }
@@ -1229,11 +1286,8 @@ bool RichResourceTextMouseEvent(const QWidget *owner, const QVariant &var, QRect
 
   QAbstractTextDocumentLayout *layout = linkedText->doc.documentLayout();
 
-  // vertical align to the centre
-  int diff = rect.height() - linkedText->doc.size().height();
-
-  QPoint p = event->pos() - rect.topLeft();
-  p -= QPoint(1, diff / 2);
+  QPointF p = event->pos() - rect.topLeft();
+  p -= QPointF(1, RichResourceTextYOffset(linkedText.data(), font, rect.height()));
 
   int pos = layout->hitTest(p, Qt::FuzzyHit);
 

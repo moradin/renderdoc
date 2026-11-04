@@ -247,12 +247,22 @@ Retest 2 (`d3d9_phase3_retest2.md`) passed everything except two UI items, now f
   but the rich text document is 18 (the cells' 14px line height plus padding), or 20 with a
   resource link (its 16 pixel icon). RichResourceTextPaint only centred a document shorter than
   the row, and drew a taller one from the top, so its text sat low and its bottom was cut off. A
-  taller document is now centred too (and mouse hit testing matches), so the text is in the
-  middle and only padding and the icon's top and bottom pixel are cut off. The probe
-  (`util/test/richtext_probe`) had the same fonts, but rows 18 pixels high. Until the fix is
-  confirmed, qrenderdoc keeps two environment variables for trying changes without rebuilding:
+  taller document was then centred too, which retest 2 found better but still about 4 screen
+  pixels low, with the link icon as tall as the row and no visible hover underline. Centring the
+  document can't line its text up: its height includes the cells' padding and the icons, and
+  where a fixed line height puts the text inside its line differs between Qt versions (on Qt 5.15
+  the same code draws it 2 pixels high instead). A single line document is now placed so that its
+  text's baseline is where a plain row in the same font puts it, with fractional offsets. An
+  offscreen Qt 5.15 test matched plain rows exactly in 45 of 48 font, row height and scale
+  combinations, and was 1 pixel off in the rest. Documents with several lines are still centred.
+  The link and message icons are 1.5 times the font's cap height (8 to 16 pixels) and drawn
+  smoothly, and a hovered link is underlined at the font's underline position. Mouse hit testing
+  uses the same offset. The probe (`util/test/richtext_probe`) had the same fonts, but rows 18
+  pixels high. Until the fix is confirmed, qrenderdoc keeps two environment variables for trying
+  changes without rebuilding:
   - `RENDERDOC_RICHTEXT_LOG=1` logs the first 60 rich text rows painted (row height, the
-    QTextDocument's height, the font's metrics, the painter's and screen's DPI) to the diagnostic
+    QTextDocument's height, the font's metrics, the painter's and screen's DPI, the baseline and
+    the offset used) to the diagnostic
     log (Help > View Diagnostic Log File, lines starting `QTRD`).
   - `RENDERDOC_RICHTEXT_STYLE` replaces each cell's `style="line-height: 14px"` with
     `style="<value>"`, or removes it with the value `none`. For example
