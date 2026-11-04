@@ -416,16 +416,17 @@ void WrappedD3DDevice9::WrapAutoDepthStencil()
   real->Release();
 
   // after Reset this is a new surface even if it has the old one's address, so it gets a new
-  // wrapper: keeping the old one would keep its ID and creation record from before the reset
+  // wrapper: keeping the old one would keep its ID and creation record from before the reset.
+  // Release the old wrapper first, so that when the new surface does reuse the address the old
+  // wrapper isn't still registered for it. It stays alive if the application still references it.
+  if(m_AutoDepthStencil)
+    m_AutoDepthStencil->IntRelease();
+  m_AutoDepthStencil = NULL;
 
   // standalone surface, but with no external references and owned by the device
   WrappedD3DSurface9 *wrapped = new WrappedD3DSurface9(real, this, (WrappedD3D9Object *)NULL);
   wrapped->IntAddRef();
   CreateOwnedRecord(wrapped);
-
-  // the old one stays alive if the application still references it
-  if(m_AutoDepthStencil)
-    m_AutoDepthStencil->IntRelease();
 
   m_AutoDepthStencil = wrapped;
 }

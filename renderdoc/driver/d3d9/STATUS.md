@@ -248,6 +248,11 @@ Retest 2 (`d3d9_phase3_retest2.md`) passed everything except two UI items, now f
 - The white backgrounds on the `Depth` and `State blocks` markers are expected: the demo passes
   0xffffffff as their colour.
 
+- The "Real D3D9 object ... already has a wrapper, replacing it" warning in one Reset run came from
+  the automatic depth stencil. After Reset the new wrapper was made before the old one was
+  released, so when the new surface reused the old address the old wrapper was still registered.
+  Replay was fine (the newer wrapper wins), but the old wrapper is now released first.
+
 Retest by eye: the IA page diagram, and rows with links in the Event Browser of a D3D9 and a D3D11
 capture.
 
