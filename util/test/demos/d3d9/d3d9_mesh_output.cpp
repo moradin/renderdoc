@@ -309,7 +309,7 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
     if(c.instances > 1)
     {
       d->SetStreamSourceFreq(0, D3DSTREAMSOURCE_INDEXEDDATA | c.instances);
-      d->SetStreamSourceFreq(1, D3DSTREAMSOURCE_INSTANCEDATA | 1);
+      d->SetStreamSourceFreq(1, D3DSTREAMSOURCE_INSTANCEDATA | 1u);
     }
   }
 
@@ -348,11 +348,11 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
     float tex[8][4];
   };
 
-  static const DWORD PVFVF = D3DFVF_XYZRHW | D3DFVF_PSIZE | D3DFVF_DIFFUSE | D3DFVF_SPECULAR |
+  static const DWORD PVFVF = (DWORD)(D3DFVF_XYZRHW | D3DFVF_PSIZE | D3DFVF_DIFFUSE | D3DFVF_SPECULAR |
                              D3DFVF_TEX8 | D3DFVF_TEXCOORDSIZE4(0) | D3DFVF_TEXCOORDSIZE4(1) |
                              D3DFVF_TEXCOORDSIZE4(2) | D3DFVF_TEXCOORDSIZE4(3) |
                              D3DFVF_TEXCOORDSIZE4(4) | D3DFVF_TEXCOORDSIZE4(5) |
-                             D3DFVF_TEXCOORDSIZE4(6) | D3DFVF_TEXCOORDSIZE4(7);
+                             D3DFVF_TEXCOORDSIZE4(6) | D3DFVF_TEXCOORDSIZE4(7));
 
   static std::vector<float> Color(D3DCOLOR c)
   {
@@ -1204,7 +1204,8 @@ VOut main(float3 pos : POSITION, float4 col : COLOR0, float4 inst : TEXCOORD1)
       if(FAILED(hr))
         TEST_WARN("Couldn't create a software vertex processing device: %x", hr);
 
-      FILE *f = fopen(path.c_str(), "w");
+      FILE *f = NULL;
+      fopen_s(&f, path.c_str(), "w");
       if(f)
       {
         fprintf(f, "viewport 0 0 %u %u 0 1\n", screenWidth, screenHeight);
