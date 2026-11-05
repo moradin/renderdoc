@@ -21,6 +21,61 @@ The Windows test reports this file refers to (`d3d9_*.md`, with their screenshot
 | 3e | Texture viewer overlays | Tested from Python and the UI on Windows (`d3d9_phase3e_test.md`, `d3d9_phase3e_retest.md`), triangle size included. Quad overdraw isn't supported (no UAVs in D3D9) and shows no overlay |
 | 3e | Mesh output (post-transform vertices, VS Out) | Tested from Python and the UI on Windows (`d3d9_phase3e_retest2.md`): all 18 checks pass, including vs_1_1, flow control, loops, FFP lighting, texgen and fog |
 
+## Remaining work
+
+Open items from the last test round:
+
+- ATI2's decode now gives blue 1, as the GPU samples it (`ff8a6dd08`). Not retested. To check it,
+  run `d3d9_formats_check.py` on a `D3D9_Texture_Formats` capture: the ATI2 line should read
+  "compared r,g,b". Then pick ATI2 texel 0,0 in the texture viewer, which should give about
+  0.659, 0.486, 1, 1.
+- Locks of part of an ATI1/ATI2 level aren't tested (see the texture viewer's known gaps).
+
+The plan, in order. The estimates are working days at the pace so far, from when the coding and
+the testing were on separate machines.
+
+| # | Work | Estimate | Notes |
+|---|---|---|---|
+| 1 | **Automated tests:** turn the `util/test/d3d9_*_check.py` scripts into tests in upstream's framework (`util/test/rdtest`, `util/test/tests/`), so that `run_tests.py` runs the demos, captures them and checks them | 1 | Do this first: every later step is cheaper with it, and it catches regressions |
+| 2 | **32-bit programs:** an x86 build that captures 32-bit programs, replayed in the x64 UI, then fixing what breaks | 1-1.5 | The most useful for real use, since most D3D9 games are 32-bit |
+| 2b | **Memory at capture:** cap the copies of textures uploaded to D3DPOOL_DEFAULT, spill them to disk, or keep them only while a capture is pending | 0.5-1 | Matters mostly for 32-bit games |
+| 3 | **Small features** | 2-3 | |
+| | GPU duration and samples passed counters (timestamp and occlusion queries) | 0.5 | |
+| | Resource usage list (what each event binds, recorded during replay) | 0.5 | |
+| | Debug messages | 0.5 | The D3D9 debug runtime doesn't run on Windows 8 and later, so report failed calls (`D3DERR_INVALIDCALL` and similar) instead |
+| | Custom display shaders in the texture viewer | 0.5-1 | Needs a documented SM3 binding layout. Shares compile code with step 4 |
+| 4 | **Shader editing and replacement**, including Edit Generated Stub | 1.5-2 | HLSL through d3dcompiler_47 for SM2/3. Assembly for SM1, since current compilers can't target ps_1_x. The stub comes from the constant table |
+| 5 | **Shader debugging** | 5-8 | The biggest item |
+| | Vertex shaders | 1.5-2 | Builds on the interpreter in `d3d9_vs_emulate.cpp`, adding per-step states and variable changes |
+| | Pixel shaders | 3-5 | Needs a new interpreter covering ps_1_x's texture addressing instructions, inputs worked out on the CPU from VS Out, sampling on the GPU, and 2x2 quads for derivatives, `vPos` and `vFace` |
+| | Source-level debugging from `D3DXSHADER_DEBUG` debug info | +1 | Optional |
+| 6 | **Pixel history:** which draws touched the pixel (occlusion queries per event), which primitive wrote it (drawing one primitive at a time, since D3D9 has no primitive ID), values before and after (`GetRenderTargetData`), depth (the existing bisection), and debugging the pixel (step 5) | 3-5 | |
+| 7 | **Remote replay:** display textures through the proxy | 1-2 | Mostly mapping D3D9 formats onto the proxy's D3D11 textures |
+| 8 | **Limitations worth fixing** | 3-4 | |
+| | `texldl` filtering | 0.5 | |
+| | vs_3_0 outputs that pack two semantics into one register | 0.5 | |
+| | Alpha test and discard in the overlays | 1 | |
+| | Saving UpdateTexture dirty regions in captures | 0.5 | Changes the capture format |
+| | D24 at a depth of 0.375 | 0.25 | Check with ZFUNC EQUAL and adjust |
+| | Saving DXT textures as PNG | 0.5 | |
+| | P8 palettes | 0.5 | Low value, since current GPUs don't create P8 textures |
+
+Left out on purpose:
+
+- **Quad overdraw:** it needs UAVs, which D3D9 doesn't have.
+- **Each sample of a multisampled colour target:** D3D9 can't read individual samples.
+- **D24FS8 and `D3DMULTISAMPLE_NONMASKABLE` depth stencil readback:** both are rare.
+- **Full 32-bit D32 depth readback:** it's kept to 24 bits.
+- **Fixed function N-patches and displacement mapping:** both are rare.
+- **More than 8 fixed function lights:** drivers rarely allow more than 8 anyway.
+
+Outside this plan:
+
+- **Real games:** the user tests these.
+- **Other GPUs:** AMD and Intel may round the depth readback differently, and may sample ATI2's
+  blue differently.
+- **Upstream merges:** about half a day each time.
+
 ## Needs testing
 
 - **Reset / ResetEx with real games.** `D3D9_Wrapping_Check` and `D3D9Ex_Wrapping_Check` exercise
