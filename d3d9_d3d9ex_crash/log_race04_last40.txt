@@ -1,0 +1,40 @@
+RDOC 017048: [08:08:52]     d3d12_replay.cpp(4536) - Debug   - Creating a D3D12 replay device
+RDOC 017048: [08:08:52]     d3d12_replay.cpp(4536) - Debug   - Creating a D3D12 replay device
+RDOC 017048: [08:08:52]     d3d12_replay.cpp(4536) - Debug   - Creating a D3D12 replay device
+RDOC 017048: [08:08:52]     d3d12_device.cpp( 937) - Debug   - Couldn't get ID3D12InfoQueue.
+RDOC 017048: [08:08:52]     d3d12_device.cpp( 937) - Debug   - Couldn't get ID3D12InfoQueue.
+RDOC 017048: [08:08:52]     d3d12_device.cpp( 937) - Debug   - Couldn't get ID3D12InfoQueue.
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 149) - Log     - Running replay on nVidia / NVIDIA GeForce RTX 4070 Ti 32.0.16.1088
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 149) - Log     - Running replay on nVidia / NVIDIA GeForce RTX 4070 Ti 32.0.16.1088
+RDOC 017048: [08:08:52]     d3d12_device.cpp( 937) - Debug   - Couldn't get ID3D12InfoQueue.
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 149) - Log     - Running replay on nVidia / NVIDIA GeForce RTX 4070 Ti 32.0.16.1088
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 109) - Error   - Assertion failed: 'GetModuleHandleA("d3d12.dll") == 0' 
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 110) - Error   - Assertion failed: 'GetModuleHandleA("d3d12core.dll") == 0' 
+RDOC 017048: [08:08:52]        vk_replay.cpp(5727) - Debug   - Creating a VulkanReplay replay device
+RDOC 017048: [08:08:52]     d3d12_device.cpp( 937) - Debug   - Couldn't get ID3D12InfoQueue.
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 149) - Log     - Running replay on nVidia / NVIDIA GeForce RTX 4070 Ti 32.0.16.1088
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 109) - Error   - Assertion failed: 'GetModuleHandleA("d3d12.dll") == 0' 
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 110) - Error   - Assertion failed: 'GetModuleHandleA("d3d12core.dll") == 0' 
+RDOC 017048: [08:08:52]        vk_replay.cpp(5727) - Debug   - Creating a VulkanReplay replay device
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 109) - Error   - Assertion failed: 'GetModuleHandleA("d3d12.dll") == 0' 
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 110) - Error   - Assertion failed: 'GetModuleHandleA("d3d12core.dll") == 0' 
+RDOC 017048: [08:08:52]        vk_replay.cpp(5727) - Debug   - Creating a VulkanReplay replay device
+RDOC 017048: [08:08:52]     d3d12_device.cpp( 937) - Debug   - Couldn't get ID3D12InfoQueue.
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 149) - Log     - Running replay on nVidia / NVIDIA GeForce RTX 4070 Ti 32.0.16.1088
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 149) - Log     - Running replay on nVidia / NVIDIA GeForce RTX 4070 Ti 32.0.16.1088
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 109) - Error   - Assertion failed: 'GetModuleHandleA("d3d12.dll") == 0' 
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 110) - Error   - Assertion failed: 'GetModuleHandleA("d3d12core.dll") == 0' 
+RDOC 017048: [08:08:52]        vk_replay.cpp(5727) - Debug   - Creating a VulkanReplay replay device
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 109) - Error   - Assertion failed: 'GetModuleHandleA("d3d12.dll") == 0' 
+RDOC 017048: [08:08:52]     d3d12_replay.cpp( 110) - Error   - Assertion failed: 'GetModuleHandleA("d3d12core.dll") == 0' 
+RDOC 017048: [08:08:52]        vk_replay.cpp(5727) - Debug   - Creating a VulkanReplay replay device
+RDOC 017048: [08:08:52]        vk_replay.cpp(5810) - Log     - Created device.
+RDOC 017048: [08:08:52]        vk_replay.cpp(5727) - Debug   - Creating a VulkanReplay replay device
+RDOC 017048: [08:08:52]        vk_replay.cpp(5810) - Log     - Created device.
+RDOC 017048: [08:08:52]        vk_replay.cpp(5810) - Log     - Created device.
+RDOC 017048: [08:08:52]        vk_replay.cpp(5810) - Log     - Created device.
+RDOC 017048: [08:08:52]        vk_replay.cpp(5810) - Log     - Created device.
+RDOC 017048: [08:08:52]        vk_replay.cpp(5810) - Log     - Created device.
+RDOC 017048: [08:08:52]             core.cpp( 997) - Log     - GPU: nVidia - NVIDIA GeForce RTX 4070 Ti (driver: --)
+RDOC 017048: [08:08:52]             core.cpp( 997) - Log     - GPU: Software - WARP Rasterizer (driver: --)
+RDOC 017048: [08:08:52]             core.cpp(1015) - Log     - Driver: 'C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispig.inf_amd64_cc526ccc3287f5cd\nvoglv64.dll' 32.0.16.1088 2026-08-18
