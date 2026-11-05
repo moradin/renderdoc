@@ -49,9 +49,10 @@ MAPPING = {
     'G32R32F': TWO,
     'R16F': ONE,
     'R32F': ONE,
-    # what D3D9 returns in the other channels of these isn't documented
+    # what D3D9 returns in the other channels of these isn't documented. ATI2's blue is compared
+    # because RenderDoc decodes it as 1, which is what an RTX 4070 Ti samples.
     'ATI1': [(0, 0)],
-    'ATI2': [(0, 0), (1, 1)],
+    'ATI2': [(0, 0), (1, 1), (2, 2)],
     # palette indices, and YUV decoded as (Cr, Y, Cb) rather than converted to RGB
     'P8': None,
     'A8P8': None,

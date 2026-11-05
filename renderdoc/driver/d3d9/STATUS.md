@@ -428,16 +428,21 @@ Known gaps:
 - P8 and A8P8 show their indices, not the palette colours.
 - (Fixed after `d3d9_formats_d3dperf_test.md`.) ATI2 was decoded like BC5, with the first half of
   each block as red. D3D9 samples the second half as red and the first as green, so the decode and
-  `GetTextureData` (which describes ATI2 as BC5) now swap the halves.
+  `GetTextureData` (which describes ATI2 as BC5) now swap the halves. Retested in
+  `d3d9_formats_retest.md`: passed. That retest found the decode gave blue 0 where the GPU samples 1;
+  the decode now gives 1 (not retested). `GetTextureData`'s data, and so a saved DDS, is still BC5
+  and has blue 0.
 - (Fixed after `d3d9_formats_d3dperf_test.md`.) Drivers report ATI1 and ATI2's lock Pitch as one byte
   per pixel column (16 for a 16 wide level), less than a row of their blocks, while the GPU reads the
   blocks tightly packed. Capture copied only Pitch bytes of each row, so most of the texture was
   lost. Reading, recording and writing locks of these now use the size of a row of blocks when the
   reported Pitch is smaller (`D3D9LockedRowPitch`). Locks of part of an ATI1/ATI2 level aren't
-  tested: where the runtime puts the region's first block isn't known.
+  tested: where the runtime puts the region's first block isn't known. Retested in
+  `d3d9_formats_retest.md`: whole-level locks passed.
 - (Fixed after `d3d9_formats_d3dperf_test.md`.) DXT2-5 colours were decoded on the CPU with DXT1's
   3-colour palette when the first endpoint isn't bigger, which only DXT1 has. This affected pick
-  pixel and the texture viewer's values, not the GPU sampling at replay.
+  pixel and the texture viewer's values, not the GPU sampling at replay. Retested in
+  `d3d9_formats_retest.md`: passed.
 - D32 depth is read back to 24 bits and described as D32_FLOAT by 3a, so its raw data in the
   buffer view of the texture looks wrong, though display and pick pixel are right. D24FS8 and
   D3DMULTISAMPLE_NONMASKABLE depth stencils can't be read, so they don't display.
@@ -492,7 +497,7 @@ every texel.
 - RenderDoc's decoding (`PickPixel` on the texture, what the texture viewer shows) with the
   reference. Formats decode to the channels they're described with, which isn't always how D3D9
   samples them (L8 samples as LLL1 and decodes as L001), so the script maps decoded channels to
-  sampled ones per format. ATI1 compares red only, and ATI2 red and green: a swapped ATI2 shows as
+  sampled ones per format. ATI1 compares red only, and ATI2 red, green and blue: a swapped ATI2 shows as
   `decoded r = GPU g` and `decoded g = GPU r`. P8, A8P8, YUY2 and UYVY aren't compared (palette
   indices, and YUV decoded as Cr, Y, Cb), only printed. The tolerance is 0.01, 0.03 for the block
   formats (NVIDIA's DXT green and BC4/BC5 6-value mode differ from the spec's interpolation by up to
@@ -506,8 +511,10 @@ the render target result.
 The first run (`d3d9_formats_d3dperf_test.md`, RTX 4070 Ti, 31 formats supported) passed 25 formats
 and failed DXT2-5, ATI1 and ATI2, and the render target at replay differed for ATI1 and ATI2. The
 three causes above (ATI2's channel order, ATI1/ATI2 lock pitch, DXT2-5's palette) are fixed, and
-the demo now writes ATI1/ATI2 rows tightly packed too. Not retested yet. Decoding the demo's DXT2-5
-data with the new code matches that run's GPU reference within 0.02.
+the demo now writes ATI1/ATI2 rows tightly packed too. The retest (`d3d9_formats_retest.md`)
+passed all 31 formats and the render target at replay, and the reference the demo writes under
+RenderDoc is byte-identical to the native one. ATI2's blue wasn't compared then; it is now, and
+the decode's blue changed from 0 to 1 to match the GPU, which isn't retested.
 
 ## Pipeline state (phase 3c)
 

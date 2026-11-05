@@ -395,6 +395,7 @@ bool DecodeBlock(D3DFORMAT format, const byte *p, FloatVector texels[16])
     }
     // D3D9 samples ATI2's second half as red and its first as green, the other way around from
     // BC5. ReadSubresource's data is in D3D9's order, so swap the halves to decode it as BC5.
+    // Blue and alpha are both 1, as an RTX 4070 Ti samples them (BC5 has blue 0).
     case MAKEFOURCC('A', 'T', 'I', '2'):
     {
       byte swapped[16];
@@ -403,7 +404,7 @@ bool DecodeBlock(D3DFORMAT format, const byte *p, FloatVector texels[16])
       byte r[16] = {}, g[16] = {};
       DecompressBlockBC5(swapped, r, g, NULL);
       for(int i = 0; i < 16; i++)
-        texels[i] = FloatVector(UNorm(r[i], 8), UNorm(g[i], 8), 0.0f, 1.0f);
+        texels[i] = FloatVector(UNorm(r[i], 8), UNorm(g[i], 8), 1.0f, 1.0f);
       return true;
     }
     default: return false;
