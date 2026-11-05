@@ -215,10 +215,11 @@ Since then:
   size works as before. To check: `d3d9_pipestate_check.py` compares the two for every constant
   block a shader uses (see "Checking the pipeline state"). The retests (`d3d9_cbuffer_len0_retest.md`,
   `d3d9_followups_retest.md`) passed every VS float, int and bool block in `D3D9_Mesh_Output`, and
-  the UI's constant buffer viewers for D3D9 and D3D11 are unchanged. Pixel shader blocks weren't
-  tested, as no demo's pixel shaders used constants. `D3D9_Simple_Triangle` now has a draw whose
-  pixel shader reads c#, i# and b# registers (see "Checking the pipeline state"); it's still to be
-  run on Windows.
+  the UI's constant buffer viewers for D3D9 and D3D11 are unchanged. Pixel shader blocks are
+  covered by `D3D9_Simple_Triangle`'s third draw, whose pixel shader reads c#, i# and b# registers
+  (see "Checking the pipeline state"). `d3d9_ps_constants_retest.md` passed its float, int and
+  bool blocks, with the triangle at 96, 191, 0 natively and at replay, and the variable names in
+  the constant buffer viewers.
 - The one crash (a call through a null pointer) loading `D3D9Ex_Wrapping_Check`, once in 78 loads,
   wasn't D3D9's (`d3d9_d3d9ex_crash.md`). The test scripts call `rd.InitialiseReplay` inside
   qrenderdoc, which had already called it, and each call started a GPU enumeration thread without
@@ -540,7 +541,7 @@ ones: its ps_3_0 shader reads c5 = (0.5, 2, 1, 1) and c9 = (0.4, 0.2, 0, 0), loo
 would mean the bool was read as FALSE, and black that the loop didn't run). fxc won't loop over an int
 uniform, so the shader has a literal count of 4 and the demo removes the `defi i0` fxc writes for
 it (`CompileLoop` in `d3d9_test.cpp`, which `D3D9_Mesh_Output` uses too); the demo log warns if
-there was none. A block with 0 non-zero variables
+there was none. Tested on Windows in `d3d9_ps_constants_retest.md`. A block with 0 non-zero variables
 where the application sets values would mean both calls read zeros, so check the counts aren't all
 0.
 
