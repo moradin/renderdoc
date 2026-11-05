@@ -29,13 +29,37 @@ RD_TEST(D3D9_Simple_Triangle, D3D9GraphicsTest)
   static constexpr const char *Description =
       "Just draws a simple triangle, using shaders and a vertex declaration, and a second one "
       "using "
-      "the fixed function pipeline with an FVF and DrawPrimitiveUP.";
+      "the fixed function pipeline with an FVF and DrawPrimitiveUP. A third, in the bottom right, "
+      "has a pixel shader that reads a float, an int and a bool constant.";
 
   struct FFVertex
   {
     float x, y, z, rhw;
     D3DCOLOR col;
   };
+
+  // reads c5 and c9, loops i0 times and branches on b3. The app sets i0 to 4, so the loop gives
+  // 1.875 * c9 = (0.75, 0.375, 0), and with b3 TRUE that's multiplied by c5 = (0.5, 2, 1): the
+  // triangle is (0.375, 0.75, 0), or 96, 191, 0 in the back buffer. If b3 were FALSE it would be
+  // 191, 96, 0, and if the loop didn't run, black.
+  const char *ConstantsPixel = R"EOSHADER(
+
+float4 tint : register(c5);
+float4 stepColour : register(c9);
+bool useTint : register(b3);
+
+float4 main() : COLOR0
+{
+  float4 ret = float4(0, 0, 0, 1);
+  // 4 is the count the app sets in i0 (see CompileLoop)
+  [loop] for(int i = 0; i < 4; i++)
+    ret.rgb = ret.rgb * 0.5f + stepColour.rgb;
+  if(useTint)
+    ret.rgb *= tint.rgb;
+  return ret;
+}
+
+)EOSHADER";
 
   int main()
   {
@@ -50,6 +74,25 @@ RD_TEST(D3D9_Simple_Triangle, D3D9GraphicsTest)
     IDirect3DPixelShader9Ptr ps = CreatePS(psblob);
 
     IDirect3DVertexBuffer9Ptr vb = MakeVB(DefaultTri, sizeof(DefaultTri));
+
+    IDirect3DPixelShader9Ptr constantsPS;
+    const std::vector<DWORD> constantsTokens = CompileLoop(ConstantsPixel, "ps_3_0", 0);
+    if(!constantsTokens.empty() &&
+       FAILED(dev->CreatePixelShader(constantsTokens.data(), &constantsPS)))
+      TEST_ERROR("CreatePixelShader failed for the constants shader");
+
+    // in the bottom right, clear of the other two
+    const DefaultA2V constantsTri[3] = {
+        {Vec3f(0.5f, -0.9f, 0.0f), Vec4f(1.0f, 1.0f, 1.0f, 1.0f), Vec2f(0.0f, 0.0f)},
+        {Vec3f(0.7f, -0.5f, 0.0f), Vec4f(1.0f, 1.0f, 1.0f, 1.0f), Vec2f(0.0f, 1.0f)},
+        {Vec3f(0.9f, -0.9f, 0.0f), Vec4f(1.0f, 1.0f, 1.0f, 1.0f), Vec2f(1.0f, 0.0f)},
+    };
+    IDirect3DVertexBuffer9Ptr constantsVB = MakeVB(constantsTri, sizeof(constantsTri));
+
+    const float tint[4] = {0.5f, 2.0f, 1.0f, 1.0f};
+    const float stepColour[4] = {0.4f, 0.2f, 0.0f, 0.0f};
+    const int loopCount[4] = {4, 0, 1, 0};
+    const BOOL useTint = TRUE;
 
     // pre-transformed vertices in the bottom-left corner
     const float w = (float)screenWidth, h = (float)screenHeight;
@@ -86,6 +129,21 @@ RD_TEST(D3D9_Simple_Triangle, D3D9GraphicsTest)
       dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
       dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, ffTri, sizeof(FFVertex));
       popMarker();
+
+      if(constantsPS)
+      {
+        pushMarker("Pixel shader constants");
+        dev->SetVertexDeclaration(defaultDecl);
+        dev->SetStreamSource(0, constantsVB, 0, sizeof(DefaultA2V));
+        dev->SetVertexShader(vs);
+        dev->SetPixelShader(constantsPS);
+        dev->SetPixelShaderConstantF(5, tint, 1);
+        dev->SetPixelShaderConstantF(9, stepColour, 1);
+        dev->SetPixelShaderConstantI(0, loopCount, 1);
+        dev->SetPixelShaderConstantB(3, &useTint, 1);
+        dev->DrawPrimitive(D3DPT_TRIANGLELIST, 0, 1);
+        popMarker();
+      }
 
       dev->EndScene();
 

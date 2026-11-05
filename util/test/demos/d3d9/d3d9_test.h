@@ -53,6 +53,12 @@ struct D3D9GraphicsTest : public GraphicsTest
   IDirect3DVertexShader9Ptr CreateVS(ID3DBlobPtr blob);
   IDirect3DPixelShader9Ptr CreatePS(ID3DBlobPtr blob);
 
+  // fxc won't compile a loop over an int uniform bound to an i register, so loops have a literal
+  // count. This compiles a shader with one, and removes the defi fxc writes for the count to
+  // i<reg>, so that the count comes from Set*ShaderConstantI(reg, ...) as it would with a uniform.
+  // The app has to set the same count. Returns no tokens if the shader doesn't compile.
+  std::vector<DWORD> CompileLoop(std::string src, std::string profile, UINT reg = 0);
+
   // a vertex buffer containing the given vertices, in the managed pool (or default pool on Ex
   // devices, which don't support managed)
   IDirect3DVertexBuffer9Ptr MakeVB(const void *data, UINT size);

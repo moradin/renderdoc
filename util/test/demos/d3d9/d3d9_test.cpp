@@ -26,6 +26,7 @@
 
 #include "d3d9_test.h"
 #include <stdio.h>
+#include <algorithm>
 #include "../win32/win32_platform.h"
 #include "../win32/win32_window.h"
 
@@ -275,6 +276,42 @@ ID3DBlobPtr D3D9GraphicsTest::Compile(std::string src, std::string entry, std::s
   }
 
   return blob;
+}
+
+std::vector<DWORD> D3D9GraphicsTest::CompileLoop(std::string src, std::string profile, UINT reg)
+{
+  ID3DBlobPtr blob = Compile(src, "main", profile);
+  if(!blob)
+    return {};
+
+  const DWORD *p = (const DWORD *)blob->GetBufferPointer();
+  const std::vector<DWORD> t(p, p + blob->GetBufferSize() / 4);
+  if(t.empty())
+    return t;
+
+  std::vector<DWORD> ret = {t[0]};
+  bool found = false;
+  for(size_t i = 1; i < t.size();)
+  {
+    const DWORD op = t[i] & 0xFFFF;
+    // comments give their length in bits 16-30, instructions in bits 24-27 from shader model 2 on
+    size_t len = op == 0xFFFE ? ((t[i] >> 16) & 0x7FFF) : ((t[i] >> 24) & 0xF);
+    if(op == 0xFFFF)
+      len = 0;
+    // defi (48): its destination is the integer constant register (type 7)
+    const bool defi = op == 48 && i + 1 < t.size() && ((t[i + 1] >> 28) & 0x7) == 7;
+    const bool remove = defi && (t[i + 1] & 0x7FF) == reg;
+    if(remove)
+      found = true;
+    else if(defi)
+      TEST_WARN("The %s loop shader defines i%u, not i%u", profile.c_str(), t[i + 1] & 0x7FF, reg);
+    if(!remove)
+      ret.insert(ret.end(), t.begin() + i, t.begin() + std::min(t.size(), i + 1 + len));
+    i += 1 + len;
+  }
+  if(!found)
+    TEST_WARN("The %s loop shader has no defi i%u, so its loop count is fixed", profile.c_str(), reg);
+  return ret;
 }
 
 IDirect3DVertexShader9Ptr D3D9GraphicsTest::CreateVS(ID3DBlobPtr blob)

@@ -215,8 +215,10 @@ Since then:
   size works as before. To check: `d3d9_pipestate_check.py` compares the two for every constant
   block a shader uses (see "Checking the pipeline state"). The retests (`d3d9_cbuffer_len0_retest.md`,
   `d3d9_followups_retest.md`) passed every VS float, int and bool block in `D3D9_Mesh_Output`, and
-  the UI's constant buffer viewers for D3D9 and D3D11 are unchanged. Pixel shader blocks are still
-  untested: no demo's pixel shaders use constants, and no game capture was available.
+  the UI's constant buffer viewers for D3D9 and D3D11 are unchanged. Pixel shader blocks weren't
+  tested, as no demo's pixel shaders used constants. `D3D9_Simple_Triangle` now has a draw whose
+  pixel shader reads c#, i# and b# registers (see "Checking the pipeline state"); it's still to be
+  run on Windows.
 - The one crash (a call through a null pointer) loading `D3D9Ex_Wrapping_Check`, once in 78 loads,
   wasn't D3D9's (`d3d9_d3d9ex_crash.md`). The test scripts call `rd.InitialiseReplay` inside
   qrenderdoc, which had already called it, and each call started a GPU enumeration thread without
@@ -435,7 +437,8 @@ Known gaps:
 
 What to test on Windows (all in the UI unless noted):
 - Open the `D3D9_Simple_Triangle` capture, select the Present and open the back buffer: the
-  triangles show on the grey background, the thumbnail strip shows the back buffer, and hovering
+  triangles show on the grey background (green in the middle, magenta in the bottom left, and
+  96, 191, 0 in the bottom right), the thumbnail strip shows the back buffer, and hovering
   shows the right colours in the pixel picker (the background picks as 0.2, 0.2, 0.2, 1, which is
   0x33 in each byte). Zoom, flip, channel toggles, range sliders, the histogram and auto-fit range
   all work, and Save Texture as PNG works.
@@ -531,8 +534,13 @@ descriptor's `byteSize` and with a length of 0, and prints
 `constant block N length 0: same V variables (Z non-zero)` or `MISMATCH` with the differing
 variables. The last line should be `GetCBufferVariableContents length 0 matched the descriptor size
 everywhere`. A `D3D9_Mesh_Output` capture covers VS float, int (the loop count) and bool blocks.
-None of the demos' pixel shaders have constants, so PS blocks need a capture of a game (or any
-application) whose pixel shaders use c#, i# or b# registers. A block with 0 non-zero variables
+`D3D9_Simple_Triangle`'s third draw ("Pixel shader constants", in the bottom right) covers PS
+ones: its ps_3_0 shader reads c5 = (0.5, 2, 1, 1) and c9 = (0.4, 0.2, 0, 0), loops i0 = (4, 0, 1,
+0) times and branches on b3 = TRUE, so the triangle is 96, 191, 0 in the back buffer (191, 96, 0
+would mean the bool was read as FALSE, and black that the loop didn't run). fxc won't loop over an int
+uniform, so the shader has a literal count of 4 and the demo removes the `defi i0` fxc writes for
+it (`CompileLoop` in `d3d9_test.cpp`, which `D3D9_Mesh_Output` uses too); the demo log warns if
+there was none. A block with 0 non-zero variables
 where the application sets values would mean both calls read zeros, so check the counts aren't all
 0.
 

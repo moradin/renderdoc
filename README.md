@@ -83,7 +83,8 @@ Not tested yet:
 - **32-bit programs.** All testing used 64-bit builds of the test programs.
 - **Other GPUs.** All testing was on one NVIDIA GPU (RTX 4070 Ti).
 - **Pixel shader constant blocks** read through `GetCBufferVariableContents` with a length of 0.
-  The vertex shader ones are tested.
+  The vertex shader ones are tested, and `D3D9_Simple_Triangle` now has a pixel shader that reads
+  constants, but it hasn't been run on Windows yet.
 - **Remote replay.** It probably won't display textures.
 - **D3DPERF markers in D3D11 captures.** Upstream moved its D3DPERF hooks into the D3D11 driver, and
   they now share `d3d9.dll` with this fork's device hooks.
