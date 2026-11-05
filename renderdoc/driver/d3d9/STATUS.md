@@ -3,6 +3,9 @@
 D3D9 support is being built in phases on this fork. Upstream RenderDoc removed its D3D9 stub in 2023,
 so none of this is upstream.
 
+The Windows test reports this file refers to (`d3d9_*.md`, with their screenshots and logs) are in
+[`test_reports/`](test_reports).
+
 | Phase | What | State |
 |---|---|---|
 | 0 | Driver project restored on current upstream, overlay working | Done |
@@ -11,11 +14,11 @@ so none of this is upstream.
 | 2b | Full device state at frame start (render/sampler/texture stage states, transforms, lights, constants...) | Done, tested with `D3D9_Frame_Start_State` |
 | 2c | Resource contents: Lock tracking, shadow copies of D3DPOOL_DEFAULT data, initial contents | Done, tested with `D3D9_Resource_Contents` |
 | 2d | Edge cases: Reset/device loss mid-capture, state block contents, D3DPERF markers in captures, depth stencil read back, GDI drawing, front buffer copies, locks spanning the capture start | Done, tested with `D3D9_Capture_Edge_Cases` and `D3D9_Reset_Capture`; device loss needs a real game |
-| 3a | Replay: loading captures, replaying to any event, the event list, resource descriptions, reading texture and buffer data | Tested from Python on Windows (see below); the UI isn't checked yet |
-| 3b | Texture viewer and buffers: displaying every D3D9 format, pick pixel, min/max, histogram, mesh viewer inputs | Tested from Python on Windows; the UI isn't checked yet |
-| 3c | D3D9 pipeline state, with its own UI panel and Python bindings | Tested from Python on Windows; the UI panel isn't checked yet |
-| 3d | Shaders: SM1-3 disassembly, reflection from the constant table | Tested on Windows against fxc; the shader viewer UI isn't checked yet |
-| 3e | Texture viewer overlays | Tested from Python and the UI on Windows (`d3d9_phase3e_test.md`, `d3d9_phase3e_retest.md`), triangle size and quad overdraw included |
+| 3a | Replay: loading captures, replaying to any event, the event list, resource descriptions, reading texture and buffer data | Tested from Python and the UI on Windows (`d3d9_phase3_report.md`, `d3d9_phase3_retest*.md`) |
+| 3b | Texture viewer and buffers: displaying every D3D9 format, pick pixel, min/max, histogram, mesh viewer inputs | Tested from Python and the UI on Windows (same reports) |
+| 3c | D3D9 pipeline state, with its own UI panel and Python bindings | Tested from Python and the UI panel on Windows (same reports) |
+| 3d | Shaders: SM1-3 disassembly, reflection from the constant table | Tested on Windows against fxc's disassembly, and in the UI's shader viewer (same reports) |
+| 3e | Texture viewer overlays | Tested from Python and the UI on Windows (`d3d9_phase3e_test.md`, `d3d9_phase3e_retest.md`), triangle size included. Quad overdraw isn't supported (no UAVs in D3D9) and shows no overlay |
 | 3e | Mesh output (post-transform vertices, VS Out) | Tested from Python and the UI on Windows (`d3d9_phase3e_retest2.md`): all 18 checks pass, including vs_1_1, flow control, loops, FFP lighting, texgen and fog |
 
 ## Needs testing
@@ -183,7 +186,7 @@ where they're cleared to 1.0.
 ## Phase 3 test round
 
 Phases 3a-3d were built (Development x64, no build errors) and tested from Python on Windows with an
-RTX 4070 Ti; the report is `d3d9_phase3_report.md` at the root of the repository. Four bugs blocked
+RTX 4070 Ti; the report is `d3d9_phase3_report.md` in `test_reports/`. Four bugs blocked
 testing; they were tested with workarounds, now replaced by these fixes:
 - Shader bytecode came back empty on replay, so no capture loaded: `SERIALISE_ELEMENT_ARRAY` takes
   its count by value, so the length has to be serialised on its own. **This changes the capture
@@ -327,7 +330,7 @@ Known gaps:
 - In-frame UpdateTexture copies the dirty region replay has (see above).
 - D24FS8 and D3DMULTISAMPLE_NONMASKABLE depth stencils aren't written back (they weren't read
   either), and the 0.375 D24 value lands one level off.
-- Output window screenshots (`GetOutputWindowData`) aren't implemented.
+- (Fixed in 3b: output window screenshots, `GetOutputWindowData`, are implemented.)
 
 ### Checking replay
 
