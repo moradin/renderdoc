@@ -201,12 +201,20 @@ Since then:
 - `d3d9_replay_check.py` saves `_first.png` and reads the depths at event 0, the frame's initial
   state, since the first event is often a Clear now that Clears replay.
 - The disassembly matches fxc's three formatting differences (see phase 3d).
+- `GetCBufferVariableContents` with a length of 0 read zeros, so scripts had to pass the
+  descriptor's size (the UI does). The replay controller deliberately skips fetching any data for
+  a length of 0: upstream made it mean an empty range, for D3D11 constant buffers bound with a
+  size of 0 (the docstring's "0 to fetch the rest of the buffer" is out of date; `GetBufferData`
+  itself still reads to the end for 0). That's left alone. D3D9's constant blocks aren't buffer
+  backed and can't be bound partially, so D3D9's `FillCBufferVariables` now reads the stage's
+  register file from the device itself when it's given no data, as GL does for bare uniforms.
+  `def`/`defi`/`defb` literals still replace the registers they define. Passing the descriptor's
+  size works as before. To check: `d3d9_pipestate_check.py` compares the two for every constant
+  block a shader uses (see "Checking the pipeline state").
 
 Still open from the test round:
 - One crash (a call through a null pointer) loading or first replaying `D3D9Ex_Wrapping_Check`,
   seen once and not reproduced in 7 more runs. No stack.
-- `GetCBufferVariableContents` with a length of 0 reads zeros (the replay controller skips the
-  data), so scripts have to pass the descriptor's size. The UI does.
 
 The retest (`d3d9_phase3_retest.md`, of ea95bb75e) passed the four fixes, `_first.png`, the
 Clear destinations, 23/23 shaders against fxc, the unit tests, 10 more `D3D9Ex_Wrapping_Check`
@@ -470,6 +478,8 @@ How it works (`d3d9_pipestate.cpp`):
   the stage's whole register file from register 0: a float4 per c#, an int4 per i#, a uint32 (0 or
   1) per b#. `GetBufferData` on them reads the replay device's current constants, so
   `GetCBufferVariableContents` works unchanged: the constant block descriptors point at them.
+  Given a length of 0 (no data), D3D9's `FillCBufferVariables` reads the same registers from the
+  device itself.
   `D3D9Shader.floatConstantsBuffer` etc. give their IDs directly.
 - Descriptor accesses (`GetDescriptorAccess`): with reflection (phase 3d), the shader's constant
   blocks map to the pseudo buffer of their register set, which is the block's `fixedBindNumber` (0
@@ -500,6 +510,16 @@ Known gaps:
 `util/test/d3d9_pipestate_check.py capture.rdc [eventId]` prints the D3D9 pipeline state at every
 draw (or only at `eventId`, with every render state too), through both `D3D9State` and the generic
 `PipeState`, and reads the constants. Run it like `d3d9_replay_check.py`.
+
+For every constant block a shader uses it also calls `GetCBufferVariableContents` twice, with the
+descriptor's `byteSize` and with a length of 0, and prints
+`constant block N length 0: same V variables (Z non-zero)` or `MISMATCH` with the differing
+variables. The last line should be `GetCBufferVariableContents length 0 matched the descriptor size
+everywhere`. A `D3D9_Mesh_Output` capture covers VS float, int (the loop count) and bool blocks.
+None of the demos' pixel shaders have constants, so PS blocks need a capture of a game (or any
+application) whose pixel shaders use c#, i# or b# registers. A block with 0 non-zero variables
+where the application sets values would mean both calls read zeros, so check the counts aren't all
+0.
 
 What to look for, in the UI's Pipeline State window and in the script:
 - the capture's API shows as D3D9, the Pipeline State window shows the D3D9 panel with IA, VS, RS,

@@ -108,5 +108,25 @@ void D3D9Replay::FillCBufferVariables(ResourceId pipeline, ResourceId shader, Sh
     return;
   }
 
-  it->second.FillConstants(cbufSlot, data, outvars);
+  const D3D9BC::ShaderInfo &info = it->second;
+  const rdcarray<ConstantBlock> &blocks = info.GetReflection().constantBlocks;
+
+  // D3D9's constants aren't in a buffer (the blocks aren't bufferBacked), the pseudo buffers just
+  // present the device's register files. With no data, read the register file from the device
+  // ourselves, as GL does for bare uniforms. The replay controller passes no data when
+  // GetCBufferVariableContents is given a length of 0, which for D3D11 means a binding with an
+  // empty range, but D3D9 can't bind a part of its constants, so here it means all of them.
+  if(data.empty() && cbufSlot < blocks.size())
+  {
+    ResourceId buf = GetConstantsBufferID(info.GetStage(), blocks[cbufSlot].fixedBindNumber);
+    if(buf != ResourceId())
+    {
+      bytebuf registers;
+      GetConstantsData(buf, 0, 0, registers);
+      info.FillConstants(cbufSlot, registers, outvars);
+      return;
+    }
+  }
+
+  info.FillConstants(cbufSlot, data, outvars);
 }

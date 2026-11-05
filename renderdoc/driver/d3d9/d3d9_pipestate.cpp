@@ -632,6 +632,19 @@ int D3D9Replay::ConstantsBufferIndex(ResourceId id) const
   return -1;
 }
 
+ResourceId D3D9Replay::GetConstantsBufferID(ShaderStage stage, uint32_t set) const
+{
+  if(set >= D3D9Constants_Count)
+    return ResourceId();
+
+  if(stage == ShaderStage::Vertex)
+    return m_ConstantsBuffers[set];
+  if(stage == ShaderStage::Pixel)
+    return m_ConstantsBuffers[D3D9Constants_Count + set];
+
+  return ResourceId();
+}
+
 BufferDescription D3D9Replay::GetConstantsBuffer(ResourceId id)
 {
   BufferDescription ret;

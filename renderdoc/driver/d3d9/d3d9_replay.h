@@ -456,6 +456,9 @@ private:
   int ConstantsBufferIndex(ResourceId id) const;
   BufferDescription GetConstantsBuffer(ResourceId id);
   void GetConstantsData(ResourceId id, uint64_t offset, uint64_t len, bytebuf &retData);
+  // the pseudo buffer for a stage's register set (0 float, 1 int, 2 bool, as D3D9BC::ConstantSet),
+  // or a null ID for other stages
+  ResourceId GetConstantsBufferID(ShaderStage stage, uint32_t set) const;
   Descriptor MakeSurfaceDescriptor(IDirect3DSurface9 *surf);
   Topology GetEventTopology(uint32_t eventId);
 
