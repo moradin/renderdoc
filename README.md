@@ -62,7 +62,8 @@ Known limitations of what works:
 - **Texture Viewer**:
   - Multisampled colour targets are only shown resolved.
   - P8 and A8P8 textures show their palette indices, not the colours.
-  - ATI2's channel order hasn't been checked against a known texture.
+  - ATI2's channel order hasn't been checked against what the GPU samples. `D3D9_Texture_Formats`
+    checks it, but hasn't been run on Windows yet.
   - Block compressed (DXT) textures can only be saved as DDS.
 - **Mesh Viewer, VS Out**:
   - `texldl` in vertex shaders always point samples.
@@ -84,7 +85,8 @@ Not tested yet:
 - **Other GPUs.** All testing was on one NVIDIA GPU (RTX 4070 Ti).
 - **Remote replay.** It probably won't display textures.
 - **D3DPERF markers in D3D11 captures.** Upstream moved its D3DPERF hooks into the D3D11 driver, and
-  they now share `d3d9.dll` with this fork's device hooks.
+  they now share `d3d9.dll` with this fork's device hooks. `D3D11_D3DPERF_Markers` checks it, but
+  hasn't been run on Windows yet.
 
 ### Changes outside the D3D9 driver
 
@@ -112,8 +114,10 @@ in the x64 Development build.
 To test it:
 
 - The test programs are the `D3D9_*` and `D3D9Ex_*` tests in
-  [util/test/demos](util/test/demos/d3d9).
-- The scripts that check their captures are `util/test/d3d9_*.py`. STATUS.md describes each one.
+  [util/test/demos](util/test/demos/d3d9), and `D3D11_D3DPERF_Markers` for the D3DPERF hooks
+  the fork shares with the D3D11 driver.
+- The scripts that check their captures are `util/test/d3d9_*.py` and
+  `util/test/d3d11_d3dperf_check.py`. STATUS.md describes each one.
 - The shader unit tests run with `renderdoccmd test unit "[d3d9]"` on Windows, or
   `util/test/d3d9_shader_unit_tests.sh` on Linux.
 

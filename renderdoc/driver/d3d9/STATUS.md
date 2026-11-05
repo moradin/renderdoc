@@ -31,6 +31,11 @@ The Windows test reports this file refers to (`d3d9_*.md`, with their screenshot
   wrappers).
 - The D3DPERF marker hooks moved to the D3D11 project upstream. They now share `d3d9.dll` with our
   device creation hooks; check that markers still show up in D3D11 captures of apps that use them.
+  `D3D11_D3DPERF_Markers` draws inside D3DPERF regions and a marker, with no D3D9 device, and
+  `util/test/d3d11_d3dperf_check.py capture.rdc` checks the capture's action tree. Its log prints
+  what the D3DPERF functions returned; that should be the same natively and under RenderDoc, since
+  `D3D11_Refcount_Check` relies on `D3DPERF_EndEvent`'s return value, so run that test under
+  RenderDoc too. Not run on Windows yet.
 - Toggling the overlay in a real game shouldn't change anything in the scene. The overlay saves and
   restores only the state it changes; that's tested with `D3D9_Frame_Start_State` and the wrapping
   checks, but not yet in a game.
@@ -421,8 +426,9 @@ Known gaps:
 - Custom display shaders aren't supported: `GetCustomShaderEncodings` is empty, so the texture
   viewer doesn't list or offer to create any. The overlays are in phase 3e (below).
 - P8 and A8P8 show their indices, not the palette colours.
-- ATI2 is decoded with its first block as red, like BC5. Some tools swap ATI2's channels; check
-  against a known texture.
+- ATI2 is decoded with its first block as red, like BC5. Some tools swap ATI2's channels;
+  `D3D9_Texture_Formats` checks it against what the GPU samples (see "Checking texture formats"
+  below). Not run on Windows yet.
 - D32 depth is read back to 24 bits and described as D32_FLOAT by 3a, so its raw data in the
   buffer view of the texture looks wrong, though display and pick pixel are right. D24FS8 and
   D3DMULTISAMPLE_NONMASKABLE depth stencils can't be read, so they don't display.
@@ -461,6 +467,31 @@ What to test on Windows (all in the UI unless noted):
   zeros.
 - RenderDoc's log has no "Couldn't decode", "Couldn't copy" or "debug shaders" errors, except for
   the formats listed in the gaps.
+
+### Checking texture formats
+
+`D3D9_Texture_Formats` creates a 16x16 managed texture in each of 48 formats the GPU can sample
+(every format `d3d9_pixel.cpp` decodes, apart from depth stencils), fills it with pseudo-random data
+(halfs and floats from 1/32 to 2 in magnitude), and draws each one 1:1 with point sampling into an
+A32B32G32R32F render target, inside a marker named `<format> at x,y`. Formats the GPU doesn't
+support get a `Not supported: <format> (...)` marker instead. On the first frame it writes the
+render target to `D3D9_Texture_Formats_reference.txt` next to the executable
+(`_reference_rdoc.txt` when it runs under RenderDoc), which is what the GPU's sampler returned for
+every texel.
+
+`util/test/d3d9_formats_check.py capture.rdc [reference.txt]` then compares, for each format:
+- RenderDoc's decoding (`PickPixel` on the texture, what the texture viewer shows) with the
+  reference. Formats decode to the channels they're described with, which isn't always how D3D9
+  samples them (L8 samples as LLL1 and decodes as L001), so the script maps decoded channels to
+  sampled ones per format. ATI1 compares red only, and ATI2 red and green: a swapped ATI2 shows as
+  `decoded r = GPU g` and `decoded g = GPU r`. P8, A8P8, YUY2 and UYVY aren't compared (palette
+  indices, and YUV decoded as Cr, Y, Cb), only printed. The tolerance is 0.01, 0.02 for the block
+  formats and 1e-5 for float formats.
+- the render target at replay with the reference, which checks the capture reproduces each
+  texture's data and the GPU samples it the same way at replay.
+
+It ends with the passed, failed and uncompared formats, the formats the GPU doesn't support, and
+the render target result. Not run on Windows yet.
 
 ## Pipeline state (phase 3c)
 

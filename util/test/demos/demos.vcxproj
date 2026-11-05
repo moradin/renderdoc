@@ -148,6 +148,7 @@
     <ClCompile Include="d3d11\d3d11_pixel_history.cpp" />
     <ClCompile Include="d3d11\d3d11_primitiveid.cpp" />
     <ClCompile Include="d3d11\d3d11_shader_debug_zoo.cpp" />
+    <ClCompile Include="d3d11\d3d11_d3dperf_markers.cpp" />
     <ClCompile Include="d3d11\d3d11_overlay_test.cpp" />
     <ClCompile Include="d3d11\d3d11_primitive_restart.cpp" />
     <ClCompile Include="d3d11\d3d11_refcount_check.cpp" />
@@ -235,6 +236,7 @@
     <ClCompile Include="d3d9\d3d9_resource_contents.cpp" />
     <ClCompile Include="d3d9\d3d9_reset_capture.cpp" />
     <ClCompile Include="d3d9\d3d9_simple_triangle.cpp" />
+    <ClCompile Include="d3d9\d3d9_texture_formats.cpp" />
     <ClCompile Include="d3d9\d3d9_test.cpp" />
     <ClCompile Include="d3d9\d3d9_wrapping_check.cpp" />
     <ClCompile Include="dx\d3d_helpers.cpp" />
