@@ -32,7 +32,7 @@ the testing were on separate machines.
 
 | # | Work | Estimate | Notes |
 |---|---|---|---|
-| 1 | **Automated tests:** turn the `util/test/d3d9_*_check.py` scripts into tests in upstream's framework (`util/test/rdtest`, `util/test/tests/`), so that `run_tests.py` runs the demos, captures them and checks them | 1 | Do this first: every later step is cheaper with it, and it catches regressions |
+| 1 | ~~**Automated tests:** turn the `util/test/d3d9_*_check.py` scripts into tests in upstream's framework (`util/test/rdtest`, `util/test/tests/`), so that `run_tests.py` runs the demos, captures them and checks them~~ | 1 | Done, see "Automated tests" below. Run them after every change |
 | 2 | **32-bit programs:** an x86 build that captures 32-bit programs, replayed in the x64 UI, then fixing what breaks | 1-1.5 | The most useful for real use, since most D3D9 games are 32-bit |
 | 2b | **Memory at capture:** cap the copies of textures uploaded to D3DPOOL_DEFAULT, spill them to disk, or keep them only while a capture is pending | 0.5-1 | Matters mostly for 32-bit games |
 | 3 | **Small features** | 2-3 | |
@@ -71,6 +71,65 @@ Outside this plan:
 - **Other GPUs:** AMD and Intel may round the depth readback differently, and may sample ATI2's
   blue differently.
 - **Upstream merges:** about half a day each time.
+
+## Automated tests
+
+Upstream's `util/test/run_tests.py` runs every D3D9 demo, captures it, and checks the capture. With
+`renderdoc.sln` and `util/test/demos.sln` built (Development x64):
+
+```
+powershell -File util\test\build_pymodule_py3.ps1
+python util\test\run_tests_local.py -t "^D3D9|D3D11_D3DPERF"
+```
+
+- `build_pymodule_py3.ps1` builds the python module against the installed Python, since
+  `run_tests.py` needs 3.7 or later and the build's own module is for qrenderdoc's bundled 3.6. It
+  goes to `x64\Development\py3module\pymodules`, leaving the 3.6 one alone. Rebuild it when
+  renderdoc's public API changes.
+- `run_tests_local.py` runs `run_tests.py` with that module and `x64\Development`, and stops it from
+  asking to register the Vulkan layer: on this machine an installed RenderDoc owns the registration,
+  and changing it needs admin rights. Vulkan tests won't work through it; D3D9 and D3D11 ones don't
+  need the layer. Other `run_tests.py` arguments pass through (`--artifacts`, `--temp`, `-j`...).
+- Results go to `util\test\artifacts\output.log.html` unless `--artifacts` says otherwise.
+
+The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) share
+`rdtest/shared/D3D9_Test.py`, which:
+- fails the test if the demo's log has a TEST_ERROR. Several demos check themselves (the wrapping
+  checks, state left alone by reads during a capture, constants above c127 surviving Present), and
+  only their log shows it.
+- captures the demo itself rather than through `TestCase.get_capture()`, so that the demo runs for
+  2 more seconds after the capture: some demos check things in the frames after a captured one,
+  which the framework's capture would kill before they're logged. It doesn't support remote
+  servers (`--remote`), unlike upstream's.
+- runs the demo natively first where a test needs a reference from the GPU. The demos write their
+  references to their tmp folder (`--tmp`), so they don't land in the source tree.
+- runs the checks of the standalone scripts (`util/test/d3d9_*_check.py`), which each have a
+  `check_capture(controller, ...)` function for this, with their output in the test log.
+
+| Test | What it checks |
+|---|---|
+| `D3D9_Simple_Triangle` | The three triangles at replay, including the pixel shader constants one (96, 191, 0), SaveTexture's alpha, the pipeline state at every draw with constants read at length 0 (`d3d9_pipestate_check.py`), the constant blocks and FVF, replaying every action, and the structured export round trip (`check_export`) |
+| `D3D9_Frame_Start_State` | The triangles, render states, and VS/PS float constants (c10, c20, c200, c180, and zero c138, c148) set before the first frame, the pipeline state check, the export round trip |
+| `D3D9_Texture_Formats` | `d3d9_formats_check.py` against the native run's reference, and that the reference written under RenderDoc is byte-identical to the native one |
+| `D3D9_Mesh_Output` | `d3d9_mesh_check.py` against the native run's reference (a draw without a reference fails), and that the reference written under RenderDoc is byte-identical to the native one |
+| `D3D9_Overlay_Test` | `d3d9_overlay_check.py`, with the overlays saved in the test's tmp folder |
+| `D3D9_Resource_Contents` | Every object's contents at the start of the frame, as listed under "Checking `D3D9_Resource_Contents` captures": each level, face and slice texel by texel, the previous frame's colour in every region the frames alternate, the vertex and write-only index buffers. Then the triangle drawn from them |
+| `D3D9_Capture_Edge_Cases` | The markers, and at the start of the frame: the automatic, multisampled (each sample), D16 and INTZ depth stencils texel by texel, the texture locked across Present, and the surface drawn with GDI |
+| `D3D9_Reset_Capture` | Both captures: frame 30's has only "After the reset" and a blue clear, the triggered one only "Frame" and a red clear |
+| `D3D9_Wrapping_Check`, `D3D9Ex_Wrapping_Check` | The demo's own checks (in its log), and that the capture loads and replays |
+| `D3D11_D3DPERF_Markers` | `d3d11_d3dperf_check.py`: the markers nest as drawn, with their colours |
+
+What they don't cover:
+- The UI. Anything that shows in qrenderdoc still needs checking there by hand, with screenshots.
+- Comparing the D3D9 disassembly with fxc's: there's no fxc in the tests. The unit tests
+  (`renderdoccmd test unit "[d3d9]"`) cover the parser and disassembler.
+- `GetFrontBufferData`'s surface (it holds whatever was on the screen) and the recorded state
+  block's contents, which were checked in the XML export.
+- 32-bit builds (step 2).
+
+First run (`d3d9_automated_tests.md`): all 11 passed in under a minute. Upstream's D3D11 tests,
+run to check the framework change, passed apart from `D3D11_Shader_ISA`, which needs AMD's driver
+(`atidxx64.dll`) for its AMDIL target and can't pass on this NVIDIA machine.
 
 ## Needs testing
 
@@ -541,9 +600,10 @@ What to test on Windows (all in the UI unless noted):
 (halfs and floats from 1/32 to 2 in magnitude), and draws each one 1:1 with point sampling into an
 A32B32G32R32F render target, inside a marker named `<format> at x,y`. Formats the GPU doesn't
 support get a `Not supported: <format> (...)` marker instead. On the first frame it writes the
-render target to `D3D9_Texture_Formats_reference.txt` next to the executable
-(`_reference_rdoc.txt` when it runs under RenderDoc), which is what the GPU's sampler returned for
-every texel.
+render target to `D3D9_Texture_Formats_reference.txt` in its tmp folder (`util\test\tmp\D3D9_Texture_Formats`,
+or `<dir>\D3D9_Texture_Formats` with `--tmp <dir>`; `_reference_rdoc.txt` when it runs under
+RenderDoc), which is what the GPU's sampler returned for every texel. The `D3D9_Texture_Formats`
+test does all of this.
 
 `util/test/d3d9_formats_check.py capture.rdc [reference.txt]` then compares, for each format:
 - RenderDoc's decoding (`PickPixel` on the texture, what the texture viewer shows) with the
@@ -1125,12 +1185,15 @@ texgen, texture transforms, fog, point size, the output signature). They pass on
 AddressSanitizer and UBSan. On Windows: `renderdoccmd test unit "[d3d9]"`.
 
 On Windows, with `D3D9_Mesh_Output` (in the demos project):
-1. Run it natively once (or under RenderDoc): before drawing it writes
-   `D3D9_Mesh_Output_reference.txt` next to the executable, and logs where. Its references come
+The `D3D9_Mesh_Output` test does steps 1 and 2.
+
+1. Run it natively once: before drawing it writes `D3D9_Mesh_Output_reference.txt` in its tmp
+   folder (`util\test\tmp\D3D9_Mesh_Output`, or `<dir>\D3D9_Mesh_Output` with `--tmp <dir>`;
+   `_reference_rdoc.txt` under RenderDoc), and logs where. Its references come
    from `ProcessVertices` on a second, software vertex processing device for the fixed function,
    vs_1_1 and vs_2_0 draws (screen space), and from C++ for pretransformed vertices, vs_3_0 with
    texldl and instancing (clip space). Check its log for "Couldn't" or "ProcessVertices failed"
-   warnings: a draw whose reference failed is skipped by the check.
+   warnings: a draw whose reference failed isn't checked, and counts as a failure.
 2. Capture a frame and run
    `python util\test\d3d9_mesh_check.py capture.rdc path\to\D3D9_Mesh_Output_reference.txt`
    (set up as for `d3d9_replay_check.py`). It prints PASS or FAIL per draw (with the first

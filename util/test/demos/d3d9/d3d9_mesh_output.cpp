@@ -40,7 +40,9 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
       "DrawPrimitiveUP and DrawIndexedPrimitiveUP, each in its own marker. Before drawing it works "
       "out what each draw's vertices should be after vertex processing, with ProcessVertices on a "
       "software vertex processing device where it can and in C++ otherwise, and writes that to "
-      "D3D9_Mesh_Output_reference.txt next to the executable for util/test/d3d9_mesh_check.py.";
+      "D3D9_Mesh_Output_reference.txt in the demo's tmp folder (--tmp, or tmp next to the "
+      "executable; _reference_rdoc.txt under RenderDoc) for util/test/d3d9_mesh_check.py and the "
+      "D3D9_Mesh_Output test.";
 
   typedef std::map<std::string, std::vector<float>> Outputs;
 
@@ -1429,15 +1431,11 @@ VOut main(float3 pos : POSITION, float4 col : COLOR0, float4 inst : TEXCOORD1)
 
     // the references, from a software vertex processing device on a window of its own
     {
-      std::string path = "D3D9_Mesh_Output_reference.txt";
-      char exe[MAX_PATH] = {};
-      if(GetModuleFileNameA(NULL, exe, MAX_PATH))
-      {
-        std::string e = exe;
-        size_t slash = e.find_last_of("\\/");
-        if(slash != std::string::npos)
-          path = e.substr(0, slash + 1) + path;
-      }
+      // in the demo's tmp folder, where the test framework's --tmp puts it. Under RenderDoc the
+      // software device and the hardware readback are captured too, so that reference is kept
+      // apart from the native one the checks use.
+      std::string path = tmpPath + (rdoc ? "/D3D9_Mesh_Output_reference_rdoc.txt"
+                                         : "/D3D9_Mesh_Output_reference.txt");
 
       Win32Window *win = (Win32Window *)MakeWindow(screenWidth, screenHeight, "ProcessVertices");
       D3DPRESENT_PARAMETERS pp = presentParams;

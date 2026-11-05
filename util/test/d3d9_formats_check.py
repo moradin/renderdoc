@@ -7,9 +7,11 @@
 #   set PATH=<build>\x64\Release;%PATH%
 #   python d3d9_formats_check.py capture.rdc [D3D9_Texture_Formats_reference.txt]
 #
-# The reference defaults to D3D9_Texture_Formats_reference.txt next to the capture, then in the
-# current directory. It's the demo's float render target from a native run: each format's 16x16
-# texture drawn 1:1 with point sampling, so it holds what the GPU's sampler returns for each texel.
+# The demo writes the reference to its tmp folder: util/test/tmp/D3D9_Texture_Formats, or
+# <dir>/D3D9_Texture_Formats when it's run with --tmp <dir>. The reference defaults to
+# D3D9_Texture_Formats_reference.txt next to the capture, then in the current directory. It's the
+# demo's float render target from a native run: each format's 16x16 texture drawn 1:1 with point
+# sampling, so it holds what the GPU's sampler returns for each texel.
 #
 # For each format the demo drew, it compares:
 # - every texel's PickPixel on the texture (RenderDoc's CPU decoding, the values the texture viewer
@@ -22,6 +24,9 @@
 #   data and the GPU samples it the same way at replay.
 #
 # It prints PASS or FAIL per format with the largest difference, and a summary at the end.
+#
+# The D3D9_Texture_Formats test (util/test/tests/D3D9, run by run_tests.py) runs the demo natively
+# and under RenderDoc and calls check_capture() on the capture.
 
 import os
 import re
@@ -228,9 +233,6 @@ def main():
         print('No D3D9_Texture_Formats_reference.txt found, pass its path')
         return 1
 
-    refs = parse_reference(refpath)
-    print('Reference {}: {} formats'.format(refpath, len(refs)))
-
     rd.InitialiseReplay(rd.GlobalEnvironment(), [])
     cap = rd.OpenCaptureFile()
     if cap.OpenFile(capture, '', None) != rd.ResultCode.Succeeded:
@@ -240,6 +242,21 @@ def main():
     if result != rd.ResultCode.Succeeded:
         print('Couldn\'t load the capture: ' + str(result))
         return 1
+
+    ok = check_capture(controller, refpath)
+
+    controller.Shutdown()
+    cap.Shutdown()
+    rd.ShutdownReplay()
+    return 0 if ok else 2
+
+
+def check_capture(controller, refpath):
+    # Checks every format on an open D3D9_Texture_Formats capture against the reference, and the
+    # render target at replay. Returns True if everything passed. The D3D9 tests in
+    # util/test/tests/D3D9 call this too.
+    refs = parse_reference(refpath)
+    print('Reference {}: {} formats'.format(refpath, len(refs)))
 
     if controller.GetAPIProperties().pipelineType != rd.GraphicsAPI.D3D9:
         print('Not a D3D9 capture')
@@ -274,11 +291,7 @@ def main():
         ' (' + ', '.join(info) + ')' if info else ''))
     print('Not supported by the GPU: ' + (', '.join(unsupported) if unsupported else 'none'))
     print('Replay render target: ' + ('PASS' if replay_ok else 'FAIL'))
-
-    controller.Shutdown()
-    cap.Shutdown()
-    rd.ShutdownReplay()
-    return 0 if not failed and replay_ok else 2
+    return not failed and replay_ok and len(passed) > 0
 
 
 if __name__ == '__main__':

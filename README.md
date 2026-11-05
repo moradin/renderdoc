@@ -99,6 +99,10 @@ Not tested yet:
 - **Core**: `InitialiseReplay` waits for the GPU enumeration thread it started on a previous call.
   Before this fix, calling it twice in one process (as Python scripts inside qrenderdoc do) could
   run two enumerations at once and crash while a capture loaded. Upstream has this bug too.
+- **Test framework** (`util/test`): the D3D9 tests in `tests/D3D9` and `D3D11_D3DPERF_Markers` in
+  `tests/D3D11` share a base class, `rdtest/shared/D3D9_Test.py`, which `rdtest/__init__.py`
+  imports. Nothing else in upstream's framework changed. Two helpers run it on a local Windows
+  build: `build_pymodule_py3.ps1` and `run_tests_local.py`.
 
 ### Building the fork
 
@@ -108,11 +112,21 @@ in the x64 Development build.
 
 To test it:
 
+- The automated tests run each test program, capture it and check the capture, with upstream's
+  `util/test/run_tests.py`. Build `util/test/demos.sln` too, then:
+  ```
+  powershell -File util\test\build_pymodule_py3.ps1
+  python util\test\run_tests_local.py -t "^D3D9|D3D11_D3DPERF"
+  ```
+  `run_tests.py` needs Python 3.7 or later, and the build's own module is for qrenderdoc's bundled
+  Python 3.6, so the first line builds one for the installed Python. STATUS.md lists the tests and
+  what they check.
 - The test programs are the `D3D9_*` and `D3D9Ex_*` tests in
   [util/test/demos](util/test/demos/d3d9), and `D3D11_D3DPERF_Markers` for the D3DPERF hooks
   the fork shares with the D3D11 driver.
-- The scripts that check their captures are `util/test/d3d9_*.py` and
-  `util/test/d3d11_d3dperf_check.py`. STATUS.md describes each one.
+- The tests share their checks with the scripts `util/test/d3d9_*.py` and
+  `util/test/d3d11_d3dperf_check.py`, which also run on their own on a capture (inside qrenderdoc's
+  Python too). STATUS.md describes each one.
 - The shader unit tests run with `renderdoccmd test unit "[d3d9]"` on Windows, or
   `util/test/d3d9_shader_unit_tests.sh` on Linux.
 

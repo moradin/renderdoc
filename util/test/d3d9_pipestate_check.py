@@ -10,7 +10,8 @@
 # capture presents itself as D3D9, that the generic PipeState agrees with the D3D9 state, and reads
 # the shader constants through the constant pseudo buffers. For each constant block a shader uses,
 # it checks that GetCBufferVariableContents with a length of 0 gives the same values as with the
-# descriptor's size, and prints a summary of any mismatches at the end.
+# descriptor's size, and prints a summary of any mismatches at the end. The D3D9_Simple_Triangle
+# and D3D9_Frame_Start_State tests (util/test/tests/D3D9) call check_capture().
 
 import struct
 import sys
@@ -185,34 +186,46 @@ def main():
         print('Couldn\'t load the capture: ' + str(result))
         return 1
 
-    props = controller.GetAPIProperties()
-    print('pipelineType {} localRenderer {}'.format(str(props.pipelineType), str(props.localRenderer)))
-    if props.pipelineType != rd.GraphicsAPI.D3D9:
-        print('Not a D3D9 capture')
-
-    names = {r.resourceId: r.name for r in controller.GetResources()}
-
-    if len(sys.argv) > 2:
-        eventIds = [int(sys.argv[2])]
-    else:
-        eventIds = [a.eventId for a in flatten(controller.GetRootActions(), [])
-                    if a.flags & rd.ActionFlags.Drawcall]
-
-    for eid in eventIds:
-        print('\nEvent {}:'.format(eid))
-        if not print_state(controller, names, eid, len(sys.argv) > 2):
-            break
-
-    if length0_failures:
-        print('\nGetCBufferVariableContents length 0 MISMATCH at (event, stage, block): {}'.format(
-            length0_failures))
-    else:
-        print('\nGetCBufferVariableContents length 0 matched the descriptor size everywhere')
+    check_capture(controller, int(sys.argv[2]) if len(sys.argv) > 2 else None)
 
     controller.Shutdown()
     cap.Shutdown()
     rd.ShutdownReplay()
     return 0
+
+
+def check_capture(controller, eventId=None):
+    # Prints the state at every draw (or only at eventId, with every render state). Returns True if
+    # the capture is D3D9, the D3D9 state was there at every event and the length 0 constants
+    # matched everywhere. The D3D9 tests in util/test/tests/D3D9 call this too.
+    props = controller.GetAPIProperties()
+    print('pipelineType {} localRenderer {}'.format(str(props.pipelineType), str(props.localRenderer)))
+    ok = props.pipelineType == rd.GraphicsAPI.D3D9
+    if not ok:
+        print('Not a D3D9 capture')
+
+    names = {r.resourceId: r.name for r in controller.GetResources()}
+
+    if eventId is not None:
+        eventIds = [eventId]
+    else:
+        eventIds = [a.eventId for a in flatten(controller.GetRootActions(), [])
+                    if a.flags & rd.ActionFlags.Drawcall]
+
+    del length0_failures[:]
+    for eid in eventIds:
+        print('\nEvent {}:'.format(eid))
+        if not print_state(controller, names, eid, eventId is not None):
+            ok = False
+            break
+
+    if length0_failures:
+        print('\nGetCBufferVariableContents length 0 MISMATCH at (event, stage, block): {}'.format(
+            length0_failures))
+        ok = False
+    else:
+        print('\nGetCBufferVariableContents length 0 matched the descriptor size everywhere')
+    return ok and len(eventIds) > 0
 
 
 if __name__ == '__main__':

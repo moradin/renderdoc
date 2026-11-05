@@ -47,35 +47,36 @@ the coding and the testing.
 
 ## Testing
 
-The machine is Windows 11 with an RTX 4070 Ti. The steps below are how every test round so far was
-run.
+The machine is Windows 11 with an RTX 4070 Ti.
 
-1. **Run the demo natively:** `demos_x64.exe <TestName> --log <file>`.
-   - `D3D9_Texture_Formats` and `D3D9_Mesh_Output` write a reference file from the native run.
-   - Under RenderDoc they write `*_reference_rdoc.txt` instead.
-2. **Capture it.** Use the renderdoc Python module: `ExecuteAndInject` the demo, then
-   `TriggerCapture` through a `TargetControl`. Then copy the capture locally.
-3. **Run the check script on the capture.** The scripts are `util/test/d3d9_*_check.py` and
-   `util/test/d3d11_d3dperf_check.py`. The comment at the top of each script and its section in
-   STATUS.md say what it checks and what it expects.
-4. **Check the UI.** For anything that shows in the UI, check it in `qrenderdoc.exe` as well, and
+1. **Run the automated tests** after every change, with both solutions built:
+   ```
+   powershell -File util\test\build_pymodule_py3.ps1
+   python util\test\run_tests_local.py -t "^D3D9|D3D11_D3DPERF"
+   ```
+   - They run each demo (natively first where a test needs the GPU's reference), capture it, and
+     check the capture. STATUS.md's "Automated tests" lists what each one checks.
+   - `build_pymodule_py3.ps1` builds the python module against the installed Python 3.14, since
+     `run_tests.py` needs 3.7 or later and the build's own module is for qrenderdoc's bundled 3.6.
+     Rebuild it when renderdoc's public API changes.
+   - `run_tests_local.py` stops `run_tests.py` asking to register the Vulkan layer, which the
+     installed RenderDoc in Program Files owns. D3D9 and D3D11 tests don't use the layer.
+   - Add a test, or a check to an existing one, for each fix and feature.
+2. **Check the UI.** For anything that shows in the UI, check it in `qrenderdoc.exe` as well, and
    take screenshots.
 
-Python setup:
+By hand:
 
-- **Embedded Python:** the build's `pymodules\renderdoc.pyd` is built against the bundled Python
-  3.6, and only Python 3.14 is installed. So the check scripts run inside qrenderdoc's embedded
-  Python, through a wrapper that sets `sys.argv` and redirects stdout:
+- The demos run on their own: `demos_x64.exe <TestName> --log <file>`. `D3D9_Texture_Formats` and
+  `D3D9_Mesh_Output` write a reference file to `util\test\tmp\<TestName>` (or the `--tmp` folder),
+  `*_reference_rdoc.txt` under RenderDoc.
+- The check scripts (`util/test/d3d9_*_check.py`, `util/test/d3d11_d3dperf_check.py`) run on a
+  capture on their own, with the 3.14 module, or inside qrenderdoc's embedded Python 3.6 through
+  a wrapper that sets `sys.argv` and redirects stdout:
   ```
   x64\Development\qrenderdoc.exe --python <wrapper.py>
   ```
-- **Upstream's test runner:** `util/test/run_tests.py` needs Python 3.7 or later. To run it:
-  - Build `pyrenderdoc_module.vcxproj` on its own against 3.14 using `VSPythonOverridePath`, with
-    a separate obj folder, and pass that module with `--pyrenderdoc`.
-  - The installed RenderDoc in Program Files owns the system Vulkan layer registration. So start
-    the runner through a wrapper that makes `rd.NeedVulkanLayerRegistration` return False.
-    D3D9 and D3D11 tests don't use the layer.
-  - Details: `test_reports/d3d9_formats_d3dperf_test.md`, section 5.
+  They have to stay Python 3.6 compatible for that.
 
 Debugging crashes:
 

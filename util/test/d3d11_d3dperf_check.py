@@ -8,8 +8,9 @@
 #   set PATH=<build>\x64\Release;%PATH%
 #   python d3d11_d3dperf_check.py capture.rdc
 #
-# It prints the capture's markers and draws, checks they nest as the demo made them, and prints
-# the marker colours.
+# It prints the capture's markers and draws, and checks they nest as the demo made them with the
+# colours the demo gave them. The D3D11_D3DPERF_Markers test (util/test/tests/D3D11) calls
+# check_capture().
 
 import sys
 
@@ -72,6 +73,17 @@ def main():
         print('Couldn\'t load the capture: ' + str(result))
         return 1
 
+    ok = check_capture(controller)
+
+    controller.Shutdown()
+    cap.Shutdown()
+    rd.ShutdownReplay()
+    return 0 if ok else 2
+
+
+def check_capture(controller):
+    # Checks the markers on an open D3D11_D3DPERF_Markers capture. Returns True if they nest as the
+    # demo made them, with the demo's colours. The D3D11_D3DPERF_Markers test calls this too.
     props = controller.GetAPIProperties()
     print('pipelineType ' + str(props.pipelineType))
 
@@ -89,13 +101,11 @@ def main():
         have = colours.get(name)
         print('Colour of {}: {} (the demo set {})'.format(
             name, '-' if have is None else '({:.3g}, {:.3g}, {:.3g})'.format(*have), want))
+        if have is None or any(abs(h - w) > 1e-3 for h, w in zip(have, want)):
+            ok = False
 
     print('\nD3DPERF markers in the D3D11 capture: ' + ('PASS' if ok else 'FAIL'))
-
-    controller.Shutdown()
-    cap.Shutdown()
-    rd.ShutdownReplay()
-    return 0 if ok else 2
+    return ok
 
 
 if __name__ == '__main__':

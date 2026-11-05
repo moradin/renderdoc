@@ -85,15 +85,17 @@ def check_save_texture(controller, tex, path):
     save.resourceId = tex.resourceId
     save.destType = rd.FileType.PNG
     save.alpha = rd.AlphaMapping.Preserve
+    # returns the saved alpha range, or None
     result = controller.SaveTexture(save, path)
     if not result.OK():
         print('  SaveTexture failed: ' + str(result.Message()))
-        return
+        return None
     alphas = read_png_alpha(path)
     if alphas is None:
         print('  saved ' + path + ' (not 8-bit RGBA, alpha not checked)')
-        return
+        return None
     print('  saved {} with SaveTexture, alpha {}-{}'.format(path, min(alphas), max(alphas)))
+    return min(alphas), max(alphas)
 
 
 def print_actions(actions, sdfile, depth=0):
@@ -129,26 +131,31 @@ def save_bgra(controller, tex, path):
     print('  saved ' + path)
 
 
+def depth_values(controller, tex, sample):
+    # a depth stencil's texels in D3D9's layout (depth << 8 | stencil for D24S8, the 16-bit value
+    # for D16), as a list in row order. None if it can't be read or decoded.
+    data = controller.GetTextureData(tex.resourceId, rd.Subresource(0, 0, sample))
+    if not data:
+        return None
+    if tex.format.type == rd.ResourceFormatType.D24S8:
+        # back to D3D9's layout, depth << 8 | stencil, to compare with STATUS.md
+        return [((v << 8) | (v >> 24)) & 0xFFFFFFFF for (v,) in struct.iter_unpack('<I', data)]
+    if tex.format.compByteWidth == 2:
+        return [v for (v,) in struct.iter_unpack('<H', data)]
+    return None
+
+
 def print_depth(controller, tex, name):
     fmt = tex.format
     for sample in range(max(1, tex.msSamp)):
-        data = controller.GetTextureData(tex.resourceId, rd.Subresource(0, 0, sample))
-        if not data:
-            print('  {} sample {}: couldn\'t read it'.format(name, sample))
+        values = depth_values(controller, tex, sample)
+        if values is None:
+            print('  {} ({}, sample {}): couldn\'t read or decode it'.format(name, fmt.Name(), sample))
             continue
 
         counts = {}
-        if fmt.type == rd.ResourceFormatType.D24S8:
-            for (v,) in struct.iter_unpack('<I', data):
-                # back to D3D9's layout, depth << 8 | stencil, to compare with STATUS.md
-                d3d9 = ((v << 8) | (v >> 24)) & 0xFFFFFFFF
-                counts[d3d9] = counts.get(d3d9, 0) + 1
-        elif fmt.compByteWidth == 2:
-            for (v,) in struct.iter_unpack('<H', data):
-                counts[v] = counts.get(v, 0) + 1
-        else:
-            print('  {}: {} isn\'t decoded by this script'.format(name, fmt.Name()))
-            return
+        for v in values:
+            counts[v] = counts.get(v, 0) + 1
 
         top = sorted(counts.items(), key=lambda kv: -kv[1])[:6]
         print('  {} ({}, sample {}): {}'.format(

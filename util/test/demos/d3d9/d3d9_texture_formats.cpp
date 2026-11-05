@@ -32,9 +32,10 @@ RD_TEST(D3D9_Texture_Formats, D3D9GraphicsTest)
       "Creates a 16x16 texture in every format the GPU can sample, filled with pseudo-random "
       "data, and draws each one 1:1 with point sampling into an A32B32G32R32F render target, "
       "inside a marker named after the format and where it's drawn. The first frame's render "
-      "target, which is what the GPU samples from each texture, is written next to the "
-      "executable as D3D9_Texture_Formats_reference.txt (_reference_rdoc.txt under RenderDoc) "
-      "for util/test/d3d9_formats_check.py to compare with RenderDoc's decoding.";
+      "target, which is what the GPU samples from each texture, is written to the demo's tmp "
+      "folder (--tmp, or tmp next to the executable) as D3D9_Texture_Formats_reference.txt "
+      "(_reference_rdoc.txt under RenderDoc) for util/test/d3d9_formats_check.py and the "
+      "D3D9_Texture_Formats test to compare with RenderDoc's decoding.";
 
   enum class Fill
   {
@@ -130,19 +131,11 @@ float4 main(float2 uv : TEXCOORD0) : COLOR0
     return buf;
   }
 
+  // in the demo's tmp folder, where the test framework's --tmp puts it
   std::string ReferencePath()
   {
-    std::string path =
-        rdoc ? "D3D9_Texture_Formats_reference_rdoc.txt" : "D3D9_Texture_Formats_reference.txt";
-    char exe[MAX_PATH] = {};
-    if(GetModuleFileNameA(NULL, exe, MAX_PATH))
-    {
-      std::string e = exe;
-      size_t slash = e.find_last_of("\\/");
-      if(slash != std::string::npos)
-        path = e.substr(0, slash + 1) + path;
-    }
-    return path;
+    return tmpPath + (rdoc ? "/D3D9_Texture_Formats_reference_rdoc.txt"
+                           : "/D3D9_Texture_Formats_reference.txt");
   }
 
   // the render target's region for each format, as the GPU sampled it

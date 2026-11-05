@@ -11,7 +11,8 @@
 # capture, and prints PASS or FAIL for each check: that the overlay texture exists with the
 # target's size, the colours at known pixels (see the layout at the top of
 # util/test/demos/d3d9/d3d9_overlay_test.cpp), and that rendering an overlay leaves the target as
-# it was. It ends with the number of failures, and returns 1 if there were any.
+# it was. It ends with the number of failures, and returns 1 if there were any. The
+# D3D9_Overlay_Test test (util/test/tests/D3D9) calls check_capture().
 
 import math
 import os
@@ -158,7 +159,6 @@ def main():
         return 1
 
     path = sys.argv[1]
-    base = os.path.splitext(path)[0]
 
     rd.InitialiseReplay(rd.GlobalEnvironment(), [])
 
@@ -172,6 +172,20 @@ def main():
     if result != rd.ResultCode.Succeeded:
         print('Couldn\'t load the capture: ' + str(result))
         return 1
+
+    ok = check_capture(controller, os.path.splitext(path)[0])
+
+    controller.Shutdown()
+    cap.Shutdown()
+    rd.ShutdownReplay()
+    return 0 if ok else 1
+
+
+def check_capture(controller, base):
+    # Runs every check on an open D3D9_Overlay_Test capture, saving the overlays as
+    # <base>_<marker>_<overlay>.png. Returns True if they all passed. The D3D9 tests in
+    # util/test/tests/D3D9 call this too.
+    results['pass'] = results['fail'] = 0
 
     sdfile = controller.GetStructuredFile()
     roots = controller.GetRootActions()
@@ -426,10 +440,7 @@ def main():
     print('\n{} passed, {} failed'.format(results['pass'], results['fail']))
 
     out.Shutdown()
-    controller.Shutdown()
-    cap.Shutdown()
-    rd.ShutdownReplay()
-    return 1 if results['fail'] else 0
+    return results['fail'] == 0
 
 
 if __name__ == '__main__':

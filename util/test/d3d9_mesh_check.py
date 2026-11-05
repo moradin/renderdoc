@@ -6,11 +6,15 @@
 #   set PATH=<build>\x64\Release;%PATH%
 #   python d3d9_mesh_check.py capture.rdc [D3D9_Mesh_Output_reference.txt]
 #
-# The reference defaults to D3D9_Mesh_Output_reference.txt next to the capture, then in the
-# current directory. For each draw in the reference it finds the draw in the marker of the same
-# name, gets its VS Out data with GetPostVSData for each instance, and compares every row with the
-# reference within a tolerance, printing PASS or FAIL per draw and the VS In and VS Out vertex
-# counts. References from ProcessVertices are screen space (the viewport applied), and their
+# The demo writes the reference to its tmp folder: util/test/tmp/D3D9_Mesh_Output, or
+# <dir>/D3D9_Mesh_Output when it's run with --tmp <dir> (_reference_rdoc.txt under RenderDoc). The
+# reference defaults to D3D9_Mesh_Output_reference.txt next to the capture, then in the current
+# directory. The D3D9_Mesh_Output test (util/test/tests/D3D9) calls check_capture().
+#
+# For each draw in the reference it finds the draw in the marker of the same name, gets its VS Out
+# data with GetPostVSData for each instance, and compares every row with the reference within a
+# tolerance, printing PASS or FAIL per draw and the VS In and VS Out vertex counts. A draw whose
+# reference failed natively counts as a failure. References from ProcessVertices are screen space (the viewport applied), and their
 # colours are 8 bits; ours are converted to match. It also checks the VS In data of
 # DrawPrimitiveUP draws can be read.
 #
@@ -253,9 +257,6 @@ def main():
         print('No D3D9_Mesh_Output_reference.txt found, pass its path')
         return 1
 
-    vp, refs = parse_reference(refpath)
-    print('Reference {}: {} draws, viewport {}'.format(refpath, len(refs), vp))
-
     rd.InitialiseReplay(rd.GlobalEnvironment(), [])
     cap = rd.OpenCaptureFile()
     if cap.OpenFile(capture, '', None) != rd.ResultCode.Succeeded:
@@ -266,10 +267,24 @@ def main():
         print('Couldn\'t load the capture: ' + str(result))
         return 1
 
+    ok = check_capture(controller, refpath)
+
+    controller.Shutdown()
+    cap.Shutdown()
+    rd.ShutdownReplay()
+    return 0 if ok else 2
+
+
+def check_capture(controller, refpath):
+    # Checks every draw in the reference on an open D3D9_Mesh_Output capture. Returns True if they
+    # all passed. The D3D9 tests in util/test/tests/D3D9 call this too.
+    vp, refs = parse_reference(refpath)
+    print('Reference {}: {} draws, viewport {}'.format(refpath, len(refs), vp))
+
     sdfile = controller.GetStructuredFile()
     draws = find_draws(controller.GetRootActions(), sdfile, '', [])
 
-    passed = failed = 0
+    passed = failed = skipped = 0
     for ref in refs:
         found = [a for parent, a in draws if parent == ref['name']]
         if not found:
@@ -281,18 +296,17 @@ def main():
             passed += 1
         elif ok is False:
             failed += 1
+        else:
+            skipped += 1
         if 'PrimitiveUP' in ref['name']:
             if check_vs_in(controller, found[0], ref['name']):
                 passed += 1
             else:
                 failed += 1
 
-    print('\n{} passed, {} failed'.format(passed, failed))
-
-    controller.Shutdown()
-    cap.Shutdown()
-    rd.ShutdownReplay()
-    return 0 if failed == 0 else 2
+    print('\n{} passed, {} failed, {} skipped (no reference)'.format(passed, failed, skipped))
+    # a draw whose reference failed natively isn't checked, so it counts against the result
+    return failed == 0 and skipped == 0 and len(refs) > 0
 
 
 if __name__ == '__main__':
