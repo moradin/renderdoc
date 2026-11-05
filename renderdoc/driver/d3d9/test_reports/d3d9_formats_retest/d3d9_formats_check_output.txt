@@ -1,0 +1,40 @@
+Reference E:\Projects\renderdoc\util\test\D3D9_Texture_Formats_reference.txt: 31 formats
+PASS A8R8G8B8       256 texels, max diff 0.000000 (B8G8R8A8_UNORM, compared r,g,b,a)
+PASS X8R8G8B8       256 texels, max diff 0.000000 (B8G8R8A8_UNORM, compared r,g,b,a)
+PASS R5G6B5         256 texels, max diff 0.002801 (B5G6R5_UNORM, compared r,g,b,a)
+PASS X1R5G5B5       256 texels, max diff 0.002657 (B5G5R5A1_UNORM, compared r,g,b,a)
+PASS A1R5G5B5       256 texels, max diff 0.002657 (B5G5R5A1_UNORM, compared r,g,b,a)
+PASS A4R4G4B4       256 texels, max diff 0.000000 (B4G4R4A4_UNORM, compared r,g,b,a)
+PASS A8             256 texels, max diff 0.000000 (A8_UNORM, compared r,g,b,a)
+PASS A2B10G10R10    256 texels, max diff 0.000000 (R10G10B10A2_UNORM, compared r,g,b,a)
+PASS G16R16         256 texels, max diff 0.000000 (R16G16_UNORM, compared r,g,a)
+PASS A2R10G10B10    256 texels, max diff 0.000000 (B10G10R10A2_UNORM, compared r,g,b,a)
+PASS A16B16G16R16   256 texels, max diff 0.000000 (R16G16B16A16_UNORM, compared r,g,b,a)
+PASS L8             256 texels, max diff 0.000000 (R8_UNORM, compared r,r=g,r=b,a)
+PASS A8L8           256 texels, max diff 0.000000 (R8G8_UNORM, compared r,r=g,r=b,g=a)
+PASS V8U8           256 texels, max diff 0.000000 (R8G8_SNORM, compared r,g,a)
+PASS X8L8V8U8       256 texels, max diff 0.000000 (Undefined, compared r,g,b,a)
+PASS Q8W8V8U8       256 texels, max diff 0.000000 (R8G8B8A8_SNORM, compared r,g,b,a)
+PASS V16U16         256 texels, max diff 0.000000 (R16G16_SNORM, compared r,g,a)
+PASS L16            256 texels, max diff 0.000000 (R16_UNORM, compared r,r=g,r=b,a)
+PASS DXT1           256 texels, max diff 0.019608 (BC1_UNORM, compared r,g,b,a)
+PASS DXT2           256 texels, max diff 0.015686 (BC2_UNORM, compared r,g,b,a)
+PASS DXT3           256 texels, max diff 0.019608 (BC2_UNORM, compared r,g,b,a)
+PASS DXT4           256 texels, max diff 0.011765 (BC3_UNORM, compared r,g,b,a)
+PASS DXT5           256 texels, max diff 0.019608 (BC3_UNORM, compared r,g,b,a)
+PASS ATI1           256 texels, max diff 0.007874 (BC4_UNORM, compared r)
+PASS ATI2           256 texels, max diff 0.024857 (BC5_UNORM, compared r,g)
+PASS R16F           256 texels, max diff 0.000000 (R16_FLOAT, compared r,a)
+PASS G16R16F        256 texels, max diff 0.000000 (R16G16_FLOAT, compared r,g,a)
+PASS A16B16G16R16F  256 texels, max diff 0.000000 (R16G16B16A16_FLOAT, compared r,g,b,a)
+PASS R32F           256 texels, max diff 0.000000 (R32_FLOAT, compared r,a)
+PASS G32R32F        256 texels, max diff 0.000000 (R32G32_FLOAT, compared r,g,a)
+PASS A32B32G32R32F  256 texels, max diff 0.000000 (R32G32B32A32_FLOAT, compared r,g,b,a)
+PASS replay render target matches the native one for all 31 formats (max diff 5e-09)
+
+31 formats passed, 0 failed, 0 not compared
+Not supported by the GPU: R8G8B8 (CheckDeviceFormat), R3G3B2 (CheckDeviceFormat), A8R3G3B2 (CheckDeviceFormat), X4R4G4B4 (CheckDeviceFormat), A8B8G8R8 (CheckDeviceFormat), X8B8G8R8 (CheckDeviceFormat), A8P8 (CheckDeviceFormat), P8 (CheckDeviceFormat), A4L4 (CheckDeviceFormat), L6V5U5 (CheckDeviceFormat), A2W10V10U10 (CheckDeviceFormat), CxV8U8 (CheckDeviceFormat), Q16W16V16U16 (CheckDeviceFormat), UYVY (CheckDeviceFormat), YUY2 (CheckDeviceFormat), R8G8_B8G8 (CheckDeviceFormat), G8R8_G8B8 (CheckDeviceFormat)
+Replay render target: PASS
+
+[exit code 0]
+log C:\Users\Balazs\AppData\Local\Temp\RenderDoc\RenderDoc_2026.11.05_21.31.20.log

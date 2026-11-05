@@ -1,0 +1,18 @@
+pipelineType GraphicsAPI.D3D11
+Markers and draws (clears and Present left out):
+  D3DPERF region
+    Draw
+    D3DPERF marker
+    D3DPERF nested region
+      Draw
+  Draw
+  Annotation region
+    Draw
+Colour of D3DPERF region: (1, 0, 0) (the demo set (1.0, 0.0, 0.0))
+Colour of D3DPERF marker: (0, 1, 0) (the demo set (0.0, 1.0, 0.0))
+Colour of D3DPERF nested region: (0, 0, 1) (the demo set (0.0, 0.0, 1.0))
+
+D3DPERF markers in the D3D11 capture: PASS
+
+[exit code 0]
+log C:\Users\Balazs\AppData\Local\Temp\RenderDoc\RenderDoc_2026.11.05_21.33.32.log
