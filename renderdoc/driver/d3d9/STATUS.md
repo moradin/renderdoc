@@ -210,8 +210,10 @@ Since then:
   register file from the device itself when it's given no data, as GL does for bare uniforms.
   `def`/`defi`/`defb` literals still replace the registers they define. Passing the descriptor's
   size works as before. To check: `d3d9_pipestate_check.py` compares the two for every constant
-  block a shader uses (see "Checking the pipeline state").
-
+  block a shader uses (see "Checking the pipeline state"). The retests (`d3d9_cbuffer_len0_retest.md`,
+  `d3d9_followups_retest.md`) passed every VS float, int and bool block in `D3D9_Mesh_Output`, and
+  the UI's constant buffer viewers for D3D9 and D3D11 are unchanged. Pixel shader blocks are still
+  untested: no demo's pixel shaders use constants, and no game capture was available.
 - The one crash (a call through a null pointer) loading `D3D9Ex_Wrapping_Check`, once in 78 loads,
   wasn't D3D9's (`d3d9_d3d9ex_crash.md`). The test scripts call `rd.InitialiseReplay` inside
   qrenderdoc, which had already called it, and each call started a GPU enumeration thread without
@@ -221,7 +223,10 @@ Since then:
   and one thread called `EnumerateDeviceExtensionProperties` while it was null. Calling
   `InitialiseReplay` 6 times in a row crashed 9 runs in 20. `InitialiseReplay` now waits for any
   earlier enumeration, and doesn't enumerate again once it has found GPUs. Vulkan's shared tables
-  are unchanged: they're safe while only one replay driver is created at a time.
+  are unchanged: they're safe while only one replay driver is created at a time. The retest
+  (`d3d9_followups_retest.md`, of 3cff00146) had no crashes in 20 runs of the 6-call script and 20
+  `D3D9Ex_Wrapping_Check` loads, every log had one set of proxy devices and no `d3d12_replay.cpp`
+  assertion, and Settings still lists each GPU's APIs once.
 
 The retest (`d3d9_phase3_retest.md`, of ea95bb75e) passed the four fixes, `_first.png`, the
 Clear destinations, 23/23 shaders against fxc, the unit tests, 10 more `D3D9Ex_Wrapping_Check`
