@@ -857,7 +857,15 @@ void RenderDoc::InitialiseReplay(GlobalEnvironment env, const rdcarray<rdcstr> &
   else
     RecreateCrashHandler();
 
-  if(env.enumerateGPUs)
+  // InitialiseReplay can be called again in the same process, for example by a script running
+  // inside qrenderdoc. Replay drivers are only created once the enumeration thread has been joined,
+  // and they share process-wide state (such as Vulkan's replay dispatch tables), so a second
+  // thread must not run alongside the first. The handle would also be overwritten, leaving the
+  // first thread unjoined. Wait for any previous enumeration, and keep its results if it found
+  // GPUs, since they don't change.
+  SyncAvailableGPUThread();
+
+  if(env.enumerateGPUs && m_AvailableGPUs.empty())
   {
     m_AvailableGPUThread = Threading::CreateThread([this]() {
       rdcarray<rdcstr> driverFilePaths;

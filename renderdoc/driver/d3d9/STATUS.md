@@ -212,9 +212,16 @@ Since then:
   size works as before. To check: `d3d9_pipestate_check.py` compares the two for every constant
   block a shader uses (see "Checking the pipeline state").
 
-Still open from the test round:
-- One crash (a call through a null pointer) loading or first replaying `D3D9Ex_Wrapping_Check`,
-  seen once and not reproduced in 7 more runs. No stack.
+- The one crash (a call through a null pointer) loading `D3D9Ex_Wrapping_Check`, once in 78 loads,
+  wasn't D3D9's (`d3d9_d3d9ex_crash.md`). The test scripts call `rd.InitialiseReplay` inside
+  qrenderdoc, which had already called it, and each call started a GPU enumeration thread without
+  waiting for the last one. Replay drivers are only created after that thread is joined, but only
+  the newest handle was kept, so two enumerations ran at once while the capture loaded. Their
+  Vulkan proxy devices share the replay dispatch tables, which each creation zeroes and refills,
+  and one thread called `EnumerateDeviceExtensionProperties` while it was null. Calling
+  `InitialiseReplay` 6 times in a row crashed 9 runs in 20. `InitialiseReplay` now waits for any
+  earlier enumeration, and doesn't enumerate again once it has found GPUs. Vulkan's shared tables
+  are unchanged: they're safe while only one replay driver is created at a time.
 
 The retest (`d3d9_phase3_retest.md`, of ea95bb75e) passed the four fixes, `_first.png`, the
 Clear destinations, 23/23 shaders against fxc, the unit tests, 10 more `D3D9Ex_Wrapping_Check`
