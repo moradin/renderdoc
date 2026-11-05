@@ -268,7 +268,9 @@ Retest 2 (`d3d9_phase3_retest2.md`) passed everything except two UI items, now f
   spacing down; it rounds up now. It also found those cells' hover area had shrunk to the text,
   which put the underline through the glyphs and left the top and bottom of the row dead. They now
   hover and click over the full cell height and underline at the font's underline position, as
-  rich text does. The probe
+  rich text does. Retest 5 (`d3d9_phase3e_retest5.md`) confirmed both in D3D9 and D3D11: 10
+  pixel icons clear of the separators, underlines 1 pixel below the baseline, and hover and clicks
+  working across the full row height. The probe
   (`util/test/richtext_probe`) had the same fonts, but rows 18 pixels high. The
   `RENDERDOC_RICHTEXT_LOG` and `RENDERDOC_RICHTEXT_STYLE` debugging variables used to find this
   have been removed.
@@ -1044,7 +1046,7 @@ are hidden for D3D9 and back for D3D11, the unit tests pass, and the overlay and
 match the previous round. The rows are covered under "Event Browser rows" above, and retest 3
 (`d3d9_phase3e_retest3.md`, of e409786bd) passed all of them. Retest 4 (of 22ba5031c) checked
 the icon sizes and failed on the 9 pixel icon and the resource cells' underline and hover area,
-both fixed since.
+both fixed in c1049db4f, which retest 5 passed.
 
 ## Inspecting a capture
 
