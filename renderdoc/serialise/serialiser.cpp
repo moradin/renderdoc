@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,6 +26,7 @@
 #define SERIALISER_IMPL
 
 #include "serialiser.h"
+#include "api/replay/renderdoc_replay.h"
 #include "core/core.h"
 #include "strings/string_utils.h"
 
@@ -68,6 +69,7 @@ void DumpObject(FileIO::LogFileHandle *log, const rdcstr &indent, SDObject *obj)
       case SDBasic::Boolean: val = ToStr(obj->data.basic.b); break;
       case SDBasic::Character: val = ToStr(obj->data.basic.c); break;
       case SDBasic::Resource: val = ToStr(obj->data.basic.id); break;
+      case SDBasic::GPUAddress: val = "GPUAddress::" + ToStr(obj->data.basic.u); break;
     }
     rdcstr msg = StringFormat::Fmt("%s%s %s = %s\n", indent.c_str(), obj->type.name.c_str(),
                                    obj->name.c_str(), val.c_str());
@@ -177,6 +179,13 @@ uint32_t Serialiser<SerialiserMode::Reading>::BeginChunk(uint32_t, uint64_t)
       m_Read->Read(chunkSize);
       m_ChunkMetadata.length = chunkSize;
     }
+
+    uint64_t len = m_ChunkMetadata.length;
+    VerifyArraySize(m_ChunkMetadata.length);
+    // if length was set to 0 by VerifyArraySize due to being invalid, set it to something
+    // reasonable just to prevent knock-on problems with error handling
+    if(len != 0 && m_ChunkMetadata.length == 0)
+      m_ChunkMetadata.length = 1024;
 
     m_LastChunkOffset = m_Read->GetOffset();
   }
@@ -341,6 +350,13 @@ void Serialiser<SerialiserMode::Writing>::SetChunkMetadataRecording(uint32_t fla
 template <>
 uint32_t Serialiser<SerialiserMode::Writing>::BeginChunk(uint32_t chunkID, uint64_t byteLength)
 {
+  // cannot start a chunk inside a chunk
+  RDCASSERTMSG("Beginning a chunk inside another chunk", m_ChunkMetadata.chunkID == 0,
+               m_ChunkMetadata.chunkID, chunkID);
+
+  // don't carry over any previous sideband data
+  m_SidebandKV.clear();
+
   {
     // chunk index needs to be valid
     RDCASSERT(chunkID > 0);
@@ -411,7 +427,7 @@ uint32_t Serialiser<SerialiserMode::Writing>::BeginChunk(uint32_t chunkID, uint6
         m_Write->Write(m_ChunkMetadata.timestampMicro);
       }
 
-      if(byteLength > 0 || m_DataStreaming)
+      if((byteLength > 0 && byteLength != LARGE_CHUNK_SIZE) || m_DataStreaming)
       {
         // write length, assuming it is an upper bound
         m_ChunkFixup = 0;
@@ -426,6 +442,13 @@ uint32_t Serialiser<SerialiserMode::Writing>::BeginChunk(uint32_t chunkID, uint6
         }
         m_LastChunkOffset = m_Write->GetOffset();
         m_ChunkMetadata.length = byteLength;
+      }
+      else if(byteLength == LARGE_CHUNK_SIZE)
+      {
+        uint64_t chunkSize = 0xbeebfeedbeebfeedULL;
+        m_ChunkFixup = m_Write->GetOffset();
+        m_Write->Write(chunkSize);
+        m_ChunkMetadata.length = LARGE_CHUNK_SIZE;
       }
       else
       {
@@ -477,14 +500,23 @@ void Serialiser<SerialiserMode::Writing>::EndChunk()
 
     RDCASSERT(curOffset > chunkOffset);
 
-    uint64_t chunkLength = (curOffset - chunkOffset) - sizeof(uint32_t);
-    if(chunkLength > 0xffffffff)
+    uint64_t chunkLength = (curOffset - chunkOffset);
+    if(m_ChunkMetadata.length == LARGE_CHUNK_SIZE)
     {
-      RDCERR("!!! CHUNK LENGTH %llu EXCEEDED 32 BIT VALUE. CAPTURE WILL BE CORRUPTED. !!!",
-             chunkLength);
+      chunkLength -= sizeof(uint64_t);
+      m_Write->WriteAt(chunkOffset, chunkLength);
     }
+    else
+    {
+      chunkLength -= sizeof(uint32_t);
+      if(chunkLength > 0xffffffff)
+      {
+        RDCERR("!!! CHUNK LENGTH %llu EXCEEDED 32 BIT VALUE. CAPTURE WILL BE CORRUPTED. !!!",
+               chunkLength);
+      }
 
-    m_Write->WriteAt(chunkOffset, uint32_t(chunkLength & 0xffffffff));
+      m_Write->WriteAt(chunkOffset, uint32_t(chunkLength & 0xffffffff));
+    }
 
     m_ChunkMetadata.length = chunkLength;
   }
@@ -495,6 +527,17 @@ void Serialiser<SerialiserMode::Writing>::EndChunk()
     if(writtenLength < m_ChunkMetadata.length)
     {
       uint64_t numPadBytes = m_ChunkMetadata.length - writtenLength;
+
+      if(numPadBytes > 1024)
+      {
+        byte padding[1024] = {};
+        memset(padding, 0xbb, 1024);
+        while(numPadBytes > 1024)
+        {
+          m_Write->Write(padding, 1024);
+          numPadBytes -= 1024;
+        }
+      }
 
       // need to write some padding bytes so that the length is accurate
       for(uint64_t i = 0; i < numPadBytes; i++)
@@ -507,7 +550,7 @@ void Serialiser<SerialiserMode::Writing>::EndChunk()
       if(m_ChunkMetadata.length - writtenLength > 128)
       {
         RDCDEBUG("Chunk estimated at %llu bytes, actual length %llu. Added %llu bytes padding.",
-                 m_ChunkMetadata.length, writtenLength, numPadBytes);
+                 m_ChunkMetadata.length, writtenLength, m_ChunkMetadata.length - writtenLength);
       }
     }
     else if(writtenLength > m_ChunkMetadata.length)
@@ -589,7 +632,9 @@ void Serialiser<SerialiserMode::Writing>::WriteStructuredFile(const SDFile &file
       scratchWriter.m_ChunkFlags = m_ChunkFlags;
     }
 
-    ser->BeginChunk(m_ChunkMetadata.chunkID, m_ChunkMetadata.length);
+    m_ChunkMetadata.chunkID = 0;
+
+    ser->BeginChunk(chunk.metadata.chunkID, m_ChunkMetadata.length);
 
     if(chunk.metadata.flags & SDChunkFlags::OpaqueChunk)
     {
@@ -747,6 +792,7 @@ void DoSerialise(SerialiserType &ser, SDChunk &el)
 }
 
 INSTANTIATE_SERIALISE_TYPE(SDChunk);
+INSTANTIATE_SERIALISE_TYPE(SDObject);
 
 // serialise the pointer version - special case for writing a structured file, so can assume writing
 template <class SerialiserType>
@@ -806,15 +852,11 @@ void DoSerialise(SerialiserType &ser, SDObject *el)
       }
       break;
     }
-    case SDBasic::Enum:
-    {
-      uint32_t e = (uint32_t)el->data.basic.u;
-      ser.Serialise(""_lit, e);
-      break;
-    }
     case SDBasic::Boolean: ser.Serialise(""_lit, el->data.basic.b); break;
     case SDBasic::Character: ser.Serialise(""_lit, el->data.basic.c); break;
     case SDBasic::Resource: ser.Serialise(""_lit, el->data.basic.id); break;
+    case SDBasic::Enum:
+    case SDBasic::GPUAddress:
     case SDBasic::UnsignedInteger:
       if(el->type.byteSize == 1)
       {
@@ -955,6 +997,12 @@ rdcstr DoStringise(const byte &el)
 }
 
 template <>
+rdcstr DoStringise(const int8_t &el)
+{
+  return StringFormat::Fmt("%hhd", el);
+}
+
+template <>
 rdcstr DoStringise(const uint16_t &el)
 {
   return StringFormat::Fmt("%hu", el);
@@ -979,6 +1027,12 @@ rdcstr DoStringise(const float &el)
 }
 
 template <>
+rdcstr DoStringise(const rdhalf &el)
+{
+  return StringFormat::Fmt("%0.4f", (float)el);
+}
+
+template <>
 rdcstr DoStringise(const double &el)
 {
   return StringFormat::Fmt("%0.4lf", el);
@@ -994,32 +1048,40 @@ rdcstr DoStringise(const bool &el)
 }
 
 Chunk *Chunk::Create(Serialiser<SerialiserMode::Writing> &ser, uint16_t chunkType,
-                     ChunkAllocator *allocator)
+                     ChunkAllocator *allocator, bool stealDataFromWriter)
 {
   RDCCOMPILE_ASSERT(sizeof(Chunk) <= 16, "Chunk should be no more than 16 bytes");
 
-  RDCASSERT(ser.GetWriter()->GetOffset() < 0xffffffff);
-  uint32_t length = (uint32_t)ser.GetWriter()->GetOffset();
+  uint64_t length = ser.GetWriter()->GetOffset();
+  RDCASSERT(length < (1ULL << CHUNK_LENGTH_BITS));
 
   byte *data = NULL;
-  if(allocator)
+
+  if(stealDataFromWriter)
   {
-    // try to allocate from the allocator
-    data = allocator->AllocAlignedBuffer(length);
-
-    // if we couldn't satisfy the allocation then pretend we never had an allocator in the first
-    // place. We'll externally allocate the chunk and the data.
-    if(!data)
-      allocator = NULL;
+    data = ser.GetWriter()->StealDataAndRewind();
   }
+  else
+  {
+    if(allocator)
+    {
+      // try to allocate from the allocator
+      data = allocator->AllocAlignedBuffer(length);
 
-  // if we don't have an allocator or we gave up on it above, allocate the data externally
-  if(!allocator)
-    data = AllocAlignedBuffer(length);
+      // if we couldn't satisfy the allocation then pretend we never had an allocator in the first
+      // place. We'll externally allocate the chunk and the data.
+      if(!data)
+        allocator = NULL;
+    }
 
-  memcpy(data, ser.GetWriter()->GetData(), (size_t)length);
+    // if we don't have an allocator or we gave up on it above, allocate the data externally
+    if(!allocator)
+      data = AllocAlignedBuffer(length);
 
-  ser.GetWriter()->Rewind();
+    memcpy(data, ser.GetWriter()->GetData(), (size_t)length);
+
+    ser.GetWriter()->Rewind();
+  }
 
   Chunk *ret = NULL;
 
@@ -1135,7 +1197,10 @@ void ChunkPagePool::ResetPageSet(const rdcarray<ChunkPage> &pages)
       alloc.chunkHead = alloc.chunkBase;
       // move to free list
       freePages.push_back(alloc);
-      allocatedPages.erase(idx);
+      // allocatedPages is not sorted, swap with the back and pop to avoid expensive erases in the
+      // middle of the list
+      std::swap(allocatedPages[idx], allocatedPages.back());
+      allocatedPages.pop_back();
       continue;
     }
   }

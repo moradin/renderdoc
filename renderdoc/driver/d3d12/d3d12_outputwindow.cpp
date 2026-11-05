@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -71,17 +71,17 @@ void D3D12Replay::OutputWindow::MakeRTV(bool msaa)
                                     D3D12_RESOURCE_STATE_RENDER_TARGET, NULL,
                                     __uuidof(ID3D12Resource), (void **)&col);
 
-  col->SetName(L"Output Window RTV");
-
   if(FAILED(hr))
   {
     RDCERR("Failed to create colour texture for window, HRESULT: %s", ToStr(hr).c_str());
     return;
   }
 
+  col->SetName(L"Output Window RTV");
+
   colResolve = NULL;
 
-  if(msaa)
+  if(msaa && D3D12_MSAA_SAMPLECOUNT > 1)
   {
     texDesc.SampleDesc.Count = 1;
 
@@ -89,13 +89,13 @@ void D3D12Replay::OutputWindow::MakeRTV(bool msaa)
                                       D3D12_RESOURCE_STATE_COPY_SOURCE, NULL,
                                       __uuidof(ID3D12Resource), (void **)&colResolve);
 
-    colResolve->SetName(L"Output Window Resolve");
-
     if(FAILED(hr))
     {
       RDCERR("Failed to create resolve texture for window, HRESULT: %s", ToStr(hr).c_str());
       return;
     }
+
+    colResolve->SetName(L"Output Window Resolve");
   }
 
   dev->CreateRenderTargetView(col, NULL, rtv);
@@ -117,6 +117,9 @@ void D3D12Replay::OutputWindow::MakeDSV()
 {
   SAFE_RELEASE(depth);
 
+  if(!col)
+    return;
+
   D3D12_RESOURCE_DESC texDesc = col->GetDesc();
 
   texDesc.Alignment = 0;
@@ -134,13 +137,13 @@ void D3D12Replay::OutputWindow::MakeDSV()
                                             D3D12_RESOURCE_STATE_DEPTH_WRITE, NULL,
                                             __uuidof(ID3D12Resource), (void **)&depth);
 
-  depth->SetName(L"Output Window Depth");
-
   if(FAILED(hr))
   {
     RDCERR("Failed to create DSV texture for output window, HRESULT: %s", ToStr(hr).c_str());
     return;
   }
+
+  depth->SetName(L"Output Window Depth");
 
   dev->CreateDepthStencilView(depth, NULL, dsv);
 
@@ -208,11 +211,11 @@ uint64_t D3D12Replay::MakeOutputWindow(WindowingData window, bool depth)
     if(outw.swap)
     {
       hr = outw.swap->GetBuffer(0, __uuidof(ID3D12Resource), (void **)&outw.bb[0]);
-      m_pDevice->CheckHRESULT(hr);
+      CHECK_HR(m_pDevice, hr);
       if(FAILED(hr))
         return 0;
       hr = outw.swap->GetBuffer(1, __uuidof(ID3D12Resource), (void **)&outw.bb[1]);
-      m_pDevice->CheckHRESULT(hr);
+      CHECK_HR(m_pDevice, hr);
       if(FAILED(hr))
         return 0;
 
@@ -245,26 +248,28 @@ uint64_t D3D12Replay::MakeOutputWindow(WindowingData window, bool depth)
 
   outw.bbIdx = 0;
 
-  outw.rtv = GetDebugManager()->GetCPUHandle(FIRST_WIN_RTV);
-  outw.rtv.ptr += SIZE_T(m_OutputWindowID) * sizeof(D3D12Descriptor);
+  outw.rtvId = m_OutputWindowIDs.back();
+  m_OutputWindowIDs.pop_back();
 
-  outw.dsv = GetDebugManager()->GetCPUHandle(FIRST_WIN_DSV);
-  outw.dsv.ptr += SIZE_T(m_DSVID) * sizeof(D3D12Descriptor);
+  outw.rtv = GetDebugManager()->GetCPUHandle(RTVSlot(outw.rtvId));
 
   outw.col = NULL;
   outw.colResolve = NULL;
   outw.MakeRTV(depth);
 
+  outw.dsvId = 0;
   outw.depth = NULL;
   if(depth)
   {
+    outw.dsvId = m_DSVIDs.back();
+    m_DSVIDs.pop_back();
+    outw.dsv = GetDebugManager()->GetCPUHandle(DSVSlot(outw.dsvId));
+
     outw.MakeDSV();
-    m_DSVID++;
   }
 
-  uint64_t id = m_OutputWindowID++;
-  m_OutputWindows[id] = outw;
-  return id;
+  m_OutputWindows[outw.rtvId] = outw;
+  return outw.rtvId;
 }
 
 void D3D12Replay::DestroyOutputWindow(uint64_t id)
@@ -274,6 +279,10 @@ void D3D12Replay::DestroyOutputWindow(uint64_t id)
     return;
 
   OutputWindow &outw = it->second;
+
+  m_OutputWindowIDs.push_back(outw.rtvId);
+  if(outw.dsvId != 0)
+    m_DSVIDs.push_back(outw.dsvId);
 
   m_pDevice->FlushLists(true);
 
@@ -322,7 +331,7 @@ bool D3D12Replay::CheckResizeOutputWindow(uint64_t id)
 
         HRESULT hr = outw.swap->ResizeBuffers(desc.BufferCount, outw.width, outw.height,
                                               desc.BufferDesc.Format, desc.Flags);
-        m_pDevice->CheckHRESULT(hr);
+        CHECK_HR(m_pDevice, hr);
 
         if(FAILED(hr))
         {
@@ -331,11 +340,11 @@ bool D3D12Replay::CheckResizeOutputWindow(uint64_t id)
         }
 
         hr = outw.swap->GetBuffer(0, __uuidof(ID3D12Resource), (void **)&outw.bb[0]);
-        m_pDevice->CheckHRESULT(hr);
+        CHECK_HR(m_pDevice, hr);
         if(FAILED(hr))
           return true;
         hr = outw.swap->GetBuffer(1, __uuidof(ID3D12Resource), (void **)&outw.bb[1]);
-        m_pDevice->CheckHRESULT(hr);
+        CHECK_HR(m_pDevice, hr);
         if(FAILED(hr))
           return true;
       }
@@ -366,29 +375,6 @@ void D3D12Replay::GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h)
 
   w = m_OutputWindows[id].width;
   h = m_OutputWindows[id].height;
-}
-
-void D3D12Replay::SetOutputWindowDimensions(uint64_t id, int32_t w, int32_t h)
-{
-  if(id == 0 || m_OutputWindows.find(id) == m_OutputWindows.end())
-    return;
-
-  OutputWindow &outw = m_OutputWindows[id];
-
-  // can't resize an output with an actual window backing
-  if(outw.wnd)
-    return;
-
-  m_pDevice->ExecuteLists();
-  m_pDevice->FlushLists(true);
-
-  outw.width = w;
-  outw.height = h;
-
-  outw.MakeRTV(false);
-  outw.MakeDSV();
-
-  outw.bbIdx = 0;
 }
 
 void D3D12Replay::GetOutputWindowData(uint64_t id, bytebuf &retData)
@@ -431,7 +417,7 @@ void D3D12Replay::GetOutputWindowData(uint64_t id, bytebuf &retData)
   HRESULT hr = m_pDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
                                                   D3D12_RESOURCE_STATE_COPY_DEST, NULL,
                                                   __uuidof(ID3D12Resource), (void **)&readback);
-  m_pDevice->CheckHRESULT(hr);
+  CHECK_HR(m_pDevice, hr);
 
   if(SUCCEEDED(hr))
   {
@@ -488,6 +474,7 @@ void D3D12Replay::GetOutputWindowData(uint64_t id, bytebuf &retData)
 
     // transition back
     std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
     list->ResourceBarrier(1, &barrier);
 
     list->Close();
@@ -497,7 +484,7 @@ void D3D12Replay::GetOutputWindowData(uint64_t id, bytebuf &retData)
 
     byte *data = NULL;
     hr = readback->Map(0, NULL, (void **)&data);
-    m_pDevice->CheckHRESULT(hr);
+    CHECK_HR(m_pDevice, hr);
 
     if(SUCCEEDED(hr) && data)
     {
@@ -706,7 +693,7 @@ void D3D12Replay::FlipOutputWindow(uint64_t id)
   if(outw.swap)
   {
     HRESULT hr = outw.swap->Present(0, 0);
-    m_pDevice->CheckHRESULT(hr);
+    CHECK_HR(m_pDevice, hr);
   }
 
   outw.bbIdx++;

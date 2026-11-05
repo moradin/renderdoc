@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -294,7 +294,8 @@ float4 main(v2f IN) : SV_Target0
                                     .Mips(1)
                                     .InitialState(D3D12_RESOURCE_STATE_COPY_DEST);
         Vec4i cbdata[2] = {
-            Vec4i(rgba8.width, rgba8.height, horizDownsampleFactor, vertDownsampleFactor), config,
+            Vec4i(rgba8.width, rgba8.height, horizDownsampleFactor, vertDownsampleFactor),
+            config,
         };
         ID3D12ResourcePtr cb = MakeBuffer().Data(cbdata);
 

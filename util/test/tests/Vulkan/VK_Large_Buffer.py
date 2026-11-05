@@ -8,9 +8,11 @@ class VK_Large_Buffer(rdtest.TestCase):
     def check_capture(self):
         action = self.find_action("Draw")
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        assert action is not None
 
-        vsin_ref = {
+        self.set_event(action.eventId, False)
+
+        vsin_ref: rdtest.MeshReference = {
             0: {
                 'vtx': 0,
                 'idx': 0,
@@ -38,11 +40,11 @@ class VK_Large_Buffer(rdtest.TestCase):
 
         postvs_data = self.get_postvs(action, rd.MeshDataStage.VSOut, 0, action.numIndices)
 
-        postvs_ref = {
+        postvs_ref: rdtest.MeshReference = {
             0: {
                 'vtx': 0,
                 'idx': 0,
-                'gl_PerVertex_var.gl_Position': [-0.5, 0.5, 0.0, 1.0],
+                'gl_Position': [-0.5, 0.5, 0.0, 1.0],
                 'vertOut.pos': [-0.5, 0.5, 0.0, 1.0],
                 'vertOut.col': [0.0, 1.0, 0.0, 1.0],
                 'vertOut.uv': [0.0, 0.0, 0.0, 1.0],
@@ -50,7 +52,7 @@ class VK_Large_Buffer(rdtest.TestCase):
             1: {
                 'vtx': 1,
                 'idx': 1000000,
-                'gl_PerVertex_var.gl_Position': [0.0, -0.5, 0.0, 1.0],
+                'gl_Position': [0.0, -0.5, 0.0, 1.0],
                 'vertOut.pos': [0.0, -0.5, 0.0, 1.0],
                 'vertOut.col': [0.0, 1.0, 0.0, 1.0],
                 'vertOut.uv': [0.0, 1.0, 0.0, 1.0],
@@ -58,7 +60,7 @@ class VK_Large_Buffer(rdtest.TestCase):
             2: {
                 'vtx': 2,
                 'idx': 2345678,
-                'gl_PerVertex_var.gl_Position': [0.5, 0.5, 0.0, 1.0],
+                'gl_Position': [0.5, 0.5, 0.0, 1.0],
                 'vertOut.pos': [0.5, 0.5, 0.0, 1.0],
                 'vertOut.col': [0.0, 1.0, 0.0, 1.0],
                 'vertOut.uv': [1.0, 0.0, 0.0, 1.0],

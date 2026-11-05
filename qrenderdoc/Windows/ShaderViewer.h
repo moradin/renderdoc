@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,6 +26,8 @@
 
 #include <QFrame>
 #include <QSemaphore>
+#include <QSet>
+#include <QStyledItemDelegate>
 #include "Code/Interface/QRDInterface.h"
 
 namespace Ui
@@ -42,6 +44,7 @@ class QTableWidgetItem;
 class QKeyEvent;
 class QMouseEvent;
 class QComboBox;
+class QTextEdit;
 
 // from Scintilla
 typedef intptr_t sptr_t;
@@ -69,6 +72,49 @@ struct AccessedResourceData
   rdcarray<size_t> steps;
 };
 
+enum class WatchVarState : int
+{
+  Invalid = 0,
+  Valid = 1,
+  Stale = 2,
+};
+
+struct VariableTag
+{
+  VariableTag() = default;
+  VariableTag(DebugVariableType type, rdcstr name)
+  {
+    debugVarType = type;
+    absoluteRefPath = name;
+  }
+  uint32_t offset = 0;
+
+  WatchVarState state = WatchVarState::Invalid;
+
+  bool matrix = false;
+  bool expanded = false;
+  bool modified = false;
+  int updateID = 0;
+  bool globalSourceVar = false;
+  int32_t sourceVarIdx = -1;
+
+  DebugVariableType debugVarType = DebugVariableType::Undefined;
+  rdcstr absoluteRefPath;
+};
+
+struct ResourceReference
+{
+  ResourceReference() {}
+  ResourceReference(ShaderBindIndex bp) : bind(bp), directAccess(false) {}
+  ResourceReference(ShaderDirectAccess acc) : access(acc), directAccess(true) {}
+  union
+  {
+    ShaderBindIndex bind;
+    ShaderDirectAccess access;
+  };
+  bool directAccess;
+};
+
 class ShaderViewer : public QFrame, public IShaderViewer, public ICaptureViewer
 {
   Q_OBJECT
@@ -78,39 +124,38 @@ public:
 
   static ShaderViewer *LoadEditor(ICaptureContext &ctx, QVariantMap data,
                                   IShaderViewer::SaveCallback saveCallback,
-                                  IShaderViewer::CloseCallback closeCallback,
+                                  IShaderViewer::RevertCallback revertCallback,
                                   ModifyCallback modifyCallback, QWidget *parent);
   QVariantMap SaveEditor();
 
   static ShaderViewer *EditShader(ICaptureContext &ctx, ResourceId id, ShaderStage stage,
                                   const QString &entryPoint, const rdcstrpairs &files,
-                                  ShaderEncoding shaderEncoding, ShaderCompileFlags flags,
-                                  IShaderViewer::SaveCallback saveCallback,
-                                  IShaderViewer::CloseCallback closeCallback,
+                                  KnownShaderTool knownTool, ShaderEncoding shaderEncoding,
+                                  ShaderCompileFlags flags, IShaderViewer::SaveCallback saveCallback,
+                                  IShaderViewer::RevertCallback revertCallback,
                                   ModifyCallback modifyCallback, QWidget *parent)
   {
     ShaderViewer *ret = new ShaderViewer(ctx, parent);
     ret->m_SaveCallback = saveCallback;
-    ret->m_CloseCallback = closeCallback;
+    ret->m_RevertCallback = revertCallback;
     ret->m_ModifyCallback = modifyCallback;
-    ret->editShader(id, stage, entryPoint, files, shaderEncoding, flags);
+    ret->editShader(id, stage, entryPoint, files, knownTool, shaderEncoding, flags);
     return ret;
   }
 
-  static IShaderViewer *DebugShader(ICaptureContext &ctx, const ShaderBindpointMapping *bind,
-                                    const ShaderReflection *shader, ResourceId pipeline,
-                                    ShaderDebugTrace *trace, const QString &debugContext,
-                                    QWidget *parent)
+  static IShaderViewer *DebugShader(ICaptureContext &ctx, const ShaderReflection *shader,
+                                    ResourceId pipeline, ShaderDebugTrace *trace,
+                                    const QString &debugContext, QWidget *parent)
   {
     ShaderViewer *ret = new ShaderViewer(ctx, parent);
-    ret->debugShader(bind, shader, pipeline, trace, debugContext);
+    ret->debugShader(shader, pipeline, trace, debugContext);
     return ret;
   }
 
   static IShaderViewer *ViewShader(ICaptureContext &ctx, const ShaderReflection *shader,
                                    ResourceId pipeline, QWidget *parent)
   {
-    return DebugShader(ctx, NULL, shader, pipeline, NULL, QString(), parent);
+    return DebugShader(ctx, shader, pipeline, NULL, QString(), parent);
   }
 
   ~ShaderViewer();
@@ -140,35 +185,27 @@ private slots:
   // automatic slots
   void on_findReplace_clicked();
   void on_refresh_clicked();
+  void on_unrefresh_clicked();
+  void on_resetEdits_clicked();
   void on_intView_clicked();
   void on_floatView_clicked();
   void on_debugToggle_clicked();
+  void on_toggleLog_clicked();
 
   void on_resources_sortByStep_clicked();
   void on_resources_sortByResource_clicked();
 
-  void on_watch_itemChanged(QTableWidgetItem *item);
+  void on_watch_itemChanged(RDTreeWidgetItem *item, int column);
 
   // manual slots
-  void readonly_keyPressed(QKeyEvent *event);
-  void editable_keyPressed(QKeyEvent *event);
   void debug_contextMenu(const QPoint &pos);
   void variables_contextMenu(const QPoint &pos);
   void accessedResources_contextMenu(const QPoint &pos);
   void disassembly_buttonReleased(QMouseEvent *event);
   void disassemble_typeChanged(int index);
   void watch_keyPress(QKeyEvent *event);
-  void performFind();
-  void performFindAll();
-  void resultsDoubleClick(int position, int line);
-  void performReplace();
-  void performReplaceAll();
 
-  void snippet_textureDimensions();
-  void snippet_selectedMip();
-  void snippet_selectedSlice();
-  void snippet_selectedSample();
-  void snippet_selectedType();
+  void snippet_constants();
   void snippet_samplers();
   void snippet_resources();
 
@@ -178,9 +215,10 @@ private slots:
 private:
   explicit ShaderViewer(ICaptureContext &ctx, QWidget *parent = 0);
   void editShader(ResourceId id, ShaderStage stage, const QString &entryPoint,
-                  const rdcstrpairs &files, ShaderEncoding shaderEncoding, ShaderCompileFlags flags);
-  void debugShader(const ShaderBindpointMapping *bind, const ShaderReflection *shader,
-                   ResourceId pipeline, ShaderDebugTrace *trace, const QString &debugContext);
+                  const rdcstrpairs &files, KnownShaderTool knownTool,
+                  ShaderEncoding shaderEncoding, ShaderCompileFlags flags);
+  void debugShader(const ShaderReflection *shader, ResourceId pipeline, ShaderDebugTrace *trace,
+                   const QString &debugContext);
 
   bool eventFilter(QObject *watched, QEvent *event) override;
 
@@ -188,9 +226,14 @@ private:
 
   void MarkModification();
 
+  void ConfigureBookmarkMenu();
+  void UpdateBookmarkMenu(QMenu *menu, QAction *nextAction, QAction *prevAction,
+                          QAction *clearAction);
+
   void PopulateCompileTools();
   void PopulateCompileToolParameters();
-  bool ProcessIncludeDirectives(QString &source, const rdcstrpairs &files);
+  bool ProcessIncludeDirectives(QString &source, const rdcstrpairs &files,
+                                rdcarray<rdcstr> &allIncluded, const rdcarray<rdcstr> &exclude = {});
 
   void updateWindowTitle();
   void gotoSourceDebugging();
@@ -208,14 +251,21 @@ private:
 
   ShaderEncoding currentEncoding();
 
-  QString m_TooltipName;
+  void ToggleBookmark();
+  void NextBookmark();
+  void PreviousBookmark();
+  void ClearAllBookmarks();
+  bool HasBookmarks();
+
+  void SetFindTextFromCurrentWord();
+
+  QString m_TooltipVarPath;
   int m_TooltipVarIndex = -1;
   int m_TooltipMember = -1;
   QPoint m_TooltipPos;
 
   Ui::ShaderViewer *ui;
   ICaptureContext &m_Ctx;
-  ShaderBindpointMapping m_Mapping;
   const ShaderReflection *m_ShaderDetails = NULL;
   bool m_CustomShader = false;
   ResourceId m_EditingShader;
@@ -233,70 +283,71 @@ private:
   ScintillaEdit *m_FindResults = NULL;
   QList<ScintillaEdit *> m_Scintillas;
 
-  // a map per file, from line number to instruction indices
-  QVector<QMap<int32_t, QVector<size_t>>> m_Line2Insts;
+  // a map, from a source location to a list of instruction blocks with that location.
+  // not every instruction with the instruction will be mapped to, only the first in each contiguous
+  // run
+  QMap<LineColumnInfo, rdcarray<uint32_t>> m_Location2Inst;
 
-  // a vector for the disassembly
+  // a vector for the disassembly with the instruction index for each disassembly line
   QVector<int32_t> m_AsmLine2Inst;
 
   ScintillaEdit *m_CurInstructionScintilla = NULL;
   QList<ScintillaEdit *> m_FileScintillas;
 
-  FindReplace *m_FindReplace;
-
-  struct FindState
-  {
-    // hash identifies when the search has changed
-    QString hash;
-
-    // the range identified when the search first occurred (for incremental find/replace)
-    sptr_t start = 0;
-    sptr_t end = 0;
-
-    // the current offset where to search from next time, relative to above range
-    sptr_t offset = 0;
-
-    // the last result
-    QPair<int, int> prevResult;
-  } m_FindState;
+  FindReplace *m_FindReplace = NULL;
 
   SaveCallback m_SaveCallback;
-  CloseCallback m_CloseCallback;
+  RevertCallback m_RevertCallback;
   ModifyCallback m_ModifyCallback;
 
   bool m_Modified = true;
+  bool m_Saved = false;
 
   ShaderDebugTrace *m_Trace = NULL;
+  size_t m_FirstSourceStateIdx = ~0U;
   rdcarray<ShaderDebugState> m_States;
   size_t m_CurrentStateIdx = 0;
-  rdcarray<ShaderVariable> m_Variables;
+  QList<ShaderVariable> m_Variables;
+  uint32_t m_UpdateID = 1;
+  QMap<QString, uint32_t> m_VariableLastUpdate;
+  QList<rdcstr> m_VariablesChanged;
 
   // true when debugging while we're populating the initial trace. Lets us queue up commands and
   // process them once we've initialised properly
   bool m_DeferredInit = false;
   rdcarray<std::function<void(ShaderViewer *)>> m_DeferredCommands;
 
+  bool m_ContextActive = false;
+
   QSemaphore m_BackgroundRunning;
 
   rdcarray<AccessedResourceData> m_AccessedResources;
   AccessedResourceView m_AccessedResourceView = AccessedResourceView::SortByResource;
 
-  rdcarray<BoundResourceArray> m_ReadOnlyResources;
-  rdcarray<BoundResourceArray> m_ReadWriteResources;
-  QList<int> m_Breakpoints;
+  rdcarray<UsedDescriptor> m_ReadOnlyResources;
+  rdcarray<UsedDescriptor> m_ReadWriteResources;
+  rdcarray<UsedDescriptor> m_Samplers;
+  rdcarray<UsedDescriptor> m_Constants;
+  QSet<QPair<int, uint32_t>> m_Breakpoints;
+  bool m_TempBreakpoint = false;
 
-  QList<QPair<ScintillaEdit *, int>> m_FindAllResults;
+  std::map<ShaderDirectAccess, rdcstr> m_LogicalBindNames;
+
+  static const int BOOKMARK_MAX_MENU_ENTRY_LENGTH = 40;    // max length of bookmark names in menu
+  static const int BOOKMARK_MAX_MENU_ENTRY_COUNT = 30;     // max number of bookmarks listed in menu
+  QMap<ScintillaEdit *, QList<sptr_t>> m_Bookmarks;
+
+  QTextEdit *debugInfoLog = NULL;
 
   static const int CURRENT_MARKER = 0;
   static const int BREAKPOINT_MARKER = 2;
   static const int FINISHED_MARKER = 4;
+  static const int BOOKMARK_MARKER = 6;
 
   static const int CURRENT_INDICATOR = 20;
   static const int FINISHED_INDICATOR = 21;
 
-  static const int INDICATOR_FINDRESULT = 0;
   static const int INDICATOR_REGHIGHLIGHT = 1;
-  static const int INDICATOR_FINDALLHIGHLIGHT = 2;
 
   QString targetName(const ShaderProcessingTool &disasm);
 
@@ -321,24 +372,34 @@ private:
   const ShaderDebugState &GetCurrentState() const;
   const ShaderDebugState &GetNextState() const;
 
+  const InstructionSourceInfo &GetPreviousInstInfo() const;
+  const InstructionSourceInfo &GetCurrentInstInfo() const;
+  const InstructionSourceInfo &GetNextInstInfo() const;
+  const InstructionSourceInfo &GetInstInfo(uint32_t instruction) const;
+  const LineColumnInfo &GetCurrentLineInfo() const;
+
   void updateDebugState();
+  void markWatchStale(RDTreeWidgetItem *item);
+  bool updateWatchVariable(RDTreeWidgetItem *watchItem, const RDTreeWidgetItem *varItem,
+                           const rdcstr &path, uint32_t swizzle, const SourceVariableMapping &mapping,
+                           const ShaderVariable &var, QChar regcast);
   void updateWatchVariables();
+
   void updateAccessedResources();
 
-  RDTreeWidgetItem *makeSourceVariableNode(const ShaderVariable &var, const rdcstr &sourcePath,
-                                           const rdcstr &debugVarPath, bool modified);
+  RDTreeWidgetItem *makeSourceVariableNode(const ShaderVariable &var, const rdcstr &debugVarPath,
+                                           VariableTag baseTag);
   RDTreeWidgetItem *makeSourceVariableNode(const SourceVariableMapping &l, int globalVarIdx,
-                                           int localVarIdx, bool modified);
-  RDTreeWidgetItem *makeDebugVariableNode(const ShaderVariable &v, rdcstr prefix, bool modified);
-  RDTreeWidgetItem *makeAccessedResourceNode(const ShaderVariable &v, bool modified);
+                                           int localVarIdx);
+  RDTreeWidgetItem *makeDebugVariableNode(const ShaderVariable &v, rdcstr prefix);
+  RDTreeWidgetItem *makeAccessedResourceNode(const ShaderVariable &v);
+
+  bool HasChanged(rdcstr debugVarName) const;
+  uint32_t CalcUpdateID(uint32_t prevID, rdcstr debugVarName) const;
 
   const ShaderVariable *GetDebugVariable(const DebugVariableReference &r);
 
-  void ensureLineScrolled(ScintillaEdit *s, int i);
-
-  void find(bool down);
-
-  void setEditorWindowTitle();
+  void updateEditState();
 
   enum StepMode
   {
@@ -350,20 +411,27 @@ private:
   bool step(bool forward, StepMode mode);
 
   void runToCursor(bool forward);
-  void runTo(QVector<size_t> runToInstructions, bool forward,
-             ShaderEvents condition = ShaderEvents::NoEvent);
+  void runTo(const rdcarray<uint32_t> &runToInstructions, bool forward, ShaderEvents condition);
+  void runTo(uint32_t runToInstruction, bool forward, ShaderEvents condition = ShaderEvents::NoEvent);
 
-  void runToResourceAccess(bool forward, VarType type, const BindpointIndex &resource);
+  void runToResourceAccess(bool forward, VarType type, const ResourceReference &resRef);
 
   void applyBackwardsChange();
   void applyForwardsChange();
 
   QString stringRep(const ShaderVariable &var, uint32_t row = 0);
-  QString samplerRep(Bindpoint bind, uint32_t arrayIndex, ResourceId id);
+  QString samplerRep(const ShaderSampler &samp, uint32_t arrayElement, ResourceId id);
   void combineStructures(RDTreeWidgetItem *root, int skipPrefixLength = 0);
-  RDTreeWidgetItem *findVarInTree(RDTreeWidgetItem *root, QString name, bool fullmatch, int maxDepth);
   void highlightMatchingVars(RDTreeWidgetItem *root, const QString varName,
                              const QColor highlightColor);
-  bool findVar(QString name, ShaderVariable *var = NULL);
-  bool getVar(RDTreeWidgetItem *item, ShaderVariable *var, QString *regNames);
+
+  QString getRegNames(const RDTreeWidgetItem *item, uint32_t swizzle, uint32_t child = ~0U);
+  const RDTreeWidgetItem *evaluateVar(const RDTreeWidgetItem *item, uint32_t swizzle,
+                                      ShaderVariable *var, SourceVariableMapping *mapping);
+  const RDTreeWidgetItem *getVarFromPath(const rdcstr &path, const RDTreeWidgetItem *root,
+                                         ShaderVariable *var, uint32_t *swizzle,
+                                         SourceVariableMapping *mapping);
+  const RDTreeWidgetItem *getVarFromPath(const rdcstr &path, ShaderVariable *var = NULL,
+                                         uint32_t *swizzle = NULL,
+                                         SourceVariableMapping *mapping = NULL);
 };

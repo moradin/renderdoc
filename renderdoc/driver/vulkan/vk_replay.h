@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -30,6 +30,11 @@
 #include "vk_common.h"
 #include "vk_info.h"
 #include "vk_state.h"
+
+namespace rdcspv
+{
+enum class BufferStorageMode : uint32_t;
+};
 
 #if ENABLED(RDOC_WIN32)
 
@@ -119,11 +124,6 @@
 
 #define WINDOW_HANDLE_INIT RDCEraseEl(cocoa);
 
-#elif ENABLED(RDOC_GGP)
-
-#define WINDOW_HANDLE_DECL void *wnd;
-#define WINDOW_HANDLE_INIT wnd = NULL;
-
 #else
 
 #error "Unknown platform"
@@ -152,19 +152,37 @@ class VulkanResourceManager;
 struct VulkanStatePipeline;
 struct VulkanAMDActionCallback;
 
+class NVVulkanCounters;
+
+enum class SubgroupCapability : uint32_t;
+struct SpecData;
+
 struct VulkanPostVSData
 {
   struct InstData
   {
-    uint32_t numVerts = 0;
-    uint32_t bufOffset = 0;
+    union
+    {
+      uint32_t bufOffset;
+      uint32_t numIndices;
+      uint32_t taskDispatchSizeX;
+    };
+    union
+    {
+      uint32_t numVerts;
+      struct
+      {
+        uint16_t y;
+        uint16_t z;
+      } taskDispatchSizeYZ;
+    };
   };
 
   struct StageData
   {
     VkBuffer buf;
     VkDeviceMemory bufmem;
-    VkPrimitiveTopology topo;
+    Topology topo;
 
     int32_t baseVertex;
 
@@ -172,28 +190,38 @@ struct VulkanPostVSData
     uint32_t vertStride;
     uint32_t instStride;
 
-    // complex case - expansion per instance
+    // complex case - expansion per instance,
+    // also used for meshlet offsets and sizes
     rdcarray<InstData> instData;
+
+    uint32_t primStride = 0;
+    uint64_t primOffset = 0;
 
     uint32_t numViews;
 
     bool useIndices;
     VkBuffer idxbuf;
+    uint64_t idxOffset = 0;
     VkDeviceMemory idxbufmem;
     VkIndexType idxFmt;
+
+    rdcfixedarray<uint32_t, 3> dispatchSize;
 
     bool hasPosOut;
     bool flipY;
 
     float nearPlane;
     float farPlane;
-  } vsin, vsout, gsout;
+
+    rdcstr status;
+  } vsout, gsout, taskout, meshout;
 
   VulkanPostVSData()
   {
-    RDCEraseEl(vsin);
     RDCEraseEl(vsout);
     RDCEraseEl(gsout);
+    RDCEraseEl(taskout);
+    RDCEraseEl(meshout);
   }
 
   const StageData &GetStage(MeshDataStage type)
@@ -202,17 +230,35 @@ struct VulkanPostVSData
       return vsout;
     else if(type == MeshDataStage::GSOut)
       return gsout;
-    else
-      RDCERR("Unexpected mesh data stage!");
+    else if(type == MeshDataStage::TaskOut)
+      return taskout;
+    else if(type == MeshDataStage::MeshOut)
+      return meshout;
 
-    return vsin;
+    if(type == MeshDataStage::Count)
+    {
+      if(gsout.buf != VK_NULL_HANDLE)
+        return gsout;
+
+      if(vsout.buf != VK_NULL_HANDLE)
+        return vsout;
+
+      if(meshout.buf != VK_NULL_HANDLE)
+        return meshout;
+
+      return vsout;
+    }
+
+    RDCERR("Unexpected mesh data stage!");
+
+    return vsout;
   }
 };
 
 struct VKDynamicShaderFeedback
 {
   bool compute = false, valid = false;
-  rdcarray<BindpointIndex> used;
+  rdcarray<DescriptorAccess> access;
   rdcarray<ShaderMessage> messages;
 };
 
@@ -226,29 +272,46 @@ enum TexDisplayFlags
   eTexDisplay_RemapFloat = 0x20,
   eTexDisplay_RemapUInt = 0x40,
   eTexDisplay_RemapSInt = 0x80,
+  eTexDisplay_RemapSRGB = 0x100,
 };
 
 struct ShaderDebugData
 {
+  enum
+  {
+    MAX_QUEUED_OPS = 128
+  };
+
+  // the sampling shader writes its result in the texture's native type, so we need one attachment
+  // format (and matching view/renderpass/framebuffer) per base type. They all alias the same image.
+  enum
+  {
+    SampleFormat_Float = 0,
+    SampleFormat_UInt,
+    SampleFormat_SInt,
+    SampleFormat_Count
+  };
+
   void Init(WrappedVulkan *driver, VkDescriptorPool descriptorPool);
   void Destroy(WrappedVulkan *driver);
 
+  VkDescriptorPool DescPool = VK_NULL_HANDLE;
   VkDescriptorSetLayout DescSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout PipeLayout = VK_NULL_HANDLE;
-  VkDescriptorSet DescSet = VK_NULL_HANDLE;
+  VkDescriptorSet DescSets[MAX_QUEUED_OPS];
 
   VkPipeline MathPipe[3] = {};
 
   VkImage Image = VK_NULL_HANDLE;
-  VkImageView ImageView = VK_NULL_HANDLE;
   VkDeviceMemory ImageMemory = VK_NULL_HANDLE;
-  VkFramebuffer Framebuffer = VK_NULL_HANDLE;
-  VkRenderPass RenderPass = VK_NULL_HANDLE;
+  VkImageView ImageView[SampleFormat_Count] = {};
+  VkFramebuffer Framebuffer[SampleFormat_Count] = {};
+  VkRenderPass RenderPass[SampleFormat_Count] = {};
 
-  VkDescriptorImageInfo DummyImageInfos[3][6] = {};
-  VkWriteDescriptorSet DummyWrites[3][7] = {};
+  VkDescriptorImageInfo DummyImageInfos[4][6] = {};
+  VkWriteDescriptorSet DummyWrites[4][7] = {};
 
-  VkShaderModule Module[6] = {};
+  VkShaderModule Module[7] = {};
 
   std::map<uint32_t, VkPipeline> m_Pipelines;
 
@@ -267,7 +330,7 @@ public:
   bool IsRemoteProxy() { return m_Proxy; }
   void Shutdown();
 
-  ReplayStatus FatalErrorCheck();
+  RDResult FatalErrorCheck();
   IReplayDriver *MakeDummyDriver();
 
   void CreateResources();
@@ -280,6 +343,9 @@ public:
   ResourceDescription &GetResourceDesc(ResourceId id);
   rdcarray<ResourceDescription> GetResources();
 
+  rdcarray<DescriptorStoreDescription> GetDescriptorStores();
+  void RegisterDescriptorStore(const DescriptorStoreDescription &desc);
+
   rdcarray<BufferDescription> GetBuffers();
   BufferDescription GetBuffer(ResourceId id);
 
@@ -287,7 +353,7 @@ public:
   TextureDescription GetTexture(ResourceId id);
 
   rdcarray<ShaderEntryPoint> GetShaderEntryPoints(ResourceId shader);
-  ShaderReflection *GetShader(ResourceId pipeline, ResourceId shader, ShaderEntryPoint entry);
+  const ShaderReflection *GetShader(ResourceId pipeline, ResourceId shader, ShaderEntryPoint entry);
 
   rdcarray<rdcstr> GetDisassemblyTargets(bool withPipeline);
   rdcstr DisassembleShader(ResourceId pipeline, const ShaderReflection *refl, const rdcstr &target);
@@ -300,14 +366,21 @@ public:
   rdcarray<DebugMessage> GetDebugMessages();
 
   void SetPipelineStates(D3D11Pipe::State *d3d11, D3D12Pipe::State *d3d12, GLPipe::State *gl,
-                         VKPipe::State *vk)
+                         VKPipe::State *vk, D3D9Pipe::State *d3d9)
   {
     m_VulkanPipelineState = vk;
   }
   void SavePipelineState(uint32_t eventId);
+  rdcarray<Descriptor> GetDescriptors(ResourceId descriptorStore,
+                                      const rdcarray<DescriptorRange> &ranges);
+  rdcarray<SamplerDescriptor> GetSamplerDescriptors(ResourceId descriptorStore,
+                                                    const rdcarray<DescriptorRange> &ranges);
+  rdcarray<DescriptorAccess> GetDescriptorAccess(uint32_t eventId);
+  rdcarray<DescriptorLogicalLocation> GetDescriptorLocations(ResourceId descriptorStore,
+                                                             const rdcarray<DescriptorRange> &ranges);
   void FreeTargetResource(ResourceId id);
 
-  ReplayStatus ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers);
+  RDResult ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers);
   void ReplayLog(uint32_t endEventID, ReplayLogType replayType);
   SDFile *GetStructuredFile();
 
@@ -320,15 +393,12 @@ public:
   void DestroyOutputWindow(uint64_t id);
   bool CheckResizeOutputWindow(uint64_t id);
   void GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h);
-  void SetOutputWindowDimensions(uint64_t id, int32_t w, int32_t h);
   void GetOutputWindowData(uint64_t id, bytebuf &retData);
   void ClearOutputWindowColor(uint64_t id, FloatVector col);
   void ClearOutputWindowDepth(uint64_t id, float depth, uint8_t stencil);
   void BindOutputWindow(uint64_t id, bool depth);
   bool IsOutputWindowVisible(uint64_t id);
   void FlipOutputWindow(uint64_t id);
-
-  ResourceId GetLiveID(ResourceId id);
 
   rdcarray<GPUCounter> EnumerateCounters();
   CounterDescription DescribeCounter(GPUCounter counterID);
@@ -362,6 +432,8 @@ public:
 
   void ReplaceResource(ResourceId from, ResourceId to);
   void RemoveReplacement(ResourceId id);
+  void ClearReplayCache();
+  void ReloadShaderDebugInformation();
 
   void RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondaryDraws,
                   const MeshDisplay &cfg);
@@ -370,6 +442,7 @@ public:
   {
     return {ShaderEncoding::SPIRV, ShaderEncoding::GLSL};
   }
+  rdcarray<ShaderSourcePrefix> GetCustomShaderSourcePrefixes();
   rdcarray<ShaderEncoding> GetTargetShaderEncodings()
   {
     return {ShaderEncoding::SPIRV, ShaderEncoding::GLSL};
@@ -389,18 +462,20 @@ public:
 
   void RenderHighlightBox(float w, float h, float scale);
 
-  void FillCBufferVariables(ResourceId pipeline, ResourceId shader, rdcstr entryPoint,
-                            uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
+  void FillCBufferVariables(ResourceId pipeline, ResourceId shader, ShaderStage stage,
+                            rdcstr entryPoint, uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
                             const bytebuf &data);
 
   rdcarray<PixelModification> PixelHistory(rdcarray<EventUsage> events, ResourceId target, uint32_t x,
                                            uint32_t y, const Subresource &sub, CompType typeCast);
   ShaderDebugTrace *DebugVertex(uint32_t eventId, uint32_t vertid, uint32_t instid, uint32_t idx,
                                 uint32_t view);
-  ShaderDebugTrace *DebugPixel(uint32_t eventId, uint32_t x, uint32_t y, uint32_t sample,
-                               uint32_t primitive);
+  ShaderDebugTrace *DebugPixel(uint32_t eventId, uint32_t x, uint32_t y,
+                               const DebugPixelInputs &inputs);
   ShaderDebugTrace *DebugThread(uint32_t eventId, const rdcfixedarray<uint32_t, 3> &groupid,
                                 const rdcfixedarray<uint32_t, 3> &threadid);
+  ShaderDebugTrace *DebugMeshThread(uint32_t eventId, const rdcfixedarray<uint32_t, 3> &groupid,
+                                    const rdcfixedarray<uint32_t, 3> &threadid);
   rdcarray<ShaderDebugState> ContinueDebug(ShaderDebugger *debugger);
   void FreeDebugger(ShaderDebugger *debugger);
 
@@ -409,8 +484,7 @@ public:
 
   ResourceId RenderOverlay(ResourceId texid, FloatVector clearCol, DebugOverlay overlay,
                            uint32_t eventId, const rdcarray<uint32_t> &passEvents);
-  ResourceId ApplyCustomShader(ResourceId shader, ResourceId texid, const Subresource &sub,
-                               CompType typeCast);
+  ResourceId ApplyCustomShader(TextureDisplay &display);
 
   ResourceId CreateProxyTexture(const TextureDescription &templateTex);
   void SetProxyTextureData(ResourceId texid, const Subresource &sub, byte *data, size_t dataSize);
@@ -424,10 +498,6 @@ public:
   bool IsRenderOutput(ResourceId id) { return GetRenderOutputSubresource(id).mip != ~0U; }
   void FileChanged();
 
-  void InitCallstackResolver();
-  bool HasCallstacks();
-  Callstack::StackResolver *GetCallstackResolver();
-
   // used for vulkan layer bookkeeping. Ideally this should all be handled by installers/packages,
   // but for developers running builds locally or just in case, we need to be able to update the
   // layer registration ourselves.
@@ -436,28 +506,29 @@ public:
                                rdcarray<rdcstr> &otherJSONs);
   static void InstallVulkanLayer(bool systemLevel);
   void GetInitialDriverVersion();
-  void SetDriverInformation(const VkPhysicalDeviceProperties &props);
+  void SetDriverInformation(const VkPhysicalDeviceProperties &props,
+                            const VkPhysicalDeviceDriverProperties &driverProps);
 
   AMDCounters *GetAMDCounters() { return m_pAMDCounters; }
   void CopyPixelForPixelHistory(VkCommandBuffer cmd, VkOffset2D offset, uint32_t sample,
                                 uint32_t bufferOffset, VkFormat format, VkDescriptorSet descSet);
 
+  bool Depth3DSupported() { return m_TexRender.DummyImages[3][2] != VK_NULL_HANDLE; }
+  bool DepthCubeSupported() { return m_TexRender.DepthCubesSupported; }
 private:
-  void FetchShaderFeedback(uint32_t eventId);
+  bool FetchShaderFeedback(uint32_t eventId);
   void ClearFeedbackCache();
 
-  void PatchReservedDescriptors(const VulkanStatePipeline &pipe, VkDescriptorPool &descpool,
-                                rdcarray<VkDescriptorSetLayout> &setLayouts,
-                                rdcarray<VkDescriptorSet> &descSets,
-                                VkShaderStageFlagBits patchedBindingStage,
-                                const VkDescriptorSetLayoutBinding *newBindings,
-                                size_t newBindingsCount);
+  void FillDescriptor(Descriptor &dstel, const DescriptorSetSlot &srcel);
+  void FillSamplerDescriptor(SamplerDescriptor &dstel, const DescriptorSetSlot &srcel);
 
   void FetchVSOut(uint32_t eventId, VulkanRenderState &state);
   void FetchTessGSOut(uint32_t eventId, VulkanRenderState &state);
+  void FetchMeshOut(uint32_t eventId, VulkanRenderState &state);
   void ClearPostVSCache();
 
   void RefreshDerivedReplacements();
+  void ModifyReplacementIfShaderEXT(ResourceId from, ResourceId &to);
 
   bool RenderTextureInternal(TextureDisplay cfg, const ImageState &imageState,
                              VkRenderPassBeginInfo rpbegin, int flags);
@@ -465,7 +536,45 @@ private:
   bool GetMinMax(ResourceId texid, const Subresource &sub, CompType typeCast, bool stencil,
                  float *minval, float *maxval);
 
-  void CheckVkResult(VkResult vkr);
+  struct AddedDescriptorData
+  {
+    WrappedVulkan *m_pDriver = NULL;
+
+    VkDescriptorPool descpool = VK_NULL_HANDLE;
+    rdcarray<VkDescriptorSetLayout> setLayouts;
+    rdcarray<VkDescriptorSet> descSets;
+    VkPipelineLayout pipeLayout = VK_NULL_HANDLE;
+
+    size_t numNewBindings;
+
+    void Free();
+    bool empty() { return m_pDriver == NULL; }
+  };
+
+  ShaderDebugTrace *DebugComputeCommon(ShaderStage stage, uint32_t eventId,
+                                       const rdcfixedarray<uint32_t, 3> &groupid,
+                                       const rdcfixedarray<uint32_t, 3> &threadid);
+
+  void AllocAndAddReservedDescriptors(const VulkanRenderState &state, const VulkanStatePipeline &pipe,
+                                      AddedDescriptorData &patchedBufferData,
+                                      bool vertexPatchedToCompute,
+                                      const rdcarray<VkDescriptorSetLayoutBinding> &newBindings);
+  AddedDescriptorData PrepareExtraBufferDescriptor(
+      VulkanRenderState &state, bool compute,
+      const rdcarray<VkDescriptorSetLayoutBinding> &newBindings, bool vertexPatchedToCompute);
+  void PrepareStateForPatchedShader(
+      const AddedDescriptorData &patchedBufferdata, VulkanRenderState &modifiedstate, bool compute,
+      std::function<bool(const AddedDescriptorData &patchedBufferdata, VkShaderStageFlagBits stage,
+                         const char *entryName, const rdcarray<uint32_t> &origSpirv,
+                         rdcarray<uint32_t> &modSpirv, const VkSpecializationInfo *&specInfo)>
+          stagePatchCallback);
+
+  bool RunFeedbackAction(VkDeviceSize bufferSize, const ActionDescription *action,
+                         VulkanRenderState &modifiedstate);
+
+  void CalculateSubgroupProperties(uint32_t &maxSubgroupSize, SubgroupCapability &subgroupCapability);
+  VkSpecializationInfo MakeSpecInfo(SpecData &specData, VkSpecializationMapEntry *specMaps);
+
   VulkanDebugManager *GetDebugManager();
   VulkanResourceManager *GetResourceManager();
 
@@ -496,9 +605,8 @@ private:
 
     VkSurfaceKHR surface;
     VkSwapchainKHR swap;
-    uint32_t numImgs;
-    VkImage colimg[8];
-    VkImageMemoryBarrier colBarrier[8];
+    rdcarray<VkImage> colimg;
+    rdcarray<VkImageMemoryBarrier> colBarrier;
 
     VkImage bb;
     VkImageView bbview;
@@ -534,6 +642,8 @@ private:
 
   WrappedVulkan *m_pDriver = NULL;
   VkDevice m_Device = VK_NULL_HANDLE;
+
+  BufferStorageMode m_StorageMode;
 
   // General use/misc items that are used in many places
   struct GeneralMisc
@@ -589,16 +699,17 @@ private:
 
     // images and views are re-used elsewhere in replay, so index them sensibly
     //
-    // [float/uint/sint][1D/2D/3D/MS/Cube]
+    // [float/uint/sint/depth][1D/2D/3D/MS/Cube]
     //
     // the cube image is re-used from the 2D one, so only the view is valid
-    VkImage DummyImages[3][5] = {};
-    VkImageView DummyImageViews[3][5] = {};
+    VkImage DummyImages[4][5] = {};
+    VkImageView DummyImageViews[4][5] = {};
     VkWriteDescriptorSet DummyWrites[14] = {};
     VkDescriptorImageInfo DummyInfos[14] = {};
     VkSampler DummySampler = VK_NULL_HANDLE;
     VkBuffer DummyBuffer = VK_NULL_HANDLE;
-    VkBufferView DummyBufferView[3] = {};
+    VkBufferView DummyBufferView[4] = {};
+    bool DepthCubesSupported = true;
 
     std::map<ResourceId, TextureDisplayViews> TextureViews;
 
@@ -613,6 +724,9 @@ private:
   {
     void Init(WrappedVulkan *driver, VkDescriptorPool descriptorPool);
     void Destroy(WrappedVulkan *driver);
+
+    VkPipeline CreateTempViewportPipe(WrappedVulkan *driver, uint32_t viewCount);
+    VkPipeline CreateTempMultiviewQuadResolvePipe(WrappedVulkan *driver);
 
     VkDeviceMemory ImageMem = VK_NULL_HANDLE;
     VkDeviceSize ImageMemSize = 0;
@@ -633,18 +747,31 @@ private:
     VkDescriptorSet m_CheckerDescSet = VK_NULL_HANDLE;
     VkPipeline m_CheckerPipeline = VK_NULL_HANDLE;
     VkPipeline m_CheckerMSAAPipeline = VK_NULL_HANDLE;
-    VkPipeline m_CheckerF16Pipeline[8] = {VK_NULL_HANDLE};
     GPUBuffer m_CheckerUBO;
 
     VkDescriptorSetLayout m_QuadDescSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_QuadDescBufLayout = VK_NULL_HANDLE;
     VkDescriptorSet m_QuadDescSet = VK_NULL_HANDLE;
     VkPipelineLayout m_QuadResolvePipeLayout = VK_NULL_HANDLE;
     VkPipeline m_QuadResolvePipeline[8] = {VK_NULL_HANDLE};
+    GPUBuffer m_QuadDescriptor;
 
+    VkDescriptorSetLayout m_DepthCopyDescSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet m_DepthCopyDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout m_DepthCopyPipeLayout = VK_NULL_HANDLE;
+    VkPipeline m_DepthCopyPipeline[2][5];
+
+    VkPipelineLayout m_DepthResolvePipeLayout = VK_NULL_HANDLE;
+    VkPipeline m_DepthResolvePipeline[2][5];
+
+    GPUBuffer m_DummyMeshletSSBO;
     GPUBuffer m_TriSizeUBO;
     VkDescriptorSetLayout m_TriSizeDescSetLayout = VK_NULL_HANDLE;
     VkDescriptorSet m_TriSizeDescSet = VK_NULL_HANDLE;
     VkPipelineLayout m_TriSizePipeLayout = VK_NULL_HANDLE;
+
+    VkSampler m_PointSampler = VK_NULL_HANDLE;
+    VkFormat m_DefaultDepthStencilFormat;
   } m_Overlay;
 
   struct MeshRendering
@@ -653,6 +780,7 @@ private:
     void Destroy(WrappedVulkan *driver);
 
     GPUBuffer UBO;
+    GPUBuffer MeshletSSBO;
     GPUBuffer BBoxVB;
     GPUBuffer AxisFrustumVB;
 
@@ -745,17 +873,26 @@ private:
 
   struct Feedback
   {
+    void ResizeFeedbackBuffer(WrappedVulkan *driver, VkDeviceSize feedbackStorageSize);
+
     void Destroy(WrappedVulkan *driver);
 
+    BufferStorageMode m_StorageMode;
     GPUBuffer FeedbackBuffer;
 
-    std::map<uint32_t, VKDynamicShaderFeedback> Usage;
-  } m_BindlessFeedback;
+    VkPipelineCache PipeCache = VK_NULL_HANDLE;
+  } m_PatchedShaderFeedback;
+
+  std::map<uint32_t, VKDynamicShaderFeedback> m_BindlessFeedback;
 
   ShaderDebugData m_ShaderDebugData;
 
   rdcarray<ResourceDescription> m_Resources;
+  rdcarray<DescriptorStoreDescription> m_DescriptorStores;
   std::map<ResourceId, size_t> m_ResourceIdx;
+
+  // tracks VkShaderEXT replacements for shader modules from BuildTargetShader
+  std::map<ResourceId, VkShaderEXT> m_ModuleIDToShaderObject;
 
   VKPipe::State *m_VulkanPipelineState = NULL;
 
@@ -788,6 +925,10 @@ private:
   AMDRGPControl *m_RGP = NULL;
 
   VulkanAMDActionCallback *m_pAMDActionCallback = NULL;
+
+#if DISABLED(RDOC_ANDROID) && DISABLED(RDOC_APPLE)
+  NVVulkanCounters *m_pNVCounters = NULL;
+#endif
 
   rdcarray<CounterResult> FetchCountersKHR(const rdcarray<GPUCounter> &counters);
 

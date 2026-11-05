@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -40,6 +40,7 @@ class MainWindow;
 }
 
 class RDLabel;
+class RDToolButton;
 class RDMenu;
 class LambdaThread;
 class QMimeData;
@@ -82,6 +83,9 @@ public:
   QWidget *Widget() override { return this; }
   void RegisterShortcut(const rdcstr &shortcut, QWidget *widget, ShortcutCallback callback) override;
   void UnregisterShortcut(const rdcstr &shortcut, QWidget *widget) override;
+  void BringToFront() override;
+  bool PromptCloseCapture() override;
+
   // ICaptureViewer
   void OnCaptureLoaded() override;
   void OnCaptureClosed() override;
@@ -94,6 +98,7 @@ public:
 
   void LoadInitialLayout();
 
+  bool ErrorReportsAllowed();
   void sendErrorReport(bool forceCaptureInclusion);
 
   void setProgress(float val);
@@ -102,18 +107,20 @@ public:
   void captureModified();
   void LoadFromFilename(const QString &filename, bool temporary);
   void LoadCapture(const QString &filename, const ReplayOptions &opts, bool temporary, bool local);
-  void CloseCapture();
   QString GetSavePath(QString title = QString(), QString filter = QString());
 
   void OnCaptureTrigger(const QString &exe, const QString &workingDir, const QString &cmdLine,
                         const rdcarray<EnvironmentModification> &env, CaptureOptions opts,
-                        std::function<void(LiveCapture *)> callback);
+                        std::function<void(ICaptureConnection *)> callback);
   void OnInjectTrigger(uint32_t PID, const rdcarray<EnvironmentModification> &env,
                        const QString &name, CaptureOptions opts,
-                       std::function<void(LiveCapture *)> callback);
+                       std::function<void(ICaptureConnection *)> callback);
 
   void ShowLiveCapture(LiveCapture *live);
   void LiveCaptureClosed(LiveCapture *live);
+
+  bool PromptSaveCaptureAs();
+  bool SaveCurrentCapture(QString saveFilename);
 
   void RemoveRecentCapture(const QString &filename);
 
@@ -122,12 +129,13 @@ public:
 
   void showEventBrowser() { on_action_Event_Browser_triggered(); }
   void showAPIInspector() { on_action_API_Inspector_triggered(); }
+  void showAnnotationViewer() { on_action_Annotation_Viewer_triggered(); }
   void showMeshPreview() { on_action_Mesh_Output_triggered(); }
   void showTextureViewer() { on_action_Texture_Viewer_triggered(); }
   void showPipelineViewer() { on_action_Pipeline_State_triggered(); }
   void showCaptureDialog() { on_action_Launch_Application_triggered(); }
   void showDebugMessageView() { on_action_Errors_and_Warnings_triggered(); }
-  void showDiagnosticLogView() { on_action_View_Diagnostic_Log_File_triggered(); }
+  void showDiagnosticLogView();
   void showCommentView() { on_action_Comments_triggered(); }
   void showStatisticsViewer() { on_action_Statistics_Viewer_triggered(); }
   void showTimelineBar() { on_action_Timeline_triggered(); }
@@ -149,6 +157,7 @@ private slots:
   void on_action_Close_Capture_triggered();
   void on_action_Mesh_Output_triggered();
   void on_action_API_Inspector_triggered();
+  void on_action_Annotation_Viewer_triggered();
   void on_action_Event_Browser_triggered();
   void on_action_Texture_Viewer_triggered();
   void on_action_Pipeline_State_triggered();
@@ -161,6 +170,8 @@ private slots:
   void on_action_Inject_into_Process_triggered();
   void on_action_Resolve_Symbols_triggered();
   void on_action_Recompress_Capture_triggered();
+  void on_action_EmbedExternalFiles_triggered();
+  void on_action_RemoveExternalFiles_triggered();
   void on_action_Start_Replay_Loop_triggered();
   void on_action_Open_RGP_Profile_triggered();
   void on_action_Create_RGP_Profile_triggered();
@@ -169,8 +180,6 @@ private slots:
   void on_action_Manage_Remote_Servers_triggered();
   void on_action_Settings_triggered();
   void on_action_View_Documentation_triggered();
-  void on_action_View_Diagnostic_Log_File_triggered();
-  void on_action_Diagnostic_Log_triggered() { on_action_View_Diagnostic_Log_File_triggered(); }
   void on_action_Source_on_GitHub_triggered();
   void on_action_Build_Release_Downloads_triggered();
   void on_action_Show_Tips_triggered();
@@ -189,12 +198,16 @@ private slots:
   void statusDoubleClicked(QMouseEvent *event);
   void switchContext();
   void contextChooser_menuShowing();
+  void updateToolsMenuOptions();
 
   void ClearRecentCaptureFiles();
   void ClearRecentCaptureSettings();
 
   void networkRequestFailed(QUrl url, QString error);
   void networkRequestCompleted(QUrl url, QByteArray data);
+
+public slots:
+  void PythonStatusBarUpdate();
 
 signals:
   void networkRequestGet(QUrl url);
@@ -238,14 +251,19 @@ private:
 
   RDLabel *statusIcon;
   RDLabel *statusText;
+  RDToolButton *extensionStatus;
+  RDToolButton *extensionReload;
   QProgressBar *statusProgress;
   RDMenu *contextChooserMenu;
   QToolButton *contextChooser;
+
+  bool m_CurPyDebug = false;
 
   QAction *updateAction = NULL;
 
   QTimer m_MessageTick;
   QSemaphore m_RemoteProbeSemaphore;
+  QSemaphore m_RemoteInitialProbeReady;
   LambdaThread *m_RemoteProbe;
 
   // m_ProbeRemoteHosts is covered by a lock. On the UI thread we copy it from the config regularly,
@@ -279,8 +297,6 @@ private:
   void recentCaptureFile(const QString &filename);
   void recentCaptureSetting(const QString &filename);
 
-  bool PromptCloseCapture();
-  bool PromptSaveCaptureAs();
   void OpenCaptureConfigFile(const QString &filename, bool exe);
 
   QVariantMap saveState();
@@ -293,7 +309,7 @@ private:
 
   void FillRemotesMenu(QMenu *menu, bool includeLocalhost);
 
-  void showLaunchError(ReplayStatus status);
+  void showLaunchError(ResultDetails result);
 
   bool isUnshareableDeviceInUse();
 };

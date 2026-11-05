@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,8 +25,10 @@
 #pragma once
 
 #include <set>
+#include "api/replay/replay_enums.h"
 #include "api/replay/structured_data.h"
 #include "common/formatting.h"
+#include "common/result.h"
 #include "streamio.h"
 
 // function to deallocate anything from a serialise. Default impl
@@ -116,7 +118,11 @@ public:
   Serialiser(const Serialiser &other) = delete;
 
   bool IsErrored() { return IsReading() ? m_Read->IsErrored() : m_Write->IsErrored(); }
-  void SetErrored() { IsReading() ? m_Read->SetErrored() : m_Write->SetErrored(); }
+  RDResult GetError() { return IsReading() ? m_Read->GetError() : m_Write->GetError(); }
+  void SetError(RDResult result)
+  {
+    IsReading() ? m_Read->SetError(result) : m_Write->SetError(result);
+  }
   StreamWriter *GetWriter() { return m_Write; }
   StreamReader *GetReader() { return m_Read; }
   uint32_t GetChunkMetadataRecording() { return m_ChunkFlags; }
@@ -160,6 +166,36 @@ public:
   // to flag if some context-sensitive members might be invalid
   void SetStructArg(uint64_t arg) { m_StructArg = arg; }
   uint64_t GetStructArg() { return m_StructArg; }
+
+  // in rare cases it is necessary to pass side-band data even further than the small context
+  // allowed by SetStructArg, from serialisation users all the way down to child structs. We allow
+  // adding side-band data indexed by 'GUID' here for those rare cases.
+  template <typename T>
+  T GetSidebandData(uint64_t guid)
+  {
+    RDCCOMPILE_ASSERT(sizeof(T) <= sizeof(uint64_t), "Side-band data is at most 64-bit");
+
+    T ret;
+    for(rdcpair<uint64_t, uint64_t> &kv : m_SidebandKV)
+    {
+      if(kv.first == guid)
+      {
+        memcpy(&ret, &kv.second, sizeof(T));
+        return ret;
+      }
+    }
+
+    return ret;
+  }
+  template <typename T>
+  void SetSidebandData(uint64_t guid, const T &t)
+  {
+    RDCCOMPILE_ASSERT(sizeof(T) <= sizeof(uint64_t), "Side-band data is at most 64-bit");
+    uint64_t data = 0;
+    memcpy(&data, &t, sizeof(T));
+    m_SidebandKV.push_back({guid, data});
+  }
+
   //////////////////////////////////////////
   // Public serialisation interface
 
@@ -721,7 +757,7 @@ public:
       arr.ReserveChildren((size_t)size);
 
       if(IsReading())
-        el.resize((int)size);
+        el.resize((size_t)size);
 
       if(m_LazyThreshold > 0 && size > m_LazyThreshold)
       {
@@ -756,7 +792,7 @@ public:
     else
     {
       if(IsReading())
-        el.resize((int)size);
+        el.resize((size_t)size);
 
       for(size_t i = 0; i < (size_t)size; i++)
         SerialiseDispatch<Serialiser, U>::Do(*this, el[i]);
@@ -1020,7 +1056,9 @@ public:
   Serialiser &SerialiseStream(const rdcstr &name, StreamReader &stream,
                               RENDERDOC_ProgressCallback progress = RENDERDOC_ProgressCallback())
   {
-    RDCCOMPILE_ASSERT(IsWriting(), "Can't read into a StreamReader");
+    // we don't make this a compile-time assert so this code can be compiled in a
+    // templated-serialisation function (but we still assert as this will not be valid to execute
+    RDCASSERTMSG("Can't read into a StreamReader", IsWriting());
 
     uint64_t totalSize = stream.GetSize();
 
@@ -1142,6 +1180,8 @@ public:
     {
       SDObject &current = *m_StructureStack.back();
 
+      current.type.flags |= SDTypeFlags::HiddenChildren;
+
       if(current.NumChildren() > 0)
         current.GetChild(current.NumChildren() - 1)->type.flags |= SDTypeFlags::Hidden;
     }
@@ -1216,6 +1256,37 @@ public:
     return *this;
   }
 
+  Serialiser &OffsetOrSize()
+  {
+    if(ExportStructure() && !m_StructureStack.empty())
+    {
+      SDObject &current = *m_StructureStack.back();
+
+      if(current.NumChildren() > 0)
+        current.GetChild(current.NumChildren() - 1)->type.flags |= SDTypeFlags::OffsetOrSize;
+    }
+
+    return *this;
+  }
+
+  Serialiser &GPUAddress()
+  {
+    if(ExportStructure() && !m_StructureStack.empty())
+    {
+      SDObject &current = *m_StructureStack.back();
+
+      if(current.NumChildren() > 0)
+      {
+        SDType &type = current.GetChild(current.NumChildren() - 1)->type;
+        RDCASSERT(type.basetype == SDBasic::UnsignedInteger);
+        RDCASSERT(type.byteSize == 8);
+        type.basetype = SDBasic::GPUAddress;
+      }
+    }
+
+    return *this;
+  }
+
   // these functions should be used very carefully, they completely disable structured export for
   // anything serialised while internal is set.
   void PushInternal() { m_InternalElement++; }
@@ -1256,6 +1327,7 @@ public:
       case SDBasic::String: RDCFATAL("eString should be specialised!"); break;
       case SDBasic::Enum:
       case SDBasic::Resource:
+      case SDBasic::GPUAddress:
       case SDBasic::UnsignedInteger:
         if(byteSize == 1)
           current.data.basic.u = (uint64_t)(uint8_t)el;
@@ -1303,7 +1375,8 @@ public:
     if(IsReading())
     {
       m_Read->Read(len);
-      el.resize((int)len);
+      VerifyArraySize(len);
+      el.resize((size_t)len);
       if(len > 0)
         m_Read->Read(&el[0], len);
     }
@@ -1385,6 +1458,71 @@ public:
     SerialiseValue(type, byteSize, (char *&)el);
   }
 
+  template <typename U>
+  void SerialiseArrayValue(SDBasic type, rdcarray<U> &el)
+  {
+    uint64_t size = (uint64_t)el.size();
+    {
+      m_InternalElement++;
+      DoSerialise(*this, size);
+      m_InternalElement--;
+    }
+
+    if(IsReading())
+    {
+      VerifyArraySize(size);
+    }
+
+    if(ExportStructure())
+    {
+      SDObject &current = *m_StructureStack.back();
+
+      current.type.basetype = SDBasic::Array;
+      current.type.byteSize = size;
+
+      current.ReserveChildren((size_t)size);
+
+      if(IsReading())
+        el.resize((size_t)size);
+
+      if(m_LazyThreshold > 0 && size > m_LazyThreshold)
+      {
+        PushInternal();
+
+        for(size_t i = 0; i < (size_t)size; i++)
+          SerialiseDispatch<Serialiser, U>::Do(*this, el[i]);
+
+        PopInternal();
+
+        current.SetLazyArray(size, el.data(), MakeLazySerialiser<U>());
+      }
+      else
+      {
+        for(size_t i = 0; i < (size_t)size; i++)
+        {
+          SDObject &obj = *current.AddAndOwnChild(new SDObject("$el"_lit, TypeName<U>()));
+          m_StructureStack.push_back(&obj);
+
+          // default to struct. This will be overwritten if appropriate
+          obj.type.basetype = SDBasic::Struct;
+          obj.type.byteSize = sizeof(U);
+
+          SerialiseDispatch<Serialiser, U>::Do(*this, el[i]);
+
+          m_StructureStack.pop_back();
+        }
+      }
+    }
+    else
+    {
+      if(IsReading())
+        el.resize((size_t)size);
+
+      for(size_t i = 0; i < (size_t)size; i++)
+        SerialiseDispatch<Serialiser, U>::Do(*this, el[i]);
+    }
+  }
+
   // constructors only available by the derived classes for each serialiser type
 protected:
   Serialiser(StreamWriter *writer, Ownership own);
@@ -1418,25 +1556,35 @@ private:
     }
   };
 
-  void VerifyArraySize(uint64_t &count)
+  template <typename intSize>
+  void VerifyArraySize(intSize &count)
   {
     uint64_t size = m_Read->GetSize();
 
-    // for streaming, just take 4GB as a 'semi reasonable' upper limit for array sizes
+// for streaming, just take 4GB as a 'semi reasonable' upper limit for array sizes
+// use 1GB on 32-bit to avoid overflows
+#if ENABLED(RDOC_X64)
     if(m_DataStreaming)
       size = 0xFFFFFFFFU;
+#else
+    if(m_DataStreaming)
+      size = 0x3FFFFFFFU;
+#endif
 
     if(count > size)
     {
-      RDCERR("Reading invalid array or byte buffer - %llu larger than total stream size %llu.",
-             count, size);
+      RDResult result;
+      SET_ERROR_RESULT(
+          result, ResultCode::FileCorrupted,
+          "Reading invalid array or byte buffer - %llu larger than total stream size %llu.", count,
+          size);
 
       // if we owned the previous stream, delete it
       if(m_Ownership == Ownership::Stream)
         delete m_Read;
 
       // replace our stream with an invalid one so all subsequent reads fail
-      m_Read = new StreamReader(StreamReader::InvalidStream);
+      m_Read = new StreamReader(StreamReader::InvalidStream, result);
       m_Ownership = Ownership::Stream;
 
       // set the count to 0
@@ -1450,8 +1598,9 @@ private:
     ChunkLookup lookup = m_ChunkLookup;
     void *userData = m_pUserData;
     bool buffers = m_ExportBuffers;
+    uint64_t ver = m_Version;
     std::set<rdcstr> *stringDB = m_ExtStringDB;
-    return [lookup, userData, buffers, stringDB](const void *ptr) {
+    return [lookup, userData, buffers, ver, stringDB](const void *ptr) {
       T &input = *(T *)ptr;
       static StreamReader dummy(StreamReader::DummyStream);
 
@@ -1463,6 +1612,7 @@ private:
 
       Serialiser<SerialiserMode::Reading> ser(&dummy, Ownership::Nothing, ret);
 
+      ser.SetVersion(ver);
       ser.ConfigureStructuredExport(lookup, buffers, 0, 1.0);
       ser.SetStreamingMode(true);
       ser.SetStructuriser(true);
@@ -1479,6 +1629,7 @@ private:
   uint64_t m_Version = 0;
 
   uint64_t m_StructArg = 0;
+  rdcarray<rdcpair<uint64_t, uint64_t>> m_SidebandKV;
 
   StreamWriter *m_Write = NULL;
   StreamReader *m_Read = NULL;
@@ -1564,6 +1715,7 @@ public:
 
 #define BASIC_TYPE_SERIALISE(typeName, member, type, byteSize) \
   DECLARE_STRINGISE_TYPE(typeName)                             \
+  DECLARE_STRINGISE_TYPE(rdcarray<typeName>)                   \
   template <class SerialiserType>                              \
   void DoSerialise(SerialiserType &ser, typeName &el)          \
   {                                                            \
@@ -1636,6 +1788,12 @@ template <class SerialiserType>
 void DoSerialise(SerialiserType &ser, rdcinflexiblestr &el)
 {
   ser.SerialiseValue(SDBasic::String, 0, el);
+}
+
+template <class SerialiserType, typename U>
+void DoSerialise(SerialiserType &ser, rdcarray<U> &el)
+{
+  ser.SerialiseArrayValue(SDBasic::Array, el);
 }
 
 DECLARE_STRINGISE_TYPE(SDObject *);
@@ -1751,7 +1909,7 @@ private:
 // passed around and moved between owners before being serialised out
 class Chunk
 {
-  Chunk(bool fromAllocator) : m_FromAllocator(fromAllocator) {}
+  Chunk(bool fromAllocator) : m_FromAllocator(fromAllocator ? 1 : 0) {}
   ~Chunk()
   {
     FreeAlignedBuffer(m_Data);
@@ -1763,8 +1921,8 @@ class Chunk
   }
 
 public:
-  void Delete() { Delete(m_FromAllocator); }
-  bool IsFromAllocator() { return m_FromAllocator; }
+  void Delete() { Delete(IsFromAllocator()); }
+  bool IsFromAllocator() { return m_FromAllocator != 0; }
   void Delete(bool fromAllocator)
   {
     if(!fromAllocator)
@@ -1786,7 +1944,7 @@ public:
 
   // grab current contents of the serialiser into a new chunk
   static Chunk *Create(Serialiser<SerialiserMode::Writing> &ser, uint16_t chunkType,
-                       ChunkAllocator *allocator = NULL);
+                       ChunkAllocator *allocator = NULL, bool stealDataFromWriter = false);
 
   byte *GetData() const { return m_Data; }
   Chunk *Duplicate()
@@ -1796,7 +1954,7 @@ public:
     ret->m_ChunkType = m_ChunkType;
 
     ret->m_Data = AllocAlignedBuffer(m_Length);
-    ret->m_FromAllocator = false;
+    ret->m_FromAllocator = 0;
 
     memcpy(ret->m_Data, m_Data, (size_t)m_Length);
 
@@ -1818,11 +1976,12 @@ private:
   Chunk(const Chunk &) = delete;
   Chunk &operator=(const Chunk &) = delete;
 
-  uint16_t m_ChunkType;
+#define CHUNK_LENGTH_BITS 45
 
-  bool m_FromAllocator = false;
+  uint64_t m_ChunkType : 16;
+  uint64_t m_FromAllocator : 1;
+  uint64_t m_Length : CHUNK_LENGTH_BITS;
 
-  uint32_t m_Length;
   byte *m_Data;
 
 #if ENABLED(RDOC_DEVEL)
@@ -1846,10 +2005,16 @@ public:
       End();
   }
 
+  Chunk *Steal()
+  {
+    End();
+    return Chunk::Create(m_Ser, m_Idx, NULL, true);
+  }
+
   Chunk *Get(ChunkAllocator *allocator = NULL)
   {
     End();
-    return Chunk::Create(m_Ser, m_Idx, allocator);
+    return Chunk::Create(m_Ser, m_Idx, allocator, false);
   }
 
 private:
@@ -1910,7 +2075,7 @@ struct ScopedDeserialiseArray
   }
   ~ScopedDeserialiseArray()
   {
-    if(m_Ser.IsReading())
+    if(m_Ser.IsReading() && *m_El)
     {
       for(uint64_t i = 0; i < count; i++)
         Deserialise((*m_El)[i]);
@@ -1967,6 +2132,7 @@ struct ScopedDeserialiseArray<SerialiserType, byte *>
 // can be overridden to change the name in the helper macros locally
 #define GET_SERIALISER (ser)
 
+#define LARGE_CHUNK_SIZE (~0ULL)
 #define SCOPED_SERIALISE_CHUNK(...) ScopedChunk scope(GET_SERIALISER, __VA_ARGS__);
 
 // these helper macros are intended for use when serialising objects in chunks
@@ -1988,6 +2154,18 @@ struct ScopedDeserialiseArray<SerialiserType, byte *>
   } CONCAT(union, __LINE__);               \
   CONCAT(union, __LINE__).o = &obj;        \
   GET_SERIALISER.template Serialise<type>(STRING_LITERAL(#obj), *CONCAT(union, __LINE__).t)
+
+#define SERIALISE_ELEMENT_ARRAY_TYPED(type, arrayObj, countObj)                                  \
+  RDCCOMPILE_ASSERT(sizeof(*arrayObj) == sizeof(type),                                           \
+                    "Array serialised co-erced type must be identically sized");                 \
+  union                                                                                          \
+  {                                                                                              \
+    type **t;                                                                                    \
+    decltype(arrayObj) *o;                                                                       \
+  } CONCAT(union, __LINE__);                                                                     \
+  CONCAT(union, __LINE__).o = &arrayObj;                                                         \
+  GET_SERIALISER.template Serialise<type>(STRING_LITERAL(#arrayObj), *CONCAT(union, __LINE__).t, \
+                                          countObj, SerialiserFlags::AllocateMemory)
 
 #define SERIALISE_ELEMENT_ARRAY(obj, count)                                                       \
   uint64_t CONCAT(dummy_array_count, __LINE__) = 0;                                               \

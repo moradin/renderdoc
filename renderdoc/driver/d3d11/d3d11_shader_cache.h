@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,8 +25,6 @@
 #pragma once
 
 #include <map>
-#include <string>
-#include <vector>
 #include "driver/dx/official/d3d11_4.h"
 
 class WrappedID3D11Device;
@@ -52,6 +50,8 @@ private:
   static const uint32_t m_ShaderCacheVersion = 3;
 
   ID3D11Device *m_pDevice = NULL;
+
+  uint32_t m_CompileFlags = 0;
 
   bool m_ShaderCacheDirty = false, m_CacheShaders = false;
   std::map<uint32_t, ID3DBlob *> m_ShaderCache;

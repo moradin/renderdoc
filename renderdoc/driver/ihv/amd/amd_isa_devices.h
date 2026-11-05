@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -36,7 +36,8 @@ struct asic
 };
 
 const int legacyAsicCount = 20;
-const int asicCount = 29;
+const int AMDILIndex = 24;
+const int asicCount = 31;
 extern const asic asicInfo[];
 
 };    // namespace GCNISA

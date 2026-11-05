@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2014-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,36 +25,9 @@
 #pragma once
 
 #include <stdio.h>
-#include "api/replay/data_types.h"
 #include "serialise/streamio.h"
+#include "tex_data.h"
 
-struct dds_data
-{
-  uint32_t width;
-  uint32_t height;
-  uint32_t depth;
-
-  uint32_t mips;
-  uint32_t slices;
-
-  bool cubemap;
-
-  ResourceFormat format;
-};
-
-struct read_dds_data : public dds_data
-{
-  bytebuf buffer;
-
-  // pairs of {offset, size} into above data buffer
-  rdcarray<rdcpair<size_t, size_t>> subresources;
-};
-
-struct write_dds_data : public dds_data
-{
-  rdcarray<byte *> subresources;
-};
-
-extern bool is_dds_file(byte *headerBuffer, size_t size);
-extern read_dds_data load_dds_from_file(StreamReader *reader);
-extern bool write_dds_to_file(FILE *f, const write_dds_data &data);
+extern bool is_dds_file(const byte *headerBuffer, size_t size);
+extern RDResult load_dds_from_file(StreamReader *reader, read_tex_data &data);
+extern RDResult write_dds_to_file(FILE *f, const write_tex_data &data);

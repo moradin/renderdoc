@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,6 +22,7 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+#include <limits>
 #include "3rdparty/fmt/core.h"
 #include "vk_test.h"
 
@@ -36,6 +37,21 @@ RD_TEST(VK_Shader_Debug_Zoo, VulkanGraphicsTest)
     float one;
     float negone;
     Vec2f uv;
+  };
+
+  struct PushData
+  {
+    Vec4i push;
+    Vec2u bda_uvec2;
+    uint32_t bda_hi;
+    uint32_t bda_lo;
+    uint64_t bda_u64;
+  };
+
+  struct BDA_Data
+  {
+    float f32[8];
+    uint64_t bda_ptr;
   };
 
   std::string v2f =
@@ -110,7 +126,7 @@ layout(set = 0, binding = 10, std140) uniform constsbuf
   vec4 first;
   uint uniformIndex;
   vec4 second;
-  vec4 pad2;
+  vec4 nan;
   vec4 third;
   vec4 pad3;
   vec4 fourth;
@@ -166,6 +182,13 @@ layout(set = 0, r32ui, binding = 22) uniform uimage2D atomicimg;
 layout(set = 0, binding = 30) uniform sampler2DArray queryTest;
 layout(set = 0, binding = 31) uniform sampler2DMSArray queryTestMS;
 
+layout(set = 0, binding = 32) uniform texture2D depthImage;
+
+layout(set = 0, binding = 33) uniform samplerBuffer texBuffer1010102unorm;
+layout(set = 0, binding = 34, rgb10_a2) uniform imageBuffer storeTexBuffer1010102unorm;
+layout(set = 0, binding = 35) uniform usamplerBuffer texBuffer1010102uint;
+layout(set = 0, binding = 36, rgb10_a2ui) uniform uimageBuffer storeTexBuffer1010102uint;
+
 #if TEST_DESC_INDEXING
 
 layout(set = 1, binding = 1) uniform sampler pointSamplers[14];
@@ -191,6 +214,12 @@ layout(set = 1, binding = 9) uniform sampler shadowSamplers[14];
 
 layout(set = 1, binding = 20) uniform sampler2DArray queryTests[14];
 layout(set = 1, binding = 21) uniform sampler2DMSArray queryTestsMS[14];
+layout(set = 1, binding = 22) uniform ubostype {
+  vec4 zeroes[16];
+  vec4 first;
+  ivec4 index;
+  vec4 padding[14];
+} ubos[14];
 
 layout(set = 2, binding = 0) uniform sampler1D zoo_1D;
 layout(set = 2, binding = 1) uniform sampler2D zoo_2D;
@@ -258,6 +287,21 @@ layout(set = 2, rgba32i, binding = 56) uniform iimageCubeArray storezoo_iCubeArr
 //layout(set = 2, rgba32i, binding = 58) uniform iimage2DMSArray storezoo_i2DMSArray;
 layout(set = 2, rgba32i, binding = 59) uniform iimageBuffer storezoo_iBuffer;
 
+layout(set = 3, binding = 22) uniform unboundedUniformType {
+  vec4 zeroes[16];
+  vec4 first;
+  ivec4 index;
+  vec4 padding[14];
+} unbounded_ubos[];
+
+layout(set = 3, binding = 23) uniform sampler2D unbounded_tex2ds[];
+
+layout(set = 3, binding = 24, std430) buffer unboundedBufferType {
+  vec4 colour;
+} unbounded_buffers[];
+
+layout(set = 3, binding = 25) uniform sampler unbounded_samplers[];
+
 #endif
 
 layout(push_constant) uniform PushData {
@@ -271,9 +315,22 @@ layout(location = 0, index = 0) out vec4 Color;
 
 #define inout_type in
 
-)EOSHADER" + v2f + R"EOSHADER(
+)EOSHADER" + v2f +
+                            R"EOSHADER(
 
-vec4 varscope_test(int coord, vec2 inpos_param, vec2 inpos_incr_param)
+vec2 inner_func(in vec2 modified)
+{
+  modified.x += modified.y * 2.0f;
+  vec2 ret = modified;
+  return ret;
+}
+
+struct ScopeTest
+{
+  vec2 modified;
+};
+
+vec4 varscope_test(int coord, vec2 inpos_param, vec2 inpos_incr_param, in ScopeTest scopeTest)
 {
   float never_in_scope;
 
@@ -305,6 +362,9 @@ vec4 varscope_test(int coord, vec2 inpos_param, vec2 inpos_incr_param)
     ret = vec4(1.0, 1.0, 1.0, 0.0);
   }
 
+  ret.xy += inner_func(scopeTest.modified);
+  ret.zw += inner_func(scopeTest.modified);
+
   ret.w += long_scope;
 
   ret *= 1.5f;
@@ -317,6 +377,7 @@ void main()
   float  posinf = linearData.oneVal/linearData.zeroVal.x;
   float  neginf = linearData.negoneVal/linearData.zeroVal.x;
   float  nan = linearData.zeroVal.x/linearData.zeroVal.y;
+  nan *= cbuf.nan.x;
 
   float negone = linearData.negoneVal;
   float posone = linearData.oneVal;
@@ -336,6 +397,8 @@ void main()
   int flatLocalCoord = localCoord.x + localCoord.y * 4;
 
   int flatGlobalCoord = int(gl_FragCoord.x) + int(gl_FragCoord.y) * 1024;
+  ScopeTest scopeTest;
+  scopeTest.modified = inposIncreased;
 
   Color = vec4(0,0,0,0);
   switch(test)
@@ -507,7 +570,7 @@ void main()
     case 30:
     {
       Color = cbuf.first + cbuf.second + cbuf.third + cbuf.fourth +
-              cbuf.pad2 + cbuf.pad3;
+              cbuf.pad3;
       break;
     }
     case 31:
@@ -652,7 +715,7 @@ void main()
       break;
     }
 )EOSHADER"
-                   R"EOSHADER(
+                            R"EOSHADER(
     case 51:
     {
       Color = fwidthFine(vec4(inpos, inposIncreased));
@@ -1019,7 +1082,7 @@ void main()
       break;
     }
 )EOSHADER"
-                   R"EOSHADER(
+                            R"EOSHADER(
     case 102:
     {
       uint a = zerou + 0x0dadbeef;
@@ -1086,10 +1149,10 @@ void main()
     }
     case 112:
     {
-      float x = texture(sampler2DShadow(sampledImage, shadowSampler), vec3(inpos, 0.1f));
-      float y = texture(sampler2DShadow(sampledImage, shadowSampler), vec3(inpos, 0.3f));
-      float z = texture(sampler2DShadow(sampledImage, shadowSampler), vec3(inpos, 0.7f));
-      float w = texture(sampler2DShadow(sampledImage, shadowSampler), vec3(inpos, 0.9f));
+      float x = texture(sampler2DShadow(depthImage, shadowSampler), vec3(inpos, 0.1f));
+      float y = texture(sampler2DShadow(depthImage, shadowSampler), vec3(inpos, 0.3f));
+      float z = texture(sampler2DShadow(depthImage, shadowSampler), vec3(inpos, 0.7f));
+      float w = texture(sampler2DShadow(depthImage, shadowSampler), vec3(inpos, 0.9f));
       Color = vec4(x, y, z, w);
       break;
     }
@@ -1118,7 +1181,7 @@ void main()
     {
       vec2 coord = vec2(zerof + 0.6, zerof + 0.43);
 
-      Color = textureGather(sampler2DShadow(sampledImage, shadowSampler), coord, 0.8f);
+      Color = textureGather(sampler2DShadow(depthImage, shadowSampler), coord, 0.8f);
       break;
     }
     case 117:
@@ -1330,7 +1393,7 @@ void main()
     }
     case 146:
     {
-      Color = vec4(float(textureQueryLevels(queryTests[0])), float(textureSamples(queryTestsMS[0])), 0.0f, 1.0f);
+      Color = vec4(float(textureQueryLevels(queryTests[1])), float(textureSamples(queryTestsMS[1])), 0.0f, 1.0f);
       break;
     }
     case 147:
@@ -1376,7 +1439,7 @@ void main()
     }
 #endif
 )EOSHADER"
-                   R"EOSHADER(
+                            R"EOSHADER(
     case 153:
     {
       vec3 cubeCoord = vec3(1.0f, -0.3f, 0.9f);
@@ -1540,9 +1603,169 @@ void main()
     case 175:
     {
       // this isn't really intended as a true test but more a convenience for manual testing.
-      Color = varscope_test(flatLocalCoord, inpos, inposIncreased);
+      Color = varscope_test(flatLocalCoord, inpos, inposIncreased, scopeTest);
       break;
     }
+    case 176:
+    {
+      ivec2 coord = ivec2(zeroi + 20, zeroi + 20);
+      Color = texelFetch(sampledImages[cbuf.uniformIndex+1], coord, 0);
+      mat4 mat;
+      // force out of bounds matrix lookup to make sure it doesn't crash
+      float temp = mat[int(Color.r)+70][int(Color.g)+80];
+      if (int(temp/(temp+10000.0)) == 1)
+      {
+        Color.r = Color.r;
+      }
+      Color += vec4(1.0, 1.0, 1.0, 1.0);
+      break;
+    }
+    case 177:
+    {
+      Color = imageLoad(storeTexBuffer, 1) + imageLoad(storeTexBuffer, 4);
+      break;
+    }
+    case 178:
+    {
+      imageStore(storeTexBuffer, 5, vec4(3.1f, 4.1f, 5.9f, 2.6f));
+      Color = imageLoad(storeTexBuffer, 5);
+      break;
+    }
+    case 179:
+    {
+      Color = texelFetch(texBuffer1010102unorm, int(1));
+      break;
+    }
+    case 180:
+    {
+      Color = vec4(texelFetch(texBuffer1010102uint, int(1)));
+      break;
+    }
+    case 181:
+    {
+      Color = imageLoad(storeTexBuffer1010102unorm, int(1)) + imageLoad(storeTexBuffer1010102unorm, int(4));
+      break;
+    }
+    case 182:
+    {
+      Color = vec4(imageLoad(storeTexBuffer1010102uint, int(1))) + vec4(imageLoad(storeTexBuffer1010102uint, int(4)));
+      break;
+    }
+    case 183:
+    {
+      imageStore(storeTexBuffer1010102unorm, 5, vec4(200.1f/1023.0f, 400.1f/1023.0f, 800.1f/1023.0f, 1.0f));
+      Color = imageLoad(storeTexBuffer1010102unorm, int(1)) + imageLoad(storeTexBuffer1010102unorm, int(5));
+      break;
+    }
+    case 184:
+    {
+      imageStore(storeTexBuffer1010102uint, 5, uvec4(20, 40, 80, 1));
+      Color = vec4(imageLoad(storeTexBuffer1010102uint, int(1))) + vec4(imageLoad(storeTexBuffer1010102uint, int(5)));
+      break;
+    }
+    case 185:
+    {
+      // this is intended to test triggering a mixture of GPU math and GPU sample ops
+      vec2 coord = vec2(zerof + 0.5, zerof + 0.15);
+      if (localCoord.x % 2 == 0)
+      {
+        Color = textureLod(sampler2D(sampledImage, pointSampler), coord, 0.0);
+        for (int i = 0; i < 100; i++)
+        {
+          Color += textureLod(sampler2D(sampledImage, pointSampler), coord, float(i));
+        }
+      }
+      else
+      {
+        Color = vec4(pow(posone*2.5f, posone*1.3f), pow(posone*2.5f, posone*0.45f),
+                     pow(vec2(posone*2.5f, posone*1.3f), vec2(posone*0.9f, posone*8.5f)));
+        for (int i = 0; i < 100; i++)
+        {
+          vec4 value = vec4(pow(posone*2.5f+float(i), posone*1.3f), pow(posone*2.5f, posone*0.45f),
+                        pow(vec2(posone*2.5f, posone*1.3f), vec2(posone*0.9f, posone*8.5f)));
+          Color += value / 100.0;
+        }
+      }
+      break;
+    }
+    case 186:
+    {
+      float x = textureProj(sampler2DShadow(depthImage, shadowSampler), vec4(inpos, 0.1f, 0.5f));
+      float y = textureProj(sampler2DShadow(depthImage, shadowSampler), vec4(inpos, 0.3f, 0.5f));
+      float z = textureProj(sampler2DShadow(depthImage, shadowSampler), vec4(inpos, 0.7f, 0.5f));
+      float w = textureProj(sampler2DShadow(depthImage, shadowSampler), vec4(inpos, 0.9f, 0.5f));
+      Color = vec4(x, y, z, w);
+      break;
+    }
+    case 187:
+    {
+      uint a = zerou + 0x44b82a80;
+      int b = zeroi + 0x44b82a80;
+
+      Color = vec4(float(bitfieldExtract(a, 0, 32)), float(bitfieldExtract(b, 0, 32)),
+                   float(bitfieldExtract(a, 32, 0)), float(bitfieldExtract(b, 32, 0)));
+      break;
+    }
+#if TEST_DESC_INDEXING
+    case 188:
+    {
+      Color = texelFetch(texBuffers[zeroi+9], int(zeroi+2));
+      break;
+    }
+    case 189:
+    {
+      imageStore(storeTexBuffers[zeroi+10], 7, vec4(5.3f, 6.3f, 7.9f, 1.6f));
+      Color = imageLoad(storeTexBuffers[zeroi+10], 7);
+      break;
+    }
+    case 190:
+    {
+      Color.x = float(ubos[zerou+1].index.x);
+      Color.y = float(ubos[zerou+2].index.y);
+      Color.z = float(ubos[zerou+3].index.z);
+      Color.w = float(ubos[zerou+4].index.w);
+      break;
+    }
+    case 191:
+    {
+      uint index = ubos[zerou+9].index.y;
+      Color = texture(linearSampledImages[index], inpos.xy);
+      break;
+    }
+    case 192:
+    {
+      uint index = ubos[zerou+7].index.z;
+      storebufs[index].x = vec4(3.1f, 4.1f, 5.9f, 2.6f);
+      Color = storebufs[index].x;
+      break;
+    }
+    case 193:
+    {
+      Color.x = float(unbounded_ubos[zerou+1].index.x);
+      Color.y = float(unbounded_ubos[zerou+2].index.y);
+      Color.z = float(unbounded_ubos[zerou+3].index.z);
+      Color.w = float(unbounded_ubos[zerou+4].index.w);
+      break;
+    }
+    case 194:
+    {
+      uint index = unbounded_ubos[zerou+10].index.y;
+      Color = texture(unbounded_tex2ds[index], inpos.xy);
+      break;
+    }
+    case 195:
+    {
+      uint index = unbounded_ubos[zerou+8].index.z;
+      Color = unbounded_buffers[index].colour;
+      break;
+    }
+    case 196:
+    {
+      uint index = unbounded_ubos[zerou+3].index.w;
+      vec2 coord = vec2(zerof + 1.5, zerof + 1.145);
+      Color = textureLod(sampler2D(sampledImage, unbounded_samplers[index]), coord, 0.0);
+    }
+#endif
     default: break;
   }
 }
@@ -1773,10 +1996,185 @@ void main()
       Color = gl_FrontFacing ? vec4(0, 1, 0, 1) : vec4(1, 0, 0, 1);
       break;
     }
+    case 20:
+    {
+      Color = imageLoad(storeTexBuffer, 1)+imageLoad(storeTexBuffer, 5);
+      break;
+    }
+    case 21:
+    {
+      Color = imageLoad(storeTexBuffer1010102unorm, int(1)) + imageLoad(storeTexBuffer1010102unorm, int(5));
+    }
+    case 22:
+    {
+      Color = vec4(imageLoad(storeTexBuffer1010102uint, int(1))) + vec4(imageLoad(storeTexBuffer1010102uint, int(5)));
+    }
     default: break;
   }
 }
 
+)EOSHADER";
+
+  std::string computeShaderDerivs = R"EOSHADER(
+
+#version 460 core
+#extension GL_NV_compute_shader_derivatives : require
+
+#if SUBGROUP_SUPPORT
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_vote : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#endif // #if SUBGROUP_SUPPORT
+
+layout(push_constant) uniform PushData
+{
+  uint test;
+} push;
+
+struct Output
+{
+  vec4 vals[1024];
+};
+
+layout(binding = 0, std430) buffer outbuftype {
+  Output data[COMP_TESTS];
+} outbuf;
+
+layout(set = 0, binding = 14) uniform sampler2D linearSampledImage;
+layout(set = 0, binding = 19) uniform sampler shadowSampler;
+layout(set = 0, binding = 32) uniform texture2D depthImage;
+
+uint GetTest() { return push.test; }
+
+#define IsTest(x) (GetTest() == x)
+
+layout(local_size_x = GROUP_SIZE_X, local_size_y = GROUP_SIZE_Y, local_size_z = GROUP_SIZE_Z) in;
+
+layout(QUAD_LAYOUT) in;
+
+uvec3 tid;
+uvec3 gid;
+uint flatId;
+
+#if WORKGROUP_SUPPORT
+shared uvec4 gsmUint4[1024];
+#endif // #if WORKGROUP_SUPPORT
+
+void SetOutput(vec4 val)
+{
+  outbuf.data[push.test].vals[flatId] = val;
+}
+
+void Init(vec4 val)
+{
+  flatId = gid.z * gl_WorkGroupSize.x * gl_WorkGroupSize.y + gid.y * gl_WorkGroupSize.x + gid.x;
+  SetOutput(val);
+}
+
+void main()
+{
+  // Only want the workgroup (1,0,0) to output results
+  if ((gl_WorkGroupID.x != 1) || (gl_WorkGroupID.y != 0) || (gl_WorkGroupID.z != 0))
+    return;
+
+  vec4 testResult = vec4(0);
+  gid = gl_LocalInvocationID;
+  tid = gl_GlobalInvocationID;
+  Init(testResult);
+  uint id = flatId;
+  uint ZERO = id / 10000;
+  vec2 inpos;
+  inpos.xy = gid.xy / 8.0;
+
+#if WORKGROUP_SUPPORT
+  gsmUint4[flatId].xyz = tid;
+#endif // #if WORKGROUP_SUPPORT
+#if SUBGROUP_SUPPORT
+  id += gl_SubgroupInvocationID;
+  testResult.w = id * ZERO;
+#endif // #if SUBGROUP_SUPPORT
+
+  if(IsTest(0))
+  {
+    vec4 test0;
+    test0.x = dFdx(0.5f);
+    test0.y = dFdy(0.5f);
+    test0.z = dFdxFine(0.5f);
+    test0.w = dFdyFine(0.5f);
+    testResult = test0;
+  }
+  if(IsTest(1))
+  {
+    vec3 test1 = gid;
+    testResult.xyz = test1;
+  }
+  if(IsTest(2))
+  {
+    vec3 test2 = tid;
+    testResult.xyz = test2;
+  }
+  if(IsTest(3))
+  {
+    vec3 test3 = dFdxFine(gid*gid*gid);
+    testResult.xyz = test3;
+  }
+  if(IsTest(4))
+  {
+    vec3 test4 = dFdyFine(gid*gid*gid);
+    testResult.xyz = test4;
+  }
+  if(IsTest(5))
+  {
+    vec3 test5 = dFdxCoarse(gid*gid);
+    testResult.xyz = test5;
+  }
+  if(IsTest(6))
+  {
+    vec3 test6 = dFdyCoarse(gid*gid);
+    testResult.xyz = test6;
+  }
+  if(IsTest(7))
+  {
+    // OpImageQueryLod
+    vec2 test7 = textureQueryLod(linearSampledImage, inpos);
+    testResult.xy = test7;
+  }
+  if(IsTest(8))
+  {
+    // OpImageSampleProjImplicitLod
+    vec4 test8 = textureProj(linearSampledImage, vec3(inpos, 0.5f));
+    testResult = test8;
+  }
+  if(IsTest(9))
+  {
+    // OpImageSampleImplicitLod
+    vec4 test9 = texture(linearSampledImage, inpos);
+    testResult = test9;
+  }
+  if(IsTest(10))
+  {
+    // OpImageSampleDrefImplicitLod
+    vec4 test10;
+    test10.x = texture(sampler2DShadow(depthImage, shadowSampler), vec3(inpos, 0.1f));
+    test10.y = texture(sampler2DShadow(depthImage, shadowSampler), vec3(inpos, 0.3f));
+    test10.z = texture(sampler2DShadow(depthImage, shadowSampler), vec3(inpos, 0.7f));
+    test10.w = texture(sampler2DShadow(depthImage, shadowSampler), vec3(inpos, 0.9f));
+    testResult = test10;
+  }
+  if(IsTest(11))
+  {
+    // OpImageSampleProjDrefImplicitLod
+    vec4 test11;
+    test11.x = textureProj(sampler2DShadow(depthImage, shadowSampler), vec4(inpos, 0.1f, 0.5f));
+    test11.y = textureProj(sampler2DShadow(depthImage, shadowSampler), vec4(inpos, 0.3f, 0.5f));
+    test11.z = textureProj(sampler2DShadow(depthImage, shadowSampler), vec4(inpos, 0.7f, 0.5f));
+    test11.w = textureProj(sampler2DShadow(depthImage, shadowSampler), vec4(inpos, 0.9f, 0.5f));
+    testResult = test11;
+  }
+
+  SetOutput(testResult);
+}
 )EOSHADER";
 
   std::string capabilities = "OpCapability Shader\n";
@@ -2448,6 +2846,10 @@ void main()
         "%_out_float4 = OpVectorShuffle %float4 %float4_dyn_0000 %float4_dyn_1234 7 6 0 1",
         "%_out_float3 = OpVectorShuffle %float3 %float3_000 %float3_123 3 4 5",
         "%_out_float2 = OpVectorShuffle %float2 %float2_00 %float2_12 2 3",
+
+        // test 0xffffffff component inputs
+        "%_tmp = OpVectorShuffle %float4 %float4_0000 %float4_1234 5 4 4294967295 4294967295\n"
+        "%_out_float4 = OpVectorShuffle %float4 %_tmp %float4_dyn_1234 0 1 4 5",
     });
 
     // test OpVectorExtractDynamic
@@ -2526,6 +2928,72 @@ void main()
         "%_result = OpBitwiseOr %uint %uint_dyn_0x4200004d %uint_dyn_0xa28b00\n"
         "%_out_float = OpBitcast %float %_result\n",
     });
+
+    // Bitcast vector <-> scalar
+    if(float16Int8Features.shaderInt8 && features.shaderInt16)
+    {
+      append_tests({
+          // u8[2] -> u16
+          "%_result = OpCompositeConstruct %u8v2 %u8_8 %u8_9\n"
+          "%_out_u16 = OpBitcast %u16 %_result\n",
+          // u8[4] -> u32
+          "%_result = OpCompositeConstruct %u8v4 %u8_4 %u8_5 %u8_6 %u8_7\n"
+          "%_out_uint = OpBitcast %uint %_result\n",
+          // u16[2] -> u32
+          "%_result = OpCompositeConstruct %u16v2 %u16_4 %u16_5\n"
+          "%_out_uint = OpBitcast %uint %_result\n",
+          // u16 -> u8[2]
+          "%_out_u8v2 = OpBitcast %u8v2 %u16_1234\n ",
+          // u32 -> u8[4]
+          "%_out_u8v4 = OpBitcast %u8v4 %uint_1234\n ",
+          // u32 -> u16[2]
+          "%_out_u16v2 = OpBitcast %u16v2 %uint_12345\n",
+      });
+    }
+
+    if(features.shaderInt16 && features.shaderInt64)
+    {
+      append_tests({
+          // u16[4] -> u64
+          "%_result = OpCompositeConstruct %u16v4 %u16_0 %u16_1 %u16_2 %u16_3\n"
+          "%_out_u64 = OpBitcast %u64 %_result\n",
+          // u64 -> u16[4]
+          "%_out_u16v4 = OpBitcast %u16v4 %u64_1234\n",
+      });
+    }
+
+    if(features.shaderInt64)
+    {
+      append_tests({
+          // u32[2] -> u64
+          "%_result = OpCompositeConstruct %uint2 %uint_0 %uint_1\n"
+          "%_out_u64 = OpBitcast %u64 %_result\n",
+          // u64 -> u32[2]
+          "%_out_uint2 = OpBitcast %uint2 %u64_1234\n",
+      });
+    }
+
+    if(float16Int8Features.shaderFloat16)
+    {
+      append_tests({
+          // f16[2] -> f32
+          "%_result = OpCompositeConstruct %half2 %half_0_25 %half_0_5\n"
+          "%_out_float = OpBitcast %float %_result\n",
+          // f32 -> f16[2]
+          "%_out_half2 = OpBitcast %half2 %float_1_1125\n",
+      });
+    }
+
+    if(features.shaderFloat64)
+    {
+      append_tests({
+          // f32[2] -> f64
+          "%_result = OpCompositeConstruct %float2 %float_0_5 %float_0_25\n"
+          "%_out_double = OpBitcast %double %_result\n",
+          // f64 -> f32[2]
+          "%_out_float2 = OpBitcast %float2 %double_1024_25\n",
+      });
+    }
 
     // test ExtInst NMin/NMax/NClamp
     append_tests({
@@ -2825,6 +3293,222 @@ OpBranch %_bottomlabel
 
 )EOTEST",
     });
+
+    // test switch for different integer types
+    std::vector<std::string> intTypes = {"int", "uint"};
+    std::vector<std::string> caseLiterals = {"0x12345678", "0xF2345678"};
+    if(features.shaderInt64)
+    {
+      intTypes.push_back("i64");
+      intTypes.push_back("u64");
+      caseLiterals.push_back("0x1234567812345678");
+      caseLiterals.push_back("0xF234567812345678");
+    }
+    for(size_t i = 0; i < intTypes.size(); ++i)
+    {
+      append_tests({fmt::format(
+          "%_test_switch_{0} = OpIAdd %{0} %{0}_0 %{0}_{1}\n"
+          "OpSelectionMerge %_break_{0} None\n"
+          "OpSwitch %_test_switch_{0} %_default_{0} 2 %_case_{0}_2 {1} %_case_{0}_{1}\n"
+          "%_case_{0}_2 = OpLabel\n"
+          "OpUnreachable\n"
+          "%_case_{0}_{1} = OpLabel\n"
+          "%_out_{0} = OpIAdd %{0} %{0}_0 %{0}_7\n"
+          "OpBranch %_break_{0}\n"
+          "%_default_{0} = OpLabel\n"
+          "OpUnreachable\n"
+          "%_break_{0} = OpLabel\n",
+          intTypes[i], caseLiterals[i])});
+    }
+
+    // test buffer device address
+    if(bdaFeatures.bufferDeviceAddress)
+    {
+      // bitcast uint2 address to pointer
+      append_tests({
+          R"EOTEST(
+%_ptr_addr_bda_data_struct = OpAccessChain %ptr_PushConstant_uint2 %push_data %int_1
+%_addr_bda_data_struct = OpLoad %uint2 %_ptr_addr_bda_data_struct
+%_ptr_bda_data_struct = OpBitcast %ptr_PhysicalStorageBuffer_bda_data_struct %_addr_bda_data_struct
+%_ptr_first = OpAccessChain %ptr_PhysicalStorageBuffer_bda_data_struct_first %_ptr_bda_data_struct %int_0
+%_out_float4 = OpLoad %float4 %_ptr_first Aligned 16
+)EOTEST",
+          // OpPtrAccessChain : float[] : ArrayStride 4
+          R"EOTEST(
+%_ptr_addr_bda_data_struct = OpAccessChain %ptr_PushConstant_uint2 %push_data %int_1
+%_addr_bda_data_struct = OpLoad %uint2 %_ptr_addr_bda_data_struct
+%_ptr_bda_data_struct = OpBitcast %ptr_PhysicalStorageBuffer_bda_data_struct_f32_4 %_addr_bda_data_struct
+%_ptr_f32 = OpPtrAccessChain %ptr_PhysicalStorageBuffer_f32 %_ptr_bda_data_struct %int_dyn_1
+%_out_float = OpLoad %float %_ptr_f32 Aligned 16
+)EOTEST",
+          // OpPtrAccessChain : float[] : ArrayStride 8
+          R"EOTEST(
+%_ptr_addr_bda_data_struct = OpAccessChain %ptr_PushConstant_uint2 %push_data %int_1
+%_addr_bda_data_struct = OpLoad %uint2 %_ptr_addr_bda_data_struct
+%_ptr_bda_data_struct = OpBitcast %ptr_PhysicalStorageBuffer_bda_data_struct_f32_8 %_addr_bda_data_struct
+%_ptr_f32 = OpPtrAccessChain %ptr_PhysicalStorageBuffer_f32 %_ptr_bda_data_struct %int_dyn_1
+%_out_float = OpLoad %float %_ptr_f32 Aligned 16
+)EOTEST",
+          // OpPtrAccessChain : float[] : ArrayStride 12
+          R"EOTEST(
+%_ptr_addr_bda_data_struct = OpAccessChain %ptr_PushConstant_uint2 %push_data %int_1
+%_addr_bda_data_struct = OpLoad %uint2 %_ptr_addr_bda_data_struct
+%_ptr_bda_data_struct = OpBitcast %ptr_PhysicalStorageBuffer_bda_data_struct_f32_12 %_addr_bda_data_struct
+%_ptr_f32 = OpPtrAccessChain %ptr_PhysicalStorageBuffer_f32 %_ptr_bda_data_struct %int_dyn_1
+%_out_float = OpLoad %float %_ptr_f32 Aligned 16
+)EOTEST",
+          // Load through a bda ptr array which is a member of a structure pointed to by a uint2 address
+          R"EOTEST(
+; OuterStruct { float4 a; float4 b; InnerStruct* pInner; }
+; InnerStruct { float x; float y; float z; }
+; Code Access is OuterStruct->pInner[1].x
+%_ptr_addr_bda_data_struct = OpAccessChain %ptr_PushConstant_uint2 %push_data %int_1
+%_addr_bda_data_struct = OpLoad %uint2 %_ptr_addr_bda_data_struct
+%_ptr_bda_data_struct = OpBitcast %ptr_PhysicalStorageBuffer_bda_data_struct %_addr_bda_data_struct
+%_addr_ptr_bda_nested_struct_array = OpAccessChain %ptr_PhysicalStorageBuffer_bda_inner_struct_array %_ptr_bda_data_struct %int_2
+%_ptr_bda_inner_struct_array = OpLoad %ptr_PhysicalStorageBuffer_bda_inner_struct %_addr_ptr_bda_nested_struct_array Aligned 8
+%_ptr_bda_inner_struct_one = OpPtrAccessChain %ptr_PhysicalStorageBuffer_bda_inner_struct %_ptr_bda_inner_struct_array %int_dyn_1
+%_ptr_bda_inner_struct_one_member_zero = OpAccessChain %ptr_PhysicalStorageBuffer_f32 %_ptr_bda_inner_struct_one %int_0
+%_out_float = OpLoad %float %_ptr_bda_inner_struct_one_member_zero Aligned 4
+)EOTEST",
+      });
+      if(features.shaderInt64)
+      {
+        append_tests({
+            // Convert u64 address to pointer
+            R"EOTEST(
+%_ptr_addr_bda_data_struct = OpAccessChain %ptr_PushConstant_u64 %push_data %int_4
+%_addr_bda_data_struct = OpLoad %u64 %_ptr_addr_bda_data_struct
+%_ptr_bda_data_struct = OpConvertUToPtr %ptr_PhysicalStorageBuffer_bda_data_struct %_addr_bda_data_struct
+%_ptr_first = OpAccessChain %ptr_PhysicalStorageBuffer_bda_data_struct_first %_ptr_bda_data_struct %int_1
+%_out_float4 = OpLoad %float4 %_ptr_first Aligned 16
+)EOTEST",
+            // Convert u64 address to pointer back to u64 address
+            R"EOTEST(
+%_ptr_addr_bda_data_struct = OpAccessChain %ptr_PushConstant_u64 %push_data %int_4
+%_addr = OpLoad %u64 %_ptr_addr_bda_data_struct
+%_addr_bda_data_struct = OpIAdd %u64 %_addr %u64_dyn_8
+%_ptr_bda_data_struct = OpConvertUToPtr %ptr_PhysicalStorageBuffer_bda_data_struct %_addr_bda_data_struct 
+%_out_u64 = OpConvertPtrToU %u64 %_ptr_bda_data_struct
+)EOTEST",
+            // arithmetic on u64 address then convert u64 address to pointer
+            R"EOTEST(
+%_ptr_addr_bda_data_struct = OpAccessChain %ptr_PushConstant_u64 %push_data %int_4
+%_addr = OpLoad %u64 %_ptr_addr_bda_data_struct
+%_addr2 = OpIAdd %u64 %_addr %u64_dyn_1023
+%_addr3 = OpISub %u64 %_addr2 %u64_dyn_1023
+%_addr_bda_data_struct = OpIAdd %u64 %_addr3 %u64_dyn_16
+%_ptr_bda_data_struct = OpConvertUToPtr %ptr_PhysicalStorageBuffer_bda_data_struct %_addr_bda_data_struct
+%_ptr_first = OpInBoundsAccessChain %ptr_PhysicalStorageBuffer_bda_data_struct_first %_ptr_bda_data_struct %int_0
+%_out_float4 = OpLoad %float4 %_ptr_first Aligned 16
+)EOTEST",
+            // form u64 address by arithmetic from two u32 values
+            R"EOTEST(
+%_ptr_addr_bda_data_struct_hi = OpAccessChain %ptr_PushConstant_uint %push_data %int_2
+%_addr_bda_data_struct_hi = OpLoad %uint %_ptr_addr_bda_data_struct_hi
+%_ptr_addr_bda_data_struct_lo = OpAccessChain %ptr_PushConstant_uint %push_data %int_3
+%_addr_bda_data_struct_lo = OpLoad %uint %_ptr_addr_bda_data_struct_lo
+%_addr_u64_hi = OpUConvert %u64 %_addr_bda_data_struct_hi 
+%_addr_u64_lo = OpUConvert %u64 %_addr_bda_data_struct_lo 
+%_addr_u64 = OpShiftLeftLogical %u64 %_addr_u64_hi %uint_32
+%_addr_bda_data_struct = OpIAdd %u64 %_addr_u64 %_addr_u64_lo
+%_ptr_bda_data_struct = OpConvertUToPtr %ptr_PhysicalStorageBuffer_bda_data_struct %_addr_bda_data_struct
+%_ptr_first = OpAccessChain %ptr_PhysicalStorageBuffer_bda_data_struct_first %_ptr_bda_data_struct %int_0
+%_out_float4 = OpLoad %float4 %_ptr_first Aligned 16
+)EOTEST",
+        });
+      }
+    }
+    // test integer dot product
+    if(intDotProdFeatures.shaderIntegerDotProduct)
+    {
+      std::vector<std::string> sTypes = {"int"};
+      std::vector<std::string> uTypes = {"uint"};
+      std::vector<std::string> sVecTypes = {"int4"};
+      std::vector<std::string> uVecTypes = {"uint4"};
+      if(float16Int8Features.shaderInt8)
+      {
+        sTypes.push_back("i8");
+        sVecTypes.push_back("i8v4");
+        uTypes.push_back("u8");
+        uVecTypes.push_back("u8v4");
+      }
+      if(features.shaderInt16)
+      {
+        sTypes.push_back("i16");
+        sVecTypes.push_back("i16v4");
+        uTypes.push_back("u16");
+        uVecTypes.push_back("u16v4");
+      }
+      if(features.shaderInt64)
+      {
+        sTypes.push_back("i64");
+        sVecTypes.push_back("i64v4");
+        uTypes.push_back("u64");
+        uVecTypes.push_back("u64v4");
+      }
+
+      // OpSDotKHR
+      // OpUDotKHR,
+      // OpSUDotKHR
+      // OpSDotAccSatKHR
+      // OpUDotAccSatKHR
+      // OpSUDotAccSatKHR
+      const char *prefixes[] = {"S", "U", "SU"};
+      for(size_t i = 0; i < sTypes.size(); ++i)
+      {
+        std::string signedTest;
+        std::string unsignedTest;
+        for(size_t j = 0; j < 3; ++j)
+        {
+          const char *prefix = prefixes[j];
+          const bool leftUnsigned = (j == 1);
+          const bool rightUnsigned = (j >= 1);
+          const std::string lhsType = leftUnsigned ? uTypes[i] : sTypes[i];
+          const std::string lhsVecType = leftUnsigned ? uVecTypes[i] : sVecTypes[i];
+          const std::string rhsType = rightUnsigned ? uTypes[i] : sTypes[i];
+          const std::string rhsVecType = rightUnsigned ? uVecTypes[i] : sVecTypes[i];
+          const std::string retType = lhsType;
+          std::string test;
+          test += fmt::format(
+              "%_lhs1_{6} = OpCompositeConstruct %{1} %{2}_1 %{2}_2 %{2}_3 %{2}_4\n"
+              "%_rhs1_{6} = OpCompositeConstruct %{3} %{4}_5 %{4}_6 %{4}_7 %{4}_8\n"
+              "%_res1_{6} = Op{5}DotKHR %{0} %_lhs1_{6} %_rhs1_{6}\n",
+              retType, lhsVecType, lhsType, rhsVecType, rhsType, prefix, j);
+          test += fmt::format(
+              "%_lhs2_{6} = OpCompositeConstruct %{1} %{2}_1 %{2}_2 %{2}_3 %{2}_4\n"
+              "%_rhs2_{6} = OpCompositeConstruct %{3} %{4}_9 %{4}_10 %{4}_11 %{4}_13\n"
+              "%_res2_{6} = Op{5}DotAccSatKHR %{0} %_lhs2_{6} %_rhs2_{6} %{0}_123\n",
+              retType, lhsVecType, lhsType, rhsVecType, rhsType, prefix, j);
+          if(leftUnsigned)
+            unsignedTest += test;
+          else
+            signedTest += test;
+        }
+        signedTest +=
+            fmt::format("%_out_{0} = OpCompositeConstruct %{0} %_res1_0 %_res2_0 %_res1_2 %_res2_2",
+                        sVecTypes[i]);
+        unsignedTest +=
+            fmt::format("%_out_{0} = OpCompositeConstruct %{0} %_res1_1 %_res2_1 %_res1_1 %_res2_1",
+                        uVecTypes[i]);
+        append_tests({signedTest, unsignedTest});
+      }
+      // Packed 4x8-bit
+      append_tests({
+          R"EOTEST(
+%_x = OpSDotKHR %int %int_dyn_0x01020304 %int_dyn_0x05060708 PackedVectorFormat4x8BitKHR
+%_y = OpSUDotKHR %int %int_dyn_0x090A0B0C %uint_dyn_0x0D0E0F10 PackedVectorFormat4x8BitKHR
+%_z = OpSDotAccSatKHR %int %int_dyn_0x01020304 %int_dyn_0x05060708 %int_191 PackedVectorFormat4x8BitKHR
+%_w = OpSUDotAccSatKHR %int %int_dyn_0x090A0B0C %uint_dyn_0x0D0E0F10 %int_neg237 PackedVectorFormat4x8BitKHR
+%_out_int4 = OpCompositeConstruct %int4 %_x %_y %_z %_w
+)EOTEST",
+          R"EOTEST(
+%_x = OpUDotKHR %uint %uint_dyn_0x01020304 %uint_dyn_0x05060708 PackedVectorFormat4x8BitKHR
+%_y = OpUDotAccSatKHR %uint %uint_dyn_0x090A0B0C0D %uint_dyn_0x0E0F1011 %uint_73 PackedVectorFormat4x8BitKHR
+%_out_uint4 = OpCompositeConstruct %uint4 %_x %_y %_x %_y
+)EOTEST",
+      });
+    }
   }
 
   std::string make_pixel_asm()
@@ -2839,6 +3523,12 @@ OpBranch %_bottomlabel
     std::set<float> float_constants = {0.0f, 1.0f, 2.0f, 3.0f, 4.0f};
     std::set<int32_t> int_constants = {7};
     std::set<uint32_t> uint_constants;
+    std::set<int64_t> i64_constants;
+    std::set<uint64_t> u64_constants;
+    std::set<int8_t> i8_constants;
+    std::set<uint8_t> u8_constants;
+    std::set<int16_t> i16_constants;
+    std::set<uint16_t> u16_constants;
 
     std::string cases;
 
@@ -2904,6 +3594,126 @@ OpBranch %_bottomlabel
         }
       }
 
+      // find any i8 constants referenced
+      offs = test.find("%i8_");
+      while(offs != std::string::npos)
+      {
+        offs += 4;    // past %i8_
+
+        // we generate dynamic and negative versions of all constants, skip to the first digit
+        offs = test.find_first_of("0123456789", offs);
+
+        // handle hex prefix
+        int base = 10;
+        if(test[offs] == '0' && test[offs + 1] == 'x')
+        {
+          base = 16;
+          offs += 2;
+        }
+
+        int8_t val = (int8_t)std::strtol(&test[offs], NULL, base);
+        i8_constants.insert(val);
+
+        // if it's a hex constant we'll name it in decimal, rename
+        if(base == 16)
+        {
+          size_t end = test.find_first_of("\n\t ", offs);
+          test.replace(offs - 2, end - offs + 2, fmt::format("{}", val));
+        }
+
+        offs = test.find("%i8_", offs);
+      }
+
+      // find any u8 constants referenced
+      offs = test.find("%u8_");
+      while(offs != std::string::npos)
+      {
+        offs += 4;    // past %u8_
+
+        // we generate dynamic and negative versions of all constants, skip to the first digit
+        offs = test.find_first_of("0123456789", offs);
+
+        // handle hex prefix
+        int base = 10;
+        if(test[offs] == '0' && test[offs + 1] == 'x')
+        {
+          base = 16;
+          offs += 2;
+        }
+
+        uint8_t val = (uint8_t)std::strtoul(&test[offs], NULL, base);
+        u8_constants.insert(val);
+
+        // if it's a hex constant we'll name it in decimal, rename
+        if(base == 16)
+        {
+          size_t end = test.find_first_of("\n\t ", offs);
+          test.replace(offs - 2, end - offs + 2, fmt::format("{}", val));
+        }
+
+        offs = test.find("%u8_", offs);
+      }
+
+      // find any i16 constants referenced
+      offs = test.find("%i16_");
+      while(offs != std::string::npos)
+      {
+        offs += 5;    // past %i16_
+
+        // we generate dynamic and negative versions of all constants, skip to the first digit
+        offs = test.find_first_of("0123456789", offs);
+
+        // handle hex prefix
+        int base = 10;
+        if(test[offs] == '0' && test[offs + 1] == 'x')
+        {
+          base = 16;
+          offs += 2;
+        }
+
+        int16_t val = (int16_t)std::strtoul(&test[offs], NULL, base);
+        i16_constants.insert(val);
+
+        // if it's a hex constant we'll name it in decimal, rename
+        if(base == 16)
+        {
+          size_t end = test.find_first_of("\n\t ", offs);
+          test.replace(offs - 2, end - offs + 2, fmt::format("{}", val));
+        }
+
+        offs = test.find("%i16_", offs);
+      }
+
+      // find any u16 constants referenced
+      offs = test.find("%u16_");
+      while(offs != std::string::npos)
+      {
+        offs += 5;    // past %u16_
+
+        // we generate dynamic and negative versions of all constants, skip to the first digit
+        offs = test.find_first_of("0123456789", offs);
+
+        // handle hex prefix
+        int base = 10;
+        if(test[offs] == '0' && test[offs + 1] == 'x')
+        {
+          base = 16;
+          offs += 2;
+        }
+
+        uint16_t val = (uint16_t)std::strtoul(&test[offs], NULL, base);
+        u16_constants.insert(val);
+
+        // if it's a hex constant we'll name it in decimal, rename
+        if(base == 16)
+        {
+          size_t end = test.find_first_of("\n\t ", offs);
+          test.replace(offs - 2, end - offs + 2, fmt::format("{}", val));
+        }
+
+        offs = test.find("%u16_", offs);
+      }
+
       // find any int constants referenced
       offs = test.find("%int_");
       while(offs != std::string::npos)
@@ -2921,7 +3731,7 @@ OpBranch %_bottomlabel
           offs += 2;
         }
 
-        int32_t val = std::strtol(&test[offs], NULL, base);
+        int32_t val = (int32_t)std::strtol(&test[offs], NULL, base);
         int_constants.insert(val);
 
         // if it's a hex constant we'll name it in decimal, rename
@@ -2934,7 +3744,7 @@ OpBranch %_bottomlabel
         offs = test.find("%int_", offs);
       }
 
-      // find any int constants referenced
+      // find any uint constants referenced
       offs = test.find("%uint_");
       while(offs != std::string::npos)
       {
@@ -2951,7 +3761,7 @@ OpBranch %_bottomlabel
           offs += 2;
         }
 
-        uint32_t val = std::strtoul(&test[offs], NULL, base);
+        uint32_t val = (uint32_t)std::strtoul(&test[offs], NULL, base);
         uint_constants.insert(val);
 
         // if it's a hex constant we'll name it in decimal, rename
@@ -2962,6 +3772,66 @@ OpBranch %_bottomlabel
         }
 
         offs = test.find("%uint_", offs);
+      }
+
+      // find any i64 constants referenced
+      offs = test.find("%i64_");
+      while(offs != std::string::npos)
+      {
+        offs += 5;    // past %i64_
+
+        // we generate dynamic and negative versions of all constants, skip to the first digit
+        offs = test.find_first_of("0123456789", offs);
+
+        // handle hex prefix
+        int base = 10;
+        if(test[offs] == '0' && test[offs + 1] == 'x')
+        {
+          base = 16;
+          offs += 2;
+        }
+
+        int64_t val = std::strtoll(&test[offs], NULL, base);
+        i64_constants.insert(val);
+
+        // if it's a hex constant we'll name it in decimal, rename
+        if(base == 16)
+        {
+          size_t end = test.find_first_of("\n\t ", offs);
+          test.replace(offs - 2, end - offs + 2, fmt::format("{}", val));
+        }
+
+        offs = test.find("%i64_", offs);
+      }
+
+      // find any u64 constants referenced
+      offs = test.find("%u64_");
+      while(offs != std::string::npos)
+      {
+        offs += 5;    // past %u64_
+
+        // we generate dynamic and negative versions of all constants, skip to the first digit
+        offs = test.find_first_of("0123456789", offs);
+
+        // handle hex prefix
+        int base = 10;
+        if(test[offs] == '0' && test[offs + 1] == 'x')
+        {
+          base = 16;
+          offs += 2;
+        }
+
+        uint64_t val = std::strtoull(&test[offs], NULL, base);
+        u64_constants.insert(val);
+
+        // if it's a hex constant we'll name it in decimal, rename
+        if(base == 16)
+        {
+          size_t end = test.find_first_of("\n\t ", offs);
+          test.replace(offs - 2, end - offs + 2, fmt::format("{}", val));
+        }
+
+        offs = test.find("%u64_", offs);
       }
 
       // add the test itself now
@@ -3072,6 +3942,95 @@ OpBranch %_bottomlabel
         {
           cases += fmt::format("%Color_{0} = OpConvertUToF %float4 %_out_uint4_{0}\n", i);
         }
+        else if(test.find("%_out_i64_") != std::string::npos)
+        {
+          cases += fmt::format(
+              "%_f_{0} = OpConvertSToF %float %_out_i64_{0}\n"
+              "%Color_{0} = OpCompositeConstruct %float4 %_f_{0} %_f_{0} %_f_{0} "
+              "%_f_{0}\n",
+              i);
+        }
+        else if(test.find("%_out_i64v4_") != std::string::npos)
+        {
+          cases += fmt::format("%Color_{0} = OpConvertSToF %float4 %_out_i64v4_{0}\n", i);
+        }
+        else if(test.find("%_out_u64_") != std::string::npos)
+        {
+          cases += fmt::format(
+              "%_f_{0} = OpConvertUToF %float %_out_u64_{0}\n"
+              "%Color_{0} = OpCompositeConstruct %float4 %_f_{0} %_f_{0} %_f_{0} "
+              "%_f_{0}\n",
+              i);
+        }
+        else if(test.find("%_out_u64v4_") != std::string::npos)
+        {
+          cases += fmt::format("%Color_{0} = OpConvertUToF %float4 %_out_u64v4_{0}\n", i);
+        }
+        else if(test.find("%_out_i8_") != std::string::npos)
+        {
+          cases += fmt::format(
+              "%_f_{0} = OpConvertSToF %float %_out_i8_{0}\n"
+              "%Color_{0} = OpCompositeConstruct %float4 %_f_{0} %_f_{0} %_f_{0} %_f_{0}\n",
+              i);
+        }
+        else if(test.find("%_out_i8v4_") != std::string::npos)
+        {
+          cases += fmt::format("%Color_{0} = OpConvertSToF %float4 %_out_i8v4_{0}\n", i);
+        }
+        else if(test.find("%_out_u8_") != std::string::npos)
+        {
+          cases += fmt::format(
+              "%_f_{0} = OpConvertUToF %float %_out_u8_{0}\n"
+              "%Color_{0} = OpCompositeConstruct %float4 %_f_{0} %_f_{0} %_f_{0} %_f_{0}\n",
+              i);
+        }
+        else if(test.find("%_out_u8v2_") != std::string::npos)
+        {
+          cases += fmt::format(
+              "%_f_{0} = OpConvertUToF %float2 %_out_u8v2_{0}\n"
+              "%Color_{0} = OpVectorShuffle %float4 %_f_{0} %_f_{0} 0 1 0 1\n",
+              i);
+        }
+        else if(test.find("%_out_u8v4_") != std::string::npos)
+        {
+          cases += fmt::format("%Color_{0} = OpConvertUToF %float4 %_out_u8v4_{0}\n", i);
+        }
+        else if(test.find("%_out_i16_") != std::string::npos)
+        {
+          cases += fmt::format(
+              "%_f_{0} = OpConvertSToF %float %_out_i16_{0}\n"
+              "%Color_{0} = OpCompositeConstruct %float4 %_f_{0} %_f_{0} %_f_{0} %_f_{0}\n",
+              i);
+        }
+        else if(test.find("%_out_i16v4_") != std::string::npos)
+        {
+          cases += fmt::format("%Color_{0} = OpConvertSToF %float4 %_out_i16v4_{0}\n", i);
+        }
+        else if(test.find("%_out_u16_") != std::string::npos)
+        {
+          cases += fmt::format(
+              "%_f_{0} = OpConvertUToF %float %_out_u16_{0}\n"
+              "%Color_{0} = OpCompositeConstruct %float4 %_f_{0} %_f_{0} %_f_{0} %_f_{0}\n",
+              i);
+        }
+        else if(test.find("%_out_u16v2_") != std::string::npos)
+        {
+          cases += fmt::format(
+              "%_f_{0} = OpConvertUToF %float2 %_out_u16v2_{0}\n"
+              "%Color_{0} = OpVectorShuffle %float4 %_f_{0} %_f_{0} 0 1 0 1\n",
+              i);
+        }
+        else if(test.find("%_out_u16v4_") != std::string::npos)
+        {
+          cases += fmt::format("%Color_{0} = OpConvertUToF %float4 %_out_u16v4_{0}\n", i);
+        }
+        else if(test.find("%_out_half2_") != std::string::npos)
+        {
+          cases += fmt::format(
+              "%_f_{0} = OpFConvert %float2 %_out_half2_{0}\n"
+              "%Color_{0} = OpVectorShuffle %float4 %_f_{0} %_f_{0} 0 1 0 1\n",
+              i);
+        }
         else if(test.find("; no_out") != std::string::npos)
         {
           store_out = false;
@@ -3107,7 +4066,9 @@ OpBranch %_bottomlabel
 
     if(float16Int8Features.shaderFloat16)
     {
-      typesConstants += "%half = OpTypeFloat 16\n";
+      typesConstants +=
+          "%half = OpTypeFloat 16\n"
+          "%half2 = OpTypeVector %half 2\n";
       capabilities += "OpCapability Float16\n";
     }
 
@@ -3116,7 +4077,10 @@ OpBranch %_bottomlabel
     {
       typesConstants +=
           "%i8 = OpTypeInt 8 1\n"
-          "%u8 = OpTypeInt 8 0\n";
+          "%i8v4 = OpTypeVector %i8 4\n"
+          "%u8 = OpTypeInt 8 0\n"
+          "%u8v2 = OpTypeVector %u8 2\n"
+          "%u8v4 = OpTypeVector %u8 4\n";
       capabilities += "OpCapability Int8\n";
     }
 
@@ -3124,7 +4088,9 @@ OpBranch %_bottomlabel
     {
       typesConstants +=
           "%i64 = OpTypeInt 64 1\n"
-          "%u64 = OpTypeInt 64 0\n";
+          "%i64v4 = OpTypeVector %i64 4\n"
+          "%u64 = OpTypeInt 64 0\n"
+          "%u64v4 = OpTypeVector %u64 4\n";
       capabilities += "OpCapability Int64\n";
     }
 
@@ -3134,8 +4100,91 @@ OpBranch %_bottomlabel
     {
       typesConstants +=
           "%i16 = OpTypeInt 16 1\n"
-          "%u16 = OpTypeInt 16 0\n";
+          "%i16v4 = OpTypeVector %i16 4\n"
+          "%u16 = OpTypeInt 16 0\n"
+          "%u16v2 = OpTypeVector %u16 2\n"
+          "%u16v4 = OpTypeVector %u16 4\n";
       capabilities += "OpCapability Int16\n";
+    }
+
+    if(bdaFeatures.bufferDeviceAddress)
+    {
+      capabilities += "OpCapability PhysicalStorageBufferAddresses\n";
+      spv_extensions += R"EOSHADER(
+               OpExtension "SPV_KHR_physical_storage_buffer"
+)EOSHADER";
+
+      typesConstants += "%pushdata_struct = OpTypeStruct %int4 %uint2 %uint %uint";
+      if(features.shaderInt64)
+        typesConstants += " %u64\n";
+      else
+        typesConstants += " %uint2\n";
+
+      typesConstants += R"EOSHADER(
+%ptr_PushConstant_pushdata_struct = OpTypePointer PushConstant %pushdata_struct
+%push_data = OpVariable %ptr_PushConstant_pushdata_struct PushConstant
+
+%ptr_PushConstant_uint = OpTypePointer PushConstant %uint
+%ptr_PushConstant_uint2 = OpTypePointer PushConstant %uint2
+ )EOSHADER";
+
+      if(features.shaderInt64)
+        typesConstants += "%ptr_PushConstant_u64 = OpTypePointer PushConstant %u64\n";
+
+      typesConstants += R"EOSHADER(
+%bda_inner_struct = OpTypeStruct %float %float %float 
+%ptr_PhysicalStorageBuffer_bda_inner_struct = OpTypePointer PhysicalStorageBuffer %bda_inner_struct
+%ptr_PhysicalStorageBuffer_bda_inner_struct_array = OpTypePointer PhysicalStorageBuffer %ptr_PhysicalStorageBuffer_bda_inner_struct
+
+%bda_data_struct = OpTypeStruct %float4 %float4 %ptr_PhysicalStorageBuffer_bda_inner_struct 
+ )EOSHADER";
+
+      typesConstants += R"EOSHADER(
+%ptr_PhysicalStorageBuffer_bda_data_struct = OpTypePointer PhysicalStorageBuffer %bda_data_struct
+%ptr_PhysicalStorageBuffer_bda_data_struct_first = OpTypePointer PhysicalStorageBuffer %float4
+%ptr_PhysicalStorageBuffer_bda_data_struct_f32_4 = OpTypePointer PhysicalStorageBuffer %float
+%ptr_PhysicalStorageBuffer_bda_data_struct_f32_8 = OpTypePointer PhysicalStorageBuffer %float
+%ptr_PhysicalStorageBuffer_bda_data_struct_f32_12 = OpTypePointer PhysicalStorageBuffer %float
+%ptr_PhysicalStorageBuffer_f32 = OpTypePointer PhysicalStorageBuffer %float
+ )EOSHADER";
+
+      decorations += R"EOSHADER(
+OpDecorate %ptr_PhysicalStorageBuffer_bda_data_struct_f32_4 ArrayStride 4
+OpDecorate %ptr_PhysicalStorageBuffer_bda_data_struct_f32_8 ArrayStride 8
+OpDecorate %ptr_PhysicalStorageBuffer_bda_data_struct_f32_12 ArrayStride 12
+; 8-bytes pointer stride
+OpDecorate %ptr_PhysicalStorageBuffer_bda_inner_struct_array ArrayStride 8
+; 12-bytes element stride
+OpDecorate %ptr_PhysicalStorageBuffer_bda_inner_struct ArrayStride 12
+
+OpDecorate %pushdata_struct Block
+OpMemberDecorate %pushdata_struct 0 Offset 16       ; int4 data
+OpMemberDecorate %pushdata_struct 1 Offset 32       ; uint2 bda_uvec2 
+OpMemberDecorate %pushdata_struct 2 Offset 40       ; uint bda_hi
+OpMemberDecorate %pushdata_struct 3 Offset 44       ; uint bda_lo
+OpMemberDecorate %pushdata_struct 4 Offset 48       ; uint64_t bda_u64
+
+OpMemberDecorate %bda_data_struct 0 Offset 0        ; float f32[0..3]
+OpMemberDecorate %bda_data_struct 1 Offset 16       ; float f32[4..7]
+OpMemberDecorate %bda_data_struct 2 Offset 32       ; bda_ptr to bda_inner_struct[2]
+
+OpMemberDecorate %bda_inner_struct 0 Offset 0        ; float
+OpMemberDecorate %bda_inner_struct 1 Offset 4        ; float
+OpMemberDecorate %bda_inner_struct 2 Offset 8        ; float
+)EOSHADER";
+    }
+
+    if(intDotProdFeatures.shaderIntegerDotProduct)
+    {
+      capabilities += "OpCapability DotProductKHR\n";
+      capabilities += "OpCapability DotProductInputAllKHR\n";
+      // Requires Int8 support
+      if(float16Int8Features.shaderInt8)
+        capabilities += "OpCapability DotProductInput4x8BitKHR\n";
+      capabilities += "OpCapability DotProductInput4x8BitPackedKHR\n";
+      spv_extensions += R"EOSHADER(
+               OpExtension "SPV_KHR_integer_dot_product"
+)EOSHADER";
     }
 
     std::string cbuffer =
@@ -3159,7 +4208,7 @@ OpDecorate %cbuffer Binding 10
 OpMemberDecorate %cbuffer_struct 0 Offset 0       ; vec4 first
 OpMemberDecorate %cbuffer_struct 1 Offset 16      ; vec4 pad1
 OpMemberDecorate %cbuffer_struct 2 Offset 32      ; vec4 second
-OpMemberDecorate %cbuffer_struct 3 Offset 48      ; vec4 pad2
+OpMemberDecorate %cbuffer_struct 3 Offset 48      ; vec4 nan
 OpMemberDecorate %cbuffer_struct 4 Offset 64      ; vec4 third
 OpMemberDecorate %cbuffer_struct 5 Offset 80      ; vec4 pad3
 OpMemberDecorate %cbuffer_struct 6 Offset 96      ; vec4 fourth
@@ -3196,6 +4245,12 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
       typesConstants += fmt::format("%float_{} = OpConstant %float {}\n", name, f);
       typesConstants += fmt::format("%float_neg{} = OpConstant %float -{}\n", name, f);
 
+      if(float16Int8Features.shaderFloat16)
+      {
+        typesConstants += fmt::format("%half_{} = OpConstant %half {}\n", name, f);
+        typesConstants += fmt::format("%half_neg{} = OpConstant %half -{}\n", name, f);
+      }
+
       if(features.shaderFloat64)
       {
         typesConstants += fmt::format("%double_{} = OpConstant %double {}\n", name, f);
@@ -3204,6 +4259,26 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
     }
 
     typesConstants += "\n";
+
+    if(float16Int8Features.shaderInt8)
+    {
+      for(int8_t i : i8_constants)
+        typesConstants += fmt::format("%i8_{0} = OpConstant %i8 {0}\n", i);
+      typesConstants += "\n";
+      for(uint8_t u : u8_constants)
+        typesConstants += fmt::format("%u8_{0} = OpConstant %u8 {0}\n", u);
+      typesConstants += "\n";
+    }
+
+    if(features.shaderInt16)
+    {
+      for(int16_t i : i16_constants)
+        typesConstants += fmt::format("%i16_{0} = OpConstant %i16 {0}\n", i);
+      typesConstants += "\n";
+      for(uint16_t u : u16_constants)
+        typesConstants += fmt::format("%u16_{0} = OpConstant %u16 {0}\n", u);
+      typesConstants += "\n";
+    }
 
     for(int32_t i : int_constants)
     {
@@ -3217,6 +4292,31 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
       typesConstants += fmt::format("%uint_{0} = OpConstant %uint {0}\n", u);
 
     typesConstants += "\n";
+
+    if(features.shaderInt64)
+    {
+      for(int64_t i : i64_constants)
+      {
+        typesConstants += fmt::format("%i64_{0} = OpConstant %i64 {0}\n", i);
+        typesConstants += fmt::format("%i64_neg{0} = OpConstant %i64 -{0}\n", i);
+      }
+
+      typesConstants += "\n";
+
+      for(uint64_t u : u64_constants)
+      {
+        typesConstants += fmt::format("%u64_{0} = OpConstant %u64 {0}\n", u);
+      }
+
+      typesConstants += "\n";
+    }
+    else
+    {
+      if(!i64_constants.empty())
+        TEST_FATAL("Test using i64 constants without shaderInt64 capability");
+      if(!u64_constants.empty())
+        TEST_FATAL("Test using u64 constants without shaderInt64 capability");
+    }
 
     for(size_t i = 0; i < 32; i++)
       typesConstants += fmt::format("%randf_{} = OpConstant %float {:.3}\n", i, RANDF(0.0f, 1.0f));
@@ -3239,9 +4339,13 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
 
 )EOSHADER";
 
+    std::string memory_model =
+        (bdaFeatures.bufferDeviceAddress) ? "PhysicalStorageBuffer64" : "Logical";
     std::string ret = capabilities + spv_extensions + extinstimport +
                       R"EOSHADER(
-               OpMemoryModel Logical GLSL450
+               OpMemoryModel )EOSHADER" +
+                      memory_model + " GLSL450\n" +
+                      R"EOSHADER(
                OpEntryPoint Fragment %main "main" %flatData %linearData %Color %gl_FragCoord
 )EOSHADER" + executionmodes +
                       spv_debug + decorations + typesConstants + functions +
@@ -3274,7 +4378,16 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
 
    %posinf = OpFDiv %float %oneVal %zerof
    %neginf = OpFDiv %float %negoneVal %zerof
-      %nan = OpFDiv %float %zerof %zerof
+
+ ; NaN generation is hard and we want to avoid compilers compiling it out, so generate
+ ; it in shader and multiply by one from a UBO so we get NaN either way
+ ; (since NaN * anything = NaN)
+ %nan_shad = OpFDiv %float %zerof %zerof
+
+  %nan_ptr = OpAccessChain %ptr_Uniform_float4 %cbuffer %uint_3
+  %nan_ubo = OpLoad %float4 %nan_ptr
+%nan_ubo_x = OpCompositeExtract %float %nan_ubo 0
+      %nan = OpFMul %float %nan_shad %nan_ubo_x
 
 %intval_ptr = OpAccessChain %ptr_Input_uint %flatData %flatv2f_intval_idx
     %intval = OpLoad %uint %intval_ptr
@@ -3286,6 +4399,13 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
 
     if(features.shaderFloat64)
       ret += "%zerof64 = OpFConvert %double %zerof\n";
+
+    if(features.shaderInt64)
+    {
+      ret +=
+          "%_temp = OpCompositeConstruct %uint2 %zerou %zerou\n"
+          "%zerou64 = OpBitcast %u64 %_temp\n";
+    }
 
     // generate dynamic versions of the constants
     for(float f : float_constants)
@@ -3316,6 +4436,9 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
 
     for(uint32_t u : uint_constants)
       ret += fmt::format("%uint_dyn_{0} = OpIAdd %uint %zerou %uint_{0}\n", u);
+
+    for(uint64_t u : u64_constants)
+      ret += fmt::format("%u64_dyn_{0} = OpIAdd %u64 %zerou64 %u64_{0}\n", u);
 
     ret += "\n";
 
@@ -3365,6 +4488,16 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
   VkPhysicalDeviceFloat16Int8FeaturesKHR float16Int8Features = {
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR,
   };
+  VkPhysicalDeviceBufferDeviceAddressFeaturesEXT bdaFeatures = {
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES_KHR,
+  };
+  VkPhysicalDeviceComputeShaderDerivativesFeaturesNV csDerivFeatures = {
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_NV,
+  };
+
+  VkPhysicalDeviceShaderIntegerDotProductFeaturesKHR intDotProdFeatures = {
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_FEATURES_KHR,
+  };
 
   void Prepare(int argc, char **argv)
   {
@@ -3381,6 +4514,15 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
 
     // dependencies of VK_KHR_8bit_storage
     optDevExts.push_back(VK_KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION_NAME);
+
+    // add BDA extension
+    optDevExts.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+
+    // compute shader derivatives
+    optDevExts.push_back(VK_NV_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME);
+
+    // integer dot product
+    optDevExts.push_back(VK_KHR_SHADER_INTEGER_DOT_PRODUCT_EXTENSION_NAME);
 
     // we require this to pixel shader debug anyway, so we might as well require it for all tests.
     features.fragmentStoresAndAtomics = VK_TRUE;
@@ -3401,6 +4543,14 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
                                     VK_KHR_8BIT_STORAGE_EXTENSION_NAME) != devExts.end();
     const bool float16int8 = std::find(devExts.begin(), devExts.end(),
                                        VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME) != devExts.end();
+    const bool bda = std::find(devExts.begin(), devExts.end(),
+                               VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME) != devExts.end();
+    const bool csDerivatives =
+        std::find(devExts.begin(), devExts.end(), VK_NV_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME) !=
+        devExts.end();
+    const bool intDotProduct =
+        std::find(devExts.begin(), devExts.end(),
+                  VK_KHR_SHADER_INTEGER_DOT_PRODUCT_EXTENSION_NAME) != devExts.end();
 
     vk_version = 0x10;
 
@@ -3421,6 +4571,33 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
       LIMIT_CHECK(maxPerStageDescriptorSamplers, 64);
       LIMIT_CHECK(maxPerStageDescriptorStorageBuffers, 16);
       LIMIT_CHECK(maxPerStageDescriptorStorageImages, 64);
+    }
+
+    VkFormatProperties props = {};
+    vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_A2B10G10R10_UINT_PACK32, &props);
+
+    if((props.bufferFeatures & VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT) == 0)
+    {
+      Avail = "VK_FORMAT_A2B10G10R10_UINT_PACK32 not supported in texel buffers";
+      return;
+    }
+    if((props.bufferFeatures & VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT) == 0)
+    {
+      Avail = "VK_FORMAT_A2B10G10R10_UINT_PACK32 not supported in texel buffers";
+      return;
+    }
+
+    vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_A2B10G10R10_UNORM_PACK32, &props);
+
+    if((props.bufferFeatures & VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT) == 0)
+    {
+      Avail = "VK_FORMAT_A2B10G10R10_UNORM_PACK32 not supported in texel buffers";
+      return;
+    }
+    if((props.bufferFeatures & VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT) == 0)
+    {
+      Avail = "VK_FORMAT_A2B10G10R10_UNORM_PACK32 not supported in texel buffers";
+      return;
     }
 
     // enable features we can optionally test with.
@@ -3506,6 +4683,27 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
       float16Int8Features.pNext = (void *)devInfoNext;
       devInfoNext = &float16Int8Features;
     }
+
+    if(bda)
+    {
+      getPhysFeatures2(&bdaFeatures);
+      bdaFeatures.pNext = (void *)devInfoNext;
+      devInfoNext = &bdaFeatures;
+    }
+
+    if(csDerivatives)
+    {
+      getPhysFeatures2(&csDerivFeatures);
+      csDerivFeatures.pNext = (void *)devInfoNext;
+      devInfoNext = &csDerivFeatures;
+    }
+
+    if(intDotProduct)
+    {
+      getPhysFeatures2(&intDotProdFeatures);
+      intDotProdFeatures.pNext = (void *)devInfoNext;
+      devInfoNext = &intDotProdFeatures;
+    }
   }
 
   int main()
@@ -3524,6 +4722,56 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
                                     VK_KHR_8BIT_STORAGE_EXTENSION_NAME) != devExts.end();
     const bool float16int8 = std::find(devExts.begin(), devExts.end(),
                                        VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME) != devExts.end();
+    const bool bda = std::find(devExts.begin(), devExts.end(),
+                               VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME) != devExts.end();
+    const bool csDerivatives =
+        std::find(devExts.begin(), devExts.end(), VK_NV_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME) !=
+        devExts.end();
+    const bool intDotProduct =
+        std::find(devExts.begin(), devExts.end(),
+                  VK_KHR_SHADER_INTEGER_DOT_PRODUCT_EXTENSION_NAME) != devExts.end();
+
+    bool subgroupSupport = true;
+    static VkPhysicalDeviceSubgroupProperties subProps = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES,
+    };
+
+    if(devVersion < VK_API_VERSION_1_1)
+    {
+      TEST_LOG("Disabled subgroup support: Vulkan device version isn't 1.1");
+      subgroupSupport = false;
+    }
+    if(subgroupSupport)
+    {
+      getPhysProperties2(&subProps);
+
+      if(subProps.subgroupSize < 16)
+      {
+        TEST_LOG("Disabled subgroup support: Subgroup size is less than 16");
+        subgroupSupport = false;
+      }
+    }
+    if(subgroupSupport)
+    {
+      // require at least a few ops so we only have a few conditional compilations
+      const VkSubgroupFeatureFlags requiredOps =
+          VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_VOTE_BIT |
+          VK_SUBGROUP_FEATURE_ARITHMETIC_BIT | VK_SUBGROUP_FEATURE_BALLOT_BIT;
+
+      if((subProps.supportedOperations & requiredOps) != requiredOps)
+      {
+        TEST_LOG("Disabled subgroup support: Missing ops support");
+        subgroupSupport = false;
+      }
+    }
+    if(subgroupSupport)
+    {
+      if((subProps.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) == 0)
+      {
+        TEST_LOG("Disabled subgroup support: Missing compute subgroup support");
+        subgroupSupport = false;
+      }
+    }
 
     if(storage16)
       TEST_LOG("Running tests on 16-bit storage");
@@ -3533,6 +4781,23 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
 
     if(float16int8)
       TEST_LOG("Running tests on half and int8 arithmetic");
+
+    if(bda)
+      TEST_LOG("Running tests on buffer device address");
+
+    if(csDerivatives)
+    {
+      if(subgroupSupport)
+        TEST_LOG("Running tests on compute shader derivatives + suubgroup");
+      else
+        TEST_LOG("Running tests on compute shader derivatives");
+    }
+
+    if(intDotProduct)
+    {
+      if(intDotProdFeatures.shaderIntegerDotProduct)
+        TEST_LOG("Running tests on integer dot product");
+    }
 
     if(features.shaderFloat64)
       TEST_LOG("Running tests on doubles");
@@ -3580,6 +4845,11 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
         {22, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
         {30, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
         {31, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+        {32, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+        {33, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+        {34, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+        {35, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+        {36, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
     }));
 
     std::vector<VkDescriptorSetLayout> setLayouts = {setlayout0};
@@ -3588,6 +4858,7 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
     // non-uniformly access each of these
     VkDescriptorSetLayout setlayout1 = VK_NULL_HANDLE;
     VkDescriptorSetLayout setlayout2 = VK_NULL_HANDLE;
+    VkDescriptorSetLayout setlayout3 = VK_NULL_HANDLE;
 
     if(descIndexing)
     {
@@ -3603,6 +4874,7 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
           {9, VK_DESCRIPTOR_TYPE_SAMPLER, 14, VK_SHADER_STAGE_FRAGMENT_BIT},
           {20, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 14, VK_SHADER_STAGE_FRAGMENT_BIT},
           {21, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 14, VK_SHADER_STAGE_FRAGMENT_BIT},
+          {22, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 14, VK_SHADER_STAGE_FRAGMENT_BIT},
       }));
 
       setlayout2 = createDescriptorSetLayout(vkh::DescriptorSetLayoutCreateInfo({
@@ -3673,13 +4945,21 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
           {59, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
       }));
 
+      setlayout3 = createDescriptorSetLayout(vkh::DescriptorSetLayoutCreateInfo({
+          {22, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 14, VK_SHADER_STAGE_FRAGMENT_BIT},
+          {23, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 14, VK_SHADER_STAGE_FRAGMENT_BIT},
+          {24, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 14, VK_SHADER_STAGE_FRAGMENT_BIT},
+          {25, VK_DESCRIPTOR_TYPE_SAMPLER, 14, VK_SHADER_STAGE_FRAGMENT_BIT},
+      }));
+
       setLayouts.push_back(setlayout1);
       setLayouts.push_back(setlayout2);
+      setLayouts.push_back(setlayout3);
     }
 
     VkPipelineLayout layout = createPipelineLayout(vkh::PipelineLayoutCreateInfo(
         setLayouts, {
-                        vkh::PushConstantRange(VK_SHADER_STAGE_FRAGMENT_BIT, 16, sizeof(Vec4i)),
+                        vkh::PushConstantRange(VK_SHADER_STAGE_FRAGMENT_BIT, 16, sizeof(PushData)),
                     }));
 
     // calculate number of tests, wrapping each row at 256
@@ -3754,6 +5034,138 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
 
     VkPipeline asmpipe = createGraphicsPipeline(pipeCreateInfo);
 
+    VkDescriptorSetLayout compSetlayout =
+        createDescriptorSetLayout(vkh::DescriptorSetLayoutCreateInfo({
+            {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT},
+            {14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT},
+            {19, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT},
+            {32, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT},
+        }));
+
+    VkPipelineLayout compLayout = createPipelineLayout(vkh::PipelineLayoutCreateInfo(
+        {compSetlayout}, {vkh::PushConstantRange(VK_SHADER_STAGE_ALL, 0, 8)}));
+
+    std::map<std::string, std::string> macros;
+    int numCompTests = 0;
+    size_t pos = 0;
+    while(pos != std::string::npos)
+    {
+      pos = computeShaderDerivs.find("IsTest(", pos);
+      if(pos == std::string::npos)
+        break;
+      pos += sizeof("IsTest(") - 1;
+      numCompTests = std::max(numCompTests, atoi(computeShaderDerivs.c_str() + pos) + 1);
+    }
+    macros["COMP_TESTS"] = fmt::format("{}", numCompTests);
+
+    // Must be a multiple of 4 in X
+    // Must be a multiple of 2 in Y
+    macros["GROUP_SIZE_X"] = "8";
+    macros["GROUP_SIZE_Y"] = "4";
+    macros["GROUP_SIZE_Z"] = "1";
+
+    std::string comppipe_name[8];
+    VkPipeline compPipes[8];
+    uint32_t countCompPipes = 0;
+    if(csDerivatives)
+    {
+      macros["WORKGROUP_SUPPORT"] = "0";
+      macros["SUBGROUP_SUPPORT"] = "0";
+      macros["QUAD_LAYOUT"] = "derivative_group_quadsNV";
+      comppipe_name[countCompPipes] =
+          fmt::format("{}x{}x{} : {}", macros["GROUP_SIZE_X"], macros["GROUP_SIZE_Y"],
+                      macros["GROUP_SIZE_Z"], macros["QUAD_LAYOUT"]);
+
+      compPipes[countCompPipes] = createComputePipeline(vkh::ComputePipelineCreateInfo(
+          compLayout, CompileShaderModule(computeShaderDerivs, ShaderLang::glsl, ShaderStage::comp,
+                                          "main", macros, SPIRVTarget::vulkan11)));
+      ++countCompPipes;
+
+      macros["QUAD_LAYOUT"] = "derivative_group_LinearNV";
+      comppipe_name[countCompPipes] =
+          fmt::format("{}x{}x{} : {}", macros["GROUP_SIZE_X"], macros["GROUP_SIZE_Y"],
+                      macros["GROUP_SIZE_Z"], macros["QUAD_LAYOUT"]);
+      compPipes[countCompPipes] = createComputePipeline(vkh::ComputePipelineCreateInfo(
+          compLayout, CompileShaderModule(computeShaderDerivs, ShaderLang::glsl, ShaderStage::comp,
+                                          "main", macros, SPIRVTarget::vulkan11)));
+      ++countCompPipes;
+
+      // with workgroup
+      macros["WORKGROUP_SUPPORT"] = "1";
+      macros["QUAD_LAYOUT"] = "derivative_group_quadsNV";
+      comppipe_name[countCompPipes] =
+          fmt::format("{}x{}x{} : {} + Workgroup", macros["GROUP_SIZE_X"], macros["GROUP_SIZE_Y"],
+                      macros["GROUP_SIZE_Z"], macros["QUAD_LAYOUT"]);
+      compPipes[countCompPipes] = createComputePipeline(vkh::ComputePipelineCreateInfo(
+          compLayout, CompileShaderModule(computeShaderDerivs, ShaderLang::glsl, ShaderStage::comp,
+                                          "main", macros, SPIRVTarget::vulkan11)));
+      ++countCompPipes;
+
+      macros["QUAD_LAYOUT"] = "derivative_group_LinearNV";
+      comppipe_name[countCompPipes] =
+          fmt::format("{}x{}x{} : {} + Workgroup", macros["GROUP_SIZE_X"], macros["GROUP_SIZE_Y"],
+                      macros["GROUP_SIZE_Z"], macros["QUAD_LAYOUT"]);
+      compPipes[countCompPipes] = createComputePipeline(vkh::ComputePipelineCreateInfo(
+          compLayout, CompileShaderModule(computeShaderDerivs, ShaderLang::glsl, ShaderStage::comp,
+                                          "main", macros, SPIRVTarget::vulkan11)));
+      ++countCompPipes;
+
+      if(subgroupSupport)
+      {
+        // with subgroup
+        macros["WORKGROUP_SUPPORT"] = "0";
+        macros["SUBGROUP_SUPPORT"] = "1";
+        macros["QUAD_LAYOUT"] = "derivative_group_quadsNV";
+        comppipe_name[countCompPipes] =
+            fmt::format("{}x{}x{} : {} + Subgroup", macros["GROUP_SIZE_X"], macros["GROUP_SIZE_Y"],
+                        macros["GROUP_SIZE_Z"], macros["QUAD_LAYOUT"]);
+        compPipes[countCompPipes] = createComputePipeline(vkh::ComputePipelineCreateInfo(
+            compLayout, CompileShaderModule(computeShaderDerivs, ShaderLang::glsl, ShaderStage::comp,
+                                            "main", macros, SPIRVTarget::vulkan11)));
+        ++countCompPipes;
+
+        macros["QUAD_LAYOUT"] = "derivative_group_LinearNV";
+        comppipe_name[countCompPipes] =
+            fmt::format("{}x{}x{} : {} + Subgroup", macros["GROUP_SIZE_X"], macros["GROUP_SIZE_Y"],
+                        macros["GROUP_SIZE_Z"], macros["QUAD_LAYOUT"]);
+        compPipes[countCompPipes] = createComputePipeline(vkh::ComputePipelineCreateInfo(
+            compLayout, CompileShaderModule(computeShaderDerivs, ShaderLang::glsl, ShaderStage::comp,
+                                            "main", macros, SPIRVTarget::vulkan11)));
+        ++countCompPipes;
+
+        // with subgroup and workgroup
+        macros["WORKGROUP_SUPPORT"] = "1";
+        macros["SUBGROUP_SUPPORT"] = "1";
+        macros["QUAD_LAYOUT"] = "derivative_group_quadsNV";
+        comppipe_name[countCompPipes] =
+            fmt::format("{}x{}x{} : {} + Subgroup + Workgroup", macros["GROUP_SIZE_X"],
+                        macros["GROUP_SIZE_Y"], macros["GROUP_SIZE_Z"], macros["QUAD_LAYOUT"]);
+        compPipes[countCompPipes] = createComputePipeline(vkh::ComputePipelineCreateInfo(
+            compLayout, CompileShaderModule(computeShaderDerivs, ShaderLang::glsl, ShaderStage::comp,
+                                            "main", macros, SPIRVTarget::vulkan11)));
+        ++countCompPipes;
+
+        macros["QUAD_LAYOUT"] = "derivative_group_LinearNV";
+        comppipe_name[countCompPipes] =
+            fmt::format("{}x{}x{} : {} + Subgroup + Workgroup", macros["GROUP_SIZE_X"],
+                        macros["GROUP_SIZE_Y"], macros["GROUP_SIZE_Z"], macros["QUAD_LAYOUT"]);
+        compPipes[countCompPipes] = createComputePipeline(vkh::ComputePipelineCreateInfo(
+            compLayout, CompileShaderModule(computeShaderDerivs, ShaderLang::glsl, ShaderStage::comp,
+                                            "main", macros, SPIRVTarget::vulkan11)));
+        ++countCompPipes;
+      }
+    }
+
+    AllocatedBuffer bufout(
+        this,
+        vkh::BufferCreateInfo(sizeof(Vec4f) * 1024 * numCompTests,
+                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
+
+    setName(bufout.buffer, "bufout");
+
+    VkDescriptorSet compSet = allocateDescriptorSet(compSetlayout);
+
     float triWidth = 8.0f / float(texWidth);
     float triHeight = 8.0f / float(texHeight);
 
@@ -3773,31 +5185,83 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
     Texture rgba8;
     LoadXPM(SmileyTexture, rgba8);
 
-    AllocatedImage queryTest(this, vkh::ImageCreateInfo(183, 347, 0, VK_FORMAT_R8G8B8A8_UNORM,
-                                                        VK_IMAGE_USAGE_SAMPLED_BIT, 4, 3),
+    AllocatedImage queryTest(this,
+                             vkh::ImageCreateInfo(183, 347, 0, VK_FORMAT_R8G8B8A8_UNORM,
+                                                  VK_IMAGE_USAGE_SAMPLED_BIT, 4, 3),
                              VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
 
     VkImageView queryTestView = createImageView(vkh::ImageViewCreateInfo(
         queryTest.image, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UNORM));
 
+    AllocatedImage bad_queryTest(this,
+                                 vkh::ImageCreateInfo(134, 582, 0, VK_FORMAT_R8G8B8A8_UNORM,
+                                                      VK_IMAGE_USAGE_SAMPLED_BIT, 7, 5),
+                                 VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
+
+    VkImageView bad_queryTestView = createImageView(vkh::ImageViewCreateInfo(
+        bad_queryTest.image, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UNORM));
+
     AllocatedImage queryTestMS(
-        this, vkh::ImageCreateInfo(183, 347, 0, VK_FORMAT_R8G8B8A8_UNORM,
-                                   VK_IMAGE_USAGE_SAMPLED_BIT, 1, 5, VK_SAMPLE_COUNT_4_BIT),
+        this,
+        vkh::ImageCreateInfo(183, 347, 0, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT, 1,
+                             5, VK_SAMPLE_COUNT_4_BIT),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
 
     VkImageView queryTestMSView = createImageView(vkh::ImageViewCreateInfo(
         queryTestMS.image, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UNORM));
 
+    AllocatedImage bad_queryTestMS(
+        this,
+        vkh::ImageCreateInfo(321, 543, 0, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT, 1,
+                             3, VK_SAMPLE_COUNT_2_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
+
+    VkImageView bad_queryTestMSView = createImageView(vkh::ImageViewCreateInfo(
+        bad_queryTestMS.image, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UNORM));
+
     AllocatedImage smiley(
-        this, vkh::ImageCreateInfo(rgba8.width, rgba8.height, 0, VK_FORMAT_R8G8B8A8_UNORM,
-                                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT),
+        this,
+        vkh::ImageCreateInfo(rgba8.width, rgba8.height, 0, VK_FORMAT_R8G8B8A8_UNORM,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
 
     VkImageView smileyview = createImageView(
         vkh::ImageViewCreateInfo(smiley.image, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM));
-    AllocatedBuffer uploadBuf(this, vkh::BufferCreateInfo(rgba8.data.size() * sizeof(uint32_t),
-                                                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT),
+
+    AllocatedImage bad_image(
+        this,
+        vkh::ImageCreateInfo(4, 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
+
+    VkImageView bad_imgview = createImageView(vkh::ImageViewCreateInfo(
+        bad_image.image, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R32G32B32A32_SFLOAT));
+
+    AllocatedBuffer uploadBuf(this,
+                              vkh::BufferCreateInfo(rgba8.data.size() * sizeof(uint32_t),
+                                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT),
                               VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
+
+    AllocatedImage shadowimg(this,
+                             vkh::ImageCreateInfo(16, 16, 0, VK_FORMAT_D32_SFLOAT,
+                                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                                                      VK_IMAGE_USAGE_SAMPLED_BIT),
+                             VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
+
+    VkImageView shadowview = createImageView(
+        vkh::ImageViewCreateInfo(shadowimg.image, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_D32_SFLOAT, {},
+                                 vkh::ImageSubresourceRange(VK_IMAGE_ASPECT_DEPTH_BIT)));
+
+    AllocatedImage bad_shadowimg(this,
+                                 vkh::ImageCreateInfo(4, 4, 0, VK_FORMAT_D32_SFLOAT,
+                                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                                          VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                                                          VK_IMAGE_USAGE_SAMPLED_BIT),
+                                 VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
+    VkImageView bad_shadowview = createImageView(
+        vkh::ImageViewCreateInfo(bad_shadowimg.image, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_D32_SFLOAT,
+                                 {}, vkh::ImageSubresourceRange(VK_IMAGE_ASPECT_DEPTH_BIT)));
 
     uploadBuf.upload(rgba8.data.data(), rgba8.data.size() * sizeof(uint32_t));
 
@@ -3863,9 +5327,10 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
     typeDataBuf.upload(typeData.data(), typeData.size());
 
     AllocatedImage randomcube(
-        this, vkh::ImageCreateInfo(rgba8.width, rgba8.height, 0, VK_FORMAT_R8G8B8A8_UNORM,
-                                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 1,
-                                   6, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT),
+        this,
+        vkh::ImageCreateInfo(rgba8.width, rgba8.height, 0, VK_FORMAT_R8G8B8A8_UNORM,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 1, 6,
+                             VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
 
     VkImageView randomcubeview = createImageView(vkh::ImageViewCreateInfo(
@@ -3881,6 +5346,8 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
           {
               vkh::ImageMemoryBarrier(0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, smiley.image),
+              vkh::ImageMemoryBarrier(0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, bad_image.image),
               vkh::ImageMemoryBarrier(0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, randomcube.image),
               vkh::ImageMemoryBarrier(0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
@@ -3912,6 +5379,9 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, smiley.image),
               vkh::ImageMemoryBarrier(VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, bad_image.image),
+              vkh::ImageMemoryBarrier(VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, randomcube.image),
           });
 
@@ -3928,26 +5398,52 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
     VkSampler shadowsampler = createSampler(vkh::SamplerCreateInfo(
         VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_REPEAT, 0.0f,
         VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK, 0.0f, 0.0f, 0.0f, VK_COMPARE_OP_LESS_OR_EQUAL));
+    VkSampler pointClampSampler = createSampler(
+        vkh::SamplerCreateInfo(VK_FILTER_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE));
+    VkSampler bad_sampler = createSampler(
+        vkh::SamplerCreateInfo(VK_FILTER_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER, 1.0,
+                               VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE, 10.0f, 10.0f, 10.0f));
 
     VkDescriptorSet descset0 = allocateDescriptorSet(setlayout0);
     VkDescriptorSet descset1 = VK_NULL_HANDLE;
     VkDescriptorSet descset2 = VK_NULL_HANDLE;
+    VkDescriptorSet descset3 = VK_NULL_HANDLE;
 
     if(descIndexing)
     {
       descset1 = allocateDescriptorSet(setlayout1);
       descset2 = allocateDescriptorSet(setlayout2);
+      descset3 = allocateDescriptorSet(setlayout3);
     }
 
-    Vec4f cbufferdata[64] = {};
+    vkh::updateDescriptorSets(
+        device,
+        {
+            vkh::WriteDescriptorSet(compSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                    {vkh::DescriptorBufferInfo(bufout.buffer)}),
+            vkh::WriteDescriptorSet(
+                compSet, 14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {vkh::DescriptorImageInfo(smileyview, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                          linearsampler)}),
+            vkh::WriteDescriptorSet(
+                compSet, 19, VK_DESCRIPTOR_TYPE_SAMPLER,
+                {vkh::DescriptorImageInfo(VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, shadowsampler)}),
+            vkh::WriteDescriptorSet(
+                compSet, 32, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                {vkh::DescriptorImageInfo(shadowview, VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE)}),
+        });
+
+    Vec4f cbufferdata[16 * 16] = {};
 
     AllocatedBuffer cb(
-        this, vkh::BufferCreateInfo(sizeof(cbufferdata), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                                                             VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        this,
+        vkh::BufferCreateInfo(sizeof(cbufferdata) * 2, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
 
     cbufferdata[1] = Vec4f(1.1f, 2.2f, 3.3f, 4.4f);
     cbufferdata[2] = Vec4f(5.5f, 6.6f, 7.7f, 8.8f);
+    cbufferdata[3] = Vec4f(std::numeric_limits<float>::quiet_NaN());
     cbufferdata[4] = Vec4f(9.9f, 9.99f, 9.999f, 9.999f);
     cbufferdata[6] = Vec4f(100.0f, 200.0f, 300.0f, 400.0f);
 
@@ -3963,7 +5459,13 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
     cbufferdata[11] = Vec4f(98.125f, 76.375f, 54.5625f, 32.78125f);
 
     uint32_t index = 4;
-    memcpy(&cbufferdata[1], &index, sizeof(index));
+    memcpy(&cbufferdata[1].x, &index, sizeof(index));
+    index = 2;
+    memcpy(&cbufferdata[1].y, &index, sizeof(index));
+    index = 3;
+    memcpy(&cbufferdata[1].z, &index, sizeof(index));
+    index = 5;
+    memcpy(&cbufferdata[1].w, &index, sizeof(index));
 
     Vec4u unpack = {};
 
@@ -3985,40 +5487,177 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
     memmove(&cbufferdata[16], &cbufferdata[0], sizeof(Vec4f) * 16);
     memset(&cbufferdata[0], 0, sizeof(Vec4f) * 16);
 
+    for(size_t i = 2; i < 14; ++i)
+    {
+      size_t cbufIdx = i * 16;
+      memcpy(&cbufferdata[cbufIdx], &cbufferdata[16], sizeof(Vec4f) * 16);
+
+      index = (i + 0) % 14;
+      memcpy(&cbufferdata[cbufIdx + 1].x, &index, sizeof(index));
+      index = (i + 2) % 14;
+      memcpy(&cbufferdata[cbufIdx + 1].y, &index, sizeof(index));
+      index = (i + 3) % 14;
+      memcpy(&cbufferdata[cbufIdx + 1].z, &index, sizeof(index));
+      index = (i + 5) % 14;
+      memcpy(&cbufferdata[cbufIdx + 1].w, &index, sizeof(index));
+    }
+
     cb.upload(cbufferdata);
 
+    AllocatedBuffer bad_cb(
+        this,
+        vkh::BufferCreateInfo(1 * sizeof(Vec4f), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                                     VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
+
+    AllocatedBuffer bad_texbuffer(
+        this,
+        vkh::BufferCreateInfo(1 * sizeof(Vec4f), VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                                                     VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
+
     AllocatedBuffer texbuffer(
-        this, vkh::BufferCreateInfo(sizeof(cbufferdata), VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
-                                                             VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        this,
+        vkh::BufferCreateInfo(sizeof(cbufferdata), VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                                                       VK_BUFFER_USAGE_TRANSFER_DST_BIT),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
 
     texbuffer.upload(cbufferdata);
 
+    AllocatedBuffer bad_store_buffer(
+        this,
+        vkh::BufferCreateInfo(1 * sizeof(Vec4f), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                     VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
     AllocatedBuffer store_buffer(
-        this, vkh::BufferCreateInfo(1024 * sizeof(Vec4f), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                              VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        this,
+        vkh::BufferCreateInfo(1024 * sizeof(Vec4f), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
 
-    AllocatedBuffer atomic_buffer(this, vkh::BufferCreateInfo(texWidth * texHeight * sizeof(Vec4f),
-                                                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT),
-                                  VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
+    AllocatedBuffer atomic_buffer(
+        this,
+        vkh::BufferCreateInfo(texWidth * texHeight * sizeof(Vec4f),
+                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
+
+    AllocatedBuffer bad_store_texbuffer(
+        this,
+        vkh::BufferCreateInfo(1 * sizeof(Vec4f), VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
+                                                     VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
 
     AllocatedBuffer store_texbuffer(
-        this, vkh::BufferCreateInfo(1024 * sizeof(Vec4f), VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
-                                                              VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        this,
+        vkh::BufferCreateInfo(1024 * sizeof(Vec4f), VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
+                                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
 
+    AllocatedBuffer texbuffer_1010102unorm(
+        this,
+        vkh::BufferCreateInfo(1024 * sizeof(uint32_t), VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
+
+    AllocatedBuffer store_texbuffer_1010102unorm(
+        this,
+        vkh::BufferCreateInfo(1024 * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
+                                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
+
+    uint32_t unormdata[64] = {};
+    memset(unormdata, 0x42, sizeof(unormdata));
+
+    texbuffer_1010102unorm.upload(unormdata);
+
+    AllocatedBuffer texbuffer_1010102uint(
+        this,
+        vkh::BufferCreateInfo(1024 * sizeof(uint32_t), VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
+
+    texbuffer_1010102uint.upload(unormdata);
+
+    AllocatedBuffer store_texbuffer_1010102uint(
+        this,
+        vkh::BufferCreateInfo(1024 * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
+                                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
+
+    VkBuffer bda_data_buffer = VK_NULL_HANDLE;
+    VkDeviceMemory bda_deviceMem = VK_NULL_HANDLE;
+    byte *bda_base_gpuptr = NULL;
+    if(bda)
+    {
+      vkh::BufferCreateInfo bda_buffer_info(sizeof(BDA_Data),
+                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR);
+      VkMemoryAllocateInfo memAllocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+      VkMemoryAllocateFlagsInfo memAllocFlags = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+
+      memAllocFlags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
+      memAllocInfo.pNext = &memAllocFlags;
+
+      const VkPhysicalDeviceMemoryProperties *memProps = NULL;
+      vmaGetMemoryProperties(allocator, &memProps);
+
+      vkCreateBuffer(device, bda_buffer_info, NULL, &bda_data_buffer);
+
+      VkMemoryRequirements mrq;
+      vkGetBufferMemoryRequirements(device, bda_data_buffer, &mrq);
+      memAllocInfo.allocationSize = mrq.size;
+      for(uint32_t i = 0; i < memProps->memoryTypeCount; i++)
+      {
+        if((mrq.memoryTypeBits & (1u << i)) &&
+           (memProps->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+        {
+          memAllocInfo.memoryTypeIndex = i;
+          break;
+        }
+      }
+      vkAllocateMemory(device, &memAllocInfo, NULL, &bda_deviceMem);
+      vkBindBufferMemory(device, bda_data_buffer, bda_deviceMem, 0);
+
+      VkBufferDeviceAddressInfoKHR bda_info = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR};
+      bda_info.buffer = bda_data_buffer;
+
+      VkDeviceAddress bda_Addr = vkGetBufferDeviceAddressKHR(device, &bda_info);
+      bda_base_gpuptr = (byte *)bda_Addr;    // not a valid cpu pointer
+
+      byte *bda_base_cpuptr = NULL;
+      vkMapMemory(device, bda_deviceMem, 0, mrq.size, 0, (void **)&bda_base_cpuptr);
+
+      BDA_Data *bda_data_cpu = (BDA_Data *)bda_base_cpuptr;
+      bda_data_cpu->f32[0] = 0.1f;
+      bda_data_cpu->f32[1] = 0.2f;
+      bda_data_cpu->f32[2] = 0.3f;
+      bda_data_cpu->f32[3] = 0.8f;
+      bda_data_cpu->f32[4] = 0.4f;
+      bda_data_cpu->f32[5] = 0.5f;
+      bda_data_cpu->f32[6] = 0.6f;
+      bda_data_cpu->f32[7] = 0.9f;
+      bda_data_cpu->bda_ptr = *(uint64_t *)(&bda_base_gpuptr);
+    }
+
+    AllocatedImage bad_store_image(
+        this,
+        vkh::ImageCreateInfo(4, 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
+    VkImageView bad_store_view = createImageView(vkh::ImageViewCreateInfo(
+        bad_store_image.image, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R32G32B32A32_SFLOAT));
+
     AllocatedImage store_image(
-        this, vkh::ImageCreateInfo(128, 128, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
-                                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT),
+        this,
+        vkh::ImageCreateInfo(128, 128, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
     VkImageView store_view = createImageView(vkh::ImageViewCreateInfo(
         store_image.image, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R32G32B32A32_SFLOAT));
 
     AllocatedImage atomic_image(
-        this, vkh::ImageCreateInfo(texWidth, texHeight, 0, VK_FORMAT_R32_UINT,
-                                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT),
+        this,
+        vkh::ImageCreateInfo(texWidth, texHeight, 0, VK_FORMAT_R32_UINT,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
     VkImageView atomic_view = createImageView(
         vkh::ImageViewCreateInfo(atomic_image.image, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R32_UINT));
@@ -4027,23 +5666,64 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
         createBufferView(vkh::BufferViewCreateInfo(texbuffer.buffer, VK_FORMAT_R32G32B32A32_SFLOAT));
     VkBufferView store_bufview = createBufferView(
         vkh::BufferViewCreateInfo(store_texbuffer.buffer, VK_FORMAT_R32G32B32A32_SFLOAT));
+    VkBufferView bad_bufview = createBufferView(
+        vkh::BufferViewCreateInfo(bad_texbuffer.buffer, VK_FORMAT_R32G32B32A32_SFLOAT));
+    VkBufferView bad_store_bufview = createBufferView(
+        vkh::BufferViewCreateInfo(bad_store_texbuffer.buffer, VK_FORMAT_R32G32B32A32_SFLOAT));
+
+    VkBufferView bufview_1010102unorm = createBufferView(vkh::BufferViewCreateInfo(
+        texbuffer_1010102unorm.buffer, VK_FORMAT_A2B10G10R10_UNORM_PACK32, 96));
+    VkBufferView store_bufview_1010102unorm = createBufferView(vkh::BufferViewCreateInfo(
+        store_texbuffer_1010102unorm.buffer, VK_FORMAT_A2B10G10R10_UNORM_PACK32, 96));
+    VkBufferView bufview_1010102uint = createBufferView(vkh::BufferViewCreateInfo(
+        texbuffer_1010102uint.buffer, VK_FORMAT_A2B10G10R10_UINT_PACK32, 96));
+    VkBufferView store_bufview_1010102uint = createBufferView(vkh::BufferViewCreateInfo(
+        store_texbuffer_1010102uint.buffer, VK_FORMAT_A2B10G10R10_UINT_PACK32, 96));
 
     setName(pointsampler, "pointsampler");
     setName(linearsampler, "linearsampler");
     setName(mipsampler, "mipsampler");
     setName(queryTest.image, "queryTest");
+    setName(queryTestView, "queryTestView");
     setName(queryTestMS.image, "queryTestMS");
+    setName(queryTestMSView, "queryTestMSView");
     setName(smiley.image, "smiley");
     setName(texbuffer.buffer, "texbuffer");
     setName(store_buffer.buffer, "store_buffer");
     setName(atomic_buffer.buffer, "atomic_buffer");
     setName(store_texbuffer.buffer, "store_texbuffer");
+    setName(store_view, "store_view");
     setName(store_image.image, "store_image");
     setName(atomic_image.image, "atomic_image");
+    setName(bufview_1010102unorm, "bufview_1010102unorm");
+    setName(store_bufview_1010102unorm, "store_texbuffer_1010102unorm");
+    setName(bufview_1010102uint, "bufview_1010102uint");
+    setName(store_bufview_1010102uint, "store_bufview_1010102uint");
+    setName(bufview, "bufview");
+    setName(store_bufview, "store_bufview");
+    setName(shadowimg.image, "shadowimg");
+    setName(shadowview, "shadowview");
+    setName(bad_store_buffer.buffer, "bad_store_buffer");
+    setName(bad_image.image, "bad_image");
+    setName(bad_sampler, "bad_sampler");
+    setName(bad_cb.buffer, "bad_cb");
+    setName(bad_texbuffer.buffer, "bad_texbuffer");
+    setName(bad_bufview, "bad_bufview");
+    setName(bad_store_bufview, "bad_store_bufview");
+    setName(bad_store_texbuffer.buffer, "bad_store_texbuffer");
+    setName(bad_store_image.image, "bad_store_image");
+    setName(bad_store_view, "bad_store_view");
+    setName(bad_shadowimg.image, "bad_shadowimg");
+    setName(bad_shadowview, "bad_shadowview");
+    setName(bad_queryTest.image, "bad_queryTest");
+    setName(bad_queryTestView, "bad_queryTestView");
+    setName(bad_queryTestMS.image, "bad_queryTestMS");
+    setName(bad_queryTestMSView, "bad_queryTestMSView");
 
     AllocatedImage storezoo_u2D(
-        this, vkh::ImageCreateInfo(16, 16, 0, VK_FORMAT_R32G32B32A32_UINT,
-                                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT),
+        this,
+        vkh::ImageCreateInfo(16, 16, 0, VK_FORMAT_R32G32B32A32_UINT,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
     VkImageView storezoo_u2D_view = createImageView(vkh::ImageViewCreateInfo(
         storezoo_u2D.image, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R32G32B32A32_UINT));
@@ -4054,9 +5734,9 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
         device,
         {
             vkh::WriteDescriptorSet(descset0, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-                                    {vkh::DescriptorBufferInfo(cb.buffer)}),
+                                    {vkh::DescriptorBufferInfo(cb.buffer, 0, sizeof(cbufferdata))}),
             vkh::WriteDescriptorSet(descset0, 10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-                                    {vkh::DescriptorBufferInfo(cb.buffer)}),
+                                    {vkh::DescriptorBufferInfo(cb.buffer, 0, sizeof(cbufferdata))}),
             vkh::WriteDescriptorSet(
                 descset0, 11, VK_DESCRIPTOR_TYPE_SAMPLER,
                 {vkh::DescriptorImageInfo(VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, pointsampler)}),
@@ -4098,6 +5778,18 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
             vkh::WriteDescriptorSet(
                 descset0, 31, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 {vkh::DescriptorImageInfo(queryTestMSView, VK_IMAGE_LAYOUT_GENERAL, mipsampler)}),
+            vkh::WriteDescriptorSet(
+                descset0, 32, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                {vkh::DescriptorImageInfo(shadowview, VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE)}),
+
+            vkh::WriteDescriptorSet(descset0, 33, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+                                    {bufview_1010102unorm}),
+            vkh::WriteDescriptorSet(descset0, 34, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
+                                    {store_bufview_1010102unorm}),
+            vkh::WriteDescriptorSet(descset0, 35, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+                                    {bufview_1010102uint}),
+            vkh::WriteDescriptorSet(descset0, 36, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
+                                    {store_bufview_1010102uint}),
         });
 
     if(descIndexing)
@@ -4110,6 +5802,7 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
                                                     VK_NULL_HANDLE)}),
                   });
 
+      // Set all entries to bad entries
       for(uint32_t i = 0; i < 14; i++)
       {
         vkh::updateDescriptorSets(
@@ -4117,41 +5810,203 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
             {
                 vkh::WriteDescriptorSet(descset1, 1, i, VK_DESCRIPTOR_TYPE_SAMPLER,
                                         {vkh::DescriptorImageInfo(
-                                            VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, pointsampler)}),
-                vkh::WriteDescriptorSet(
-                    descset1, 2, i, VK_DESCRIPTOR_TYPE_SAMPLER,
-                    {vkh::DescriptorImageInfo(VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED,
-                                              linearsampler)}),
-                vkh::WriteDescriptorSet(
-                    descset1, 3, i, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                    {vkh::DescriptorImageInfo(smileyview, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                              VK_NULL_HANDLE)}),
+                                            VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, bad_sampler)}),
+                vkh::WriteDescriptorSet(descset1, 2, i, VK_DESCRIPTOR_TYPE_SAMPLER,
+                                        {vkh::DescriptorImageInfo(
+                                            VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, bad_sampler)}),
+                vkh::WriteDescriptorSet(descset1, 3, i, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                        {vkh::DescriptorImageInfo(
+                                            bad_shadowview, VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE)}),
                 vkh::WriteDescriptorSet(
                     descset1, 4, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    {vkh::DescriptorImageInfo(smileyview, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                              linearsampler)}),
+                    {vkh::DescriptorImageInfo(bad_imgview, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                              bad_sampler)}),
                 vkh::WriteDescriptorSet(descset1, 5, i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                        {vkh::DescriptorBufferInfo(store_buffer.buffer)}),
-                vkh::WriteDescriptorSet(
-                    descset1, 6, i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                    {vkh::DescriptorImageInfo(store_view, VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE)}),
+                                        {vkh::DescriptorBufferInfo(bad_store_buffer.buffer)}),
+                vkh::WriteDescriptorSet(descset1, 6, i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                        {vkh::DescriptorImageInfo(
+                                            bad_store_view, VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE)}),
                 vkh::WriteDescriptorSet(descset1, 7, i, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
-                                        {bufview}),
+                                        {bad_bufview}),
                 vkh::WriteDescriptorSet(descset1, 8, i, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
-                                        {store_bufview}),
-                vkh::WriteDescriptorSet(
-                    descset1, 9, i, VK_DESCRIPTOR_TYPE_SAMPLER,
-                    {vkh::DescriptorImageInfo(VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED,
-                                              shadowsampler)}),
+                                        {bad_store_bufview}),
+                vkh::WriteDescriptorSet(descset1, 9, i, VK_DESCRIPTOR_TYPE_SAMPLER,
+                                        {vkh::DescriptorImageInfo(
+                                            VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, bad_sampler)}),
 
-                vkh::WriteDescriptorSet(
-                    descset1, 20, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    {vkh::DescriptorImageInfo(queryTestView, VK_IMAGE_LAYOUT_GENERAL, mipsampler)}),
+                vkh::WriteDescriptorSet(descset1, 20, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                        {vkh::DescriptorImageInfo(
+                                            bad_queryTestView, VK_IMAGE_LAYOUT_GENERAL, bad_sampler)}),
                 vkh::WriteDescriptorSet(
                     descset1, 21, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    {vkh::DescriptorImageInfo(queryTestMSView, VK_IMAGE_LAYOUT_GENERAL, mipsampler)}),
+                    {vkh::DescriptorImageInfo(bad_queryTestMSView, VK_IMAGE_LAYOUT_GENERAL,
+                                              bad_sampler)}),
+                vkh::WriteDescriptorSet(descset1, 22, i, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                        {vkh::DescriptorBufferInfo(bad_cb.buffer)}),
             });
       }
+      // Update specific entries to valid entries
+      vkh::updateDescriptorSets(
+          device,
+          {
+              // pointsamplers:  3, 7, 11
+              vkh::WriteDescriptorSet(descset1, 1, 3, VK_DESCRIPTOR_TYPE_SAMPLER,
+                                      {vkh::DescriptorImageInfo(
+                                          VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, pointsampler)}),
+              vkh::WriteDescriptorSet(descset1, 1, 7, VK_DESCRIPTOR_TYPE_SAMPLER,
+                                      {vkh::DescriptorImageInfo(
+                                          VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, pointsampler)}),
+              vkh::WriteDescriptorSet(descset1, 1, 11, VK_DESCRIPTOR_TYPE_SAMPLER,
+                                      {vkh::DescriptorImageInfo(
+                                          VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, pointsampler)}),
+              // linearSamplers: 3, 7, 11
+              vkh::WriteDescriptorSet(descset1, 2, 3, VK_DESCRIPTOR_TYPE_SAMPLER,
+                                      {vkh::DescriptorImageInfo(
+                                          VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, linearsampler)}),
+              vkh::WriteDescriptorSet(descset1, 2, 7, VK_DESCRIPTOR_TYPE_SAMPLER,
+                                      {vkh::DescriptorImageInfo(
+                                          VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, linearsampler)}),
+              vkh::WriteDescriptorSet(descset1, 2, 11, VK_DESCRIPTOR_TYPE_SAMPLER,
+                                      {vkh::DescriptorImageInfo(
+                                          VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, linearsampler)}),
+              // sampledImages: 1, 2, 5, 6, 9, 10
+              vkh::WriteDescriptorSet(
+                  descset1, 3, 1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                  {vkh::DescriptorImageInfo(shadowview, VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE)}),
+              vkh::WriteDescriptorSet(
+                  descset1, 3, 2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                  {vkh::DescriptorImageInfo(shadowview, VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE)}),
+              vkh::WriteDescriptorSet(
+                  descset1, 3, 5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                  {vkh::DescriptorImageInfo(shadowview, VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE)}),
+              vkh::WriteDescriptorSet(
+                  descset1, 3, 6, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                  {vkh::DescriptorImageInfo(shadowview, VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE)}),
+              vkh::WriteDescriptorSet(
+                  descset1, 3, 9, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                  {vkh::DescriptorImageInfo(shadowview, VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE)}),
+              vkh::WriteDescriptorSet(
+                  descset1, 3, 10, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                  {vkh::DescriptorImageInfo(shadowview, VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE)}),
+              // linearSampledImages: 4, 8, 12
+              vkh::WriteDescriptorSet(
+                  descset1, 4, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                  {vkh::DescriptorImageInfo(smileyview, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                            linearsampler)}),
+              vkh::WriteDescriptorSet(
+                  descset1, 4, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                  {vkh::DescriptorImageInfo(smileyview, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                            linearsampler)}),
+              vkh::WriteDescriptorSet(
+                  descset1, 4, 12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                  {vkh::DescriptorImageInfo(smileyview, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                            linearsampler)}),
+              // storebufs: 7, 11
+              vkh::WriteDescriptorSet(descset1, 5, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                      {vkh::DescriptorBufferInfo(store_buffer.buffer)}),
+              vkh::WriteDescriptorSet(descset1, 5, 11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                      {vkh::DescriptorBufferInfo(store_buffer.buffer)}),
+              // storeImages: 7
+              vkh::WriteDescriptorSet(
+                  descset1, 6, 7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                  {vkh::DescriptorImageInfo(store_view, VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE)}),
+              // texbuffers: 9
+              vkh::WriteDescriptorSet(descset1, 7, 9, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+                                      {bufview}),
+              // storeTexBuffers: 10
+              vkh::WriteDescriptorSet(descset1, 8, 10, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
+                                      {store_bufview}),
+              // shadowSamplers: 8
+              vkh::WriteDescriptorSet(descset1, 9, 8, VK_DESCRIPTOR_TYPE_SAMPLER,
+                                      {vkh::DescriptorImageInfo(
+                                          VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, shadowsampler)}),
+              // queryTests: 1, 3, 5
+              vkh::WriteDescriptorSet(
+                  descset1, 20, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                  {vkh::DescriptorImageInfo(queryTestView, VK_IMAGE_LAYOUT_GENERAL, mipsampler)}),
+              vkh::WriteDescriptorSet(
+                  descset1, 20, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                  {vkh::DescriptorImageInfo(queryTestView, VK_IMAGE_LAYOUT_GENERAL, mipsampler)}),
+              vkh::WriteDescriptorSet(
+                  descset1, 20, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                  {vkh::DescriptorImageInfo(queryTestView, VK_IMAGE_LAYOUT_GENERAL, mipsampler)}),
+              // queryTestsMS: 1, 3, 5
+              vkh::WriteDescriptorSet(
+                  descset1, 21, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                  {vkh::DescriptorImageInfo(queryTestMSView, VK_IMAGE_LAYOUT_GENERAL, mipsampler)}),
+              vkh::WriteDescriptorSet(
+                  descset1, 21, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                  {vkh::DescriptorImageInfo(queryTestMSView, VK_IMAGE_LAYOUT_GENERAL, mipsampler)}),
+              vkh::WriteDescriptorSet(
+                  descset1, 21, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                  {vkh::DescriptorImageInfo(queryTestMSView, VK_IMAGE_LAYOUT_GENERAL, mipsampler)}),
+              // ubos: 1, 2, 3, 4, 7, 9
+              vkh::WriteDescriptorSet(descset1, 22, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                      {vkh::DescriptorBufferInfo(cb.buffer, 1 * sizeof(Vec4f) * 16)}),
+              vkh::WriteDescriptorSet(descset1, 22, 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                      {vkh::DescriptorBufferInfo(cb.buffer, 2 * sizeof(Vec4f) * 16)}),
+              vkh::WriteDescriptorSet(descset1, 22, 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                      {vkh::DescriptorBufferInfo(cb.buffer, 3 * sizeof(Vec4f) * 16)}),
+              vkh::WriteDescriptorSet(descset1, 22, 4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                      {vkh::DescriptorBufferInfo(cb.buffer, 4 * sizeof(Vec4f) * 16)}),
+              vkh::WriteDescriptorSet(descset1, 22, 7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                      {vkh::DescriptorBufferInfo(cb.buffer, 7 * sizeof(Vec4f) * 16)}),
+              vkh::WriteDescriptorSet(descset1, 22, 9, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                      {vkh::DescriptorBufferInfo(cb.buffer, 9 * sizeof(Vec4f) * 16)}),
+          });
+
+      // Set all entries to bad entries
+      for(uint32_t i = 0; i < 14; i++)
+      {
+        vkh::updateDescriptorSets(
+            device,
+            {
+                vkh::WriteDescriptorSet(descset3, 22, i, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                        {vkh::DescriptorBufferInfo(bad_cb.buffer)}),
+                vkh::WriteDescriptorSet(
+                    descset3, 23, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    {vkh::DescriptorImageInfo(bad_imgview, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                              bad_sampler)}),
+                vkh::WriteDescriptorSet(descset3, 24, i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                        {vkh::DescriptorBufferInfo(bad_store_buffer.buffer)}),
+                vkh::WriteDescriptorSet(descset3, 25, i, VK_DESCRIPTOR_TYPE_SAMPLER,
+                                        {vkh::DescriptorImageInfo(
+                                            VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, bad_sampler)}),
+            });
+      }
+      // Update specific entries to valid entries
+      vkh::updateDescriptorSets(
+          device,
+          {
+              // unbounded_ubos: 1 2 3 4 8 10
+              vkh::WriteDescriptorSet(descset3, 22, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                      {vkh::DescriptorBufferInfo(cb.buffer, 1 * sizeof(Vec4f) * 16)}),
+              vkh::WriteDescriptorSet(descset3, 22, 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                      {vkh::DescriptorBufferInfo(cb.buffer, 2 * sizeof(Vec4f) * 16)}),
+              vkh::WriteDescriptorSet(descset3, 22, 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                      {vkh::DescriptorBufferInfo(cb.buffer, 3 * sizeof(Vec4f) * 16)}),
+              vkh::WriteDescriptorSet(descset3, 22, 4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                      {vkh::DescriptorBufferInfo(cb.buffer, 4 * sizeof(Vec4f) * 16)}),
+              vkh::WriteDescriptorSet(descset3, 22, 8, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                      {vkh::DescriptorBufferInfo(cb.buffer, 8 * sizeof(Vec4f) * 16)}),
+              vkh::WriteDescriptorSet(descset3, 22, 10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                      {vkh::DescriptorBufferInfo(cb.buffer, 10 * sizeof(Vec4f) * 16)}),
+              // unbounded_tex2ds: 13
+              vkh::WriteDescriptorSet(
+                  descset3, 23, 13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                  {vkh::DescriptorImageInfo(smileyview, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                            linearsampler)}),
+              // unbounded_buffers: 12
+              vkh::WriteDescriptorSet(
+                  descset3, 24, 12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                  {vkh::DescriptorBufferInfo(store_buffer.buffer, 13 * sizeof(Vec4f) * 16)}),
+
+              // unbounded_samplers: 9
+              vkh::WriteDescriptorSet(
+                  descset3, 25, 9, VK_DESCRIPTOR_TYPE_SAMPLER,
+                  {vkh::DescriptorImageInfo(VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED,
+                                            pointClampSampler)}),
+          });
     }
 
     while(Running())
@@ -4175,10 +6030,21 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
                                       VK_IMAGE_LAYOUT_GENERAL, store_image.image),
               vkh::ImageMemoryBarrier(VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
                                       VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                                      VK_IMAGE_LAYOUT_GENERAL, bad_store_image.image),
+              vkh::ImageMemoryBarrier(VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+                                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                                       VK_IMAGE_LAYOUT_GENERAL, atomic_image.image),
               vkh::ImageMemoryBarrier(VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
                                       VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                                       VK_IMAGE_LAYOUT_GENERAL, storezoo_u2D.image),
+              vkh::ImageMemoryBarrier(VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+                                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                                      VK_IMAGE_LAYOUT_GENERAL, shadowimg.image,
+                                      vkh::ImageSubresourceRange(VK_IMAGE_ASPECT_DEPTH_BIT)),
+              vkh::ImageMemoryBarrier(VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+                                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                                      VK_IMAGE_LAYOUT_GENERAL, bad_shadowimg.image,
+                                      vkh::ImageSubresourceRange(VK_IMAGE_ASPECT_DEPTH_BIT)),
           },
           {
               vkh::BufferMemoryBarrier(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
@@ -4187,10 +6053,26 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
                                        VK_ACCESS_TRANSFER_WRITE_BIT, atomic_buffer.buffer),
               vkh::BufferMemoryBarrier(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
                                        VK_ACCESS_TRANSFER_WRITE_BIT, store_texbuffer.buffer),
+              vkh::BufferMemoryBarrier(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                                       VK_ACCESS_TRANSFER_WRITE_BIT,
+                                       store_texbuffer_1010102uint.buffer),
+              vkh::BufferMemoryBarrier(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                                       VK_ACCESS_TRANSFER_WRITE_BIT,
+                                       store_texbuffer_1010102unorm.buffer),
           });
+
+      vkCmdClearDepthStencilImage(cmd, shadowimg.image, VK_IMAGE_LAYOUT_GENERAL,
+                                  vkh::ClearDepthStencilValue({0.5f, 0}), 1,
+                                  vkh::ImageSubresourceRange(VK_IMAGE_ASPECT_DEPTH_BIT));
+      vkCmdClearDepthStencilImage(cmd, bad_shadowimg.image, VK_IMAGE_LAYOUT_GENERAL,
+                                  vkh::ClearDepthStencilValue({0.9f, 128}), 1,
+                                  vkh::ImageSubresourceRange(VK_IMAGE_ASPECT_DEPTH_BIT));
 
       vkCmdClearColorImage(cmd, store_image.image, VK_IMAGE_LAYOUT_GENERAL,
                            vkh::ClearColorValue(6.66f, 6.66f, 6.66f, 6.66f), 1,
+                           vkh::ImageSubresourceRange());
+      vkCmdClearColorImage(cmd, bad_store_image.image, VK_IMAGE_LAYOUT_GENERAL,
+                           vkh::ClearColorValue(1.66f, 2.66f, 3.66f, 4.66f), 1,
                            vkh::ImageSubresourceRange());
       vkCmdClearColorImage(cmd, atomic_image.image, VK_IMAGE_LAYOUT_GENERAL,
                            vkh::ClearColorValue(0x42424242U, 0x42424242U, 0x42424242U, 0x42424242U),
@@ -4199,7 +6081,13 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
                            vkh::ClearColorValue(8U, 18U, 28U, 38U), 1, vkh::ImageSubresourceRange());
       vkCmdFillBuffer(cmd, store_buffer.buffer, 0, VK_WHOLE_SIZE, 0x42424242);
       vkCmdFillBuffer(cmd, atomic_buffer.buffer, 0, VK_WHOLE_SIZE, 0x42424242);
-      vkCmdFillBuffer(cmd, store_texbuffer.buffer, 0, VK_WHOLE_SIZE, 0);
+      const float val = 1.234f;
+      vkCmdFillBuffer(cmd, store_texbuffer.buffer, 0, 128, *(uint32_t *)&val);
+      vkCmdFillBuffer(cmd, store_texbuffer.buffer, 128, VK_WHOLE_SIZE, 0);
+      vkCmdFillBuffer(cmd, store_texbuffer_1010102uint.buffer, 0, 104, 0x42424242);
+      vkCmdFillBuffer(cmd, store_texbuffer_1010102uint.buffer, 104, VK_WHOLE_SIZE, 0);
+      vkCmdFillBuffer(cmd, store_texbuffer_1010102unorm.buffer, 0, 104, 0x42424242);
+      vkCmdFillBuffer(cmd, store_texbuffer_1010102unorm.buffer, 104, VK_WHOLE_SIZE, 0);
 
       vkh::cmdPipelineBarrier(
           cmd,
@@ -4207,6 +6095,9 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
               vkh::ImageMemoryBarrier(
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
                   VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, store_image.image),
+              vkh::ImageMemoryBarrier(
+                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+                  VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, bad_store_image.image),
               vkh::ImageMemoryBarrier(
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
                   VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, atomic_image.image),
@@ -4239,7 +6130,14 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
       vkCmdSetScissor(cmd, 0, 1, &s);
       vkh::cmdBindVertexBuffers(cmd, 0, {vb.buffer}, {0});
 
-      Vec4i push = Vec4i(101, 103, 107, 109);
+      BDA_Data *bda_gpuptr = (BDA_Data *)bda_base_gpuptr;
+
+      PushData pushData;
+      pushData.push = Vec4i(101, 103, 107, 109);
+      pushData.bda_uvec2 = *(Vec2u *)(&bda_gpuptr);
+      pushData.bda_hi = (uint64_t)bda_gpuptr >> 32;
+      pushData.bda_lo = (uint64_t)bda_gpuptr & 0xFFFFFFFF;
+      pushData.bda_u64 = *(uint64_t *)(&bda_gpuptr);
 
       std::vector<VkDescriptorSet> descSets = {descset0};
 
@@ -4247,14 +6145,16 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
       {
         descSets.push_back(descset1);
         descSets.push_back(descset2);
+        descSets.push_back(descset3);
       }
 
       vkh::cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, descSets,
                                  {0, sizeof(Vec4f) * 16});
-      vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT, 16, sizeof(Vec4i), &push);
+      vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT, 16, sizeof(PushData), &pushData);
 
-      vkCmdBeginRenderPass(cmd, vkh::RenderPassBeginInfo(renderPass, framebuffer, s,
-                                                         {vkh::ClearValue(0.0f, 0.0f, 0.0f, 0.0f)}),
+      vkCmdBeginRenderPass(cmd,
+                           vkh::RenderPassBeginInfo(renderPass, framebuffer, s,
+                                                    {vkh::ClearValue(0.0f, 0.0f, 0.0f, 0.0f)}),
                            VK_SUBPASS_CONTENTS_INLINE);
 
       pushMarker(cmd, "GLSL1 tests");
@@ -4274,8 +6174,9 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
 
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, asmpipe);
 
-      vkCmdBeginRenderPass(cmd, vkh::RenderPassBeginInfo(renderPass, framebuffer, s,
-                                                         {vkh::ClearValue(0.0f, 0.0f, 0.0f, 0.0f)}),
+      vkCmdBeginRenderPass(cmd,
+                           vkh::RenderPassBeginInfo(renderPass, framebuffer, s,
+                                                    {vkh::ClearValue(0.0f, 0.0f, 0.0f, 0.0f)}),
                            VK_SUBPASS_CONTENTS_INLINE);
 
       pushMarker(cmd, "ASM tests");
@@ -4324,8 +6225,9 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
 
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glslpipe2);
 
-      vkCmdBeginRenderPass(cmd, vkh::RenderPassBeginInfo(renderPass, framebuffer, s,
-                                                         {vkh::ClearValue(0.0f, 0.0f, 0.0f, 0.0f)}),
+      vkCmdBeginRenderPass(cmd,
+                           vkh::RenderPassBeginInfo(renderPass, framebuffer, s,
+                                                    {vkh::ClearValue(0.0f, 0.0f, 0.0f, 0.0f)}),
                            VK_SUBPASS_CONTENTS_INLINE);
 
       pushMarker(cmd, "GLSL2 tests");
@@ -4345,13 +6247,51 @@ OpMemberDecorate %cbuffer_struct 17 Offset 216    ; double doublePackSource
 
       FinishUsingBackbuffer(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL);
 
+      pushMarker(cmd, "Compute Tests");
+
+      for(size_t p = 0; p < countCompPipes; p++)
+      {
+        vkh::cmdPipelineBarrier(
+            cmd, {},
+            {vkh::BufferMemoryBarrier(VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                      bufout.buffer, 0, sizeof(Vec4f) * 1024 * numCompTests)});
+
+        vkCmdFillBuffer(cmd, bufout.buffer, 0, sizeof(Vec4f) * 1024 * numCompTests, 0);
+
+        vkh::cmdPipelineBarrier(
+            cmd, {},
+            {vkh::BufferMemoryBarrier(VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                                      bufout.buffer, 0, sizeof(Vec4f) * 1024 * numCompTests)});
+
+        pushMarker(cmd, comppipe_name[p]);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipes[p]);
+        vkh::cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compLayout, 0, {compSet}, {});
+
+        for(int i = 0; i < numCompTests; i++)
+        {
+          vkh::cmdPushConstants(cmd, compLayout, i);
+          vkCmdDispatch(cmd, 2, 1, 1);
+        }
+
+        popMarker(cmd);
+      }
+
+      popMarker(cmd);
       vkEndCommandBuffer(cmd);
 
       Submit(0, 1, {cmd});
 
       Present();
     }
+    CHECK_VKR(vkDeviceWaitIdle(device));
 
+    if(bda)
+    {
+      vkDestroyBuffer(device, bda_data_buffer, NULL);
+      vkUnmapMemory(device, bda_deviceMem);
+      vkFreeMemory(device, bda_deviceMem, NULL);
+    }
     return 0;
   }
 };

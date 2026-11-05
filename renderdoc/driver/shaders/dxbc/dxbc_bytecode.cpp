@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -66,6 +66,90 @@ Program::Program(const rdcarray<uint32_t> &words)
   m_Type = VersionToken::ProgramType.Get(cur[0]);
   m_Major = VersionToken::MajorVersion.Get(cur[0]);
   m_Minor = VersionToken::MinorVersion.Get(cur[0]);
+}
+
+void Program::CalculateEvalSampleCache(const DXDebug::InputFetcherConfig &cfg,
+                                       DXDebug::InputFetcher &fetcher) const
+{
+  // scan the instructions to see if it contains any evaluates.
+  for(size_t i = 0; i < GetNumInstructions(); i++)
+  {
+    const Operation &op = GetInstruction(i);
+
+    // skip any non-eval opcodes
+    if(op.operation != OPCODE_EVAL_CENTROID && op.operation != OPCODE_EVAL_SAMPLE_INDEX &&
+       op.operation != OPCODE_EVAL_SNAPPED)
+      continue;
+
+    // the generation of this key must match what we'll generate in the corresponding lookup
+    DXDebug::SampleEvalCacheKey key;
+
+    // all the eval opcodes have rDst, vIn as the first two operands
+    key.inputRegisterIndex = (int32_t)op.operands[1].indices[0].index;
+
+    for(int c = 0; c < 4; c++)
+    {
+      if(op.operands[0].comps[c] == 0xff)
+        break;
+
+      key.numComponents = c + 1;
+    }
+
+    key.firstComponent = op.operands[1].comps[op.operands[0].comps[0]];
+
+    fetcher.sampleEvalRegisterMask |= 1ULL << key.inputRegisterIndex;
+
+    if(op.operation == OPCODE_EVAL_CENTROID)
+    {
+      // nothing to do - default key is centroid, sample is -1 and offset x/y is 0
+      if(!fetcher.evalSampleCacheData.contains(key))
+        fetcher.evalSampleCacheData.push_back(key);
+    }
+    else if(op.operation == OPCODE_EVAL_SAMPLE_INDEX)
+    {
+      if(op.operands[2].type == TYPE_IMMEDIATE32 || op.operands[2].type == TYPE_IMMEDIATE64)
+      {
+        // hooray, only sampling a single index, just add this key
+        key.sample = (int32_t)op.operands[2].values[0];
+
+        if(!fetcher.evalSampleCacheData.contains(key))
+          fetcher.evalSampleCacheData.push_back(key);
+      }
+      else
+      {
+        // parameter is a register and we don't know which sample will be needed, fetch them
+        // all. In most cases this will be a loop over them all, so they'll all be needed anyway
+        for(uint32_t c = 0; c < cfg.outputSampleCount; c++)
+        {
+          key.sample = (int32_t)c;
+          fetcher.evalSampleCacheData.push_back(key);
+        }
+      }
+    }
+    else if(op.operation == OPCODE_EVAL_SNAPPED)
+    {
+      if(op.operands[2].type == TYPE_IMMEDIATE32 || op.operands[2].type == TYPE_IMMEDIATE64)
+      {
+        // hooray, only sampling a single offset, just add this key
+        key.offsetx = (int32_t)op.operands[2].values[0];
+        key.offsety = (int32_t)op.operands[2].values[1];
+
+        if(!fetcher.evalSampleCacheData.contains(key))
+          fetcher.evalSampleCacheData.push_back(key);
+      }
+      else
+      {
+        RDCWARN(
+            "EvaluateAttributeSnapped called with dynamic parameter, caching all possible "
+            "evaluations which could have performance impact.");
+
+        for(key.offsetx = -8; key.offsetx <= 7; key.offsetx++)
+          for(key.offsety = -8; key.offsety <= 7; key.offsety++)
+            if(!fetcher.evalSampleCacheData.contains(key))
+              fetcher.evalSampleCacheData.push_back(key);
+      }
+    }
+  }
 }
 
 void HandleResourceArrayIndices(const rdcarray<DXBCBytecode::RegIndex> &indices,
@@ -363,10 +447,9 @@ DXBC::Reflection *Program::GuessReflection()
         uint32_t idx = (uint32_t)dcl.operand.indices[0].index;
 
         desc.name = StringFormat::Fmt("uav%u", idx);
-        desc.type =
-            DXBC::ShaderInputBind::TYPE_UAV_RWSTRUCTURED;    // doesn't seem to be anything that
-                                                             // determines append vs consume vs
-                                                             // rwstructured
+        desc.type = DXBC::ShaderInputBind::TYPE_UAV_RWSTRUCTURED;    // doesn't seem to be anything
+                                                                     // that determines append vs
+                                                                     // consume vs rwstructured
         if(dcl.structured.hasCounter)
           desc.type = DXBC::ShaderInputBind::TYPE_UAV_RWSTRUCTURED_WITH_COUNTER;
         desc.space = dcl.space;
@@ -489,13 +572,13 @@ DXBC::Reflection *Program::GuessReflection()
           DXBC::CBufferVariable var;
           var.name = cb.name;
           var.offset = 0;
-          var.type.descriptor.varClass = DXBC::VariableClass::CLASS_STRUCT;
-          var.type.descriptor.varType = VarType::Unknown;
-          var.type.descriptor.rows = 1;
-          var.type.descriptor.cols = 4;
-          var.type.descriptor.elements = 1;
-          var.type.descriptor.bytesize = 4 * sizeof(float);
-          var.type.descriptor.name = "struct";
+          var.type.varClass = DXBC::VariableClass::CLASS_STRUCT;
+          var.type.varType = VarType::Unknown;
+          var.type.rows = 1;
+          var.type.cols = 4;
+          var.type.elements = 1;
+          var.type.bytesize = 4 * sizeof(float);
+          var.type.name = "struct";
           cb.variables.push_back(var);
         }
         rdcarray<DXBC::CBufferVariable> &fillVars =
@@ -510,13 +593,13 @@ DXBC::Reflection *Program::GuessReflection()
 
           var.offset = 4 * sizeof(float) * v;
 
-          var.type.descriptor.bytesize = 4 * sizeof(float);
-          var.type.descriptor.rows = 1;
-          var.type.descriptor.cols = 4;
-          var.type.descriptor.elements = 0;
-          var.type.descriptor.varType = VarType::Float;
-          var.type.descriptor.varClass = DXBC::CLASS_VECTOR;
-          var.type.descriptor.name = TypeName(var.type.descriptor);
+          var.type.bytesize = 4 * sizeof(float);
+          var.type.rows = 1;
+          var.type.cols = 4;
+          var.type.elements = 0;
+          var.type.varType = VarType::Float;
+          var.type.varClass = DXBC::CLASS_VECTOR;
+          var.type.name = TypeName(var.type);
 
           fillVars.push_back(var);
         }
@@ -534,7 +617,12 @@ DXBC::Reflection *Program::GuessReflection()
 
 rdcstr Program::GetDebugStatus()
 {
-  // if there are no vendor extensions this is always debuggable
+  if(m_Reflection)
+    for(const DXBC::CBuffer &c : m_Reflection->CBuffers)
+      if(c.bindCount == ~0U)
+        return "Unsupported unbounded ConstantBuffer array";
+
+  // if there are no vendor extensions this is always debuggable for <=SM5.0
   if(m_ShaderExt.second == ~0U)
     return rdcstr();
 
@@ -578,7 +666,7 @@ D3D_PRIMITIVE_TOPOLOGY Program::GetOutputTopology()
       return decl.geomOutputTopology;
     if(decl.declaration == DXBCBytecode::OPCODE_DCL_TESS_DOMAIN)
     {
-      if(decl.tessDomain == DXBCBytecode::DOMAIN_ISOLINE)
+      if(decl.tessDomain == DXBC::TessellatorDomain::DOMAIN_ISOLINE)
         return D3D_PRIMITIVE_TOPOLOGY_LINELIST;
       else
         return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
@@ -587,6 +675,47 @@ D3D_PRIMITIVE_TOPOLOGY Program::GetOutputTopology()
   }
 
   return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+}
+
+D3D_PRIMITIVE_TOPOLOGY Program::GetOutputTopology(const byte *bytes, size_t length)
+{
+  uint32_t *begin = (uint32_t *)bytes;
+  uint32_t *cur = begin;
+  uint32_t *end = begin + (length / sizeof(uint32_t));
+
+  // skip version and length
+  cur += 2;
+
+  while(cur < end)
+  {
+    uint32_t OpcodeToken0 = cur[0];
+
+    OpcodeType op = Opcode::Type.Get(OpcodeToken0);
+
+    // nvidia is a structured buffer with counter
+    // AMD is a RW byte address buffer
+    if(op == OPCODE_DCL_GS_OUTPUT_PRIMITIVE_TOPOLOGY)
+    {
+      uint32_t *tokenStream = cur;
+
+      // skip opcode and length
+      tokenStream++;
+
+      return Decl::OutputPrimitiveTopology.Get(tokenStream[0]);
+    }
+
+    if(op == OPCODE_CUSTOMDATA)
+    {
+      // length in opcode token is 0, full length is in second dword
+      cur += cur[1];
+    }
+    else
+    {
+      cur += Opcode::Length.Get(OpcodeToken0);
+    }
+  }
+
+  return D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 }
 
 void Program::SetupRegisterFile(rdcarray<ShaderVariable> &registers) const
@@ -608,6 +737,8 @@ void Program::SetupRegisterFile(rdcarray<ShaderVariable> &registers) const
   for(size_t i = 0; i < m_IndexTempSizes.size(); i++)
   {
     registers.push_back(makeReg(GetRegisterName(TYPE_INDEXABLE_TEMP, (uint32_t)i)));
+    registers.back().rows = 0;
+    registers.back().columns = 0;
     registers.back().members.resize(m_IndexTempSizes[i]);
     for(uint32_t t = 0; t < m_IndexTempSizes[i]; t++)
       registers.back().members[t] = makeReg(StringFormat::Fmt("[%u]", t));
@@ -624,6 +755,50 @@ void Program::SetupRegisterFile(rdcarray<ShaderVariable> &registers) const
     registers.push_back(makeReg(rdcstr()));
   if(m_OutputCoverage)
     registers.push_back(makeReg(rdcstr()));
+
+  for(size_t i = 0; i < m_GroupsharedTempSizes.size(); i++)
+  {
+    if(m_GroupsharedTempSizes[i].first == 0)
+      continue;
+
+    registers.push_back(makeReg(GetRegisterName(TYPE_THREAD_GROUP_SHARED_MEMORY, (uint32_t)i)));
+    registers.back().rows = 0;
+    registers.back().columns = 0;
+    registers.back().members.resize(m_GroupsharedTempSizes[i].second);
+    // nice case, groupshared is raw or structured with stride less than a register, we can treat
+    // it as a simple array
+    if(m_GroupsharedTempSizes[i].first <= 16)
+    {
+      for(uint32_t t = 0; t < m_GroupsharedTempSizes[i].second; t++)
+      {
+        registers.back().members[t] = makeReg(StringFormat::Fmt("[%u]", t));
+
+        // truncate columns if it's float[]/int[] or float2[] or something
+        registers.back().members[t].columns = uint8_t(m_GroupsharedTempSizes[i].first / 4);
+      }
+    }
+    else
+    {
+      // unfortunate case. With a larger stride we need to make every array element large enough for
+      // the 'struct'. We insert fake members since we can't tell what is what and do it component
+      // wise since that's hopefully slightly better than nothing. It also makes debug-info mapping easier
+      for(uint32_t t = 0; t < m_GroupsharedTempSizes[i].second; t++)
+      {
+        registers.back().members[t] = makeReg(StringFormat::Fmt("[%u]", t));
+        registers.back().members[t].rows = 0;
+        registers.back().members[t].columns = 0;
+
+        registers.back().members[t].members.resize(AlignUp4(m_GroupsharedTempSizes[i].first) / 4);
+
+        uint32_t idx = 0;
+        for(ShaderVariable &m : registers.back().members[t].members)
+        {
+          m = makeReg(StringFormat::Fmt("_%u", idx++));
+          m.columns = 1;
+        }
+      }
+    }
+  }
 }
 
 const Declaration *Program::FindDeclaration(OperandType declType, uint32_t identifier) const
@@ -678,6 +853,11 @@ uint32_t Program::GetRegisterIndex(OperandType type, uint32_t index) const
     return m_NumTemps + (uint32_t)m_IndexTempSizes.size() + m_NumOutputs + (m_OutputDepth ? 1 : 0) +
            (m_OutputStencil ? 1 : 0);
   }
+  else if(type == TYPE_THREAD_GROUP_SHARED_MEMORY)
+  {
+    return m_NumTemps + (uint32_t)m_IndexTempSizes.size() + m_NumOutputs + (m_OutputDepth ? 1 : 0) +
+           (m_OutputStencil ? 1 : 0) + (m_OutputCoverage ? 1 : 0) + index;
+  }
 
   RDCERR("Unexpected type for register index: %s", ToStr(type).c_str());
 
@@ -696,6 +876,8 @@ rdcstr Program::GetRegisterName(OperandType oper, uint32_t index) const
     return StringFormat::Fmt("%s%u", IsShaderModel51() ? "CB" : "cb", index);
   else if(oper == TYPE_OUTPUT)
     return StringFormat::Fmt("o%u", index);
+  else if(oper == TYPE_THREAD_GROUP_SHARED_MEMORY)
+    return StringFormat::Fmt("g%u", index);
   else if(oper == TYPE_OUTPUT_DEPTH)
     return "oDepth";
   else if(oper == TYPE_OUTPUT_DEPTH_LESS_EQUAL)
@@ -929,8 +1111,7 @@ size_t NumOperands(OpcodeType op)
     case OPCODE_GATHER4_C_FEEDBACK:
     case OPCODE_GATHER4_PO_FEEDBACK: return 6;
     case OPCODE_SAMPLE_D_CLAMP_FEEDBACK:
-    case OPCODE_GATHER4_PO_C_FEEDBACK:
-      return 7;
+    case OPCODE_GATHER4_PO_C_FEEDBACK: return 7;
 
     // custom data doesn't have particular operands
     case OPCODE_CUSTOMDATA:

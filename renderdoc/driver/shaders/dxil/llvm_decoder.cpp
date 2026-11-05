@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,37 +24,16 @@
 
 #include "llvm_decoder.h"
 #include "os/os_specific.h"
+#include "llvm_common.h"
 
 namespace LLVMBC
 {
-enum class AbbrevEncoding : uint8_t
-{
-  Fixed = 1,
-  VBR = 2,
-  Array = 3,
-  Char6 = 4,
-  Blob = 5,
-  // the abbrev encoding is only 3 bits, so 8 is not representable, we can store whether or not
-  // we're a literal this way.
-  Literal = 8,
-};
-
-struct AbbrevParam
-{
-  AbbrevEncoding encoding;
-  uint64_t value;    // this is also the bitwidth for Fixed/VBR
-};
-
-struct AbbrevDesc
-{
-  rdcarray<AbbrevParam> params;
-};
-
 // the temporary context while pushing/popping blocks
 struct BlockContext
 {
-  BlockContext(size_t size = 2) : abbrevSize(size) {}
+  BlockContext(size_t size, size_t offs = 0) : abbrevSize(size), lengthOffset(offs) {}
   size_t abbrevSize;
+  size_t lengthOffset;
   rdcarray<AbbrevDesc> abbrevs;
 };
 
@@ -66,24 +45,6 @@ struct BlockInfo
   rdcarray<AbbrevDesc> abbrevs;
 };
 
-enum AbbrevId
-{
-  END_BLOCK = 0,
-  ENTER_SUBBLOCK = 1,
-  DEFINE_ABBREV = 2,
-  UNABBREV_RECORD = 3,
-  APPLICATION_ABBREV = 4,
-};
-
-enum class BlockInfoRecord
-{
-  SETBID = 1,
-  BLOCKNAME = 2,
-  SETRECORDNAME = 3,
-};
-
-static const uint32_t BitcodeMagic = MAKE_FOURCC('B', 'C', 0xC0, 0xDE);
-
 bool BitcodeReader::Valid(const byte *bitcode, size_t length)
 {
   return length >= 4 && memcmp(bitcode, &BitcodeMagic, sizeof(uint32_t)) == 0;
@@ -91,6 +52,8 @@ bool BitcodeReader::Valid(const byte *bitcode, size_t length)
 
 BitcodeReader::BitcodeReader(const byte *bitcode, size_t length) : b(bitcode, length)
 {
+  abbrevSize = 2;
+
   uint32_t magic = b.Read<uint32_t>();
 
   RDCASSERT(magic == BitcodeMagic);
@@ -107,7 +70,7 @@ BlockOrRecord BitcodeReader::ReadToplevelBlock()
   BlockOrRecord ret;
 
   // should hit ENTER_SUBBLOCK first for top-level block
-  uint32_t abbrevID = b.fixed<uint32_t>(abbrevSize());
+  uint32_t abbrevID = b.fixed<uint32_t>(abbrevSize);
   RDCASSERT(abbrevID == ENTER_SUBBLOCK);
 
   ReadBlockContents(ret);
@@ -124,7 +87,8 @@ void BitcodeReader::ReadBlockContents(BlockOrRecord &block)
 {
   block.id = b.vbr<uint32_t>(8);
 
-  blockStack.push_back(new BlockContext(b.vbr<size_t>(4)));
+  abbrevSize = b.vbr<size_t>(4);
+  blockStack.push_back(new BlockContext(abbrevSize));
 
   b.align32bits();
   block.blockDwordLength = b.Read<uint32_t>();
@@ -135,7 +99,7 @@ void BitcodeReader::ReadBlockContents(BlockOrRecord &block)
   uint32_t abbrevID = ~0U;
   do
   {
-    abbrevID = b.fixed<uint32_t>(abbrevSize());
+    abbrevID = b.fixed<uint32_t>(abbrevSize);
 
     if(abbrevID == END_BLOCK)
     {
@@ -283,6 +247,8 @@ void BitcodeReader::ReadBlockContents(BlockOrRecord &block)
 
   delete blockStack.back();
   blockStack.erase(blockStack.size() - 1);
+
+  abbrevSize = blockStack.empty() ? 2 : blockStack.back()->abbrevSize;
 }
 
 uint64_t BitcodeReader::decodeAbbrevParam(const AbbrevParam &param)
@@ -296,17 +262,11 @@ uint64_t BitcodeReader::decodeAbbrevParam(const AbbrevParam &param)
     case AbbrevEncoding::Char6: return b.c6();
     case AbbrevEncoding::Literal: return param.value;
     case AbbrevEncoding::Array:
-    case AbbrevEncoding::Blob: RDCERR("Array and blob types must be decoded specially");
+    case AbbrevEncoding::Blob: RDCERR("Array and blob types must be decoded specially"); break;
+    case AbbrevEncoding::Unknown: RDCERR("Unexpected abbrev encoding"); break;
   }
 
   return 0;
-}
-
-size_t BitcodeReader::abbrevSize() const
-{
-  if(blockStack.empty())
-    return 2;
-  return blockStack.back()->abbrevSize;
 }
 
 const AbbrevDesc &BitcodeReader::getAbbrev(uint32_t blockId, uint32_t abbrevID)
@@ -442,14 +402,19 @@ TEST_CASE("Check LLVM bitreader", "[llvm]")
     uint32_t val1 = b.fixed<uint32_t>(17);
     CHECK(val1 == 0x18040);
 
+    EXPECT_ERROR();
+
     // second read is partially out of bounds, we should read all 0s
     uint32_t val2 = b.fixed<uint32_t>(16);
     CHECK(val2 == 0);
+
+    CHECK(DID_ERROR_HAPPEN());
 
     // should be exactly at the end of the stream
     CHECK(b.AtEndOfStream());
     CHECK(b.ByteOffset() == sizeof(bits));
     CHECK(b.BitOffset() == sizeof(bits) * 8);
+    CHECK(b.IsErrored());
   }
 
   SECTION("Check fixed encoding")
@@ -463,13 +428,25 @@ TEST_CASE("Check LLVM bitreader", "[llvm]")
     // values
     byte bits[] = {
         // dword 1
-        0x96, 0xf0, 0xA5, 0x3C,
+        0x96,
+        0xf0,
+        0xA5,
+        0x3C,
         // padding dword
-        0x00, 0x00, 0x00, 0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
         // padding dword
-        0x00, 0x00, 0x00, 0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
         // padding dword
-        0x00, 0x00, 0x00, 0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
     };
 
     LLVMBC::BitReader b(bits, sizeof(bits));
@@ -643,7 +620,8 @@ TEST_CASE("Check LLVM bitreader", "[llvm]")
       };
 
       uint64_t expected[] = {
-          0, 0,
+          0,
+          0,
           // i_vbr2
           0x0003,
           // i_vbr3
@@ -827,12 +805,16 @@ TEST_CASE("Check LLVM bitreader", "[llvm]")
         // first i_4 value
         0x04,
         // padding for alignment
-        0x00, 0x00, 0x00,
+        0x00,
+        0x00,
+        0x00,
 
         // second two i_4 values
         0xF5,
         // i_24 value
-        0xCA, 0x99, 0x23,
+        0xCA,
+        0x99,
+        0x23,
 
         // no padding - already aligned
 
@@ -897,19 +879,30 @@ TEST_CASE("Check LLVM bitreader", "[llvm]")
         // first vbr_6 length
         0x06,
         // padding for alignment
-        0x00, 0x00, 0x00,
+        0x00,
+        0x00,
+        0x00,
 
         // blob data
-        0xF5, 0x00, 0xCA, 0x40, 0x99, 0x23,
+        0xF5,
+        0x00,
+        0xCA,
+        0x40,
+        0x99,
+        0x23,
 
         // padding for trailing alignment
-        0x00, 0x00,
+        0x00,
+        0x00,
 
         // i_20 dummy to get us to the point where two vbr_6 chunks would be aligned
         // we choose a length of 70, which is 0b10 00110, then vbr_6 encoded it becomes
         // 0b000010 100110 which is 0xA6, over 12 bits. That leaves 4 bits in the upper part of
         // the last byte of the i_20, and the remaining 8 in the next byte
-        0x5B, 0xC2, 0x64, 0x0A,
+        0x5B,
+        0xC2,
+        0x64,
+        0x0A,
     };
 
     LLVMBC::BitReader b(bits, sizeof(bits));

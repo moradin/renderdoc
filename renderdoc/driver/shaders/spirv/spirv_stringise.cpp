@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,3 +24,16 @@
 
 #include "api/replay/stringise.h"
 #include "spirv_common.h"
+#include "spirv_reflect.h"
+
+template <>
+rdcstr DoStringise(const SPIRVInterpolationMode &el)
+{
+  BEGIN_ENUM_STRINGISE(SPIRVInterpolationMode)
+  {
+    STRINGISE_ENUM_CLASS_NAMED(Smooth, "smooth")
+    STRINGISE_ENUM_CLASS_NAMED(Flat, "flat")
+    STRINGISE_ENUM_CLASS_NAMED(NoPerspective, "noperspective")
+  }
+  END_ENUM_STRINGISE();
+};

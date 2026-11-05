@@ -20,6 +20,28 @@
 #define DOCUMENT3(text1, text2, text3) %feature("docstring") text1 text2 text3
 #define DOCUMENT4(text1, text2, text3, text4) %feature("docstring") text1 text2 text3 text4
 
+%header %{
+#include "3rdparty/pythoncapi_compat.h"
+%}
+
+%begin %{
+
+#include <Python.h>
+
+#if PY_VERSION_HEX >= 0x030d0000
+inline PyObject *PyWeakref_GetObject_emu(PyObject *ref)
+{
+  PyObject *ret = NULL;
+  if(PyWeakref_GetRef(ref, &ret) > 0)
+    Py_DECREF(ret);
+  return ret;
+}
+#undef PyWeakref_GET_OBJECT
+#define PyWeakref_GET_OBJECT(x) PyWeakref_GetObject_emu(x)
+#endif
+
+%}
+
 // include header for typed enums (hopefully using PEP435 enums)
 %include <enums.swg>
 
@@ -47,6 +69,7 @@
 // (not that we follow python naming perfectly)
 %rename("%(regex:/^D3D11Pipe::(.*)/D3D11\\1/)s", regextarget=1, fullname=1, %$isclass) "D3D11Pipe::.*";
 %rename("%(regex:/^D3D12Pipe::(.*)/D3D12\\1/)s", regextarget=1, fullname=1, %$isclass) "D3D12Pipe::.*";
+%rename("%(regex:/^D3D9Pipe::(.*)/D3D9\\1/)s", regextarget=1, fullname=1, %$isclass) "D3D9Pipe::.*";
 %rename("%(regex:/^GLPipe::(.*)/GL\\1/)s", regextarget=1, fullname=1, %$isclass) "GLPipe::.*";
 %rename("%(regex:/^VKPipe::(.*)/VK\\1/)s", regextarget=1, fullname=1, %$isclass) "VKPipe::.*";
 
@@ -76,6 +99,13 @@ VA_IGNORE_REST_OF_FILE
   PyDateTime_IMPORT;
 %}
 
+%typemap(out) const SWIGTYPE & {
+  static_assert(false, "Const ref types must be explicitly allowed, to ensure proper copy semantics. " \
+                       "Consider returning by copy if reasonable, or explicitly set up copy typemap.");
+  //$ltype owned = new std::remove_pointer<$ltype>::type(indirect($1));
+  //$result = SWIG_NewPointerObj(SWIG_as_voidptr(owned), $descriptor, SWIG_POINTER_OWN |  0 );
+}
+
 %include "pyconversion.i"
 
 // typemaps for windowing data
@@ -100,15 +130,10 @@ VA_IGNORE_REST_OF_FILE
 %ignore rdcfixedarray::operator[];
 %ignore rdcliteral;
 %ignore rdcpair;
+%ignore rdhalf;
 %ignore bytebuf;
 
-// special handling for RENDERDOC_GetDefaultCaptureOptions to transform output parameter to a return value
-%typemap(in, numinputs=0) CaptureOptions *defaultOpts { $1 = new CaptureOptions; }
-%typemap(argout) CaptureOptions *defaultOpts {
-  $result = SWIG_NewPointerObj($1, $descriptor(struct CaptureOptions*), SWIG_POINTER_OWN);
-}
-
-// same for RENDERDOC_GetSupportedDeviceProtocols
+// special handling for RENDERDOC_GetSupportedDeviceProtocols to transform output parameter to a return value
 %typemap(in, numinputs=0) rdcarray<rdcstr> *supportedProtocols { $1 = new rdcarray<rdcstr>; }
 %typemap(argout) rdcarray<rdcstr> *supportedProtocols {
   $result = ConvertToPy(*$1);
@@ -153,6 +178,11 @@ VA_IGNORE_REST_OF_FILE
 %ignore StructuredBufferList::~StructuredBufferList;
 %ignore StructuredChunkList::StructuredChunkList;
 %ignore StructuredChunkList::~StructuredChunkList;
+
+// don't allow user code to create ResultDetails objects (they can't allocate the string)
+// or access the internal message, which we can't hide as ResultDetails must be POD.
+%ignore ResultDetails::ResultDetails;
+%ignore ResultDetails::internal_msg;
 
 // these objects return a new copy which the python caller should own.
 %newobject SDObject::Duplicate;
@@ -204,6 +234,32 @@ VA_IGNORE_REST_OF_FILE
   $1.assign(*$input);
 }
 
+// this is fine to return directly as it offers no mutable members
+%typemap(out) const PipeState & {
+  $result = SWIG_NewPointerObj(SWIG_as_voidptr($1), $descriptor, 0 );
+}
+
+// this is returned directly due to the size of the data contained in the type.
+// it's mostly "pythonic" to have an object returned that is considered mutable
+%typemap(out) const SDFile & {
+  $result = SWIG_NewPointerObj(SWIG_as_voidptr($1), $descriptor, 0 );
+}
+
+%typemap(ret) const ActionDescription * {
+  // for ActionDescription pointers don't apply parent tracking, since these are preserved
+  // in other ways and the linked-list nature of walking them can produce absurdly long
+  // parent chains
+  if (SwigPyObject_Check($result))
+  {
+    SwigPyObject *sobj = (SwigPyObject *)$result;
+    if(sobj->parent)
+    {
+      sobj->parent = NULL;
+      Py_DECREF($self);
+    }
+  }
+}
+
 SIMPLE_TYPEMAPS(rdcstr)
 SIMPLE_TYPEMAPS(rdcinflexiblestr)
 SIMPLE_TYPEMAPS(rdcdatetime)
@@ -246,6 +302,7 @@ TEMPLATE_FIXEDARRAY_DECLARE(rdcfixedarray);
 %include "common_pipestate.h"
 %include "d3d11_pipestate.h"
 %include "d3d12_pipestate.h"
+%include "d3d9_pipestate.h"
 %include "data_types.h"
 %include "gl_pipestate.h"
 %include "replay_enums.h"
@@ -264,8 +321,8 @@ TEMPLATE_FIXEDARRAY_DECLARE(rdcfixedarray);
 }
 
   %feature("docstring") R"(Returns a string representation of an object. This is quite similar to
-the built-in repr() function but it iterates over struct members and prints them out, where normally
-repr() would stop and say something like 'Swig Object of type ...'.
+the built-in ``repr()`` function but it iterates over struct members and prints them out, where normally
+``repr()`` would stop and say something like 'Swig Object of type ...'.
 
 :param Any obj: The object to dump
 :return: The string representation of the object.
@@ -322,6 +379,7 @@ EXTEND_ARRAY_CLASS_METHODS(StructuredBufferList)
 // or in qrenderdoc.i, depending on which one is appropriate
 TEMPLATE_FIXEDARRAY_INSTANTIATE(rdcfixedarray, float, 2)
 TEMPLATE_FIXEDARRAY_INSTANTIATE(rdcfixedarray, float, 4)
+TEMPLATE_FIXEDARRAY_INSTANTIATE(rdcfixedarray, uint32_t, 2)
 TEMPLATE_FIXEDARRAY_INSTANTIATE(rdcfixedarray, uint32_t, 3)
 TEMPLATE_FIXEDARRAY_INSTANTIATE(rdcfixedarray, uint32_t, 4)
 TEMPLATE_FIXEDARRAY_INSTANTIATE(rdcfixedarray, uint64_t, 4)
@@ -331,6 +389,7 @@ TEMPLATE_FIXEDARRAY_INSTANTIATE(rdcfixedarray, ResourceId, 8)
 TEMPLATE_FIXEDARRAY_INSTANTIATE(rdcfixedarray, bool, 4)
 TEMPLATE_FIXEDARRAY_INSTANTIATE(rdcfixedarray, bool, 8)
 TEMPLATE_FIXEDARRAY_INSTANTIATE(rdcfixedarray, float, 16)
+TEMPLATE_FIXEDARRAY_INSTANTIATE(rdcfixedarray, rdhalf, 16)
 TEMPLATE_FIXEDARRAY_INSTANTIATE(rdcfixedarray, int32_t, 16)
 TEMPLATE_FIXEDARRAY_INSTANTIATE(rdcfixedarray, uint32_t, 16)
 TEMPLATE_FIXEDARRAY_INSTANTIATE(rdcfixedarray, double, 16)
@@ -354,7 +413,7 @@ TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ActionDescription)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, GPUCounter)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, CounterResult)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, APIEvent)
-TEMPLATE_ARRAY_INSTANTIATE(rdcarray, Bindpoint)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, DescriptorStoreDescription)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, BufferDescription)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, CaptureFileFormat)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ConstantBlock)
@@ -363,9 +422,12 @@ TEMPLATE_ARRAY_INSTANTIATE(rdcarray, EnvironmentModification)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, EventUsage)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, PathEntry)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, PixelModification)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, TaskGroupSize)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, MeshletSize)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ResourceDescription)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ResourceId)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, LineColumnInfo)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, InstructionSourceInfo)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderCompileFlag)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderConstant)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderDebugState)
@@ -373,6 +435,7 @@ TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderMessage)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderResource)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderSampler)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderSourceFile)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderSourcePrefix)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderVariable)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderEncoding)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderVariableChange)
@@ -385,9 +448,8 @@ TEMPLATE_ARRAY_INSTANTIATE(rdcarray, Viewport)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, Scissor)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ColorBlend)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, BoundVBuffer)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, Offset)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, VertexInputAttribute)
-TEMPLATE_ARRAY_INSTANTIATE(rdcarray, BoundResource)
-TEMPLATE_ARRAY_INSTANTIATE(rdcarray, BoundResourceArray)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, FloatVector)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, GraphicsAPI)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, GPUDevice)
@@ -396,10 +458,15 @@ TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderChangeStats)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ResourceBindStats)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, SamplerBindStats)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ConstantBindStats)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, VKPipe, Attachment)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, VKPipe, BindingElement)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, VKPipe, DescriptorBinding)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, DescriptorRange)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, Descriptor)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, SamplerDescriptor)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, DescriptorAccess)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, DescriptorLogicalLocation)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, UsedDescriptor)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, VKPipe, DynamicOffset)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, VKPipe, DescriptorSet)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, VKPipe, DescriptorBuffer)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, VKPipe, ImageData)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, VKPipe, ImageLayout)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, VKPipe, RenderArea)
@@ -408,28 +475,28 @@ TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, VKPipe, VertexBuffer)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, VKPipe, VertexAttribute)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, VKPipe, VertexBinding)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, VKPipe, ViewportScissor)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D11Pipe, ConstantBuffer)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D11Pipe, Layout)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D11Pipe, Sampler)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D11Pipe, StreamOutBind)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D11Pipe, VertexBuffer)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D11Pipe, View)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, ConstantBuffer)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, Layout)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, ResourceData)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, ResourceState)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, RootSignatureRange)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, Sampler)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, StreamOutBind)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, VertexBuffer)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, View)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, GLPipe, Attachment)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, GLPipe, Buffer)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, GLPipe, ImageLoadStore)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, GLPipe, Sampler)
-TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, GLPipe, Texture)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, RootTableRange)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, RootParam)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D12Pipe, StaticSampler)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, VertexElement)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, StreamSource)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, Sampler)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, TextureStage)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, Transform)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, Light)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, ClipPlane)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, D3D9Pipe, RenderState)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, GLPipe, VertexBuffer)
 TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, GLPipe, VertexAttribute)
+TEMPLATE_NAMESPACE_ARRAY_INSTANTIATE(rdcarray, GLPipe, TextureCompleteness)
 
 ///////////////////////////////////////////////////////////////////////////////////////////
 // declare a function for passing external objects into python
@@ -458,9 +525,9 @@ extern "C" PyObject *RENDERDOC_DumpObject(PyObject *obj)
   void *resptr = NULL;
 
   // for basic types, return the repr directly
-  if(obj == (PyObject *)&_Py_TrueStruct ||
-     obj == (PyObject *)&_Py_FalseStruct ||
-     PyObject_IsInstance(obj, (PyObject*)&_PyNone_Type) ||
+  if(Py_IsTrue(obj) ||
+     Py_IsFalse(obj) ||
+     Py_IsNone(obj) ||
      PyObject_IsInstance(obj, (PyObject*)&PyFloat_Type) ||
      PyObject_IsInstance(obj, (PyObject*)&PyLong_Type) ||
      PyObject_IsInstance(obj, (PyObject*)&PyBytes_Type) ||

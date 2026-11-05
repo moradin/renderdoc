@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -50,13 +50,15 @@ static BOOL add_hooks()
   }
 
   // search for an exported symbol with this name, typically renderdoc__replay__marker
-  if(LibraryHooks::Detect(STRINGIZE(RDOC_DLL_FILE) "__replay__marker"))
+  if(LibraryHooks::Detect(STRINGIZE(RDOC_BASE_NAME) "__replay__marker"))
   {
     RDCDEBUG("Not creating hooks - in replay app");
 
     RenderDoc::Inst().SetReplayApp(true);
 
     RenderDoc::Inst().Initialise();
+
+    LibraryHooks::ReplayInitialise();
 
     return true;
   }

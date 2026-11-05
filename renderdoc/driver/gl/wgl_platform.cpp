@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,6 +29,9 @@
 
 class WGLPlatform : public GLPlatform
 {
+  RDCDriver m_API = RDCDriver::OpenGL;
+  bool m_Debug = false;
+
   bool MakeContextCurrent(GLWindowingData data)
   {
     if(WGL.wglMakeCurrent)
@@ -70,10 +73,16 @@ class WGLPlatform : public GLPlatform
   virtual void PopChildContext(GLWindowingData existing, GLWindowingData newChild,
                                GLWindowingData saved)
   {
-    MakeContextCurrent(saved);
-    // release the DC now, if we didn't use our own because theirs was invalid
-    if(saved.DC != newChild.DC)
-      ::ReleaseDC(saved.wnd, saved.DC);
+    // if possible we want to use the existing DC so that we have a valid DC for further work (the
+    // cloned one we're making is going to be destroyed). First try to rebind the existing as-is,
+    // and only if that fails - e.g. due to a stale DC - use our cloned one to rebind the context
+    if(!MakeContextCurrent(existing))
+    {
+      MakeContextCurrent(saved);
+      // release the DC now, if we didn't use our own because theirs was invalid
+      if(saved.DC != newChild.DC)
+        ::ReleaseDC(saved.wnd, saved.DC);
+    }
   }
   GLWindowingData CloneTemporaryContext(GLWindowingData share)
   {
@@ -102,6 +111,9 @@ class WGLPlatform : public GLPlatform
 
     SetPixelFormat(dc, pf, &pfd);
 
+    int profile = m_API == RDCDriver::OpenGLES ? WGL_CONTEXT_ES2_PROFILE_BIT_EXT
+                                               : WGL_CONTEXT_CORE_PROFILE_BIT_ARB;
+
     const int attribs[] = {
         WGL_CONTEXT_MAJOR_VERSION_ARB,
         3,
@@ -110,7 +122,7 @@ class WGLPlatform : public GLPlatform
         WGL_CONTEXT_FLAGS_ARB,
         0,
         WGL_CONTEXT_PROFILE_MASK_ARB,
-        WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
+        profile,
         0,
         0,
     };
@@ -277,13 +289,10 @@ class WGLPlatform : public GLPlatform
     attribs[i++] = WGL_CONTEXT_MINOR_VERSION_ARB;
     attribs[i++] = GLCoreVersion % 10;
     attribs[i++] = WGL_CONTEXT_FLAGS_ARB;
-#if ENABLED(RDOC_DEVEL)
-    attribs[i++] = WGL_CONTEXT_DEBUG_BIT_ARB;
-#else
-    attribs[i++] = 0;
-#endif
+    attribs[i++] = m_Debug ? WGL_CONTEXT_DEBUG_BIT_ARB : 0;
     attribs[i++] = WGL_CONTEXT_PROFILE_MASK_ARB;
-    attribs[i++] = WGL_CONTEXT_CORE_PROFILE_BIT_ARB;
+    attribs[i++] = m_API == RDCDriver::OpenGLES ? WGL_CONTEXT_ES2_PROFILE_BIT_EXT
+                                                : WGL_CONTEXT_CORE_PROFILE_BIT_ARB;
 
     HGLRC rc = WGL.wglCreateContextAttribsARB(DC, share_context.ctx, attribs);
     if(rc == NULL)
@@ -359,19 +368,18 @@ class WGLPlatform : public GLPlatform
   }
 
   bool PopulateForReplay() { return WGL.PopulateForReplay(); }
-  ReplayStatus InitialiseAPI(GLWindowingData &replayContext, RDCDriver api, bool debug)
+  void SetDriverType(RDCDriver api) { m_API = api; }
+  RDResult InitialiseAPI(GLWindowingData &replayContext, RDCDriver api, bool debug)
   {
-// force debug in development builds
-#if ENABLED(RDOC_DEVEL)
-    debug = true;
-#endif
-
     RDCASSERT(api == RDCDriver::OpenGL || api == RDCDriver::OpenGLES);
+
+    m_API = api;
+    m_Debug = debug;
 
     bool success = RegisterClass();
 
     if(!success)
-      return ReplayStatus::APIInitFailed;
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Couldn't register window class");
 
     HWND w = NULL;
     HDC dc = NULL;
@@ -380,7 +388,8 @@ class WGLPlatform : public GLPlatform
     success = CreateTrampolineContext(w, dc, rc);
 
     if(!success)
-      return ReplayStatus::APIInitFailed;
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed,
+                          "Couldn't create unextended trampoline context");
 
     if(!WGL.wglCreateContextAttribsARB || !WGL.wglGetPixelFormatAttribivARB)
     {
@@ -388,8 +397,8 @@ class WGLPlatform : public GLPlatform
       WGL.wglDeleteContext(rc);
       ReleaseDC(w, dc);
       DestroyWindow(w);
-      RDCERR("RenderDoc requires WGL_ARB_create_context and WGL_ARB_pixel_format");
-      return ReplayStatus::APIHardwareUnsupported;
+      RETURN_ERROR_RESULT(ResultCode::APIHardwareUnsupported,
+                          "RenderDoc requires WGL_ARB_create_context and WGL_ARB_pixel_format");
     }
 
     WGL.wglMakeCurrent(NULL, NULL);
@@ -418,19 +427,17 @@ class WGLPlatform : public GLPlatform
     int pf = ChoosePixelFormat(dc, &pfd);
     if(pf == 0)
     {
-      RDCERR("Couldn't choose pixel format");
       ReleaseDC(w, dc);
       DestroyWindow(w);
-      return ReplayStatus::APIInitFailed;
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Couldn't choose pixel format");
     }
 
     BOOL res = SetPixelFormat(dc, pf, &pfd);
     if(res == FALSE)
     {
-      RDCERR("Couldn't set pixel format");
       ReleaseDC(w, dc);
       DestroyWindow(w);
-      return ReplayStatus::APIInitFailed;
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Couldn't set pixel format");
     }
 
     int attribs[64] = {0};
@@ -443,7 +450,7 @@ class WGLPlatform : public GLPlatform
     int &minor = attribs[i];
     attribs[i++] = 0;
     attribs[i++] = WGL_CONTEXT_FLAGS_ARB;
-    attribs[i++] = debug ? WGL_CONTEXT_DEBUG_BIT_ARB : 0;
+    attribs[i++] = m_Debug ? WGL_CONTEXT_DEBUG_BIT_ARB : 0;
     attribs[i++] = WGL_CONTEXT_PROFILE_MASK_ARB;
     attribs[i++] = api == RDCDriver::OpenGLES ? WGL_CONTEXT_ES2_PROFILE_BIT_EXT
                                               : WGL_CONTEXT_CORE_PROFILE_BIT_ARB;
@@ -464,10 +471,11 @@ class WGLPlatform : public GLPlatform
 
     if(rc == NULL)
     {
-      RDCERR("Couldn't create at least 3.2 context - RenderDoc requires OpenGL 3.2 availability");
       ReleaseDC(w, dc);
       DestroyWindow(w);
-      return ReplayStatus::APIHardwareUnsupported;
+      RETURN_ERROR_RESULT(
+          ResultCode::APIHardwareUnsupported,
+          "Couldn't create at least 3.2 context - RenderDoc requires OpenGL 3.2 availability");
     }
 
     GLCoreVersion = major * 10 + minor;
@@ -475,19 +483,18 @@ class WGLPlatform : public GLPlatform
     res = WGL.wglMakeCurrent(dc, rc);
     if(res == FALSE)
     {
-      RDCERR("Couldn't make 3.2 RC current");
       WGL.wglMakeCurrent(NULL, NULL);
       WGL.wglDeleteContext(rc);
       ReleaseDC(w, dc);
       DestroyWindow(w);
-      return ReplayStatus::APIInitFailed;
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Couldn't make modern OpenGL context current");
     }
 
     replayContext.DC = dc;
     replayContext.ctx = rc;
     replayContext.wnd = w;
 
-    return ReplayStatus::Succeeded;
+    return ResultCode::Succeeded;
   }
 
   bool CreateTrampolineContext(HWND &w, HDC &dc, HGLRC &rc)

@@ -1,83 +1,105 @@
+from __future__ import annotations
 import renderdoc as rd
-from typing import List
 import rdtest
 
 
 class D3D12_PrimitiveID(rdtest.TestCase):
     demos_test_name = 'D3D12_PrimitiveID'
-    
-    def test_action(self, action: rd.ActionDescription, x, y, prim, expected_prim, expected_output):
-        self.controller.SetFrameEvent(action.eventId, True)
-        pipe: rd.PipeState = self.controller.GetPipelineState()
 
-        if not pipe.GetShaderReflection(rd.ShaderStage.Pixel).debugInfo.debuggable:
-            rdtest.log.print("Skipping undebuggable shader at {}.".format(action.eventId))
-            return
+    def test_action(
+        self,
+        action: rd.ActionDescription,
+        x: int,
+        y: int,
+        prim: int,
+        expected_prim: rdtest.VectorValue,
+        expected_output: rdtest.VectorValue | None,
+    ):
+        self.set_event(action.eventId, True)
+        pipe = self.controller.GetPipelineState()
 
-        trace: rd.ShaderDebugTrace = self.controller.DebugPixel(x, y, rd.ReplayController.NoPreference, prim)
+        pixel_inputs = rd.DebugPixelInputs()
+        pixel_inputs.primitive = prim
+        with self.debug_pixel(x, y, pixel_inputs) as debug:
+            cycles, variables = self.process_trace(debug.trace)
 
-        cycles, variables = self.process_trace(trace)
+            # Find the SV_PrimitiveID variable, optionally
+            if not self.has_input_source_var(debug.trace, rd.ShaderBuiltin.PrimitiveIndex):
+                # If we didn't find it, then we should be expecting a 0
+                if len(expected_prim) != 1 or expected_prim[0] != 0:
+                    rdtest.log.error(f"Expected prim {expected_prim!s} at {x},{y} did not match actual prim {prim}.")
+                    return False
+            else:
+                primInput = self.find_input_source_var(debug.trace, rd.ShaderBuiltin.PrimitiveIndex)
 
-        # Find the SV_PrimitiveID variable
-        primInput = self.find_input_source_var(trace, rd.ShaderBuiltin.PrimitiveIndex)
-        if primInput is None:
-            # If we didn't find it, then we should be expecting a 0
-            if len(expected_prim) > 1 or expected_prim[0] != 0:
-                rdtest.log.error("Expected prim {} at {},{} did not match actual prim {}.".format(
-                    str(expected_prim), x, y, prim))
-                return False
-        else:
-            # Look up the matching register in the inputs, and see if the expected value matches
-            inputs: List[rd.ShaderVariable] = list(trace.inputs)
-            primValue = [var for var in inputs if var.name == primInput.variables[0].name][0]
-            if primValue.value.u32v[0] not in expected_prim:
-                rdtest.log.error("Expected prim {} at {},{} did not match actual prim {}.".format(
-                    str(expected_prim), x, y, primValue.value.u32v[0]))
-                return False
+                # Look up the matching register in the inputs, and see if the expected value matches
+                inputs = list(debug.trace.inputs)
+                primInputName = primInput.variables[0].name
+                if inputs[0].name.startswith('_IN') and primInputName.startswith('_IN.'):
+                    # Walk the DXIL input structure
+                    inputVars = inputs[0].members
+                    # Remove the input name prefix
+                    primInputName = primInputName[4:]
+                else:
+                    inputVars = inputs
 
-        # Compare shader debug output against an expected value instead of the RT's output,
-        # since we're testing overlapping primitives in a single action
-        if expected_output is not None:
-            output = self.find_output_source_var(trace, rd.ShaderBuiltin.ColorOutput, 0)
-            debugged = self.evaluate_source_var(output, variables)
-            if list(debugged.value.f32v[0:4]) != expected_output:
-                rdtest.log.error("Expected value {} at {},{} did not match actual {}.".format(
-                    expected_output, x, y, debugged.value.f32v[0:4]))
-                return False
+                primVars = [var for var in inputVars if var.name == primInputName]
 
-        self.controller.FreeTrace(trace)
+                primValue = primVars[0]
+                if primValue.value.u32v[0] not in expected_prim:
+                    rdtest.log.error(f"Expected prim {expected_prim!s} at {x},{y} did not match actual prim {primValue.value.u32v[0]}.")
+                    return False
 
-        rdtest.log.success("Test at {},{} matched as expected".format(x, y))
+            # Compare shader debug output against an expected value instead of the RT's output,
+            # since we're testing overlapping primitives in a single action
+            if expected_output is not None:
+                output = self.find_output_source_var(debug.trace, rd.ShaderBuiltin.ColorOutput, 0)
+
+                debugged = self.evaluate_source_var(output, variables)
+                if list(debugged.value.f32v[0:4]) != expected_output:
+                    rdtest.log.error(f"Expected value {expected_output} at {x},{y} did not match actual {debugged.value.f32v[0:4]}.")
+                    return False
+
+            rdtest.log.success(f"Test at {x},{y} matched as expected")
         return True
 
     def check_capture(self):
-        if not self.controller.GetAPIProperties().shaderDebugging:
-            rdtest.log.success("Shader debugging not enabled, skipping test")
-            return
-
         success = True
 
-        # Jump to the action
-        test_marker: rd.ActionDescription = self.find_action("Test")
+        markers = ["SM5.0", "SM6.0"]
+        for i in range(2):
+            rdtest.log.begin_section(markers[i])
+            # Jump to the action
+            test_marker = self.find_action(markers[i])
+            if test_marker is None:
+                rdtest.log.print(f"No {markers[i]} actions to test")
+                return
 
-        # Draw 1: No GS, PS without prim
-        action = test_marker.next
-        success &= self.test_action(action, 100, 80, rd.ReplayController.NoPreference, [0], [0, 1, 0, 1])
+            y = 40 + i * 150
+            # Draw 1: No GS, PS without prim
+            action = test_marker.nextAction
+            assert action is not None
+            success &= self.test_action(action, 100, y, rd.ReplayController.NoPreference, [0], [0, 1, 0, 1])
 
-        # Draw 2: No GS, PS with prim
-        action = action.next
-        success &= self.test_action(action, 300, 80, rd.ReplayController.NoPreference, [0], [0, 1, 0, 1])
+            # Draw 2: No GS, PS with prim
+            action = action.nextAction
+            assert action is not None
+            success &= self.test_action(action, 300, y, rd.ReplayController.NoPreference, [0], [0, 1, 0, 1])
 
-        # Draw 3: GS, PS without prim
-        action = action.next
-        success &= self.test_action(action, 125, 250, rd.ReplayController.NoPreference, [0], [0, 1, 0, 1])
+            # Draw 3: GS, PS without prim
+            y = 125 + i * 150
+            action = action.nextAction
+            assert action is not None
+            success &= self.test_action(action, 125, y, rd.ReplayController.NoPreference, [0], [0, 1, 0, 1])
 
-        # Draw 4: GS, PS with prim
-        action = action.next
-        success &= self.test_action(action, 325, 250, 2, [2], [0.5, 1, 0, 1])
-        success &= self.test_action(action, 325, 250, 3, [3], [0.75, 1, 0, 1])
-        # No expected output here, since it's nondeterministic which primitive gets selected
-        success &= self.test_action(action, 325, 250, rd.ReplayController.NoPreference, [2, 3], None)
+            # Draw 4: GS, PS with prim
+            action = action.nextAction
+            assert action is not None
+            success &= self.test_action(action, 325, y, 2, [2], [0.5, 1, 0, 1])
+            success &= self.test_action(action, 325, y, 3, [3], [0.75, 1, 0, 1])
+            # No expected output here, since it's nondeterministic which primitive gets selected
+            success &= self.test_action(action, 325, y, rd.ReplayController.NoPreference, [2, 3], None)
+            rdtest.log.end_section(markers[i])
 
         if not success:
             raise rdtest.TestFailureException("Some tests were not as expected")

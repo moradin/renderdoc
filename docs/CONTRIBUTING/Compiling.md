@@ -2,7 +2,7 @@
 
 ## Windows
 
-The main [renderdoc.sln](renderdoc.sln) is a VS2015 solution. It should also compile in VS2017, just select to update the compilers if you don't have the 2015 compilers available.
+The main [renderdoc.sln](renderdoc.sln) is a VS2015 solution. It should also compile in later VS versions, just select to update the compilers if you don't have the 2015 compilers available.
 
 There are no external dependencies apart from the Windows SDK and any version will work, otherwise all libraries/headers needed to build are included in the git checkout.
 
@@ -27,7 +27,17 @@ Configuration is available for cmake, [documented elsewhere](https://cmake.org/d
 
 First check that you have all of the [required dependencies](Dependencies.md#mac).
 
-Mac support is pretty early and while it will compile, it's not usable for debugging yet and is not officially supported. Builds happen with cmake the same way as Linux.
+Mac support is pretty early and while it will compile, it's not usable for debugging yet and is not officially supported. 
+
+To build with make, use cmake the same way as Linux.
+
+To build with Xcode, use the cmake Xcode generator to create the Xcode project:
+
+```
+cmake -DCMAKE_BUILD_TYPE=Debug -Bbuild -H. -GXcode
+```
+
+Building for Mac requires a C++17 compliant compiler i.e. the Xcode clang compiler.
 
 ## Android
 

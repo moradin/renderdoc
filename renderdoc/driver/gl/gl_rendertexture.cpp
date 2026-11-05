@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -43,7 +43,7 @@ bool GLReplay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flags)
 
   WrappedOpenGL &drv = *m_pDriver;
 
-  auto &texDetails = m_pDriver->m_Textures[cfg.resourceId];
+  WrappedOpenGL::TextureData &texDetails = m_pDriver->m_Textures[cfg.resourceId];
 
   if(texDetails.internalFormat == eGL_NONE)
     return false;
@@ -341,9 +341,14 @@ bool GLReplay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flags)
       }
       cfg.rangeMin *= rangeScale;
       cfg.rangeMax *= rangeScale;
+
+      if(displayFormat == eGL_STENCIL_INDEX8)
+        cfg.red = true;
     }
     else
+    {
       dsTexMode = eGL_DEPTH_COMPONENT;
+    }
   }
   else
   {
@@ -365,10 +370,9 @@ bool GLReplay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flags)
 
   GLuint customProgram = 0;
 
-  if(cfg.customShaderId != ResourceId() &&
-     drv.GetResourceManager()->HasCurrentResource(cfg.customShaderId))
+  if(cfg.customShaderId != ResourceId() && drv.GetResourceManager()->HasResource(cfg.customShaderId))
   {
-    GLuint customShader = drv.GetResourceManager()->GetCurrentResource(cfg.customShaderId).name;
+    GLuint customShader = drv.GetResourceManager()->GetResource(cfg.customShaderId).name;
 
     customProgram = drv.glCreateProgram();
 
@@ -417,13 +421,22 @@ bool GLReplay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flags)
         if(cfg.subresource.sample == ~0U)
           drv.glProgramUniform1i(customProgram, loc, -texDetails.samples);
         else
-          drv.glProgramUniform1i(customProgram, loc, (int)RDCCLAMP(cfg.subresource.sample, 0U,
-                                                                   (uint32_t)texDetails.samples - 1));
+          drv.glProgramUniform1i(
+              customProgram, loc,
+              (int)RDCCLAMP(cfg.subresource.sample, 0U, (uint32_t)texDetails.samples - 1));
       }
 
       loc = drv.glGetUniformLocation(customProgram, "RENDERDOC_TextureType");
       if(loc >= 0)
         drv.glProgramUniform1ui(customProgram, loc, resType);
+
+      loc = drv.glGetUniformLocation(customProgram, "RENDERDOC_SelectedRangeMin");
+      if(loc >= 0)
+        drv.glProgramUniform1f(customProgram, loc, cfg.rangeMin);
+
+      loc = drv.glGetUniformLocation(customProgram, "RENDERDOC_SelectedRangeMax");
+      if(loc >= 0)
+        drv.glProgramUniform1f(customProgram, loc, cfg.rangeMax);
     }
   }
 
@@ -483,9 +496,17 @@ bool GLReplay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flags)
 
   drv.glBindBufferBase(eGL_UNIFORM_BUFFER, 0, DebugData.UBOs[0]);
 
+  RDCCOMPILE_ASSERT(sizeof(RD_CustomShader_UBO_Type) <= sizeof(TexDisplayUBOData),
+                    "Custom shader UBO is bigger than tex display UBO, map is not valid");
   TexDisplayUBOData *ubo =
       (TexDisplayUBOData *)drv.glMapBufferRange(eGL_UNIFORM_BUFFER, 0, sizeof(TexDisplayUBOData),
                                                 GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+  if(!ubo)
+  {
+    RDCERR("Map buffer failed %d", drv.glGetError());
+    return false;
+  }
 
   float x = cfg.xOffset;
   float y = cfg.yOffset;
@@ -601,9 +622,14 @@ bool GLReplay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flags)
   ubo->TextureResolutionPS.z = float(RDCMAX(1, tex_z >> cfg.subresource.mip));
 
   if(mipShift)
-    ubo->MipShift = float(1 << cfg.subresource.mip);
+  {
+    ubo->MipShift.x = float(tex_x) / float(RDCMAX(1, tex_x >> cfg.subresource.mip));
+    ubo->MipShift.y = float(tex_y) / float(RDCMAX(1, tex_y >> cfg.subresource.mip));
+  }
   else
-    ubo->MipShift = 1.0f;
+  {
+    ubo->MipShift.x = ubo->MipShift.y = 1.0f;
+  }
 
   ubo->OutputRes.x = DebugData.outWidth;
   ubo->OutputRes.y = DebugData.outHeight;
@@ -617,6 +643,29 @@ bool GLReplay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flags)
   ubo->DecodeYUV = 0;
   ubo->YUVDownsampleRate = {};
   ubo->YUVAChannels = {};
+
+  if(customProgram)
+  {
+    // overwrite with data for custom UBO
+    RD_CustomShader_UBO_Type customUBO = {};
+
+    customUBO.TexDim.x = texDetails.width;
+    customUBO.TexDim.y = texDetails.height;
+    customUBO.TexDim.z = texDetails.depth;
+    customUBO.TexDim.w = (uint32_t)numMips;
+    customUBO.SelectedMip = cfg.subresource.mip;
+    customUBO.TextureType = resType;
+    customUBO.SelectedSliceFace = cfg.subresource.slice;
+    if(cfg.subresource.sample == ~0U)
+      customUBO.SelectedSample = -texDetails.samples;
+    else
+      customUBO.SelectedSample = cfg.subresource.sample;
+    customUBO.YUVDownsampleRate = Vec4u(1, 1, 1, 8);
+    customUBO.YUVAChannels = Vec4u(0, 1, 2, 3);
+    customUBO.SelectedRange = Vec2f(cfg.rangeMin, cfg.rangeMax);
+
+    memcpy(ubo, &customUBO, sizeof(RD_CustomShader_UBO_Type));
+  }
 
   drv.glUnmapBuffer(eGL_UNIFORM_BUFFER);
 
@@ -649,6 +698,12 @@ bool GLReplay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flags)
   {
     HeatmapData *ptr = (HeatmapData *)drv.glMapBufferRange(
         eGL_UNIFORM_BUFFER, 0, sizeof(HeatmapData), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+    if(!ptr)
+    {
+      RDCERR("Map buffer failed %d", drv.glGetError());
+      return false;
+    }
 
     memcpy(ptr, &heatmapData, sizeof(heatmapData));
 

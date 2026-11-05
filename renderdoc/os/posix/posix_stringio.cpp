@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -53,10 +53,23 @@ rdcstr GetTempRootPath();
 
 rdcstr GetHomeFolderFilename()
 {
-  passwd *pw = getpwuid(getuid());
-  const char *homedir = pw->pw_dir;
+  errno = 0;
+  const uid_t uid = getuid();
+  const passwd *pw = getpwuid(uid);
+  if(pw != NULL)
+  {
+    return pw->pw_dir;
+  }
 
-  return homedir;
+  RDCERR("Cannot find password file entry for %u: %s, falling back to $HOME", uid, strerror(errno));
+  const rdcstr homeEnv = Process::GetEnvVariable("HOME");
+  if(!homeEnv.empty())
+  {
+    return homeEnv;
+  }
+
+  RDCERR("$HOME is empty, returning temp path");
+  return GetTempFolderFilename();
 }
 
 rdcstr GetTempFolderFilename()
@@ -101,19 +114,18 @@ rdcstr GetFullPathname(const rdcstr &filename)
   return rdcstr(path);
 }
 
-rdcstr FindFileInPath(const rdcstr &fileName)
+rdcstr DefaultFindFileInPath(const rdcstr &fileName)
 {
   rdcstr filePath;
 
   // Search the PATH directory list for the application (like shell which) to get the absolute path
   // Return "" if no exectuable found in the PATH list
-  char *pathEnvVar = getenv("PATH");
-  if(!pathEnvVar)
+  rdcstr pathEnvVar = Process::GetEnvVariable("PATH");
+  if(pathEnvVar.empty())
     return filePath;
 
   // Make a copy of our PATH so strtok can insert NULL without actually changing env
-  char *localPath = new char[strlen(pathEnvVar) + 1];
-  strcpy(localPath, pathEnvVar);
+  char *localPath = pathEnvVar.data();
 
   const char *pathSeparator = ":";
   const char *path = strtok(localPath, pathSeparator);
@@ -129,7 +141,6 @@ rdcstr FindFileInPath(const rdcstr &fileName)
     path = strtok(NULL, pathSeparator);
   }
 
-  delete[] localPath;
   return filePath;
 }
 
@@ -204,16 +215,17 @@ void GetDefaultFiles(const rdcstr &logBaseName, rdcstr &capture_filename, rdcstr
   target = rdcstr(mod);
 
   time_t t = time(NULL);
-  tm now = *localtime(&t);
+  tm tmv_store;
+  tm now = *localtime_r(&t, &tmv_store);
 
   char temp_folder[2048] = {0};
 
   strcpy(temp_folder, GetTempRootPath().c_str());
 
-  char *temp_override = getenv("RENDERDOC_TEMP");
-  if(temp_override && temp_override[0] == '/')
+  rdcstr temp_override = Process::GetEnvVariable("RENDERDOC_TEMP");
+  if(!temp_override.empty() && temp_override[0] == '/')
   {
-    strncpy(temp_folder, temp_override, sizeof(temp_folder) - 1);
+    strncpy(temp_folder, temp_override.c_str(), sizeof(temp_folder) - 1);
     size_t len = strlen(temp_folder);
     while(temp_folder[len - 1] == '/')
       temp_folder[--len] = 0;
@@ -224,9 +236,9 @@ void GetDefaultFiles(const rdcstr &logBaseName, rdcstr &capture_filename, rdcstr
                         1900 + now.tm_year, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min);
 
   // set by UI when launching programs so all logging goes to the same file
-  char *logfile_override = getenv("RENDERDOC_DEBUG_LOG_FILE");
-  if(logfile_override)
-    logging_filename = rdcstr(logfile_override);
+  rdcstr logfile_override = Process::GetEnvVariable("RENDERDOC_DEBUG_LOG_FILE");
+  if(!logfile_override.empty())
+    logging_filename = logfile_override;
   else
     logging_filename = StringFormat::Fmt(
         "%s/RenderDoc/%s_%04d.%02d.%02d_%02d.%02d.%02d.log", temp_folder, logBaseName.c_str(),
@@ -400,15 +412,16 @@ FILE *fopen(const rdcstr &filename, FileMode mode)
   return ::fopen(filename.c_str(), modeString[mode]);
 }
 
+FILE *OpenTransientFileHandle(const rdcstr &filename, FileMode mode)
+{
+  FILE *ret = ::fopen(filename.c_str(), modeString[mode]);
+  ::unlink(filename.c_str());
+  return ret;
+}
+
 rdcstr ErrorString()
 {
-  int err = errno;
-
-  char buf[256] = {0};
-
-  strerror_r(err, buf, 256);
-
-  return buf;
+  return strerror(errno);
 }
 
 size_t fread(void *buf, size_t elementSize, size_t count, FILE *f)
@@ -449,6 +462,12 @@ bool fflush(FILE *f)
 int fclose(FILE *f)
 {
   return ::fclose(f);
+}
+
+bool IsUntrustedFile(const rdcstr &filename)
+{
+  // do android/linux have any way of marking files as potentially unsafe?
+  return false;
 }
 
 bool exists(const rdcstr &filename)
@@ -499,8 +518,8 @@ rdcstr logfile_readall(uint64_t offset, const rdcstr &filename)
 
 LogFileHandle *logfile_open(const rdcstr &filename)
 {
-  int fd =
-      open(filename.c_str(), O_APPEND | O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+  int fd = open(filename.c_str(), O_APPEND | O_WRONLY | O_CREAT | O_NOFOLLOW,
+                S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
   if(fd < 0)
   {
@@ -585,7 +604,8 @@ namespace StringFormat
 {
 rdcstr sntimef(time_t utcTime, const char *format)
 {
-  tm *tmv = localtime(&utcTime);
+  tm tmv_store;
+  tm *tmv = localtime_r(&utcTime, &tmv_store);
 
   // conservatively assume that most formatters will replace like-for-like (e.g. %H with 12) and
   // a few will increase (%Y to 2019) but generally the string will stay the same size.

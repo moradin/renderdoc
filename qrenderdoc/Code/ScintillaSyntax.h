@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,6 +26,7 @@
 
 #define SCLEX_GLSL 1000
 #define SCLEX_HLSL 1001
+#define SCLEX_BUFFER 1002
 
 #define SCINTILLA_COLOUR(r, g, b) (long(r) | (long(g) << 8) | (long(b) << 16))
 

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -67,10 +67,12 @@ void main()
         MakeTexture(DXGI_FORMAT_R32_UINT, 8, 8).SRV().UAV().RTV(),
     };
     ID3D11ShaderResourceViewPtr srv[2] = {
-        MakeSRV(tex[0]), MakeSRV(tex[1]),
+        MakeSRV(tex[0]),
+        MakeSRV(tex[1]),
     };
     ID3D11UnorderedAccessViewPtr uav[2] = {
-        MakeUAV(tex[0]), MakeUAV(tex[1]),
+        MakeUAV(tex[0]),
+        MakeUAV(tex[1]),
     };
     ID3D11RenderTargetViewPtr texRTV = MakeRTV(tex[0]);
 

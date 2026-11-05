@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -236,15 +236,33 @@ void FreeAlignedBuffer(byte *buf)
 
 uint32_t Log2Floor(uint32_t value)
 {
-  RDCASSERT(value > 0);
+  if(!value)
+    return ~0U;
   return 31 - Bits::CountLeadingZeroes(value);
 }
 
 #if ENABLED(RDOC_X64)
 uint64_t Log2Floor(uint64_t value)
 {
-  RDCASSERT(value > 0);
+  if(!value)
+    return ~0ULL;
   return 63 - Bits::CountLeadingZeroes(value);
+}
+#endif
+
+uint32_t Log2Ceil(uint32_t value)
+{
+  if(!value)
+    return ~0U;
+  return 32 - Bits::CountLeadingZeroes(value - 1);
+}
+
+#if ENABLED(RDOC_X64)
+uint64_t Log2Ceil(uint64_t value)
+{
+  if(!value)
+    return ~0ULL;
+  return 64 - Bits::CountLeadingZeroes(value - 1);
 }
 #endif
 
@@ -321,7 +339,14 @@ void rdclogprint_int(LogType type, const char *fullMsg, const char *msg)
   // don't output debug messages to stdout/stderr
   if(type != LogType::Debug && log_output_enabled)
     OSUtility::WriteOutput(OSUtility::Output_StdErr, msg);
+  else
 #endif
+  {
+    // always output fatal errors to stderr no matter what, even if not normally enabled, to catch
+    // errors during startup
+    if(type == LogType::Fatal)
+      OSUtility::WriteOutput(OSUtility::Output_StdErr, msg);
+  }
 #if ENABLED(OUTPUT_LOG_TO_DISK)
   if(logfileHandle)
   {
@@ -446,6 +471,17 @@ void rdclog_direct(time_t utcTime, uint32_t pid, LogType type, const char *proje
     output += numWritten;
 
     va_end(args2);
+  }
+
+  // normalise newlines
+  {
+    char *nl = base;
+    while(*nl)
+    {
+      if(*nl == '\r')
+        *nl = '\n';
+      nl++;
+    }
   }
 
   // likely path - string contains no newlines

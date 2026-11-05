@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -45,22 +45,13 @@ struct ItemHelper
       new(first + i) T();
   }
 
-  static bool equalRange(const T *a, const T *b, size_t count)
+  static int compRange(const T *a, const T *b, size_t count)
   {
     for(size_t i = 0; i < count; i++)
       if(!(a[i] == b[i]))
-        return false;
+        return a[i] < b[i] ? -1 : 1;
 
-    return true;
-  }
-
-  static bool lessthanRange(const T *a, const T *b, size_t count)
-  {
-    for(size_t i = 0; i < count; i++)
-      if(!(a[i] == b[i]))
-        return a[i] < b[i];
-
-    return false;
+    return 0;
   }
 };
 
@@ -68,13 +59,9 @@ template <typename T>
 struct ItemHelper<T, true>
 {
   static void initRange(T *first, size_t itemCount) { memset(first, 0, itemCount * sizeof(T)); }
-  static bool equalRange(const T *a, const T *b, size_t count)
+  static int compRange(const T *a, const T *b, size_t count)
   {
-    return !memcmp(a, b, count * sizeof(T));
-  }
-  static bool lessthanRange(const T *a, const T *b, size_t count)
-  {
-    return memcmp(a, b, count * sizeof(T)) < 0;
+    return memcmp(a, b, count * sizeof(T));
   }
 };
 
@@ -162,12 +149,6 @@ public:
   typedef T value_type;
 
   rdcarray() : elems(NULL), allocatedCount(0), usedCount(0) {}
-  rdcarray(size_t count)
-  {
-    elems = NULL;
-    allocatedCount = usedCount = 0;
-    resize(count);
-  }
   ~rdcarray()
   {
     // clear will destruct the actual elements still existing
@@ -184,14 +165,24 @@ public:
   const T &operator[](size_t i) const { return elems[i]; }
   bool operator==(const rdcarray<T> &o) const
   {
-    return usedCount == o.usedCount && ItemHelper<T>::equalRange(elems, o.elems, usedCount);
+    return usedCount == o.usedCount && ItemHelper<T>::compRange(elems, o.elems, usedCount) == 0;
   }
   bool operator!=(const rdcarray<T> &o) const { return !(*this == o); }
   bool operator<(const rdcarray<T> &o) const
   {
-    if(usedCount != o.usedCount)
-      return usedCount < o.usedCount;
-    return ItemHelper<T>::lessthanRange(elems, o.elems, usedCount);
+    // compare the subset of elements in both arrays
+    size_t c = usedCount;
+    if(o.usedCount < c)
+      c = o.usedCount;
+
+    // compare the range
+    int comp = ItemHelper<T>::compRange(elems, o.elems, c);
+    // if it's not equal, we can return either true or false now
+    if(comp != 0)
+      return (comp < 0);
+
+    // if they compared equal, the smaller array is less-than (if they're different sizes)
+    return usedCount < o.usedCount;
   }
   T *data() { return elems; }
   const T *data() const { return elems; }
@@ -336,7 +327,7 @@ public:
   {
     const size_t lastIdx = size();
     reserve(size() + 1);
-    new(elems + lastIdx) T(std::forward<ConstructArgs...>(args...));
+    new(elems + lastIdx) T(std::forward<ConstructArgs>(args)...);
     setUsedCount(usedCount + 1);
   }
 
@@ -438,7 +429,7 @@ public:
       // destruct it before inserting.
 
       // first pass, move construct elements in place
-      const size_t moveCount = count < oldSize ? count : oldSize;
+      const size_t moveCount = count < oldSize - offs ? count : oldSize - offs;
       for(size_t i = 0; i < moveCount; i++)
       {
         new(elems + oldSize + count - 1 - i) T(std::move(elems[oldSize - 1 - i]));
@@ -462,7 +453,7 @@ public:
       for(size_t i = 0; i < count; i++)
       {
         // if this was one used previously, destruct it
-        if(i < oldSize)
+        if(offs + i < oldSize)
           ItemDestroyHelper<T>::destroyRange(elems + offs + i, 1);
 
         // then copy construct the new value
@@ -506,10 +497,38 @@ public:
     {
       // if we're inserting from within our range, save the index
       size_t idx = &el - begin();
+
       // do any potentially reallocating resize
       reserve(oldSize + 1);
-      // then move from the index in wherever elems now points
-      new(elems + offs) T(std::move(elems[idx]));
+
+      // fast path where offs == size(), for push_back
+      if(offs == oldSize)
+      {
+        new(elems + offs) T(std::move(elems[idx]));
+      }
+      else
+      {
+        // we need to shuffle everything up by one
+
+        // first pass, move construct elements and destruct as we go
+        const size_t moveCount = oldSize - offs;
+        for(size_t i = 0; i < moveCount; i++)
+        {
+          new(elems + oldSize - i) T(std::move(elems[oldSize - i - 1]));
+          ItemDestroyHelper<T>::destroyRange(elems + oldSize - i - 1, 1);
+        }
+
+        // if idx moved as a result of the insert, it will be coming from a different place
+        if(idx >= offs)
+          idx++;
+
+        // then move construct the new value.
+        new(elems + offs) T(std::move(elems[idx]));
+      }
+
+      // update new size
+      setUsedCount(usedCount + 1);
+
       return;
     }
 
@@ -544,6 +563,18 @@ public:
   // helpful shortcut for 'append at end', basically a multi-element push_back
   inline void append(const T *el, size_t count) { insert(size(), el, count); }
   inline void append(const rdcarray<T> &in) { insert(size(), in.data(), in.size()); }
+  // overload for 'append from move' to move all the elements individually even though we can't move
+  // the allocation obviously.
+  inline void append(rdcarray<T> &&in)
+  {
+    reserve(size() + in.size());
+    ItemCopyHelper<T>::moveRange(data() + size(), in.data(), in.size());
+    setUsedCount(usedCount + in.size());
+    // don't have to clear here, since moved object can be left in any indeterminate but valid state
+    // (an all the members are in that state, while the array is fully valid), but this gives fewer
+    // surprises.
+    in.clear();
+  }
   void erase(size_t offs, size_t count = 1)
   {
     if(count == 0)
@@ -607,8 +638,25 @@ public:
     return -1;
   }
 
+  template <class U>
+  int32_t indexOf(const U &el, size_t first = 0, size_t last = ~0U) const
+  {
+    for(size_t i = first; i < usedCount && i < last; i++)
+    {
+      if(elems[i] == el)
+        return (int32_t)i;
+    }
+
+    return -1;
+  }
+
   // return true if an element is found
   bool contains(const T &el) const { return indexOf(el) != -1; }
+  template <class U>
+  bool contains(const U &el) const
+  {
+    return indexOf(el) != -1;
+  }
   // remove the first occurrence of an element
   void removeOne(const T &el)
   {
@@ -830,12 +878,12 @@ public:
   const T &operator[](size_t i) const { return elems[i]; }
   bool operator==(const rdcfixedarray<T, N> &o) const
   {
-    return ItemHelper<T>::equalRange(elems, o.elems, N);
+    return ItemHelper<T>::compRange(elems, o.elems, N) == 0;
   }
   bool operator!=(const rdcfixedarray<T, N> &o) const { return !(*this == o); }
   bool operator<(const rdcfixedarray<T, N> &o) const
   {
-    return ItemHelper<T>::lessthanRange(elems, o.elems, N);
+    return ItemHelper<T>::compRange(elems, o.elems, N) < 0;
   }
   T *data() { return elems; }
   const T *data() const { return elems; }
@@ -852,6 +900,11 @@ public:
   size_t size() const { return N; }
   size_t byteSize() const { return N * sizeof(T); }
   int32_t count() const { return (int32_t)N; }
+  void clear()
+  {
+    for(size_t i = 0; i < N; i++)
+      elems[i] = T();
+  }
   // find the first occurrence of an element
   int32_t indexOf(const T &el, size_t first = 0, size_t last = ~0U) const
   {
@@ -931,9 +984,6 @@ struct bytebuf : public rdcarray<byte>
     resize(in.size());
     memcpy(elems, in.data(), (size_t)in.size());
   }
-  operator QByteArray() const
-  {
-    return QByteArray::fromRawData((const char *)elems, (int32_t)usedCount);
-  }
+  operator QByteArray() const { return QByteArray((const char *)elems, (int32_t)usedCount); }
 #endif
 };

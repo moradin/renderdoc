@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -56,6 +56,7 @@ int RENDERDOC_CC SetCaptureOptionU32(RENDERDOC_CaptureOption opt, uint32_t val)
       else
         RDCWARN("AllowUnsupportedVendorExtensions unexpected parameter %x", val);
       break;
+    case eRENDERDOC_Option_SoftMemoryLimit: opts.softMemoryLimit = val; break;
     default: RDCLOG("Unrecognised capture option '%d'", opt); return 0;
   }
 
@@ -88,6 +89,7 @@ int RENDERDOC_CC SetCaptureOptionF32(RENDERDOC_CaptureOption opt, float val)
     case eRENDERDOC_Option_AllowUnsupportedVendorExtensions:
       RDCWARN("AllowUnsupportedVendorExtensions unexpected parameter %f", val);
       break;
+    case eRENDERDOC_Option_SoftMemoryLimit: opts.softMemoryLimit = (uint32_t)val; break;
     default: RDCLOG("Unrecognised capture option '%d'", opt); return 0;
   }
 
@@ -125,6 +127,8 @@ uint32_t RENDERDOC_CC GetCaptureOptionU32(RENDERDOC_CaptureOption opt)
     case eRENDERDOC_Option_DebugOutputMute:
       return (RenderDoc::Inst().GetCaptureOptions().debugOutputMute ? 1 : 0);
     case eRENDERDOC_Option_AllowUnsupportedVendorExtensions: return 0;
+    case eRENDERDOC_Option_SoftMemoryLimit:
+      return (RenderDoc::Inst().GetCaptureOptions().softMemoryLimit);
     default: break;
   }
 
@@ -162,6 +166,8 @@ float RENDERDOC_CC GetCaptureOptionF32(RENDERDOC_CaptureOption opt)
     case eRENDERDOC_Option_DebugOutputMute:
       return (RenderDoc::Inst().GetCaptureOptions().debugOutputMute ? 1.0f : 0.0f);
     case eRENDERDOC_Option_AllowUnsupportedVendorExtensions: return 0.0f;
+    case eRENDERDOC_Option_SoftMemoryLimit:
+      return (RenderDoc::Inst().GetCaptureOptions().softMemoryLimit * 1.0f);
     default: break;
   }
 
@@ -169,19 +175,51 @@ float RENDERDOC_CC GetCaptureOptionF32(RENDERDOC_CaptureOption opt)
   return -FLT_MAX;
 }
 
-CaptureOptions::CaptureOptions()
+#if ENABLED(ENABLE_UNIT_TESTS)
+
+#undef None
+#undef Always
+
+#include "catch/catch.hpp"
+
+TEST_CASE("Check CaptureOptions de/serialise to string", "[serialise]")
 {
-  // since we're reading from all bytes even padding etc, memset to 0
-  RDCEraseEl(*this);
-  allowVSync = true;
-  allowFullscreen = true;
-  apiValidation = false;
-  captureCallstacks = false;
-  captureCallstacksOnlyActions = false;
-  delayForDebugger = 0;
-  verifyBufferAccess = false;
-  hookIntoChildren = false;
-  refAllResources = false;
-  captureAllCmdLists = false;
-  debugOutputMute = true;
+  CaptureOptions opts;
+
+  bool *boolOpts[] = {
+      &opts.allowVSync,
+      &opts.allowFullscreen,
+      &opts.apiValidation,
+      &opts.captureCallstacks,
+      &opts.captureCallstacksOnlyActions,
+      &opts.verifyBufferAccess,
+      &opts.hookIntoChildren,
+      &opts.refAllResources,
+      &opts.captureAllCmdLists,
+      &opts.debugOutputMute,
+  };
+
+  for(uint32_t delay = 0; delay < 1000; delay++)
+  {
+    for(uint32_t variant = 0; variant < (1 << ARRAY_COUNT(boolOpts)); variant++)
+    {
+      opts.delayForDebugger = delay;
+      for(size_t o = 0; o < ARRAY_COUNT(boolOpts); o++)
+      {
+        *boolOpts[o] = (variant & (1 << o)) != 0;
+      }
+
+      rdcstr s = opts.EncodeAsString();
+      CaptureOptions decoded;
+      decoded.DecodeFromString(s);
+
+      CHECK(memcmp(&opts, &decoded, sizeof(decoded)) == 0);
+    }
+  }
+
+  // check that nothing explodes here
+  CaptureOptions a;
+  a.DecodeFromString("");
 }
+
+#endif

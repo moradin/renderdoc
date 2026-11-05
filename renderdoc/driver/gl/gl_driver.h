@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -59,7 +59,7 @@ struct GLInitParams
   rdcstr renderer, version;
 
   // check if a frame capture section version is supported
-  static const uint64_t CurrentVersion = 0x23;
+  static const uint64_t CurrentVersion = 0x24;
   static bool IsSupportedVersion(uint64_t ver);
 };
 
@@ -111,12 +111,12 @@ private:
 
   GLPlatform &m_Platform;
 
-  ReplayStatus m_FatalError = ReplayStatus::Succeeded;
+  RDResult m_FatalError = ResultCode::Succeeded;
   rdcarray<DebugMessage> m_DebugMessages;
   template <typename SerialiserType>
   void Serialise_DebugMessages(SerialiserType &ser);
   rdcarray<DebugMessage> GetDebugMessages();
-  ReplayStatus FatalErrorCheck() { return m_FatalError; }
+  RDResult FatalErrorCheck() { return m_FatalError; }
   rdcstr m_DebugMsgContext;
 
   bool m_SuppressDebugMessages;
@@ -145,6 +145,8 @@ private:
   // internals
   CaptureState m_State;
   bool m_AppControlledCapture = false;
+  bool m_FirstFrameCapture = false;
+  void *m_FirstFrameCaptureContext = NULL;
 
   PerformanceTimer m_CaptureTimer;
 
@@ -184,6 +186,12 @@ private:
   void *m_LastCtx;
   int m_ImplicitThreadSwitches = 0;
 
+  // Object and command annotation support
+  Threading::CriticalSection m_AnnotationsLock;
+  std::unordered_map<ResourceId, SDObject *> m_Annotations;    // Object annotations by ResourceId
+  SDObject *m_RootAnnotation = NULL;                           // Root for event annotation state
+  rdcarray<SDObject *> m_EventAnnotations;                     // Track allocations for cleanup
+
   GLContextTLSData m_EmptyTLSData;
   uint64_t m_CurCtxDataTLS;
   rdcarray<GLContextTLSData *> m_CtxDataVector;
@@ -193,6 +201,8 @@ private:
   rdcarray<GLWindowingData> m_LastContexts;
 
   std::set<void *> m_AcceptedCtx;
+
+  std::set<const char *> m_UnsupportedFunctions;
 
   rdcarray<rdcpair<GLResourceRecord *, Chunk *>> m_BufferResizes;
 
@@ -215,6 +225,8 @@ private:
 
   ResourceId m_ContextResourceID;
   GLResourceRecord *m_ContextRecord;
+
+  ResourceId m_DescriptorsID;
 
   GLResourceManager *m_ResourceManager;
 
@@ -294,7 +306,7 @@ private:
   uint32_t m_LastEventID;
   GLChunk m_LastChunk;
 
-  ReplayStatus m_FailedReplayStatus = ReplayStatus::APIReplayFailed;
+  RDResult m_FailedReplayResult = ResultCode::APIReplayFailed;
 
   ActionDescription m_ParentAction;
 
@@ -336,8 +348,8 @@ private:
   uint32_t m_InitChunkIndex = 0;
 
   bool ProcessChunk(ReadSerialiser &ser, GLChunk chunk);
-  ReplayStatus ContextReplayLog(CaptureState readType, uint32_t startEventID, uint32_t endEventID,
-                                bool partial);
+  RDResult ContextReplayLog(CaptureState readType, uint32_t startEventID, uint32_t endEventID,
+                            bool partial);
   bool ContextProcessChunk(ReadSerialiser &ser, GLChunk chunk);
   void AddUsage(const ActionDescription &a);
   void AddAction(const ActionDescription &a);
@@ -482,6 +494,12 @@ private:
         return;
       m_TextureRecord[TextureIdx(target)][m_TextureUnit] = record;
     }
+    void ClearMatchingActiveTexRecord(GLResourceRecord *record)
+    {
+      for(size_t i = 0; i < ARRAY_COUNT(m_TextureRecord); i++)
+        if(m_TextureRecord[i][m_TextureUnit] == record)
+          m_TextureRecord[i][m_TextureUnit] = NULL;
+    }
     GLResourceRecord *GetTexUnitRecord(GLenum target, GLenum texunit)
     {
       return m_TextureRecord[TextureIdx(target)][texunit - eGL_TEXTURE0];
@@ -562,8 +580,15 @@ private:
   rdcarray<QueuedResource> m_QueuedInitialFetches;
   rdcarray<QueuedResource> m_QueuedReleases;
 
+  void RemoveAnnotations(ResourceId id)
+  {
+    SCOPED_LOCK(m_AnnotationsLock);
+    m_Annotations.erase(id);
+  }
+
   void QueuePrepareInitialState(GLResource res);
   void QueueResourceRelease(GLResource res);
+  void CheckQueuedInitialFetches(void *ctx);
 
   void ReleaseResource(GLResource res);
 
@@ -574,7 +599,7 @@ private:
   void RenderText(float x, float y, const rdcstr &text);
   void RenderTextInternal(float x, float y, const rdcstr &text);
 
-  void CreateReplayBackbuffer(const GLInitParams &params, ResourceId fboOrigId, GLuint &fbo,
+  void CreateReplayBackbuffer(const GLInitParams &params, ResourceId fboId, GLuint &fbo,
                               rdcstr bbname);
 
   RenderDoc::FramePixels *SaveBackbufferImage();
@@ -591,10 +616,12 @@ private:
   // final check function to ensure we don't try and render with no index or vertex buffer bound, as
   // many drivers will still try to access memory via legacy behaviour even on core profile.
   bool Check_SafeDraw(bool indexed);
+  bool Check_SafeDrawAtEventID(uint32_t eid) const;
 
-  void StoreCompressedTexData(ResourceId texId, GLenum target, GLint level, GLint xoffset,
-                              GLint yoffset, GLint zoffset, GLsizei width, GLsizei height,
-                              GLsizei depth, GLenum format, GLsizei imageSize, const void *pixels);
+  void StoreCompressedTexData(ResourceId texId, GLenum target, GLint level, bool subUpdate,
+                              GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width,
+                              GLsizei height, GLsizei depth, GLenum format, GLsizei imageSize,
+                              const void *pixels);
 
   // no copy semantics
   WrappedOpenGL(const WrappedOpenGL &);
@@ -612,12 +639,13 @@ public:
   CaptureState GetState() { return m_State; }
   GLReplay *GetReplay() { return m_Replay; }
   WriteSerialiser &GetSerialiser() { return m_ScratchSerialiser; }
-  void SetDriverType(RDCDriver type) { m_DriverType = type; }
+  void SetDriverType(RDCDriver type);
   bool isGLESMode() { return m_DriverType == RDCDriver::OpenGLES; }
   RDCDriver GetDriverType() { return m_DriverType; }
   ContextPair &GetCtx();
   GLResourceRecord *GetContextRecord();
 
+  void UseUnusedSupportedFunction(const char *name);
   void CheckImplicitThread();
 
   void CreateTextureImage(GLuint tex, GLenum internalFormat, GLenum initFormatHint,
@@ -634,7 +662,21 @@ public:
     m_State = CaptureState::StructuredExport;
   }
   SDFile *GetStructuredFile() { return m_StructuredFile; }
-  void DetachStructuredFile() { m_StoredStructuredData = m_StructuredFile = NULL; }
+  SDFile *DetachStructuredFile()
+  {
+    SDFile *ret = m_StoredStructuredData;
+    m_StoredStructuredData = m_StructuredFile = NULL;
+    return ret;
+  }
+  rdcarray<SDObject *> DetachAnnotations()
+  {
+    rdcarray<SDObject *> ret;
+    ret.swap(m_EventAnnotations);
+    for(auto it = m_Annotations.begin(); it != m_Annotations.end(); ++it)
+      ret.push_back(it->second);
+    m_Annotations.clear();
+    return ret;
+  }
   void SetFetchCounters(bool in) { m_FetchCounters = in; };
   void SetDebugMsgContext(const rdcstr &context) { m_DebugMsgContext = context; }
   void AddDebugMessage(DebugMessage msg)
@@ -650,7 +692,7 @@ public:
   // replay interface
   void Initialise(GLInitParams &params, uint64_t sectionVersion, const ReplayOptions &opts);
   void ReplayLog(uint32_t startEventID, uint32_t endEventID, ReplayLogType replayType);
-  ReplayStatus ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers);
+  RDResult ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers);
 
   GLuint GetFakeVAO0() { return m_Global_VAO0; }
   GLuint GetCurrentDefaultFBO() { return m_CurrentDefaultFBO; }
@@ -681,9 +723,20 @@ public:
 
   void ReplayMarkers(bool replay) { m_ReplayMarkers = replay; }
   RDCDriver GetFrameCaptureDriver() { return GetDriverType(); }
-  void StartFrameCapture(void *dev, void *wnd);
-  bool EndFrameCapture(void *dev, void *wnd);
-  bool DiscardFrameCapture(void *dev, void *wnd);
+  void StartFrameCapture(DeviceOwnedWindow devWnd);
+  bool EndFrameCapture(DeviceOwnedWindow devWnd);
+  bool DiscardFrameCapture(DeviceOwnedWindow devWnd);
+
+  template <typename SerialiserType>
+  bool Serialise_SetCommandAnnotation(SerialiserType &ser, rdcstr key,
+                                      RENDERDOC_AnnotationType valueType, uint32_t valueVectorWidth,
+                                      RENDERDOC_AnnotationValue value);
+
+  uint32_t SetObjectAnnotation(void *object, const char *key, RENDERDOC_AnnotationType valueType,
+                               uint32_t valueVectorWidth, const RENDERDOC_AnnotationValue *value);
+  uint32_t SetCommandAnnotation(void *queueOrCommandBuffer, const char *key,
+                                RENDERDOC_AnnotationType valueType, uint32_t valueVectorWidth,
+                                const RENDERDOC_AnnotationValue *value);
 
   // map with key being mip level, value being stored data
   typedef std::map<int, bytebuf> CompressedDataStore;
@@ -701,8 +754,8 @@ public:
     rdcspv::Reflector spirv;
     rdcstr disassembly;
     std::map<size_t, uint32_t> spirvInstructionLines;
-    ShaderReflection *reflection;
     int version;
+    const ShaderReflection *GetReflection() const { return reflection; }
 
     // used only when we're capturing and don't have driver-side reflection so we need to emulate
     glslang::TShader *glslangShader = NULL;
@@ -711,18 +764,45 @@ public:
     rdcarray<uint32_t> spirvWords;
     SPIRVPatchData patchData;
 
+    rdcarray<SpecConstant> specInfo;
+
+    // used if the application uploaded GLSL but we were able to compile to SPIR-V
+    bool convertedSPIRV = false;
+    bool convertedAutomapped = false;
+    rdcarray<uint32_t> convertedSpirvWords;
+    SPIRVPatchData convertedPatchData;
+    ShaderReflection convertedRefl;
+
     // the parameters passed to glSpecializeShader
     rdcstr entryPoint;
     rdcarray<uint32_t> specIDs;
     rdcarray<uint32_t> specValues;
 
-    // pre-calculated bindpoint mapping for SPIR-V shaders. NOT valid for normal GLSL shaders
-    ShaderBindpointMapping mapping;
-
     void ProcessCompilation(WrappedOpenGL &drv, ResourceId id, GLuint realShader);
     void ProcessSPIRVCompilation(WrappedOpenGL &drv, ResourceId id, GLuint realShader,
                                  const GLchar *pEntryPoint, GLuint numSpecializationConstants,
                                  const GLuint *pConstantIndex, const GLuint *pConstantValue);
+
+    void ClearReflection()
+    {
+      *reflection = ShaderReflection();
+      spirv = rdcspv::Reflector();
+    }
+    const ShaderReflection *StealReflection()
+    {
+      ShaderReflection *ret = reflection;
+      reflection = NULL;
+      return ret;
+    }
+
+    void Disassemble(const rdcstr &disasmEntryPoint)
+    {
+      if(disassembly.empty())
+        disassembly = spirv.Disassemble(disasmEntryPoint, specInfo, spirvInstructionLines);
+    }
+
+  private:
+    ShaderReflection *reflection;
   };
 
   struct ProgramData
@@ -740,7 +820,7 @@ public:
     // the application to modify anything.
     bool shaderProgramUnlinkable = false;
     bool linked;
-    ResourceId stageShaders[6];
+    ResourceId stageShaders[NumShaderStages];
 
     // used only when we're capturing and don't have driver-side reflection so we need to emulate
     glslang::TProgram *glslangProgram = NULL;
@@ -761,24 +841,30 @@ public:
       GLbitfield use;
     };
 
-    ResourceId stagePrograms[6];
-    ResourceId stageShaders[6];
+    ResourceId stagePrograms[NumShaderStages];
+    ResourceId stageShaders[NumShaderStages];
   };
 
   std::map<ResourceId, ShaderData> m_Shaders;
   std::map<ResourceId, ProgramData> m_Programs;
   std::map<ResourceId, PipelineData> m_Pipelines;
 
+  bool HasShader(ResourceId id) { return m_Shaders.find(id) != m_Shaders.end(); }
+  const ShaderData &GetShader(ResourceId id) { return m_Shaders[id]; }
+  ShaderData &GetWriteableShader(ResourceId id) { return m_Shaders[id]; }
+  const ProgramData &GetProgram(ResourceId id) { return m_Programs[id]; }
+  ProgramData &GetWriteableProgram(ResourceId id) { return m_Programs[id]; }
+  const PipelineData &GetPipeline(ResourceId id) { return m_Pipelines[id]; }
+
   void FillReflectionArray(ResourceId program, PerStageReflections &stages)
   {
-    ProgramData &progdata = m_Programs[program];
+    const ProgramData &progdata = GetProgram(program);
     for(size_t i = 0; i < ARRAY_COUNT(progdata.stageShaders); i++)
     {
       ResourceId shadId = progdata.stageShaders[i];
       if(shadId != ResourceId())
       {
-        stages.refls[i] = m_Shaders[shadId].reflection;
-        stages.mappings[i] = &m_Shaders[shadId].mapping;
+        stages.refls[i] = GetShader(shadId).GetReflection();
       }
     }
   }

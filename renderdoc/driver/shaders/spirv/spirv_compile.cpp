@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -32,6 +32,7 @@
 #undef max
 
 #include "glslang/SPIRV/GlslangToSpv.h"
+#include "glslang/glslang/Public/ResourceLimits.h"
 #include "glslang/glslang/Public/ShaderLang.h"
 
 rdcstr rdcspv::Compile(const rdcspv::CompilationSettings &settings, const rdcarray<rdcstr> &sources,
@@ -58,7 +59,9 @@ rdcstr rdcspv::Compile(const rdcspv::CompilationSettings &settings, const rdcarr
                         (int)EShLangTessControl == (int)rdcspv::ShaderStage::TessControl &&
                         (int)EShLangTessEvaluation == (int)rdcspv::ShaderStage::TessEvaluation &&
                         (int)EShLangGeometry == (int)rdcspv::ShaderStage::Geometry &&
-                        (int)EShLangCompute == (int)rdcspv::ShaderStage::Compute,
+                        (int)EShLangCompute == (int)rdcspv::ShaderStage::Compute &&
+                        (int)EShLangTask == (int)rdcspv::ShaderStage::Task &&
+                        (int)EShLangMesh == (int)rdcspv::ShaderStage::Mesh,
                     "Shader language enums don't match");
 
   {
@@ -66,6 +69,15 @@ rdcstr rdcspv::Compile(const rdcspv::CompilationSettings &settings, const rdcarr
     EShLanguage lang = EShLanguage(settings.stage);
 
     glslang::TShader *shader = new glslang::TShader(lang);
+
+    shader->setAutoMapBindings(settings.autoMapBindings);
+    shader->setAutoMapLocations(settings.autoMapLocations);
+    // glslang internally allows up to 4095 for locations - this gives plenty space for I/O where
+    // only 128 components are allowed max
+    shader->setIOLocationBase(3900);
+    // don't set a limit for uniforms, as we don't know a reasonable value and can't make use of
+    // this information
+    // shader->setUniformLocationBase(0);
 
     shader->setStringsWithLengthsAndNames(strs, NULL, names, (int)sources.size());
 
@@ -99,6 +111,9 @@ rdcstr rdcspv::Compile(const rdcspv::CompilationSettings &settings, const rdcarr
 
       success = program->link(EShMsgDefault);
 
+      if(success && (settings.autoMapBindings || settings.autoMapLocations))
+        success = program->mapIO();
+
       if(!success)
       {
         errors = "Program failed to link:\n\n";
@@ -115,7 +130,11 @@ rdcstr rdcspv::Compile(const rdcspv::CompilationSettings &settings, const rdcarr
 
         glslang::SpvOptions opts;
         if(settings.debugInfo)
+        {
           opts.generateDebugInfo = true;
+          opts.emitNonSemanticShaderDebugInfo = true;
+          opts.emitNonSemanticShaderDebugSource = true;
+        }
 
         std::vector<uint32_t> spirvVec;
         glslang::GlslangToSpv(*intermediate, spirvVec, &opts);

@@ -1,5 +1,4 @@
 import renderdoc as rd
-from typing import List
 import rdtest
 
 
@@ -9,27 +8,28 @@ class D3D11_Shader_ISA(rdtest.TestCase):
     def check_capture(self):
         action = self.find_action("GPU=")
 
-        self.check(action is not None)
+        assert action is not None
 
         is_amd = 'AMD' in action.customName
 
-        self.controller.SetFrameEvent(action.next.eventId, False)
+        self.set_event(action.nextAction.eventId, False)
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
-        refl: rd.ShaderReflection = pipe.GetShaderReflection(rd.ShaderStage.Vertex)
+        refl = pipe.GetShaderReflection(rd.ShaderStage.Vertex)
+        assert refl is not None
 
-        isas: List[str] = self.controller.GetDisassemblyTargets(True)
+        isas = self.controller.GetDisassemblyTargets(True)
 
         if isas == []:
             raise rdtest.TestFailureException("Expected some disassembly targets, got none!")
 
         # Generic testing can't do much, we just ensure that we can successfully get a non-empty disassembly string
         for isa in isas:
-            disasm: str = self.controller.DisassembleShader(pipe.GetGraphicsPipelineObject(), refl, isa)
+            disasm = self.controller.DisassembleShader(pipe.GetGraphicsPipelineObject(), refl, isa)
 
             if len(disasm) < 32:
-                raise rdtest.TestFailureException("Disassembly for target '{}' is degenerate: {}".format(isa, disasm))
+                raise rdtest.TestFailureException(f"Disassembly for target '{isa}' is degenerate: {disasm}")
 
         rdtest.log.success("All disassembly targets successfully fetched and seem reasonable")
 
@@ -39,7 +39,7 @@ class D3D11_Shader_ISA(rdtest.TestCase):
             raise rdtest.TestFailureException(
                 "AMDIL is not an available disassembly target. Are you missing plugins?")
 
-        disasm: str = self.controller.DisassembleShader(pipe.GetGraphicsPipelineObject(), refl, 'AMDIL')
+        disasm = self.controller.DisassembleShader(pipe.GetGraphicsPipelineObject(), refl, 'AMDIL')
 
         expected = [
             'il_vs',
@@ -50,13 +50,13 @@ class D3D11_Shader_ISA(rdtest.TestCase):
         for fragment in expected:
             if not fragment in disasm:
                 raise rdtest.TestFailureException(
-                    "AMDIL ISA doesn't contain '{}' as expected: {}".format(fragment, disasm))
+                    f"AMDIL ISA doesn't contain '{fragment}' as expected: {disasm}")
 
         if 'RDNA (gfx1010)' not in isas:
             raise rdtest.TestFailureException(
                 "RDNA (gfx1010) is not an available disassembly target. Are you missing plugins?")
 
-        disasm: str = self.controller.DisassembleShader(pipe.GetGraphicsPipelineObject(), refl, 'RDNA (gfx1010)')
+        disasm = self.controller.DisassembleShader(pipe.GetGraphicsPipelineObject(), refl, 'RDNA (gfx1010)')
 
         expected = [
             'asic(GFX10)',
@@ -68,7 +68,7 @@ class D3D11_Shader_ISA(rdtest.TestCase):
         for fragment in expected:
             if not fragment in disasm:
                 raise rdtest.TestFailureException(
-                    "RDNA ISA doesn't contain '{}' as expected: {}".format(fragment, disasm))
+                    f"RDNA ISA doesn't contain '{fragment}' as expected: {disasm}")
 
         rdtest.log.success("AMD disassembly is as expected")
 

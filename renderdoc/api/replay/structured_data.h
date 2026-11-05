@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -91,6 +91,11 @@ DOCUMENT(R"(The basic irreducible type of an object. Every other more complex ty
 
   A ResourceId. Equivalent to (and stored as) an 8-byte unsigned integer, but specifically contains
   the unique Id of a resource in a capture.
+
+.. data:: GPUAddress
+
+  A GPU pointer. Equivalent to (and stored as) an 8-byte unsigned integer, but specifically contains
+  the address of a resource in a capture.
 )");
 enum class SDBasic : uint32_t
 {
@@ -107,9 +112,16 @@ enum class SDBasic : uint32_t
   Boolean,
   Character,
   Resource,
+  GPUAddress,
 };
 
 DECLARE_REFLECTION_ENUM(SDBasic);
+
+#if defined(ENABLE_PYTHON_FLAG_ENUMS)
+
+ENABLE_PYTHON_FLAG_ENUMS;
+
+#endif
 
 DOCUMENT(R"(Bitfield flags that could be applied to a type.
 
@@ -159,6 +171,16 @@ DOCUMENT(R"(Bitfield flags that could be applied to a type.
   Indicates that only important children should be processed, as noted in :data:`Important`. This
   may appear on an object which has no important children - which indicates explicitly that there
   are no important children so when summarising no parameters should be shown.
+
+.. data:: HiddenChildren
+
+  Indicates that some children are marked as hidden. This can be important for cases where the
+  number of children is important.
+
+.. data:: OffsetOrSize
+
+  Special flag to indicate that this type will be used as a byte offset or byte size, which is used to 
+  control the formatting mode when the value is displayed in the UI.
 )");
 enum class SDTypeFlags : uint32_t
 {
@@ -171,61 +193,12 @@ enum class SDTypeFlags : uint32_t
   Union = 0x20,
   Important = 0x40,
   ImportantChildren = 0x80,
+  HiddenChildren = 0x100,
+  OffsetOrSize = 0x200,
 };
 
 BITMASK_OPERATORS(SDTypeFlags);
 DECLARE_REFLECTION_ENUM(SDTypeFlags);
-
-struct SDObject;
-struct SDChunk;
-
-DOCUMENT("Details the name and properties of a structured type");
-struct SDType
-{
-  SDType(const rdcinflexiblestr &n)
-      : name(n), basetype(SDBasic::Struct), flags(SDTypeFlags::NoFlags), byteSize(0)
-  {
-  }
-#if !defined(SWIG)
-  SDType(rdcinflexiblestr &&n)
-      : name(std::move(n)), basetype(SDBasic::Struct), flags(SDTypeFlags::NoFlags), byteSize(0)
-  {
-  }
-#endif
-
-  DOCUMENT("The name of this type.");
-  rdcinflexiblestr name;
-
-  DOCUMENT("The :class:`SDBasic` category that this type belongs to.");
-  SDBasic basetype;
-
-  DOCUMENT("The :class:`SDTypeFlags` flags for this type.");
-  SDTypeFlags flags;
-
-  DOCUMENT(R"(The size in bytes that an instance of this type takes up.
-
-This is only valid for whole chunks (where it contains the whole chunk size), for buffers that have
-an arbitrary size, or for basic types such as integers and floating point values where it gives the
-size/precision of the type.
-
-For variable size types like structs, arrays, etc it will be set to 0.
-)");
-  uint64_t byteSize;
-
-protected:
-  friend struct SDObject;
-  friend struct SDChunk;
-
-  SDType() = default;
-  SDType(const SDType &) = default;
-  SDType &operator=(const SDType &) = default;
-  void *operator new(size_t count) = delete;
-  void *operator new[](size_t count) = delete;
-  void operator delete(void *p) = delete;
-  void operator delete[](void *p) = delete;
-};
-
-DECLARE_REFLECTION_STRUCT(SDType);
 
 DOCUMENT(R"(Bitfield flags that could be applied to an :class:`SDChunk`.
 
@@ -253,7 +226,78 @@ enum class SDChunkFlags : uint64_t
 BITMASK_OPERATORS(SDChunkFlags);
 DECLARE_REFLECTION_ENUM(SDChunkFlags);
 
-DOCUMENT("The metadata that goes along with a :class:`SDChunk` to detail how it was recorded.");
+#if defined(DISABLE_PYTHON_FLAG_ENUMS)
+DISABLE_PYTHON_FLAG_ENUMS;
+#endif
+
+struct SDObject;
+struct SDChunk;
+
+DOCUMENT("Details the name and properties of a structured type");
+struct SDType
+{
+  SDType(const rdcinflexiblestr &n)
+      : name(n), basetype(SDBasic::Struct), flags(SDTypeFlags::NoFlags), byteSize(0)
+  {
+  }
+#if !defined(SWIG)
+  SDType(rdcinflexiblestr &&n)
+      : name(std::move(n)), basetype(SDBasic::Struct), flags(SDTypeFlags::NoFlags), byteSize(0)
+  {
+  }
+#endif
+
+  DOCUMENT(R"(The name of this type.
+
+:type: str
+)");
+  rdcinflexiblestr name;
+
+  DOCUMENT(R"(The :class:`SDBasic` category that this type belongs to.
+
+:type: SDBasic
+)");
+  SDBasic basetype;
+
+  DOCUMENT(R"(The :class:`SDTypeFlags` flags for this type.
+
+:type: SDTypeFlags
+)");
+  SDTypeFlags flags;
+
+  DOCUMENT(R"(The size in bytes that an instance of this type takes up.
+
+This is only valid for whole chunks (where it contains the whole chunk size), for buffers that have
+an arbitrary size, or for basic types such as integers and floating point values where it gives the
+size/precision of the type.
+
+For variable size types like structs, arrays, etc it will be set to 0.
+
+:type: int
+)");
+  uint64_t byteSize;
+
+protected:
+  friend struct SDObject;
+  friend struct SDChunk;
+
+  SDType() = default;
+  SDType(const SDType &) = default;
+  SDType &operator=(const SDType &) = default;
+  void *operator new(size_t count) = delete;
+  void *operator new[](size_t count) = delete;
+  void operator delete(void *p) = delete;
+  void operator delete[](void *p) = delete;
+};
+
+DECLARE_REFLECTION_STRUCT(SDType);
+
+DOCUMENT(R"(
+SDChunkMetaData()
+SDChunkMetaData(other: SDChunkMetaData)
+
+The metadata that goes along with a :class:`SDChunk` to detail how it was recorded.
+)");
 struct SDChunkMetaData
 {
   DOCUMENT("");
@@ -261,30 +305,49 @@ struct SDChunkMetaData
   SDChunkMetaData(const SDChunkMetaData &) = default;
   SDChunkMetaData &operator=(const SDChunkMetaData &) = default;
 
-  DOCUMENT("The internal chunk ID - unique given a particular driver in use.");
+  DOCUMENT(R"(The internal chunk ID - unique given a particular driver in use.
+
+:type: int
+)");
   uint32_t chunkID = 0;
 
-  DOCUMENT("The :class:`SDChunkFlags` for this chunk.");
+  DOCUMENT(R"(The :class:`SDChunkFlags` for this chunk.
+
+:type: SDChunkFlags
+)");
   SDChunkFlags flags = SDChunkFlags::NoFlags;
 
   DOCUMENT(R"(The length in bytes of this chunk - may be longer than the actual sum of the data if a
 conservative size estimate was used on creation to avoid seeking to fix-up the stored length.
+
+:type: int
 )");
   uint64_t length = 0;
 
-  DOCUMENT("The ID of the thread where this chunk was recorded.");
+  DOCUMENT(R"(The ID of the thread where this chunk was recorded.
+
+:type: int
+)");
   uint64_t threadID = 0;
 
   DOCUMENT(R"(The duration in microseconds that this chunk took. This is the time for the actual
 work, not the serialising.
 Since 0 is a possible value for this (for extremely fast calls), -1 is the invalid/not present value.
+
+:type: int
 )");
   int64_t durationMicro = -1;
 
-  DOCUMENT("The point in time when this chunk was recorded, in microseconds since program start.");
+  DOCUMENT(R"(The point in time when this chunk was recorded, in microseconds since program start.
+
+:type: int
+)");
   uint64_t timestampMicro = 0;
 
-  DOCUMENT("The frames of the CPU-side callstack leading up to the chunk.");
+  DOCUMENT(R"(The frames of the CPU-side callstack leading up to the chunk.
+
+:type: List[int]
+)");
   rdcarray<uint64_t> callstack;
 
 private:
@@ -302,22 +365,40 @@ Only one member is valid, as defined by the type of the :class:`SDObject`.
 )");
 union SDObjectPODData
 {
-  DOCUMENT("The value as an unsigned integer.");
+  DOCUMENT(R"(The value as an unsigned integer.
+
+:type: int
+)");
   uint64_t u;
 
-  DOCUMENT("The value as a signed integer.");
+  DOCUMENT(R"(The value as a signed integer.
+
+:type: int
+)");
   int64_t i;
 
-  DOCUMENT("The value as a floating point number.");
+  DOCUMENT(R"(The value as a floating point number.
+
+:type: float
+)");
   double d;
 
-  DOCUMENT("The value as a boolean.");
+  DOCUMENT(R"(The value as a boolean.
+
+:type: bool
+)");
   bool b;
 
-  DOCUMENT("The value as a single byte character.");
+  DOCUMENT(R"(The value as a single byte character.
+
+:type: str
+)");
   char c;
 
-  DOCUMENT("The value as a :class:`ResourceId`.");
+  DOCUMENT(R"(The value as a :class:`ResourceId`
+
+:type: ResourceId
+)");
   ResourceId id;
 
   SDObjectPODData() : u(0) {}
@@ -373,10 +454,16 @@ struct SDObjectData
   DOCUMENT("");
   SDObjectData() = default;
 
-  DOCUMENT("The plain-old data contents of the object, in a :class:`SDObjectPODData`.");
+  DOCUMENT(R"(The plain-old data contents of the object, in a :class:`SDObjectPODData`.
+
+:type: SDObjectPODData
+)");
   SDObjectPODData basic;
 
-  DOCUMENT("The string contents of the object.");
+  DOCUMENT(R"(The string contents of the object.
+
+:type: str
+)");
   rdcinflexiblestr str;
 
   SDObjectData(const SDObjectData &) = delete;
@@ -418,7 +505,11 @@ struct LazyArrayData
 };
 #endif
 
-DOCUMENT(R"(Defines a single structured object. Structured objects are defined recursively and one
+DOCUMENT(R"(
+SDObject()
+SDObject(name: str, typeName: str)
+
+Defines a single structured object. Structured objects are defined recursively and one
 object can either be a basic type (integer, float, etc), an array, or a struct. Arrays and structs
 are defined similarly.
 
@@ -537,20 +628,29 @@ struct SDObject
       PopulateAllChildren();
     }
 
-    ret->data.children.resize(data.children.size());
+    ret->data.children.reserve(data.children.size());
     for(size_t i = 0; i < data.children.size(); i++)
-      ret->data.children[i] = data.children[i]->Duplicate();
+      ret->AddAndOwnChild(data.children[i]->Duplicate());
 
     return ret;
   }
 
-  DOCUMENT("The name of this object.");
+  DOCUMENT(R"(The name of this object.
+
+:type: str
+)");
   rdcinflexiblestr name;
 
-  DOCUMENT("The :class:`SDType` of this object.");
+  DOCUMENT(R"(The :class:`SDType` of this object.
+
+:type: SDType
+)");
   SDType type;
 
-  DOCUMENT("The :class:`SDObjectData` with the contents of this object.");
+  DOCUMENT(R"(The :class:`SDObjectData` with the contents of this object.
+
+:type: SDObjectData
+)");
   SDObjectData data;
 
   DOCUMENT(R"(Checks if the given object has the same value as this one. This equality is defined
@@ -600,15 +700,14 @@ recursively through children.
     // fully owned children. This shouldn't happen, but just in case we'll evaluate the lazy array
     // here.
     PopulateAllChildren();
-    data.children.push_back(child->Duplicate());
-    data.children.back()->m_Parent = this;
+    AddAndOwnChild(child->Duplicate());
   }
   DOCUMENT(R"(Find a child object by a given name. If no matching child is found, ``None`` is
 returned.
 
 :param str childName: The name to search for.
 :return: A reference to the child object if found, or ``None`` if not.
-:rtype: SDObject
+:rtype: Optional[SDObject]
 )");
   inline SDObject *FindChild(const rdcstr &childName)
   {
@@ -618,12 +717,158 @@ returned.
     return NULL;
   }
 
+  DOCUMENT(R"(Find a child object by a given name recursively. If no matching child is found,
+``None`` is returned.
+
+The order of the search is not guaranteed, so care should be taken when the name may not be unique.
+
+:param str childName: The name to search for.
+:return: A reference to the child object if found, or ``None`` if not.
+:rtype: Optional[SDObject]
+)");
+  inline SDObject *FindChildRecursively(const rdcstr &childName)
+  {
+    SDObject *o = FindChild(childName);
+    if(o)
+      return o;
+
+    for(size_t i = 0; i < NumChildren(); i++)
+    {
+      o = GetChild(i)->FindChildRecursively(childName);
+      if(o)
+        return o;
+    }
+
+    return NULL;
+  }
+
+  DOCUMENT(R"(Create a child object by a key path. Children will be created as necessary to ensure
+that the key path exists, but if they already exist then the existing object will be returned.
+
+Key paths are dotted recursive references, e.g. ``foo.bar`` is the member ``bar`` in parent ``foo``.
+
+Arrays are represented by simple numeric entries e.g. ``foo.0.bar``, ``foo.1.bar``.
+
+Empty entries are ignored so ``foo..bar`` and ``foo.bar`` refer to the same object.
+
+Key paths must not be empty and must not begin with a dot.
+
+If any path element is not unique in any child the behaviour is undefined, so objects should only be
+manipulated by key path exclusively or not at all.
+
+:param str keyPath: The key path to search for and return.
+:return: A reference to the object at the relative key path
+:rtype: SDObject
+)");
+  inline SDObject *CreateChildByKeyPath(const rdcstr &keyPath)
+  {
+    if(keyPath.empty() || keyPath[0] == '.')
+      return this;
+
+    int dotIdx = keyPath.indexOf('.');
+    rdcstr element = keyPath.substr(0, dotIdx);
+
+    SDObject *child = NULL;
+    for(size_t i = 0; i < data.children.size(); i++)
+      if(GetChild(i)->name == element)
+        child = GetChild(i);
+
+    if(!child)
+      child = AddAndOwnChild(new SDObject(element, ""_lit));
+
+    while(dotIdx >= 0 && keyPath[dotIdx] == '.')
+      dotIdx++;
+
+    if(dotIdx >= 0 && dotIdx < keyPath.count())
+      return child->CreateChildByKeyPath(keyPath.substr(dotIdx));
+
+    return child;
+  }
+
+  DOCUMENT(R"(Find if a child object if it exists by a key path. Children will not be created
+if any element of the path doesn't exist and instead ``None`` will be returned.
+
+Key paths are dotted recursive references, e.g. ``foo.bar`` is the member ``bar`` in parent ``foo``.
+
+Arrays are represented by simple numeric entries e.g. ``foo.0.bar``, ``foo.1.bar``.
+
+Empty entries are ignored so ``foo..bar`` and ``foo.bar`` refer to the same object.
+
+Key paths must not be empty and must not begin with a dot.
+
+If any path element is not unique in any child the behaviour is undefined, so objects should only be
+manipulated by key path exclusively or not at all.
+
+:param str keyPath: The key path to search for and return.
+:return: Whether or not a child exists at the given key path
+:rtype: Optional[SDObject]
+)");
+  inline const SDObject *FindChildByKeyPath(const rdcstr &keyPath) const
+  {
+    if(keyPath.empty() || keyPath[0] == '.')
+      return this;
+
+    int dotIdx = keyPath.indexOf('.');
+    rdcstr element = keyPath.substr(0, dotIdx);
+
+    const SDObject *child = NULL;
+    for(size_t i = 0; i < data.children.size(); i++)
+      if(GetChild(i)->name == element)
+        child = GetChild(i);
+
+    if(!child)
+      return NULL;
+
+    while(dotIdx >= 0 && keyPath[dotIdx] == '.')
+      dotIdx++;
+
+    if(dotIdx >= 0 && dotIdx < keyPath.count())
+      return child->FindChildByKeyPath(keyPath.substr(dotIdx));
+
+    return child;
+  }
+
+  DOCUMENT(R"(Delete a child object by a key path. All children of the resulting path will be deleted
+as well. If no such path exists, nothing will be changed.
+
+If any path element is not unique in any child the behaviour is undefined, so objects should only be
+manipulated by key path exclusively or not at all.
+
+:param str keyPath: The key path to search for and delete.
+)");
+  inline void EraseChildByKeyPath(const rdcstr &keyPath)
+  {
+    // shouldn't happen since we delete the found child (if it exists) from the parent, but return to be fault-tolerant
+    if(keyPath.empty() || keyPath[0] == '.')
+      return;
+
+    int dotIdx = keyPath.indexOf('.');
+    rdcstr element = keyPath.substr(0, dotIdx);
+
+    int childIdx = -1;
+    for(int i = 0; i < data.children.count(); i++)
+      if(GetChild(i)->name == element)
+        childIdx = i;
+
+    // if the child doesn't exist we can stop now
+    if(childIdx < 0)
+      return;
+
+    while(dotIdx >= 0 && keyPath[dotIdx] == '.')
+      dotIdx++;
+
+    if(dotIdx >= 0 && dotIdx < keyPath.count())
+      return GetChild(childIdx)->EraseChildByKeyPath(keyPath.substr(dotIdx));
+
+    RemoveChild(childIdx);
+  }
+
   DOCUMENT(R"(Find a child object by a given index. If the index is out of bounds, ``None`` is
 returned.
 
 :param int index: The index to look up.
 :return: A reference to the child object if valid, or ``None`` if not.
-:rtype: SDObject
+:rtype: Optional[SDObject]
 )");
   inline SDObject *GetChild(size_t index)
   {
@@ -639,7 +884,7 @@ returned.
   DOCUMENT(R"(Get the parent of this object. If this object has no parent, ``None`` is returned.
 
 :return: A reference to the parent object if valid, or ``None`` if not.
-:rtype: SDObject
+:rtype: Optional[SDObject]
 )");
   inline SDObject *GetParent() { return m_Parent; }
 #if !defined(SWIG)
@@ -650,6 +895,21 @@ returned.
     for(size_t i = 0; i < data.children.size(); i++)
       if(GetChild(i)->name == childName)
         return GetChild(i);
+    return NULL;
+  }
+  inline const SDObject *FindChildRecursively(const rdcstr &childName) const
+  {
+    const SDObject *o = FindChild(childName);
+    if(o)
+      return o;
+
+    for(size_t i = 0; i < NumChildren(); i++)
+    {
+      o = GetChild(i)->FindChildRecursively(childName);
+      if(o)
+        return o;
+    }
+
     return NULL;
   }
   inline const SDObject *GetChild(size_t index) const
@@ -880,6 +1140,7 @@ Invalid if the object is not actually a :class:`ResourceId`.
       case SDBasic::Buffer: return QVariant();
       case SDBasic::String: return data.str;
       case SDBasic::Enum:
+      case SDBasic::GPUAddress:
       case SDBasic::UnsignedInteger: return QVariant(qulonglong(data.basic.u));
       case SDBasic::SignedInteger: return QVariant(qlonglong(data.basic.i));
       case SDBasic::Resource: return (QVariant)data.basic.id;
@@ -909,6 +1170,13 @@ protected:
         data.children[idx]->m_Parent = (SDObject *)this;
       }
     }
+  }
+
+  void Detach()
+  {
+    PopulateAllChildren();
+    for(size_t i = 0; i < data.children.size(); i++)
+      data.children[i]->Detach();
   }
 
   void PopulateAllChildren() const
@@ -954,6 +1222,9 @@ private:
   friend void DoSerialise(SerialiserType &ser, SDChunk &el);
   template <class SerialiserType>
   friend void DoSerialise(SerialiserType &ser, SDObject &el, StructuredObjectList &children);
+
+  // SDFile should be a friend so it can detach
+  friend struct SDFile;
 
   void DeleteLazyGenerator() const
   {
@@ -1230,7 +1501,7 @@ DOCUMENT(R"(Make a structured object as an enum value.
 
 .. note::
   The enum will be stored just as an integer value, but the string name of the enumeration value can
-  be set with :meth:`SDObject.SetCustomString` if desired.
+  be set by changing the string data member if desired.
 
 :param str name: The name of the object.
 :param int val: The integer value of the enum itself.
@@ -1307,7 +1578,11 @@ SDOBJECT_MAKER(ResourceId, makeSDResourceId);
 
 #endif
 
-DOCUMENT("Defines a single structured chunk, which is a :class:`SDObject`.");
+DOCUMENT(R"(
+SDChunk()
+
+Defines a single structured chunk, which is a :class:`SDObject`.
+)");
 struct SDChunk : public SDObject
 {
   /////////////////////////////////////////////////////////////////
@@ -1339,7 +1614,10 @@ struct SDChunk : public SDObject
   {
     type.basetype = SDBasic::Chunk;
   }
-  DOCUMENT("The :class:`SDChunkMetaData` with the metadata for this chunk.");
+  DOCUMENT(R"(The :class:`SDChunkMetaData` with the metadata for this chunk.
+
+:type: SDChunkMetaData
+)");
   SDChunkMetaData metadata;
 
   DOCUMENT(R"(
@@ -1355,12 +1633,11 @@ struct SDChunk : public SDObject
     ret->data.basic = data.basic;
     ret->data.str = data.str;
 
-    ret->data.children.resize(data.children.size());
-
     PopulateAllChildren();
 
+    ret->data.children.reserve(data.children.size());
     for(size_t i = 0; i < data.children.size(); i++)
-      ret->data.children[i] = data.children[i]->Duplicate();
+      ret->AddAndOwnChild(data.children[i]->Duplicate());
 
     return ret;
   }
@@ -1445,7 +1722,11 @@ private:
 
 DECLARE_REFLECTION_STRUCT(StructuredBufferList);
 
-DOCUMENT("Contains the structured information in a file. Owns the buffers and chunks.");
+DOCUMENT(R"(
+SDFile()
+
+Contains the structured information in a file. Owns the buffers and chunks.
+)");
 struct SDFile
 {
 private:
@@ -1501,7 +1782,10 @@ public:
 )");
   StructuredBufferList buffers;
 
-  DOCUMENT("The version of this structured stream, typically only used internally.");
+  DOCUMENT(R"(The version of this structured stream, typically only used internally.
+
+:type: int
+)");
   uint64_t version = 0;
 
   DOCUMENT(R"(Swaps the contents of this file with another.
@@ -1513,6 +1797,15 @@ public:
     chunks.swap(other.chunks);
     buffers.swap(other.buffers);
     std::swap(version, other.version);
+  }
+
+  DOCUMENT(R"(Prepares the SDFile to remove any possible dependencies on what
+created it.
+)");
+  void Detach()
+  {
+    for(SDChunk *c : chunks)
+      c->Detach();
   }
 
 protected:

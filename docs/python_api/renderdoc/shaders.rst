@@ -1,20 +1,44 @@
-Shaders
-=======
+API Reference: Shaders
+======================
 
-.. contents::
+This is the API reference for the functions, classes, and enums in the ``renderdoc`` module which represents the underlying interface that the UI is built on top of. For more high-level information and instructions on using the python API, see :doc:`../index`.
+
+.. contents:: Sections
+   :local:
 
 .. currentmodule:: renderdoc
 
-Bindpoints
-----------
+Descriptors
+-----------
 
-.. autoclass:: renderdoc.ShaderBindpointMapping
+.. autoclass:: renderdoc.Descriptor
   :members:
 
-.. autoclass:: renderdoc.Bindpoint
+.. autoclass:: renderdoc.SamplerDescriptor
   :members:
 
-.. autoclass:: renderdoc.BindpointIndex
+.. autoclass:: renderdoc.DescriptorFlags
+  :members:
+   
+.. autoclass:: renderdoc.DescriptorCategory
+  :members:
+   
+.. autoclass:: renderdoc.DescriptorType
+  :members:
+   
+.. autofunction:: renderdoc.CategoryForDescriptorType
+.. autofunction:: renderdoc.IsConstantBlockDescriptor
+.. autofunction:: renderdoc.IsReadOnlyDescriptor
+.. autofunction:: renderdoc.IsReadWriteDescriptor
+.. autofunction:: renderdoc.IsSamplerDescriptor
+
+.. autoclass:: renderdoc.DescriptorLogicalLocation
+  :members:
+
+.. autoclass:: renderdoc.DescriptorRange
+  :members:
+
+.. autoclass:: renderdoc.DescriptorAccess
   :members:
 
 Reflection
@@ -30,6 +54,7 @@ Reflection
   :members:
 
 .. autofunction:: renderdoc.MaskForStage
+.. autofunction:: renderdoc.FirstStageForMask
 
 .. autoclass:: renderdoc.SigParameter
   :members:
@@ -55,6 +80,13 @@ Debug Info
 .. autoclass:: renderdoc.ShaderEncoding
   :members:
   
+.. autoclass:: renderdoc.KnownShaderTool
+  :members:
+  
+.. autofunction:: renderdoc.ToolExecutable
+.. autofunction:: renderdoc.ToolInput
+.. autofunction:: renderdoc.ToolOutput
+
 .. autofunction:: renderdoc.IsTextRepresentation
 
 .. autoclass:: renderdoc.ShaderEntryPoint
@@ -69,6 +101,9 @@ Debug Info
 .. autoclass:: renderdoc.ShaderCompileFlag
   :members:
 
+.. autoclass:: renderdoc.ShaderSourcePrefix
+  :members:
+
 Shader Constants
 ----------------
 
@@ -77,8 +112,8 @@ Shader Constants
 
 .. autoclass:: renderdoc.ShaderConstantType
   :members:
-  
-.. autoclass:: renderdoc.ShaderConstantDescriptor
+
+.. autoclass:: renderdoc.ShaderVariableFlags
   :members:
 
 .. autoclass:: renderdoc.VarType
@@ -108,6 +143,9 @@ Shader Debugging
 .. autoclass:: renderdoc.LineColumnInfo
   :members:
 
+.. autoclass:: renderdoc.InstructionSourceInfo
+  :members:
+
 .. autoclass:: renderdoc.ShaderDebugState
   :members:
 
@@ -129,3 +167,8 @@ Shader Variables
 .. autoclass:: renderdoc.PointerVal
   :members:
 
+.. autoclass:: renderdoc.ShaderBindIndex
+  :members:
+
+.. autoclass:: renderdoc.ShaderDirectAccess
+  :members:

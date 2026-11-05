@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -32,6 +32,54 @@
 class WrappedID3D11Device;
 class WrappedID3D11DeviceContext;
 class D3D11ResourceManager;
+
+// mapping of 'index in descriptor store' to fixed bindings, linearly in a given stage's members
+enum class D3D11DescriptorMapping : uint32_t
+{
+  CBs = 0,
+  SRVs = CBs + D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT,
+  Samplers = SRVs + D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT,
+  UAVs = Samplers + D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT,
+  Count = UAVs + D3D11_1_UAV_SLOT_COUNT,
+  Invalid = ~0U,
+};
+
+struct D3D11DescriptorLocation
+{
+  ShaderStage stage;
+  D3D11DescriptorMapping type;
+  uint32_t idx;
+};
+
+inline D3D11DescriptorLocation DecodeD3D11DescriptorIndex(uint32_t idx)
+{
+  ShaderStage stage = ShaderStage(idx / (uint32_t)D3D11DescriptorMapping::Count);
+
+  idx %= (uint32_t)D3D11DescriptorMapping::Count;
+
+  if((uint32_t)stage > (uint32_t)ShaderStage::Compute)
+    return {stage, D3D11DescriptorMapping::Invalid, 0};
+
+    // go in reverse order to handle each case with a >=
+#define HANDLE_TYPE(type)                                         \
+  else if(idx >= (uint32_t)D3D11DescriptorMapping::type) return { \
+      stage,                                                      \
+      D3D11DescriptorMapping::type,                               \
+      idx - (uint32_t)D3D11DescriptorMapping::type,               \
+  }
+  HANDLE_TYPE(UAVs);
+  HANDLE_TYPE(Samplers);
+  HANDLE_TYPE(SRVs);
+  HANDLE_TYPE(CBs);
+#undef HANDLE_TYPE
+
+  return {stage, D3D11DescriptorMapping::Invalid, 0};
+}
+
+inline uint32_t EncodeD3D11DescriptorIndex(const D3D11DescriptorLocation &idx)
+{
+  return (uint32_t)idx.stage * (uint32_t)D3D11DescriptorMapping::Count + (uint32_t)idx.type + idx.idx;
+}
 
 struct D3D11RenderState
 {
@@ -134,7 +182,7 @@ struct D3D11RenderState
     // happen is the death will be reported to the device. By the time the device actually processes
     // it the object will have an intref again.
     for(size_t i = 0; i < num; i++)
-      ChangeRefRead(stateArray[offset + i], newArray[i]);
+      ChangeRefRead(stateArray[offset + i], newArray ? newArray[i] : NULL);
   }
 
   template <typename T>
@@ -166,7 +214,7 @@ struct D3D11RenderState
   void ChangeRefWrite(T **stateArray, T *const *newArray, size_t offset, size_t num)
   {
     for(size_t i = 0; i < num; i++)
-      ChangeRefWrite(stateArray[offset + i], newArray[i]);
+      ChangeRefWrite(stateArray[offset + i], newArray ? newArray[i] : NULL);
   }
 
   template <typename T>

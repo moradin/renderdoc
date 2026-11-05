@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2021 Baldur Karlsson
+ * Copyright (c) 2021-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,16 +24,19 @@
 
 #include "dummy_driver.h"
 
-DummyDriver::DummyDriver(IReplayDriver *original, const rdcarray<ShaderReflection *> &shaders)
+DummyDriver::DummyDriver(IReplayDriver *original, const rdcarray<const ShaderReflection *> &shaders,
+                         SDFile *sdfile, const rdcarray<SDObject *> &annotations)
 {
   m_Shaders = shaders;
+  m_Annotations = annotations;
+  m_SDFile = sdfile;
 
   m_Props = original->GetAPIProperties();
   m_Resources = original->GetResources();
+  m_DescriptorStores = original->GetDescriptorStores();
   m_Buffers = original->GetBuffers();
   m_Textures = original->GetTextures();
   m_FrameRecord = original->GetFrameRecord();
-  m_SDFile = original->GetStructuredFile();
   m_TargetEncodings = original->GetTargetShaderEncodings();
   m_DriverInfo = original->GetDriverInfo();
 
@@ -41,13 +44,20 @@ DummyDriver::DummyDriver(IReplayDriver *original, const rdcarray<ShaderReflectio
   m_GPUs = original->GetAvailableGPUs();
   m_WindowSystems = original->GetSupportedWindowSystems();
   m_CustomEncodings = original->GetCustomShaderEncodings();
+  m_CustomPrefixes = original->GetCustomShaderSourcePrefixes();
+
+  sdfile->Detach();
 }
 
 DummyDriver::~DummyDriver()
 {
   // we own the shaders
-  for(ShaderReflection *refl : m_Shaders)
+  for(const ShaderReflection *refl : m_Shaders)
     delete refl;
+
+  // and annotations
+  for(const SDObject *ann : m_Annotations)
+    delete ann;
 
   // and we own the structured file
   delete m_SDFile;
@@ -66,6 +76,11 @@ APIProperties DummyDriver::GetAPIProperties()
 rdcarray<ResourceDescription> DummyDriver::GetResources()
 {
   return m_Resources;
+}
+
+rdcarray<DescriptorStoreDescription> DummyDriver::GetDescriptorStores()
+{
+  return m_DescriptorStores;
 }
 
 rdcarray<BufferDescription> DummyDriver::GetBuffers()
@@ -133,7 +148,7 @@ rdcarray<EventUsage> DummyDriver::GetUsage(ResourceId id)
 }
 
 void DummyDriver::SetPipelineStates(D3D11Pipe::State *d3d11, D3D12Pipe::State *d3d12,
-                                    GLPipe::State *gl, VKPipe::State *vk)
+                                    GLPipe::State *gl, VKPipe::State *vk, D3D9Pipe::State *d3d9)
 {
 }
 
@@ -141,14 +156,47 @@ void DummyDriver::SavePipelineState(uint32_t eventId)
 {
 }
 
+rdcarray<Descriptor> DummyDriver::GetDescriptors(ResourceId descriptorStore,
+                                                 const rdcarray<DescriptorRange> &ranges)
+{
+  size_t count = 0;
+  for(const DescriptorRange &r : ranges)
+    count += r.count;
+  rdcarray<Descriptor> ret;
+  ret.resize(count);
+  return ret;
+}
+
+rdcarray<SamplerDescriptor> DummyDriver::GetSamplerDescriptors(ResourceId descriptorStore,
+                                                               const rdcarray<DescriptorRange> &ranges)
+{
+  size_t count = 0;
+  for(const DescriptorRange &r : ranges)
+    count += r.count;
+  rdcarray<SamplerDescriptor> ret;
+  ret.resize(count);
+  return ret;
+}
+
+rdcarray<DescriptorAccess> DummyDriver::GetDescriptorAccess(uint32_t eventId)
+{
+  return {};
+}
+
+rdcarray<DescriptorLogicalLocation> DummyDriver::GetDescriptorLocations(
+    ResourceId descriptorStore, const rdcarray<DescriptorRange> &ranges)
+{
+  return {};
+}
+
 FrameRecord DummyDriver::GetFrameRecord()
 {
   return m_FrameRecord;
 }
 
-ReplayStatus DummyDriver::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers)
+RDResult DummyDriver::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers)
 {
-  return ReplayStatus::APIReplayFailed;
+  return ResultCode::APIReplayFailed;
 }
 
 void DummyDriver::ReplayLog(uint32_t endEventID, ReplayLogType replayType)
@@ -171,11 +219,6 @@ void DummyDriver::InitPostVSBuffers(uint32_t eventId)
 
 void DummyDriver::InitPostVSBuffers(const rdcarray<uint32_t> &passEvents)
 {
-}
-
-ResourceId DummyDriver::GetLiveID(ResourceId id)
-{
-  return id;
 }
 
 MeshFormat DummyDriver::GetPostVSBuffers(uint32_t eventId, uint32_t instID, uint32_t viewID,
@@ -220,6 +263,14 @@ void DummyDriver::FreeTargetResource(ResourceId id)
 {
 }
 
+void DummyDriver::ClearReplayCache()
+{
+}
+
+void DummyDriver::ReloadShaderDebugInformation()
+{
+}
+
 rdcarray<GPUCounter> DummyDriver::EnumerateCounters()
 {
   return {};
@@ -235,9 +286,9 @@ rdcarray<CounterResult> DummyDriver::FetchCounters(const rdcarray<GPUCounter> &c
   return {};
 }
 
-void DummyDriver::FillCBufferVariables(ResourceId pipeline, ResourceId shader, rdcstr entryPoint,
-                                       uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
-                                       const bytebuf &data)
+void DummyDriver::FillCBufferVariables(ResourceId pipeline, ResourceId shader, ShaderStage stage,
+                                       rdcstr entryPoint, uint32_t cbufSlot,
+                                       rdcarray<ShaderVariable> &outvars, const bytebuf &data)
 {
   outvars.clear();
 }
@@ -255,8 +306,15 @@ ShaderDebugTrace *DummyDriver::DebugVertex(uint32_t eventId, uint32_t vertid, ui
   return new ShaderDebugTrace;
 }
 
-ShaderDebugTrace *DummyDriver::DebugPixel(uint32_t eventId, uint32_t x, uint32_t y, uint32_t sample,
-                                          uint32_t primitive)
+ShaderDebugTrace *DummyDriver::DebugMeshThread(uint32_t eventId,
+                                               const rdcfixedarray<uint32_t, 3> &groupid,
+                                               const rdcfixedarray<uint32_t, 3> &threadid)
+{
+  return new ShaderDebugTrace;
+}
+
+ShaderDebugTrace *DummyDriver::DebugPixel(uint32_t eventId, uint32_t x, uint32_t y,
+                                          const DebugPixelInputs &inputs)
 {
   return new ShaderDebugTrace;
 }
@@ -312,9 +370,9 @@ bool DummyDriver::IsRemoteProxy()
   return m_Proxy;
 }
 
-ReplayStatus DummyDriver::FatalErrorCheck()
+RDResult DummyDriver::FatalErrorCheck()
 {
-  return ReplayStatus::Succeeded;
+  return ResultCode::Succeeded;
 }
 
 IReplayDriver *DummyDriver::MakeDummyDriver()
@@ -373,10 +431,6 @@ void DummyDriver::DestroyOutputWindow(uint64_t id)
 bool DummyDriver::CheckResizeOutputWindow(uint64_t id)
 {
   return false;
-}
-
-void DummyDriver::SetOutputWindowDimensions(uint64_t id, int32_t w, int32_t h)
-{
 }
 
 void DummyDriver::GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h)
@@ -477,11 +531,15 @@ void DummyDriver::BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf
 
 rdcarray<ShaderEncoding> DummyDriver::GetCustomShaderEncodings()
 {
-  return {ShaderEncoding::HLSL, ShaderEncoding::GLSL};
+  return m_CustomEncodings;
 }
 
-ResourceId DummyDriver::ApplyCustomShader(ResourceId shader, ResourceId texid,
-                                          const Subresource &sub, CompType typeCast)
+rdcarray<ShaderSourcePrefix> DummyDriver::GetCustomShaderSourcePrefixes()
+{
+  return m_CustomPrefixes;
+}
+
+ResourceId DummyDriver::ApplyCustomShader(TextureDisplay &display)
 {
   return ResourceId();
 }

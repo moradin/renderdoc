@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -40,12 +40,12 @@
 #include "api/replay/rdcpair.h"
 #include "api/replay/rdcstr.h"
 #include "common/globalconfig.h"
+#include "common/result.h"
 
 struct CaptureOptions;
 struct EnvironmentModification;
 struct PathEntry;
 enum class WindowingSystem : uint32_t;
-enum class ReplayStatus : uint32_t;
 typedef std::function<void(float)> RENDERDOC_ProgressCallback;
 
 namespace Process
@@ -59,14 +59,15 @@ rdcstr GetEnvVariable(const rdcstr &name);
 uint64_t GetMemoryUsage();
 
 bool CanGlobalHook();
-bool StartGlobalHook(const rdcstr &pathmatch, const rdcstr &capturefile, const CaptureOptions &opts);
+RDResult StartGlobalHook(const rdcstr &pathmatch, const rdcstr &capturefile,
+                         const CaptureOptions &opts);
 bool IsGlobalHookActive();
 void StopGlobalHook();
 
-rdcpair<ReplayStatus, uint32_t> InjectIntoProcess(uint32_t pid,
-                                                  const rdcarray<EnvironmentModification> &env,
-                                                  const rdcstr &capturefile,
-                                                  const CaptureOptions &opts, bool waitForExit);
+rdcpair<RDResult, uint32_t> InjectIntoProcess(uint32_t pid,
+                                              const rdcarray<EnvironmentModification> &env,
+                                              const rdcstr &capturefile, const CaptureOptions &opts,
+                                              bool waitForExit);
 struct ProcessResult
 {
   rdcstr strStdout, strStderror;
@@ -76,10 +77,11 @@ uint32_t LaunchProcess(const rdcstr &app, const rdcstr &workingDir, const rdcstr
                        bool internal, ProcessResult *result = NULL);
 uint32_t LaunchScript(const rdcstr &script, const rdcstr &workingDir, const rdcstr &args,
                       bool internal, ProcessResult *result = NULL);
-rdcpair<ReplayStatus, uint32_t> LaunchAndInjectIntoProcess(
-    const rdcstr &app, const rdcstr &workingDir, const rdcstr &cmdLine,
-    const rdcarray<EnvironmentModification> &env, const rdcstr &capturefile,
-    const CaptureOptions &opts, bool waitForExit);
+rdcpair<RDResult, uint32_t> LaunchAndInjectIntoProcess(const rdcstr &app, const rdcstr &workingDir,
+                                                       const rdcstr &cmdLine,
+                                                       const rdcarray<EnvironmentModification> &env,
+                                                       const rdcstr &capturefile,
+                                                       const CaptureOptions &opts, bool waitForExit);
 bool IsModuleLoaded(const rdcstr &module);
 void *LoadModule(const rdcstr &module);
 void *GetFunctionAddress(void *module, const rdcstr &function);
@@ -144,6 +146,17 @@ uint64_t AllocateTLSSlot();
 void *GetTLSValue(uint64_t slot);
 void SetTLSValue(uint64_t slot, void *value);
 
+struct Semaphore
+{
+  static Semaphore *Create();
+  void Destroy();
+  void Wake(uint32_t numToWake);
+  void WaitForWake();
+protected:
+  Semaphore();
+  ~Semaphore();
+};
+
 // must typedef CriticalSectionTemplate<X> CriticalSection
 
 void SetCurrentThreadName(const rdcstr &name);
@@ -151,6 +164,7 @@ void SetCurrentThreadName(const rdcstr &name);
 typedef uint64_t ThreadHandle;
 ThreadHandle CreateThread(std::function<void()> entryFunc);
 uint64_t GetCurrentID();
+uint32_t NumberOfCores();
 void JoinThread(ThreadHandle handle);
 void DetachThread(ThreadHandle handle);
 void CloseThread(ThreadHandle handle);
@@ -173,6 +187,7 @@ public:
 
   bool Connected() const;
 
+  RDResult GetError() const { return m_Error; }
   uint32_t GetTimeout() const { return timeoutMS; }
   void SetTimeout(uint32_t milliseconds) { timeoutMS = milliseconds; }
   Socket *AcceptClient(uint32_t timeoutMilliseconds);
@@ -188,6 +203,7 @@ public:
 private:
   ptrdiff_t socket;
   uint32_t timeoutMS;
+  RDResult m_Error;
 };
 
 Socket *CreateServerSocket(const rdcstr &addr, uint16_t port, int queuesize);
@@ -309,8 +325,12 @@ enum FileMode
 };
 FILE *fopen(const rdcstr &filename, FileMode mode);
 
+FILE *OpenTransientFileHandle(const rdcstr &filename, FileMode mode);
+
 size_t fread(void *buf, size_t elementSize, size_t count, FILE *f);
 size_t fwrite(const void *buf, size_t elementSize, size_t count, FILE *f);
+
+bool IsUntrustedFile(const rdcstr &filename);
 
 bool exists(const rdcstr &filename);
 
@@ -460,7 +480,6 @@ void Shutdown();
 namespace OSUtility
 {
 inline void ForceCrash();
-inline void DebugBreak();
 bool DebuggerPresent();
 enum
 {

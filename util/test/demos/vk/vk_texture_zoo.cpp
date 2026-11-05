@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -338,7 +338,8 @@ void main()
       pipeCreateInfo.renderPass = rp;
 
       pipeCreateInfo.stages = {
-          vs, CompileShaderModule(src, ShaderLang::glsl, ShaderStage::frag, "main"),
+          vs,
+          CompileShaderModule(src, ShaderLang::glsl, ShaderStage::frag, "main"),
       };
 
       ret = PSOs[key] = createGraphicsPipeline(pipeCreateInfo);
@@ -421,8 +422,8 @@ void main()
 
   TestCase FinaliseTest(VkCommandBuffer cmd, TestCase test)
   {
-    VkImageCreateFlags flags =
-        (test.fmt.texFmt != test.fmt.viewFmt) ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
+    bool mutableFmt = (test.fmt.texFmt != test.fmt.viewFmt);
+    VkImageCreateFlags flags = mutableFmt ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
 
     VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
@@ -474,7 +475,7 @@ void main()
         vkh::ImageCreateInfo(
             w, h, d, test.fmt.texFmt, usage, test.isMSAA ? 1 : texMips, test.isArray ? texSlices : 1,
             test.isMSAA ? VkSampleCountFlagBits(texSamples) : VK_SAMPLE_COUNT_1_BIT, flags)
-            .next(hasExt(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME) ? &formatList : NULL),
+            .next(hasExt(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME) && mutableFmt ? &formatList : NULL),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
     test.view = createImageView(vkh::ImageViewCreateInfo(
         test.res.image, test.viewType, test.fmt.viewFmt, {}, vkh::ImageSubresourceRange(viewAspect)));
@@ -545,13 +546,24 @@ void main()
     if(vkr != VK_SUCCESS)
       props3D = {};
 
-    // rendering to depth 3D textures is broken on NV, fixed in a future driver version (guess made,
-    // will be updated once fix ships)
+    // hide support for 1D textures on certain formats that are very rarely used and might cause
+    // problems if the file-loading proxy API doesn't support it.
+    if(int(f.cfg.type) >= int(TextureType::BC1) && int(f.cfg.type) <= int(TextureType::BC7))
+      props1D = {};
+
+    if(f.cfg.type == TextureType::A8)
+      props1D = {};
+
+    // rendering to depth 3D textures is broken on NV, fixed in a future driver version (guess
+    // made, will be updated once fix ships)
     if(depth && physProperties.vendorID == PCI_VENDOR_NV &&
        physProperties.driverVersion < VK_MAKE_VERSION_NV(445, 0, 0, 0))
       props3D = {};
 
     if(!renderable && !depth)
+      props2D.sampleCounts = VK_SAMPLE_COUNT_1_BIT;
+
+    if(f.texFmt == VK_FORMAT_A8_UNORM)
       props2D.sampleCounts = VK_SAMPLE_COUNT_1_BIT;
 
     if((props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) || depth)
@@ -625,6 +637,7 @@ void main()
   void Prepare(int argc, char **argv)
   {
     devExts.push_back(VK_KHR_MAINTENANCE1_EXTENSION_NAME);
+    devExts.push_back(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
     optDevExts.push_back(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME);
 
     features.sampleRateShading = true;
@@ -688,9 +701,12 @@ void main()
   (texFmt == viewFmt) ? std::string(&(#texFmt)[10]) \
                       : (std::string(&(#texFmt)[10]) + "->" + (strchr(&(#viewFmt)[10], '_') + 1))
 
-#define TEST_CASE(texType, texFmt, viewFmt, compCount, byteWidth, dataType)                      \
-  {                                                                                              \
-    TEST_CASE_NAME(texFmt, viewFmt), texFmt, viewFmt, {texType, compCount, byteWidth, dataType}, \
+#define TEST_CASE(texType, texFmt, viewFmt, compCount, byteWidth, dataType) \
+  {                                                                         \
+      TEST_CASE_NAME(texFmt, viewFmt),                                      \
+      texFmt,                                                               \
+      viewFmt,                                                              \
+      {texType, compCount, byteWidth, dataType},                            \
   }
 
     std::vector<TestCase> test_textures;
@@ -1005,6 +1021,8 @@ void main()
                   VK_FORMAT_B5G5R5A1_UNORM_PACK16, 0, 0, DataType::UNorm),
         TEST_CASE(TextureType::R5G5B5A1, VK_FORMAT_A1R5G5B5_UNORM_PACK16,
                   VK_FORMAT_A1R5G5B5_UNORM_PACK16, 0, 0, DataType::UNorm),
+        TEST_CASE(TextureType::R5G5B5A1, VK_FORMAT_A1B5G5R5_UNORM_PACK16,
+                  VK_FORMAT_A1B5G5R5_UNORM_PACK16, 0, 0, DataType::UNorm),
 
         TEST_CASE(TextureType::RGB10A2, VK_FORMAT_A2R10G10B10_UINT_PACK32,
                   VK_FORMAT_A2R10G10B10_UNORM_PACK32, 1, 4, DataType::UNorm),
@@ -1035,6 +1053,8 @@ void main()
                   VK_FORMAT_A2B10G10R10_UINT_PACK32, 1, 4, DataType::UInt),
         TEST_CASE(TextureType::Unknown, VK_FORMAT_A2B10G10R10_SINT_PACK32,
                   VK_FORMAT_A2B10G10R10_SINT_PACK32, 1, 4, DataType::SInt),
+
+        TEST_CASE(TextureType::A8, VK_FORMAT_A8_UNORM, VK_FORMAT_A8_UNORM, 1, 1, DataType::UNorm),
 
         TEST_CASE(TextureType::Unknown, VK_FORMAT_B10G11R11_UFLOAT_PACK32,
                   VK_FORMAT_B10G11R11_UFLOAT_PACK32, 0, 0, DataType::Float),
@@ -1068,6 +1088,8 @@ void main()
 
         TEST_CASE(TextureType::Unknown, VK_FORMAT_D16_UNORM, VK_FORMAT_D16_UNORM, 0, 0,
                   DataType::Float),
+
+        TEST_CASE(TextureType::Unknown, VK_FORMAT_S8_UINT, VK_FORMAT_S8_UINT, 0, 0, DataType::UInt),
     };
 
     for(VKFormat f : depth_tests)
@@ -1082,7 +1104,8 @@ void main()
     pipeCreateInfo.layout = layout;
 
     pipeCreateInfo.stages = {
-        vs, vs,
+        vs,
+        vs,
     };
 
     pipeCreateInfo.depthStencilState.depthCompareOp = VK_COMPARE_OP_ALWAYS;
@@ -1121,17 +1144,20 @@ void main()
       {
         aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 
-        if(t.fmt.viewFmt == VK_FORMAT_S8_UINT || t.fmt.viewFmt == VK_FORMAT_D16_UNORM_S8_UINT ||
-           t.fmt.viewFmt == VK_FORMAT_D24_UNORM_S8_UINT ||
-           t.fmt.viewFmt == VK_FORMAT_D32_SFLOAT_S8_UINT)
+        if(t.fmt.viewFmt == VK_FORMAT_S8_UINT)
+          aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+        else if(t.fmt.viewFmt == VK_FORMAT_D16_UNORM_S8_UINT ||
+                t.fmt.viewFmt == VK_FORMAT_D24_UNORM_S8_UINT ||
+                t.fmt.viewFmt == VK_FORMAT_D32_SFLOAT_S8_UINT)
           aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
       }
 
       vkh::cmdPipelineBarrier(
           cmd, {
                    vkh::ImageMemoryBarrier(
-                       0, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                              VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                       0,
+                       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                        t.res.image, vkh::ImageSubresourceRange(aspectMask)),
                });
@@ -1218,6 +1244,8 @@ void main()
         flags |= 2;
       if(bgra)
         flags |= 4;
+      if(t.fmt.viewFmt == VK_FORMAT_A8_UNORM)
+        flags |= 8;
 
       renderPassCreateInfo.attachments[0].format = t.fmt.viewFmt;
 
@@ -1240,7 +1268,9 @@ void main()
         attRef->layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
         pipeCreateInfo.dynamicState.dynamicStates = {
-            VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR,
+            VK_DYNAMIC_STATE_STENCIL_REFERENCE,
         };
       }
       else
@@ -1257,7 +1287,8 @@ void main()
         attRef->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
         pipeCreateInfo.dynamicState.dynamicStates = {
-            VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR,
         };
       }
 
@@ -1308,8 +1339,9 @@ void main()
             viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
 
           vkCreateImageView(
-              device, vkh::ImageViewCreateInfo(t.res.image, viewType, t.fmt.viewFmt, {},
-                                               vkh::ImageSubresourceRange(aspectMask, mp, 1, sl, 1)),
+              device,
+              vkh::ImageViewCreateInfo(t.res.image, viewType, t.fmt.viewFmt, {},
+                                       vkh::ImageSubresourceRange(aspectMask, mp, 1, sl, 1)),
               NULL, &tempView);
           vkCreateFramebuffer(
               device, vkh::FramebufferCreateInfo(tempRP, {tempView}, scissor.extent), NULL, &tempFB);
@@ -1445,8 +1477,9 @@ void main()
 
     slice_test_3d.dim = 3;
     slice_test_3d.res = AllocatedImage(
-        this, vkh::ImageCreateInfo(64, 64, 64, VK_FORMAT_R32G32B32A32_SFLOAT,
-                                   VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 2),
+        this,
+        vkh::ImageCreateInfo(64, 64, 64, VK_FORMAT_R32G32B32A32_SFLOAT,
+                             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 2),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
     slice_test_3d.view = createImageView(vkh::ImageViewCreateInfo(
         slice_test_3d.res.image, VK_IMAGE_VIEW_TYPE_3D, VK_FORMAT_R32G32B32A32_SFLOAT));
@@ -1563,8 +1596,9 @@ void main()
       VkImage swapimg =
           StartUsingBackbuffer(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL);
 
-      vkCmdBeginRenderPass(cmd, vkh::RenderPassBeginInfo(rp, framebuffer, mainWindow->scissor,
-                                                         {vkh::ClearValue(0.2f, 0.2f, 0.2f, 1.0f)}),
+      vkCmdBeginRenderPass(cmd,
+                           vkh::RenderPassBeginInfo(rp, framebuffer, mainWindow->scissor,
+                                                    {vkh::ClearValue(0.2f, 0.2f, 0.2f, 1.0f)}),
                            VK_SUBPASS_CONTENTS_INLINE);
 
       VkViewport view = {0.0f, 0.0f, 10.0f, 10.0f, 0.0f, 1.0f};

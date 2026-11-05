@@ -30,7 +30,6 @@
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v140</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
     <WholeProgramOptimization>true</WholeProgramOptimization>
@@ -39,12 +38,9 @@
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
+  <Import Project="$(SolutionDir)\util\WindowsSDKFix.props" />
   <PropertyGroup>
     <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
-    <ExecutablePath>$(ExecutablePath)</ExecutablePath>
-    <IncludePath>$(SolutionDir)\breakpad;$(IncludePath)</IncludePath>
-    <LibraryPath>$(LibraryPath)</LibraryPath>
-    <ExcludePath>$(ExcludePath)</ExcludePath>
     <TargetName>driver_$(ProjectName)</TargetName>
   </PropertyGroup>
   <PropertyGroup>
@@ -74,7 +70,7 @@
       <WarningLevel>Level3</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
       <AdditionalOptions>/w44062 /w44840 %(AdditionalOptions)</AdditionalOptions>
-      <DisableSpecificWarnings>4100</DisableSpecificWarnings>
+      <DisableSpecificWarnings>4100;4267;5030;4065</DisableSpecificWarnings>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -125,13 +121,14 @@
     <ClCompile Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\RemoveTree.cpp" />
     <ClCompile Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\Scan.cpp" />
     <ClCompile Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\ShaderLang.cpp" />
+    <ClCompile Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\SpirvIntrinsics.cpp" />
     <ClCompile Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\SymbolTable.cpp" />
     <ClCompile Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\Versions.cpp" />
+    <ClCompile Include="..\..\..\3rdparty\glslang\glslang\ResourceLimits\ResourceLimits.cpp" />
     <ClCompile Include="..\..\..\3rdparty\glslang\glslang\OSDependent\Unix\ossource.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="..\..\..\3rdparty\glslang\glslang\OSDependent\Windows\ossource.cpp" />
-    <ClCompile Include="..\..\..\3rdparty\glslang\OGLCompilersDLL\InitializeDll.cpp" />
     <ClCompile Include="..\..\..\3rdparty\glslang\SPIRV\GlslangToSpv.cpp" />
     <ClCompile Include="..\..\..\3rdparty\glslang\SPIRV\InReadableOrder.cpp" />
     <ClCompile Include="..\..\..\3rdparty\glslang\SPIRV\Logger.cpp" />
@@ -224,7 +221,9 @@
     <ClInclude Include="..\..\..\3rdparty\glslang\glslang\Include\ResourceLimits.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\glslang\Include\revision.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\glslang\Include\ShHandle.h" />
+    <ClInclude Include="..\..\..\3rdparty\glslang\glslang\Include\SpirvIntrinsics.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\glslang\Include\Types.h" />
+    <ClInclude Include="..\..\..\3rdparty\glslang\glslang\Include\visibility.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\glslang_tab.cpp.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\gl_types.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\Initialize.h" />
@@ -240,19 +239,24 @@
     <ClInclude Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\RemoveTree.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\Scan.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\ScanContext.h" />
+    <ClInclude Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\span.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\SymbolTable.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\glslang\MachineIndependent\Versions.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\glslang\OSDependent\osinclude.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\glslang\Public\ShaderLang.h" />
-    <ClInclude Include="..\..\..\3rdparty\glslang\OGLCompilersDLL\InitializeDll.h" />
+    <ClInclude Include="..\..\..\3rdparty\glslang\glslang\Public\ResourceLimits.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\bitutils.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\GLSL.ext.KHR.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\GLSL.ext.EXT.h" />
+    <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\GLSL.ext.ARM.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\GLSL.ext.AMD.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\GLSL.ext.NV.h" />
+    <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\GLSL.ext.QCOM.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\GLSL.std.450.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\GlslangToSpv.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\hex_float.h" />
+    <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\NonSemanticDebugPrintf.h" />
+    <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\NonSemanticShaderDebugInfo100.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\Logger.h" />
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\spirv.hpp" />
     <ClInclude Include="..\..\..\3rdparty\glslang\SPIRV\SpvBuilder.h" />
@@ -268,7 +272,6 @@
     <ClInclude Include="spirv_op_helpers.h" />
     <ClInclude Include="spirv_processor.h" />
     <ClInclude Include="spirv_reflect.h" />
-    <ClInclude Include="var_dispatch_helpers.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

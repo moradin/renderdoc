@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -30,6 +30,7 @@
 #include "strings/string_utils.h"
 #include "d3d12_command_list.h"
 #include "d3d12_device.h"
+#include "d3d12_rootsig.h"
 #include "d3d12_shader_cache.h"
 
 #include "data/hlsl/hlsl_cbuffers.h"
@@ -325,38 +326,57 @@ D3D12TextRenderer::D3D12TextRenderer(WrappedID3D12Device *wrapper)
 
   D3D12ShaderCache *shaderCache = wrapper->GetShaderCache();
 
-  const D3D12_STATIC_SAMPLER_DESC samplers[2] = {
+  const D3D12_STATIC_SAMPLER_DESC1 samplers[2] = {
       // point
       {
-          D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
-          D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, 0.0f, 1,
-          D3D12_COMPARISON_FUNC_ALWAYS, D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK, 0.0f, FLT_MAX, 0, 0,
+          D3D12_FILTER_MIN_MAG_MIP_POINT,
+          D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+          D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+          D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+          0.0f,
+          1,
+          D3D12_COMPARISON_FUNC_ALWAYS,
+          D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK,
+          0.0f,
+          FLT_MAX,
+          0,
+          0,
           D3D12_SHADER_VISIBILITY_PIXEL,
+          D3D12_SAMPLER_FLAG_NONE,
       },
 
       // linear
       {
-          D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
-          D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, 0.0f, 1,
-          D3D12_COMPARISON_FUNC_ALWAYS, D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK, 0.0f, FLT_MAX, 1, 0,
+          D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+          D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+          D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+          D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+          0.0f,
+          1,
+          D3D12_COMPARISON_FUNC_ALWAYS,
+          D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK,
+          0.0f,
+          FLT_MAX,
+          1,
+          0,
           D3D12_SHADER_VISIBILITY_PIXEL,
+          D3D12_SAMPLER_FLAG_NONE,
       },
   };
 
-  ID3DBlob *root = shaderCache->MakeRootSig(rootSig, D3D12_ROOT_SIGNATURE_FLAG_NONE, 2, samplers);
+  bytebuf root =
+      EncodeRootSig(wrapper->RootSigVersion(), rootSig, D3D12_ROOT_SIGNATURE_FLAG_NONE, 2, samplers);
 
-  RDCASSERT(root);
+  RDCASSERT(!root.empty());
 
-  hr = wrapper->CreateRootSignature(0, root->GetBufferPointer(), root->GetBufferSize(),
-                                    __uuidof(ID3D12RootSignature), (void **)&RootSig);
+  hr = wrapper->CreateRootSignature(0, root.data(), root.size(), __uuidof(ID3D12RootSignature),
+                                    (void **)&RootSig);
   wrapper->InternalRef();
 
   if(FAILED(hr))
     RDCERR("Couldn't create RootSig! %s", ToStr(hr).c_str());
 
   rm->SetInternalResource(RootSig);
-
-  SAFE_RELEASE(root);
 
   rdcstr hlsl = GetEmbeddedResource(text_hlsl);
 

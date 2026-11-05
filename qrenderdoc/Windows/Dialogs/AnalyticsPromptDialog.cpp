@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,7 +28,7 @@
 #include "Code/Interface/QRDInterface.h"
 #include "ui_AnalyticsPromptDialog.h"
 
-AnalyticsPromptDialog::AnalyticsPromptDialog(PersistantConfig &cfg, QWidget *parent)
+AnalyticsPromptDialog::AnalyticsPromptDialog(PersistentConfig &cfg, QWidget *parent)
     : QDialog(parent), ui(new Ui::AnalyticsPromptDialog), m_Config(cfg)
 {
   ui->setupUi(this);

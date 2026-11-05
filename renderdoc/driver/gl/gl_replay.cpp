@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -24,10 +24,13 @@
  ******************************************************************************/
 
 #include "gl_replay.h"
+
 #include "core/settings.h"
+#include "data/glsl_shaders.h"
 #include "driver/ihv/amd/amd_counters.h"
 #include "driver/ihv/arm/arm_counters.h"
 #include "driver/ihv/intel/intel_gl_counters.h"
+#include "driver/ihv/nv/nv_gl_counters.h"
 #include "maths/matrix.h"
 #include "replay/dummy_driver.h"
 #include "serialise/rdcfile.h"
@@ -47,8 +50,7 @@ GLReplay::GLReplay(WrappedOpenGL *d)
 {
   m_pDriver = d;
 
-  if(RenderDoc::Inst().GetCrashHandler())
-    RenderDoc::Inst().GetCrashHandler()->RegisterMemoryRegion(this, sizeof(GLReplay));
+  RenderDoc::Inst().RegisterMemoryRegion(this, sizeof(GLReplay));
 
   m_Proxy = false;
 
@@ -70,6 +72,9 @@ void GLReplay::Shutdown()
   SAFE_DELETE(m_pAMDCounters);
   SAFE_DELETE(m_pIntelCounters);
   SAFE_DELETE(m_pARMCounters);
+#if DISABLED(RDOC_ANDROID) && DISABLED(RDOC_APPLE)
+  SAFE_DELETE(m_pNVCounters);
+#endif
 
   DeleteDebugData();
 
@@ -87,7 +92,7 @@ void GLReplay::Shutdown()
   delete m_pDriver;
 }
 
-ReplayStatus GLReplay::FatalErrorCheck()
+RDResult GLReplay::FatalErrorCheck()
 {
   return m_pDriver->FatalErrorCheck();
 }
@@ -95,22 +100,19 @@ ReplayStatus GLReplay::FatalErrorCheck()
 IReplayDriver *GLReplay::MakeDummyDriver()
 {
   // gather up the shaders we've allocated to pass to the dummy driver
-  rdcarray<ShaderReflection *> shaders;
+  rdcarray<const ShaderReflection *> shaders;
   for(auto it = m_pDriver->m_Shaders.begin(); it != m_pDriver->m_Shaders.end(); it++)
   {
-    shaders.push_back(it->second.reflection);
-    it->second.reflection = NULL;
+    shaders.push_back(it->second.StealReflection());
   }
 
-  IReplayDriver *dummy = new DummyDriver(this, shaders);
-
-  // the dummy driver now owns the file, remove our reference
-  m_pDriver->DetachStructuredFile();
+  IReplayDriver *dummy = new DummyDriver(this, shaders, m_pDriver->DetachStructuredFile(),
+                                         m_pDriver->DetachAnnotations());
 
   return dummy;
 }
 
-ReplayStatus GLReplay::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers)
+RDResult GLReplay::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers)
 {
   MakeCurrentReplayContext(&m_ReplayCtx);
   return m_pDriver->ReadLogInitialisation(rdc, storeStructuredBuffers);
@@ -141,9 +143,9 @@ rdcarray<uint32_t> GLReplay::GetPassEvents(uint32_t eventId)
   const ActionDescription *action = m_pDriver->GetAction(eventId);
 
   const ActionDescription *start = action;
-  while(start && start->previous && !(start->previous->flags & ActionFlags::Clear))
+  while(start && start->previousAction && !(start->previousAction->flags & ActionFlags::Clear))
   {
-    const ActionDescription *prev = start->previous;
+    const ActionDescription *prev = start->previousAction;
 
     if(start->outputs != prev->outputs || start->depthOut != prev->depthOut)
       break;
@@ -159,7 +161,7 @@ rdcarray<uint32_t> GLReplay::GetPassEvents(uint32_t eventId)
     if(start->flags & ActionFlags::Drawcall)
       passEvents.push_back(start->eventId);
 
-    start = start->next;
+    start = start->nextAction;
   }
 
   return passEvents;
@@ -199,13 +201,6 @@ rdcarray<WindowingSystem> GLReplay::GetSupportedWindowSystems()
   return ret;
 }
 
-ResourceId GLReplay::GetLiveID(ResourceId id)
-{
-  if(!m_pDriver->GetResourceManager()->HasLiveResource(id))
-    return ResourceId();
-  return m_pDriver->GetResourceManager()->GetLiveID(id);
-}
-
 rdcarray<GPUDevice> GLReplay::GetAvailableGPUs()
 {
   // GL doesn't support multiple GPUs, return an empty list
@@ -220,7 +215,9 @@ APIProperties GLReplay::GetAPIProperties()
   ret.localRenderer = GraphicsAPI::OpenGL;
   ret.degraded = m_Degraded;
   ret.vendor = m_DriverInfo.vendor;
-  ret.shadersMutable = true;
+  ret.pixelHistory = true;
+  // we require storage buffers and compute shaders
+  ret.shaderDebugging = HasExt[ARB_shader_storage_buffer_object] && HasExt[ARB_compute_shader];
 
   return ret;
 }
@@ -261,6 +258,9 @@ void GLReplay::SetReplayData(GLWindowingData data)
     AMDCounters *countersAMD = NULL;
     IntelGlCounters *countersIntel = NULL;
     ARMCounters *countersARM = NULL;
+#if DISABLED(RDOC_ANDROID) && DISABLED(RDOC_APPLE)
+    NVGLCounters *countersNV = NULL;
+#endif
 
     bool isMesa = false;
 
@@ -309,9 +309,9 @@ void GLReplay::SetReplayData(GLWindowingData data)
         RDCLOG("Intel GPU detected - trying to initialise Intel GL counters");
         countersIntel = new IntelGlCounters();
       }
-      else if(m_DriverInfo.vendor == GPUVendor::AMD)
+      else if(m_DriverInfo.vendor == GPUVendor::AMD || m_DriverInfo.vendor == GPUVendor::Samsung)
       {
-        RDCLOG("AMD GPU detected - trying to initialise AMD counters");
+        RDCLOG("AMD or Samsung GPU detected - trying to initialise AMD counters");
         countersAMD = new AMDCounters();
       }
       else if(m_DriverInfo.vendor == GPUVendor::ARM)
@@ -319,6 +319,13 @@ void GLReplay::SetReplayData(GLWindowingData data)
         RDCLOG("ARM Mali GPU detected - trying to initialise ARM counters");
         countersARM = new ARMCounters();
       }
+#if DISABLED(RDOC_ANDROID) && DISABLED(RDOC_APPLE)
+      else if(m_DriverInfo.vendor == GPUVendor::nVidia)
+      {
+        RDCLOG("NVIDIA GPU detected - trying to initialise NVIDIA counters");
+        countersNV = new NVGLCounters();
+      }
+#endif
       else
       {
         RDCLOG("%s GPU detected - no counters available", ToStr(m_DriverInfo.vendor).c_str());
@@ -354,6 +361,18 @@ void GLReplay::SetReplayData(GLWindowingData data)
       delete countersARM;
       m_pARMCounters = NULL;
     }
+
+#if DISABLED(RDOC_ANDROID) && DISABLED(RDOC_APPLE)
+    if(countersNV && countersNV->Init(m_pDriver))
+    {
+      m_pNVCounters = countersNV;
+    }
+    else
+    {
+      delete countersNV;
+      m_pNVCounters = NULL;
+    }
+#endif
   }
 }
 
@@ -366,7 +385,7 @@ void GLReplay::GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, byt
     return;
   }
 
-  auto &buf = m_pDriver->m_Buffers[buff];
+  WrappedOpenGL::BufferData &buf = m_pDriver->m_Buffers[buff];
 
   uint64_t bufsize = buf.size;
 
@@ -411,10 +430,10 @@ void GLReplay::CacheTexture(ResourceId id)
 
   MakeCurrentReplayContext(&m_ReplayCtx);
 
-  auto &res = m_pDriver->m_Textures[id];
+  WrappedOpenGL::TextureData &res = m_pDriver->m_Textures[id];
   WrappedOpenGL &drv = *m_pDriver;
 
-  tex.resourceId = m_pDriver->GetResourceManager()->GetOriginalID(id);
+  tex.resourceId = id;
 
   if(res.resource.Namespace == eResUnknown || res.curType == eGL_NONE)
   {
@@ -664,7 +683,7 @@ BufferDescription GLReplay::GetBuffer(ResourceId id)
 
   MakeCurrentReplayContext(&m_ReplayCtx);
 
-  auto &res = m_pDriver->m_Buffers[id];
+  WrappedOpenGL::BufferData &res = m_pDriver->m_Buffers[id];
 
   if(res.resource.Namespace == eResUnknown)
   {
@@ -675,7 +694,7 @@ BufferDescription GLReplay::GetBuffer(ResourceId id)
 
   WrappedOpenGL &drv = *m_pDriver;
 
-  ret.resourceId = m_pDriver->GetResourceManager()->GetOriginalID(id);
+  ret.resourceId = id;
 
   GLint prevBind = 0;
   if(res.curType != eGL_NONE)
@@ -714,7 +733,7 @@ rdcarray<BufferDescription> GLReplay::GetBuffers()
   for(auto it = m_pDriver->m_Buffers.begin(); it != m_pDriver->m_Buffers.end(); ++it)
   {
     // skip buffers that aren't from the log
-    if(m_pDriver->GetResourceManager()->GetOriginalID(it->first) == it->first)
+    if(ResourceIDGen::IsReplayOnlyID(it->first))
       continue;
 
     ret.push_back(GetBuffer(it->first));
@@ -730,11 +749,10 @@ rdcarray<TextureDescription> GLReplay::GetTextures()
 
   for(auto it = m_pDriver->m_Textures.begin(); it != m_pDriver->m_Textures.end(); ++it)
   {
-    auto &res = m_pDriver->m_Textures[it->first];
+    WrappedOpenGL::TextureData &res = m_pDriver->m_Textures[it->first];
 
     // skip textures that aren't from the log (except the 'default backbuffer' textures)
-    if(!(res.creationFlags & TextureCategory::SwapBuffer) &&
-       m_pDriver->GetResourceManager()->GetOriginalID(it->first) == it->first)
+    if(!(res.creationFlags & TextureCategory::SwapBuffer) && ResourceIDGen::IsReplayOnlyID(it->first))
       continue;
 
     CacheTexture(it->first);
@@ -751,31 +769,32 @@ rdcarray<DebugMessage> GLReplay::GetDebugMessages()
 
 rdcarray<ShaderEntryPoint> GLReplay::GetShaderEntryPoints(ResourceId shader)
 {
-  if(m_pDriver->m_Shaders.find(shader) == m_pDriver->m_Shaders.end())
+  if(!m_pDriver->HasShader(shader))
     return {};
 
-  WrappedOpenGL::ShaderData &shaderDetails = m_pDriver->m_Shaders[shader];
+  const WrappedOpenGL::ShaderData &shaderDetails = m_pDriver->GetShader(shader);
 
-  if(shaderDetails.reflection->resourceId == ResourceId())
+  if(shaderDetails.GetReflection()->resourceId == ResourceId())
   {
     RDCERR("Can't get shader details without successful reflect");
     return {};
   }
 
-  return {{shaderDetails.reflection->entryPoint, shaderDetails.reflection->stage}};
+  return {{shaderDetails.GetReflection()->entryPoint, shaderDetails.GetReflection()->stage}};
 }
 
-ShaderReflection *GLReplay::GetShader(ResourceId pipeline, ResourceId shader, ShaderEntryPoint entry)
+const ShaderReflection *GLReplay::GetShader(ResourceId pipeline, ResourceId shader,
+                                            ShaderEntryPoint entry)
 {
-  auto &shaderDetails = m_pDriver->m_Shaders[shader];
+  const WrappedOpenGL::ShaderData &shaderDetails = m_pDriver->GetShader(shader);
 
-  if(shaderDetails.reflection->resourceId == ResourceId())
+  if(shaderDetails.GetReflection()->resourceId == ResourceId())
   {
     RDCERR("Can't get shader details without successful reflect");
     return NULL;
   }
 
-  return shaderDetails.reflection;
+  return shaderDetails.GetReflection();
 }
 
 rdcarray<rdcstr> GLReplay::GetDisassemblyTargets(bool withPipeline)
@@ -786,20 +805,17 @@ rdcarray<rdcstr> GLReplay::GetDisassemblyTargets(bool withPipeline)
 rdcstr GLReplay::DisassembleShader(ResourceId pipeline, const ShaderReflection *refl,
                                    const rdcstr &target)
 {
-  auto &shaderDetails =
-      m_pDriver->m_Shaders[m_pDriver->GetResourceManager()->GetLiveID(refl->resourceId)];
+  const WrappedOpenGL::ShaderData &shaderDetails = m_pDriver->GetShader(refl->resourceId);
 
-  if(shaderDetails.sources.empty() && shaderDetails.spirvWords.empty())
+  if(shaderDetails.sources.empty() && shaderDetails.spirvWords.empty() &&
+     shaderDetails.convertedSpirvWords.empty())
     return "; Invalid Shader Specified";
 
   if(target == SPIRVDisassemblyTarget || target.empty())
   {
-    rdcstr &disasm = shaderDetails.disassembly;
+    m_pDriver->GetWriteableShader(refl->resourceId).Disassemble(refl->entryPoint);
 
-    if(disasm.empty())
-      disasm = shaderDetails.spirv.Disassemble(refl->entryPoint, shaderDetails.spirvInstructionLines);
-
-    return disasm;
+    return shaderDetails.disassembly;
   }
 
   return StringFormat::Fmt("; Invalid disassembly target %s", target.c_str());
@@ -823,13 +839,19 @@ void GLReplay::SavePipelineState(uint32_t eventId)
 
   ContextPair &ctx = drv.GetCtx();
 
+  pipe.descriptorStore = m_pDriver->m_DescriptorsID;
+  pipe.descriptorCount = EncodeGLDescriptorIndex({GLDescriptorMapping::Count, 0});
+  pipe.descriptorByteSize = 1;
+
+  m_Access.clear();
+
   GLuint vao = 0;
   drv.glGetIntegerv(eGL_VERTEX_ARRAY_BINDING, (GLint *)&vao);
-  pipe.vertexInput.vertexArrayObject = rm->GetOriginalID(rm->GetResID(VertexArrayRes(ctx, vao)));
+  pipe.vertexInput.vertexArrayObject = rm->GetResID(VertexArrayRes(ctx, vao));
 
   GLuint ibuffer = 0;
   drv.glGetIntegerv(eGL_ELEMENT_ARRAY_BUFFER_BINDING, (GLint *)&ibuffer);
-  pipe.vertexInput.indexBuffer = rm->GetOriginalID(rm->GetResID(BufferRes(ctx, ibuffer)));
+  pipe.vertexInput.indexBuffer = rm->GetResID(BufferRes(ctx, ibuffer));
 
   pipe.vertexInput.primitiveRestart = rs.Enabled[GLRenderState::eEnabled_PrimitiveRestart] ||
                                       rs.Enabled[GLRenderState::eEnabled_PrimitiveRestartFixedIndex];
@@ -856,8 +878,7 @@ void GLReplay::SavePipelineState(uint32_t eventId)
   {
     GLuint buffer = GetBoundVertexBuffer(i);
 
-    pipe.vertexInput.vertexBuffers[i].resourceId =
-        rm->GetOriginalID(rm->GetResID(BufferRes(ctx, buffer)));
+    pipe.vertexInput.vertexBuffers[i].resourceId = rm->GetResID(BufferRes(ctx, buffer));
 
     drv.glGetIntegeri_v(eGL_VERTEX_BINDING_STRIDE, i,
                         (GLint *)&pipe.vertexInput.vertexBuffers[i].byteStride);
@@ -939,12 +960,12 @@ void GLReplay::SavePipelineState(uint32_t eventId)
       case eGL_INT_2_10_10_10_REV:
         fmt.type = ResourceFormatType::R10G10B10A2;
         fmt.compCount = 4;
-        fmt.compType = CompType::UInt;
+        fmt.compType = CompType::SInt;
         break;
       case eGL_UNSIGNED_INT_2_10_10_10_REV:
         fmt.type = ResourceFormatType::R10G10B10A2;
         fmt.compCount = 4;
-        fmt.compType = CompType::SInt;
+        fmt.compType = CompType::UInt;
         break;
       case eGL_UNSIGNED_INT_10F_11F_11F_REV:
         fmt.type = ResourceFormatType::R11G11B10;
@@ -1013,8 +1034,6 @@ void GLReplay::SavePipelineState(uint32_t eventId)
 
   GLint numTexUnits = 8;
   drv.glGetIntegerv(eGL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &numTexUnits);
-  pipe.textures.resize(numTexUnits);
-  pipe.samplers.resize(numTexUnits);
 
   GLenum activeTexture = eGL_TEXTURE0;
   drv.glGetIntegerv(eGL_ACTIVE_TEXTURE, (GLint *)&activeTexture);
@@ -1026,131 +1045,404 @@ void GLReplay::SavePipelineState(uint32_t eventId)
   pipe.fragmentShader.stage = ShaderStage::Fragment;
   pipe.computeShader.stage = ShaderStage::Compute;
 
-  GLuint curProg = 0;
-  drv.glGetIntegerv(eGL_CURRENT_PROGRAM, (GLint *)&curProg);
-
-  GLPipe::Shader *stages[6] = {
+  GLPipe::Shader *stages[NumShaderStages] = {
       &pipe.vertexShader,   &pipe.tessControlShader, &pipe.tessEvalShader,
       &pipe.geometryShader, &pipe.fragmentShader,    &pipe.computeShader,
   };
-  ShaderReflection *refls[6] = {NULL};
-  ShaderBindpointMapping *mappings[6] = {NULL};
-  bool spirv[6] = {false};
+  const ShaderReflection *refls[NumShaderStages] = {NULL};
+  ResourceId progIds[NumShaderStages];
+  ResourceId shadIds[NumShaderStages];
+  GLuint progForStage[NumShaderStages] = {};
+  bool spirv[NumShaderStages] = {false};
 
-  for(int i = 0; i < 6; i++)
+  for(size_t i = 0; i < NumShaderStages; i++)
   {
+    if(!stages[i])
+      continue;
+
     stages[i]->programResourceId = stages[i]->shaderResourceId = ResourceId();
     stages[i]->reflection = NULL;
-    stages[i]->bindpointMapping = ShaderBindpointMapping();
   }
 
-  if(curProg == 0)
+  rdcarray<int32_t> vertexAttrBindings;
+
   {
-    drv.glGetIntegerv(eGL_PROGRAM_PIPELINE_BINDING, (GLint *)&curProg);
+    GLuint curProg = 0;
+    drv.glGetIntegerv(eGL_CURRENT_PROGRAM, (GLint *)&curProg);
 
     if(curProg == 0)
     {
-      for(GLint unit = 0; unit < numTexUnits; unit++)
+      GLuint curPipe = 0;
+      drv.glGetIntegerv(eGL_PROGRAM_PIPELINE_BINDING, (GLint *)&curPipe);
+
+      if(curPipe != 0)
       {
-        RDCEraseEl(pipe.textures[unit]);
-        RDCEraseEl(pipe.samplers[unit]);
+        ResourceId id = rm->GetResID(ProgramPipeRes(ctx, curPipe));
+        const WrappedOpenGL::PipelineData &pipeDetails = m_pDriver->GetPipeline(id);
+
+        pipe.pipelineResourceId = rm->GetUnreplacedID(id);
+
+        for(size_t i = 0; i < ARRAY_COUNT(pipeDetails.stageShaders); i++)
+        {
+          if(!stages[i])
+            continue;
+
+          if(pipeDetails.stageShaders[i] != ResourceId())
+          {
+            progIds[i] = pipeDetails.stagePrograms[i];
+            shadIds[i] = pipeDetails.stageShaders[i];
+
+            progForStage[i] = rm->GetResource(pipeDetails.stagePrograms[i]).name;
+          }
+        }
       }
     }
     else
     {
-      ResourceId id = rm->GetResID(ProgramPipeRes(ctx, curProg));
-      auto &pipeDetails = m_pDriver->m_Pipelines[id];
+      ResourceId id = rm->GetResID(ProgramRes(ctx, curProg));
+      const WrappedOpenGL::ProgramData &progDetails = m_pDriver->GetProgram(id);
 
-      pipe.pipelineResourceId = rm->GetUnreplacedOriginalID(id);
+      pipe.pipelineResourceId = ResourceId();
 
-      for(size_t i = 0; i < ARRAY_COUNT(pipeDetails.stageShaders); i++)
+      for(size_t i = 0; i < ARRAY_COUNT(progDetails.stageShaders); i++)
       {
-        if(pipeDetails.stageShaders[i] != ResourceId())
+        if(!stages[i])
+          continue;
+
+        if(progDetails.stageShaders[i] != ResourceId())
         {
-          curProg = rm->GetCurrentResource(pipeDetails.stagePrograms[i]).name;
+          progIds[i] = id;
+          shadIds[i] = progDetails.stageShaders[i];
 
-          auto &shaderDetails = m_pDriver->m_Shaders[pipeDetails.stageShaders[i]];
-
-          if(shaderDetails.reflection->resourceId == ResourceId())
-            stages[i]->reflection = refls[i] = NULL;
-          else
-            stages[i]->reflection = refls[i] = shaderDetails.reflection;
-
-          if(!shaderDetails.spirvWords.empty())
-          {
-            stages[i]->bindpointMapping = shaderDetails.mapping;
-            spirv[i] = true;
-
-            EvaluateSPIRVBindpointMapping(curProg, (int)i, refls[i], stages[i]->bindpointMapping);
-          }
-          else
-          {
-            GetBindpointMapping(curProg, (int)i, refls[i], stages[i]->bindpointMapping);
-          }
-
-          mappings[i] = &stages[i]->bindpointMapping;
-
-          stages[i]->programResourceId = rm->GetUnreplacedOriginalID(pipeDetails.stagePrograms[i]);
-          stages[i]->shaderResourceId = rm->GetUnreplacedOriginalID(pipeDetails.stageShaders[i]);
-        }
-        else
-        {
-          stages[i]->programResourceId = stages[i]->shaderResourceId = ResourceId();
+          progForStage[i] = curProg;
         }
       }
     }
   }
-  else
+
+  for(size_t i = 0; i < NumShaderStages; i++)
   {
-    ResourceId id = rm->GetResID(ProgramRes(ctx, curProg));
-    auto &progDetails = m_pDriver->m_Programs[id];
-
-    pipe.pipelineResourceId = ResourceId();
-
-    for(size_t i = 0; i < ARRAY_COUNT(progDetails.stageShaders); i++)
+    if(progForStage[i])
     {
-      if(progDetails.stageShaders[i] != ResourceId())
+      progForStage[i] = rm->GetResource(progIds[i]).name;
+      stages[i]->programResourceId = rm->GetUnreplacedID(progIds[i]);
+      stages[i]->shaderResourceId = rm->GetUnreplacedID(shadIds[i]);
+
+      const WrappedOpenGL::ShaderData &shaderDetails = m_pDriver->GetShader(shadIds[i]);
+
+      if(shaderDetails.GetReflection()->resourceId == ResourceId())
+        stages[i]->reflection = refls[i] = NULL;
+      else
+        stages[i]->reflection = refls[i] = shaderDetails.GetReflection();
+
+      if(!shaderDetails.spirvWords.empty())
+        spirv[i] = true;
+
+      if(i == 0)
+        EvaluateVertexAttributeBinds(progForStage[i], refls[i], spirv[i], vertexAttrBindings);
+    }
+    else if(stages[i])
+    {
+      stages[i]->programResourceId = stages[i]->shaderResourceId = ResourceId();
+      stages[i]->reflection = NULL;
+    }
+  }
+
+  for(size_t i = 0; i < pipe.vertexInput.attributes.size(); i++)
+  {
+    if(i < vertexAttrBindings.size())
+      pipe.vertexInput.attributes[i].boundShaderInput = vertexAttrBindings[i];
+    else
+      pipe.vertexInput.attributes[i].boundShaderInput = -1;
+  }
+
+  pipe.textureCompleteness.clear();
+
+  for(size_t s = 0; s < NumShaderStages; s++)
+  {
+    const ShaderReflection *refl = refls[s];
+
+    if(!refl)
+      continue;
+
+    GLuint prog = progForStage[s];
+
+    DescriptorAccess access;
+    access.descriptorStore = m_pDriver->m_DescriptorsID;
+    access.stage = refl->stage;
+    access.byteSize = 1;
+
+    m_Access.reserve(m_Access.size() + refl->constantBlocks.size() +
+                     refl->readOnlyResources.size() + refl->readWriteResources.size());
+
+    RDCASSERT(refl->constantBlocks.size() < 0xffff, refl->constantBlocks.size());
+    for(uint16_t i = 0; i < refl->constantBlocks.size(); i++)
+    {
+      uint32_t slot = 0;
+      bool used = false;
+      GetCurrentBinding(prog, refl, refl->constantBlocks[i], slot, used);
+
+      access.staticallyUnused = !used;
+      access.type = DescriptorType::ConstantBuffer;
+      access.index = i;
+      if(!refl->constantBlocks[i].bufferBacked)
+        access.byteOffset = EncodeGLDescriptorIndex({GLDescriptorMapping::BareUniforms, (uint32_t)s});
+      else
+        access.byteOffset =
+            EncodeGLDescriptorIndex({GLDescriptorMapping::UniformBinding, (uint32_t)slot});
+      m_Access.push_back(access);
+    }
+
+    RDCASSERT(refl->readOnlyResources.size() < 0xffff, refl->readOnlyResources.size());
+    for(uint16_t i = 0; i < refl->readOnlyResources.size(); i++)
+    {
+      uint32_t slot = 0;
+      bool used = false;
+      GetCurrentBinding(prog, refl, refl->readOnlyResources[i], slot, used);
+
+      access.staticallyUnused = !used;
+
+      GLDescriptorMapping descType = GLDescriptorMapping::Tex2D;
+
+      switch(refl->readOnlyResources[i].textureType)
       {
-        auto &shaderDetails = m_pDriver->m_Shaders[progDetails.stageShaders[i]];
+        case TextureType::Buffer: descType = GLDescriptorMapping::TexBuffer; break;
+        case TextureType::Texture1D: descType = GLDescriptorMapping::Tex1D; break;
+        case TextureType::Texture1DArray: descType = GLDescriptorMapping::Tex1DArray; break;
+        case TextureType::Texture2D: descType = GLDescriptorMapping::Tex2D; break;
+        case TextureType::TextureRect: descType = GLDescriptorMapping::TexRect; break;
+        case TextureType::Texture2DArray: descType = GLDescriptorMapping::Tex2DArray; break;
+        case TextureType::Texture2DMS: descType = GLDescriptorMapping::Tex2DMS; break;
+        case TextureType::Texture2DMSArray: descType = GLDescriptorMapping::Tex2DMSArray; break;
+        case TextureType::Texture3D: descType = GLDescriptorMapping::Tex3D; break;
+        case TextureType::TextureCube: descType = GLDescriptorMapping::TexCube; break;
+        case TextureType::TextureCubeArray: descType = GLDescriptorMapping::TexCubeArray; break;
+        case TextureType::Unknown:
+        case TextureType::Count:
+          RDCERR("Invalid resource type on binding %s", refl->readOnlyResources[i].name.c_str());
+          break;
+      }
 
-        if(shaderDetails.reflection->resourceId == ResourceId())
-          stages[i]->reflection = refls[i] = NULL;
-        else
-          stages[i]->reflection = refls[i] = shaderDetails.reflection;
+      access.type = DescriptorType::ImageSampler;
+      if(descType == GLDescriptorMapping::TexBuffer)
+        access.type = DescriptorType::TypedBuffer;
+      access.index = i;
+      access.byteOffset = EncodeGLDescriptorIndex({descType, slot});
+      m_Access.push_back(access);
 
-        if(!shaderDetails.spirvWords.empty())
-        {
-          stages[i]->bindpointMapping = shaderDetails.mapping;
-          spirv[i] = true;
+      // checking texture completeness is a pretty expensive operation since it requires a lot of
+      // queries against the driver's texture properties.
+      // We assume that if a texture and sampler are complete at any point, even if their
+      // properties change mid-frame they will stay complete. Similarly if they are _incomplete_
+      // they will stay incomplete. Thus we can cache the results for a given pair, which if
+      // samplers don't change (or are only ever used consistently with the same texture) amounts
+      // to one entry per texture.
+      // Note that textures can't change target, so we don't need to icnlude the target in the key
+      drv.glActiveTexture(GLenum(eGL_TEXTURE0 + slot));
 
-          EvaluateSPIRVBindpointMapping(curProg, (int)i, refls[i], stages[i]->bindpointMapping);
-        }
-        else
-        {
-          GetBindpointMapping(curProg, (int)i, refls[i], stages[i]->bindpointMapping);
-        }
+      GLenum binding = eGL_NONE;
+      switch(refl->readOnlyResources[i].textureType)
+      {
+        case TextureType::Unknown: binding = eGL_NONE; break;
+        case TextureType::Buffer: binding = eGL_TEXTURE_BINDING_BUFFER; break;
+        case TextureType::Texture1D: binding = eGL_TEXTURE_BINDING_1D; break;
+        case TextureType::Texture1DArray: binding = eGL_TEXTURE_BINDING_1D_ARRAY; break;
+        case TextureType::Texture2D: binding = eGL_TEXTURE_BINDING_2D; break;
+        case TextureType::TextureRect: binding = eGL_TEXTURE_BINDING_RECTANGLE; break;
+        case TextureType::Texture2DArray: binding = eGL_TEXTURE_BINDING_2D_ARRAY; break;
+        case TextureType::Texture2DMS: binding = eGL_TEXTURE_BINDING_2D_MULTISAMPLE; break;
+        case TextureType::Texture2DMSArray:
+          binding = eGL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY;
+          break;
+        case TextureType::Texture3D: binding = eGL_TEXTURE_BINDING_3D; break;
+        case TextureType::TextureCube: binding = eGL_TEXTURE_BINDING_CUBE_MAP; break;
+        case TextureType::TextureCubeArray: binding = eGL_TEXTURE_BINDING_CUBE_MAP_ARRAY; break;
+        case TextureType::Count: RDCERR("Invalid shader resource type"); break;
+      }
 
-        mappings[i] = &stages[i]->bindpointMapping;
+      GLuint tex = 0;
 
-        stages[i]->programResourceId = rm->GetUnreplacedOriginalID(id);
-        stages[i]->shaderResourceId = rm->GetUnreplacedOriginalID(progDetails.stageShaders[i]);
+      if(descType == GLDescriptorMapping::TexCubeArray && !HasExt[ARB_texture_cube_map_array])
+        tex = 0;
+      else
+        drv.glGetIntegerv(binding, (GLint *)&tex);
+
+      GLuint samp = 0;
+      if(HasExt[ARB_sampler_objects])
+        drv.glGetIntegerv(eGL_SAMPLER_BINDING, (GLint *)&samp);
+
+      CompleteCacheKey complete = {tex, samp};
+
+      auto it = m_CompleteCache.find(complete);
+      if(it == m_CompleteCache.end())
+        it = m_CompleteCache.insert(
+            it,
+            std::make_pair(complete, GetTextureCompleteStatus(TextureTarget(binding), tex, samp)));
+      if(!it->second.empty())
+      {
+        GLPipe::TextureCompleteness completeness;
+        completeness.descriptorByteOffset = access.byteOffset;
+        completeness.completeStatus = it->second;
+        pipe.textureCompleteness.push_back(completeness);
+      }
+    }
+
+    RDCASSERT(refl->readWriteResources.size() < 0xffff, refl->readWriteResources.size());
+    for(uint16_t i = 0; i < refl->readWriteResources.size(); i++)
+    {
+      uint32_t slot = 0;
+      bool used = false;
+      GetCurrentBinding(prog, refl, refl->readWriteResources[i], slot, used);
+
+      access.staticallyUnused = !used;
+
+      GLDescriptorMapping descType = GLDescriptorMapping::Images;
+
+      if(refl->readWriteResources[i].isTexture)
+      {
+        access.type = DescriptorType::ReadWriteImage;
+        if(refl->readWriteResources[i].textureType == TextureType::Buffer)
+          access.type = DescriptorType::ReadWriteTypedBuffer;
       }
       else
       {
-        stages[i]->programResourceId = stages[i]->shaderResourceId = ResourceId();
+        access.type = DescriptorType::ReadWriteBuffer;
+        descType = GLDescriptorMapping::ShaderStorage;
+
+        if(refl->readWriteResources[i].variableType.rows == 1 &&
+           refl->readWriteResources[i].variableType.columns == 1 &&
+           refl->readWriteResources[i].variableType.baseType == VarType::UInt)
+        {
+          descType = GLDescriptorMapping::AtomicCounter;
+        }
       }
+
+      access.index = i;
+      access.byteOffset = EncodeGLDescriptorIndex({descType, slot});
+      m_Access.push_back(access);
     }
   }
 
-  // !!!NOTE!!! This function will MODIFY the refls[] binding arrays.
-  // See inside this function for what it does and why.
-  for(size_t i = 0; i < ARRAY_COUNT(refls); i++)
+  // GL is ass-backwards in its handling of texture units. When a shader is active
+  // the types in the glsl samplers inform which targets are used from which texture units
+  //
+  // So texture unit 5 can have a 2D bound (texture 52) and a Cube bound (texture 77).
+  // * if a uniform sampler2D has value 5 then the 2D texture is used, and we sample from 52
+  // * if a uniform samplerCube has value 5 then the Cube texture is used, and we sample from 77
+  // It's illegal for both a sampler2D and samplerCube to both have the same value (or any two
+  // different types). It makes it all rather pointless and needlessly complex.
+  //
+  // What we have to do then, is consider the program, look at the values of the uniforms, and
+  // then check if two uniforms with different types point to the same binding
+  for(uint32_t unit = 0; unit < (uint32_t)numTexUnits; unit++)
   {
-    // don't resort if it's SPIR-V
-    if(spirv[i])
-      continue;
+    rdcstr typeConflict;
+    GLenum binding = eGL_NONE;
+    GLenum target = eGL_NONE;
+    TextureType resType = TextureType::Unknown;
+    rdcstr firstBindName;
 
-    ResortBindings(refls[i], mappings[i]);
+    rdcarray<uint32_t> descriptorsReferenced;
+
+    for(const DescriptorAccess &access : m_Access)
+    {
+      // only look at read-only descriptors, these are the texture units that can clash
+      if(!IsReadOnlyDescriptor(access.type))
+        continue;
+
+      const ShaderReflection *refl = refls[(uint32_t)access.stage];
+      if(refl == NULL)
+      {
+        RDCERR("Unexpected NULL reflection on %s shader with a descriptor access",
+               ToStr(access.stage).c_str());
+        continue;
+      }
+
+      uint32_t accessedUnit = DecodeGLDescriptorIndex(access.byteOffset).idx;
+
+      // accessed the same unit, check its binding
+      if(accessedUnit == unit)
+      {
+        if(!descriptorsReferenced.contains(access.byteOffset))
+          descriptorsReferenced.push_back(access.byteOffset);
+
+        const ShaderResource &res = refl->readOnlyResources[access.index];
+        GLenum t = eGL_NONE;
+
+        switch(res.textureType)
+        {
+          case TextureType::Unknown: target = eGL_NONE; break;
+          case TextureType::Buffer: target = eGL_TEXTURE_BUFFER; break;
+          case TextureType::Texture1D: target = eGL_TEXTURE_1D; break;
+          case TextureType::Texture1DArray: target = eGL_TEXTURE_1D_ARRAY; break;
+          case TextureType::Texture2D: target = eGL_TEXTURE_2D; break;
+          case TextureType::TextureRect: target = eGL_TEXTURE_RECTANGLE; break;
+          case TextureType::Texture2DArray: target = eGL_TEXTURE_2D_ARRAY; break;
+          case TextureType::Texture2DMS: target = eGL_TEXTURE_2D_MULTISAMPLE; break;
+          case TextureType::Texture2DMSArray: target = eGL_TEXTURE_2D_MULTISAMPLE_ARRAY; break;
+          case TextureType::Texture3D: target = eGL_TEXTURE_3D; break;
+          case TextureType::TextureCube: target = eGL_TEXTURE_CUBE_MAP; break;
+          case TextureType::TextureCubeArray: target = eGL_TEXTURE_CUBE_MAP_ARRAY; break;
+          case TextureType::Count: RDCERR("Invalid shader resource type"); break;
+        }
+
+        if(target != eGL_NONE)
+          t = TextureBinding(target);
+
+        if(binding == eGL_NONE)
+        {
+          binding = t;
+          firstBindName = res.name;
+          resType = res.textureType;
+        }
+        else if(binding == t)
+        {
+          // two uniforms with the same type pointing to the same slot is fine
+          binding = t;
+        }
+        else if(binding != t)
+        {
+          RDCERR("Two uniforms pointing to texture unit %d with types %s and %s", unit,
+                 ToStr(binding).c_str(), ToStr(t).c_str());
+
+          if(typeConflict.empty())
+          {
+            typeConflict = StringFormat::Fmt("First binding found '%s' is %s",
+                                             firstBindName.c_str(), ToStr(resType).c_str());
+          }
+
+          typeConflict +=
+              StringFormat::Fmt(", '%s' is %s", res.name.c_str(), ToStr(res.textureType).c_str());
+        }
+      }
+    }
+
+    // if we found a type conflict, add an entry for all descriptors
+    if(!typeConflict.empty())
+    {
+      for(uint32_t descriptor : descriptorsReferenced)
+      {
+        bool found = false;
+        for(GLPipe::TextureCompleteness &completeness : pipe.textureCompleteness)
+        {
+          if(completeness.descriptorByteOffset == descriptor)
+          {
+            // don't worry about overwriting, the descriptor byte offset is unique to the unit so
+            // we should only set this at most once
+            completeness.typeConflict = typeConflict;
+            found = true;
+          }
+        }
+
+        if(!found)
+        {
+          GLPipe::TextureCompleteness completeness;
+          completeness.descriptorByteOffset = descriptor;
+          completeness.typeConflict = typeConflict;
+          pipe.textureCompleteness.push_back(completeness);
+        }
+      }
+    }
   }
 
   RDCEraseEl(pipe.transformFeedback);
@@ -1161,8 +1453,7 @@ void GLReplay::SavePipelineState(uint32_t eventId)
     drv.glGetIntegerv(eGL_TRANSFORM_FEEDBACK_BINDING, (GLint *)&feedback);
 
     if(feedback != 0)
-      pipe.transformFeedback.feedbackResourceId =
-          rm->GetOriginalID(rm->GetResID(FeedbackRes(ctx, feedback)));
+      pipe.transformFeedback.feedbackResourceId = rm->GetResID(FeedbackRes(ctx, feedback));
     else
       pipe.transformFeedback.feedbackResourceId = ResourceId();
 
@@ -1173,8 +1464,7 @@ void GLReplay::SavePipelineState(uint32_t eventId)
     {
       GLuint buffer = 0;
       drv.glGetIntegeri_v(eGL_TRANSFORM_FEEDBACK_BUFFER_BINDING, i, (GLint *)&buffer);
-      pipe.transformFeedback.bufferResourceId[i] =
-          rm->GetOriginalID(rm->GetResID(BufferRes(ctx, buffer)));
+      pipe.transformFeedback.bufferResourceId[i] = rm->GetResID(BufferRes(ctx, buffer));
       drv.glGetInteger64i_v(eGL_TRANSFORM_FEEDBACK_BUFFER_START, i,
                             (GLint64 *)&pipe.transformFeedback.byteOffset[i]);
       drv.glGetInteger64i_v(eGL_TRANSFORM_FEEDBACK_BUFFER_SIZE, i,
@@ -1189,7 +1479,7 @@ void GLReplay::SavePipelineState(uint32_t eventId)
     pipe.transformFeedback.active = (p != 0) || m_pDriver->m_WasActiveFeedback;
   }
 
-  for(int i = 0; i < 6; i++)
+  for(size_t i = 0; i < ARRAY_COUNT(rs.Subroutines); i++)
   {
     size_t num = RDCMIN(128, rs.Subroutines[i].numSubroutines);
     if(num == 0)
@@ -1203,407 +1493,7 @@ void GLReplay::SavePipelineState(uint32_t eventId)
     }
   }
 
-  // GL is ass-backwards in its handling of texture units. When a shader is active
-  // the types in the glsl samplers inform which targets are used from which texture units
-  //
-  // So texture unit 5 can have a 2D bound (texture 52) and a Cube bound (texture 77).
-  // * if a uniform sampler2D has value 5 then the 2D texture is used, and we sample from 52
-  // * if a uniform samplerCube has value 5 then the Cube texture is used, and we sample from 77
-  // It's illegal for both a sampler2D and samplerCube to both have the same value (or any two
-  // different types). It makes it all rather pointless and needlessly complex.
-  //
-  // What we have to do then, is consider the program, look at the values of the uniforms, and
-  // then get the appropriate current binding based on the uniform type. We can warn/alert the
-  // user if we hit the illegal case of two uniforms with different types but the same value
-  //
-  // Handling is different if no shaders are active, but we don't consider that case.
-
-  for(GLint unit = 0; unit < numTexUnits; unit++)
-  {
-    GLenum binding = eGL_NONE;
-    GLenum target = eGL_NONE;
-    TextureType resType = TextureType::Unknown;
-
-    for(size_t s = 0; s < ARRAY_COUNT(refls); s++)
-    {
-      if(refls[s] == NULL)
-        continue;
-
-      for(const ShaderResource &res : refls[s]->readOnlyResources)
-      {
-        // bindPoint is the uniform value for this sampler
-        if(mappings[s]->readOnlyResources[res.bindPoint].bind == unit)
-        {
-          GLenum t = eGL_NONE;
-
-          switch(res.resType)
-          {
-            case TextureType::Unknown: target = eGL_NONE; break;
-            case TextureType::Buffer: target = eGL_TEXTURE_BUFFER; break;
-            case TextureType::Texture1D: target = eGL_TEXTURE_1D; break;
-            case TextureType::Texture1DArray: target = eGL_TEXTURE_1D_ARRAY; break;
-            case TextureType::Texture2D: target = eGL_TEXTURE_2D; break;
-            case TextureType::TextureRect: target = eGL_TEXTURE_RECTANGLE; break;
-            case TextureType::Texture2DArray: target = eGL_TEXTURE_2D_ARRAY; break;
-            case TextureType::Texture2DMS: target = eGL_TEXTURE_2D_MULTISAMPLE; break;
-            case TextureType::Texture2DMSArray: target = eGL_TEXTURE_2D_MULTISAMPLE_ARRAY; break;
-            case TextureType::Texture3D: target = eGL_TEXTURE_3D; break;
-            case TextureType::TextureCube: target = eGL_TEXTURE_CUBE_MAP; break;
-            case TextureType::TextureCubeArray: target = eGL_TEXTURE_CUBE_MAP_ARRAY; break;
-            case TextureType::Count: RDCERR("Invalid shader resource type"); break;
-          }
-
-          if(target != eGL_NONE)
-            t = TextureBinding(target);
-
-          resType = res.resType;
-
-          if(binding == eGL_NONE)
-          {
-            binding = t;
-          }
-          else if(binding == t)
-          {
-            // two uniforms with the same type pointing to the same slot is fine
-            binding = t;
-          }
-          else if(binding != t)
-          {
-            RDCWARN("Two uniforms pointing to texture unit %d with types %s and %s", unit,
-                    ToStr(binding).c_str(), ToStr(t).c_str());
-          }
-        }
-      }
-    }
-
-    if(binding != eGL_NONE)
-    {
-      drv.glActiveTexture(GLenum(eGL_TEXTURE0 + unit));
-
-      GLuint tex = 0;
-
-      if(binding == eGL_TEXTURE_CUBE_MAP_ARRAY && !HasExt[ARB_texture_cube_map_array])
-        tex = 0;
-      else
-        drv.glGetIntegerv(binding, (GLint *)&tex);
-
-      if(tex == 0)
-      {
-        pipe.textures[unit].resourceId = ResourceId();
-        pipe.textures[unit].firstMip = 0;
-        pipe.textures[unit].numMips = 1;
-        pipe.textures[unit].type = TextureType::Unknown;
-        pipe.textures[unit].depthReadChannel = -1;
-        pipe.textures[unit].swizzle.red = TextureSwizzle::Red;
-        pipe.textures[unit].swizzle.green = TextureSwizzle::Green;
-        pipe.textures[unit].swizzle.blue = TextureSwizzle::Blue;
-        pipe.textures[unit].swizzle.alpha = TextureSwizzle::Alpha;
-
-        RDCEraseEl(pipe.samplers[unit].borderColor);
-        pipe.samplers[unit].addressS = AddressMode::Wrap;
-        pipe.samplers[unit].addressT = AddressMode::Wrap;
-        pipe.samplers[unit].addressR = AddressMode::Wrap;
-        pipe.samplers[unit].compareFunction = CompareFunction::AlwaysTrue;
-        pipe.samplers[unit].filter = TextureFilter();
-        pipe.samplers[unit].seamlessCubeMap = false;
-        pipe.samplers[unit].maxAnisotropy = 0.0f;
-        pipe.samplers[unit].maxLOD = 0.0f;
-        pipe.samplers[unit].minLOD = 0.0f;
-        pipe.samplers[unit].mipLODBias = 0.0f;
-      }
-      else
-      {
-        GLint firstMip = 0, numMips = 1;
-
-        if(target != eGL_TEXTURE_BUFFER)
-        {
-          drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_BASE_LEVEL, &firstMip);
-          drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_MAX_LEVEL, &numMips);
-
-          numMips = numMips - firstMip + 1;
-        }
-
-        pipe.textures[unit].resourceId = rm->GetOriginalID(rm->GetResID(TextureRes(ctx, tex)));
-        pipe.textures[unit].firstMip = (uint32_t)firstMip;
-        pipe.textures[unit].numMips = (uint32_t)numMips;
-        pipe.textures[unit].type = resType;
-
-        pipe.textures[unit].depthReadChannel = -1;
-
-        GLenum levelQueryType =
-            target == eGL_TEXTURE_CUBE_MAP ? eGL_TEXTURE_CUBE_MAP_POSITIVE_X : target;
-        GLenum fmt = eGL_NONE;
-        drv.glGetTexLevelParameteriv(levelQueryType, 0, eGL_TEXTURE_INTERNAL_FORMAT, (GLint *)&fmt);
-        if(IsDepthStencilFormat(fmt))
-        {
-          GLint depthMode = eGL_DEPTH_COMPONENT;
-
-          if(HasExt[ARB_stencil_texturing])
-            drv.glGetTextureParameterivEXT(tex, target, eGL_DEPTH_STENCIL_TEXTURE_MODE, &depthMode);
-
-          if(depthMode == eGL_DEPTH_COMPONENT)
-            pipe.textures[unit].depthReadChannel = 0;
-          else if(depthMode == eGL_STENCIL_INDEX)
-            pipe.textures[unit].depthReadChannel = 1;
-        }
-
-        GLenum swizzles[4] = {eGL_RED, eGL_GREEN, eGL_BLUE, eGL_ALPHA};
-        if(target != eGL_TEXTURE_BUFFER &&
-           (HasExt[ARB_texture_swizzle] || HasExt[EXT_texture_swizzle]))
-          GetTextureSwizzle(tex, target, swizzles);
-
-        pipe.textures[unit].swizzle.red = MakeSwizzle(swizzles[0]);
-        pipe.textures[unit].swizzle.green = MakeSwizzle(swizzles[1]);
-        pipe.textures[unit].swizzle.blue = MakeSwizzle(swizzles[2]);
-        pipe.textures[unit].swizzle.alpha = MakeSwizzle(swizzles[3]);
-
-        GLuint samp = 0;
-        if(HasExt[ARB_sampler_objects])
-          drv.glGetIntegerv(eGL_SAMPLER_BINDING, (GLint *)&samp);
-
-        pipe.samplers[unit].resourceId = rm->GetOriginalID(rm->GetResID(SamplerRes(ctx, samp)));
-
-        // checking texture completeness is a pretty expensive operation since it requires a lot of
-        // queries against the driver's texture properties.
-        // We assume that if a texture and sampler are complete at any point, even if their
-        // properties change mid-frame they will stay complete. Similarly if they are _incomplete_
-        // they will stay incomplete. Thus we can cache the results for a given pair, which if
-        // samplers don't change (or are only ever used consistently with the same texture) amounts
-        // to one entry per texture.
-        // Note that textures can't change target, so we don't need to icnlude the target in the key
-        CompleteCacheKey complete = {tex, samp};
-
-        auto it = m_CompleteCache.find(complete);
-        if(it == m_CompleteCache.end())
-          it = m_CompleteCache.insert(
-              it, std::make_pair(complete, GetTextureCompleteStatus(target, tex, samp)));
-        pipe.textures[unit].completeStatus = it->second;
-
-        if(target != eGL_TEXTURE_BUFFER && target != eGL_TEXTURE_2D_MULTISAMPLE &&
-           target != eGL_TEXTURE_2D_MULTISAMPLE_ARRAY)
-        {
-          if(samp != 0)
-            drv.glGetSamplerParameterfv(samp, eGL_TEXTURE_BORDER_COLOR,
-                                        pipe.samplers[unit].borderColor.data());
-          else
-            drv.glGetTextureParameterfvEXT(tex, target, eGL_TEXTURE_BORDER_COLOR,
-                                           pipe.samplers[unit].borderColor.data());
-
-          GLint v;
-          v = 0;
-          if(samp != 0)
-            drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_WRAP_S, &v);
-          else
-            drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_WRAP_S, &v);
-          pipe.samplers[unit].addressS = MakeAddressMode((GLenum)v);
-
-          v = 0;
-          if(samp != 0)
-            drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_WRAP_T, &v);
-          else
-            drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_WRAP_T, &v);
-          pipe.samplers[unit].addressT = MakeAddressMode((GLenum)v);
-
-          v = 0;
-          if(samp != 0)
-            drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_WRAP_R, &v);
-          else
-            drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_WRAP_R, &v);
-          pipe.samplers[unit].addressR = MakeAddressMode((GLenum)v);
-
-          v = 0;
-          if(HasExt[ARB_seamless_cubemap_per_texture])
-          {
-            if(samp != 0)
-              drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_CUBE_MAP_SEAMLESS, &v);
-            else
-              drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_CUBE_MAP_SEAMLESS, &v);
-          }
-          pipe.samplers[unit].seamlessCubeMap =
-              (v != 0 || rs.Enabled[GLRenderState::eEnabled_TexCubeSeamless]);
-
-          v = 0;
-          if(samp != 0)
-            drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_COMPARE_FUNC, &v);
-          else
-            drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_COMPARE_FUNC, &v);
-          pipe.samplers[unit].compareFunction = MakeCompareFunc((GLenum)v);
-
-          GLint minf = 0;
-          GLint magf = 0;
-          if(samp != 0)
-            drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_MIN_FILTER, &minf);
-          else
-            drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_MIN_FILTER, &minf);
-
-          if(samp != 0)
-            drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_MAG_FILTER, &magf);
-          else
-            drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_MAG_FILTER, &magf);
-
-          if(HasExt[ARB_texture_filter_anisotropic])
-          {
-            if(samp != 0)
-              drv.glGetSamplerParameterfv(samp, eGL_TEXTURE_MAX_ANISOTROPY,
-                                          &pipe.samplers[unit].maxAnisotropy);
-            else
-              drv.glGetTextureParameterfvEXT(tex, target, eGL_TEXTURE_MAX_ANISOTROPY,
-                                             &pipe.samplers[unit].maxAnisotropy);
-          }
-          else
-          {
-            pipe.samplers[unit].maxAnisotropy = 0.0f;
-          }
-
-          pipe.samplers[unit].filter =
-              MakeFilter((GLenum)minf, (GLenum)magf, pipe.samplers[unit].maxAnisotropy);
-
-          v = 0;
-          if(samp != 0)
-            drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_COMPARE_MODE, &v);
-          else
-            drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_COMPARE_MODE, &v);
-          pipe.samplers[unit].filter.filter = (GLenum)v == eGL_COMPARE_REF_TO_TEXTURE
-                                                  ? FilterFunction::Comparison
-                                                  : FilterFunction::Normal;
-
-          if(samp != 0)
-            drv.glGetSamplerParameterfv(samp, eGL_TEXTURE_MAX_LOD, &pipe.samplers[unit].maxLOD);
-          else
-            drv.glGetTextureParameterfvEXT(tex, target, eGL_TEXTURE_MAX_LOD,
-                                           &pipe.samplers[unit].maxLOD);
-
-          if(samp != 0)
-            drv.glGetSamplerParameterfv(samp, eGL_TEXTURE_MIN_LOD, &pipe.samplers[unit].minLOD);
-          else
-            drv.glGetTextureParameterfvEXT(tex, target, eGL_TEXTURE_MIN_LOD,
-                                           &pipe.samplers[unit].minLOD);
-
-          if(!IsGLES)
-          {
-            if(samp != 0)
-              drv.glGetSamplerParameterfv(samp, eGL_TEXTURE_LOD_BIAS,
-                                          &pipe.samplers[unit].mipLODBias);
-            else
-              drv.glGetTextureParameterfvEXT(tex, target, eGL_TEXTURE_LOD_BIAS,
-                                             &pipe.samplers[unit].mipLODBias);
-          }
-          else
-          {
-            pipe.samplers[unit].mipLODBias = 0.0f;
-          }
-        }
-        else
-        {
-          // texture buffers don't support sampling
-          RDCEraseEl(pipe.samplers[unit].borderColor);
-          pipe.samplers[unit].addressS = AddressMode::Wrap;
-          pipe.samplers[unit].addressT = AddressMode::Wrap;
-          pipe.samplers[unit].addressR = AddressMode::Wrap;
-          pipe.samplers[unit].compareFunction = CompareFunction::AlwaysTrue;
-          pipe.samplers[unit].filter = TextureFilter();
-          pipe.samplers[unit].seamlessCubeMap = false;
-          pipe.samplers[unit].maxAnisotropy = 0.0f;
-          pipe.samplers[unit].maxLOD = 0.0f;
-          pipe.samplers[unit].minLOD = 0.0f;
-          pipe.samplers[unit].mipLODBias = 0.0f;
-        }
-      }
-    }
-    else
-    {
-      // what should we do in this case? there could be something bound just not used,
-      // it'd be nice to return that
-    }
-  }
-
   drv.glActiveTexture(activeTexture);
-
-  pipe.uniformBuffers.resize(ARRAY_COUNT(rs.UniformBinding));
-  for(size_t b = 0; b < pipe.uniformBuffers.size(); b++)
-  {
-    if(rs.UniformBinding[b].res.name == 0)
-    {
-      pipe.uniformBuffers[b].resourceId = ResourceId();
-      pipe.uniformBuffers[b].byteOffset = pipe.uniformBuffers[b].byteSize = 0;
-    }
-    else
-    {
-      pipe.uniformBuffers[b].resourceId = rm->GetOriginalID(rm->GetResID(rs.UniformBinding[b].res));
-      pipe.uniformBuffers[b].byteOffset = rs.UniformBinding[b].start;
-      pipe.uniformBuffers[b].byteSize = rs.UniformBinding[b].size;
-    }
-  }
-
-  pipe.atomicBuffers.resize(ARRAY_COUNT(rs.AtomicCounter));
-  for(size_t b = 0; b < pipe.atomicBuffers.size(); b++)
-  {
-    if(rs.AtomicCounter[b].res.name == 0)
-    {
-      pipe.atomicBuffers[b].resourceId = ResourceId();
-      pipe.atomicBuffers[b].byteOffset = pipe.atomicBuffers[b].byteSize = 0;
-    }
-    else
-    {
-      pipe.atomicBuffers[b].resourceId = rm->GetOriginalID(rm->GetResID(rs.AtomicCounter[b].res));
-      pipe.atomicBuffers[b].byteOffset = rs.AtomicCounter[b].start;
-      pipe.atomicBuffers[b].byteSize = rs.AtomicCounter[b].size;
-    }
-  }
-
-  pipe.shaderStorageBuffers.resize(ARRAY_COUNT(rs.ShaderStorage));
-  for(size_t b = 0; b < pipe.shaderStorageBuffers.size(); b++)
-  {
-    if(rs.ShaderStorage[b].res.name == 0)
-    {
-      pipe.shaderStorageBuffers[b].resourceId = ResourceId();
-      pipe.shaderStorageBuffers[b].byteOffset = pipe.shaderStorageBuffers[b].byteSize = 0;
-    }
-    else
-    {
-      pipe.shaderStorageBuffers[b].resourceId =
-          rm->GetOriginalID(rm->GetResID(rs.ShaderStorage[b].res));
-      pipe.shaderStorageBuffers[b].byteOffset = rs.ShaderStorage[b].start;
-      pipe.shaderStorageBuffers[b].byteSize = rs.ShaderStorage[b].size;
-    }
-  }
-
-  pipe.images.resize(ARRAY_COUNT(rs.Images));
-  for(size_t i = 0; i < pipe.images.size(); i++)
-  {
-    if(rs.Images[i].res.name == 0)
-    {
-      RDCEraseEl(pipe.images[i]);
-    }
-    else
-    {
-      ResourceId id = rm->GetResID(rs.Images[i].res);
-      pipe.images[i].resourceId = rm->GetOriginalID(id);
-      pipe.images[i].mipLevel = rs.Images[i].level;
-      pipe.images[i].layered = rs.Images[i].layered;
-      pipe.images[i].slice = rs.Images[i].layer;
-      if(rs.Images[i].access == eGL_READ_ONLY)
-      {
-        pipe.images[i].readAllowed = true;
-        pipe.images[i].writeAllowed = false;
-      }
-      else if(rs.Images[i].access == eGL_WRITE_ONLY)
-      {
-        pipe.images[i].readAllowed = false;
-        pipe.images[i].writeAllowed = true;
-      }
-      else
-      {
-        pipe.images[i].readAllowed = true;
-        pipe.images[i].writeAllowed = true;
-      }
-      pipe.images[i].imageFormat = MakeResourceFormat(eGL_TEXTURE_2D, rs.Images[i].format);
-
-      CacheTexture(id);
-
-      pipe.images[i].type = m_CachedTextures[id].type;
-    }
-  }
 
   // Vertex post processing and rasterization
 
@@ -1777,22 +1667,24 @@ void GLReplay::SavePipelineState(uint32_t eventId)
     if(type == eGL_RENDERBUFFER)
       rbStencil = true;
 
-    pipe.framebuffer.drawFBO.resourceId =
-        rm->GetOriginalID(rm->GetResID(FramebufferRes(ctx, curDrawFBO)));
+    pipe.framebuffer.drawFBO.resourceId = rm->GetResID(FramebufferRes(ctx, curDrawFBO));
     pipe.framebuffer.drawFBO.colorAttachments.resize(numCols);
     for(GLint i = 0; i < numCols; i++)
     {
       ResourceId id =
           rm->GetResID(rbCol[i] ? RenderbufferRes(ctx, curCol[i]) : TextureRes(ctx, curCol[i]));
 
-      pipe.framebuffer.drawFBO.colorAttachments[i].resourceId = rm->GetOriginalID(id);
+      pipe.framebuffer.drawFBO.colorAttachments[i].resource = id;
+
+      if(id != ResourceId())
+        pipe.framebuffer.drawFBO.colorAttachments[i].format = GetTexture(id).format;
 
       GLenum attachment = GLenum(eGL_COLOR_ATTACHMENT0 + i);
 
-      if(pipe.framebuffer.drawFBO.colorAttachments[i].resourceId != ResourceId() && !rbCol[i])
+      if(pipe.framebuffer.drawFBO.colorAttachments[i].resource != ResourceId() && !rbCol[i])
         GetFramebufferMipAndLayer(curDrawFBO, attachment,
-                                  (GLint *)&pipe.framebuffer.drawFBO.colorAttachments[i].mipLevel,
-                                  (GLint *)&pipe.framebuffer.drawFBO.colorAttachments[i].slice);
+                                  (GLint *)&pipe.framebuffer.drawFBO.colorAttachments[i].firstMip,
+                                  (GLint *)&pipe.framebuffer.drawFBO.colorAttachments[i].firstSlice);
 
       pipe.framebuffer.drawFBO.colorAttachments[i].numSlices = 1;
 
@@ -1807,7 +1699,8 @@ void GLReplay::SavePipelineState(uint32_t eventId)
 
           if(layered)
           {
-            pipe.framebuffer.drawFBO.colorAttachments[i].numSlices = m_pDriver->m_Textures[id].depth;
+            pipe.framebuffer.drawFBO.colorAttachments[i].numSlices =
+                m_pDriver->m_Textures[id].depth & 0xffff;
           }
         }
         else
@@ -1824,8 +1717,8 @@ void GLReplay::SavePipelineState(uint32_t eventId)
 
             if(numViews > 1)
             {
-              pipe.framebuffer.drawFBO.colorAttachments[i].numSlices = numViews;
-              pipe.framebuffer.drawFBO.colorAttachments[i].slice = startView;
+              pipe.framebuffer.drawFBO.colorAttachments[i].numSlices = numViews & 0xffff;
+              pipe.framebuffer.drawFBO.colorAttachments[i].firstSlice = startView & 0xffff;
             }
           }
         }
@@ -1845,25 +1738,25 @@ void GLReplay::SavePipelineState(uint32_t eventId)
       pipe.framebuffer.drawFBO.colorAttachments[i].swizzle.alpha = MakeSwizzle(swizzles[3]);
     }
 
-    pipe.framebuffer.drawFBO.depthAttachment.resourceId = rm->GetOriginalID(
-        rm->GetResID(rbDepth ? RenderbufferRes(ctx, curDepth) : TextureRes(ctx, curDepth)));
-    pipe.framebuffer.drawFBO.stencilAttachment.resourceId = rm->GetOriginalID(
-        rm->GetResID(rbStencil ? RenderbufferRes(ctx, curStencil) : TextureRes(ctx, curStencil)));
+    ResourceId id =
+        rm->GetResID(rbDepth ? RenderbufferRes(ctx, curDepth) : TextureRes(ctx, curDepth));
+    pipe.framebuffer.drawFBO.depthAttachment.resource = id;
+    pipe.framebuffer.drawFBO.stencilAttachment.resource =
+        rm->GetResID(rbStencil ? RenderbufferRes(ctx, curStencil) : TextureRes(ctx, curStencil));
 
-    if(pipe.framebuffer.drawFBO.depthAttachment.resourceId != ResourceId() && !rbDepth)
+    if(pipe.framebuffer.drawFBO.depthAttachment.resource != ResourceId() && !rbDepth)
       GetFramebufferMipAndLayer(curDrawFBO, eGL_DEPTH_ATTACHMENT,
-                                (GLint *)&pipe.framebuffer.drawFBO.depthAttachment.mipLevel,
-                                (GLint *)&pipe.framebuffer.drawFBO.depthAttachment.slice);
+                                &pipe.framebuffer.drawFBO.depthAttachment.firstMip,
+                                &pipe.framebuffer.drawFBO.depthAttachment.firstSlice);
 
-    if(pipe.framebuffer.drawFBO.stencilAttachment.resourceId != ResourceId() && !rbStencil)
+    if(pipe.framebuffer.drawFBO.stencilAttachment.resource != ResourceId() && !rbStencil)
       GetFramebufferMipAndLayer(curDrawFBO, eGL_STENCIL_ATTACHMENT,
-                                (GLint *)&pipe.framebuffer.drawFBO.stencilAttachment.mipLevel,
-                                (GLint *)&pipe.framebuffer.drawFBO.stencilAttachment.slice);
+                                &pipe.framebuffer.drawFBO.stencilAttachment.firstMip,
+                                &pipe.framebuffer.drawFBO.stencilAttachment.firstSlice);
 
     pipe.framebuffer.drawFBO.depthAttachment.numSlices = 1;
     pipe.framebuffer.drawFBO.stencilAttachment.numSlices = 1;
 
-    ResourceId id = pipe.framebuffer.drawFBO.depthAttachment.resourceId;
     if(!rbDepth && id != ResourceId())
     {
       // desktop GL allows layered attachments which attach all slices from 0 to N
@@ -1875,7 +1768,8 @@ void GLReplay::SavePipelineState(uint32_t eventId)
 
         if(layered)
         {
-          pipe.framebuffer.drawFBO.depthAttachment.numSlices = m_pDriver->m_Textures[id].depth;
+          pipe.framebuffer.drawFBO.depthAttachment.numSlices =
+              m_pDriver->m_Textures[id].depth & 0xffff;
         }
       }
       else
@@ -1893,17 +1787,17 @@ void GLReplay::SavePipelineState(uint32_t eventId)
 
           if(numViews > 1)
           {
-            pipe.framebuffer.drawFBO.depthAttachment.numSlices = numViews;
-            pipe.framebuffer.drawFBO.depthAttachment.slice = startView;
+            pipe.framebuffer.drawFBO.depthAttachment.numSlices = numViews & 0xffff;
+            pipe.framebuffer.drawFBO.depthAttachment.firstSlice = startView & 0xffff;
           }
         }
       }
 
-      if(pipe.framebuffer.drawFBO.stencilAttachment.resourceId ==
-         pipe.framebuffer.drawFBO.depthAttachment.resourceId)
+      if(pipe.framebuffer.drawFBO.stencilAttachment.resource ==
+         pipe.framebuffer.drawFBO.depthAttachment.resource)
       {
-        pipe.framebuffer.drawFBO.stencilAttachment.slice =
-            pipe.framebuffer.drawFBO.depthAttachment.slice;
+        pipe.framebuffer.drawFBO.stencilAttachment.firstSlice =
+            pipe.framebuffer.drawFBO.depthAttachment.firstSlice;
         pipe.framebuffer.drawFBO.stencilAttachment.numSlices =
             pipe.framebuffer.drawFBO.depthAttachment.numSlices;
       }
@@ -1952,34 +1846,33 @@ void GLReplay::SavePipelineState(uint32_t eventId)
     if(type == eGL_RENDERBUFFER)
       rbStencil = true;
 
-    pipe.framebuffer.readFBO.resourceId =
-        rm->GetOriginalID(rm->GetResID(FramebufferRes(ctx, curReadFBO)));
+    pipe.framebuffer.readFBO.resourceId = rm->GetResID(FramebufferRes(ctx, curReadFBO));
     pipe.framebuffer.readFBO.colorAttachments.resize(numCols);
     for(GLint i = 0; i < numCols; i++)
     {
-      pipe.framebuffer.readFBO.colorAttachments[i].resourceId = rm->GetOriginalID(
-          rm->GetResID(rbCol[i] ? RenderbufferRes(ctx, curCol[i]) : TextureRes(ctx, curCol[i])));
+      pipe.framebuffer.readFBO.colorAttachments[i].resource =
+          rm->GetResID(rbCol[i] ? RenderbufferRes(ctx, curCol[i]) : TextureRes(ctx, curCol[i]));
 
-      if(pipe.framebuffer.readFBO.colorAttachments[i].resourceId != ResourceId() && !rbCol[i])
+      if(pipe.framebuffer.readFBO.colorAttachments[i].resource != ResourceId() && !rbCol[i])
         GetFramebufferMipAndLayer(curReadFBO, GLenum(eGL_COLOR_ATTACHMENT0 + i),
-                                  (GLint *)&pipe.framebuffer.readFBO.colorAttachments[i].mipLevel,
-                                  (GLint *)&pipe.framebuffer.readFBO.colorAttachments[i].slice);
+                                  &pipe.framebuffer.readFBO.colorAttachments[i].firstMip,
+                                  &pipe.framebuffer.readFBO.colorAttachments[i].firstSlice);
     }
 
-    pipe.framebuffer.readFBO.depthAttachment.resourceId = rm->GetOriginalID(
-        rm->GetResID(rbDepth ? RenderbufferRes(ctx, curDepth) : TextureRes(ctx, curDepth)));
-    pipe.framebuffer.readFBO.stencilAttachment.resourceId = rm->GetOriginalID(
-        rm->GetResID(rbStencil ? RenderbufferRes(ctx, curStencil) : TextureRes(ctx, curStencil)));
+    pipe.framebuffer.readFBO.depthAttachment.resource =
+        rm->GetResID(rbDepth ? RenderbufferRes(ctx, curDepth) : TextureRes(ctx, curDepth));
+    pipe.framebuffer.readFBO.stencilAttachment.resource =
+        rm->GetResID(rbStencil ? RenderbufferRes(ctx, curStencil) : TextureRes(ctx, curStencil));
 
-    if(pipe.framebuffer.readFBO.depthAttachment.resourceId != ResourceId() && !rbDepth)
+    if(pipe.framebuffer.readFBO.depthAttachment.resource != ResourceId() && !rbDepth)
       GetFramebufferMipAndLayer(curReadFBO, eGL_DEPTH_ATTACHMENT,
-                                (GLint *)&pipe.framebuffer.readFBO.depthAttachment.mipLevel,
-                                (GLint *)&pipe.framebuffer.readFBO.depthAttachment.slice);
+                                &pipe.framebuffer.readFBO.depthAttachment.firstMip,
+                                &pipe.framebuffer.readFBO.depthAttachment.firstSlice);
 
-    if(pipe.framebuffer.readFBO.stencilAttachment.resourceId != ResourceId() && !rbStencil)
+    if(pipe.framebuffer.readFBO.stencilAttachment.resource != ResourceId() && !rbStencil)
       GetFramebufferMipAndLayer(curReadFBO, eGL_STENCIL_ATTACHMENT,
-                                (GLint *)&pipe.framebuffer.readFBO.stencilAttachment.mipLevel,
-                                (GLint *)&pipe.framebuffer.readFBO.stencilAttachment.slice);
+                                &pipe.framebuffer.readFBO.stencilAttachment.firstMip,
+                                &pipe.framebuffer.readFBO.stencilAttachment.firstSlice);
 
     pipe.framebuffer.readFBO.drawBuffers.resize(numCols);
     for(GLint i = 0; i < numCols; i++)
@@ -2073,6 +1966,643 @@ void GLReplay::SavePipelineState(uint32_t eventId)
   pipe.hints.polySmoothingEnabled = rs.Enabled[GLRenderState::eEnabled_PolySmooth];
 }
 
+rdcarray<Descriptor> GLReplay::GetDescriptors(ResourceId descriptorStore,
+                                              const rdcarray<DescriptorRange> &ranges)
+{
+  rdcarray<Descriptor> ret;
+
+  if(descriptorStore != m_pDriver->m_DescriptorsID)
+  {
+    RDCERR("Descriptors query for invalid descriptor store on fixed bindings API (OpenGL)");
+    return ret;
+  }
+
+  MakeCurrentReplayContext(&m_ReplayCtx);
+  WrappedOpenGL &drv = *m_pDriver;
+  GLResourceManager *rm = m_pDriver->GetResourceManager();
+
+  ContextPair &ctx = drv.GetCtx();
+
+  GLRenderState rs;
+  rs.FetchState(&drv);
+
+  size_t count = 0;
+  for(const DescriptorRange &r : ranges)
+    count += r.count;
+  ret.resize(count);
+
+  size_t dst = 0;
+  for(const DescriptorRange &r : ranges)
+  {
+    uint32_t descriptorId = r.offset;
+
+    for(uint32_t i = 0; i < r.count; i++, dst++, descriptorId++)
+    {
+      GLDescriptorLocation idx = DecodeGLDescriptorIndex(descriptorId);
+
+      if(idx.type == GLDescriptorMapping::Invalid)
+      {
+      }
+      else if(idx.type == GLDescriptorMapping::BareUniforms)
+      {
+        // not feasible to emulate backing store for bare uniforms. We could synthesise our own byte
+        // layout and query uniform values into a buffer but... let's not.
+        ret[dst].type = DescriptorType::ConstantBuffer;
+        ret[dst].byteSize = 16 * 1024;
+      }
+      else if(idx.type == GLDescriptorMapping::UniformBinding)
+      {
+        ret[dst].type = DescriptorType::ConstantBuffer;
+        if(rs.UniformBinding[idx.idx].res.name != 0)
+        {
+          ResourceId id = rm->GetResID(rs.UniformBinding[idx.idx].res);
+          ret[dst].resource = id;
+          ret[dst].byteOffset = rs.UniformBinding[idx.idx].start;
+          ret[dst].byteSize = rs.UniformBinding[idx.idx].size;
+
+          if(ret[dst].byteSize == 0)
+            ret[dst].byteSize = m_pDriver->m_Buffers[id].size;
+        }
+      }
+      else if(idx.type == GLDescriptorMapping::AtomicCounter)
+      {
+        ret[dst].type = DescriptorType::ReadWriteBuffer;
+        if(rs.AtomicCounter[idx.idx].res.name != 0)
+        {
+          ResourceId id = rm->GetResID(rs.AtomicCounter[idx.idx].res);
+          ret[dst].resource = id;
+          ret[dst].byteOffset = rs.AtomicCounter[idx.idx].start;
+          ret[dst].byteSize = rs.AtomicCounter[idx.idx].size;
+
+          if(ret[dst].byteSize == 0)
+            ret[dst].byteSize = m_pDriver->m_Buffers[id].size;
+        }
+      }
+      else if(idx.type == GLDescriptorMapping::ShaderStorage)
+      {
+        ret[dst].type = DescriptorType::ReadWriteBuffer;
+        if(rs.ShaderStorage[idx.idx].res.name != 0)
+        {
+          ResourceId id = rm->GetResID(rs.ShaderStorage[idx.idx].res);
+          ret[dst].resource = id;
+          ret[dst].byteOffset = rs.ShaderStorage[idx.idx].start;
+          ret[dst].byteSize = rs.ShaderStorage[idx.idx].size;
+
+          if(ret[dst].byteSize == 0)
+            ret[dst].byteSize = m_pDriver->m_Buffers[id].size;
+        }
+      }
+      else if(idx.type == GLDescriptorMapping::Images)
+      {
+        ret[dst].type = DescriptorType::ReadWriteImage;
+        if(rs.Images[idx.idx].res.name != 0)
+        {
+          ResourceId id = rm->GetResID(rs.Images[idx.idx].res);
+          ret[dst].resource = id;
+          ret[dst].firstMip = rs.Images[idx.idx].level & 0xff;
+          ret[dst].numMips = 1;
+          ret[dst].firstSlice = rs.Images[idx.idx].layer & 0xffff;
+          if(rs.Images[idx.idx].access == eGL_READ_ONLY)
+          {
+            ret[dst].flags = DescriptorFlags::ReadOnlyAccess;
+          }
+          else if(rs.Images[idx.idx].access == eGL_WRITE_ONLY)
+          {
+            ret[dst].flags = DescriptorFlags::WriteOnlyAccess;
+          }
+          ret[dst].format = MakeResourceFormat(eGL_TEXTURE_2D, rs.Images[idx.idx].format);
+
+          CacheTexture(id);
+
+          ret[dst].textureType = m_CachedTextures[id].type;
+          if(ret[dst].textureType == TextureType::Texture3D)
+            ret[dst].numSlices = rs.Images[idx.idx].layered
+                                     ? (m_CachedTextures[id].depth >> ret[dst].firstMip) & 0xffff
+                                     : 1;
+          else
+            ret[dst].numSlices =
+                rs.Images[idx.idx].layered ? m_CachedTextures[id].arraysize & 0xffff : 1;
+
+          if(ret[dst].textureType == TextureType::Buffer)
+            ret[dst].type = DescriptorType::ReadWriteTypedBuffer;
+        }
+      }
+      else
+      {
+        ret[dst].type = DescriptorType::ImageSampler;
+        if(idx.type == GLDescriptorMapping::TexBuffer)
+          ret[dst].type = DescriptorType::TypedBuffer;
+
+        drv.glActiveTexture(GLenum(eGL_TEXTURE0 + idx.idx));
+
+        GLuint tex = 0;
+        GLenum target = eGL_NONE;
+
+        if(idx.type == GLDescriptorMapping::TexCubeArray && !HasExt[ARB_texture_cube_map_array])
+        {
+          tex = 0;
+          target = eGL_TEXTURE_CUBE_MAP_ARRAY;
+        }
+        else
+        {
+          switch(idx.type)
+          {
+            case GLDescriptorMapping::Tex1D:
+              target = eGL_TEXTURE_1D;
+              ret[dst].textureType = TextureType::Texture1D;
+
+              if(IsGLES)
+                continue;
+              break;
+            case GLDescriptorMapping::Tex2D:
+              target = eGL_TEXTURE_2D;
+              ret[dst].textureType = TextureType::Texture2D;
+              break;
+            case GLDescriptorMapping::Tex3D:
+              target = eGL_TEXTURE_3D;
+              ret[dst].textureType = TextureType::Texture3D;
+              break;
+            case GLDescriptorMapping::Tex1DArray:
+              target = eGL_TEXTURE_1D_ARRAY;
+              ret[dst].textureType = TextureType::Texture1DArray;
+
+              if(IsGLES)
+                continue;
+              break;
+            case GLDescriptorMapping::Tex2DArray:
+              target = eGL_TEXTURE_2D_ARRAY;
+              ret[dst].textureType = TextureType::Texture2DArray;
+              break;
+            case GLDescriptorMapping::TexCubeArray:
+              target = eGL_TEXTURE_CUBE_MAP_ARRAY;
+              ret[dst].textureType = TextureType::TextureCubeArray;
+
+              if(!HasExt[ARB_texture_cube_map_array])
+                continue;
+              break;
+            case GLDescriptorMapping::TexRect:
+              target = eGL_TEXTURE_RECTANGLE;
+              ret[dst].textureType = TextureType::TextureRect;
+
+              if(IsGLES)
+                continue;
+              break;
+            case GLDescriptorMapping::TexBuffer:
+              target = eGL_TEXTURE_BUFFER;
+              ret[dst].textureType = TextureType::Buffer;
+
+              if(!HasExt[ARB_texture_buffer_object])
+                continue;
+              break;
+            case GLDescriptorMapping::TexCube:
+              target = eGL_TEXTURE_CUBE_MAP;
+              ret[dst].textureType = TextureType::TextureCube;
+              break;
+            case GLDescriptorMapping::Tex2DMS:
+              target = eGL_TEXTURE_2D_MULTISAMPLE;
+              ret[dst].textureType = TextureType::Texture2DMS;
+
+              if(!HasExt[ARB_texture_multisample_no_array] && !HasExt[ARB_texture_multisample])
+                continue;
+              break;
+            case GLDescriptorMapping::Tex2DMSArray:
+              target = eGL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+              ret[dst].textureType = TextureType::Texture2DMSArray;
+
+              if(!HasExt[ARB_texture_multisample])
+                continue;
+              break;
+            case GLDescriptorMapping::AtomicCounter:
+            case GLDescriptorMapping::ShaderStorage:
+            case GLDescriptorMapping::BareUniforms:
+            case GLDescriptorMapping::UniformBinding:
+            case GLDescriptorMapping::Images:
+            case GLDescriptorMapping::Invalid:
+            case GLDescriptorMapping::Count: target = eGL_NONE; break;
+          }
+        }
+
+        if(target == eGL_NONE)
+          continue;
+
+        GLenum binding = TextureBinding(target);
+
+        drv.glGetIntegerv(binding, (GLint *)&tex);
+
+        if(tex == 0)
+          continue;
+
+        GLint firstMip = 0, numMips = 1;
+
+        if(target != eGL_TEXTURE_BUFFER)
+        {
+          drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_BASE_LEVEL, &firstMip);
+          drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_MAX_LEVEL, &numMips);
+
+          numMips = numMips - firstMip + 1;
+        }
+
+        ResourceId id = rm->GetResID(TextureRes(ctx, tex));
+        ret[dst].resource = id;
+        ret[dst].firstMip = firstMip & 0xff;
+        ret[dst].numMips = numMips & 0xff;
+
+        GLenum levelQueryType =
+            target == eGL_TEXTURE_CUBE_MAP ? eGL_TEXTURE_CUBE_MAP_POSITIVE_X : target;
+        GLenum fmt = eGL_NONE;
+        drv.glGetTexLevelParameteriv(levelQueryType, 0, eGL_TEXTURE_INTERNAL_FORMAT, (GLint *)&fmt);
+        ret[dst].format = MakeResourceFormat(target, fmt);
+        if(IsDepthStencilFormat(fmt))
+        {
+          GLint depthMode = eGL_DEPTH_COMPONENT;
+
+          if(HasExt[ARB_stencil_texturing])
+            drv.glGetTextureParameterivEXT(tex, target, eGL_DEPTH_STENCIL_TEXTURE_MODE, &depthMode);
+
+          ret[dst].format = ResourceFormat();
+          ret[dst].format.type = ResourceFormatType::Regular;
+          ret[dst].format.compByteWidth = 1;
+          ret[dst].format.compCount = 1;
+          if(depthMode == eGL_DEPTH_COMPONENT)
+            ret[dst].format.compType = CompType::Depth;
+          else if(depthMode == eGL_STENCIL_INDEX)
+            ret[dst].format.compType = CompType::UInt;
+        }
+
+        GLenum swizzles[4] = {eGL_RED, eGL_GREEN, eGL_BLUE, eGL_ALPHA};
+        if(target != eGL_TEXTURE_BUFFER &&
+           (HasExt[ARB_texture_swizzle] || HasExt[EXT_texture_swizzle]))
+          GetTextureSwizzle(tex, target, swizzles);
+
+        ret[dst].swizzle.red = MakeSwizzle(swizzles[0]);
+        ret[dst].swizzle.green = MakeSwizzle(swizzles[1]);
+        ret[dst].swizzle.blue = MakeSwizzle(swizzles[2]);
+        ret[dst].swizzle.alpha = MakeSwizzle(swizzles[3]);
+
+        GLuint samp = 0;
+        if(HasExt[ARB_sampler_objects])
+          drv.glGetIntegerv(eGL_SAMPLER_BINDING, (GLint *)&samp);
+
+        ret[dst].secondary = rm->GetResID(SamplerRes(ctx, samp));
+      }
+    }
+  }
+
+  return ret;
+}
+
+rdcarray<SamplerDescriptor> GLReplay::GetSamplerDescriptors(ResourceId descriptorStore,
+                                                            const rdcarray<DescriptorRange> &ranges)
+{
+  rdcarray<SamplerDescriptor> ret;
+
+  if(descriptorStore != m_pDriver->m_DescriptorsID)
+  {
+    RDCERR("Descriptors query for invalid descriptor store on fixed bindings API (OpenGL)");
+    return ret;
+  }
+
+  MakeCurrentReplayContext(&m_ReplayCtx);
+  WrappedOpenGL &drv = *m_pDriver;
+  GLResourceManager *rm = m_pDriver->GetResourceManager();
+
+  ContextPair &ctx = drv.GetCtx();
+
+  size_t count = 0;
+  for(const DescriptorRange &r : ranges)
+    count += r.count;
+  ret.resize(count);
+
+  size_t dst = 0;
+  for(const DescriptorRange &r : ranges)
+  {
+    uint32_t descriptorId = r.offset;
+
+    for(uint32_t i = 0; i < r.count; i++, dst++, descriptorId++)
+    {
+      GLDescriptorLocation idx = DecodeGLDescriptorIndex(descriptorId);
+
+      if(idx.type == GLDescriptorMapping::Invalid || idx.type == GLDescriptorMapping::Images ||
+         idx.type == GLDescriptorMapping::AtomicCounter ||
+         idx.type == GLDescriptorMapping::ShaderStorage ||
+         idx.type == GLDescriptorMapping::UniformBinding)
+        continue;
+
+      drv.glActiveTexture(GLenum(eGL_TEXTURE0 + idx.idx));
+
+      GLuint tex = 0;
+      GLenum target = eGL_NONE;
+
+      if(idx.type == GLDescriptorMapping::TexCubeArray && !HasExt[ARB_texture_cube_map_array])
+      {
+        tex = 0;
+        target = eGL_TEXTURE_CUBE_MAP_ARRAY;
+      }
+      else
+      {
+        switch(idx.type)
+        {
+          case GLDescriptorMapping::Tex1D:
+            target = eGL_TEXTURE_1D;
+
+            if(IsGLES)
+              continue;
+            break;
+          case GLDescriptorMapping::Tex2D: target = eGL_TEXTURE_2D; break;
+          case GLDescriptorMapping::Tex3D: target = eGL_TEXTURE_3D; break;
+          case GLDescriptorMapping::Tex1DArray:
+            target = eGL_TEXTURE_1D_ARRAY;
+
+            if(IsGLES)
+              continue;
+            break;
+          case GLDescriptorMapping::Tex2DArray: target = eGL_TEXTURE_2D_ARRAY; break;
+          case GLDescriptorMapping::TexCubeArray:
+            target = eGL_TEXTURE_CUBE_MAP_ARRAY;
+
+            if(!HasExt[ARB_texture_cube_map_array])
+              continue;
+            break;
+          case GLDescriptorMapping::TexRect:
+            target = eGL_TEXTURE_RECTANGLE;
+
+            if(IsGLES)
+              continue;
+            break;
+          case GLDescriptorMapping::TexBuffer:
+            target = eGL_TEXTURE_BUFFER;
+
+            if(!HasExt[ARB_texture_buffer_object])
+              continue;
+            break;
+          case GLDescriptorMapping::TexCube: target = eGL_TEXTURE_CUBE_MAP; break;
+          case GLDescriptorMapping::Tex2DMS:
+            target = eGL_TEXTURE_2D_MULTISAMPLE;
+
+            if(!HasExt[ARB_texture_multisample_no_array] && !HasExt[ARB_texture_multisample])
+              continue;
+            break;
+          case GLDescriptorMapping::Tex2DMSArray:
+            target = eGL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+
+            if(!HasExt[ARB_texture_multisample])
+              continue;
+            break;
+          case GLDescriptorMapping::AtomicCounter:
+          case GLDescriptorMapping::ShaderStorage:
+          case GLDescriptorMapping::BareUniforms:
+          case GLDescriptorMapping::UniformBinding:
+          case GLDescriptorMapping::Images:
+          case GLDescriptorMapping::Invalid:
+          case GLDescriptorMapping::Count: target = eGL_NONE; break;
+        }
+      }
+
+      if(target == eGL_NONE)
+        continue;
+
+      GLenum binding = TextureBinding(target);
+
+      GLuint samp = 0;
+      if(HasExt[ARB_sampler_objects])
+        drv.glGetIntegerv(eGL_SAMPLER_BINDING, (GLint *)&samp);
+
+      drv.glGetIntegerv(binding, (GLint *)&tex);
+
+      if(samp == 0 && tex == 0)
+        continue;
+
+      ret[dst].object = rm->GetResID(SamplerRes(ctx, samp));
+
+      // GL has separate sampler objects but they don't exist as separate sampler descriptors
+      ret[dst].type = DescriptorType::ImageSampler;
+
+      if(target != eGL_TEXTURE_2D_MULTISAMPLE && target != eGL_TEXTURE_2D_MULTISAMPLE_ARRAY &&
+         target != eGL_TEXTURE_BUFFER)
+      {
+        if(samp != 0)
+          drv.glGetSamplerParameterfv(samp, eGL_TEXTURE_BORDER_COLOR,
+                                      ret[dst].borderColorValue.floatValue.data());
+        else
+          drv.glGetTextureParameterfvEXT(tex, target, eGL_TEXTURE_BORDER_COLOR,
+                                         ret[dst].borderColorValue.floatValue.data());
+
+        ret[dst].borderColorType = CompType::Float;
+
+        GLint v;
+        v = 0;
+        if(samp != 0)
+          drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_WRAP_S, &v);
+        else
+          drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_WRAP_S, &v);
+        ret[dst].addressU = MakeAddressMode((GLenum)v);
+
+        v = 0;
+        if(samp != 0)
+          drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_WRAP_T, &v);
+        else
+          drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_WRAP_T, &v);
+        ret[dst].addressV = MakeAddressMode((GLenum)v);
+
+        v = 0;
+        if(samp != 0)
+          drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_WRAP_R, &v);
+        else
+          drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_WRAP_R, &v);
+        ret[dst].addressW = MakeAddressMode((GLenum)v);
+
+        // GLES 3 is always seamless
+        if(IsGLES && GLCoreVersion > 30)
+        {
+          ret[dst].seamlessCubemaps = true;
+        }
+        else if(!IsGLES)
+        {
+          // on GLES 2 this is always going to be false, GL has a toggle
+          ret[dst].seamlessCubemaps = drv.glIsEnabled(eGL_TEXTURE_CUBE_MAP_SEAMLESS) != GL_FALSE;
+        }
+
+        v = 0;
+        if(samp != 0)
+          drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_COMPARE_FUNC, &v);
+        else
+          drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_COMPARE_FUNC, &v);
+        ret[dst].compareFunction = MakeCompareFunc((GLenum)v);
+
+        GLint minf = 0;
+        GLint magf = 0;
+        if(samp != 0)
+          drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_MIN_FILTER, &minf);
+        else
+          drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_MIN_FILTER, &minf);
+
+        if(samp != 0)
+          drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_MAG_FILTER, &magf);
+        else
+          drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_MAG_FILTER, &magf);
+
+        if(HasExt[ARB_texture_filter_anisotropic])
+        {
+          if(samp != 0)
+            drv.glGetSamplerParameterfv(samp, eGL_TEXTURE_MAX_ANISOTROPY, &ret[dst].maxAnisotropy);
+          else
+            drv.glGetTextureParameterfvEXT(tex, target, eGL_TEXTURE_MAX_ANISOTROPY,
+                                           &ret[dst].maxAnisotropy);
+        }
+        else
+        {
+          ret[dst].maxAnisotropy = 0.0f;
+        }
+
+        ret[dst].filter = MakeFilter((GLenum)minf, (GLenum)magf, ret[dst].maxAnisotropy);
+
+        v = 0;
+        if(samp != 0)
+          drv.glGetSamplerParameteriv(samp, eGL_TEXTURE_COMPARE_MODE, &v);
+        else
+          drv.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_COMPARE_MODE, &v);
+        ret[dst].filter.filter = (GLenum)v == eGL_COMPARE_REF_TO_TEXTURE ? FilterFunction::Comparison
+                                                                         : FilterFunction::Normal;
+
+        if(samp != 0)
+          drv.glGetSamplerParameterfv(samp, eGL_TEXTURE_MAX_LOD, &ret[dst].maxLOD);
+        else
+          drv.glGetTextureParameterfvEXT(tex, target, eGL_TEXTURE_MAX_LOD, &ret[dst].maxLOD);
+
+        if(samp != 0)
+          drv.glGetSamplerParameterfv(samp, eGL_TEXTURE_MIN_LOD, &ret[dst].minLOD);
+        else
+          drv.glGetTextureParameterfvEXT(tex, target, eGL_TEXTURE_MIN_LOD, &ret[dst].minLOD);
+
+        if(!IsGLES)
+        {
+          if(samp != 0)
+            drv.glGetSamplerParameterfv(samp, eGL_TEXTURE_LOD_BIAS, &ret[dst].mipBias);
+          else
+            drv.glGetTextureParameterfvEXT(tex, target, eGL_TEXTURE_LOD_BIAS, &ret[dst].mipBias);
+        }
+      }
+    }
+  }
+
+  return ret;
+}
+
+rdcarray<DescriptorAccess> GLReplay::GetDescriptorAccess(uint32_t eventId)
+{
+  return m_Access;
+}
+
+rdcarray<DescriptorLogicalLocation> GLReplay::GetDescriptorLocations(
+    ResourceId descriptorStore, const rdcarray<DescriptorRange> &ranges)
+{
+  rdcarray<DescriptorLogicalLocation> ret;
+
+  if(descriptorStore != m_pDriver->m_DescriptorsID)
+  {
+    RDCERR("Descriptors query for invalid descriptor store on fixed bindings API (OpenGL)");
+    return ret;
+  }
+
+  size_t count = 0;
+  for(const DescriptorRange &r : ranges)
+    count += r.count;
+  ret.resize(count);
+
+  size_t dst = 0;
+  for(const DescriptorRange &r : ranges)
+  {
+    uint32_t descriptorByteOffset = r.offset;
+
+    for(uint32_t i = 0; i < r.count; i++, dst++, descriptorByteOffset++)
+    {
+      DescriptorLogicalLocation &dstLoc = ret[dst];
+      GLDescriptorLocation srcLoc = DecodeGLDescriptorIndex(descriptorByteOffset);
+
+      const char *prefix = "Unknown";
+      dstLoc.stageMask = ShaderStageMask::All;
+      switch(srcLoc.type)
+      {
+        case GLDescriptorMapping::BareUniforms:
+          prefix = "Uniforms";
+          dstLoc.category = DescriptorCategory::ConstantBlock;
+          break;
+        case GLDescriptorMapping::UniformBinding:
+          prefix = "UBO";
+          dstLoc.category = DescriptorCategory::ConstantBlock;
+          break;
+        case GLDescriptorMapping::Tex1D:
+          prefix = "Tex1D";
+          dstLoc.category = DescriptorCategory::ReadOnlyResource;
+          break;
+        case GLDescriptorMapping::Tex2D:
+          prefix = "Tex2D";
+          dstLoc.category = DescriptorCategory::ReadOnlyResource;
+          break;
+        case GLDescriptorMapping::Tex3D:
+          prefix = "Tex3D";
+          dstLoc.category = DescriptorCategory::ReadOnlyResource;
+          break;
+        case GLDescriptorMapping::Tex1DArray:
+          prefix = "Tex1DArray";
+          dstLoc.category = DescriptorCategory::ReadOnlyResource;
+          break;
+        case GLDescriptorMapping::Tex2DArray:
+          prefix = "Tex2DArray";
+          dstLoc.category = DescriptorCategory::ReadOnlyResource;
+          break;
+        case GLDescriptorMapping::TexCubeArray:
+          prefix = "TexCubeArray";
+          dstLoc.category = DescriptorCategory::ReadOnlyResource;
+          break;
+        case GLDescriptorMapping::TexRect:
+          prefix = "TexRect";
+          dstLoc.category = DescriptorCategory::ReadOnlyResource;
+          break;
+        case GLDescriptorMapping::TexBuffer:
+          prefix = "TexBuffer";
+          dstLoc.category = DescriptorCategory::ReadOnlyResource;
+          break;
+        case GLDescriptorMapping::TexCube:
+          prefix = "TexCube";
+          dstLoc.category = DescriptorCategory::ReadOnlyResource;
+          break;
+        case GLDescriptorMapping::Tex2DMS:
+          prefix = "Tex2DMS";
+          dstLoc.category = DescriptorCategory::ReadOnlyResource;
+          break;
+        case GLDescriptorMapping::Tex2DMSArray:
+          prefix = "Tex2DMSArray";
+          dstLoc.category = DescriptorCategory::ReadOnlyResource;
+          break;
+        case GLDescriptorMapping::Images:
+          prefix = "Image";
+          dstLoc.category = DescriptorCategory::ReadWriteResource;
+          break;
+        case GLDescriptorMapping::AtomicCounter:
+          prefix = "Atomic";
+          dstLoc.category = DescriptorCategory::ReadWriteResource;
+          break;
+        case GLDescriptorMapping::ShaderStorage:
+          prefix = "SSBO";
+          dstLoc.category = DescriptorCategory::ReadWriteResource;
+          break;
+        case GLDescriptorMapping::Count:
+        case GLDescriptorMapping::Invalid: dstLoc.category = DescriptorCategory::Unknown; break;
+      }
+      dstLoc.fixedBindNumber = srcLoc.idx;
+
+      if(srcLoc.type == GLDescriptorMapping::BareUniforms)
+        dstLoc.logicalBindName =
+            StringFormat::Fmt("%s %s", prefix, ToStr(ShaderStage(srcLoc.idx)).c_str());
+      else
+        dstLoc.logicalBindName = StringFormat::Fmt("%s %u", prefix, srcLoc.idx);
+    }
+  }
+
+  return ret;
+}
+
 void GLReplay::OpenGLFillCBufferVariables(ResourceId shader, GLuint prog, bool bufferBacked,
                                           rdcstr prefix, const rdcarray<ShaderConstant> &variables,
                                           rdcarray<ShaderVariable> &outvars,
@@ -2086,7 +2616,7 @@ void GLReplay::OpenGLFillCBufferVariables(ResourceId shader, GLuint prog, bool b
 
   for(int32_t i = 0; i < variables.count(); i++)
   {
-    const ShaderConstantDescriptor &desc = variables[i].type.descriptor;
+    const ShaderConstantType &desc = variables[i].type;
 
     // remove implicit '.' for recursing through "structs" if it's actually a multi-dimensional
     // array.
@@ -2097,18 +2627,18 @@ void GLReplay::OpenGLFillCBufferVariables(ResourceId shader, GLuint prog, bool b
     var.name = variables[i].name;
     var.rows = desc.rows;
     var.columns = desc.columns;
-    var.type = desc.type;
-    var.rowMajor = desc.rowMajorStorage;
+    var.type = desc.baseType;
+    var.flags = desc.flags;
 
     const uint32_t matStride = desc.matrixByteStride;
 
     if(!variables[i].type.members.empty())
     {
-      if(desc.elements == 0)
+      if(desc.elements <= 1)
       {
         OpenGLFillCBufferVariables(shader, prog, bufferBacked, prefix + var.name.c_str() + ".",
                                    variables[i].type.members, var.members, data);
-        var.isStruct = true;
+        var.type = VarType::Struct;
       }
       else
       {
@@ -2119,14 +2649,12 @@ void GLReplay::OpenGLFillCBufferVariables(ResourceId shader, GLuint prog, bool b
           arrEl.rows = var.rows;
           arrEl.columns = var.columns;
           arrEl.name = StringFormat::Fmt("%s[%u]", var.name.c_str(), a);
-          arrEl.type = var.type;
-          arrEl.isStruct = true;
-          arrEl.rowMajor = var.rowMajor;
+          arrEl.type = VarType::Struct;
+          arrEl.flags = var.flags;
 
           OpenGLFillCBufferVariables(shader, prog, bufferBacked, prefix + arrEl.name.c_str() + ".",
                                      variables[i].type.members, arrEl.members, data);
         }
-        var.isStruct = false;
         var.rows = var.columns = 0;
       }
     }
@@ -2140,6 +2668,16 @@ void GLReplay::OpenGLFillCBufferVariables(ResourceId shader, GLuint prog, bool b
 
       GLuint idx = GL.glGetProgramResourceIndex(prog, eGL_UNIFORM, fullname.c_str());
 
+      // if this is an array of size 1 try looking for <array_variable_name>[0].<member_name>
+      if((idx == GL_INVALID_INDEX) && (desc.elements == 1))
+      {
+        rdcstr arrayZeroName = prefix;
+        if(!arrayZeroName.empty() && arrayZeroName.back() == '.')
+          arrayZeroName.pop_back();
+        arrayZeroName += "[0]." + var.name;
+
+        idx = GL.glGetProgramResourceIndex(prog, eGL_UNIFORM, arrayZeroName.c_str());
+      }
       if(idx == GL_INVALID_INDEX)
       {
         // this might not be an error, this might be the corresponding member in an array-of-structs
@@ -2156,7 +2694,7 @@ void GLReplay::OpenGLFillCBufferVariables(ResourceId shader, GLuint prog, bool b
           RDCERR("Uniform is buffer backed - index expected");
 
         // if this is an array, generate empty members
-        if(desc.elements > 0)
+        if(desc.elements > 1)
         {
           rdcarray<ShaderVariable> elems;
           for(uint32_t a = 0; a < desc.elements; a++)
@@ -2169,13 +2707,10 @@ void GLReplay::OpenGLFillCBufferVariables(ResourceId shader, GLuint prog, bool b
             else
               el.name = StringFormat::Fmt("[%u]", a);
 
-            el.isStruct = false;
-
             elems.push_back(el);
           }
 
           var.members = elems;
-          var.isStruct = false;
           var.rows = var.columns = 0;
         }
       }
@@ -2193,7 +2728,7 @@ void GLReplay::OpenGLFillCBufferVariables(ResourceId shader, GLuint prog, bool b
         if(!bufferBacked)
           offset = 0;
 
-        if(desc.elements == 0)
+        if(desc.elements <= 1)
         {
           if(!bufferBacked)
           {
@@ -2212,6 +2747,8 @@ void GLReplay::OpenGLFillCBufferVariables(ResourceId shader, GLuint prog, bool b
               case VarType::SByte:
               case VarType::UByte:
               case VarType::Half:
+              case VarType::Struct:
+              case VarType::Enum:
                 RDCERR("Unexpected base variable type %s, treating as float",
                        ToStr(var.type).c_str());
                 DELIBERATE_FALLTHROUGH();
@@ -2263,6 +2800,8 @@ void GLReplay::OpenGLFillCBufferVariables(ResourceId shader, GLuint prog, bool b
                 case VarType::SByte:
                 case VarType::UByte:
                 case VarType::Half:
+                case VarType::Struct:
+                case VarType::Enum:
                   RDCERR("Unexpected base variable type %s, treating as float",
                          ToStr(var.type).c_str());
                   DELIBERATE_FALLTHROUGH();
@@ -2287,13 +2826,10 @@ void GLReplay::OpenGLFillCBufferVariables(ResourceId shader, GLuint prog, bool b
             if(bufferBacked)
               offset += desc.arrayByteStride;
 
-            el.isStruct = false;
-
             elems.push_back(el);
           }
 
           var.members = elems;
-          var.isStruct = false;
           var.rows = var.columns = 0;
         }
       }
@@ -2303,17 +2839,17 @@ void GLReplay::OpenGLFillCBufferVariables(ResourceId shader, GLuint prog, bool b
   }
 }
 
-void GLReplay::FillCBufferVariables(ResourceId pipeline, ResourceId shader, rdcstr entryPoint,
-                                    uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
-                                    const bytebuf &data)
+void GLReplay::FillCBufferVariables(ResourceId pipeline, ResourceId shader, ShaderStage stage,
+                                    rdcstr entryPoint, uint32_t cbufSlot,
+                                    rdcarray<ShaderVariable> &outvars, const bytebuf &data)
 {
   WrappedOpenGL &drv = *m_pDriver;
 
   MakeCurrentReplayContext(&m_ReplayCtx);
 
-  auto &shaderDetails = m_pDriver->m_Shaders[shader];
+  const WrappedOpenGL::ShaderData &shaderDetails = m_pDriver->GetShader(shader);
 
-  if((int32_t)cbufSlot >= shaderDetails.reflection->constantBlocks.count())
+  if((int32_t)cbufSlot >= shaderDetails.GetReflection()->constantBlocks.count())
   {
     RDCERR("Requesting invalid constant block");
     return;
@@ -2335,26 +2871,25 @@ void GLReplay::FillCBufferVariables(ResourceId pipeline, ResourceId shader, rdcs
     {
       ResourceId id =
           m_pDriver->GetResourceManager()->GetResID(ProgramPipeRes(m_pDriver->GetCtx(), curProg));
-      auto &pipeDetails = m_pDriver->m_Pipelines[id];
+      const WrappedOpenGL::PipelineData &pipeDetails = m_pDriver->GetPipeline(id);
 
       size_t s = ShaderIdx(shaderDetails.type);
 
-      curProg =
-          m_pDriver->GetResourceManager()->GetCurrentResource(pipeDetails.stagePrograms[s]).name;
+      curProg = m_pDriver->GetResourceManager()->GetResource(pipeDetails.stagePrograms[s]).name;
     }
   }
 
-  const ConstantBlock &cblock = shaderDetails.reflection->constantBlocks[cbufSlot];
+  const ConstantBlock &cblock = shaderDetails.GetReflection()->constantBlocks[cbufSlot];
 
   if(shaderDetails.spirvWords.empty())
   {
-    OpenGLFillCBufferVariables(shaderDetails.reflection->resourceId, curProg,
+    OpenGLFillCBufferVariables(shaderDetails.GetReflection()->resourceId, curProg,
                                cblock.bufferBacked ? true : false, "", cblock.variables, outvars,
                                data);
   }
   else
   {
-    if(shaderDetails.mapping.constantBlocks[cbufSlot].bindset == SpecializationConstantBindSet)
+    if(cblock.compileConstants)
     {
       rdcarray<SpecConstant> specconsts;
 
@@ -2367,18 +2902,18 @@ void GLReplay::FillCBufferVariables(ResourceId pipeline, ResourceId shader, rdcs
         specconsts.push_back(spec);
       }
 
-      FillSpecConstantVariables(shaderDetails.reflection->resourceId, cblock.variables, outvars,
-                                specconsts);
+      FillSpecConstantVariables(shaderDetails.GetReflection()->resourceId, shaderDetails.patchData,
+                                cblock.variables, outvars, specconsts);
     }
     else if(!cblock.bufferBacked)
     {
-      OpenGLFillCBufferVariables(shaderDetails.reflection->resourceId, curProg, false, "",
+      OpenGLFillCBufferVariables(shaderDetails.GetReflection()->resourceId, curProg, false, "",
                                  cblock.variables, outvars, data);
     }
     else
     {
-      StandardFillCBufferVariables(shaderDetails.reflection->resourceId, cblock.variables, outvars,
-                                   data);
+      StandardFillCBufferVariables(shaderDetails.GetReflection()->resourceId, cblock.variables,
+                                   outvars, data);
     }
   }
 }
@@ -2469,7 +3004,7 @@ void GLReplay::GetTextureData(ResourceId tex, const Subresource &sub,
     else if(params.remap == RemapTexture::RGBA32)
       remapFormat = eGL_RGBA32F;
 
-    CompType typeCast = BaseRemapType(params.typeCast);
+    CompType typeCast = BaseRemapType(params);
     if(typeCast == CompType::Typeless && IsSRGBFormat(intFormat))
       typeCast = CompType::UNormSRGB;
 
@@ -2578,7 +3113,7 @@ void GLReplay::GetTextureData(ResourceId tex, const Subresource &sub,
       }
 
       // do one more time for the stencil
-      if(baseFormat == eGL_DEPTH_STENCIL)
+      if(baseFormat == eGL_DEPTH_STENCIL || baseFormat == eGL_STENCIL_INDEX)
       {
         TextureDisplay texDisplay;
 
@@ -2606,6 +3141,8 @@ void GLReplay::GetTextureData(ResourceId tex, const Subresource &sub,
         GLboolean color_mask[4];
         drv.glGetBooleanv(eGL_COLOR_WRITEMASK, color_mask);
         drv.glColorMask(GL_FALSE, GL_TRUE, GL_FALSE, GL_FALSE);
+        if(baseFormat == eGL_STENCIL_INDEX)
+          drv.glColorMask(GL_TRUE, GL_TRUE, GL_FALSE, GL_FALSE);
 
         flags = TexDisplayFlags(
             flags & ~(eTexDisplay_RemapFloat | eTexDisplay_RemapUInt | eTexDisplay_RemapSInt));
@@ -2732,7 +3269,8 @@ void GLReplay::GetTextureData(ResourceId tex, const Subresource &sub,
     m_pDriver->CopyTex2DMSToArray(tempTex, texname, width, height, arraysize, samples, intFormat);
 
     // CopyTex2DMSToArray is unwrapped, so register the resource here now
-    m_pDriver->GetResourceManager()->RegisterResource(TextureRes(m_pDriver->GetCtx(), tempTex));
+    m_pDriver->GetResourceManager()->RegisterResource(ResourceId(),
+                                                      TextureRes(m_pDriver->GetCtx(), tempTex));
 
     // rewrite the variables to temporary texture
     texType = eGL_TEXTURE_2D_ARRAY;
@@ -2993,7 +3531,7 @@ void GLReplay::GetTextureData(ResourceId tex, const Subresource &sub,
           dst = data.data() + d * sliceSize;
           src = dst + (height - 1) * rowSize;
 
-          for(GLsizei i = 0; i<height>> 1; i++)
+          for(GLsizei i = 0; i < height >> 1; i++)
           {
             memcpy(row, src, rowSize);
             memcpy(src, dst, rowSize);
@@ -3025,16 +3563,26 @@ void GLReplay::BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &s
                                  const rdcstr &entry, const ShaderCompileFlags &compileFlags,
                                  ShaderStage type, ResourceId &id, rdcstr &errors)
 {
+  if(sourceEncoding == ShaderEncoding::GLSL)
+  {
+    rdcstr sourceText = InsertSnippetAfterVersion(ShaderType::GLSL, (const char *)source.data(),
+                                                  source.count(), GLSL_CUSTOM_PREFIX);
+
+    bytebuf patchedSource;
+    patchedSource.assign((byte *)sourceText.begin(), sourceText.size());
+
+    return BuildTargetShader(sourceEncoding, patchedSource, entry, compileFlags, type, id, errors);
+  }
+
   BuildTargetShader(sourceEncoding, source, entry, compileFlags, type, id, errors);
 }
 
-ResourceId GLReplay::ApplyCustomShader(ResourceId shader, ResourceId texid, const Subresource &sub,
-                                       CompType typeCast)
+ResourceId GLReplay::ApplyCustomShader(TextureDisplay &display)
 {
-  if(shader == ResourceId() || texid == ResourceId())
+  if(display.customShaderId == ResourceId() || display.resourceId == ResourceId())
     return ResourceId();
 
-  auto &texDetails = m_pDriver->m_Textures[texid];
+  WrappedOpenGL::TextureData &texDetails = m_pDriver->m_Textures[display.resourceId];
 
   MakeCurrentReplayContext(m_DebugCtx);
 
@@ -3042,10 +3590,10 @@ ResourceId GLReplay::ApplyCustomShader(ResourceId shader, ResourceId texid, cons
 
   m_pDriver->glBindFramebuffer(eGL_FRAMEBUFFER, DebugData.customFBO);
   m_pDriver->glFramebufferTexture2D(eGL_FRAMEBUFFER, eGL_COLOR_ATTACHMENT0, eGL_TEXTURE_2D,
-                                    DebugData.customTex, sub.mip);
+                                    DebugData.customTex, display.subresource.mip);
 
-  m_pDriver->glViewport(0, 0, RDCMAX(1, texDetails.width >> sub.mip),
-                        RDCMAX(1, texDetails.height >> sub.mip));
+  m_pDriver->glViewport(0, 0, RDCMAX(1, texDetails.width >> display.subresource.mip),
+                        RDCMAX(1, texDetails.height >> display.subresource.mip));
 
   DebugData.outWidth = float(RDCMAX(1, texDetails.width));
   DebugData.outHeight = float(RDCMAX(1, texDetails.height));
@@ -3058,15 +3606,15 @@ ResourceId GLReplay::ApplyCustomShader(ResourceId shader, ResourceId texid, cons
   disp.flipY = false;
   disp.xOffset = 0.0f;
   disp.yOffset = 0.0f;
-  disp.customShaderId = shader;
-  disp.resourceId = texid;
-  disp.typeCast = typeCast;
+  disp.customShaderId = display.customShaderId;
+  disp.resourceId = display.resourceId;
+  disp.typeCast = display.typeCast;
   disp.hdrMultiplier = -1.0f;
   disp.linearDisplayAsGamma = false;
-  disp.subresource = sub;
+  disp.subresource = display.subresource;
   disp.overlay = DebugOverlay::NoOverlay;
-  disp.rangeMin = 0.0f;
-  disp.rangeMax = 1.0f;
+  disp.rangeMin = display.rangeMin;
+  disp.rangeMax = display.rangeMax;
   disp.rawOutput = false;
   disp.scale = 1.0f;
 
@@ -3123,7 +3671,7 @@ void GLReplay::FreeCustomShader(ResourceId id)
   if(id == ResourceId())
     return;
 
-  m_pDriver->glDeleteShader(m_pDriver->GetResourceManager()->GetCurrentResource(id).name);
+  m_pDriver->glDeleteShader(m_pDriver->GetResourceManager()->GetResource(id).name);
 }
 
 void GLReplay::BuildTargetShader(ShaderEncoding sourceEncoding, const bytebuf &source,
@@ -3194,6 +3742,16 @@ void GLReplay::FreeTargetResource(ResourceId id)
 {
   MakeCurrentReplayContext(&m_ReplayCtx);
   m_pDriver->FreeTargetResource(id);
+}
+
+void GLReplay::ClearReplayCache()
+{
+  ClearPostVSCache();
+}
+
+void GLReplay::ReloadShaderDebugInformation()
+{
+  // Nop : GL does not have seperate debug information
 }
 
 ResourceId GLReplay::CreateProxyTexture(const TextureDescription &templateTex)
@@ -3362,9 +3920,9 @@ void GLReplay::SetProxyTextureData(ResourceId texid, const Subresource &sub, byt
 {
   WrappedOpenGL &drv = *m_pDriver;
 
-  GLuint tex = m_pDriver->GetResourceManager()->GetCurrentResource(texid).name;
+  GLuint tex = m_pDriver->GetResourceManager()->GetResource(texid).name;
 
-  auto &texdetails = m_pDriver->m_Textures[texid];
+  WrappedOpenGL::TextureData &texdetails = m_pDriver->m_Textures[texid];
 
   if(texdetails.curType == eGL_NONE)
     return;
@@ -3712,54 +4270,22 @@ ResourceId GLReplay::CreateProxyBuffer(const BufferDescription &templateBuf)
 
 void GLReplay::SetProxyBufferData(ResourceId bufid, byte *data, size_t dataSize)
 {
-  GLuint buf = m_pDriver->GetResourceManager()->GetCurrentResource(bufid).name;
+  GLuint buf = m_pDriver->GetResourceManager()->GetResource(bufid).name;
 
   m_pDriver->glNamedBufferSubDataEXT(buf, 0, dataSize, data);
 }
 
 rdcarray<EventUsage> GLReplay::GetUsage(ResourceId id)
 {
+  if((m_pDriver->m_Textures.find(id) == m_pDriver->m_Textures.end() ||
+      m_pDriver->m_Textures[id].resource.Namespace == eResUnknown) &&
+     (m_pDriver->m_Buffers.find(id) == m_pDriver->m_Buffers.end() ||
+      m_pDriver->m_Buffers[id].resource.Namespace == eResUnknown))
+  {
+    return {EventUsage(0, ResourceUsage::Unused)};
+  }
+
   return m_pDriver->GetUsage(id);
-}
-
-rdcarray<PixelModification> GLReplay::PixelHistory(rdcarray<EventUsage> events, ResourceId target,
-                                                   uint32_t x, uint32_t y, const Subresource &sub,
-                                                   CompType typeCast)
-{
-  GLNOTIMP("GLReplay::PixelHistory");
-  return {};
-}
-
-ShaderDebugTrace *GLReplay::DebugVertex(uint32_t eventId, uint32_t vertid, uint32_t instid,
-                                        uint32_t idx, uint32_t view)
-{
-  GLNOTIMP("DebugVertex");
-  return new ShaderDebugTrace();
-}
-
-ShaderDebugTrace *GLReplay::DebugPixel(uint32_t eventId, uint32_t x, uint32_t y, uint32_t sample,
-                                       uint32_t primitive)
-{
-  GLNOTIMP("DebugPixel");
-  return new ShaderDebugTrace();
-}
-
-ShaderDebugTrace *GLReplay::DebugThread(uint32_t eventId, const rdcfixedarray<uint32_t, 3> &groupid,
-                                        const rdcfixedarray<uint32_t, 3> &threadid)
-{
-  GLNOTIMP("DebugThread");
-  return new ShaderDebugTrace();
-}
-
-rdcarray<ShaderDebugState> GLReplay::ContinueDebug(ShaderDebugger *debugger)
-{
-  GLNOTIMP("ContinueDebug");
-  return {};
-}
-
-void GLReplay::FreeDebugger(ShaderDebugger *debugger)
-{
-  delete debugger;
 }
 
 void GLReplay::MakeCurrentReplayContext(GLWindowingData *ctx)
@@ -3788,8 +4314,8 @@ void GLReplay::CloseReplayContext()
   m_pDriver->UnregisterReplayContext(m_ReplayCtx);
 }
 
-ReplayStatus CreateReplayDevice(RDCDriver rdcdriver, RDCFile *rdc, const ReplayOptions &opts,
-                                GLPlatform &platform, IReplayDriver **&driver)
+RDResult CreateReplayDevice(RDCDriver rdcdriver, RDCFile *rdc, const ReplayOptions &opts,
+                            GLPlatform &platform, IReplayDriver **&driver)
 {
   GLInitParams initParams;
   uint64_t ver = GLInitParams::CurrentVersion;
@@ -3801,14 +4327,16 @@ ReplayStatus CreateReplayDevice(RDCDriver rdcdriver, RDCFile *rdc, const ReplayO
     int sectionIdx = rdc->SectionIndex(SectionType::FrameCapture);
 
     if(sectionIdx < 0)
-      return ReplayStatus::InternalError;
+      RETURN_ERROR_RESULT(ResultCode::FileCorrupted, "File does not contain captured API data");
 
     ver = rdc->GetSectionProperties(sectionIdx).version;
 
     if(!GLInitParams::IsSupportedVersion(ver))
     {
-      RDCERR("Incompatible OpenGL serialise version %llu", ver);
-      return ReplayStatus::APIIncompatibleVersion;
+      RETURN_ERROR_RESULT(
+          ResultCode::APIIncompatibleVersion,
+          "Incompatible OpenGL serialise version %llu, newest version supported is %llu", ver,
+          GLInitParams::CurrentVersion);
     }
 
     StreamReader *reader = rdc->ReadSection(sectionIdx);
@@ -3821,17 +4349,14 @@ ReplayStatus CreateReplayDevice(RDCDriver rdcdriver, RDCFile *rdc, const ReplayO
 
     if(chunk != SystemChunk::DriverInit)
     {
-      RDCERR("Expected to get a DriverInit chunk, instead got %u", chunk);
-      return ReplayStatus::FileCorrupted;
+      RETURN_ERROR_RESULT(ResultCode::FileCorrupted,
+                          "Expected to get a DriverInit chunk, instead got %u", chunk);
     }
 
     SERIALISE_ELEMENT(initParams);
 
     if(ser.IsErrored())
-    {
-      RDCERR("Failed reading driver init params.");
-      return ReplayStatus::FileIOFailed;
-    }
+      return ser.GetError();
 
     if(!initParams.renderer.empty())
       RDCLOG("Capture was created on %s / %s", initParams.renderer.c_str(),
@@ -3840,18 +4365,17 @@ ReplayStatus CreateReplayDevice(RDCDriver rdcdriver, RDCFile *rdc, const ReplayO
 
   GLWindowingData data = {};
 
-  ReplayStatus status = platform.InitialiseAPI(data, rdcdriver, opts.apiValidation);
+  RDResult status = platform.InitialiseAPI(data, rdcdriver, opts.apiValidation);
 
   // any errors will be already printed, just pass the error up
-  if(status != ReplayStatus::Succeeded)
+  if(status != ResultCode::Succeeded)
     return status;
 
   bool current = platform.MakeContextCurrent(data);
   if(!current)
   {
-    RDCERR("Couldn't active the created GL ES context");
     platform.DeleteReplayContext(data);
-    return ReplayStatus::APIInitFailed;
+    RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Couldn't activate the created replay context");
   }
 
   // we use the platform's function which tries GL's GetProcAddress first, then falls back to
@@ -3864,19 +4388,18 @@ ReplayStatus CreateReplayDevice(RDCDriver rdcdriver, RDCFile *rdc, const ReplayO
   GL.EmulateUnsupportedFunctions();
   GL.EmulateRequiredExtensions();
 
-  bool extensionsValidated = CheckReplayContext();
-
-  if(!extensionsValidated)
+  RDResult extensionsValidated = CheckReplayContext();
+  if(extensionsValidated != ResultCode::Succeeded)
   {
     platform.DeleteReplayContext(data);
-    return ReplayStatus::APIInitFailed;
+    return extensionsValidated;
   }
 
-  bool functionsValidated = ValidateFunctionPointers();
-  if(!functionsValidated)
+  RDResult functionsValidated = ValidateFunctionPointers();
+  if(functionsValidated != ResultCode::Succeeded)
   {
     platform.DeleteReplayContext(data);
-    return ReplayStatus::APIHardwareUnsupported;
+    return functionsValidated;
   }
 
   WrappedOpenGL *gldriver = new WrappedOpenGL(platform);
@@ -3894,16 +4417,16 @@ ReplayStatus CreateReplayDevice(RDCDriver rdcdriver, RDCFile *rdc, const ReplayO
   {
     delete gldriver;
     platform.DeleteReplayContext(data);
-    return ReplayStatus::APIHardwareUnsupported;
+    RETURN_ERROR_RESULT(ResultCode::APIHardwareUnsupported, "Failed to create analysis context");
   }
 
   gldriver->Initialise(initParams, ver, opts);
 
   *driver = (IReplayDriver *)replay;
-  return ReplayStatus::Succeeded;
+  return ResultCode::Succeeded;
 }
 
-void GL_ProcessStructured(RDCFile *rdc, SDFile &output)
+RDResult GL_ProcessStructured(RDCFile *rdc, SDFile &output)
 {
   GLDummyPlatform dummy;
   WrappedOpenGL device(dummy);
@@ -3911,13 +4434,15 @@ void GL_ProcessStructured(RDCFile *rdc, SDFile &output)
   int sectionIdx = rdc->SectionIndex(SectionType::FrameCapture);
 
   if(sectionIdx < 0)
-    return;
+    RETURN_ERROR_RESULT(ResultCode::FileCorrupted, "File does not contain captured API data");
 
   device.SetStructuredExport(rdc->GetSectionProperties(sectionIdx).version);
-  ReplayStatus status = device.ReadLogInitialisation(rdc, true);
+  RDResult status = device.ReadLogInitialisation(rdc, true);
 
-  if(status == ReplayStatus::Succeeded)
+  if(status == ResultCode::Succeeded)
     device.GetStructuredFile()->Swap(output);
+
+  return status;
 }
 
 static StructuredProcessRegistration GLProcessRegistration(RDCDriver::OpenGL, &GL_ProcessStructured);
@@ -3931,7 +4456,9 @@ rdcarray<GLVersion> GetReplayVersions(RDCDriver api)
   if(api == RDCDriver::OpenGLES)
   {
     return {
-        {3, 2}, {3, 1}, {3, 0},
+        {3, 2},
+        {3, 1},
+        {3, 0},
     };
   }
   else
@@ -3944,7 +4471,7 @@ rdcarray<GLVersion> GetReplayVersions(RDCDriver api)
 
 #if defined(RENDERDOC_SUPPORT_GLES)
 
-ReplayStatus GLES_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IReplayDriver **driver)
+RDResult GLES_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IReplayDriver **driver)
 {
   RDCLOG("Creating an OpenGL ES replay device");
 
@@ -3956,8 +4483,8 @@ ReplayStatus GLES_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IR
 
     if(!load_ok)
     {
-      RDCERR("Couldn't find required EGL function addresses");
-      return ReplayStatus::APIInitFailed;
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed,
+                          "Couldn't find required EGL function addresses");
     }
 
     RDCLOG("Initialising GLES replay via libEGL");
@@ -3974,23 +4501,21 @@ ReplayStatus GLES_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IR
 
     if(!load_ok)
     {
-      RDCERR("Couldn't find required GLX function addresses");
-      return ReplayStatus::APIInitFailed;
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed,
+                          "Couldn't find required GL function addresses");
     }
 
     return CreateReplayDevice(rdc ? rdc->GetDriver() : RDCDriver::OpenGLES, rdc, opts,
                               GetGLPlatform(), driver);
   }
 
-  RDCERR(
-      "libEGL not available, and GL cannot initialise or doesn't support "
-      "EXT_create_context_es2_profile");
-  return ReplayStatus::APIInitFailed;
+  RETURN_ERROR_RESULT(ResultCode::APIInitFailed,
+                      "libEGL not available, and GL cannot initialise or doesn't support "
+                      "EXT_create_context_es2_profile");
 #else
   // no GL support, no fallback apart from EGL
 
-  RDCERR("libEGL is not available");
-  return ReplayStatus::APIInitFailed;
+  RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "libEGL is not available");
 #endif
 }
 
@@ -4000,7 +4525,7 @@ static DriverRegistration GLESDriverRegistration(RDCDriver::OpenGLES, &GLES_Crea
 
 #if defined(RENDERDOC_SUPPORT_GL)
 
-ReplayStatus GL_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IReplayDriver **driver)
+RDResult GL_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IReplayDriver **driver)
 {
   GLPlatform *gl_platform = &GetGLPlatform();
 
@@ -4010,8 +4535,8 @@ ReplayStatus GL_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IRep
     RDCLOG("Forcing EGL device creation for wayland");
     gl_platform = &GetEGLPlatform();
 #else
-    RDCERR("EGL support must be enabled at build time when using Wayland");
-    return ReplayStatus::InternalError;
+    RETURN_ERROR_RESULT(ResultCode::InternalError,
+                        "EGL support must be enabled at build time when using Wayland");
 #endif
   }
 
@@ -4028,8 +4553,8 @@ ReplayStatus GL_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IRep
 
   if(!can_create_gl_context)
   {
-    RDCERR("Platform doesn't support GL contexts");
-    return ReplayStatus::APIInitFailed;
+    RETURN_ERROR_RESULT(ResultCode::APIInitFailed,
+                        "Current platform doesn't support OpenGL contexts");
   }
 
   RDCDEBUG("Creating an OpenGL replay device");
@@ -4038,9 +4563,9 @@ ReplayStatus GL_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IRep
 
   if(!load_ok)
   {
-    RDCERR("Couldn't find required platform %s function addresses",
-           gl_platform == &GetGLPlatform() ? "GL" : "EGL");
-    return ReplayStatus::APIInitFailed;
+    RETURN_ERROR_RESULT(ResultCode::APIInitFailed,
+                        "Couldn't find required platform %s function addresses",
+                        gl_platform == &GetGLPlatform() ? "GL" : "EGL");
   }
 
   return CreateReplayDevice(rdc ? rdc->GetDriver() : RDCDriver::OpenGL, rdc, opts, *gl_platform,

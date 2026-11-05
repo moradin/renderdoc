@@ -187,6 +187,36 @@
     <ClCompile Include="d3d12\d3d12_simple_triangle.cpp">
       <Filter>D3D12\demos</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9\d3d9ex_wrapping_check.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9\d3d9_capture_edge_cases.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9\d3d9_frame_start_state.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9\d3d9_overlay_test.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9\d3d9_mesh_output.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9\d3d9_resource_contents.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9\d3d9_reset_capture.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9\d3d9_simple_triangle.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9\d3d9_test.cpp">
+      <Filter>D3D9</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9\d3d9_wrapping_check.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
     <ClCompile Include="dx\d3d_helpers.cpp">
       <Filter>D3D</Filter>
     </ClCompile>
@@ -451,9 +481,6 @@
     <ClCompile Include="d3d12\d3d12_rendertarget_binds.cpp">
       <Filter>D3D12\demos</Filter>
     </ClCompile>
-    <ClCompile Include="d3d11\d3d11_pixel_history_zoo.cpp">
-      <Filter>D3D11\demos</Filter>
-    </ClCompile>
     <ClCompile Include="gl\gl_large_buffer.cpp">
       <Filter>OpenGL\demos</Filter>
     </ClCompile>
@@ -607,6 +634,177 @@
     <ClCompile Include="d3d12\d3d12_descriptor_indexing.cpp">
       <Filter>D3D12\demos</Filter>
     </ClCompile>
+    <ClCompile Include="vk\vk_load_store_none.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_shader_printf.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_multi_entry.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_multi_present.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_dynamic_rendering.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_postponed.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="gl\gl_depth_bounds.cpp">
+      <Filter>OpenGL\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_compute_only.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_compute_only.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_read_before_overwrite.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_graphics_pipeline.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_vertex_uav.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="gl\gl_pixel_history.cpp">
+      <Filter>OpenGL\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_map_placed_alias.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_mem_bench.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="android\android_platform.cpp">
+      <Filter>Android</Filter>
+    </ClCompile>
+    <ClCompile Include="android\android_window.cpp">
+      <Filter>Android</Filter>
+    </ClCompile>
+    <ClCompile Include="gl\gl_test_android.cpp">
+      <Filter>OpenGL</Filter>
+    </ClCompile>
+    <ClCompile Include="gl\gl_template.cpp">
+      <Filter>OpenGL\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_template.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d11\d3d11_template.cpp">
+      <Filter>D3D11\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_template.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_blend.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_counters.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_pixel_history.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_multi_wait_before_signal.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_multi_view.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_mesh_shader.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_rtas_zoo.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_ray_query.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_subgroup_zoo.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_groupshared.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_mesh_shader.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_groupshared.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d11\d3d11_groupshared.cpp">
+      <Filter>D3D11\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_descriptor_buffer.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_shader_debugdata_zoo.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_subgroup_zoo.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_workgroup_zoo.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_workgroup_zoo.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d11\d3d11_workgroup_zoo.cpp">
+      <Filter>D3D11\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_descriptor_buffer_analyse.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_blend.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_memory_overlap.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d11\d3d11_pixel_history.cpp">
+      <Filter>D3D11\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="gl\gl_shader_debug_zoo.cpp">
+      <Filter>OpenGL\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_annotations.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="gl\gl_annotations.cpp">
+      <Filter>OpenGL\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_annotations.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d11\d3d11_annotations.cpp">
+      <Filter>D3D11\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_predication.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_custom_resolve.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_resource_usage.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_vrs.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_device_address_commands.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12\d3d12_stripped_shaders.cpp">
+      <Filter>D3D12\demos</Filter>
+    </ClCompile>
+    <ClCompile Include="vk\vk_stripped_shaders.cpp">
+      <Filter>Vulkan\demos</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="D3D11">
@@ -633,6 +831,12 @@
     <Filter Include="Linux">
       <UniqueIdentifier>{9c5ec0e8-32a9-45b7-8cbc-e6507dfff362}</UniqueIdentifier>
     </Filter>
+    <Filter Include="D3D9">
+      <UniqueIdentifier>{5b0d3c8e-1f2a-4c6b-9e7d-3a4f5b6c7d8e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="D3D9\demos">
+      <UniqueIdentifier>{6c1e4d9f-2a3b-4d7c-8f8e-4b5a6c7d8e9f}</UniqueIdentifier>
+    </Filter>
     <Filter Include="D3D12">
       <UniqueIdentifier>{1ce198b8-2024-4567-b8e2-086dd27725e4}</UniqueIdentifier>
     </Filter>
@@ -654,9 +858,6 @@
     <Filter Include="3rdparty\nuklear">
       <UniqueIdentifier>{06e64450-43b4-42d5-bbf3-290c721ae555}</UniqueIdentifier>
     </Filter>
-    <Filter Include="3rdparty\shaderc">
-      <UniqueIdentifier>{e641fa6b-a639-49af-9bc3-387b87bdb066}</UniqueIdentifier>
-    </Filter>
     <Filter Include="3rdparty\glad">
       <UniqueIdentifier>{526cfb18-bd0f-41b7-ac73-30a2fc90f449}</UniqueIdentifier>
     </Filter>
@@ -677,6 +878,9 @@
     </Filter>
     <Filter Include="3rdparty\md5">
       <UniqueIdentifier>{25327220-a428-4ea2-8894-300df4a61a33}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Android">
+      <UniqueIdentifier>{cd8bc334-25e7-40a0-99fb-fff5ccf33687}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -788,6 +992,12 @@
     <ClInclude Include="dx\official\winapifamily.h">
       <Filter>D3D\official</Filter>
     </ClInclude>
+    <ClInclude Include="d3d9\d3d9_test.h">
+      <Filter>D3D9</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9\d3d9_wrapping_check.h">
+      <Filter>D3D9</Filter>
+    </ClInclude>
     <ClInclude Include="dx\d3d_helpers.h">
       <Filter>D3D</Filter>
     </ClInclude>
@@ -806,9 +1016,6 @@
     </ClInclude>
     <ClInclude Include="3rdparty\nuklear\nuklear_xlib.h">
       <Filter>3rdparty\nuklear</Filter>
-    </ClInclude>
-    <ClInclude Include="3rdparty\shaderc\shaderc.h">
-      <Filter>3rdparty\shaderc</Filter>
     </ClInclude>
     <ClInclude Include="3rdparty\glad\khrplatform.h">
       <Filter>3rdparty\glad</Filter>
@@ -870,6 +1077,12 @@
     </ClInclude>
     <ClInclude Include="3rdparty\md5\md5.h">
       <Filter>3rdparty\md5</Filter>
+    </ClInclude>
+    <ClInclude Include="android\android_platform.h">
+      <Filter>Android</Filter>
+    </ClInclude>
+    <ClInclude Include="android\android_window.h">
+      <Filter>Android</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

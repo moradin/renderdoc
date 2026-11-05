@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -96,7 +96,7 @@ rdcstr GetDefaultActivityForPackage(const rdcstr &deviceID, const rdcstr &packag
   {
     line.trim();
 
-    if(line.beginsWith("name="))
+    if(line.beginsWith("name=") && !line.contains("com.android"))
     {
       return line.substr(5);
     }
@@ -181,8 +181,9 @@ int GetCurrentPID(const rdcstr &deviceID, const rdcstr &processName)
     RDCLOG("Getting PID from device %s for process '%s'", deviceID.c_str(), processName.c_str());
   }
 
-  // try 5 times, 200ms apart to find the pid
-  for(int i = 0; i < 5; i++)
+  // try 15 times, 200ms apart to find the pid, for a total of 3 seconds timeout waiting for the
+  // process to even be alive
+  for(int i = 0; i < 15; i++)
   {
     Process::ProcessResult pidOutput =
         adbExecCommand(deviceID, StringFormat::Fmt("shell ps -A | grep %s", processName.c_str()));
@@ -268,7 +269,20 @@ int GetCurrentPID(const rdcstr &deviceID, const rdcstr &processName)
   return 0;
 }
 
-bool CheckAndroidServerVersion(const rdcstr &deviceID, ABI abi)
+enum class AndroidVersionCheckResult
+{
+  Correct,
+  WrongVersion,
+  NotInstalled,
+};
+
+enum class AndroidInstallPermissionCheckResult
+{
+  Correct,
+  NotQueryable,
+};
+
+AndroidVersionCheckResult CheckAndroidServerVersion(const rdcstr &deviceID, ABI abi)
 {
   // assume all servers are updated at the same rate. Only check first ABI's version
   rdcstr packageName = GetRenderDocPackageForABI(abi);
@@ -276,7 +290,10 @@ bool CheckAndroidServerVersion(const rdcstr &deviceID, ABI abi)
 
   rdcstr dump = adbExecCommand(deviceID, "shell pm dump " + packageName).strStdout;
   if(dump.empty())
-    RDCERR("Unable to pm dump %s", packageName.c_str());
+  {
+    RDCWARN("Unable to pm dump %s", packageName.c_str());
+    return AndroidVersionCheckResult::NotInstalled;
+  }
 
   rdcstr versionCode = GetFirstMatchingLine(dump, "versionCode=").trimmed();
   rdcstr versionName = GetFirstMatchingLine(dump, "versionName=").trimmed();
@@ -292,7 +309,7 @@ bool CheckAndroidServerVersion(const rdcstr &deviceID, ABI abi)
   }
   else
   {
-    RDCERR("Unable to determine versionCode for: %s", packageName.c_str());
+    RDCWARN("Unable to determine versionCode for: %s", packageName.c_str());
   }
 
   if(versionName != "")
@@ -301,8 +318,11 @@ bool CheckAndroidServerVersion(const rdcstr &deviceID, ABI abi)
   }
   else
   {
-    RDCERR("Unable to determine versionName for: %s", packageName.c_str());
+    RDCWARN("Unable to determine versionName for: %s", packageName.c_str());
   }
+
+  if(versionCode.empty() && versionName.empty())
+    return AndroidVersionCheckResult::NotInstalled;
 
   // Compare the server's versionCode and versionName with the host's for compatibility
   rdcstr hostVersionCode =
@@ -314,25 +334,84 @@ bool CheckAndroidServerVersion(const rdcstr &deviceID, ABI abi)
   {
     RDCLOG("Installed server version (%s:%s) is compatible", versionCode.c_str(),
            versionName.c_str());
-    return true;
+    return AndroidVersionCheckResult::Correct;
   }
 
   RDCWARN("RenderDoc server versionCode:versionName (%s:%s) is incompatible with host (%s:%s)",
           versionCode.c_str(), versionName.c_str(), hostVersionCode.c_str(), hostVersionName.c_str());
 
-  return false;
+  return AndroidVersionCheckResult::WrongVersion;
 }
 
-ReplayStatus InstallRenderDocServer(const rdcstr &deviceID)
+Process::ProcessResult InstallAPK(const rdcstr &deviceID, const rdcstr &apk, int apiVersion)
 {
-  ReplayStatus status = ReplayStatus::Succeeded;
+  Process::ProcessResult adbInstall;
+  if(apiVersion >= 30)
+  {
+    adbInstall = adbExecCommand(deviceID, "install -r -g --force-queryable \"" + apk + "\"");
+  }
+  else
+  {
+    adbInstall = adbExecCommand(deviceID, "install -r -g \"" + apk + "\"");
+  }
+
+  return adbInstall;
+}
+
+AndroidInstallPermissionCheckResult CheckAndroidServerInstallPermissions(const rdcstr &deviceID,
+                                                                         rdcstr packageName,
+                                                                         int apiVersion)
+{
+  // Permissions check only applicable to API >= 30
+  if(apiVersion < 30)
+  {
+    return AndroidInstallPermissionCheckResult::Correct;
+  }
+  // Command to check that the Android Server is queryable by other APKs (API>=30)
+  Process::ProcessResult adbCheck =
+      adbExecCommand(deviceID, "shell dumpsys package queries " + packageName, ".", true);
+  // parse command output
+  int32_t sectionStart = adbCheck.strStdout.find("forceQueryable");
+  int32_t sectionEnd = adbCheck.strStdout.find("queries via package name", sectionStart);
+  int32_t isPackageQueryable = adbCheck.strStdout.find(packageName, sectionStart, sectionEnd);
+  if(isPackageQueryable == -1)
+  {
+    RDCERR("Failed to install with 'force queryable' permissions.");
+    return AndroidInstallPermissionCheckResult::NotQueryable;
+  }
+
+  return AndroidInstallPermissionCheckResult::Correct;
+}
+
+Process::ProcessResult ListPackages(const rdcstr &deviceID, const rdcstr &parameters)
+{
+  Process::ProcessResult result = adbExecCommand(deviceID, "shell getprop ro.build.version.sdk");
+
+  int sdkVersion = -1;
+  if(result.retCode == 0)
+    sdkVersion = atoi(result.strStdout.c_str());
+
+  // Android 13 and higher
+  if(sdkVersion >= 33)
+    result = adbExecCommand(deviceID,
+                            "shell pm list packages --user $(am get-current-user) " + parameters);
+
+  if(result.retCode != 0 || sdkVersion < 33)
+    result = adbExecCommand(deviceID, "shell pm list packages " + parameters);
+
+  return result;
+}
+
+RDResult InstallRenderDocServer(const rdcstr &deviceID)
+{
+  ResultCode result = ResultCode::Succeeded;
 
   rdcarray<ABI> abis = GetSupportedABIs(deviceID);
 
   if(abis.empty())
   {
-    RDCERR("Couldn't determine supported ABIs for %s", deviceID.c_str());
-    return ReplayStatus::AndroidABINotFound;
+    RETURN_ERROR_RESULT(ResultCode::AndroidABINotFound,
+                        "Couldn't determine supported ABIs for device %s", deviceID.c_str());
   }
 
   // Check known paths for RenderDoc server
@@ -391,12 +470,24 @@ ReplayStatus InstallRenderDocServer(const rdcstr &deviceID)
 
   if(apksFolder.empty())
   {
-    RDCERR(
-        "APK folder missing! RenderDoc for Android will not work without it. "
-        "Build your Android ABI in build-android in the root to have it "
-        "automatically found and installed.");
-    return ReplayStatus::AndroidAPKFolderNotFound;
+#if RENDERDOC_OFFICIAL_BUILD
+    RETURN_ERROR_RESULT(ResultCode::AndroidAPKFolderNotFound,
+                        "RenderDoc APK not found. Your build of RenderDoc may be incomplete.\n"
+                        "Check that your device is ARM based, other ABIs are not supported.");
+#else
+    RETURN_ERROR_RESULT(ResultCode::AndroidAPKFolderNotFound,
+                        "RenderDoc APK not found. Your build of RenderDoc is incomplete.\n"
+                        "If this is a development build, consult the documentation for building "
+                        "the Android package.\n"
+                        "If this is a release build check that your device is ARM based, other "
+                        "ABIs are not supported.");
+#endif
   }
+
+  // install the best ABI first, so that for arm64 only devices we can know by the time we go to
+  // install arm32 whether arm64 installed correctly
+  if(abis.size() == 2)
+    std::swap(abis[0], abis[1]);
 
   for(ABI abi : abis)
   {
@@ -418,52 +509,91 @@ ReplayStatus InstallRenderDocServer(const rdcstr &deviceID)
 
     int apiVersion = atoi(api.c_str());
 
-    Process::ProcessResult adbInstall;
-    if(apiVersion >= 30)
+    Process::ProcessResult adbInstall = InstallAPK(deviceID, apk, apiVersion);
+
+    // if adb produces this message we can be reasonably sure this is a 32-bit version that failed
+    // to install on a 64-bit only device. However we need to account for the possibility that adb
+    // might not produce this error even if that's the problem, so we still handle that below as well.
+    if((adbInstall.strStderror.contains("INSTALL_FAILED_NO_MATCHING_ABIS") ||
+        adbInstall.strStdout.contains("INSTALL_FAILED_NO_MATCHING_ABIS")) &&
+       abi == ABI::armeabi_v7a && abis.contains(ABI::arm64_v8a))
     {
-      adbInstall = adbExecCommand(deviceID, "install -r -g --force-queryable \"" + apk + "\"");
-    }
-    else
-    {
-      adbInstall = adbExecCommand(deviceID, "install -r -g \"" + apk + "\"");
+      RDCWARN(
+          "ARM32 package failed to install on ARM64 device with no matching ABIs error. Assuming "
+          "64-bit only ARM device and ignoring.");
+      continue;
     }
 
     RDCLOG("Installed package '%s', checking for success...", apk.c_str());
 
-    bool success = CheckAndroidServerVersion(deviceID, abi);
+    AndroidVersionCheckResult versionCheck = CheckAndroidServerVersion(deviceID, abi);
 
-    if(!success)
+    if(versionCheck != AndroidVersionCheckResult::Correct)
     {
       RDCLOG("Failed to install APK. stdout: %s, stderr: %s",
              adbInstall.strStdout.trimmed().c_str(), adbInstall.strStderror.trimmed().c_str());
       RDCLOG("Retrying...");
       adbExecCommand(deviceID, "install -r \"" + apk + "\"");
 
-      success = CheckAndroidServerVersion(deviceID, abi);
+      versionCheck = CheckAndroidServerVersion(deviceID, abi);
 
-      if(success)
+      // if the apk came back as not installed (rather than wrong version code)
+      // AND it's arm32 in an arm64 environment
+      // AND the previous install (the arm64 install) succeeded
+      // AND we're on Android 12
+      // then we assume that this device is 64-bit only and doesn't support arm32 at all,
+      // so we ignore the problem
+      if(versionCheck == AndroidVersionCheckResult::NotInstalled && abi == ABI::armeabi_v7a &&
+         abis.contains(ABI::arm64_v8a) && result == ResultCode::Succeeded && apiVersion >= 31)
+      {
+        RDCWARN(
+            "ARM32 package failed to install but ARM64 package succeeded. Assuming 64-bit only ARM "
+            "device and ignoring.");
+        continue;
+      }
+      else if(versionCheck == AndroidVersionCheckResult::Correct)
       {
         // if it succeeded this time, then it was the permission grant that failed
-        status = ReplayStatus::AndroidGrantPermissionsFailed;
+        result = ResultCode::AndroidGrantPermissionsFailed;
       }
       else
       {
         // otherwise something went wrong with verifying. If the install failed completely we'll
         // return AndroidAPKInstallFailed below, otherwise return a code indicating we couldn't
         // verify the install properly.
-        status = ReplayStatus::AndroidAPKVerifyFailed;
+        result = ResultCode::AndroidAPKVerifyFailed;
+      }
+    }
+
+    // Only verify permissions if we are otherwise happy with the installation
+    if(result != ResultCode::AndroidAPKVerifyFailed)
+    {
+      AndroidInstallPermissionCheckResult permissionsCheck =
+          CheckAndroidServerInstallPermissions(deviceID, GetRenderDocPackageForABI(abi), apiVersion);
+      if(permissionsCheck != AndroidInstallPermissionCheckResult::Correct)
+      {
+        RDCWARN("Failed to verify APK installation permissions. Retrying...");
+        // Some devices will only grant permissions with a second installation attempt
+        InstallAPK(deviceID, apk, apiVersion);
+        // Check permission and version again - version was correct last time so should ok here
+        if((CheckAndroidServerVersion(deviceID, abi) != AndroidVersionCheckResult::Correct) ||
+           (CheckAndroidServerInstallPermissions(deviceID, GetRenderDocPackageForABI(abi), apiVersion) !=
+            AndroidInstallPermissionCheckResult::Correct))
+        {
+          RDCWARN("Failed to verify APK installation");
+          result = ResultCode::AndroidAPKVerifyFailed;
+        }
       }
     }
   }
 
   // Ensure installation succeeded. We should have as many lines as abis we installed
-  Process::ProcessResult adbCheck =
-      adbExecCommand(deviceID, "shell pm list packages " RENDERDOC_ANDROID_PACKAGE_BASE);
+  Process::ProcessResult adbCheck = ListPackages(deviceID, RENDERDOC_ANDROID_PACKAGE_BASE);
 
   if(adbCheck.strStdout.empty())
   {
-    RDCERR("Couldn't find any installed APKs. stderr: %s", adbCheck.strStderror.c_str());
-    return ReplayStatus::AndroidAPKInstallFailed;
+    RETURN_ERROR_RESULT(ResultCode::AndroidAPKInstallFailed, "Couldn't install APK(s). stderr: %s",
+                        adbCheck.strStderror.c_str());
   }
 
   size_t lines = adbCheck.strStdout.find('\n') == -1 ? 1 : 2;
@@ -471,7 +601,7 @@ ReplayStatus InstallRenderDocServer(const rdcstr &deviceID)
   if(lines != abis.size())
     RDCWARN("Installation of some apks failed!");
 
-  return status;
+  return result;
 }
 
 bool RemoveRenderDocAndroidServer(const rdcstr &deviceID)
@@ -491,7 +621,7 @@ bool RemoveRenderDocAndroidServer(const rdcstr &deviceID)
     adbExecCommand(deviceID, "uninstall " + packageName);
 
     // Ensure uninstall succeeded
-    rdcstr adbCheck = adbExecCommand(deviceID, "shell pm list packages " + packageName).strStdout;
+    rdcstr adbCheck = ListPackages(deviceID, packageName).strStdout;
 
     if(!adbCheck.empty())
     {
@@ -555,17 +685,17 @@ struct AndroidRemoteServer : public RemoteServer
     RemoteServer::ShutdownServerAndConnection();
   }
 
-  virtual bool Ping() override
+  virtual ResultDetails Ping() override
   {
     if(!Connected())
-      return false;
+      return RDResult(ResultCode::RemoteServerConnectionLost);
 
     LazilyStartLogcatThread();
 
     return RemoteServer::Ping();
   }
 
-  virtual rdcpair<ReplayStatus, IReplayController *> OpenCapture(
+  virtual rdcpair<ResultDetails, IReplayController *> OpenCapture(
       uint32_t proxyid, const rdcstr &filename, const ReplayOptions &opts,
       RENDERDOC_ProgressCallback progress) override
   {
@@ -594,7 +724,7 @@ struct AndroidRemoteServer : public RemoteServer
     {
       SCOPED_TIMER("Fetching android packages and activities");
 
-      rdcstr adbStdout = Android::adbExecCommand(m_deviceID, "shell pm list packages -3").strStdout;
+      rdcstr adbStdout = Android::ListPackages(m_deviceID, "-3").strStdout;
 
       rdcarray<rdcstr> lines;
       split(adbStdout, lines, '\n');
@@ -622,7 +752,7 @@ struct AndroidRemoteServer : public RemoteServer
       }
 
       // also fetch the system packages but mark them as hidden folders
-      adbStdout = Android::adbExecCommand(m_deviceID, "shell pm list packages -s").strStdout;
+      adbStdout = Android::ListPackages(m_deviceID, "-s").strStdout;
 
       split(adbStdout, lines, '\n');
       for(rdcstr &line : lines)
@@ -643,7 +773,14 @@ struct AndroidRemoteServer : public RemoteServer
         }
       }
 
+      // Android is a completely garbage platform, and the command below can take several orders of
+      // magnitude more time than is reasonable and hit the remote server timeout. To give the best
+      // chance of that not happening, we ping before and after running it.
+      RemoteServer::Ping();
+
       adbStdout = Android::adbExecCommand(m_deviceID, "shell dumpsys package").strStdout;
+
+      RemoteServer::Ping();
 
       split(adbStdout, lines, '\n');
       for(rdcstr &line : lines)
@@ -868,10 +1005,14 @@ struct AndroidController : public IDeviceProtocolHandler
 
       cmd->meth();
 
-      Atomic::Inc32(&cmd->done);
-
       if(cmd->selfdelete)
+      {
         delete cmd;
+      }
+      else
+      {
+        Atomic::Inc32(&cmd->done);
+      }
     }
   }
 
@@ -933,9 +1074,8 @@ struct AndroidController : public IDeviceProtocolHandler
         dev.name = Android::GetFriendlyName(d);
         if(!Android::IsSupported(d))
           dev.name += " - (Android 5.x)";
-        dev.portbase =
-            uint16_t(RenderDoc_ForwardPortBase +
-                     RenderDoc::Inst().GetForwardedPortSlot() * RenderDoc_ForwardPortStride);
+        dev.portbase = uint16_t(RenderDoc_ForwardPortBase + RenderDoc::Inst().GetForwardedPortSlot() *
+                                                                RenderDoc_ForwardPortStride);
 
         // silently forward the ports now. These may be refreshed but this will allow us to connect
         Android::adbForwardPorts(dev.portbase, d, 0, 0, true);
@@ -959,7 +1099,9 @@ struct AndroidController : public IDeviceProtocolHandler
 
     {
       SCOPED_LOCK(lock);
-      ret = devices[GetDeviceID(URL)].name;
+      auto it = devices.find(GetDeviceID(URL));
+      if(it != devices.end())
+        ret = it->second.name;
     }
 
     return ret;
@@ -978,25 +1120,34 @@ struct AndroidController : public IDeviceProtocolHandler
     return ret;
   }
 
-  ReplayStatus StartRemoteServer(const rdcstr &URL) override
+  ResultDetails StartRemoteServer(const rdcstr &URL) override
   {
-    ReplayStatus status = ReplayStatus::Succeeded;
+    RDResult result = ResultCode::Succeeded;
 
-    Invoke([this, &status, URL]() {
+    Invoke([this, &result, URL]() {
       rdcstr deviceID = GetDeviceID(URL);
 
-      Device &dev = devices[deviceID];
+      auto it = devices.find(deviceID);
+      if(it == devices.end())
+      {
+        SET_ERROR_RESULT(result, ResultCode::InternalError,
+                         "Android device %s is not a valid device ID, can't launch server",
+                         Android::GetFriendlyName(deviceID).c_str());
+        return;
+      }
+
+      Device &dev = it->second;
 
       if(!dev.active)
       {
-        status = ReplayStatus::InternalError;
+        SET_ERROR_RESULT(result, ResultCode::InternalError,
+                         "Android device %s is not active, can't launch server",
+                         Android::GetFriendlyName(deviceID).c_str());
         return;
       }
 
       rdcstr packagesOutput =
-          Android::adbExecCommand(deviceID,
-                                  "shell pm list packages " RENDERDOC_ANDROID_PACKAGE_BASE)
-              .strStdout.trimmed();
+          Android::ListPackages(deviceID, RENDERDOC_ANDROID_PACKAGE_BASE).strStdout.trimmed();
 
       rdcarray<rdcstr> packages;
       split(packagesOutput, packages, '\n');
@@ -1009,12 +1160,42 @@ struct AndroidController : public IDeviceProtocolHandler
 
       if(abis.empty())
       {
-        status = ReplayStatus::AndroidABINotFound;
+        SET_ERROR_RESULT(result, ResultCode::AndroidABINotFound,
+                         "Can't determine supported ABIs for device %s",
+                         Android::GetFriendlyName(deviceID).c_str());
         return;
       }
 
-      // assume all servers are updated at the same rate. Only check first ABI's version
-      if(packages.size() != abis.size() || !Android::CheckAndroidServerVersion(deviceID, abis[0]))
+      rdcstr api =
+          Android::adbExecCommand(deviceID, "shell getprop ro.build.version.sdk").strStdout.trimmed();
+
+      int apiVersion = atoi(api.c_str());
+
+      // To account for awkward 64-bit only devices, sometimes need to check ABIs independently. If
+      // ARM32 is *missing completely* and ARM64 is present and on the right version, we allow that
+      // case on Android 12+ assuming it's a 64-bit only device. Since our installer should always
+      // update both packages in lockstep we don't expect 64-bit to be installed only if we could
+      // have installed 32-bit.
+
+      // the installed version is OK if...
+      bool installedOK =
+          // ...we have exactly the right number of packages installed and the best ABI is on the
+          // right version. This covers normal 64-bit devices and also covers the 32-bit only case
+          // trivially.
+          (packages.size() == abis.size() &&
+           Android::CheckAndroidServerVersion(deviceID, abis.back()) ==
+               Android::AndroidVersionCheckResult::Correct)
+          // OR
+          ||
+          // ...we're a 64-bit capable device on Android 12+ and only 64-bit is installed and up
+          // to date, 32-bit is not installed at all
+          (abis.contains(Android::ABI::arm64_v8a) && apiVersion >= 31 &&
+           Android::CheckAndroidServerVersion(deviceID, Android::ABI::arm64_v8a) ==
+               Android::AndroidVersionCheckResult::Correct &&
+           Android::CheckAndroidServerVersion(deviceID, Android::ABI::armeabi_v7a) ==
+               Android::AndroidVersionCheckResult::NotInstalled);
+
+      if(!installedOK)
       {
         // if there was any existing package, remove it
         if(!packages.empty())
@@ -1026,10 +1207,9 @@ struct AndroidController : public IDeviceProtocolHandler
         }
 
         // If server is not detected or has been removed due to incompatibility, install it
-        status = Android::InstallRenderDocServer(deviceID);
-        if(status != ReplayStatus::Succeeded &&
-           status != ReplayStatus::AndroidGrantPermissionsFailed &&
-           status != ReplayStatus::AndroidAPKVerifyFailed)
+        result = Android::InstallRenderDocServer(deviceID);
+        if(result != ResultCode::Succeeded && result != ResultCode::AndroidGrantPermissionsFailed &&
+           result != ResultCode::AndroidAPKVerifyFailed)
         {
           RDCERR("Failed to install RenderDoc server app");
           return;
@@ -1040,8 +1220,27 @@ struct AndroidController : public IDeviceProtocolHandler
       for(Android::ABI abi : abis)
         Android::adbExecCommand(deviceID, "shell am force-stop " + GetRenderDocPackageForABI(abi));
 
+      // Attempt to prevent the user needing to click through on permissions
+      rdcstr auto_grant_permissions =
+          Android::adbExecCommand(deviceID, "shell getprop debug.renderdoc.autograntpermissions")
+              .strStdout.trimmed();
+      if(apiVersion >= 30 && atoi(auto_grant_permissions.c_str()) == 1)
+      {
+        for(Android::ABI abi : abis)
+          Android::adbExecCommand(deviceID, "shell pm grant " + GetRenderDocPackageForABI(abi) +
+                                                " android.permission.MANAGE_EXTERNAL_STORAGE");
+      }
+
       Android::adbForwardPorts(dev.portbase, deviceID, 0, 0, false);
       Android::ResetCaptureSettings(deviceID);
+
+      // make Oculus' on device vulkan validation layer available for load
+      Android::adbExecCommand(
+          deviceID,
+          "shell setprop debug.oculus.usepackagedvvl." RENDERDOC_ANDROID_PACKAGE_BASE ".arm32 1");
+      Android::adbExecCommand(
+          deviceID,
+          "shell setprop debug.oculus.usepackagedvvl." RENDERDOC_ANDROID_PACKAGE_BASE ".arm64 1");
 
       rdcstr package = GetRenderDocPackageForABI(abis.back());
 
@@ -1060,9 +1259,9 @@ struct AndroidController : public IDeviceProtocolHandler
     });
 
     // allow the package to start and begin listening before we return
-    Threading::Sleep(1500);
+    Threading::Sleep(8000);
 
-    return status;
+    return result;
   }
 
   rdcstr RemapHostname(const rdcstr &deviceID) override
@@ -1077,7 +1276,9 @@ struct AndroidController : public IDeviceProtocolHandler
 
     {
       SCOPED_LOCK(lock);
-      portbase = devices[deviceID].portbase;
+      auto it = devices.find(deviceID);
+      if(it != devices.end())
+        portbase = it->second.portbase;
     }
 
     if(portbase == 0)
@@ -1098,7 +1299,13 @@ struct AndroidController : public IDeviceProtocolHandler
 
     {
       SCOPED_LOCK(lock);
-      portbase = devices[deviceID].portbase;
+      auto it = devices.find(deviceID);
+      if(it == devices.end())
+      {
+        SAFE_DELETE(sock);
+        return NULL;
+      }
+      portbase = it->second.portbase;
     }
 
     return new AndroidRemoteServer(sock, deviceID, portbase);
@@ -1142,19 +1349,17 @@ ExecuteResult AndroidRemoteServer::ExecuteAndInject(const rdcstr &packageAndActi
   Threading::ThreadHandle pingThread = Threading::CreateThread([&done, this]() {
     Threading::SetCurrentThreadName("Android Ping");
 
-    bool ok = true;
-    while(ok && Atomic::CmpExch32(&done, 0, 0) == 0)
+    ResultDetails ok;
+    ok.code = ResultCode::Succeeded;
+    while(ok.OK() && Atomic::CmpExch32(&done, 0, 0) == 0)
       ok = Ping();
   });
 
-  ExecuteResult ret;
+  RDResult result;
+  uint32_t ident = RenderDoc_FirstTargetControlPort;
 
-  AndroidController::m_Inst.Invoke([this, &ret, packageAndActivity, intentArgs, opts]() {
-    ret.status = ReplayStatus::UnknownError;
-    ret.ident = RenderDoc_FirstTargetControlPort;
-
-    rdcstr packageName =
-        Android::GetPackageName(packageAndActivity);    // Remove leading '/' if any
+  AndroidController::m_Inst.Invoke([this, &result, &ident, packageAndActivity, intentArgs, opts]() {
+    rdcstr packageName = Android::GetPackageName(packageAndActivity);    // Remove leading '/' if any
 
     // adb shell cmd package resolve-activity -c android.intent.category.LAUNCHER com.jake.cube1
     rdcstr activityName = Android::GetActivityName(packageAndActivity);
@@ -1180,6 +1385,8 @@ ExecuteResult AndroidRemoteServer::ExecuteAndInject(const rdcstr &packageAndActi
     Android::adbExecCommand(m_deviceID, "shell setprop debug.vulkan.layers :", ".", true);
 
     bool hookWithJDWP = true;
+
+    rdcstr info;
 
     if(Android::SupportsNativeLayers(m_deviceID))
     {
@@ -1250,11 +1457,16 @@ ExecuteResult AndroidRemoteServer::ExecuteAndInject(const rdcstr &packageAndActi
          !checkString.contains("gpu_debug_layers=" RENDERDOC_VULKAN_LAYER_NAME) ||
          !checkString.contains("gpu_debug_layers_gles=" RENDERDOC_ANDROID_LIBRARY))
       {
-        RDCERR(
-            "Couldn't verify that debug settings are set:\n%s"
+        info =
             "Do you have a strange device that requires extra setup?\n"
-            "E.g. Xiaomi requires a developer account and \"USB debugging (Security Settings)\"\n",
-            inString.c_str());
+            "E.g. Xiaomi requires a developer account and \"USB debugging (Security Settings)\"";
+
+        RDCERR("Couldn't verify that debug settings are set:\n%s\n%s", inString.c_str(),
+               info.c_str());
+
+        result = RDResult(ResultCode::AndroidLayerConfFailed);
+        result.message = info;
+
         hookWithJDWP = true;
 
         // need to tell the hooks to ignore the fact that layers are present because they're not
@@ -1332,7 +1544,8 @@ ExecuteResult AndroidRemoteServer::ExecuteAndInject(const rdcstr &packageAndActi
 
     int pid = 0;
 
-    RDCLOG("Launching package '%s' with activity '%s'", packageName.c_str(), activityName.c_str());
+    RDCLOG("Launching package '%s' with activity '%s' and intent args '%s'", packageName.c_str(),
+           activityName.c_str(), intentArgs.c_str());
 
     if(hookWithJDWP)
     {
@@ -1361,10 +1574,20 @@ ExecuteResult AndroidRemoteServer::ExecuteAndInject(const rdcstr &packageAndActi
 
     if(pid == 0)
     {
-      RDCERR("Couldn't get PID when launching %s with activity %s and intent args %s",
-             packageName.c_str(), activityName.c_str(), intentArgs.c_str());
-      ret.status = ReplayStatus::InjectionFailed;
-      ret.ident = 0;
+      result = RDResult(ResultCode::InjectionFailed);
+      ident = 0;
+
+      RDCERR("Couldn't get PID");
+
+      if(!info.empty())
+        result.message =
+            "Couldn't locate the launched activity, either it failed to launch or crashed."
+            "\n\nAdditional information:\n" +
+            info;
+      else
+        result.message =
+            "Couldn't locate the launched activity, either it failed to launch or crashed.";
+
       return;
     }
 
@@ -1380,25 +1603,35 @@ ExecuteResult AndroidRemoteServer::ExecuteAndInject(const rdcstr &packageAndActi
       if(!injected)
       {
         RDCERR("Failed to inject using JDWP");
-        ret.status = ReplayStatus::JDWPFailure;
-        ret.ident = 0;
+        ident = 0;
+
+        // If layer configuration failed first, then report that to the user as it is usually easier
+        // to fix
+        if(result.code != ResultCode::AndroidLayerConfFailed)
+        {
+          result = RDResult(ResultCode::JDWPFailure);
+          result.message = StringFormat::Fmt(
+              "Failed to inject using JDWP when launching '%s' with activity '%s' and intent args "
+              "'%s'",
+              packageName.c_str(), activityName.c_str(), intentArgs.c_str());
+        }
         return;
       }
     }
 
-    ret.status = ReplayStatus::InjectionFailed;
+    result = RDResult(ResultCode::InjectionFailed, "Timeout was reached waiting for app to start.");
 
     uint32_t elapsed = 0, timeout = 1000 * RDCMAX(5U, Android_MaxConnectTimeout());
     while(elapsed < timeout)
     {
       // Check if the target app has started yet and we can connect to it.
       ITargetControl *control = RENDERDOC_CreateTargetControl(
-          AndroidController::m_Inst.GetProtocolName() + "://" + m_deviceID, ret.ident,
-          "testConnection", false);
+          AndroidController::m_Inst.GetProtocolName() + "://" + m_deviceID, ident, "testConnection",
+          false);
       if(control)
       {
         control->Shutdown();
-        ret.status = ReplayStatus::Succeeded;
+        result = ResultCode::Succeeded;
         break;
       }
 
@@ -1409,7 +1642,9 @@ ExecuteResult AndroidRemoteServer::ExecuteAndInject(const rdcstr &packageAndActi
 
       if(curpid == 0)
       {
-        RDCERR("APK has crashed or never opened target control connection before closing.");
+        SET_ERROR_RESULT(
+            result, ResultCode::InjectionFailed,
+            "APK has crashed or never opened target control connection before closing.");
         break;
       }
 
@@ -1429,9 +1664,42 @@ ExecuteResult AndroidRemoteServer::ExecuteAndInject(const rdcstr &packageAndActi
   Threading::JoinThread(pingThread);
   Threading::CloseThread(pingThread);
 
+  ExecuteResult ret = {};
+
+  ret.result = result;
+  ret.ident = ident;
+
   return ret;
 }
 
 AndroidController AndroidController::m_Inst;
 
 DeviceProtocolRegistration androidProtocol("adb", &AndroidController::Get);
+
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_CheckAndroidPackage(
+    const rdcstr &URL, const rdcstr &packageAndActivity, AndroidFlags *flags)
+{
+  IDeviceProtocolHandler *adb = RenderDoc::Inst().GetDeviceProtocol("adb");
+
+  rdcstr deviceID = adb->GetDeviceID(URL);
+
+  // Reset the flags each time we check
+  *flags = AndroidFlags::NoFlags;
+
+  if(Android::IsDebuggable(deviceID, Android::GetPackageName(packageAndActivity)))
+  {
+    *flags |= AndroidFlags::Debuggable;
+  }
+  else
+  {
+    RDCLOG("%s is not debuggable", packageAndActivity.c_str());
+  }
+
+  if(Android::HasRootAccess(deviceID))
+  {
+    RDCLOG("Root access detected");
+    *flags |= AndroidFlags::RootAccess;
+  }
+
+  return;
+}

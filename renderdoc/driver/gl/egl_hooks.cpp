@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,9 +22,16 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+#include "core/settings.h"
 #include "hooks/hooks.h"
+#include "strings/string_utils.h"
 #include "egl_dispatch_table.h"
 #include "gl_driver.h"
+
+RDOC_CONFIG(bool, Android_AllowAllEGLExtensions, false,
+            "Normally certain extensions are removed from the EGL extension string for "
+            "compatibility, but with this option that behaviour can be overridden and all "
+            "extensions will be reported.");
 
 #if ENABLED(RDOC_POSIX)
 #include <dlfcn.h>
@@ -59,6 +66,11 @@ class EGLHook : LibraryHook
 {
 public:
   EGLHook() : driver(GetEGLPlatform()) {}
+  ~EGLHook()
+  {
+    for(auto it : extStrings)
+      SAFE_DELETE(it.second);
+  }
   void RegisterHooks();
 
   RDCDriver activeAPI = RDCDriver::OpenGLES;
@@ -69,6 +81,7 @@ public:
   std::map<EGLContext, EGLConfig> configs;
   std::map<EGLSurface, SurfaceConfig> windows;
   std::map<EGLDisplay, DisplayConfig> displays;
+  std::map<EGLDisplay, rdcstr *> extStrings;
 
   // indicates we're in a swap function, so don't process the swap any further if we recurse - could
   // happen due to driver implementation of one function calling another
@@ -97,6 +110,7 @@ public:
     EGLDisplay display = data.egl_dpy;
     EGLContext ctx = data.egl_ctx;
     EGLSurface draw = data.egl_wnd;
+    EGLConfig config = data.egl_cfg;
 
     if(ctx && draw)
     {
@@ -113,10 +127,18 @@ public:
 
       bool isYFlipped = IsYFlipped(display, draw);
 
+      int multiSamples;
+      EGL.GetConfigAttrib(display, config, EGL_SAMPLES, &multiSamples);
+      if(multiSamples != 1 && multiSamples != 2 && multiSamples != 4 && multiSamples != 8)
+      {
+        multiSamples = 1;
+      }
+
       params.width = width;
       params.height = height;
       params.isSRGB = isSRGB;
       params.isYFlipped = isYFlipped;
+      params.multiSamples = multiSamples;
     }
   }
 
@@ -138,10 +160,10 @@ static void EnsureRealLibraryLoaded()
     if(!RenderDoc::Inst().IsReplayApp())
       RDCLOG("Loading libEGL at the last second");
 
-    void *handle = Process::LoadModule("libEGL.so");
+    void *handle = Process::LoadModule("libEGL.so.1");
 
     if(!handle)
-      handle = Process::LoadModule("libEGL.so.1");
+      handle = Process::LoadModule("libEGL.so");
 
     if(RenderDoc::Inst().IsReplayApp())
       eglhook.handle = handle;
@@ -202,6 +224,12 @@ HOOK_EXPORT EGLDisplay EGLAPIENTRY eglGetPlatformDisplay_renderdoc_hooked(EGLenu
 #endif
 
   return EGL.GetPlatformDisplay(platform, native_display, attrib_list);
+}
+
+HOOK_EXPORT EGLDisplay EGLAPIENTRY eglGetPlatformDisplayEXT_renderdoc_hooked(
+    EGLenum platform, void *native_display, const EGLAttrib *attrib_list)
+{
+  return eglGetPlatformDisplay_renderdoc_hooked(platform, native_display, attrib_list);
 }
 
 HOOK_EXPORT EGLBoolean EGLAPIENTRY eglBindAPI_renderdoc_hooked(EGLenum api)
@@ -278,6 +306,13 @@ HOOK_EXPORT EGLContext EGLAPIENTRY eglCreateContext_renderdoc_hooked(EGLDisplay 
         if(name == EGL_CONTEXT_OPENGL_NO_ERROR_KHR)
         {
           // remove this attribute so that we can be more stable
+          continue;
+        }
+
+        // remove reset notification attributes, so that we don't have to carry this bit around to
+        // know how to safely create sharing contexts.
+        if(name == EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT)
+        {
           continue;
         }
 
@@ -432,14 +467,27 @@ HOOK_EXPORT EGLSurface EGLAPIENTRY eglCreatePlatformWindowSurface_renderdoc_hook
   return ret;
 }
 
+HOOK_EXPORT EGLDisplay EGLAPIENTRY eglCreatePlatformWindowSurfaceEXT_renderdoc_hooked(
+    EGLDisplay dpy, EGLConfig config, void *native_window, const EGLAttrib *attrib_list)
+{
+  return eglCreatePlatformWindowSurface_renderdoc_hooked(dpy, config, native_window, attrib_list);
+}
+
 HOOK_EXPORT EGLBoolean EGLAPIENTRY eglMakeCurrent_renderdoc_hooked(EGLDisplay display,
                                                                    EGLSurface draw, EGLSurface read,
                                                                    EGLContext ctx)
 {
   if(RenderDoc::Inst().IsReplayApp())
   {
-    if(!EGL.MakeCurrent)
+    if(!EGL.MakeCurrent || !EGL.GetProcAddress)
       EGL.PopulateForReplay();
+
+    // populate GL function pointers now in case linked functions are called
+    if(EGL.GetProcAddress)
+    {
+      GL.PopulateWithCallback(
+          [](const char *funcName) -> void * { return (void *)EGL.GetProcAddress(funcName); });
+    }
 
     return EGL.MakeCurrent(display, draw, read, ctx);
   }
@@ -458,12 +506,13 @@ HOOK_EXPORT EGLBoolean EGLAPIENTRY eglMakeCurrent_renderdoc_hooked(EGLDisplay di
     {
       eglhook.contexts.insert(ctx);
 
-      FetchEnabledExtensions();
-
-      // see gl_emulated.cpp
-      GL.EmulateUnsupportedFunctions();
-      GL.EmulateRequiredExtensions();
-      GL.DriverForEmulation(&eglhook.driver);
+      if(FetchEnabledExtensions())
+      {
+        // see gl_emulated.cpp
+        GL.EmulateUnsupportedFunctions();
+        GL.EmulateRequiredExtensions();
+        GL.DriverForEmulation(&eglhook.driver);
+      }
     }
 
     SurfaceConfig cfg = eglhook.windows[draw];
@@ -487,9 +536,9 @@ HOOK_EXPORT EGLBoolean EGLAPIENTRY eglMakeCurrent_renderdoc_hooked(EGLDisplay di
 
     eglhook.driver.SetDriverType(eglhook.activeAPI);
 
-    eglhook.driver.ActivateContext(data);
-
     eglhook.RefreshWindowParameters(data);
+
+    eglhook.driver.ActivateContext(data);
   }
 
   return ret;
@@ -517,6 +566,9 @@ HOOK_EXPORT EGLBoolean EGLAPIENTRY eglSwapBuffers_renderdoc_hooked(EGLDisplay dp
     data.egl_wnd = surface;
     data.egl_ctx = EGL.GetCurrentContext();
 
+    // we could query this out technically but it's easier to keep a map
+    data.egl_cfg = eglhook.configs[data.egl_ctx];
+
     eglhook.RefreshWindowParameters(data);
 
     SurfaceConfig cfg = eglhook.windows[surface];
@@ -532,6 +584,45 @@ HOOK_EXPORT EGLBoolean EGLAPIENTRY eglSwapBuffers_renderdoc_hooked(EGLDisplay dp
     eglhook.swapping = false;
     return ret;
   }
+}
+
+HOOK_EXPORT const char *EGLAPIENTRY eglQueryString_renderdoc_hooked(EGLDisplay dpy, EGLint name)
+{
+  if(RenderDoc::Inst().IsReplayApp())
+  {
+    if(!EGL.QueryString)
+      EGL.PopulateForReplay();
+
+    return EGL.QueryString(dpy, name);
+  }
+
+  EnsureRealLibraryLoaded();
+
+  SCOPED_LOCK(glLock);
+
+  if(name == EGL_EXTENSIONS && !Android_AllowAllEGLExtensions())
+  {
+    rdcstr *extStr = eglhook.extStrings[dpy];
+    if(extStr == NULL)
+      extStr = eglhook.extStrings[dpy] = new rdcstr;
+
+    const rdcstr implExtStr = EGL.QueryString(dpy, name);
+
+    rdcarray<rdcstr> exts;
+    split(implExtStr, exts, ' ');
+
+    // We take the unusual approach here of explicitly _disallowing_ extensions only when we know
+    // they are unsupported. The main reason for this is because EGL is the android platform API and
+    // it may well be that undocumented internal or private extensions are important and should not
+    // be filtered out. Also since we have minimal interaction with the API as long as they don't
+    // affect the functions we care about for context management and swapping most extensions can be
+    // allowed silently.
+    exts.removeOne("EGL_KHR_no_config_context");
+
+    merge(exts, *extStr, ' ');
+  }
+
+  return EGL.QueryString(dpy, name);
 }
 
 HOOK_EXPORT EGLBoolean EGLAPIENTRY eglPostSubBufferNV_renderdoc_hooked(EGLDisplay dpy,
@@ -735,6 +826,11 @@ HOOK_EXPORT EGLBoolean EGLAPIENTRY eglSwapBuffers(EGLDisplay dpy, EGLSurface sur
   return eglSwapBuffers_renderdoc_hooked(dpy, surface);
 }
 
+HOOK_EXPORT const char *EGLAPIENTRY eglQueryString(EGLDisplay dpy, EGLint name)
+{
+  return eglQueryString_renderdoc_hooked(dpy, name);
+}
+
 HOOK_EXPORT EGLBoolean EGLAPIENTRY eglPostSubBufferNV(EGLDisplay dpy, EGLSurface surface, EGLint x,
                                                       EGLint y, EGLint width, EGLint height)
 {
@@ -849,7 +945,6 @@ EGL_PASSTHRU_0(EGLint, eglGetError)
 EGL_PASSTHRU_3(EGLBoolean, eglInitialize, EGLDisplay, dpy, EGLint *, major, EGLint *, minor)
 EGL_PASSTHRU_4(EGLBoolean, eglQueryContext, EGLDisplay, dpy, EGLContext, ctx, EGLint, attribute,
                EGLint *, value)
-EGL_PASSTHRU_2(const char *, eglQueryString, EGLDisplay, dpy, EGLint, name)
 EGL_PASSTHRU_4(EGLBoolean, eglQuerySurface, EGLDisplay, dpy, EGLSurface, surface, EGLint, attribute,
                EGLint *, value)
 EGL_PASSTHRU_1(EGLBoolean, eglTerminate, EGLDisplay, dpy)
@@ -889,7 +984,7 @@ EGL_PASSTHRU_4(EGLSurface, eglCreatePlatformPixmapSurface, EGLDisplay, dpy, EGLC
                void *, native_pixmap, const EGLAttrib *, attrib_list)
 EGL_PASSTHRU_3(EGLBoolean, eglWaitSync, EGLDisplay, dpy, EGLSync, sync, EGLint, flags)
 
-static void EGLHooked(void *handle)
+static void EGLHooked(void *handle, const char *libName)
 {
   RDCDEBUG("EGL library hooked");
 
@@ -910,6 +1005,14 @@ static void EGLHooked(void *handle)
   EGL_NONHOOKED_SYMBOLS(EGL_FETCH)
 #undef EGL_FETCH
 
+// fetch any hooked extension functions into our dispatch table since they're not necessarily
+// exported
+#define EGL_FETCH(func, isext, replayrequired) \
+  if(!EGL.func)                                \
+    EGL.func = (CONCAT(PFN_egl, func))EGL.GetProcAddress("egl" STRINGIZE(func));
+  EGL_HOOKED_SYMBOLS(EGL_FETCH)
+#undef EGL_FETCH
+
 // on systems where EGL isn't the primary/only way to get GL function pointers, we need to ensure we
 // re-fetch all function pointers through eglGetProcAddress and don't try to use any through the
 // primary system library (opengl32.dll/libGL.so), since they may not work correctly.
@@ -925,6 +1028,11 @@ static void EGLHooked(void *handle)
     ScopedSuppressHooking suppress;
     return (void *)EGL.GetProcAddress(funcName);
   });
+
+#if ENABLED(RDOC_WIN32)
+  // force library to stay loaded so that function pointers don't move
+  LoadLibraryA(libName);
+#endif
 }
 
 #if ENABLED(RDOC_WIN32)
@@ -1019,10 +1127,11 @@ void EGLHook::RegisterHooks()
 #endif
 
 // register EGL hooks
-#define EGL_REGISTER(func, isext, replayrequired)                                 \
-  LibraryHooks::RegisterFunctionHook(                                             \
-      "libEGL" LIBSUFFIX, FunctionHook("egl" STRINGIZE(func), (void **)&EGL.func, \
-                                       (void *)&CONCAT(egl, CONCAT(func, _renderdoc_hooked))));
+#define EGL_REGISTER(func, isext, replayrequired)             \
+  LibraryHooks::RegisterFunctionHook(                         \
+      "libEGL" LIBSUFFIX,                                     \
+      FunctionHook("egl" STRINGIZE(func), (void **)&EGL.func, \
+                                   (void *)&CONCAT(egl, CONCAT(func, _renderdoc_hooked))));
   EGL_HOOKED_SYMBOLS(EGL_REGISTER)
 #undef EGL_REGISTER
 }

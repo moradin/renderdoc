@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -48,7 +48,7 @@ HRESULT WrappedID3D12Device::CreatePipelineLibrary(_In_reads_(BlobLength) const 
   if(BlobLength > 0)
     return D3D12_ERROR_DRIVER_VERSION_MISMATCH;
 
-  WrappedID3D12PipelineLibrary *pipeLibrary = new WrappedID3D12PipelineLibrary(this);
+  WrappedID3D12PipelineLibrary *pipeLibrary = new WrappedID3D12PipelineLibrary(ResourceId(), this);
 
   if(riid == __uuidof(ID3D12PipelineLibrary))
   {

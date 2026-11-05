@@ -11,12 +11,12 @@ class VK_Overlay_Test(rdtest.Overlay_Test):
         out = self.controller.CreateOutput(rd.CreateHeadlessWindowingData(100, 100), rd.ReplayOutputType.Texture)
 
         setup_marker = self.find_action("Setup")
-        self.controller.SetFrameEvent(setup_marker.next.eventId, True)
+        self.set_event(setup_marker.nextAction.eventId, True)
 
         pipe = self.controller.GetPipelineState()
 
         tex = rd.TextureDisplay()
-        tex.resourceId = pipe.GetOutputTargets()[0].resourceId
+        tex.resourceId = pipe.GetOutputTargets()[0].resource
 
         tex.overlay = rd.DebugOverlay.ClearBeforeDraw
         out.SetTextureDisplay(tex)
@@ -24,10 +24,10 @@ class VK_Overlay_Test(rdtest.Overlay_Test):
         out.Display()
 
         # Select the next setup action
-        self.controller.SetFrameEvent(setup_marker.next.eventId, True)
+        self.set_event(setup_marker.nextAction.eventId, True)
 
         # Select the real action for the first time
-        self.controller.SetFrameEvent(self.find_action("Normal Test").next.eventId, True)
+        self.set_event(self.find_action("Normal Test").nextAction.eventId, True)
 
         self.check_pixel_value(tex.resourceId, 180, 150, [0.0, 0.0, 0.0, 0.0])
         self.check_pixel_value(tex.resourceId, 50, 50, [0.0, 0.0, 0.0, 0.0])
@@ -44,12 +44,12 @@ class VK_Overlay_Test(rdtest.Overlay_Test):
         # Don't check any pixel values, but ensure all overlays at least work with rasterizer discard and no
         # viewport/scissor bound
         sub_marker = self.find_action("Discard Test")
-        self.controller.SetFrameEvent(sub_marker.next.eventId, True)
+        self.set_event(sub_marker.nextAction.eventId, True)
 
         pipe = self.controller.GetPipelineState()
 
         tex = rd.TextureDisplay()
-        tex.resourceId = pipe.GetOutputTargets()[0].resourceId
+        tex.resourceId = pipe.GetOutputTargets()[0].resource
 
         for overlay in rd.DebugOverlay:
             if overlay == rd.DebugOverlay.NoOverlay:
@@ -62,15 +62,15 @@ class VK_Overlay_Test(rdtest.Overlay_Test):
             if overlay == rd.DebugOverlay.ClearBeforeDraw or overlay == rd.DebugOverlay.ClearBeforePass:
                 continue
 
-            rdtest.log.success("Checking overlay {} with rasterizer discard".format(str(overlay)))
+            rdtest.log.success(f"Checking overlay {overlay!s} with rasterizer discard")
 
             tex.overlay = overlay
             out.SetTextureDisplay(tex)
 
             out.Display()
 
-            overlay_id: rd.ResourceId = out.GetDebugOverlayTexID()
+            overlay_id = out.GetDebugOverlayTexID()
 
-            rdtest.log.success("Overlay {} rendered with rasterizer discard".format(str(overlay)))
+            rdtest.log.success(f"Overlay {overlay!s} rendered with rasterizer discard")
 
         out.Shutdown()

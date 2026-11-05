@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -23,7 +23,9 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+#include "core/settings.h"
 #include "data/resource.h"
+#include "driver/shaders/dxbc/dx_debug.h"
 #include "driver/shaders/dxbc/dxbc_bytecode.h"
 #include "driver/shaders/dxbc/dxbc_debug.h"
 #include "maths/formatpacking.h"
@@ -37,18 +39,7 @@
 #include "d3d11_resources.h"
 #include "d3d11_shader_cache.h"
 
-struct DebugHit
-{
-  uint32_t numHits;
-  float posx;
-  float posy;
-  float depth;
-  uint32_t primitive;
-  uint32_t isFrontFace;
-  uint32_t sample;
-  uint32_t coverage;
-  uint32_t rawdata;    // arbitrary, depending on shader
-};
+#include "data/hlsl/hlsl_cbuffers.h"
 
 class D3D11DebugAPIWrapper : public DXBCDebug::DebugAPIWrapper
 {
@@ -75,12 +66,12 @@ public:
 
   bool CalculateSampleGather(DXBCBytecode::OpcodeType opcode,
                              DXBCDebug::SampleGatherResourceData resourceData,
-                             DXBCDebug::SampleGatherSamplerData samplerData, ShaderVariable uv,
-                             ShaderVariable ddxCalc, ShaderVariable ddyCalc,
-                             const int8_t texelOffsets[3], int multisampleIndex,
-                             float lodOrCompareValue, const uint8_t swizzle[4],
-                             DXBCDebug::GatherChannel gatherChannel, const char *opString,
-                             ShaderVariable &output);
+                             DXBCDebug::SampleGatherSamplerData samplerData,
+                             const ShaderVariable &uvIn, const ShaderVariable &ddxCalcIn,
+                             const ShaderVariable &ddyCalcIn, const int8_t texelOffsets[3],
+                             int multisampleIndex, float lodOrCompareValue,
+                             const uint8_t swizzle[4], DXBCDebug::GatherChannel gatherChannel,
+                             const char *opString, ShaderVariable &output);
 
 private:
   DXBC::ShaderType GetShaderType() { return m_dxbc ? m_dxbc->m_Type : DXBC::ShaderType::Pixel; }
@@ -142,7 +133,7 @@ void D3D11DebugAPIWrapper::FetchSRV(const DXBCDebug::BindingSlot &slot)
   pSRV->GetResource(&res);
 
   if(!res)
-    return;
+    return;    // @NoCoverage
 
   D3D11_SHADER_RESOURCE_VIEW_DESC sdesc;
   pSRV->GetDesc(&sdesc);
@@ -754,6 +745,14 @@ ShaderVariable D3D11DebugAPIWrapper::GetResourceInfo(DXBCBytecode::OperandType t
             result.value.u32v[3] =
                 isarray ? srvDesc.Texture1DArray.MipLevels : srvDesc.Texture1D.MipLevels;
 
+            if(isarray && (result.value.u32v[2] == 0 || result.value.u32v[2] == ~0U))
+              result.value.u32v[2] = desc.ArraySize;
+
+            if(result.value.u32v[3] == 0 || result.value.u32v[3] == ~0U)
+              result.value.u32v[3] = desc.MipLevels;
+            if(result.value.u32v[3] == 0 || result.value.u32v[3] == ~0U)
+              result.value.u32v[3] = CalcNumMips(desc.Width, 1, 1);
+
             if(mipLevel >= result.value.u32v[3])
               result.value.u32v[0] = result.value.u32v[1] = 0;
 
@@ -787,6 +786,9 @@ ShaderVariable D3D11DebugAPIWrapper::GetResourceInfo(DXBCBytecode::OperandType t
             {
               result.value.u32v[2] = srvDesc.Texture2DArray.ArraySize;
               result.value.u32v[3] = srvDesc.Texture2DArray.MipLevels;
+
+              if(result.value.u32v[2] == 0 || result.value.u32v[2] == ~0U)
+                result.value.u32v[2] = desc.ArraySize;
             }
             else if(srvDesc.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2DMS)
             {
@@ -797,7 +799,15 @@ ShaderVariable D3D11DebugAPIWrapper::GetResourceInfo(DXBCBytecode::OperandType t
             {
               result.value.u32v[2] = srvDesc.Texture2DMSArray.ArraySize;
               result.value.u32v[3] = 1;
+
+              if(result.value.u32v[2] == 0 || result.value.u32v[2] == ~0U)
+                result.value.u32v[2] = desc.ArraySize;
             }
+
+            if(result.value.u32v[3] == 0 || result.value.u32v[3] == ~0U)
+              result.value.u32v[3] = desc.MipLevels;
+            if(result.value.u32v[3] == 0 || result.value.u32v[3] == ~0U)
+              result.value.u32v[3] = CalcNumMips(desc.Width, desc.Height, 1);
 
             if(mipLevel >= result.value.u32v[3])
               result.value.u32v[0] = result.value.u32v[1] = result.value.u32v[2] = 0;
@@ -821,6 +831,11 @@ ShaderVariable D3D11DebugAPIWrapper::GetResourceInfo(DXBCBytecode::OperandType t
             result.value.u32v[1] = RDCMAX(1U, desc.Height >> mipLevel);
             result.value.u32v[2] = RDCMAX(1U, desc.Depth >> mipLevel);
             result.value.u32v[3] = srvDesc.Texture3D.MipLevels;
+
+            if(result.value.u32v[3] == 0 || result.value.u32v[3] == ~0U)
+              result.value.u32v[3] = desc.MipLevels;
+            if(result.value.u32v[3] == 0 || result.value.u32v[3] == ~0U)
+              result.value.u32v[3] = CalcNumMips(desc.Width, desc.Height, desc.Depth);
 
             if(mipLevel >= result.value.u32v[3])
               result.value.u32v[0] = result.value.u32v[1] = result.value.u32v[2] = 0;
@@ -852,6 +867,14 @@ ShaderVariable D3D11DebugAPIWrapper::GetResourceInfo(DXBCBytecode::OperandType t
             result.value.u32v[2] = isarray ? srvDesc.TextureCubeArray.NumCubes : 0;
             result.value.u32v[3] =
                 isarray ? srvDesc.TextureCubeArray.MipLevels : srvDesc.TextureCube.MipLevels;
+
+            if(isarray && (result.value.u32v[2] == 0 || result.value.u32v[2] == ~0U))
+              result.value.u32v[2] = desc.ArraySize;
+
+            if(result.value.u32v[3] == 0 || result.value.u32v[3] == ~0U)
+              result.value.u32v[3] = desc.MipLevels;
+            if(result.value.u32v[3] == 0 || result.value.u32v[3] == ~0U)
+              result.value.u32v[3] = CalcNumMips(desc.Width, desc.Height, 1);
 
             if(mipLevel >= result.value.u32v[3])
               result.value.u32v[0] = result.value.u32v[1] = result.value.u32v[2] = 0;
@@ -914,6 +937,9 @@ ShaderVariable D3D11DebugAPIWrapper::GetResourceInfo(DXBCBytecode::OperandType t
             result.value.u32v[1] = isarray ? uavDesc.Texture1DArray.ArraySize : 0;
             result.value.u32v[2] = 0;
 
+            if(isarray && (result.value.u32v[2] == 0 || result.value.u32v[2] == ~0U))
+              result.value.u32v[2] = desc.ArraySize;
+
             // spec says "For UAVs (u#), the number of mip levels is always 1."
             result.value.u32v[3] = 1;
 
@@ -940,9 +966,16 @@ ShaderVariable D3D11DebugAPIWrapper::GetResourceInfo(DXBCBytecode::OperandType t
             result.value.u32v[1] = RDCMAX(1U, desc.Height >> mipLevel);
 
             if(uavDesc.ViewDimension == D3D11_UAV_DIMENSION_TEXTURE2D)
+            {
               result.value.u32v[2] = 0;
+            }
             else if(uavDesc.ViewDimension == D3D11_UAV_DIMENSION_TEXTURE2DARRAY)
+            {
               result.value.u32v[2] = uavDesc.Texture2DArray.ArraySize;
+
+              if(result.value.u32v[2] == 0 || result.value.u32v[2] == ~0U)
+                result.value.u32v[2] = desc.ArraySize;
+            }
 
             // spec says "For UAVs (u#), the number of mip levels is always 1."
             result.value.u32v[3] = 1;
@@ -991,187 +1024,41 @@ ShaderVariable D3D11DebugAPIWrapper::GetResourceInfo(DXBCBytecode::OperandType t
 
 bool D3D11DebugAPIWrapper::CalculateSampleGather(
     DXBCBytecode::OpcodeType opcode, DXBCDebug::SampleGatherResourceData resourceData,
-    DXBCDebug::SampleGatherSamplerData samplerData, ShaderVariable uv, ShaderVariable ddxCalc,
-    ShaderVariable ddyCalc, const int8_t texelOffsets[3], int multisampleIndex,
-    float lodOrCompareValue, const uint8_t swizzle[4], DXBCDebug::GatherChannel gatherChannel,
-    const char *opString, ShaderVariable &output)
+    DXBCDebug::SampleGatherSamplerData samplerData, const ShaderVariable &uvIn,
+    const ShaderVariable &ddxCalcIn, const ShaderVariable &ddyCalcIn, const int8_t texelOffsets[3],
+    int multisampleIndex, float lodOrCompareValue, const uint8_t swizzle[4],
+    DXBCDebug::GatherChannel gatherChannel, const char *opString, ShaderVariable &output)
 {
   using namespace DXBCBytecode;
 
-  rdcstr funcRet = "";
-  DXGI_FORMAT retFmt = DXGI_FORMAT_UNKNOWN;
-
-  if(opcode == OPCODE_SAMPLE_C || opcode == OPCODE_SAMPLE_C_LZ || opcode == OPCODE_GATHER4_C ||
-     opcode == OPCODE_GATHER4_PO_C || opcode == OPCODE_LOD)
+  int sampleOp;
+  switch(opcode)
   {
-    retFmt = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    funcRet = "float4";
+    case OPCODE_SAMPLE: sampleOp = DEBUG_SAMPLE_TEX_SAMPLE; break;
+    case OPCODE_SAMPLE_L: sampleOp = DEBUG_SAMPLE_TEX_SAMPLE_LEVEL; break;
+    case OPCODE_SAMPLE_B: sampleOp = DEBUG_SAMPLE_TEX_SAMPLE_BIAS; break;
+    case OPCODE_SAMPLE_C: sampleOp = DEBUG_SAMPLE_TEX_SAMPLE_CMP; break;
+    case OPCODE_SAMPLE_D: sampleOp = DEBUG_SAMPLE_TEX_SAMPLE_GRAD; break;
+    case OPCODE_SAMPLE_C_LZ: sampleOp = DEBUG_SAMPLE_TEX_SAMPLE_CMP_LEVEL_ZERO; break;
+    case OPCODE_GATHER4: sampleOp = DEBUG_SAMPLE_TEX_GATHER4; break;
+    case OPCODE_GATHER4_C: sampleOp = DEBUG_SAMPLE_TEX_GATHER4_CMP; break;
+    case OPCODE_GATHER4_PO: sampleOp = DEBUG_SAMPLE_TEX_GATHER4_PO; break;
+    case OPCODE_GATHER4_PO_C: sampleOp = DEBUG_SAMPLE_TEX_GATHER4_PO_CMP; break;
+    case OPCODE_LOD: sampleOp = DEBUG_SAMPLE_TEX_LOD; break;
+    case OPCODE_LD: sampleOp = DEBUG_SAMPLE_TEX_LOAD; break;
+    case OPCODE_LD_MS: sampleOp = DEBUG_SAMPLE_TEX_LOAD_MS; break;
+    default:
+      // To support a new instruction, the shader created in
+      // ShaderDebugging::Init() will need updating
+      RDCERR("Unsupported instruction for CalculateSampleGather: %u", opcode);
+      return false;
   }
 
-  rdcstr samplerDecl = "";
-  if(samplerData.mode == SAMPLER_MODE_DEFAULT)
-    samplerDecl = "SamplerState s";
-  else if(samplerData.mode == SAMPLER_MODE_COMPARISON)
-    samplerDecl = "SamplerComparisonState s";
+  ShaderDebugging &debugData = m_pDevice->GetReplay()->GetShaderDebuggingData();
 
-  rdcstr textureDecl = "";
-  int texdim = 2;
-  int offsetDim = 2;
-  bool useOffsets = true;
-  if(resourceData.dim == RESOURCE_DIMENSION_TEXTURE1D)
-  {
-    textureDecl = "Texture1D";
-    texdim = 1;
-    offsetDim = 1;
-  }
-  else if(resourceData.dim == RESOURCE_DIMENSION_TEXTURE2D)
-  {
-    textureDecl = "Texture2D";
-    texdim = 2;
-    offsetDim = 2;
-  }
-  else if(resourceData.dim == RESOURCE_DIMENSION_TEXTURE2DMS)
-  {
-    textureDecl = "Texture2DMS";
-    texdim = 2;
-    offsetDim = 2;
-  }
-  else if(resourceData.dim == RESOURCE_DIMENSION_TEXTURE3D)
-  {
-    textureDecl = "Texture3D";
-    texdim = 3;
-    offsetDim = 3;
-  }
-  else if(resourceData.dim == RESOURCE_DIMENSION_TEXTURECUBE)
-  {
-    textureDecl = "TextureCube";
-    texdim = 3;
-    offsetDim = 3;
-    useOffsets = false;
-  }
-  else if(resourceData.dim == RESOURCE_DIMENSION_TEXTURE1DARRAY)
-  {
-    textureDecl = "Texture1DArray";
-    texdim = 2;
-    offsetDim = 1;
-  }
-  else if(resourceData.dim == RESOURCE_DIMENSION_TEXTURE2DARRAY)
-  {
-    textureDecl = "Texture2DArray";
-    texdim = 3;
-    offsetDim = 2;
-  }
-  else if(resourceData.dim == RESOURCE_DIMENSION_TEXTURE2DMSARRAY)
-  {
-    textureDecl = "Texture2DMSArray";
-    texdim = 3;
-    offsetDim = 2;
-  }
-  else if(resourceData.dim == RESOURCE_DIMENSION_TEXTURECUBEARRAY)
-  {
-    textureDecl = "TextureCubeArray";
-    texdim = 4;
-    offsetDim = 3;
-    useOffsets = false;
-  }
-  else
-  {
-    RDCERR("Unsupported resource type %d in sample operation", resourceData.dim);
-  }
-
-  {
-    char *typeStr[DXBC::NUM_RETURN_TYPES] = {
-        "",    // enum starts at ==1
-        "unorm float",
-        "snorm float",
-        "int",
-        "uint",
-        "float",
-        "__",    // RETURN_TYPE_MIXED
-        "double",
-        "__",    // RETURN_TYPE_CONTINUED
-        "__",    // RETURN_TYPE_UNUSED
-    };
-
-    // obviously these may be overly optimistic in some cases
-    // but since we don't know at debug time what the source texture format is
-    // we just use the fattest one necessary. There's no harm in retrieving at
-    // higher precision
-    DXGI_FORMAT fmts[DXBC::NUM_RETURN_TYPES] = {
-        DXGI_FORMAT_UNKNOWN,               // enum starts at ==1
-        DXGI_FORMAT_R32G32B32A32_FLOAT,    // unorm float
-        DXGI_FORMAT_R32G32B32A32_FLOAT,    // snorm float
-        DXGI_FORMAT_R32G32B32A32_SINT,     // int
-        DXGI_FORMAT_R32G32B32A32_UINT,     // uint
-        DXGI_FORMAT_R32G32B32A32_FLOAT,    // float
-        DXGI_FORMAT_UNKNOWN,               // RETURN_TYPE_MIXED
-
-        // should maybe be double, but there is no double texture format anyway!
-        // spec is unclear but I presume reads are done at most at float
-        // precision anyway since that's the source, and converted to doubles.
-        DXGI_FORMAT_R32G32B32A32_FLOAT,    // double
-
-        DXGI_FORMAT_UNKNOWN,    // RETURN_TYPE_CONTINUED
-        DXGI_FORMAT_UNKNOWN,    // RETURN_TYPE_UNUSED
-    };
-
-    rdcstr type = StringFormat::Fmt("%s4", typeStr[resourceData.retType]);
-
-    if(retFmt == DXGI_FORMAT_UNKNOWN)
-    {
-      funcRet = type;
-      retFmt = fmts[resourceData.retType];
-    }
-
-    if(resourceData.dim == RESOURCE_DIMENSION_TEXTURE2DMS ||
-       resourceData.dim == RESOURCE_DIMENSION_TEXTURE2DMSARRAY)
-    {
-      if(resourceData.sampleCount > 0)
-        type += StringFormat::Fmt(", %d", resourceData.sampleCount);
-    }
-
-    textureDecl += "<" + type + "> t";
-  }
-
-  char *formats[4][2] = {
-      {"float(%.10f)", "int(%d)"},
-      {"float2(%.10f, %.10f)", "int2(%d, %d)"},
-      {"float3(%.10f, %.10f, %.10f)", "int3(%d, %d, %d)"},
-      {"float4(%.10f, %.10f, %.10f, %.10f)", "int4(%d, %d, %d, %d)"},
-  };
-
-  int texcoordType = 0;
-  int texdimOffs = 0;
-
-  if(opcode == OPCODE_SAMPLE || opcode == OPCODE_SAMPLE_L || opcode == OPCODE_SAMPLE_B ||
-     opcode == OPCODE_SAMPLE_D || opcode == OPCODE_SAMPLE_C || opcode == OPCODE_SAMPLE_C_LZ ||
-     opcode == OPCODE_GATHER4 || opcode == OPCODE_GATHER4_C || opcode == OPCODE_GATHER4_PO ||
-     opcode == OPCODE_GATHER4_PO_C || opcode == OPCODE_LOD)
-  {
-    // all floats
-    texcoordType = 0;
-  }
-  else if(opcode == OPCODE_LD)
-  {
-    // int address, one larger than texdim (to account for mip/slice parameter)
-    texdimOffs = 1;
-    texcoordType = 1;
-
-    if(texdim == 4)
-    {
-      RDCERR("Unexpectedly large texture in load operation");
-    }
-  }
-  else if(opcode == OPCODE_LD_MS)
-  {
-    texcoordType = 1;
-
-    if(texdim == 4)
-    {
-      RDCERR("Unexpectedly large texture in load operation");
-    }
-  }
-
+  ShaderVariable uv(uvIn);
+  ShaderVariable ddxCalc(ddxCalcIn);
+  ShaderVariable ddyCalc(ddyCalcIn);
   for(uint32_t i = 0; i < ddxCalc.columns; i++)
   {
     if(!RDCISFINITE(ddxCalc.value.f32v[i]))
@@ -1200,7 +1087,7 @@ bool D3D11DebugAPIWrapper::CalculateSampleGather(
 
   for(uint32_t i = 0; i < uv.columns; i++)
   {
-    if(texcoordType == 0 && !RDCISFINITE(uv.value.f32v[i]))
+    if(opcode != OPCODE_LD && opcode != OPCODE_LD_MS && !RDCISFINITE(uv.value.f32v[i]))
     {
       RDCWARN("NaN or Inf in texlookup");
       uv.value.f32v[i] = 0.0f;
@@ -1213,185 +1100,71 @@ bool D3D11DebugAPIWrapper::CalculateSampleGather(
     }
   }
 
-  rdcstr texcoords;
+  // set array slice selection to 0 if the resource is declared non-arrayed
 
-  // because of unions in .value we can pass the float versions and printf will interpret it as
-  // the right type according to formats
-  if(texcoordType == 0)
-    texcoords = StringFormat::Fmt(formats[texdim + texdimOffs - 1][texcoordType], uv.value.f32v[0],
-                                  uv.value.f32v[1], uv.value.f32v[2], uv.value.f32v[3]);
+  if(resourceData.dim == RESOURCE_DIMENSION_TEXTURE1D)
+    uv.value.f32v[1] = 0.0f;
+  else if(resourceData.dim == RESOURCE_DIMENSION_TEXTURE2D ||
+          resourceData.dim == RESOURCE_DIMENSION_TEXTURE2DMS ||
+          resourceData.dim == RESOURCE_DIMENSION_TEXTURECUBE)
+    uv.value.f32v[2] = 0.0f;
+
+  DebugSampleOperation cbufferData = {};
+
+  memcpy(&cbufferData.debugSampleUV, uv.value.u32v.data(), sizeof(Vec4f));
+  memcpy(&cbufferData.debugSampleDDX, ddxCalc.value.u32v.data(), sizeof(Vec4f));
+  memcpy(&cbufferData.debugSampleDDY, ddyCalc.value.u32v.data(), sizeof(Vec4f));
+  memcpy(&cbufferData.debugSampleUVInt, uv.value.u32v.data(), sizeof(Vec4f));
+
+  if(resourceData.dim == RESOURCE_DIMENSION_TEXTURE1D ||
+     resourceData.dim == RESOURCE_DIMENSION_TEXTURE1DARRAY)
+  {
+    cbufferData.debugSampleTexDim = DEBUG_SAMPLE_TEX1D;
+  }
+  else if(resourceData.dim == RESOURCE_DIMENSION_TEXTURE2D ||
+          resourceData.dim == RESOURCE_DIMENSION_TEXTURE2DARRAY)
+  {
+    cbufferData.debugSampleTexDim = DEBUG_SAMPLE_TEX2D;
+  }
+  else if(resourceData.dim == RESOURCE_DIMENSION_TEXTURE3D)
+  {
+    cbufferData.debugSampleTexDim = DEBUG_SAMPLE_TEX3D;
+  }
+  else if(resourceData.dim == RESOURCE_DIMENSION_TEXTURE2DMS ||
+          resourceData.dim == RESOURCE_DIMENSION_TEXTURE2DMSARRAY)
+  {
+    cbufferData.debugSampleTexDim = DEBUG_SAMPLE_TEXMS;
+  }
+  else if(resourceData.dim == RESOURCE_DIMENSION_TEXTURECUBE ||
+          resourceData.dim == RESOURCE_DIMENSION_TEXTURECUBEARRAY)
+  {
+    cbufferData.debugSampleTexDim = DEBUG_SAMPLE_TEXCUBE;
+  }
   else
-    texcoords = StringFormat::Fmt(formats[texdim + texdimOffs - 1][texcoordType], uv.value.s32v[0],
-                                  uv.value.s32v[1], uv.value.s32v[2], uv.value.s32v[3]);
-
-  rdcstr offsets = "";
-
-  if(useOffsets)
   {
-    if(offsetDim == 1)
-      offsets = StringFormat::Fmt(", int(%d)", texelOffsets[0]);
-    else if(offsetDim == 2)
-      offsets = StringFormat::Fmt(", int2(%d, %d)", texelOffsets[0], texelOffsets[1]);
-    else if(offsetDim == 3)
-      offsets =
-          StringFormat::Fmt(", int3(%d, %d, %d)", texelOffsets[0], texelOffsets[1], texelOffsets[2]);
-    // texdim == 4 is cube arrays, no offset supported
+    RDCERR("Unsupported resource type %d in sample operation", resourceData.dim);
   }
 
-  char elems[] = "xyzw";
-  rdcstr strSwizzle = ".";
-  for(int i = 0; i < 4; ++i)
-    strSwizzle += elems[swizzle[i]];
+  int retTypes[DXBC::NUM_RETURN_TYPES] = {
+      0,                     // RETURN_TYPE_UNKNOWN
+      DEBUG_SAMPLE_UNORM,    // RETURN_TYPE_UNORM
+      DEBUG_SAMPLE_SNORM,    // RETURN_TYPE_SNORM
+      DEBUG_SAMPLE_INT,      // RETURN_TYPE_SINT
+      DEBUG_SAMPLE_UINT,     // RETURN_TYPE_UINT
+      DEBUG_SAMPLE_FLOAT,    // RETURN_TYPE_FLOAT
+      0,                     // RETURN_TYPE_MIXED
+      DEBUG_SAMPLE_FLOAT,    // RETURN_TYPE_DOUBLE (treat as floats)
+      0,                     // RETURN_TYPE_CONTINUED
+      0,                     // RETURN_TYPE_UNUSED
+  };
 
-  rdcstr strGatherChannel;
-  switch(gatherChannel)
-  {
-    case DXBCDebug::GatherChannel::Red: strGatherChannel = "Red"; break;
-    case DXBCDebug::GatherChannel::Green: strGatherChannel = "Green"; break;
-    case DXBCDebug::GatherChannel::Blue: strGatherChannel = "Blue"; break;
-    case DXBCDebug::GatherChannel::Alpha: strGatherChannel = "Alpha"; break;
-  }
+  cbufferData.debugSampleRetType = retTypes[resourceData.retType];
 
-  rdcstr vsProgram = "float4 main(uint id : SV_VertexID) : SV_Position {\n";
-  vsProgram += "return float4((id == 2) ? 3.0f : -1.0f, (id == 0) ? -3.0f : 1.0f, 0.5, 1.0);\n";
-  vsProgram += "}";
-
-  rdcstr sampleProgram;
-
-  if(opcode == OPCODE_SAMPLE || opcode == OPCODE_SAMPLE_B || opcode == OPCODE_SAMPLE_D)
-  {
-    rdcstr ddx =
-        StringFormat::Fmt(formats[offsetDim + texdimOffs - 1][0], ddxCalc.value.f32v[0],
-                          ddxCalc.value.f32v[1], ddxCalc.value.f32v[2], ddxCalc.value.f32v[3]);
-
-    rdcstr ddy =
-        StringFormat::Fmt(formats[offsetDim + texdimOffs - 1][0], ddyCalc.value.f32v[0],
-                          ddyCalc.value.f32v[1], ddyCalc.value.f32v[2], ddyCalc.value.f32v[3]);
-
-    sampleProgram = StringFormat::Fmt("%s : register(t0);\n%s : register(s0);\n\n",
-                                      textureDecl.c_str(), samplerDecl.c_str());
-    sampleProgram += funcRet + " main() : SV_Target0\n{\n";
-    sampleProgram +=
-        StringFormat::Fmt("return t.SampleGrad(s, %s, %s, %s %s)%s;\n", texcoords.c_str(),
-                          ddx.c_str(), ddy.c_str(), offsets.c_str(), strSwizzle.c_str());
-    sampleProgram += "}\n";
-  }
-  else if(opcode == OPCODE_SAMPLE_L)
-  {
-    sampleProgram = StringFormat::Fmt("%s : register(t0);\n%s : register(s0);\n\n",
-                                      textureDecl.c_str(), samplerDecl.c_str());
-    sampleProgram += funcRet + " main() : SV_Target0\n{\n";
-    sampleProgram +=
-        StringFormat::Fmt("return t.SampleLevel(s, %s, %.10f %s)%s;\n", texcoords.c_str(),
-                          lodOrCompareValue, offsets.c_str(), strSwizzle.c_str());
-    sampleProgram += "}\n";
-  }
-  else if(opcode == OPCODE_SAMPLE_C || opcode == OPCODE_LOD)
-  {
-    // these operations need derivatives but have no hlsl function to call to provide them, so
-    // we fake it in the vertex shader
-
-    rdcstr uvdecl = StringFormat::Fmt("float%d uv : uvs", texdim + texdimOffs);
-
-    vsProgram =
-        "void main(uint id : SV_VertexID, out float4 pos : SV_Position, out " + uvdecl + ") {\n";
-
-    rdcstr uvPlusDDX = StringFormat::Fmt(formats[texdim + texdimOffs - 1][texcoordType],
-                                         uv.value.f32v[0] + ddyCalc.value.f32v[0] * 2.0f,
-                                         uv.value.f32v[1] + ddyCalc.value.f32v[1] * 2.0f,
-                                         uv.value.f32v[2] + ddyCalc.value.f32v[2] * 2.0f,
-                                         uv.value.f32v[3] + ddyCalc.value.f32v[3] * 2.0f);
-
-    rdcstr uvPlusDDY = StringFormat::Fmt(formats[texdim + texdimOffs - 1][texcoordType],
-                                         uv.value.f32v[0] + ddxCalc.value.f32v[0] * 2.0f,
-                                         uv.value.f32v[1] + ddxCalc.value.f32v[1] * 2.0f,
-                                         uv.value.f32v[2] + ddxCalc.value.f32v[2] * 2.0f,
-                                         uv.value.f32v[3] + ddxCalc.value.f32v[3] * 2.0f);
-
-    vsProgram += "if(id == 0) uv = " + uvPlusDDX + ";\n";
-    vsProgram += "if(id == 1) uv = " + texcoords + ";\n";
-    vsProgram += "if(id == 2) uv = " + uvPlusDDY + ";\n";
-    vsProgram += "pos = float4((id == 2) ? 3.0f : -1.0f, (id == 0) ? -3.0f : 1.0f, 0.5, 1.0);\n";
-    vsProgram += "}";
-
-    if(opcode == OPCODE_SAMPLE_C)
-    {
-      sampleProgram = StringFormat::Fmt("%s : register(t0);\n%s : register(s0);\n\n",
-                                        textureDecl.c_str(), samplerDecl.c_str());
-      sampleProgram +=
-          funcRet + " main(float4 pos : SV_Position, " + uvdecl + ") : SV_Target0\n{\n";
-      sampleProgram += StringFormat::Fmt("return t.SampleCmpLevelZero(s, uv, %.10f %s).xxxx;\n",
-                                         lodOrCompareValue, offsets.c_str());
-      sampleProgram += "}\n";
-    }
-    else if(opcode == OPCODE_LOD)
-    {
-      sampleProgram = StringFormat::Fmt("%s : register(t0);\n%s : register(s0);\n\n",
-                                        textureDecl.c_str(), samplerDecl.c_str());
-      sampleProgram +=
-          funcRet + " main(float4 pos : SV_Position, " + uvdecl + ") : SV_Target0\n{\n";
-      sampleProgram +=
-          "return float4(t.CalculateLevelOfDetail(s, uv),\n"
-          "              t.CalculateLevelOfDetailUnclamped(s, uv),\n"
-          "              0.0f, 0.0f);\n";
-      sampleProgram += "}\n";
-    }
-  }
-  else if(opcode == OPCODE_SAMPLE_C_LZ)
-  {
-    sampleProgram = StringFormat::Fmt("%s : register(t0);\n%s : register(s0);\n\n",
-                                      textureDecl.c_str(), samplerDecl.c_str());
-    sampleProgram += funcRet + " main() : SV_Target0\n{\n";
-    sampleProgram +=
-        StringFormat::Fmt("return t.SampleCmpLevelZero(s, %s, %.10f %s)%s;\n", texcoords.c_str(),
-                          lodOrCompareValue, offsets.c_str(), strSwizzle.c_str());
-    sampleProgram += "}\n";
-  }
-  else if(opcode == OPCODE_LD)
-  {
-    sampleProgram = StringFormat::Fmt("%s : register(t0);\n\n", textureDecl.c_str());
-    sampleProgram += funcRet + " main() : SV_Target0\n{\n";
-    sampleProgram += "return t.Load(" + texcoords + offsets + ")" + strSwizzle + ";";
-    sampleProgram += "\n}\n";
-  }
-  else if(opcode == OPCODE_LD_MS)
-  {
-    sampleProgram = StringFormat::Fmt("%s : register(t0);\n\n", textureDecl.c_str());
-    sampleProgram += funcRet + " main() : SV_Target0\n{\n";
-    sampleProgram += StringFormat::Fmt("return t.Load(%s, int(%d) %s)%s;\n", texcoords.c_str(),
-                                       multisampleIndex, offsets.c_str(), strSwizzle.c_str());
-    sampleProgram += "\n}\n";
-  }
-  else if(opcode == OPCODE_GATHER4 || opcode == OPCODE_GATHER4_PO)
-  {
-    sampleProgram = StringFormat::Fmt("%s : register(t0);\n%s : register(s0);\n\n",
-                                      textureDecl.c_str(), samplerDecl.c_str());
-    sampleProgram += funcRet + " main() : SV_Target0\n{\n";
-    sampleProgram += StringFormat::Fmt("return t.Gather%s(s, %s %s)%s;\n", strGatherChannel.c_str(),
-                                       texcoords.c_str(), offsets.c_str(), strSwizzle.c_str());
-    sampleProgram += "}\n";
-  }
-  else if(opcode == OPCODE_GATHER4_C || opcode == OPCODE_GATHER4_PO_C)
-  {
-    sampleProgram = StringFormat::Fmt("%s : register(t0);\n%s : register(s0);\n\n",
-                                      textureDecl.c_str(), samplerDecl.c_str());
-    sampleProgram += funcRet + " main() : SV_Target0\n{\n";
-    sampleProgram += StringFormat::Fmt("return t.GatherCmp%s(s, %s, %.10f %s)%s;\n",
-                                       strGatherChannel.c_str(), texcoords.c_str(),
-                                       lodOrCompareValue, offsets.c_str(), strSwizzle.c_str());
-    sampleProgram += "}\n";
-  }
-
-  ID3D11VertexShader *vs =
-      m_pDevice->GetShaderCache()->MakeVShader(vsProgram.c_str(), "main", "vs_5_0");
-  ID3D11PixelShader *ps =
-      m_pDevice->GetShaderCache()->MakePShader(sampleProgram.c_str(), "main", "ps_5_0");
-
-  if(!vs || !ps)
-  {
-    RDCERR("Sample VS or PS failed to compile");
-    return false;
-  }
+  cbufferData.debugSampleGatherChannel = (int)gatherChannel;
+  cbufferData.debugSampleSampleIndex = multisampleIndex;
+  cbufferData.debugSampleOperation = sampleOp;
+  cbufferData.debugSampleLod = lodOrCompareValue;
+  cbufferData.debugSampleCompare = lodOrCompareValue;
 
   D3D11RenderStateTracker tracker(m_pDevice->GetImmediateContext());
 
@@ -1436,14 +1209,29 @@ bool D3D11DebugAPIWrapper::CalculateSampleGather(
     default: RDCERR("Unhandled shader type %d", GetShaderType()); break;
   }
 
+  texSlot = (cbufferData.debugSampleTexDim - 1) + 5 * (cbufferData.debugSampleRetType - 1);
+
   // set onto PS while we perform the sample
-  context->PSSetShaderResources(0, 1, &usedSRV);
+  context->PSSetShaderResources(texSlot, 1, &usedSRV);
   if(opcode == OPCODE_SAMPLE_B && samplerData.bias != 0.0f)
   {
-    RDCASSERT(usedSamp);
+    D3D11_SAMPLER_DESC desc = {};
 
-    D3D11_SAMPLER_DESC desc;
-    usedSamp->GetDesc(&desc);
+    if(usedSamp)
+    {
+      usedSamp->GetDesc(&desc);
+    }
+    else
+    {
+      desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+      desc.AddressU = desc.AddressV = desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+      desc.MipLODBias = 0.0f;
+      desc.MaxAnisotropy = 1;
+      desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+      desc.BorderColor[0] = desc.BorderColor[1] = desc.BorderColor[2] = desc.BorderColor[3] = 1.0f;
+      desc.MinLOD = -FLT_MAX;
+      desc.MaxLOD = FLT_MAX;
+    }
 
     desc.MipLODBias = RDCCLAMP(desc.MipLODBias + samplerData.bias, -15.99f, 15.99f);
 
@@ -1451,7 +1239,8 @@ bool D3D11DebugAPIWrapper::CalculateSampleGather(
     HRESULT hr = m_pDevice->CreateSamplerState(&desc, &replacementSamp);
     if(FAILED(hr))
     {
-      RDCERR("Failed to create new sampler state in debugging HRESULT: %s", ToStr(hr).c_str());
+      RDCERR("Failed to create new sampler state in debugging HRESULT: %s",
+             ToStr(hr).c_str());    // @NoCoverage
     }
     else
     {
@@ -1461,14 +1250,33 @@ bool D3D11DebugAPIWrapper::CalculateSampleGather(
   }
   else
   {
-    context->PSSetSamplers(0, 1, &usedSamp);
+    if(opcode == OPCODE_SAMPLE_C || opcode == OPCODE_SAMPLE_C_LZ || opcode == OPCODE_GATHER4_C ||
+       opcode == OPCODE_GATHER4_PO_C)
+      context->PSSetSamplers(1, 1, &usedSamp);
+    else
+      context->PSSetSamplers(0, 1, &usedSamp);
   }
 
   context->IASetInputLayout(NULL);
   context->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-  context->VSSetShader(vs, NULL, 0);
-  context->PSSetShader(ps, NULL, 0);
+  context->VSSetShader(debugData.SampleVS, NULL, 0);
+  context->PSSetShader(debugData.GetSamplePS(texelOffsets), NULL, 0);
+
+  D3D11_MAPPED_SUBRESOURCE mapped;
+  HRESULT hr = context->Map(debugData.ParamBuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+  if(FAILED(hr))
+  {
+    RDCERR("Failed to map parameters HRESULT: %s", ToStr(hr).c_str());    // @NoCoverage
+    return false;                                                         // @NoCoverage
+  }
+
+  memcpy(mapped.pData, &cbufferData, sizeof(cbufferData));
+
+  context->Unmap(debugData.ParamBuf, 0);
+
+  context->VSSetConstantBuffers(0, 1, &debugData.ParamBuf);
+  context->PSSetConstantBuffers(0, 1, &debugData.ParamBuf);
 
   D3D11_VIEWPORT view = {0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};
   context->RSSetViewports(1, &view);
@@ -1484,88 +1292,44 @@ bool D3D11DebugAPIWrapper::CalculateSampleGather(
   context->OMSetBlendState(NULL, NULL, (UINT)~0);
   context->OMSetDepthStencilState(NULL, 0);
 
-  ID3D11RenderTargetView *rtv = NULL;
-
-  ID3D11Texture2D *rtTex = NULL;
-  ID3D11Texture2D *copyTex = NULL;
-
-  D3D11_TEXTURE2D_DESC tdesc;
-
-  RDCASSERT(retFmt != DXGI_FORMAT_UNKNOWN);
-
-  tdesc.ArraySize = 1;
-  tdesc.BindFlags = D3D11_BIND_RENDER_TARGET;
-  tdesc.CPUAccessFlags = 0;
-  tdesc.Format = retFmt;
-  tdesc.Width = 1;
-  tdesc.Height = 1;
-  tdesc.MipLevels = 0;
-  tdesc.MiscFlags = 0;
-  tdesc.SampleDesc.Count = 1;
-  tdesc.SampleDesc.Quality = 0;
-  tdesc.Usage = D3D11_USAGE_DEFAULT;
-
-  HRESULT hr = S_OK;
-
-  hr = m_pDevice->CreateTexture2D(&tdesc, NULL, &rtTex);
-
-  if(FAILED(hr))
-  {
-    RDCERR("Failed to create RT tex HRESULT: %s", ToStr(hr).c_str());
-    return false;
-  }
-
-  tdesc.BindFlags = 0;
-  tdesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-  tdesc.Usage = D3D11_USAGE_STAGING;
-
-  hr = m_pDevice->CreateTexture2D(&tdesc, NULL, &copyTex);
-
-  if(FAILED(hr))
-  {
-    RDCERR("Failed to create copy tex HRESULT: %s", ToStr(hr).c_str());
-    return false;
-  }
-
-  D3D11_RENDER_TARGET_VIEW_DESC rtDesc;
-
-  rtDesc.Format = retFmt;
-  rtDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-  rtDesc.Texture2D.MipSlice = 0;
-
-  hr = m_pDevice->CreateRenderTargetView(rtTex, &rtDesc, &rtv);
-
-  if(FAILED(hr))
-  {
-    RDCERR("Failed to create rt rtv HRESULT: %s", ToStr(hr).c_str());
-    return false;
-  }
-
-  context->OMSetRenderTargetsAndUnorderedAccessViews(1, &rtv, NULL, 0, 0, NULL, NULL);
+  UINT uavCount = ~0U;
+  context->OMSetRenderTargetsAndUnorderedAccessViews(1, &debugData.DummyRTV, NULL, 1, 1,
+                                                     &debugData.OutUAV, &uavCount);
   context->Draw(3, 0);
 
-  context->CopyResource(copyTex, rtTex);
+  context->CopyResource(debugData.OutStageBuf, debugData.OutBuf);
 
-  D3D11_MAPPED_SUBRESOURCE mapped;
-  hr = context->Map(copyTex, 0, D3D11_MAP_READ, 0, &mapped);
+  hr = context->Map(debugData.OutStageBuf, 0, D3D11_MAP_READ, 0, &mapped);
 
   if(FAILED(hr))
   {
-    RDCERR("Failed to map results HRESULT: %s", ToStr(hr).c_str());
-    return false;
+    RDCERR("Failed to map results HRESULT: %s", ToStr(hr).c_str());    // @NoCoverage
+    return false;                                                      // @NoCoverage
   }
 
   ShaderVariable lookupResult("tex", 0.0f, 0.0f, 0.0f, 0.0f);
 
-  memcpy(lookupResult.value.u32v.data(), mapped.pData, sizeof(uint32_t) * 4);
+  float *retFloats = (float *)mapped.pData;
+  uint32_t *retUInts = (uint32_t *)(retFloats + 8);
+  int32_t *retSInts = (int32_t *)(retUInts + 8);
 
-  context->Unmap(copyTex, 0);
+  if(cbufferData.debugSampleRetType == DEBUG_SAMPLE_UINT)
+  {
+    for(int i = 0; i < 4; i++)
+      lookupResult.value.u32v[i] = retUInts[swizzle[i]];
+  }
+  else if(cbufferData.debugSampleRetType == DEBUG_SAMPLE_INT)
+  {
+    for(int i = 0; i < 4; i++)
+      lookupResult.value.s32v[i] = retSInts[swizzle[i]];
+  }
+  else
+  {
+    for(int i = 0; i < 4; i++)
+      lookupResult.value.f32v[i] = retFloats[swizzle[i]];
+  }
 
-  SAFE_RELEASE(rtTex);
-  SAFE_RELEASE(copyTex);
-  SAFE_RELEASE(rtv);
-  SAFE_RELEASE(vs);
-  SAFE_RELEASE(ps);
+  context->Unmap(debugData.OutStageBuf, 0);
 
   SAFE_RELEASE(context);
 
@@ -1580,121 +1344,57 @@ bool D3D11DebugAPIWrapper::CalculateMathIntrinsic(DXBCBytecode::OpcodeType opcod
                                                   const ShaderVariable &input,
                                                   ShaderVariable &output1, ShaderVariable &output2)
 {
-  rdcstr csProgram =
-      "RWBuffer<float4> outval : register(u0);\n"
-      "cbuffer srcOper : register(b0) { float4 inval; };\n"
-      "[numthreads(1, 1, 1)]\n"
-      "void main() {\n";
+  D3D11RenderStateTracker tracker(m_pDevice->GetImmediateContext());
 
+  int mathOp = 0;
   switch(opcode)
   {
-    case DXBCBytecode::OPCODE_RCP: csProgram += "outval[0] = rcp(inval);\n"; break;
-    case DXBCBytecode::OPCODE_RSQ: csProgram += "outval[0] = rsqrt(inval);\n"; break;
-    case DXBCBytecode::OPCODE_EXP: csProgram += "outval[0] = exp2(inval);\n"; break;
-    case DXBCBytecode::OPCODE_LOG: csProgram += "outval[0] = log2(inval);\n"; break;
-    case DXBCBytecode::OPCODE_SINCOS: csProgram += "sincos(inval, outval[0], outval[1]);\n"; break;
-    default: RDCERR("Unexpected opcode %d passed to CalculateMathIntrinsic", opcode); return false;
+    case DXBCBytecode::OPCODE_RCP: mathOp = DEBUG_SAMPLE_MATH_DXBC_RCP; break;
+    case DXBCBytecode::OPCODE_RSQ: mathOp = DEBUG_SAMPLE_MATH_DXBC_RSQ; break;
+    case DXBCBytecode::OPCODE_EXP: mathOp = DEBUG_SAMPLE_MATH_DXBC_EXP; break;
+    case DXBCBytecode::OPCODE_LOG: mathOp = DEBUG_SAMPLE_MATH_DXBC_LOG; break;
+    case DXBCBytecode::OPCODE_SINCOS: mathOp = DEBUG_SAMPLE_MATH_DXBC_SINCOS; break;
+    default:
+      // To support a new instruction, the shader created in
+      // ShaderDebugging::Init() will need updating
+      RDCERR("Unsupported instruction for CalculateMathIntrinsic: %u", opcode);
+      return false;
   }
-
-  csProgram += "}\n";
-
-  ID3D11ComputeShader *cs =
-      m_pDevice->GetShaderCache()->MakeCShader(csProgram.c_str(), "main", "cs_5_0");
-
-  D3D11RenderStateTracker tracker(m_pDevice->GetImmediateContext());
 
   ID3D11DeviceContext *context = NULL;
   m_pDevice->GetImmediateContext(&context);
 
-  ID3D11Buffer *constBuf = NULL;
-
-  D3D11_BUFFER_DESC cdesc;
-
-  cdesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-  cdesc.CPUAccessFlags = 0;
-  cdesc.MiscFlags = 0;
-  cdesc.StructureByteStride = sizeof(Vec4f);
-  cdesc.ByteWidth = sizeof(Vec4f);
-  cdesc.Usage = D3D11_USAGE_DEFAULT;
-
-  D3D11_SUBRESOURCE_DATA operData = {};
-  operData.pSysMem = &input.value.u32v[0];
-  operData.SysMemPitch = sizeof(Vec4f);
-  operData.SysMemSlicePitch = sizeof(Vec4f);
-
-  HRESULT hr = m_pDevice->CreateBuffer(&cdesc, &operData, &constBuf);
-  if(FAILED(hr))
-  {
-    RDCERR("Failed to create constant buf HRESULT: %s", ToStr(hr).c_str());
-    return false;
-  }
-
-  context->CSSetConstantBuffers(0, 1, &constBuf);
-
-  context->CSSetShader(cs, NULL, 0);
-
-  ID3D11UnorderedAccessView *uav = NULL;
-
-  ID3D11Buffer *uavBuf = NULL;
-  ID3D11Buffer *copyBuf = NULL;
-
-  D3D11_BUFFER_DESC bdesc;
-
-  bdesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
-  bdesc.CPUAccessFlags = 0;
-  bdesc.MiscFlags = 0;
-  bdesc.StructureByteStride = sizeof(Vec4f);
-  bdesc.ByteWidth = sizeof(Vec4f) * 2;
-  bdesc.Usage = D3D11_USAGE_DEFAULT;
-
-  hr = m_pDevice->CreateBuffer(&bdesc, NULL, &uavBuf);
-
-  if(FAILED(hr))
-  {
-    RDCERR("Failed to create UAV buf HRESULT: %s", ToStr(hr).c_str());
-    return false;
-  }
-
-  bdesc.BindFlags = 0;
-  bdesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-  bdesc.Usage = D3D11_USAGE_STAGING;
-
-  hr = m_pDevice->CreateBuffer(&bdesc, NULL, &copyBuf);
-
-  if(FAILED(hr))
-  {
-    RDCERR("Failed to create copy buf HRESULT: %s", ToStr(hr).c_str());
-    return false;
-  }
-
-  D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-
-  uavDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-  uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-  uavDesc.Buffer.FirstElement = 0;
-  uavDesc.Buffer.NumElements = 2;
-  uavDesc.Buffer.Flags = 0;
-
-  hr = m_pDevice->CreateUnorderedAccessView(uavBuf, &uavDesc, &uav);
-
-  if(FAILED(hr))
-  {
-    RDCERR("Failed to create uav HRESULT: %s", ToStr(hr).c_str());
-    return false;
-  }
-
-  context->CSSetUnorderedAccessViews(0, 1, &uav, NULL);
-  context->Dispatch(1, 1, 1);
-
-  context->CopyResource(copyBuf, uavBuf);
+  const ShaderDebugging &debugData = m_pDevice->GetReplay()->GetShaderDebuggingData();
 
   D3D11_MAPPED_SUBRESOURCE mapped;
-  hr = context->Map(copyBuf, 0, D3D11_MAP_READ, 0, &mapped);
+  HRESULT hr = context->Map(debugData.ParamBuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+  if(FAILED(hr))
+  {
+    RDCERR("Failed to map parameters HRESULT: %s", ToStr(hr).c_str());    // @NoCoverage
+    return false;                                                         // @NoCoverage
+  }
+
+  DebugMathOperation data;
+  data.mathOp = mathOp;
+  memcpy(&data.mathInVal, &input.value.u32v[0], sizeof(Vec4f));
+
+  memcpy(mapped.pData, &data, sizeof(data));
+
+  context->Unmap(debugData.ParamBuf, 0);
+
+  context->CSSetConstantBuffers(0, 1, &debugData.ParamBuf);
+  context->CSSetShader(debugData.MathCS, NULL, 0);
+  context->CSSetUnorderedAccessViews(1, 1, &debugData.OutUAV, NULL);
+  context->Dispatch(1, 1, 1);
+
+  context->CopyResource(debugData.OutStageBuf, debugData.OutBuf);
+
+  hr = context->Map(debugData.OutStageBuf, 0, D3D11_MAP_READ, 0, &mapped);
 
   if(FAILED(hr))
   {
-    RDCERR("Failed to map results HRESULT: %s", ToStr(hr).c_str());
-    return false;
+    RDCERR("Failed to map results HRESULT: %s", ToStr(hr).c_str());    // @NoCoverage
+    return false;                                                      // @NoCoverage
   }
 
   uint32_t *resA = (uint32_t *)mapped.pData;
@@ -1703,13 +1403,7 @@ bool D3D11DebugAPIWrapper::CalculateMathIntrinsic(DXBCBytecode::OpcodeType opcod
   memcpy(output1.value.u32v.data(), resA, sizeof(uint32_t) * 4);
   memcpy(output2.value.u32v.data(), resB, sizeof(uint32_t) * 4);
 
-  context->Unmap(copyBuf, 0);
-
-  SAFE_RELEASE(constBuf);
-  SAFE_RELEASE(uavBuf);
-  SAFE_RELEASE(copyBuf);
-  SAFE_RELEASE(uav);
-  SAFE_RELEASE(cs);
+  context->Unmap(debugData.OutStageBuf, 0);
 
   SAFE_RELEASE(context);
 
@@ -1719,8 +1413,7 @@ bool D3D11DebugAPIWrapper::CalculateMathIntrinsic(DXBCBytecode::OpcodeType opcod
 void AddCBuffersToGlobalState(const DXBCBytecode::Program &program, D3D11DebugManager &debugManager,
                               DXBCDebug::GlobalState &global,
                               rdcarray<SourceVariableMapping> &sourceVars,
-                              const D3D11RenderState::Shader &shader, const ShaderReflection &refl,
-                              const ShaderBindpointMapping &mapping)
+                              const D3D11RenderState::Shader &shader, const ShaderReflection &refl)
 {
   bytebuf cbufData;
   for(int i = 0; i < D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT; i++)
@@ -1729,10 +1422,12 @@ void AddCBuffersToGlobalState(const DXBCBytecode::Program &program, D3D11DebugMa
     {
       DXBCDebug::BindingSlot slot(i, 0);
       cbufData.clear();
-      debugManager.GetBufferData(shader.ConstantBuffers[i], shader.CBOffsets[i] * sizeof(Vec4f),
-                                 shader.CBCounts[i] * sizeof(Vec4f), cbufData);
+      // GetBufferData returns the whole buffer if we pass a length of 0, so skip explicitly
+      if(shader.CBCounts[i] > 0)
+        debugManager.GetBufferData(shader.ConstantBuffers[i], shader.CBOffsets[i] * sizeof(Vec4f),
+                                   shader.CBCounts[i] * sizeof(Vec4f), cbufData);
 
-      AddCBufferToGlobalState(program, global, sourceVars, refl, mapping, slot, cbufData);
+      AddCBufferToGlobalState(program, global, sourceVars, refl, slot, cbufData);
     }
   }
 }
@@ -1740,9 +1435,6 @@ void AddCBuffersToGlobalState(const DXBCBytecode::Program &program, D3D11DebugMa
 ShaderDebugTrace *D3D11Replay::DebugVertex(uint32_t eventId, uint32_t vertid, uint32_t instid,
                                            uint32_t idx, uint32_t view)
 {
-  using namespace DXBCBytecode;
-  using namespace DXBCDebug;
-
   D3D11MarkerRegion region(
       StringFormat::Fmt("DebugVertex @ %u of (%u,%u,%u)", eventId, vertid, instid, idx));
 
@@ -1760,13 +1452,13 @@ ShaderDebugTrace *D3D11Replay::DebugVertex(uint32_t eventId, uint32_t vertid, ui
   if(!vs)
     return new ShaderDebugTrace;
 
-  DXBC::DXBCContainer *dxbc = vs->GetDXBC();
+  const DXBC::DXBCContainer *dxbc = vs->GetDXBC();
   const ShaderReflection &refl = vs->GetDetails();
 
   if(!dxbc)
     return new ShaderDebugTrace;
 
-  dxbc->GetDisassembly();
+  vs->GetWriteableDXBC()->GetDisassembly(false);
 
   D3D11RenderState *rs = m_pImmediateContext->GetCurrentPipelineState();
 
@@ -1830,14 +1522,14 @@ ShaderDebugTrace *D3D11Replay::DebugVertex(uint32_t eventId, uint32_t vertid, ui
     }
   }
 
-  InterpretDebugger *interpreter = new InterpretDebugger;
+  DXBCDebug::InterpretDebugger *interpreter = new DXBCDebug::InterpretDebugger;
   interpreter->eventId = eventId;
-  ShaderDebugTrace *ret = interpreter->BeginDebug(dxbc, refl, vs->GetMapping(), 0);
-  GlobalState &global = interpreter->global;
-  ThreadState &state = interpreter->activeLane();
+  ShaderDebugTrace *ret = interpreter->BeginDebug(dxbc, refl, 0);
+  DXBCDebug::GlobalState &global = interpreter->global;
+  DXBCDebug::ThreadState &state = interpreter->activeLane();
 
   AddCBuffersToGlobalState(*dxbc->GetDXBCByteCode(), *GetDebugManager(), global, ret->sourceVars,
-                           rs->VS, refl, vs->GetMapping());
+                           rs->VS, refl);
 
   for(size_t i = 0; i < state.inputs.size(); i++)
   {
@@ -2103,11 +1795,11 @@ ShaderDebugTrace *D3D11Replay::DebugVertex(uint32_t eventId, uint32_t vertid, ui
   return ret;
 }
 
-ShaderDebugTrace *D3D11Replay::DebugPixel(uint32_t eventId, uint32_t x, uint32_t y, uint32_t sample,
-                                          uint32_t primitive)
+ShaderDebugTrace *D3D11Replay::DebugPixel(uint32_t eventId, uint32_t x, uint32_t y,
+                                          const DebugPixelInputs &inputs)
 {
-  using namespace DXBCBytecode;
-  using namespace DXBCDebug;
+  uint32_t sample = inputs.sample;
+  uint32_t primitive = inputs.primitive;
 
   D3D11MarkerRegion region(
       StringFormat::Fmt("DebugPixel @ %u of (%u,%u) %u / %u", eventId, x, y, sample, primitive));
@@ -2148,15 +1840,15 @@ ShaderDebugTrace *D3D11Replay::DebugPixel(uint32_t eventId, uint32_t x, uint32_t
 
   D3D11RenderState *rs = m_pImmediateContext->GetCurrentPipelineState();
 
-  DXBC::DXBCContainer *dxbc = ps->GetDXBC();
+  const DXBC::DXBCContainer *dxbc = ps->GetDXBC();
   const ShaderReflection &refl = ps->GetDetails();
 
   if(!dxbc)
     return new ShaderDebugTrace;
 
-  dxbc->GetDisassembly();
+  ps->GetWriteableDXBC()->GetDisassembly(false);
 
-  DXBC::DXBCContainer *prevdxbc = NULL;
+  const DXBC::DXBCContainer *prevdxbc = NULL;
 
   if(prevdxbc == NULL && gs != NULL)
     prevdxbc = gs->GetDXBC();
@@ -2166,32 +1858,13 @@ ShaderDebugTrace *D3D11Replay::DebugPixel(uint32_t eventId, uint32_t x, uint32_t
     prevdxbc = vs->GetDXBC();
   RDCASSERT(prevdxbc);
 
-  rdcarray<PSInputElement> initialValues;
-  rdcarray<rdcstr> floatInputs;
-  rdcarray<rdcstr> inputVarNames;
-  rdcstr extractHlsl;
-  int structureStride = 0;
+  DXDebug::InputFetcherConfig cfg;
+  DXDebug::InputFetcher fetcher;
 
-  DXBCDebug::GatherPSInputDataForInitialValues(dxbc, *prevdxbc->GetReflection(), initialValues,
-                                               floatInputs, inputVarNames, extractHlsl,
-                                               structureStride);
-
-  uint32_t overdrawLevels = 100;    // maximum number of overdraw levels
-
-  // If the pipe contains a geometry shader, then SV_PrimitiveID cannot be used in the pixel
-  // shader without being emitted from the geometry shader. For now, check if this semantic
-  // will succeed in a new pixel shader with the rest of the pipe unchanged
-  bool usePrimitiveID = (prevdxbc->m_Type != DXBC::ShaderType::Geometry);
-  for(const PSInputElement &e : initialValues)
-  {
-    if(e.sysattribute == ShaderBuiltin::PrimitiveIndex)
-    {
-      usePrimitiveID = true;
-      break;
-    }
-  }
-
-  uint32_t uavslot = 0;
+  cfg.x = x;
+  cfg.y = y;
+  cfg.waveOps = false;
+  cfg.maxWaveSize = 4;
 
   ID3D11DepthStencilView *depthView = NULL;
   ID3D11RenderTargetView *rtView = NULL;
@@ -2199,10 +1872,13 @@ ShaderDebugTrace *D3D11Replay::DebugPixel(uint32_t eventId, uint32_t x, uint32_t
   // we have the right multisample level on output either way
   m_pImmediateContext->OMGetRenderTargets(1, &rtView, &depthView);
   if(rtView != NULL)
-    uavslot = 1;
+    cfg.uavslot = 1;
+  else
+    cfg.uavslot = 0;
+  cfg.uavspace = 0;
 
   // get the multisample count
-  uint32_t outputSampleCount = 1;
+  cfg.outputSampleCount = 1;
 
   {
     ID3D11Resource *res = NULL;
@@ -2222,257 +1898,20 @@ ShaderDebugTrace *D3D11Replay::DebugPixel(uint32_t eventId, uint32_t x, uint32_t
         D3D11_TEXTURE2D_DESC desc;
         ((ID3D11Texture2D *)res)->GetDesc(&desc);
 
-        outputSampleCount = RDCMAX(1U, desc.SampleDesc.Count);
+        cfg.outputSampleCount = RDCMAX(1U, desc.SampleDesc.Count);
       }
 
       SAFE_RELEASE(res);
     }
   }
 
-  std::set<GlobalState::SampleEvalCacheKey> evalSampleCacheData;
-
-  uint64_t sampleEvalRegisterMask = 0;
-
-  // if we're not rendering at MSAA, no need to fill the cache because evaluates will all return the
-  // plain input anyway.
-  if(outputSampleCount > 1)
-  {
-    // scan the instructions to see if it contains any evaluates.
-    for(size_t i = 0; i < dxbc->GetDXBCByteCode()->GetNumInstructions(); i++)
-    {
-      const Operation &op = dxbc->GetDXBCByteCode()->GetInstruction(i);
-
-      // skip any non-eval opcodes
-      if(op.operation != OPCODE_EVAL_CENTROID && op.operation != OPCODE_EVAL_SAMPLE_INDEX &&
-         op.operation != OPCODE_EVAL_SNAPPED)
-        continue;
-
-      // the generation of this key must match what we'll generate in the corresponding lookup
-      GlobalState::SampleEvalCacheKey key;
-
-      // all the eval opcodes have rDst, vIn as the first two operands
-      key.inputRegisterIndex = (int32_t)op.operands[1].indices[0].index;
-
-      for(int c = 0; c < 4; c++)
-      {
-        if(op.operands[0].comps[c] == 0xff)
-          break;
-
-        key.numComponents = c + 1;
-      }
-
-      key.firstComponent = op.operands[1].comps[op.operands[0].comps[0]];
-
-      sampleEvalRegisterMask |= 1ULL << key.inputRegisterIndex;
-
-      if(op.operation == OPCODE_EVAL_CENTROID)
-      {
-        // nothing to do - default key is centroid, sample is -1 and offset x/y is 0
-        evalSampleCacheData.insert(key);
-      }
-      else if(op.operation == OPCODE_EVAL_SAMPLE_INDEX)
-      {
-        if(op.operands[2].type == TYPE_IMMEDIATE32 || op.operands[2].type == TYPE_IMMEDIATE64)
-        {
-          // hooray, only sampling a single index, just add this key
-          key.sample = (int32_t)op.operands[2].values[0];
-
-          evalSampleCacheData.insert(key);
-        }
-        else
-        {
-          // parameter is a register and we don't know which sample will be needed, fetch them all.
-          // In most cases this will be a loop over them all, so they'll all be needed anyway
-          for(uint32_t c = 0; c < outputSampleCount; c++)
-          {
-            key.sample = (int32_t)c;
-            evalSampleCacheData.insert(key);
-          }
-        }
-      }
-      else if(op.operation == OPCODE_EVAL_SNAPPED)
-      {
-        if(op.operands[2].type == TYPE_IMMEDIATE32 || op.operands[2].type == TYPE_IMMEDIATE64)
-        {
-          // hooray, only sampling a single offset, just add this key
-          key.offsetx = (int32_t)op.operands[2].values[0];
-          key.offsety = (int32_t)op.operands[2].values[1];
-
-          evalSampleCacheData.insert(key);
-        }
-        else
-        {
-          m_pDevice->AddDebugMessage(
-              MessageCategory::Shaders, MessageSeverity::Medium, MessageSource::RuntimeWarning,
-              "EvaluateAttributeSnapped called with dynamic parameter, caching all possible "
-              "evaluations which could have performance impact.");
-
-          for(key.offsetx = -8; key.offsetx <= 7; key.offsetx++)
-            for(key.offsety = -8; key.offsety <= 7; key.offsety++)
-              evalSampleCacheData.insert(key);
-        }
-      }
-    }
-  }
-
-  extractHlsl += R"(
-struct PSInitialData
-{
-  // metadata we need ourselves
-  uint hit;
-  float3 pos;
-  uint prim;
-  uint fface;
-  uint sample;
-  uint covge;
-  float derivValid;
-
-  // input values
-  PSInput IN;
-  PSInput INddx;
-  PSInput INddy;
-  PSInput INddxfine;
-  PSInput INddyfine;
-};
-
-)";
-
-  extractHlsl +=
-      "RWStructuredBuffer<PSInitialData> PSInitialBuffer : register(u" + ToStr(uavslot) + ");\n\n";
-
-  if(!evalSampleCacheData.empty())
-  {
-    // float4 is wasteful in some cases but it's easier than using ByteAddressBuffer and manual
-    // packing
-    extractHlsl += "RWBuffer<float4> PSEvalBuffer : register(u" + ToStr(uavslot + 1) + ");\n\n";
-  }
-
-  if(usePrimitiveID)
-  {
-    extractHlsl += R"(
-void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position, uint prim : SV_PrimitiveID,
-                     uint sample : SV_SampleIndex, uint covge : SV_Coverage,
-                     bool fface : SV_IsFrontFace)
-{
-)";
-  }
-  else
-  {
-    extractHlsl += R"(
-void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position,
-                     uint sample : SV_SampleIndex, uint covge : SV_Coverage,
-                     bool fface : SV_IsFrontFace)
-{
-)";
-  }
-
-  extractHlsl += "  uint idx = " + ToStr(overdrawLevels) + ";\n";
-  extractHlsl += StringFormat::Fmt(
-      "  if(abs(debug_pixelPos.x - %u.5) < 0.5f && abs(debug_pixelPos.y - %u.5) < 0.5f)\n", x, y);
-  extractHlsl += "    InterlockedAdd(PSInitialBuffer[0].hit, 1, idx);\n\n";
-  extractHlsl += "  idx = min(idx, " + ToStr(overdrawLevels) + ");\n\n";
-  extractHlsl += "  PSInitialBuffer[idx].pos = debug_pixelPos.xyz;\n";
-
-  if(usePrimitiveID)
-    extractHlsl += "  PSInitialBuffer[idx].prim = prim;\n";
-  else
-    extractHlsl += "  PSInitialBuffer[idx].prim = 0;\n";
-
-  extractHlsl += "  PSInitialBuffer[idx].fface = fface;\n";
-  extractHlsl += "  PSInitialBuffer[idx].covge = covge;\n";
-  extractHlsl += "  PSInitialBuffer[idx].sample = sample;\n";
-  extractHlsl += "  PSInitialBuffer[idx].IN = IN;\n";
-  extractHlsl += "  PSInitialBuffer[idx].derivValid = ddx(debug_pixelPos.x);\n";
-  extractHlsl += "  PSInitialBuffer[idx].INddx = (PSInput)0;\n";
-  extractHlsl += "  PSInitialBuffer[idx].INddy = (PSInput)0;\n";
-  extractHlsl += "  PSInitialBuffer[idx].INddxfine = (PSInput)0;\n";
-  extractHlsl += "  PSInitialBuffer[idx].INddyfine = (PSInput)0;\n";
-
-  if(!evalSampleCacheData.empty())
-  {
-    extractHlsl += StringFormat::Fmt("  uint evalIndex = idx * %zu;\n", evalSampleCacheData.size());
-
-    uint32_t evalIdx = 0;
-    for(const GlobalState::SampleEvalCacheKey &key : evalSampleCacheData)
-    {
-      uint32_t keyMask = 0;
-
-      for(int32_t i = 0; i < key.numComponents; i++)
-        keyMask |= (1 << (key.firstComponent + i));
-
-      // find the name of the variable matching the operand, in the case of merged input variables.
-      rdcstr name, swizzle = "xyzw";
-      for(size_t i = 0; i < dxbc->GetReflection()->InputSig.size(); i++)
-      {
-        if(dxbc->GetReflection()->InputSig[i].regIndex == (uint32_t)key.inputRegisterIndex &&
-           dxbc->GetReflection()->InputSig[i].systemValue == ShaderBuiltin::Undefined &&
-           (dxbc->GetReflection()->InputSig[i].regChannelMask & keyMask) == keyMask)
-        {
-          name = inputVarNames[i];
-
-          if(!name.empty())
-            break;
-        }
-      }
-
-      swizzle.resize(key.numComponents);
-
-      if(name.empty())
-      {
-        RDCERR("Couldn't find matching input variable for v%d [%d:%d]", key.inputRegisterIndex,
-               key.firstComponent, key.numComponents);
-        extractHlsl += StringFormat::Fmt("  PSEvalBuffer[evalIndex+%u] = 0;\n", evalIdx);
-        evalIdx++;
-        continue;
-      }
-
-      name = StringFormat::Fmt("IN.%s.%s", name.c_str(), swizzle.c_str());
-
-      // we must write all components, so just swizzle the values - they'll be ignored later.
-      rdcstr expandSwizzle = swizzle;
-      while(expandSwizzle.size() < 4)
-        expandSwizzle.push_back('x');
-
-      if(key.sample >= 0)
-      {
-        extractHlsl += StringFormat::Fmt(
-            "  PSEvalBuffer[evalIndex+%u] = EvaluateAttributeAtSample(%s, %d).%s;\n", evalIdx,
-            name.c_str(), key.sample, expandSwizzle.c_str());
-      }
-      else
-      {
-        // we don't need to special-case EvaluateAttributeAtCentroid, since it's just a case with
-        // 0,0
-        extractHlsl += StringFormat::Fmt(
-            "  PSEvalBuffer[evalIndex+%u] = EvaluateAttributeSnapped(%s, int2(%d, %d)).%s;\n",
-            evalIdx, name.c_str(), key.offsetx, key.offsety, expandSwizzle.c_str());
-      }
-      evalIdx++;
-    }
-  }
-
-  for(size_t i = 0; i < floatInputs.size(); i++)
-  {
-    const rdcstr &name = floatInputs[i];
-    extractHlsl += "  PSInitialBuffer[idx].INddx." + name + " = ddx(IN." + name + ");\n";
-    extractHlsl += "  PSInitialBuffer[idx].INddy." + name + " = ddy(IN." + name + ");\n";
-    extractHlsl += "  PSInitialBuffer[idx].INddxfine." + name + " = ddx_fine(IN." + name + ");\n";
-    extractHlsl += "  PSInitialBuffer[idx].INddyfine." + name + " = ddy_fine(IN." + name + ");\n";
-  }
-  extractHlsl += "\n}";
+  DXDebug::CreateInputFetcher(dxbc, prevdxbc, cfg, fetcher);
 
   ID3D11PixelShader *extract =
-      m_pDevice->GetShaderCache()->MakePShader(extractHlsl.c_str(), "ExtractInputsPS", "ps_5_0");
+      m_pDevice->GetShaderCache()->MakePShader(fetcher.hlsl.c_str(), "ExtractInputs", "ps_5_0");
 
-  uint32_t structStride = sizeof(uint32_t)       // uint hit;
-                          + sizeof(float) * 3    // float3 pos;
-                          + sizeof(uint32_t)     // uint prim;
-                          + sizeof(uint32_t)     // uint fface;
-                          + sizeof(uint32_t)     // uint sample;
-                          + sizeof(uint32_t)     // uint covge;
-                          + sizeof(float)        // float derivValid;
-                          +
-                          structureStride * 5;    // PSInput IN, INddx, INddy, INddxfine, INddyfine;
+  uint32_t structStride = fetcher.hitBufferStride;
+  RDCASSERT(fetcher.laneDataBufferStride == 0);
 
   HRESULT hr = S_OK;
 
@@ -2482,30 +1921,31 @@ void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position,
   bdesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
   bdesc.Usage = D3D11_USAGE_DEFAULT;
   bdesc.StructureByteStride = structStride;
-  bdesc.ByteWidth = structStride * (overdrawLevels + 1);
+  bdesc.ByteWidth = structStride * (DXDebug::maxPixelHits + 1);
 
   ID3D11Buffer *initialBuf = NULL;
   hr = m_pDevice->CreateBuffer(&bdesc, NULL, &initialBuf);
 
   if(FAILED(hr))
   {
-    RDCERR("Failed to create buffer HRESULT: %s", ToStr(hr).c_str());
-    return new ShaderDebugTrace;
+    RDCERR("Failed to create buffer HRESULT: %s", ToStr(hr).c_str());    // @NoCoverage
+    return new ShaderDebugTrace;                                         // @NoCoverage
   }
 
   ID3D11Buffer *evalBuf = NULL;
-  if(!evalSampleCacheData.empty())
+  if(!fetcher.evalSampleCacheData.empty())
   {
     bdesc.StructureByteStride = 0;
     bdesc.MiscFlags = 0;
-    bdesc.ByteWidth = UINT(evalSampleCacheData.size() * sizeof(Vec4f) * (overdrawLevels + 1));
+    bdesc.ByteWidth =
+        UINT(fetcher.evalSampleCacheData.size() * sizeof(Vec4f) * (DXDebug::maxPixelHits + 1));
 
     hr = m_pDevice->CreateBuffer(&bdesc, NULL, &evalBuf);
 
     if(FAILED(hr))
     {
-      RDCERR("Failed to create buffer HRESULT: %s", ToStr(hr).c_str());
-      return new ShaderDebugTrace;
+      RDCERR("Failed to create buffer HRESULT: %s", ToStr(hr).c_str());    // @NoCoverage
+      return new ShaderDebugTrace;                                         // @NoCoverage
     }
   }
 
@@ -2514,30 +1954,30 @@ void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position,
   bdesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
   bdesc.Usage = D3D11_USAGE_STAGING;
   bdesc.StructureByteStride = 0;
-  bdesc.ByteWidth = structStride * (overdrawLevels + 1);
+  bdesc.ByteWidth = structStride * (DXDebug::maxPixelHits + 1);
 
   ID3D11Buffer *initialStageBuf = NULL;
   hr = m_pDevice->CreateBuffer(&bdesc, NULL, &initialStageBuf);
 
   if(FAILED(hr))
   {
-    RDCERR("Failed to create buffer HRESULT: %s", ToStr(hr).c_str());
-    return new ShaderDebugTrace;
+    RDCERR("Failed to create buffer HRESULT: %s", ToStr(hr).c_str());    // @NoCoverage
+    return new ShaderDebugTrace;                                         // @NoCoverage
   }
 
-  uint32_t evalStructStride = uint32_t(evalSampleCacheData.size() * sizeof(Vec4f));
+  uint32_t evalStructStride = uint32_t(fetcher.evalSampleCacheData.size() * sizeof(Vec4f));
 
   ID3D11Buffer *evalStageBuf = NULL;
   if(evalBuf)
   {
-    bdesc.ByteWidth = evalStructStride * (overdrawLevels + 1);
+    bdesc.ByteWidth = evalStructStride * (DXDebug::maxPixelHits + 1);
 
     hr = m_pDevice->CreateBuffer(&bdesc, NULL, &evalStageBuf);
 
     if(FAILED(hr))
     {
-      RDCERR("Failed to create buffer HRESULT: %s", ToStr(hr).c_str());
-      return new ShaderDebugTrace;
+      RDCERR("Failed to create buffer HRESULT: %s", ToStr(hr).c_str());    // @NoCoverage
+      return new ShaderDebugTrace;                                         // @NoCoverage
     }
   }
 
@@ -2545,7 +1985,7 @@ void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position,
   uavdesc.Format = DXGI_FORMAT_UNKNOWN;
   uavdesc.Buffer.FirstElement = 0;
   uavdesc.Buffer.Flags = 0;
-  uavdesc.Buffer.NumElements = overdrawLevels + 1;
+  uavdesc.Buffer.NumElements = DXDebug::maxPixelHits + 1;
   uavdesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
 
   ID3D11UnorderedAccessView *initialUAV = NULL;
@@ -2553,21 +1993,22 @@ void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position,
 
   if(FAILED(hr))
   {
-    RDCERR("Failed to create buffer HRESULT: %s", ToStr(hr).c_str());
-    return new ShaderDebugTrace;
+    RDCERR("Failed to create buffer HRESULT: %s", ToStr(hr).c_str());    // @NoCoverage
+    return new ShaderDebugTrace;                                         // @NoCoverage
   }
 
   ID3D11UnorderedAccessView *evalUAV = NULL;
   if(evalBuf)
   {
-    uavdesc.Buffer.NumElements = (overdrawLevels + 1) * (uint32_t)evalSampleCacheData.size();
+    uavdesc.Buffer.NumElements =
+        (DXDebug::maxPixelHits + 1) * (uint32_t)fetcher.evalSampleCacheData.size();
     uavdesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     hr = m_pDevice->CreateUnorderedAccessView(evalBuf, &uavdesc, &evalUAV);
 
     if(FAILED(hr))
     {
-      RDCERR("Failed to create buffer HRESULT: %s", ToStr(hr).c_str());
-      return new ShaderDebugTrace;
+      RDCERR("Failed to create buffer HRESULT: %s", ToStr(hr).c_str());    // @NoCoverage
+      return new ShaderDebugTrace;                                         // @NoCoverage
     }
   }
 
@@ -2579,8 +2020,8 @@ void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position,
   ID3D11UnorderedAccessView *uavs[] = {initialUAV, evalUAV};
 
   UINT count = (UINT)-1;
-  m_pImmediateContext->OMSetRenderTargetsAndUnorderedAccessViews(uavslot, &rtView, depthView,
-                                                                 uavslot, 2, uavs, &count);
+  m_pImmediateContext->OMSetRenderTargetsAndUnorderedAccessViews(cfg.uavslot, &rtView, depthView,
+                                                                 cfg.uavslot, 2, uavs, &count);
   m_pImmediateContext->PSSetShader(extract, NULL, 0);
 
   SAFE_RELEASE(rtView);
@@ -2601,16 +2042,17 @@ void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position,
 
   if(FAILED(hr))
   {
-    RDCERR("Failed to map stage buff HRESULT: %s", ToStr(hr).c_str());
-    return new ShaderDebugTrace;
+    RDCERR("Failed to map stage buff HRESULT: %s", ToStr(hr).c_str());    // @NoCoverage
+    return new ShaderDebugTrace;                                          // @NoCoverage
   }
 
-  byte *initialData = new byte[structStride * (overdrawLevels + 1)];
-  memcpy(initialData, mapped.pData, structStride * (overdrawLevels + 1));
+  bytebuf initialData;
+  initialData.resize(structStride * (DXDebug::maxPixelHits + 1));
+  memcpy(initialData.data(), mapped.pData, structStride * (DXDebug::maxPixelHits + 1));
 
   m_pImmediateContext->Unmap(initialStageBuf, 0);
 
-  byte *evalData = NULL;
+  bytebuf evalData;
 
   if(evalStageBuf)
   {
@@ -2618,13 +2060,12 @@ void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed to map stage buff HRESULT: %s", ToStr(hr).c_str());
-      SAFE_DELETE_ARRAY(initialData);
-      return new ShaderDebugTrace;
+      RDCERR("Failed to map stage buff HRESULT: %s", ToStr(hr).c_str());    // @NoCoverage
+      return new ShaderDebugTrace;                                          // @NoCoverage
     }
 
-    evalData = new byte[evalStructStride * (overdrawLevels + 1)];
-    memcpy(evalData, mapped.pData, evalStructStride * (overdrawLevels + 1));
+    evalData.resize(evalStructStride * (DXDebug::maxPixelHits + 1));
+    memcpy(evalData.data(), mapped.pData, evalStructStride * (DXDebug::maxPixelHits + 1));
 
     m_pImmediateContext->Unmap(evalStageBuf, 0);
   }
@@ -2639,15 +2080,13 @@ void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position,
 
   SAFE_RELEASE(extract);
 
-  DebugHit *buf = (DebugHit *)initialData;
+  DXDebug::DebugHit *buf = (DXDebug::DebugHit *)initialData.data();
 
   D3D11MarkerRegion::Set(StringFormat::Fmt("Got %u hits", buf[0].numHits));
 
   if(buf[0].numHits == 0)
   {
     RDCLOG("No hit for this event");
-    SAFE_DELETE_ARRAY(initialData);
-    SAFE_DELETE_ARRAY(evalData);
     return new ShaderDebugTrace;
   }
 
@@ -2656,14 +2095,6 @@ void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position,
   // being set to ~0U). If it was, debug that pixel, otherwise do a best-estimate
   // of which fragment was the last to successfully depth test and debug that, just by
   // checking if the depth test is ordered and picking the final fragment in the series
-
-  // figure out the TL pixel's coords. Assume even top left (towards 0,0)
-  // this isn't spec'd but is a reasonable assumption.
-  int xTL = x & (~1);
-  int yTL = y & (~1);
-
-  // get the index of our desired pixel
-  int destIdx = (x - xTL) + 2 * (y - yTL);
 
   D3D11_COMPARISON_FUNC depthFunc = D3D11_COMPARISON_LESS;
 
@@ -2674,37 +2105,38 @@ void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position,
     depthFunc = desc.DepthFunc;
   }
 
-  DebugHit *winner = NULL;
-  float *evalSampleCache = (float *)evalData;
+  DXDebug::DebugHit *winner = NULL;
+  float *evalSampleCache = (float *)evalData.data();
+  size_t winnerIdx = 0;
 
   if(sample == ~0U)
     sample = 0;
 
   if(primitive != ~0U)
   {
-    for(size_t i = 0; i < buf[0].numHits && i < overdrawLevels; i++)
+    for(size_t i = 0; i < buf[0].numHits && i < DXDebug::maxPixelHits; i++)
     {
-      DebugHit *hit = (DebugHit *)(initialData + i * structStride);
+      DXDebug::DebugHit *hit = (DXDebug::DebugHit *)(initialData.data() + i * structStride);
 
       if(hit->primitive == primitive && hit->sample == sample)
       {
         winner = hit;
-        evalSampleCache = ((float *)evalData) + evalSampleCacheData.size() * 4 * i;
+        winnerIdx = i;
       }
     }
   }
 
   if(winner == NULL)
   {
-    for(size_t i = 0; i < buf[0].numHits && i < overdrawLevels; i++)
+    for(size_t i = 0; i < buf[0].numHits && i < DXDebug::maxPixelHits; i++)
     {
-      DebugHit *hit = (DebugHit *)(initialData + i * structStride);
+      DXDebug::DebugHit *hit = (DXDebug::DebugHit *)(initialData.data() + i * structStride);
 
       if(winner == NULL)
       {
         // If we haven't picked a winner at all yet, use the first one
         winner = hit;
-        evalSampleCache = ((float *)evalData) + evalSampleCacheData.size() * 4 * i;
+        winnerIdx = i;
       }
       else if(hit->sample == sample)
       {
@@ -2713,14 +2145,14 @@ void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position,
         {
           // The previously selected winner was for the wrong sample, use this one
           winner = hit;
-          evalSampleCache = ((float *)evalData) + evalSampleCacheData.size() * 4 * i;
+          winnerIdx = i;
         }
         else if((depthFunc == D3D11_COMPARISON_ALWAYS || depthFunc == D3D11_COMPARISON_NEVER ||
                  depthFunc == D3D11_COMPARISON_NOT_EQUAL || depthFunc == D3D11_COMPARISON_EQUAL))
         {
           // For depth functions without an inequality comparison, use the last sample encountered
           winner = hit;
-          evalSampleCache = ((float *)evalData) + evalSampleCacheData.size() * 4 * i;
+          winnerIdx = i;
         }
         else if((depthFunc == D3D11_COMPARISON_LESS && hit->depth < winner->depth) ||
                 (depthFunc == D3D11_COMPARISON_LESS_EQUAL && hit->depth <= winner->depth) ||
@@ -2729,112 +2161,103 @@ void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position,
         {
           // For depth functions with an inequality, find the hit that "wins" the most
           winner = hit;
-          evalSampleCache = ((float *)evalData) + evalSampleCacheData.size() * 4 * i;
+          winnerIdx = i;
         }
       }
     }
   }
 
+  evalSampleCache =
+      (float *)(evalData.data() + fetcher.evalSampleCacheData.size() * sizeof(Vec4f) * 4 * winnerIdx);
+
   if(winner == NULL)
   {
     RDCLOG("Couldn't find any pixels that passed depth test at target co-ordinates");
-    SAFE_DELETE_ARRAY(initialData);
-    SAFE_DELETE_ARRAY(evalData);
     return new ShaderDebugTrace;
   }
 
   tracker.State().ApplyState(m_pImmediateContext);
 
-  InterpretDebugger *interpreter = new InterpretDebugger;
+  DXDebug::DebugHit *hit = winner;
+
+  // ddx(SV_Position.x) MUST be 1.0
+  if(hit->derivValid != 1.0f)
+  {
+    RDCERR("Derivatives invalid");
+    return new ShaderDebugTrace;
+  }
+
+  DXBCDebug::InterpretDebugger *interpreter = new DXBCDebug::InterpretDebugger;
   interpreter->eventId = eventId;
-  ShaderDebugTrace *ret = interpreter->BeginDebug(dxbc, refl, ps->GetMapping(), destIdx);
-  GlobalState &global = interpreter->global;
-  ThreadState &state = interpreter->activeLane();
+  ShaderDebugTrace *ret = interpreter->BeginDebug(dxbc, refl, hit->quadLaneIndex);
+  DXBCDebug::GlobalState &global = interpreter->global;
 
   AddCBuffersToGlobalState(*dxbc->GetDXBCByteCode(), *GetDebugManager(), global, ret->sourceVars,
-                           rs->PS, refl, ps->GetMapping());
+                           rs->PS, refl);
 
-  global.sampleEvalRegisterMask = sampleEvalRegisterMask;
+  global.sampleEvalRegisterMask = fetcher.sampleEvalRegisterMask;
 
+  byte *data = (byte *)(hit + 1);
+
+  for(uint32_t q = 0; q < 4; q++)
   {
-    DebugHit *hit = winner;
+    DXDebug::PSLaneData *lane = (DXDebug::PSLaneData *)data;
 
+    DXBCDebug::ThreadState &state = interpreter->workgroup[q];
     rdcarray<ShaderVariable> &ins = state.inputs;
-    if(!ins.empty() &&
-       ins.back().name ==
-           dxbc->GetDXBCByteCode()->GetRegisterName(DXBCBytecode::TYPE_INPUT_COVERAGE_MASK, 0))
-      ins.back().value.u32v[0] = hit->coverage;
 
-    state.semantics.coverage = hit->coverage;
-    state.semantics.primID = hit->primitive;
-    state.semantics.isFrontFace = hit->isFrontFace;
+    if(q != hit->quadLaneIndex)
+      ins = interpreter->workgroup[hit->quadLaneIndex].inputs;
 
-    uint32_t *data = &hit->rawdata;
+    state.semantics.coverage = lane->coverage;
+    state.semantics.primID = lane->primitive;
+    state.semantics.isFrontFace = lane->isFrontFace;
 
-    float *pos_ddx = (float *)data;
+    if(!ins.empty() && ins.back().name == dxbc->GetDXBCByteCode()->GetRegisterName(
+                                              DXBCBytecode::TYPE_INPUT_COVERAGE_MASK, 0))
+      ins.back().value.u32v[0] = lane->coverage;
 
-    // ddx(SV_Position.x) MUST be 1.0
-    if(*pos_ddx != 1.0f)
+    if(lane->isHelper)
+      state.SetHelper();
+
+    data += sizeof(DXDebug::PSLaneData);
+
+    for(size_t i = 0; i < fetcher.inputs.size(); i++)
     {
-      RDCERR("Derivatives invalid");
-      SAFE_DELETE_ARRAY(initialData);
-      SAFE_DELETE_ARRAY(evalData);
-      delete interpreter;
-      delete ret;
-      return new ShaderDebugTrace;
-    }
-
-    data++;
-
-    for(size_t i = 0; i < initialValues.size(); i++)
-    {
-      int32_t *rawout = NULL;
-
-      if(initialValues[i].reg >= 0)
+      if(fetcher.inputs[i].reg >= 0)
       {
-        ShaderVariable &invar = ins[initialValues[i].reg];
+        ShaderVariable &invar = ins[fetcher.inputs[i].reg];
 
-        if(initialValues[i].sysattribute == ShaderBuiltin::PrimitiveIndex)
+        if(fetcher.inputs[i].sysattribute == ShaderBuiltin::PrimitiveIndex)
         {
-          invar.value.u32v[0] = hit->primitive;
+          invar.value.u32v[fetcher.inputs[i].elem] = lane->primitive;
         }
-        else if(initialValues[i].sysattribute == ShaderBuiltin::MSAASampleIndex)
+        else if(fetcher.inputs[i].sysattribute == ShaderBuiltin::MSAASampleIndex)
         {
-          invar.value.u32v[0] = hit->sample;
+          invar.value.u32v[fetcher.inputs[i].elem] = lane->sample;
         }
-        else if(initialValues[i].sysattribute == ShaderBuiltin::MSAACoverage)
+        else if(fetcher.inputs[i].sysattribute == ShaderBuiltin::MSAACoverage)
         {
-          invar.value.u32v[0] = hit->coverage;
+          invar.value.u32v[fetcher.inputs[i].elem] = lane->coverage;
         }
-        else if(initialValues[i].sysattribute == ShaderBuiltin::IsFrontFace)
+        else if(fetcher.inputs[i].sysattribute == ShaderBuiltin::IsFrontFace)
         {
-          invar.value.u32v[0] = hit->isFrontFace ? ~0U : 0;
+          invar.value.u32v[fetcher.inputs[i].elem] = lane->isFrontFace ? ~0U : 0;
         }
         else
         {
-          rawout = &invar.value.s32v[initialValues[i].elem];
+          int32_t *rawout = &invar.value.s32v[fetcher.inputs[i].elem];
 
-          memcpy(rawout, data, initialValues[i].numwords * 4);
+          memcpy(rawout, data, fetcher.inputs[i].numwords * 4);
         }
       }
 
-      if(initialValues[i].included)
-        data += initialValues[i].numwords;
-    }
-
-    for(int i = 0; i < 4; i++)
-    {
-      if(i != destIdx)
-      {
-        interpreter->workgroup[i].inputs = state.inputs;
-        interpreter->workgroup[i].semantics = state.semantics;
-        interpreter->workgroup[i].variables = state.variables;
-        interpreter->workgroup[i].SetHelper();
-      }
+      if(fetcher.inputs[i].included)
+        data += fetcher.inputs[i].numwords * sizeof(uint32_t);
     }
 
     // fetch any inputs that were evaluated at sample granularity
-    for(const GlobalState::SampleEvalCacheKey &key : evalSampleCacheData)
+    for(const DXDebug::SampleEvalCacheKey &key : fetcher.evalSampleCacheData)
     {
       // start with the basic input value
       ShaderVariable var = state.inputs[key.inputRegisterIndex];
@@ -2842,26 +2265,18 @@ void ExtractInputsPS(PSInput IN, float4 debug_pixelPos : SV_Position,
       // copy over the value into the variable
       memcpy(var.value.f32v.data(), evalSampleCache, var.columns * sizeof(float));
 
-      // store in the global cache for each quad. We'll apply derivatives below to adjust for each
-      GlobalState::SampleEvalCacheKey k = key;
-      for(int i = 0; i < 4; i++)
-      {
-        k.quadIndex = i;
-        global.sampleEvalCache[k] = var;
-      }
+      // store in the global cache for this thread
+      DXDebug::SampleEvalCacheKey k = key;
+      k.quadIndex = q;
+      global.sampleEvalCache[k] = var;
 
       // advance past this data - always by float4 as that's the buffer stride
       evalSampleCache += 4;
     }
-
-    ApplyAllDerivatives(global, interpreter->workgroup, destIdx, initialValues, (float *)data);
   }
 
-  ret->inputs = state.inputs;
+  ret->inputs = interpreter->activeLane().inputs;
   ret->constantBlocks = global.constantBlocks;
-
-  SAFE_DELETE_ARRAY(initialData);
-  SAFE_DELETE_ARRAY(evalData);
 
   dxbc->FillTraceLineInfo(*ret);
 
@@ -2872,9 +2287,6 @@ ShaderDebugTrace *D3D11Replay::DebugThread(uint32_t eventId,
                                            const rdcfixedarray<uint32_t, 3> &groupid,
                                            const rdcfixedarray<uint32_t, 3> &threadid)
 {
-  using namespace DXBCBytecode;
-  using namespace DXBCDebug;
-
   D3D11MarkerRegion region(StringFormat::Fmt("DebugThread @ %u: [%u, %u, %u] (%u, %u, %u)", eventId,
                                              groupid[0], groupid[1], groupid[2], threadid[0],
                                              threadid[1], threadid[2]));
@@ -2891,24 +2303,31 @@ ShaderDebugTrace *D3D11Replay::DebugThread(uint32_t eventId,
   if(!cs)
     return new ShaderDebugTrace;
 
-  DXBC::DXBCContainer *dxbc = cs->GetDXBC();
+  const DXBC::DXBCContainer *dxbc = cs->GetDXBC();
   const ShaderReflection &refl = cs->GetDetails();
 
   if(!dxbc)
     return new ShaderDebugTrace;
 
-  dxbc->GetDisassembly();
+  cs->GetWriteableDXBC()->GetDisassembly(false);
 
   D3D11RenderState *rs = m_pImmediateContext->GetCurrentPipelineState();
 
-  InterpretDebugger *interpreter = new InterpretDebugger;
+  uint32_t activeIndex = 0;
+  if(dxbc->GetThreadScope() == DXBC::ThreadScope::Workgroup)
+  {
+    activeIndex = threadid[0] + threadid[1] * refl.dispatchThreadsDimension[0] +
+                  threadid[2] * refl.dispatchThreadsDimension[0] * refl.dispatchThreadsDimension[1];
+  }
+
+  DXBCDebug::InterpretDebugger *interpreter = new DXBCDebug::InterpretDebugger;
   interpreter->eventId = eventId;
-  ShaderDebugTrace *ret = interpreter->BeginDebug(dxbc, refl, cs->GetMapping(), 0);
-  GlobalState &global = interpreter->global;
-  ThreadState &state = interpreter->activeLane();
+  ShaderDebugTrace *ret = interpreter->BeginDebug(dxbc, refl, activeIndex);
+  DXBCDebug::GlobalState &global = interpreter->global;
+  DXBCDebug::ThreadState &state = interpreter->activeLane();
 
   AddCBuffersToGlobalState(*dxbc->GetDXBCByteCode(), *GetDebugManager(), global, ret->sourceVars,
-                           rs->CS, refl, cs->GetMapping());
+                           rs->CS, refl);
 
   for(int i = 0; i < 3; i++)
   {
@@ -2925,28 +2344,29 @@ ShaderDebugTrace *D3D11Replay::DebugThread(uint32_t eventId,
   {
     const DXBCBytecode::Declaration &decl = dxbc->GetDXBCByteCode()->GetDeclaration(i);
 
-    if(decl.declaration == OPCODE_DCL_INPUT &&
-       (decl.operand.type == TYPE_INPUT_THREAD_ID || decl.operand.type == TYPE_INPUT_THREAD_GROUP_ID ||
-        decl.operand.type == TYPE_INPUT_THREAD_ID_IN_GROUP ||
-        decl.operand.type == TYPE_INPUT_THREAD_ID_IN_GROUP_FLATTENED))
+    if(decl.declaration == DXBCBytecode::OPCODE_DCL_INPUT &&
+       (decl.operand.type == DXBCBytecode::TYPE_INPUT_THREAD_ID ||
+        decl.operand.type == DXBCBytecode::TYPE_INPUT_THREAD_GROUP_ID ||
+        decl.operand.type == DXBCBytecode::TYPE_INPUT_THREAD_ID_IN_GROUP ||
+        decl.operand.type == DXBCBytecode::TYPE_INPUT_THREAD_ID_IN_GROUP_FLATTENED))
     {
       ShaderVariable v;
 
-      v.name = decl.operand.toString(dxbc->GetReflection(), ToString::IsDecl);
+      v.name = decl.operand.toString(dxbc->GetReflection(), DXBCBytecode::ToString::IsDecl);
       v.rows = 1;
       v.type = VarType::UInt;
 
       switch(decl.operand.type)
       {
-        case TYPE_INPUT_THREAD_GROUP_ID:
+        case DXBCBytecode::TYPE_INPUT_THREAD_GROUP_ID:
           memcpy(v.value.u32v.data(), state.semantics.GroupID, sizeof(uint32_t) * 3);
           v.columns = 3;
           break;
-        case TYPE_INPUT_THREAD_ID_IN_GROUP:
+        case DXBCBytecode::TYPE_INPUT_THREAD_ID_IN_GROUP:
           memcpy(v.value.u32v.data(), state.semantics.ThreadID, sizeof(uint32_t) * 3);
           v.columns = 3;
           break;
-        case TYPE_INPUT_THREAD_ID:
+        case DXBCBytecode::TYPE_INPUT_THREAD_ID:
           v.value.u32v[0] =
               state.semantics.GroupID[0] * dxbc->GetReflection()->DispatchThreadsDimension[0] +
               state.semantics.ThreadID[0];
@@ -2958,7 +2378,7 @@ ShaderDebugTrace *D3D11Replay::DebugThread(uint32_t eventId,
               state.semantics.ThreadID[2];
           v.columns = 3;
           break;
-        case TYPE_INPUT_THREAD_ID_IN_GROUP_FLATTENED:
+        case DXBCBytecode::TYPE_INPUT_THREAD_ID_IN_GROUP_FLATTENED:
           v.value.u32v[0] =
               state.semantics.ThreadID[2] * dxbc->GetReflection()->DispatchThreadsDimension[0] *
                   dxbc->GetReflection()->DispatchThreadsDimension[1] +
@@ -2976,12 +2396,20 @@ ShaderDebugTrace *D3D11Replay::DebugThread(uint32_t eventId,
   return ret;
 }
 
+ShaderDebugTrace *D3D11Replay::DebugMeshThread(uint32_t eventId,
+                                               const rdcfixedarray<uint32_t, 3> &groupid,
+                                               const rdcfixedarray<uint32_t, 3> &threadid)
+{
+  // Not supported
+  return new ShaderDebugTrace;
+}
+
 rdcarray<ShaderDebugState> D3D11Replay::ContinueDebug(ShaderDebugger *debugger)
 {
   DXBCDebug::InterpretDebugger *interpreter = (DXBCDebug::InterpretDebugger *)debugger;
 
   if(!interpreter)
-    return NULL;
+    return {};
 
   D3D11DebugAPIWrapper apiWrapper(m_pDevice, interpreter->dxbc, interpreter->global,
                                   interpreter->eventId);

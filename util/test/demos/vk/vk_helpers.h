@@ -1,26 +1,26 @@
 /******************************************************************************
-* The MIT License (MIT)
-*
-* Copyright (c) 2019-2021 Baldur Karlsson
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-* THE SOFTWARE.
-******************************************************************************/
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2018-2026 Baldur Karlsson
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ ******************************************************************************/
 
 #pragma once
 
@@ -147,20 +147,33 @@ void updateDescriptorSets(VkDevice device, const std::vector<VkWriteDescriptorSe
 void cmdPipelineBarrier(VkCommandBuffer cmd, std::initializer_list<VkImageMemoryBarrier> img,
                         std::initializer_list<VkBufferMemoryBarrier> buf = {},
                         std::initializer_list<VkMemoryBarrier> mem = {},
-                        VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        VkPipelineStageFlags dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT |
+                                                            VK_PIPELINE_STAGE_HOST_BIT,
+                        VkPipelineStageFlags dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT |
+                                                            VK_PIPELINE_STAGE_HOST_BIT,
                         VkDependencyFlags dependencyFlags = 0);
 
 void cmdPipelineBarrier(VkCommandBuffer cmd, const std::vector<VkImageMemoryBarrier> &img,
                         const std::vector<VkBufferMemoryBarrier> &buf = {},
                         const std::vector<VkMemoryBarrier> &mem = {},
-                        VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        VkPipelineStageFlags dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT |
+                                                            VK_PIPELINE_STAGE_HOST_BIT,
+                        VkPipelineStageFlags dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT |
+                                                            VK_PIPELINE_STAGE_HOST_BIT,
                         VkDependencyFlags dependencyFlags = 0);
+
+struct ClearColorValue;
+struct ClearDepthStencilValue;
+void cmdClearImage(VkCommandBuffer cmd, VkImage img, const ClearColorValue &col,
+                   VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL);
+void cmdClearImage(VkCommandBuffer cmd, VkImage img, const ClearDepthStencilValue &ds,
+                   VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL);
 
 void cmdBindVertexBuffers(VkCommandBuffer cmd, uint32_t firstBinding,
                           std::initializer_list<VkBuffer> bufs,
-                          std::initializer_list<VkDeviceSize> offsets);
+                          std::initializer_list<VkDeviceSize> offsets = {});
+
+void cmdBindVertexBuffers(VkCommandBuffer cmd, std::initializer_list<VkBuffer> bufs);
 
 void cmdBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint pipelineBindPoint,
                            VkPipelineLayout layout, uint32_t firstSet,
@@ -169,6 +182,21 @@ void cmdBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint pipelineBind
 void cmdPushDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint pipelineBindPoint,
                            VkPipelineLayout layout, uint32_t set,
                            std::vector<VkWriteDescriptorSet> writes);
+
+template <typename T>
+void cmdPushConstants(VkCommandBuffer cmd, VkPipelineLayout layout, VkShaderStageFlags stages,
+                      const T &val)
+{
+  vkCmdPushConstants(cmd, layout, stages, 0, sizeof(T), &val);
+}
+
+template <typename T>
+void cmdPushConstants(VkCommandBuffer cmd, VkPipelineLayout layout, const T &val)
+{
+  cmdPushConstants(cmd, layout, VK_SHADER_STAGE_ALL, val);
+}
+
+void cmdSetViewport(VkCommandBuffer cmd, VkViewport viewport);
 
 struct ApplicationInfo : public VkApplicationInfo
 {
@@ -256,8 +284,22 @@ struct DeviceQueueCreateInfo : public VkDeviceQueueCreateInfo
   DeviceQueueCreateInfo(uint32_t queueFamilyIndex, uint32_t queueCount,
                         const std::vector<float> &priorities =
                             {
-                                1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
-                                1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f,
                             })
       : VkDeviceQueueCreateInfo()
   {
@@ -273,7 +315,7 @@ struct DeviceQueueCreateInfo : public VkDeviceQueueCreateInfo
 struct DeviceCreateInfo : public VkDeviceCreateInfo
 {
   DeviceCreateInfo(const std::vector<VkDeviceQueueCreateInfo> &queues,
-                   const std::vector<const char *> &layers, const std::vector<const char *> &exts,
+                   const std::vector<const char *> &exts,
                    const VkPhysicalDeviceFeatures *features = NULL)
   {
     sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -281,17 +323,16 @@ struct DeviceCreateInfo : public VkDeviceCreateInfo
     flags = 0;
     queueCreateInfoCount = uint32_t(queues.size());
     pQueueCreateInfos = queues.data();
-    enabledLayerCount = uint32_t(layers.size());
-    ppEnabledLayerNames = layers.data();
+    enabledLayerCount = 0;
+    ppEnabledLayerNames = NULL;
     enabledExtensionCount = uint32_t(exts.size());
     ppEnabledExtensionNames = exts.data();
     pEnabledFeatures = features;
   }
 
   DeviceCreateInfo(const std::vector<VkDeviceQueueCreateInfo> &queues,
-                   const std::vector<const char *> &layers, const std::vector<const char *> &exts,
-                   const VkPhysicalDeviceFeatures &features)
-      : DeviceCreateInfo(queues, layers, exts, &features)
+                   const std::vector<const char *> &exts, const VkPhysicalDeviceFeatures &features)
+      : DeviceCreateInfo(queues, exts, &features)
   {
   }
 
@@ -451,6 +492,19 @@ struct BufferMemoryBarrier : public VkBufferMemoryBarrier
   }
 };
 
+#undef MemoryBarrier
+
+struct MemoryBarrier : public VkMemoryBarrier
+{
+  MemoryBarrier(VkAccessFlags srcAccessMask, VkAccessFlags dstAccessMask)
+  {
+    sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    pNext = NULL;
+    this->srcAccessMask = srcAccessMask;
+    this->dstAccessMask = dstAccessMask;
+  }
+};
+
 struct CommandBufferAllocateInfo : public VkCommandBufferAllocateInfo
 {
   CommandBufferAllocateInfo(VkCommandPool commandPool, uint32_t commandBufferCount,
@@ -589,14 +643,12 @@ struct SamplerCreateInfo : public VkSamplerCreateInfo
 
 struct ImageViewCreateInfo : public VkImageViewCreateInfo
 {
-  ImageViewCreateInfo(VkImage image, VkImageViewType viewType, VkFormat format,
-                      VkComponentMapping components = {VK_COMPONENT_SWIZZLE_IDENTITY,
-                                                       VK_COMPONENT_SWIZZLE_IDENTITY,
-                                                       VK_COMPONENT_SWIZZLE_IDENTITY,
-                                                       VK_COMPONENT_SWIZZLE_IDENTITY},
-                      VkImageSubresourceRange subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0,
-                                                                  VK_REMAINING_MIP_LEVELS, 0,
-                                                                  VK_REMAINING_ARRAY_LAYERS})
+  ImageViewCreateInfo(
+      VkImage image, VkImageViewType viewType, VkFormat format,
+      VkComponentMapping components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                                       VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY},
+      VkImageSubresourceRange subresourceRange = {
+          VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS})
   {
     sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     pNext = NULL;
@@ -681,6 +733,12 @@ struct DescriptorPoolCreateInfo : public VkDescriptorPoolCreateInfo
     this->pPoolSizes = poolSizes.data();
   }
 
+  DescriptorPoolCreateInfo &next(const void *next)
+  {
+    this->pNext = next;
+    return *this;
+  }
+
   operator const VkDescriptorPoolCreateInfo *() const { return this; }
 };
 
@@ -714,11 +772,12 @@ struct PushConstantRange : public VkPushConstantRange
 struct PipelineLayoutCreateInfo : public VkPipelineLayoutCreateInfo
 {
   PipelineLayoutCreateInfo(const std::vector<VkDescriptorSetLayout> &setLayouts = {},
-                           const std::vector<VkPushConstantRange> &pushConstantRanges = {})
+                           const std::vector<VkPushConstantRange> &pushConstantRanges = {},
+                           VkPipelineLayoutCreateFlags flags = 0)
   {
     sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pNext = NULL;
-    this->flags = 0;
+    this->flags = flags;
     this->setLayoutCount = (uint32_t)setLayouts.size();
     this->pSetLayouts = setLayouts.data();
     this->pushConstantRangeCount = (uint32_t)pushConstantRanges.size();
@@ -894,6 +953,19 @@ struct DescriptorImageInfo : public VkDescriptorImageInfo
   }
 };
 
+struct WriteDescriptorSetInlineUniformBlockEXT : public VkWriteDescriptorSetInlineUniformBlockEXT
+{
+  WriteDescriptorSetInlineUniformBlockEXT(void *data, uint32_t size)
+  {
+    sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK_EXT;
+    pNext = NULL;
+    this->pData = data;
+    this->dataSize = size;
+  }
+
+  operator const VkWriteDescriptorSetInlineUniformBlockEXT *() const { return this; }
+};
+
 struct WriteDescriptorSet : public VkWriteDescriptorSet
 {
   WriteDescriptorSet(VkDescriptorSet dstSet, uint32_t dstBinding, uint32_t dstArrayElement,
@@ -909,6 +981,22 @@ struct WriteDescriptorSet : public VkWriteDescriptorSet
     this->descriptorType = descriptorType;
     this->pImageInfo = NULL;
     this->pBufferInfo = bufferInfo.data();
+    this->pTexelBufferView = NULL;
+  }
+
+  WriteDescriptorSet(VkDescriptorSet dstSet, uint32_t dstBinding,
+                     const VkWriteDescriptorSetInlineUniformBlockEXT &inlineWrite,
+                     const VkDescriptorBufferInfo &bufferInfo)
+  {
+    sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    pNext = &inlineWrite;
+    this->dstSet = dstSet;
+    this->dstBinding = dstBinding;
+    this->dstArrayElement = 0;
+    this->descriptorCount = inlineWrite.dataSize;
+    this->descriptorType = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT;
+    this->pImageInfo = NULL;
+    this->pBufferInfo = &bufferInfo;
     this->pTexelBufferView = NULL;
   }
 
@@ -1140,6 +1228,14 @@ struct ClearColorValue
   operator const VkClearColorValue *() const { return (VkClearColorValue *)this; }
 };
 
+struct ClearDepthStencilValue
+{
+  float depth;
+  uint32_t stencil;
+
+  operator const VkClearDepthStencilValue *() const { return (VkClearDepthStencilValue *)this; }
+};
+
 struct ClearValue
 {
   ClearValue() {}
@@ -1149,6 +1245,13 @@ struct ClearValue
     clear.color.float32[1] = g;
     clear.color.float32[2] = b;
     clear.color.float32[3] = a;
+  }
+  ClearValue(uint32_t r, uint32_t g, uint32_t b, uint32_t a)
+  {
+    clear.color.uint32[0] = r;
+    clear.color.uint32[1] = g;
+    clear.color.uint32[2] = b;
+    clear.color.uint32[3] = a;
   }
 
   ClearValue(float d, uint32_t s)
@@ -1160,7 +1263,7 @@ struct ClearValue
   VkClearValue clear;
 
   operator const VkClearValue *() const { return (VkClearValue *)this; }
-  operator const VkClearValue &() const { return (VkClearValue &)*this; }
+  operator const VkClearValue &() const { return clear; }
 };
 
 struct Viewport : public VkViewport
@@ -1211,7 +1314,7 @@ struct ComputePipelineCreateInfo : public VkComputePipelineCreateInfo
   {
     sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pNext = NULL;
-    this->flags = 0;
+    this->flags = flags;
     this->stage = stage;
     this->layout = layout;
     this->basePipelineHandle = basePipelineHandle;
@@ -1339,6 +1442,12 @@ struct GraphicsPipelineCreateInfo : private VkGraphicsPipelineCreateInfo
     return (const VkGraphicsPipelineCreateInfo *)this;
   }
 
+  operator VkGraphicsPipelineCreateInfo *()
+  {
+    bake();
+    return (VkGraphicsPipelineCreateInfo *)this;
+  }
+
 private:
   void bake();
 };
@@ -1395,17 +1504,21 @@ struct RenderPassCreator : private VkRenderPassCreateInfo
 
     subpasses.push_back({
         // flags
-        0, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        0,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
         // input attachments
-        (uint32_t)inputAttachments.size(), input,
+        (uint32_t)inputAttachments.size(),
+        input,
         // color attachments
-        (uint32_t)colorAttachments.size(), color,
+        (uint32_t)colorAttachments.size(),
+        color,
         // resolve attachments
         resolve,
         // depth stencil attachment
         depth,
         // preserve attachments
-        0, NULL,
+        0,
+        NULL,
     });
   }
 
@@ -1413,6 +1526,12 @@ struct RenderPassCreator : private VkRenderPassCreateInfo
   {
     bake();
     return (const VkRenderPassCreateInfo *)this;
+  }
+
+  RenderPassCreator &next(const void *next)
+  {
+    this->pNext = next;
+    return *this;
   }
 
 private:
@@ -1541,7 +1660,8 @@ struct RenderPassCreator2 : private VkRenderPassCreateInfo2KHR
     }
 
     subpasses.push_back({
-        VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2_KHR, NULL,
+        VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2_KHR,
+        NULL,
         // flags
         0,
         // pipelineBindPoint
@@ -1549,15 +1669,18 @@ struct RenderPassCreator2 : private VkRenderPassCreateInfo2KHR
         // viewMask
         0,
         // input attachments
-        (uint32_t)inputAttachments.size(), input,
+        (uint32_t)inputAttachments.size(),
+        input,
         // color attachments
-        (uint32_t)colorAttachments.size(), color,
+        (uint32_t)colorAttachments.size(),
+        color,
         // resolve attachments
         resolve,
         // depth stencil attachment
         depth,
         // preserve attachments
-        0, NULL,
+        0,
+        NULL,
     });
   }
 

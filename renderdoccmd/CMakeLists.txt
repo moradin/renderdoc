@@ -1,4 +1,4 @@
-set(sources 
+set(sources
     renderdoccmd.cpp
     renderdoccmd.h
     3rdparty/cmdline/cmdline.h
@@ -7,13 +7,15 @@ set(includes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty ${CMAKE_SOURCE_DIR}/re
 set(libraries PRIVATE renderdoc)
 
 if(PythonLibs_FOUND)
-    add_definitions(-DPYTHON_VERSION_MINOR=${PYTHON_VERSION_MINOR})
+    add_definitions(-DPYTHON_AVAILALBE=1)
 else()
-    add_definitions(-DPYTHON_VERSION_MINOR=0)
+    add_definitions(-DPYTHON_AVAILALBE=0)
 endif()
 
 if(APPLE)
     list(APPEND sources renderdoccmd_apple.cpp apple/cocoa_window.mm)
+
+    set_property(SOURCE renderdoccmd_apple.cpp APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-shadow")
 
     find_library(COCOA_LIBRARY Cocoa)
     list(APPEND libraries PRIVATE ${COCOA_LIBRARY})
@@ -27,20 +29,29 @@ elseif(ANDROID)
     include_directories(${ANDROID_NDK_ROOT_PATH}/sources/android/native_app_glue)
     list(APPEND libraries PRIVATE -llog -landroid)
     set(LINKER_FLAGS "-Wl,--no-as-needed")
-    
+
     if(ENABLE_ASAN)
         set(LINKER_FLAGS "${LINKER_FLAGS} -fsanitize=address")
     endif()
 
     set_source_files_properties(renderdoccmd.cpp PROPERTIES COMPILE_FLAGS "-fexceptions -frtti")
     set_source_files_properties(renderdoccmd_android.cpp PROPERTIES COMPILE_FLAGS "-fexceptions")
-elseif(ENABLE_GGP)
-    list(APPEND sources renderdoccmd_ggp.cpp)
-    find_library(GGP_LIBRARY ggp)
-    list(APPEND libraries PRIVATE ${GGP_LIBRARY})
-    set(LINKER_FLAGS "-Wl,--no-as-needed -Wl,--hash-style=gnu -Wl,--build-id=sha1")
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set_property(SOURCE renderdoccmd_android.cpp APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-shadow")
+endif()
+
 elseif(UNIX)
     list(APPEND sources renderdoccmd_linux.cpp)
+
+    if(FREEBSD)
+        list(APPEND libraries PRIVATE -L/usr/local/lib)
+        list(APPEND includes /usr/local/include)
+    endif()
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        set_property(SOURCE renderdoccmd_linux.cpp APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-shadow")
+    endif()
 
     if(ENABLE_XLIB)
         list(APPEND libraries PRIVATE -lX11)
@@ -56,7 +67,7 @@ elseif(UNIX)
 
     # Make sure that for the target executable we don't throw away
     # any shared libraries.
-    set(LINKER_FLAGS "-Wl,--no-as-needed")
+    set(LINKER_FLAGS "-Wl,--no-as-needed -rdynamic")
 endif()
 
 if(ANDROID)
@@ -74,6 +85,14 @@ else()
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${LINKER_FLAGS}")
 
     add_executable(renderdoccmd ${sources})
+    
+    if(INTERNAL_SELF_CAPTURE)
+        set_target_properties(renderdoccmd PROPERTIES OUTPUT_NAME "rdocselfcmd")
+    endif()
+endif()
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set_property(SOURCE renderdoccmd.cpp APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-shadow")
 endif()
 
 target_include_directories(renderdoccmd ${includes})
@@ -92,11 +111,20 @@ if(ANDROID)
     set(SAVE_JAVA_HOME $ENV{JAVA_HOME})
 
     set(ENV{JAVA_HOME} "")
-    find_package(Java REQUIRED)
+    find_package(Java)
     set(ENV{JAVA_HOME} ${SAVE_JAVA_HOME})
+
+    if(NOT ${Java_FOUND})
+        message(FATAL_ERROR "Building Android requires the 'java' program in your PATH. It must be at least Java 8 (1.8)")
+    endif()
 
     if(${Java_VERSION} VERSION_LESS 1.8)
         message(FATAL_ERROR "Building Android requires the 'java' program in your PATH to be at least Java 8 (1.8)")
+    elseif(${Java_VERSION} VERSION_LESS 20.0)
+        set(JAVA_TARGET "1.7")
+    else()
+        message(WARNING "Building with JDK ${Java_VERSION} may cause broken Android binaries, it is recommended to build with JDK 17 or earlier")
+        set(JAVA_TARGET "8")
     endif()
     message(STATUS "Using Java of version ${Java_VERSION}")
 
@@ -123,7 +151,7 @@ if(ANDROID)
     if(APK_TARGET_ID STREQUAL "")
         # This seems different from the platform we're targetting,
         # default to the latest available that's greater or equal to our target platform
-        file(GLOB __platforms RELATIVE "${ANDROID_SDK_ROOT_PATH}/platforms" "${ANDROID_SDK_ROOT_PATH}/platforms/*")
+        file(GLOB __platforms RELATIVE "${ANDROID_SDK_ROOT_PATH}/platforms" "${ANDROID_SDK_ROOT_PATH}/platforms/android-*")
         list(SORT __platforms)
 
         # In case we don't find one, target the latest platform
@@ -180,20 +208,24 @@ if(ANDROID)
 
     # Set the package name based on the ABI
     if(ANDROID_ABI STREQUAL "armeabi-v7a")
-        set(RENDERDOC_ANDROID_PACKAGE_NAME "org.renderdoc.renderdoccmd.arm32")
+        set(ABI_EXTENSION_NAME "arm32")
     elseif(ANDROID_ABI STREQUAL "arm64-v8a")
-        set(RENDERDOC_ANDROID_PACKAGE_NAME "org.renderdoc.renderdoccmd.arm64")
+        set(ABI_EXTENSION_NAME "arm64")
     elseif(ANDROID_ABI STREQUAL "x86")
-        set(RENDERDOC_ANDROID_PACKAGE_NAME "org.renderdoc.renderdoccmd.x86")
+        set(ABI_EXTENSION_NAME "x86")
     elseif(ANDROID_ABI STREQUAL "x86_64")
-        set(RENDERDOC_ANDROID_PACKAGE_NAME "org.renderdoc.renderdoccmd.x64")
+        set(ABI_EXTENSION_NAME "x64")
     else()
         message(FATAL_ERROR "ABI ${ANDROID_ABI} is not supported.")
     endif()
 
+    set(RENDERDOC_ANDROID_PACKAGE_NAME "org.renderdoc.renderdoccmd.${ABI_EXTENSION_NAME}")
+
     set(APK_FILE ${CMAKE_BINARY_DIR}/bin/${RENDERDOC_ANDROID_PACKAGE_NAME}.apk)
     add_custom_target(apk ALL
                       DEPENDS ${APK_FILE})
+                  
+    option(ENABLE_CUSTOM_WRAP_SCRIPT "Enable custom wrap.sh on Android to workaround Android bug" ON)
 
     # Copy in android package files, replacing the package name with the architecture-specific package name
     configure_file(android/Loader.java ${CMAKE_CURRENT_BINARY_DIR}/src/org/renderdoc/renderdoccmd/Loader.java)
@@ -211,6 +243,18 @@ if(ANDROID)
                        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:renderdoc> libs/lib/${ANDROID_ABI}/$<TARGET_FILE_NAME:renderdoc>
                        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:renderdoccmd> libs/lib/${ANDROID_ABI}/$<TARGET_FILE_NAME:renderdoccmd>
                        )
+    
+    if(ENABLE_CUSTOM_WRAP_SCRIPT)
+        # use configure_file to ensure unix newlines regardless of how it is in the repository (e.g. CRLF on windows)
+        configure_file(android/wrap.sh ${CMAKE_CURRENT_BINARY_DIR}/libs/lib/${ANDROID_ABI}/wrap.sh @ONLY NEWLINE_STYLE UNIX)
+
+        message(STATUS "Using custom wrap script for Android bug workaround")
+        add_custom_command(OUTPUT ${APK_FILE} APPEND
+            COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_BINARY_DIR}/libs/lib/${ANDROID_ABI}/wrap.sh libs/lib/${ANDROID_ABI}/wrap.sh
+            )
+    else()
+        message(WARNING "Without custom wrap script, some Android versions will break due to Android bug")
+    endif()
 
     if(ENABLE_ASAN)
         set(ASAN_ABI_TAG "")
@@ -221,14 +265,14 @@ if(ANDROID)
         else()
             message(WARNING "Unknown ABI ${ANDROID_ABI}, libasan tag unknown")
         endif()
-        
+
         file(GLOB ASAN_LIBRARIES "${ANDROID_TOOLCHAIN_ROOT}/lib64/clang/*/lib/linux/libclang_rt.asan-${ASAN_ABI_TAG}-android.so")
         list(SORT ASAN_LIBRARIES)
 
         list(GET ASAN_LIBRARIES -1 ASAN_LIBRARY)
 
         set(WRAP_SCRIPT "${ANDROID_NDK_ROOT_PATH}/wrap.sh/asan.sh")
-        
+
         string(REPLACE "\\" "/" WRAP_SCRIPT "${WRAP_SCRIPT}")
         string(REPLACE "\\" "/" ASAN_LIBRARY "${ASAN_LIBRARY}")
 
@@ -238,18 +282,33 @@ if(ANDROID)
         elseif(${ASAN_LIBRARY} STREQUAL "" OR NOT EXISTS ${ASAN_LIBRARY})
             message(WARNING "libasan library couldn't be found in NDK, you will need to manually copy it in and re-generate apk")
         else()
-            message(STATUS "Using wrap script ${WRAP_SCRIPT} and libasan library ${ASAN_LIBRARY}")
-            add_custom_command(OUTPUT ${APK_FILE} APPEND
-                COMMAND ${CMAKE_COMMAND} -E copy ${WRAP_SCRIPT} libs/lib/${ANDROID_ABI}/wrap.sh
-                COMMAND ${CMAKE_COMMAND} -E copy ${ASAN_LIBRARY} libs/lib/${ANDROID_ABI}/
-                )
+            if(ENABLE_CUSTOM_WRAP_SCRIPT)
+                message(STATUS "Chaining to wrap script ${WRAP_SCRIPT} and libasan library ${ASAN_LIBRARY}")
+                add_custom_command(OUTPUT ${APK_FILE} APPEND
+                    COMMAND ${CMAKE_COMMAND} -E copy ${WRAP_SCRIPT} libs/lib/${ANDROID_ABI}/asan.sh
+                    COMMAND ${CMAKE_COMMAND} -E copy ${ASAN_LIBRARY} libs/lib/${ANDROID_ABI}/
+                    )
+            else()
+                message(STATUS "Directly using wrap script ${WRAP_SCRIPT} and libasan library ${ASAN_LIBRARY}")
+                add_custom_command(OUTPUT ${APK_FILE} APPEND
+                    COMMAND ${CMAKE_COMMAND} -E copy ${WRAP_SCRIPT} libs/lib/${ANDROID_ABI}/wrap.sh
+                    COMMAND ${CMAKE_COMMAND} -E copy ${ASAN_LIBRARY} libs/lib/${ANDROID_ABI}/
+                    )
+            endif()
         endif()
     endif()
-    
+
+    set(D8_SCRIPT "${BUILD_TOOLS}/d8${TOOL_SCRIPT_EXTENSION}")
+    if(NOT EXISTS ${D8_SCRIPT})
+        set(DEX_COMMAND ${BUILD_TOOLS}/dx${TOOL_SCRIPT_EXTENSION} --dex --output=bin/classes.dex ./obj)
+    else()
+        set(DEX_COMMAND ${D8_SCRIPT} --output ./bin/ ./obj/org/renderdoc/renderdoccmd/${ABI_EXTENSION_NAME}/*.class)
+    endif()
+
     add_custom_command(OUTPUT ${APK_FILE} APPEND
                        COMMAND ${BUILD_TOOLS}/aapt package -f -m -S res -J src -M AndroidManifest.xml -I ${ANDROID_JAR}
-                       COMMAND ${JAVA_BIN}/javac -d ./obj -source 1.7 -target 1.7 -bootclasspath ${RT_JAR} -classpath "${CLASS_PATH}" -sourcepath src src/org/renderdoc/renderdoccmd/*.java
-                       COMMAND ${BUILD_TOOLS}/dx${TOOL_SCRIPT_EXTENSION} --dex --output=bin/classes.dex ./obj
+                       COMMAND ${JAVA_BIN}/javac -d ./obj -source ${JAVA_TARGET} -target ${JAVA_TARGET} -bootclasspath ${RT_JAR} -classpath "${CLASS_PATH}" -sourcepath src src/org/renderdoc/renderdoccmd/*.java
+                       COMMAND ${DEX_COMMAND}
                        COMMAND ${BUILD_TOOLS}/aapt package -f -M AndroidManifest.xml --version-code ${APK_VERSION_CODE} --version-name ${APK_VERSION_NAME} -S res -I ${ANDROID_JAR} -F RenderDocCmd-unaligned.apk bin libs
                        COMMAND ${BUILD_TOOLS}/zipalign -f 4 RenderDocCmd-unaligned.apk RenderDocCmd.apk
                        COMMAND ${BUILD_TOOLS}/apksigner${TOOL_SCRIPT_EXTENSION} sign --ks ${KEYSTORE} --ks-pass pass:android --key-pass pass:android --ks-key-alias rdocandroidkey RenderDocCmd.apk

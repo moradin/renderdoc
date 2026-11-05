@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -93,7 +93,14 @@ void APIInspector::RevealParameter(SDObject *param)
           if(current->GetChild(i) == next)
           {
             current = next;
-            item = parent->child((int)i);
+
+            int idx = (int)i;
+
+            // revealing a parameter that wasn't added, bail out now
+            if(idx >= parent->childCount() || parent->child(idx)->tag().value<void *>() != next)
+              return;
+
+            item = parent->child(idx);
             break;
           }
         }
@@ -173,20 +180,22 @@ void APIInspector::on_apiEvents_itemSelectionChanged()
 
   if(chunk && !chunk->metadata.callstack.isEmpty())
   {
-    if(m_Ctx.Replay().GetCaptureAccess())
-    {
-      m_Ctx.Replay().AsyncInvoke([this, chunk](IReplayController *) {
-        rdcarray<rdcstr> stack =
-            m_Ctx.Replay().GetCaptureAccess()->GetResolve(chunk->metadata.callstack);
+    ui->callstack->setUpdatesEnabled(false);
+    ui->callstack->clear();
+    ui->callstack->addItem(tr("Loading..."));
 
-        GUIInvoke::call(this, [this, stack]() { addCallstack(stack); });
-      });
+    if(!m_Ctx.Replay().AsyncAccessInvoke([this, chunk](ICaptureAccess *access) {
+         rdcarray<rdcstr> stack = access->GetResolve(chunk->metadata.callstack);
+
+         GUIInvoke::call(this, [this, stack]() { addCallstack(stack); });
+       }))
+    {
+      ui->callstack->clear();
+      ui->callstack->addItem(tr("Callstack resolution not available."));
+      ui->callstack->setUpdatesEnabled(true);
     }
     else
     {
-      ui->callstack->setUpdatesEnabled(false);
-      ui->callstack->clear();
-      ui->callstack->addItem(tr("Callstack resolution not available."));
       ui->callstack->setUpdatesEnabled(true);
     }
   }

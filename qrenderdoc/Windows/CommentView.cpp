@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -41,19 +41,19 @@ CommentView::CommentView(ICaptureContext &ctx, QWidget *parent)
   m_commentsEditor = new ScintillaEdit(this);
 
   m_commentsEditor->styleSetFont(STYLE_DEFAULT, Formatter::FixedFont().family().toUtf8().data());
+  m_commentsEditor->styleSetSize(STYLE_DEFAULT, Formatter::FixedFont().pointSize());
   m_commentsEditor->setTabWidth(4);
 
   m_commentsEditor->setWrapMode(SC_WRAP_WORD);
   m_commentsEditor->setWrapVisualFlags(SC_WRAPVISUALFLAG_MARGIN);
 
-  m_commentsEditor->setMarginWidthN(0, sptr_t(30.0 * devicePixelRatioF()));
+  m_commentsEditor->setMarginWidthN(0, 30.0);
 
   ConfigureSyntax(m_commentsEditor, SCLEX_NULL);
 
   QObject::connect(
       m_commentsEditor, &ScintillaEdit::modified,
       [this](int type, int position, int length, int, const QByteArray &, int, int, int) {
-
         // if there has been a change, restyle the region around the modification. We can't use just
         // word boundaries so search back to the last whitespace character - this means we will
         // restyle at most a line, likely much less.
@@ -89,7 +89,10 @@ CommentView::CommentView(ICaptureContext &ctx, QWidget *parent)
       });
 
   m_commentsEditor->styleSetHotSpot(link_style, true);
-  m_commentsEditor->styleSetFore(link_style, SCINTILLA_COLOUR(0, 0, 255));
+  QColor back = palette().base().color();
+  QColor fore = palette().link().color();
+  m_commentsEditor->styleSetBack(link_style, SCINTILLA_COLOUR(back.red(), back.green(), back.blue()));
+  m_commentsEditor->styleSetFore(link_style, SCINTILLA_COLOUR(fore.red(), fore.green(), fore.blue()));
 
   QObject::connect(
       m_commentsEditor, &ScintillaEdit::hotSpotClick, [this](int position, int modifiers) {

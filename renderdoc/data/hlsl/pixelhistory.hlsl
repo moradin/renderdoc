@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -30,6 +30,8 @@ cbuffer cb0 : register(b0)
   bool is_float;
   bool is_uint;
   bool is_int;
+
+  bool is_3d;
 };
 
 cbuffer cb1 : register(b1)
@@ -47,34 +49,36 @@ Texture2DMSArray<uint2> copyin_stencil_ms : register(t3);
 
 Texture2DArray<float4> copyin_float : register(t4);
 Texture2DMSArray<float4> copyin_float_ms : register(t5);
+Texture3D<float4> copyin_float_3d : register(t6);
 
-Texture2DArray<uint4> copyin_uint : register(t6);
-Texture2DMSArray<uint4> copyin_uint_ms : register(t7);
+Texture2DArray<uint4> copyin_uint : register(t8);
+Texture2DMSArray<uint4> copyin_uint_ms : register(t9);
+Texture3D<uint4> copyin_uint_3d : register(t10);
 
-Texture2DArray<int4> copyin_int : register(t8);
-Texture2DMSArray<int4> copyin_int_ms : register(t9);
+Texture2DArray<int4> copyin_int : register(t12);
+Texture2DMSArray<int4> copyin_int_ms : register(t13);
+Texture3D<int4> copyin_int_3d : register(t14);
 
 RWBuffer<float4> copyout_depth : register(u0);
 RWBuffer<float4> copyout_float : register(u1);
 RWBuffer<uint4> copyout_uint : register(u2);
 RWBuffer<int4> copyout_int : register(u3);
 
-[numthreads(1, 1, 1)] void RENDERDOC_PixelHistoryUnused()
-{
+[numthreads(1, 1, 1)] void RENDERDOC_PixelHistoryUnused() {
   copyout_depth[dst_slot] = float4(-1.0f, -1.0f, 0.0f, 0.0f);
 }
 
-[numthreads(1, 1, 1)] void RENDERDOC_PixelHistoryCopyPixel()
+    [numthreads(1, 1, 1)] void RENDERDOC_PixelHistoryCopyPixel()
 {
   if(multisampled)
   {
     if(copy_depth || copy_stencil)
     {
       float2 val =
-          float2(copyin_depth_ms.sample[src_coord.z][uint3(src_coord.xy, src_coord.w)].r, -1.0f);
+          float2(copyin_depth_ms.Load(uint3(src_coord.xy, src_coord.w), src_coord.z).r, -1.0f);
 
       if(copy_stencil)
-        val.g = (float)copyin_stencil_ms.sample[src_coord.z][uint3(src_coord.xy, src_coord.w)].g;
+        val.g = (float)copyin_stencil_ms.Load(uint3(src_coord.xy, src_coord.w), src_coord.z).g;
 
       copyout_depth[dst_slot] = float4(val, 0.0f, 0.0f);
     }
@@ -82,17 +86,31 @@ RWBuffer<int4> copyout_int : register(u3);
     {
       if(is_float)
       {
-        copyout_float[dst_slot] =
-            copyin_float_ms.sample[src_coord.z][uint3(src_coord.xy, src_coord.w)];
+        copyout_float[dst_slot] = copyin_float_ms.Load(uint3(src_coord.xy, src_coord.w), src_coord.z);
       }
       else if(is_uint)
       {
-        copyout_uint[dst_slot] = copyin_uint_ms.sample[src_coord.z][uint3(src_coord.xy, src_coord.w)];
+        copyout_uint[dst_slot] = copyin_uint_ms.Load(uint3(src_coord.xy, src_coord.w), src_coord.z);
       }
       else if(is_int)
       {
-        copyout_int[dst_slot] = copyin_int_ms.sample[src_coord.z][uint3(src_coord.xy, src_coord.w)];
+        copyout_int[dst_slot] = copyin_int_ms.Load(uint3(src_coord.xy, src_coord.w), src_coord.z);
       }
+    }
+  }
+  else if(is_3d)
+  {
+    if(is_float)
+    {
+      copyout_float[dst_slot] = copyin_float_3d.Load(src_coord.xywz);
+    }
+    else if(is_uint)
+    {
+      copyout_uint[dst_slot] = copyin_uint_3d.Load(src_coord.xywz);
+    }
+    else if(is_int)
+    {
+      copyout_int[dst_slot] = copyin_int_3d.Load(src_coord.xywz);
     }
   }
   else

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -511,7 +511,9 @@ bool D3D11Replay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flag
   // we create all proxy textures as typeless to allow us to cast, but that means if the remote API
   // gave us a typed texture and then wants to view it 'typeless' (i.e. as it was created) we need
   // to restore that type here.
-  if(typeCast == CompType::Typeless)
+  //
+  // we also override the typecast for depth here, to allow handling of S8 textures
+  if(typeCast == CompType::Typeless || typeCast == CompType::Depth)
   {
     auto it = m_ProxyResourceOrigInfo.find(cfg.resourceId);
     if(it != m_ProxyResourceOrigInfo.end())
@@ -579,7 +581,7 @@ bool D3D11Replay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flag
   vertexData.VertexScale.y = (tex_y / m_OutputHeight) * cfg.scale * 2.0f;
 
   ID3D11PixelShader *customPS = NULL;
-  ID3D11Buffer *customBuff = NULL;
+  ID3D11Buffer *customBuffs[2] = {};
 
   if(cfg.customShaderId != ResourceId())
   {
@@ -592,11 +594,29 @@ bool D3D11Replay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flag
       RDCASSERT(dxbc);
       RDCASSERT(dxbc->m_Type == DXBC::ShaderType::Pixel);
 
-      if(m_pDevice->GetResourceManager()->HasLiveResource(cfg.customShaderId))
+      if(m_pDevice->GetResourceManager()->HasResource(cfg.customShaderId))
       {
         WrappedID3D11Shader<ID3D11PixelShader> *wrapped =
-            (WrappedID3D11Shader<ID3D11PixelShader> *)m_pDevice->GetResourceManager()->GetLiveResource(
+            (WrappedID3D11Shader<ID3D11PixelShader> *)m_pDevice->GetResourceManager()->GetResource(
                 cfg.customShaderId);
+
+        RD_CustomShader_CBuffer_Type customCBuffer = {};
+
+        customCBuffer.TexDim.x = details.texWidth;
+        customCBuffer.TexDim.y = details.texHeight;
+        customCBuffer.TexDim.z =
+            details.texType == eTexType_3D ? details.texDepth : details.texArraySize;
+        customCBuffer.TexDim.w = details.texMips;
+        customCBuffer.SelectedMip = cfg.subresource.mip;
+        customCBuffer.SelectedSliceFace = cfg.subresource.slice;
+        customCBuffer.SelectedSample = sampleIdx;
+        customCBuffer.TextureType = (uint32_t)details.texType;
+        customCBuffer.YUVDownsampleRate = details.YUVDownsampleRate;
+        customCBuffer.YUVAChannels = details.YUVAChannels;
+        customCBuffer.SelectedRange.x = cfg.rangeMin;
+        customCBuffer.SelectedRange.y = cfg.rangeMax;
+
+        customBuffs[0] = GetDebugManager()->MakeCBuffer(&customCBuffer, sizeof(customCBuffer));
 
         customPS = wrapped;
 
@@ -614,8 +634,7 @@ bool D3D11Replay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flag
 
               if(var.name == "RENDERDOC_TexDim")
               {
-                if(var.type.descriptor.rows == 1 && var.type.descriptor.cols == 4 &&
-                   var.type.descriptor.varType == VarType::UInt)
+                if(var.type.rows == 1 && var.type.cols == 4 && var.type.varType == VarType::UInt)
                 {
                   uint32_t *d = (uint32_t *)(byteData + var.offset);
 
@@ -644,8 +663,7 @@ bool D3D11Replay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flag
               }
               else if(var.name == "RENDERDOC_SelectedMip")
               {
-                if(var.type.descriptor.rows == 1 && var.type.descriptor.cols == 1 &&
-                   var.type.descriptor.varType == VarType::UInt)
+                if(var.type.rows == 1 && var.type.cols == 1 && var.type.varType == VarType::UInt)
                 {
                   uint32_t *d = (uint32_t *)(byteData + var.offset);
 
@@ -659,8 +677,7 @@ bool D3D11Replay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flag
               }
               else if(var.name == "RENDERDOC_SelectedSliceFace")
               {
-                if(var.type.descriptor.rows == 1 && var.type.descriptor.cols == 1 &&
-                   var.type.descriptor.varType == VarType::UInt)
+                if(var.type.rows == 1 && var.type.cols == 1 && var.type.varType == VarType::UInt)
                 {
                   uint32_t *d = (uint32_t *)(byteData + var.offset);
 
@@ -674,12 +691,11 @@ bool D3D11Replay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flag
               }
               else if(var.name == "RENDERDOC_SelectedSample")
               {
-                if(var.type.descriptor.rows == 1 && var.type.descriptor.cols == 1 &&
-                   var.type.descriptor.varType == VarType::SInt)
+                if(var.type.rows == 1 && var.type.cols == 1 && var.type.varType == VarType::SInt)
                 {
                   int32_t *d = (int32_t *)(byteData + var.offset);
 
-                  d[0] = cfg.subresource.sample;
+                  d[0] = sampleIdx;
                 }
                 else
                 {
@@ -689,8 +705,7 @@ bool D3D11Replay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flag
               }
               else if(var.name == "RENDERDOC_TextureType")
               {
-                if(var.type.descriptor.rows == 1 && var.type.descriptor.cols == 1 &&
-                   var.type.descriptor.varType == VarType::UInt)
+                if(var.type.rows == 1 && var.type.cols == 1 && var.type.varType == VarType::UInt)
                 {
                   uint32_t *d = (uint32_t *)(byteData + var.offset);
 
@@ -702,13 +717,43 @@ bool D3D11Replay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flag
                           var.name.c_str());
                 }
               }
+              else if(var.name == "RENDERDOC_SelectedRangeMin")
+              {
+                float *d = (float *)(byteData + var.offset);
+                d[0] = cfg.rangeMin;
+              }
+              else if(var.name == "RENDERDOC_SelectedRangeMax")
+              {
+                float *d = (float *)(byteData + var.offset);
+                d[0] = cfg.rangeMax;
+              }
               else
               {
                 RDCWARN("Custom shader: Variable not recognised: %s", var.name.c_str());
               }
             }
 
-            customBuff = GetDebugManager()->MakeCBuffer(cbufData, cbuf.descriptor.byteSize);
+            if(cbuf.reg == 0)
+            {
+              // with the prefix added, binding 0 should be 'reserved' for the modern cbuffer.
+              // we can still make this work, but it's unexpected
+              RDCWARN(
+                  "Unexpected globals cbuffer at binding 0, expected binding 1 after prefix "
+                  "cbuffer");
+              customBuffs[0] = GetDebugManager()->MakeCBuffer(cbufData, cbuf.descriptor.byteSize);
+            }
+            else if(cbuf.reg == 1)
+            {
+              customBuffs[1] = GetDebugManager()->MakeCBuffer(cbufData, cbuf.descriptor.byteSize);
+            }
+            else
+            {
+              RDCERR(
+                  "Globals cbuffer at binding %d, unexpected and not handled - these constants "
+                  "will be "
+                  "undefined",
+                  cbuf.reg);
+            }
 
             SAFE_DELETE_ARRAY(cbufData);
           }
@@ -810,7 +855,7 @@ bool D3D11Replay::RenderTextureInternal(TextureDisplay cfg, TexDisplayFlags flag
     if(customPS)
     {
       m_pImmediateContext->PSSetShader(customPS, NULL, 0);
-      m_pImmediateContext->PSSetConstantBuffers(0, 1, &customBuff);
+      m_pImmediateContext->PSSetConstantBuffers(0, 2, customBuffs);
     }
     else
     {

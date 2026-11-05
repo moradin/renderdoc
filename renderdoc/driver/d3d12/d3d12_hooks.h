@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,6 +28,8 @@
 #include "driver/dx/official/d3d12.h"
 #include "driver/dx/official/dxgi.h"
 
+struct D3D12DevConfiguration;
+
 // this is the type of the lambda we use to route the call out to the 'real' function inside our
 // generic wrapper.
 // Could be any of D3D12CreateDevice or the AMD wrapper
@@ -35,8 +37,9 @@ typedef std::function<HRESULT(IUnknown *pAdapter, D3D_FEATURE_LEVEL MinimumFeatu
                               REFIID riid, void **ppDevice)>
     RealD3D12CreateFunction;
 
-HRESULT CreateD3D12_Internal(RealD3D12CreateFunction real, IUnknown *pAdapter,
-                             D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid, void **ppDevice);
+HRESULT CreateD3D12_Internal(RealD3D12CreateFunction real, D3D12DevConfiguration *devConfig,
+                             IUnknown *pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid,
+                             void **ppDevice);
 
 struct ID3DDevice;
 

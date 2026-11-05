@@ -31,7 +31,6 @@
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v140</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
     <LinkIncremental>false</LinkIncremental>
@@ -41,12 +40,9 @@
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
+  <Import Project="$(SolutionDir)\util\WindowsSDKFix.props" />
   <PropertyGroup>
     <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
-    <ExecutablePath>$(ExecutablePath)</ExecutablePath>
-    <IncludePath>$(SolutionDir)\breakpad;$(IncludePath)</IncludePath>
-    <LibraryPath>$(LibraryPath)</LibraryPath>
-    <ExcludePath>$(ExcludePath)</ExcludePath>
   </PropertyGroup>
   <PropertyGroup>
     <IntDir>$(SolutionDir)$(Platform)\$(Configuration)\obj\$(ProjectName)\</IntDir>
@@ -71,7 +67,7 @@
       <MinimalRebuild>false</MinimalRebuild>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <AdditionalIncludeDirectories>$(SolutionDir)renderdoc\;$(SolutionDir)renderdoc\3rdparty\</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>RDOC_DLL_FILE=$(ProjectName);RENDERDOC_EXPORTS;RENDERDOC_PLATFORM_WIN32;WIN32;NDEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>RDOC_BASE_NAME=$(ProjectName);RENDERDOC_EXPORTS;RENDERDOC_PLATFORM_WIN32;WIN32;NDEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level4</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
       <DisableSpecificWarnings>4100</DisableSpecificWarnings>
@@ -108,7 +104,6 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="3rdparty\android\android_manifest.h" />
     <ClInclude Include="3rdparty\catch\catch.hpp" />
     <ClInclude Include="3rdparty\catch\official\catch.hpp" />
     <ClInclude Include="3rdparty\compressonator\BC1_Encode_kernel.h" />
@@ -141,7 +136,7 @@
     <ClInclude Include="3rdparty\pugixml\pugiconfig.hpp" />
     <ClInclude Include="3rdparty\pugixml\pugixml.hpp" />
     <ClInclude Include="3rdparty\stb\stb_image.h" />
-    <ClInclude Include="3rdparty\stb\stb_image_resize.h" />
+    <ClInclude Include="3rdparty\stb\stb_image_resize2.h" />
     <ClInclude Include="3rdparty\stb\stb_image_write.h" />
     <ClInclude Include="3rdparty\stb\stb_truetype.h" />
     <ClInclude Include="3rdparty\superluminal\PerformanceAPI_capi.h" />
@@ -180,6 +175,7 @@
     <ClInclude Include="api\replay\common_pipestate.h" />
     <ClInclude Include="api\replay\control_types.h" />
     <ClInclude Include="api\replay\d3d11_pipestate.h" />
+    <ClInclude Include="api\replay\d3d9_pipestate.h" />
     <ClInclude Include="api\replay\d3d12_pipestate.h" />
     <ClInclude Include="api\replay\data_types.h" />
     <ClInclude Include="api\replay\gl_pipestate.h" />
@@ -201,11 +197,15 @@
     <ClInclude Include="common\dds_readwrite.h" />
     <ClInclude Include="common\formatting.h" />
     <ClInclude Include="common\globalconfig.h" />
+    <ClInclude Include="common\result.h" />
     <ClInclude Include="common\shader_cache.h" />
+    <ClInclude Include="common\tex_data.h" />
     <ClInclude Include="common\threading.h" />
     <ClInclude Include="common\timing.h" />
     <ClInclude Include="common\wrapped_pool.h" />
     <ClInclude Include="core\bit_flag_iterator.h" />
+    <ClInclude Include="core\gpu_address_range_tracker.h" />
+    <ClInclude Include="core\rdcbytetrie.h" />
     <ClInclude Include="core\settings.h" />
     <ClInclude Include="core\core.h" />
     <ClInclude Include="core\crash_handler.h" />
@@ -225,6 +225,7 @@
     <ClInclude Include="data\glsl\vk_texsample.h" />
     <ClInclude Include="data\glsl_shaders.h" />
     <ClInclude Include="data\hlsl\hlsl_cbuffers.h" />
+    <ClInclude Include="data\hlsl\hlsl_custom_prefix.h" />
     <ClInclude Include="data\resource.h" />
     <ClInclude Include="hooks\hooks.h" />
     <ClInclude Include="maths\camera.h" />
@@ -242,15 +243,16 @@
     </ClInclude>
     <ClInclude Include="os\win32\dia2_stubs.h" />
     <ClInclude Include="os\win32\win32_specific.h" />
+    <ClInclude Include="replay\common\var_dispatch_helpers.h" />
     <ClInclude Include="replay\dummy_driver.h" />
     <ClInclude Include="replay\replay_driver.h" />
     <ClInclude Include="replay\replay_controller.h" />
-    <ClInclude Include="serialise\codecs\vk_cpp_codec_common.h" />
     <ClInclude Include="serialise\lz4io.h" />
     <ClInclude Include="serialise\rdcfile.h" />
     <ClInclude Include="serialise\serialiser.h" />
     <ClInclude Include="serialise\streamio.h" />
     <ClInclude Include="serialise\zstdio.h" />
+    <ClInclude Include="shaders\controlflow.h" />
     <ClInclude Include="strings\string_utils.h" />
   </ItemGroup>
   <ItemGroup>
@@ -524,8 +526,6 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
     </ClCompile>
     <ClCompile Include="android\android.cpp" />
-    <ClCompile Include="android\android_manifest.cpp" />
-    <ClCompile Include="android\android_patch.cpp" />
     <ClCompile Include="android\android_tools.cpp" />
     <ClCompile Include="android\android_utils.cpp" />
     <ClCompile Include="android\jdwp.cpp" />
@@ -533,8 +533,11 @@
     <ClCompile Include="android\jdwp_util.cpp" />
     <ClCompile Include="common\common.cpp" />
     <ClCompile Include="common\dds_readwrite.cpp" />
+    <ClCompile Include="common\jobsystem.cpp" />
+    <ClCompile Include="common\jobsystem_tests.cpp" />
     <ClCompile Include="common\threading_tests.cpp" />
     <ClCompile Include="core\bit_flag_iterator_tests.cpp" />
+    <ClCompile Include="core\gpu_address_range_tracker.cpp" />
     <ClCompile Include="core\settings.cpp" />
     <ClCompile Include="core\core.cpp">
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
@@ -591,24 +594,6 @@
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="os\posix\apple\apple_threading.cpp">
-      <ExcludedFromBuild>true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="os\posix\ggp\ggp_callstack.cpp">
-      <ExcludedFromBuild>true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="os\posix\ggp\ggp_hook.cpp">
-      <ExcludedFromBuild>true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="os\posix\ggp\ggp_network.cpp">
-      <ExcludedFromBuild>true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="os\posix\ggp\ggp_process.cpp">
-      <ExcludedFromBuild>true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="os\posix\ggp\ggp_stringio.cpp">
-      <ExcludedFromBuild>true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="os\posix\ggp\ggp_threading.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="os\posix\linux\linux_callstack.cpp">
@@ -672,6 +657,7 @@
     <ClCompile Include="serialise\streamio.cpp" />
     <ClCompile Include="serialise\streamio_tests.cpp" />
     <ClCompile Include="serialise\zstdio.cpp" />
+    <ClCompile Include="shaders\controlflow.cpp" />
     <ClCompile Include="strings\grisu2.cpp" />
     <ClCompile Include="strings\string_utils.cpp" />
     <ClCompile Include="strings\utf8printf.cpp" />
@@ -685,6 +671,10 @@
     <None Include="data\glsl\array2ms.comp" />
     <None Include="data\glsl\blit.vert" />
     <None Include="data\glsl\checkerboard.frag" />
+    <None Include="data\glsl\debug_math.comp" />
+    <None Include="data\glsl\debug_sample.frag" />
+    <None Include="data\glsl\depth_copy.frag" />
+    <None Include="data\glsl\depth_copyms.frag" />
     <None Include="data\glsl\deptharr2ms.frag" />
     <None Include="data\glsl\depthms2arr.frag" />
     <None Include="data\glsl\discard.frag" />
@@ -711,6 +701,10 @@
     <None Include="data\glsl\vktext.vert" />
     <None Include="data\glsl\trisize.frag" />
     <None Include="data\glsl\trisize.geom" />
+    <None Include="data\glsl\vk_buffer2ms.comp" />
+    <None Include="data\glsl\vk_depthbuf2ms.frag" />
+    <None Include="data\glsl\vk_depthms2buffer.comp" />
+    <None Include="data\glsl\vk_ms2buffer.comp" />
     <None Include="data\hlsl\hlsl_texsample.h" />
     <None Include="data\hlsl\misc.hlsl" />
     <None Include="data\hlsl\text.hlsl" />
@@ -718,6 +712,7 @@
     <None Include="data\hlsl\mesh.hlsl" />
     <None Include="data\hlsl\multisample.hlsl" />
     <None Include="data\hlsl\pixelhistory.hlsl" />
+    <None Include="data\hlsl\d3d12_pixelhistory.hlsl" />
     <None Include="data\hlsl\quadoverdraw.hlsl" />
     <None Include="data\hlsl\texdisplay.hlsl" />
     <None Include="os\win32\comexport.def" />
@@ -725,6 +720,10 @@
     <None Include="replay\renderdoc_serialise.inl" />
     <None Include="data\hlsl\texremap.hlsl" />
     <None Include="data\hlsl\fixedcol.hlsl" />
+    <None Include="data\hlsl\shaderdebug.hlsl" />
+    <None Include="data\hlsl\depth_copy.hlsl" />
+    <None Include="data\hlsl\raytracing.hlsl" />
+    <None Include="data\hlsl\quadswizzle.hlsl" />
   </ItemGroup>
   <!-- try to bake shaders needed in DXIL now, in case we won't be able to find a dxc at runtime -->
   <UsingTask TaskName="GetDXCExecutable" TaskFactory="CodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
@@ -742,34 +741,47 @@ using System.Runtime.CompilerServices;
 namespace DXCEnumerateAndCheck {
   public class GetDXCExecutable : Microsoft.Build.Utilities.Task {
     public override bool Execute() {
-      string[] dirs = System.IO.Directory.GetDirectories(SDKPath, "10.*");
-      // sort and reverse so we try from latest to oldest
-      System.Array.Sort(dirs);
-      System.Array.Reverse(dirs);
+      string[] sdkPathsCheck = SDKPath.Split(';');
 
-      // look for the latest dxc.exe available that works
-      foreach(string path in dirs)
+      foreach(string sdkPathCheck in sdkPathsCheck)
       {
-        string dxcCheck = System.IO.Path.Combine(path, "x64", "dxc.exe");
-        if(System.IO.File.Exists(dxcCheck))
+        try
         {
-          // check that dxc.exe is runnable, some dxc.exe are broken
-          try
+          string[] dirs = System.IO.Directory.GetDirectories(sdkPathCheck, "10.*");
+          // sort and reverse so we try from latest to oldest
+          System.Array.Sort(dirs);
+          System.Array.Reverse(dirs);
+
+          // look for the latest dxc.exe available that works
+          foreach(string path in dirs)
           {
-            ProcessStartInfo psi = new ProcessStartInfo();
-            psi.UseShellExecute = false;
-            psi.FileName = dxcCheck;
-            psi.CreateNoWindow = true;
-            Process.Start(psi);
-            DXC = dxcCheck;
-            return true;
-          }
-          catch(Exception ex)
-          {
-            // keep going, maybe we'll find one that works
+            string dxcCheck = System.IO.Path.Combine(path, "x64", "dxc.exe");
+            if(System.IO.File.Exists(dxcCheck))
+            {
+              // check that dxc.exe is runnable, some dxc.exe are broken
+              try
+              {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.UseShellExecute = false;
+                psi.FileName = dxcCheck;
+                psi.CreateNoWindow = true;
+                Process.Start(psi);
+                DXC = dxcCheck;
+                return true;
+              }
+              catch(Exception ex)
+              {
+                // keep going, maybe we'll find one that works
+              }
+            }
           }
         }
+        catch(Exception ex)
+        {
+          // try next SDK path
+        }
       }
+
       // always succeed even if we don't find dxc
       return true;
     }
@@ -782,7 +794,7 @@ namespace DXCEnumerateAndCheck {
     </Task>
   </UsingTask>
   <Target Name="_findDXC" BeforeTargets="PrepareForBuild">
-    <GetDXCExecutable SDKPath="$(Registry:HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Microsoft SDKs\Windows\v10.0@InstallationFolder)bin" ContinueOnError="WarnAndContinue">
+    <GetDXCExecutable SDKPath="$(Registry:HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Microsoft SDKs\Windows\v10.0@InstallationFolder)bin;$(Registry:HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Microsoft SDKs\Windows\v10.0@InstallationFolder)bin" ContinueOnError="WarnAndContinue">
       <Output TaskParameter="DXC" PropertyName="DXCExecutable" />
     </GetDXCExecutable>
     <Message Condition="$(DXCExecutable.Length) == 0" Importance="high" Text="Can't build DXIL shaders without DXC. Install windows 10 SDK to bake DXIL shaders." />
@@ -797,14 +809,23 @@ namespace DXCEnumerateAndCheck {
       </ResourceCompile>
     </ItemGroup>
   </Target>
-  <Target Name="_bakeShaders" BeforeTargets="PrepareForBuild" Condition="$(DXCExecutable.Length) &gt; 0" Inputs="data\hlsl\fixedcol.hlsl;data\hlsl\quadoverdraw.hlsl" Outputs="$(DXILBakedDir)\fixedcol_0.dxbc;$(DXILBakedDir)\fixedcol_1.dxbc;$(DXILBakedDir)\fixedcol_2.dxbc;$(DXILBakedDir)\fixedcol_3.dxbc;$(DXILBakedDir)\quadwrite.dxbc">
+  <Target Name="_bakeShaders" BeforeTargets="PrepareForBuild" Condition="$(DXCExecutable.Length) &gt; 0" Inputs="data\hlsl\fixedcol.hlsl;data\hlsl\quadoverdraw.hlsl;data\hlsl\d3d12_pixelhistory.hlsl" Outputs="$(DXILBakedDir)\fixedcol_0.dxbc;$(DXILBakedDir)\fixedcol_1.dxbc;$(DXILBakedDir)\fixedcol_2.dxbc;$(DXILBakedDir)\fixedcol_3.dxbc;$(DXILBakedDir)\quadwrite.dxbc;$(DXILBakedDir)\pixelhistory_primitiveid.dxbc;$(DXILBakedDir)\pixelhistory_fixedcol_0.dxbc;$(DXILBakedDir)\pixelhistory_fixedcol_1.dxbc;$(DXILBakedDir)\pixelhistory_fixedcol_2.dxbc;$(DXILBakedDir)\pixelhistory_fixedcol_3.dxbc;$(DXILBakedDir)\pixelhistory_fixedcol_4.dxbc;$(DXILBakedDir)\pixelhistory_fixedcol_5.dxbc;$(DXILBakedDir)\pixelhistory_fixedcol_6.dxbc;$(DXILBakedDir)\pixelhistory_fixedcol_7.dxbc">
     <Message Text="Baking DXIL Shaders with $(DXCExecutable)" Importance="High" />
     <MakeDir Directories="$(DXILBakedDir)" />
     <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\fixedcol.hlsl&quot; -T ps_6_0 -DVARIANT=0 -E main -Qstrip_reflect -Fo &quot;$(DXILBakedDir)fixedcol_0.dxbc&quot;" />
     <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\fixedcol.hlsl&quot; -T ps_6_0 -DVARIANT=1 -E main -Qstrip_reflect -Fo &quot;$(DXILBakedDir)fixedcol_1.dxbc&quot;" />
     <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\fixedcol.hlsl&quot; -T ps_6_0 -DVARIANT=2 -E main -Qstrip_reflect -Fo &quot;$(DXILBakedDir)fixedcol_2.dxbc&quot;" />
     <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\fixedcol.hlsl&quot; -T ps_6_0 -DVARIANT=3 -E main -Qstrip_reflect -Fo &quot;$(DXILBakedDir)fixedcol_3.dxbc&quot;" />
-    <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\quadoverdraw.hlsl&quot; -T ps_6_0 -E RENDERDOC_QuadOverdrawPS -Qstrip_reflect -Fo &quot;$(DXILBakedDir)quadwrite.dxbc&quot;" />
+    <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\quadoverdraw.hlsl&quot; -T ps_6_0 -DD3D12=1 -E RENDERDOC_QuadOverdrawPS -Qstrip_reflect -Fo &quot;$(DXILBakedDir)quadwrite.dxbc&quot;" />
+    <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\d3d12_pixelhistory.hlsl&quot; -T ps_6_0 -E RENDERDOC_PrimitiveIDPS -Qstrip_reflect -Fo &quot;$(DXILBakedDir)pixelhistory_primitiveid.dxbc&quot;" />
+    <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\d3d12_pixelhistory.hlsl&quot; -T ps_6_0 -DRT=0 -E RENDERDOC_PixelHistoryFixedColPS -Qstrip_reflect -Fo &quot;$(DXILBakedDir)pixelhistory_fixedcol_0.dxbc&quot;" />
+    <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\d3d12_pixelhistory.hlsl&quot; -T ps_6_0 -DRT=1 -E RENDERDOC_PixelHistoryFixedColPS -Qstrip_reflect -Fo &quot;$(DXILBakedDir)pixelhistory_fixedcol_1.dxbc&quot;" />
+    <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\d3d12_pixelhistory.hlsl&quot; -T ps_6_0 -DRT=2 -E RENDERDOC_PixelHistoryFixedColPS -Qstrip_reflect -Fo &quot;$(DXILBakedDir)pixelhistory_fixedcol_2.dxbc&quot;" />
+    <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\d3d12_pixelhistory.hlsl&quot; -T ps_6_0 -DRT=3 -E RENDERDOC_PixelHistoryFixedColPS -Qstrip_reflect -Fo &quot;$(DXILBakedDir)pixelhistory_fixedcol_3.dxbc&quot;" />
+    <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\d3d12_pixelhistory.hlsl&quot; -T ps_6_0 -DRT=4 -E RENDERDOC_PixelHistoryFixedColPS -Qstrip_reflect -Fo &quot;$(DXILBakedDir)pixelhistory_fixedcol_4.dxbc&quot;" />
+    <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\d3d12_pixelhistory.hlsl&quot; -T ps_6_0 -DRT=5 -E RENDERDOC_PixelHistoryFixedColPS -Qstrip_reflect -Fo &quot;$(DXILBakedDir)pixelhistory_fixedcol_5.dxbc&quot;" />
+    <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\d3d12_pixelhistory.hlsl&quot; -T ps_6_0 -DRT=6 -E RENDERDOC_PixelHistoryFixedColPS -Qstrip_reflect -Fo &quot;$(DXILBakedDir)pixelhistory_fixedcol_6.dxbc&quot;" />
+    <Exec Command="&quot;$(DXCExecutable)&quot; &quot;$(ProjectDir)data\hlsl\d3d12_pixelhistory.hlsl&quot; -T ps_6_0 -DRT=7 -E RENDERDOC_PixelHistoryFixedColPS -Qstrip_reflect -Fo &quot;$(DXILBakedDir)pixelhistory_fixedcol_7.dxbc&quot;" />
   </Target>
   <ItemGroup>
     <Natvis Include="renderdoc.natvis" />
@@ -832,8 +853,9 @@ namespace DXCEnumerateAndCheck {
     <Message Text="Processing layer JSON file for RenderDoc $(MajorVersion).$(MinorVersion)" Importance="High" />
     <!-- Read the template json, replace the major/minor versions -->
     <PropertyGroup>
+      <VulkanLayerName>VK_LAYER_$(ProjectName.ToUpper())_Capture</VulkanLayerName>
       <VulkanEnableVar>ENABLE_VULKAN_$(ProjectName)_CAPTURE</VulkanEnableVar>
-      <JSONContents>$([System.IO.File]::ReadAllText('$(SolutionDir)renderdoc/driver/vulkan/renderdoc.json').Replace('@RENDERDOC_VERSION_MAJOR@', '$(MajorVersion)').Replace('@RENDERDOC_VERSION_MINOR@', '$(MinorVersion)').Replace('@VULKAN_LAYER_MODULE_PATH@', '.\\$(ProjectName).dll').Replace('@VULKAN_ENABLE_VAR@', $(VulkanEnableVar.ToUpper())))</JSONContents>
+      <JSONContents>$([System.IO.File]::ReadAllText('$(SolutionDir)renderdoc/driver/vulkan/renderdoc.json').Replace('@RENDERDOC_VERSION_MAJOR@', '$(MajorVersion)').Replace('@RENDERDOC_VERSION_MINOR@', '$(MinorVersion)').Replace('@VULKAN_LAYER_MODULE_PATH@', '.\\$(ProjectName).dll').Replace('@VULKAN_LAYER_NAME@', $(VulkanLayerName)).Replace('@VULKAN_ENABLE_VAR@', $(VulkanEnableVar.ToUpper())))</JSONContents>
     </PropertyGroup>
     <!-- Write it out to the output directory -->
     <WriteLinesToFile File="$(OutDir)$(ProjectName).json" Lines="$(JSONContents)" Overwrite="true" />
@@ -844,9 +866,6 @@ namespace DXCEnumerateAndCheck {
     </ProjectReference>
     <ProjectReference Include="driver\d3d12\renderdoc_d3d12.vcxproj">
       <Project>{9e6b10a2-84b4-434d-abdb-43be4ea650f4}</Project>
-    </ProjectReference>
-    <ProjectReference Include="driver\d3d8\renderdoc_d3d8.vcxproj">
-      <Project>{9c4487e8-eeb0-4a7f-bd81-23f81cd24e22}</Project>
     </ProjectReference>
     <ProjectReference Include="driver\d3d9\renderdoc_d3d9.vcxproj">
       <Project>{44044776-9469-4079-b587-abfff6574aa4}</Project>

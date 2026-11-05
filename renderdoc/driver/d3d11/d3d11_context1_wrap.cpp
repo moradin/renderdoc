@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -447,10 +447,8 @@ bool WrappedID3D11DeviceContext::Serialise_CopySubresourceRegion1(
 
     if(IsLoading(m_State))
     {
-      ResourceId dstLiveID = GetIDForDeviceChild(pDstResource);
-      ResourceId srcLiveID = GetIDForDeviceChild(pSrcResource);
-      ResourceId dstOrigID = GetResourceManager()->GetOriginalID(dstLiveID);
-      ResourceId srcOrigID = GetResourceManager()->GetOriginalID(srcLiveID);
+      ResourceId dstID = GetIDForDeviceChild(pDstResource);
+      ResourceId srcID = GetIDForDeviceChild(pSrcResource);
 
       AddEvent();
 
@@ -459,25 +457,25 @@ bool WrappedID3D11DeviceContext::Serialise_CopySubresourceRegion1(
 
       if(pDstResource && pSrcResource)
       {
-        action.copySource = srcOrigID;
+        action.copySource = srcID;
         action.copySourceSubresource =
             Subresource(GetMipForSubresource(pSrcResource, SrcSubresource),
                         GetSliceForSubresource(pSrcResource, SrcSubresource));
-        action.copyDestination = dstOrigID;
+        action.copyDestination = dstID;
         action.copyDestinationSubresource =
             Subresource(GetMipForSubresource(pDstResource, DstSubresource),
                         GetSliceForSubresource(pDstResource, DstSubresource));
 
         if(m_CurEventID)
         {
-          if(dstLiveID == srcLiveID)
+          if(dstID == srcID)
           {
-            m_ResourceUses[dstLiveID].push_back(EventUsage(m_CurEventID, ResourceUsage::Copy));
+            m_ResourceUses[dstID].push_back(EventUsage(m_CurEventID, ResourceUsage::Copy));
           }
           else
           {
-            m_ResourceUses[dstLiveID].push_back(EventUsage(m_CurEventID, ResourceUsage::CopyDst));
-            m_ResourceUses[srcLiveID].push_back(EventUsage(m_CurEventID, ResourceUsage::CopySrc));
+            m_ResourceUses[dstID].push_back(EventUsage(m_CurEventID, ResourceUsage::CopyDst));
+            m_ResourceUses[srcID].push_back(EventUsage(m_CurEventID, ResourceUsage::CopySrc));
           }
         }
       }
@@ -569,9 +567,8 @@ bool WrappedID3D11DeviceContext::Serialise_ClearView(SerialiserType &ser, ID3D11
 
       if(resid != ResourceId())
       {
-        m_ResourceUses[resid].push_back(
-            EventUsage(m_CurEventID, ResourceUsage::Clear, GetIDForDeviceChild(pView)));
-        action.copyDestination = GetResourceManager()->GetOriginalID(resid);
+        m_ResourceUses[resid].push_back(EventUsage(m_CurEventID, ResourceUsage::Clear));
+        action.copyDestination = resid;
         action.copyDestinationSubresource = Subresource();
 
         const ResourceRange &range = GetResourceRange(pView);
@@ -687,8 +684,14 @@ bool WrappedID3D11DeviceContext::Serialise_VSSetConstantBuffers1(
     if(pFirstConstant)
       m_CurrentPipelineState->Change(m_CurrentPipelineState->VS.CBOffsets, pFirstConstant,
                                      StartSlot, NumBuffers);
+    else
+      m_CurrentPipelineState->Change(m_CurrentPipelineState->VS.CBOffsets, NullCBOffsets, StartSlot,
+                                     NumBuffers);
     if(pNumConstants)
       m_CurrentPipelineState->Change(m_CurrentPipelineState->VS.CBCounts, pNumConstants, StartSlot,
+                                     NumBuffers);
+    else
+      m_CurrentPipelineState->Change(m_CurrentPipelineState->VS.CBCounts, NullCBCounts, StartSlot,
                                      NumBuffers);
 
     ID3D11Buffer *bufs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
@@ -779,6 +782,11 @@ void WrappedID3D11DeviceContext::VSSetConstantBuffers1(UINT StartSlot, UINT NumB
     }
     m_CurrentPipelineState->Change(m_CurrentPipelineState->VS.CBOffsets, offs, StartSlot, NumBuffers);
   }
+  else
+  {
+    m_CurrentPipelineState->Change(m_CurrentPipelineState->VS.CBOffsets, NullCBOffsets, StartSlot,
+                                   NumBuffers);
+  }
 
   if(pNumConstants)
   {
@@ -789,6 +797,11 @@ void WrappedID3D11DeviceContext::VSSetConstantBuffers1(UINT StartSlot, UINT NumB
         cnts[i] = NullCBCounts[i];
     }
     m_CurrentPipelineState->Change(m_CurrentPipelineState->VS.CBCounts, cnts, StartSlot, NumBuffers);
+  }
+  else
+  {
+    m_CurrentPipelineState->Change(m_CurrentPipelineState->VS.CBCounts, NullCBCounts, StartSlot,
+                                   NumBuffers);
   }
 
   VerifyState();
@@ -818,8 +831,14 @@ bool WrappedID3D11DeviceContext::Serialise_HSSetConstantBuffers1(
     if(pFirstConstant)
       m_CurrentPipelineState->Change(m_CurrentPipelineState->HS.CBOffsets, pFirstConstant,
                                      StartSlot, NumBuffers);
+    else
+      m_CurrentPipelineState->Change(m_CurrentPipelineState->HS.CBOffsets, NullCBOffsets, StartSlot,
+                                     NumBuffers);
     if(pNumConstants)
       m_CurrentPipelineState->Change(m_CurrentPipelineState->HS.CBCounts, pNumConstants, StartSlot,
+                                     NumBuffers);
+    else
+      m_CurrentPipelineState->Change(m_CurrentPipelineState->HS.CBCounts, NullCBCounts, StartSlot,
                                      NumBuffers);
 
     ID3D11Buffer *bufs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
@@ -910,6 +929,11 @@ void WrappedID3D11DeviceContext::HSSetConstantBuffers1(UINT StartSlot, UINT NumB
     }
     m_CurrentPipelineState->Change(m_CurrentPipelineState->HS.CBOffsets, offs, StartSlot, NumBuffers);
   }
+  else
+  {
+    m_CurrentPipelineState->Change(m_CurrentPipelineState->HS.CBOffsets, NullCBOffsets, StartSlot,
+                                   NumBuffers);
+  }
 
   if(pNumConstants)
   {
@@ -920,6 +944,11 @@ void WrappedID3D11DeviceContext::HSSetConstantBuffers1(UINT StartSlot, UINT NumB
         cnts[i] = NullCBCounts[i];
     }
     m_CurrentPipelineState->Change(m_CurrentPipelineState->HS.CBCounts, cnts, StartSlot, NumBuffers);
+  }
+  else
+  {
+    m_CurrentPipelineState->Change(m_CurrentPipelineState->HS.CBCounts, NullCBCounts, StartSlot,
+                                   NumBuffers);
   }
 
   VerifyState();
@@ -949,8 +978,14 @@ bool WrappedID3D11DeviceContext::Serialise_DSSetConstantBuffers1(
     if(pFirstConstant)
       m_CurrentPipelineState->Change(m_CurrentPipelineState->DS.CBOffsets, pFirstConstant,
                                      StartSlot, NumBuffers);
+    else
+      m_CurrentPipelineState->Change(m_CurrentPipelineState->DS.CBOffsets, NullCBOffsets, StartSlot,
+                                     NumBuffers);
     if(pNumConstants)
       m_CurrentPipelineState->Change(m_CurrentPipelineState->DS.CBCounts, pNumConstants, StartSlot,
+                                     NumBuffers);
+    else
+      m_CurrentPipelineState->Change(m_CurrentPipelineState->DS.CBCounts, NullCBCounts, StartSlot,
                                      NumBuffers);
 
     ID3D11Buffer *bufs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
@@ -1041,6 +1076,11 @@ void WrappedID3D11DeviceContext::DSSetConstantBuffers1(UINT StartSlot, UINT NumB
     }
     m_CurrentPipelineState->Change(m_CurrentPipelineState->DS.CBOffsets, offs, StartSlot, NumBuffers);
   }
+  else
+  {
+    m_CurrentPipelineState->Change(m_CurrentPipelineState->DS.CBOffsets, NullCBOffsets, StartSlot,
+                                   NumBuffers);
+  }
 
   if(pNumConstants)
   {
@@ -1051,6 +1091,11 @@ void WrappedID3D11DeviceContext::DSSetConstantBuffers1(UINT StartSlot, UINT NumB
         cnts[i] = NullCBCounts[i];
     }
     m_CurrentPipelineState->Change(m_CurrentPipelineState->DS.CBCounts, cnts, StartSlot, NumBuffers);
+  }
+  else
+  {
+    m_CurrentPipelineState->Change(m_CurrentPipelineState->DS.CBCounts, NullCBCounts, StartSlot,
+                                   NumBuffers);
   }
 
   VerifyState();
@@ -1080,8 +1125,14 @@ bool WrappedID3D11DeviceContext::Serialise_GSSetConstantBuffers1(
     if(pFirstConstant)
       m_CurrentPipelineState->Change(m_CurrentPipelineState->GS.CBOffsets, pFirstConstant,
                                      StartSlot, NumBuffers);
+    else
+      m_CurrentPipelineState->Change(m_CurrentPipelineState->GS.CBOffsets, NullCBOffsets, StartSlot,
+                                     NumBuffers);
     if(pNumConstants)
       m_CurrentPipelineState->Change(m_CurrentPipelineState->GS.CBCounts, pNumConstants, StartSlot,
+                                     NumBuffers);
+    else
+      m_CurrentPipelineState->Change(m_CurrentPipelineState->GS.CBCounts, NullCBCounts, StartSlot,
                                      NumBuffers);
 
     ID3D11Buffer *bufs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
@@ -1172,6 +1223,11 @@ void WrappedID3D11DeviceContext::GSSetConstantBuffers1(UINT StartSlot, UINT NumB
     }
     m_CurrentPipelineState->Change(m_CurrentPipelineState->GS.CBOffsets, offs, StartSlot, NumBuffers);
   }
+  else
+  {
+    m_CurrentPipelineState->Change(m_CurrentPipelineState->GS.CBOffsets, NullCBOffsets, StartSlot,
+                                   NumBuffers);
+  }
 
   if(pNumConstants)
   {
@@ -1182,6 +1238,11 @@ void WrappedID3D11DeviceContext::GSSetConstantBuffers1(UINT StartSlot, UINT NumB
         cnts[i] = NullCBCounts[i];
     }
     m_CurrentPipelineState->Change(m_CurrentPipelineState->GS.CBCounts, cnts, StartSlot, NumBuffers);
+  }
+  else
+  {
+    m_CurrentPipelineState->Change(m_CurrentPipelineState->GS.CBCounts, NullCBCounts, StartSlot,
+                                   NumBuffers);
   }
 
   VerifyState();
@@ -1211,8 +1272,14 @@ bool WrappedID3D11DeviceContext::Serialise_PSSetConstantBuffers1(
     if(pFirstConstant)
       m_CurrentPipelineState->Change(m_CurrentPipelineState->PS.CBOffsets, pFirstConstant,
                                      StartSlot, NumBuffers);
+    else
+      m_CurrentPipelineState->Change(m_CurrentPipelineState->PS.CBOffsets, NullCBOffsets, StartSlot,
+                                     NumBuffers);
     if(pNumConstants)
       m_CurrentPipelineState->Change(m_CurrentPipelineState->PS.CBCounts, pNumConstants, StartSlot,
+                                     NumBuffers);
+    else
+      m_CurrentPipelineState->Change(m_CurrentPipelineState->PS.CBCounts, NullCBCounts, StartSlot,
                                      NumBuffers);
 
     ID3D11Buffer *bufs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
@@ -1303,6 +1370,11 @@ void WrappedID3D11DeviceContext::PSSetConstantBuffers1(UINT StartSlot, UINT NumB
     }
     m_CurrentPipelineState->Change(m_CurrentPipelineState->PS.CBOffsets, offs, StartSlot, NumBuffers);
   }
+  else
+  {
+    m_CurrentPipelineState->Change(m_CurrentPipelineState->PS.CBOffsets, NullCBOffsets, StartSlot,
+                                   NumBuffers);
+  }
 
   if(pNumConstants)
   {
@@ -1313,6 +1385,11 @@ void WrappedID3D11DeviceContext::PSSetConstantBuffers1(UINT StartSlot, UINT NumB
         cnts[i] = NullCBCounts[i];
     }
     m_CurrentPipelineState->Change(m_CurrentPipelineState->PS.CBCounts, cnts, StartSlot, NumBuffers);
+  }
+  else
+  {
+    m_CurrentPipelineState->Change(m_CurrentPipelineState->PS.CBCounts, NullCBCounts, StartSlot,
+                                   NumBuffers);
   }
 
   VerifyState();
@@ -1342,8 +1419,14 @@ bool WrappedID3D11DeviceContext::Serialise_CSSetConstantBuffers1(
     if(pFirstConstant)
       m_CurrentPipelineState->Change(m_CurrentPipelineState->CS.CBOffsets, pFirstConstant,
                                      StartSlot, NumBuffers);
+    else
+      m_CurrentPipelineState->Change(m_CurrentPipelineState->CS.CBOffsets, NullCBOffsets, StartSlot,
+                                     NumBuffers);
     if(pNumConstants)
       m_CurrentPipelineState->Change(m_CurrentPipelineState->CS.CBCounts, pNumConstants, StartSlot,
+                                     NumBuffers);
+    else
+      m_CurrentPipelineState->Change(m_CurrentPipelineState->CS.CBCounts, NullCBCounts, StartSlot,
                                      NumBuffers);
 
     ID3D11Buffer *bufs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
@@ -1434,6 +1517,11 @@ void WrappedID3D11DeviceContext::CSSetConstantBuffers1(UINT StartSlot, UINT NumB
     }
     m_CurrentPipelineState->Change(m_CurrentPipelineState->CS.CBOffsets, offs, StartSlot, NumBuffers);
   }
+  else
+  {
+    m_CurrentPipelineState->Change(m_CurrentPipelineState->CS.CBOffsets, NullCBOffsets, StartSlot,
+                                   NumBuffers);
+  }
 
   if(pNumConstants)
   {
@@ -1444,6 +1532,11 @@ void WrappedID3D11DeviceContext::CSSetConstantBuffers1(UINT StartSlot, UINT NumB
         cnts[i] = NullCBCounts[i];
     }
     m_CurrentPipelineState->Change(m_CurrentPipelineState->CS.CBCounts, cnts, StartSlot, NumBuffers);
+  }
+  else
+  {
+    m_CurrentPipelineState->Change(m_CurrentPipelineState->CS.CBCounts, NullCBCounts, StartSlot,
+                                   NumBuffers);
   }
 
   VerifyState();
@@ -1733,21 +1826,20 @@ bool WrappedID3D11DeviceContext::Serialise_DiscardResource(SerialiserType &ser,
 
     if(IsLoading(m_State))
     {
-      ResourceId dstLiveID = GetIDForDeviceChild(pResource);
-      ResourceId dstOrigID = GetResourceManager()->GetOriginalID(dstLiveID);
+      ResourceId dstID = GetIDForDeviceChild(pResource);
 
       AddEvent();
 
       ActionDescription action;
 
       action.flags |= ActionFlags::Clear;
-      action.copyDestination = dstOrigID;
+      action.copyDestination = dstID;
       action.copyDestinationSubresource = Subresource();
 
       AddAction(action);
 
       if(pResource)
-        m_ResourceUses[dstLiveID].push_back(EventUsage(m_CurEventID, ResourceUsage::Discard));
+        m_ResourceUses[dstID].push_back(EventUsage(m_CurEventID, ResourceUsage::Discard));
     }
   }
 
@@ -1832,10 +1924,9 @@ bool WrappedID3D11DeviceContext::Serialise_DiscardView(SerialiserType &ser, ID3D
       {
         const ResourceRange &range = GetResourceRange(pResourceView);
         ResourceId resid = GetViewResourceResID(pResourceView);
-        action.copyDestination = m_pDevice->GetResourceManager()->GetOriginalID(resid);
+        action.copyDestination = resid;
         action.copyDestinationSubresource = Subresource(range.GetMinMip(), range.GetMinSlice());
-        m_ResourceUses[resid].push_back(
-            EventUsage(m_CurEventID, ResourceUsage::Discard, GetIDForDeviceChild(pResourceView)));
+        m_ResourceUses[resid].push_back(EventUsage(m_CurEventID, ResourceUsage::Discard));
       }
 
       AddAction(action);
@@ -1967,10 +2058,9 @@ bool WrappedID3D11DeviceContext::Serialise_DiscardView1(SerialiserType &ser,
       {
         const ResourceRange &range = GetResourceRange(pResourceView);
         ResourceId resid = GetViewResourceResID(pResourceView);
-        action.copyDestination = m_pDevice->GetResourceManager()->GetOriginalID(resid);
+        action.copyDestination = resid;
         action.copyDestinationSubresource = Subresource(range.GetMinMip(), range.GetMinSlice());
-        m_ResourceUses[resid].push_back(
-            EventUsage(m_CurEventID, ResourceUsage::Discard, GetIDForDeviceChild(pResourceView)));
+        m_ResourceUses[resid].push_back(EventUsage(m_CurEventID, ResourceUsage::Discard));
       }
 
       AddAction(action);
@@ -2120,7 +2210,7 @@ void WrappedID3D11DeviceContext::SwapDeviceContextState(ID3DDeviceContextState *
     }
     else if(prev)
     {
-      wrapped = new WrappedID3DDeviceContextState(prev, m_pDevice);
+      wrapped = new WrappedID3DDeviceContextState(ResourceId(), prev, m_pDevice);
     }
 
     if(wrapped)

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,8 +26,8 @@
 #include "driver/shaders/spirv/spirv_debug.h"
 #include "driver/shaders/spirv/spirv_editor.h"
 #include "driver/shaders/spirv/spirv_op_helpers.h"
-#include "driver/shaders/spirv/var_dispatch_helpers.h"
 #include "maths/formatpacking.h"
+#include "replay/common/var_dispatch_helpers.h"
 #include "vk_core.h"
 #include "vk_debug.h"
 #include "vk_replay.h"
@@ -36,42 +36,22 @@
 #undef None
 
 RDOC_CONFIG(rdcstr, Vulkan_Debug_PSDebugDumpDirPath, "",
-            "Path to dump pixel shader debugging generated SPIR-V files.");
-RDOC_CONFIG(bool, Vulkan_Debug_DisableBufferDeviceAddress, false,
-            "Disable use of buffer device address for PS Input fetch.");
+            "Path to dump shader debugging generated SPIR-V files.");
 RDOC_CONFIG(bool, Vulkan_Debug_ShaderDebugLogging, false,
             "Output verbose debug logging messages when debugging shaders.");
 
-struct DescSetBindingSnapshot
-{
-  rdcarray<VkDescriptorImageInfo> imageInfos;
-  rdcarray<VkDescriptorBufferInfo> buffers;
-  rdcarray<VkBufferView> texelBuffers;
+RDOC_CONFIG(bool, Vulkan_Debug_EnableShaderDebugMT, true,
+            "Use multiple threads to run the shader debugger simulation.");
 
-  template <typename T>
-  const rdcarray<T> &get() const;
+// needed for old linux compilers
+namespace std
+{
+template <>
+struct hash<ShaderBuiltin>
+{
+  std::size_t operator()(const ShaderBuiltin &e) const { return size_t(e); }
 };
-
-template <>
-const rdcarray<VkDescriptorImageInfo> &DescSetBindingSnapshot::get() const
-{
-  return imageInfos;
 }
-template <>
-const rdcarray<VkDescriptorBufferInfo> &DescSetBindingSnapshot::get() const
-{
-  return buffers;
-}
-template <>
-const rdcarray<VkBufferView> &DescSetBindingSnapshot::get() const
-{
-  return texelBuffers;
-}
-
-struct DescSetSnapshot
-{
-  rdcarray<DescSetBindingSnapshot> bindings;
-};
 
 // should match the descriptor set layout created in ShaderDebugData::Init()
 enum class ShaderDebugBind
@@ -89,11 +69,6 @@ enum class ShaderDebugBind
   MathResult = 9,
 };
 
-struct Vec3i
-{
-  int32_t x, y, z;
-};
-
 struct GatherOffsets
 {
   int32_t u0, v0, u1, v1, u2, v2, u3, v3;
@@ -105,7 +80,11 @@ struct ShaderConstParameters
   VkBool32 useGradOrGatherOffsets;
   ShaderDebugBind dim;
   rdcspv::GatherChannel gatherChannel;
-  GatherOffsets gatherOffsets;
+  union
+  {
+    GatherOffsets gatherOffsets;
+    Vec3i constOffsets;
+  };
 
   uint32_t hashKey(uint32_t shaderIndex) const
   {
@@ -141,185 +120,147 @@ struct ShaderUniformParameters
   float minlod;
 };
 
+#if ENABLED(RDOC_RELEASE)
+#define CHECK_DEVICE_THREAD()
+#else
+#define CHECK_DEVICE_THREAD() \
+  RDCASSERTMSG("API Wrapper function called from non-device thread!", IsDeviceThread());
+#endif    // #if ENABLED(RDOC_RELEASE)
+
 class VulkanAPIWrapper : public rdcspv::DebugAPIWrapper
 {
-  rdcarray<DescSetSnapshot> m_DescSets;
-
 public:
-  VulkanAPIWrapper(WrappedVulkan *vk, VulkanCreationInfo &creation, VkShaderStageFlagBits stage,
-                   uint32_t eid)
-      : m_DebugData(vk->GetReplay()->GetShaderDebugData()), m_Creation(creation), m_EventID(eid)
+  VulkanAPIWrapper(WrappedVulkan *vk, VulkanCreationInfo &creation, ShaderStage stage, uint32_t eid,
+                   ResourceId shadId)
+      : m_DebugData(vk->GetReplay()->GetShaderDebugData()),
+        m_Creation(creation),
+        m_EventID(eid),
+        m_ShaderID(shadId),
+        deviceThreadID(Threading::GetCurrentID())
   {
     m_pDriver = vk;
 
     // when we're first setting up, the state is pristine and no replay is needed
     m_ResourcesDirty = false;
 
-    const VulkanRenderState &state = m_pDriver->GetRenderState();
+    VulkanReplay *replay = m_pDriver->GetReplay();
 
-    const bool compute = (stage == VK_SHADER_STAGE_COMPUTE_BIT);
+    // cache the descriptor access. This should be a superset of all descriptors we need to read from
+    m_Access = replay->GetDescriptorAccess(eid);
 
-    // snapshot descriptor set contents
-    const rdcarray<VulkanStatePipeline::DescriptorAndOffsets> &descSets =
-        compute ? state.compute.descSets : state.graphics.descSets;
+    // filter to only accesses from the stage we care about, as access lookups will be stage-specific
+    m_Access.removeIf([stage](const DescriptorAccess &access) { return access.stage != stage; });
 
-    const VulkanCreationInfo::Pipeline &pipe =
-        m_Creation.m_Pipeline[compute ? state.compute.pipeline : state.graphics.pipeline];
-    const VulkanCreationInfo::PipelineLayout &pipeLayout = m_Creation.m_PipelineLayout[pipe.layout];
+    // fetch all descriptor contents now too
+    m_Descriptors.reserve(m_Access.size());
+    m_SamplerDescriptors.reserve(m_Access.size());
 
-    for(const VkPushConstantRange &range : pipeLayout.pushRanges)
+    // we could collate ranges by descriptor store, but in practice we don't expect descriptors to
+    // be scattered across multiple stores. So to keep the code simple for now we do a linear sweep
+    ResourceId store;
+    rdcarray<DescriptorRange> ranges;
+
+    for(const DescriptorAccess &acc : m_Access)
     {
-      if(range.stageFlags & stage)
+      if(acc.descriptorStore != store)
       {
-        pushData.resize(RDCMAX((uint32_t)pushData.size(), range.offset + range.size));
+        if(store != ResourceId())
+        {
+          m_Descriptors.append(replay->GetDescriptors(store, ranges));
+          m_SamplerDescriptors.append(replay->GetSamplerDescriptors(store, ranges));
+        }
 
-        RDCASSERT(range.offset + range.size < sizeof(state.pushconsts));
-
-        memcpy(pushData.data() + range.offset, state.pushconsts + range.offset, range.size);
+        store = acc.descriptorStore;
+        ranges.clear();
       }
+
+      // if the last range is contiguous with this access, append this access as a new range to query
+      if(!ranges.empty() && ranges.back().descriptorSize == acc.byteSize &&
+         ranges.back().offset + ranges.back().descriptorSize == acc.byteOffset &&
+         ranges.back().type == acc.type)
+      {
+        ranges.back().count++;
+        continue;
+      }
+
+      DescriptorRange range = acc;
+      ranges.push_back(range);
     }
 
-    m_DescSets.resize(RDCMIN(descSets.size(), pipeLayout.descSetLayouts.size()));
-    for(size_t set = 0; set < m_DescSets.size(); set++)
+    if(store != ResourceId())
     {
-      uint32_t dynamicOffset = 0;
+      m_Descriptors.append(replay->GetDescriptors(store, ranges));
+      m_SamplerDescriptors.append(replay->GetSamplerDescriptors(store, ranges));
+    }
 
-      // skip invalid descriptor set binds, we assume these aren't present because they will not be
-      // accessed statically
-      if(descSets[set].descSet == ResourceId() || descSets[set].pipeLayout == ResourceId())
-        continue;
+    // apply dynamic offsets to our cached descriptors
+    // we iterate over descriptors first to find dynamic ones, then iterate over our cached set to
+    // apply. Neither array should be large but there should be fewer dynamic descriptors in total
+    {
+      const VulkanRenderState &state = m_pDriver->GetRenderState();
 
-      DescSetSnapshot &dstSet = m_DescSets[set];
+      const rdcarray<VulkanStatePipeline::DescriptorAndOffsets> &src =
+          (stage == ShaderStage::Compute ? state.compute.descSets : state.graphics.descSets);
 
-      const BindingStorage &bindStorage =
-          m_pDriver->GetCurrentDescSetBindingStorage(descSets[set].descSet);
-      const rdcarray<DescriptorSetSlot *> &curBinds = bindStorage.binds;
-      const bytebuf &curInline = bindStorage.inlineBytes;
-
-      // use the descriptor set layout from when it was bound. If the pipeline layout declared a
-      // descriptor set layout for this set, but it's statically unused, it may be complete
-      // garbage and doesn't match what the shader uses. However the pipeline layout at descriptor
-      // set bind time must have been compatible and valid so we can use it. If this set *is* used
-      // then the pipeline layout at bind time must be compatible with the pipeline's pipeline
-      // layout, so we're fine too.
-      const DescSetLayout &setLayout =
-          m_Creation
-              .m_DescSetLayout[m_Creation.m_PipelineLayout[descSets[set].pipeLayout].descSetLayouts[set]];
-
-      for(size_t bind = 0; bind < setLayout.bindings.size(); bind++)
+      for(size_t i = 0; i < src.size(); i++)
       {
-        const DescSetLayout::Binding &bindLayout = setLayout.bindings[bind];
+        const VulkanStatePipeline::DescriptorAndOffsets &srcData = src[i];
+        ResourceId sourceSet = srcData.descSet;
+        const uint32_t *srcOffset = srcData.offsets.begin();
 
-        uint32_t descriptorCount = bindLayout.descriptorCount;
-
-        if(bindLayout.variableSize)
-          descriptorCount = bindStorage.variableDescriptorCount;
-
-        if(descriptorCount == 0)
+        // this could be either an unbound set, or descriptor buffers (which can't use dynamic offsets anyway)
+        if(sourceSet == ResourceId())
           continue;
 
-        if(bindLayout.stageFlags & stage)
+        const VulkanCreationInfo::PipelineLayout &pipeLayoutInfo =
+            m_Creation.GetPipelineLayoutInfo(srcData.pipeLayout);
+
+        ResourceId setOrig = sourceSet;
+
+        const BindingStorage &bindStorage =
+            m_pDriver->GetCurrentDescSetBindingStorage(srcData.descSet);
+        const DescriptorSetSlot *first = bindStorage.binds.empty() ? NULL : bindStorage.binds[0];
+        for(size_t b = 0; b < bindStorage.binds.size(); b++)
         {
-          DescriptorSetSlot *curSlots = curBinds[bind];
+          const DescSetLayout::Binding &layoutBind =
+              m_Creation.GetDescSetLayout(pipeLayoutInfo.descSetLayouts[i]).bindings[b];
 
-          dstSet.bindings.resize_for_index(bind);
+          if(layoutBind.layoutDescType != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC &&
+             layoutBind.layoutDescType != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+            continue;
 
-          DescSetBindingSnapshot &dstBind = dstSet.bindings[bind];
+          uint64_t descriptorByteOffset = bindStorage.binds[b] - first;
 
-          switch(bindLayout.descriptorType)
+          // inline UBOs aren't dynamic and variable size can't be used with dynamic buffers, so
+          // the count is what it is at definition time
+          for(uint32_t a = 0; a < layoutBind.descriptorCount; a++)
           {
-            case VK_DESCRIPTOR_TYPE_SAMPLER:
-            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-            case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-            {
-              dstBind.imageInfos.resize(descriptorCount);
-              for(uint32_t i = 0; i < descriptorCount; i++)
-              {
-                dstBind.imageInfos[i].imageLayout = curSlots[i].imageInfo.imageLayout;
-                dstBind.imageInfos[i].imageView =
-                    m_pDriver->GetResourceManager()->GetCurrentHandle<VkImageView>(
-                        curSlots[i].imageInfo.imageView);
-                dstBind.imageInfos[i].sampler =
-                    m_pDriver->GetResourceManager()->GetCurrentHandle<VkSampler>(
-                        bindLayout.immutableSampler ? bindLayout.immutableSampler[i]
-                                                    : curSlots[i].imageInfo.sampler);
-              }
-              break;
-            }
-            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-            {
-              dstBind.texelBuffers.resize(descriptorCount);
-              for(uint32_t i = 0; i < descriptorCount; i++)
-              {
-                dstBind.texelBuffers[i] =
-                    m_pDriver->GetResourceManager()->GetCurrentHandle<VkBufferView>(
-                        curSlots[i].texelBufferView);
-              }
-              break;
-            }
-            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-            {
-              dstBind.buffers.resize(descriptorCount);
-              for(uint32_t i = 0; i < descriptorCount; i++)
-              {
-                dstBind.buffers[i].offset = curSlots[i].bufferInfo.offset;
-                dstBind.buffers[i].range = curSlots[i].bufferInfo.range;
-                dstBind.buffers[i].buffer =
-                    m_pDriver->GetResourceManager()->GetCurrentHandle<VkBuffer>(
-                        curSlots[i].bufferInfo.buffer);
-              }
-              break;
-            }
-            case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT:
-            {
-              // push directly into the buffer cache from the inline data
-              BindpointIndex idx;
-              idx.bindset = (int32_t)set;
-              idx.bind = (int32_t)bind;
-              idx.arrayIndex = 0;
-              bufferCache[idx].assign(curInline.data() + curSlots->inlineOffset, descriptorCount);
-              break;
-            }
-            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
-            {
-              dstBind.buffers.resize(descriptorCount);
-              for(uint32_t i = 0; i < descriptorCount; i++)
-              {
-                dstBind.buffers[i].offset = curSlots[i].bufferInfo.offset;
-                dstBind.buffers[i].range = curSlots[i].bufferInfo.range;
-                dstBind.buffers[i].buffer =
-                    m_pDriver->GetResourceManager()->GetCurrentHandle<VkBuffer>(
-                        curSlots[i].bufferInfo.buffer);
+            uint32_t dynamicBufferByteOffset = *srcOffset;
+            srcOffset++;
 
-                dstBind.buffers[i].offset += descSets[set].offsets[dynamicOffset++];
+            for(size_t accIdx = 0; accIdx < m_Access.size(); accIdx++)
+            {
+              if(m_Access[accIdx].descriptorStore == setOrig &&
+                 m_Access[accIdx].byteOffset == descriptorByteOffset + a)
+              {
+                m_Descriptors[accIdx].byteOffset += dynamicBufferByteOffset;
+                break;
               }
-              break;
             }
-            default: RDCERR("Unexpected descriptor type");
-          }
-        }
-        else
-        {
-          // still need to skip past dynamic offsets for stages that aren't of interest
-
-          switch(bindLayout.descriptorType)
-          {
-            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: dynamicOffset += descriptorCount; break;
-            default: break;
           }
         }
       }
     }
+    RDCASSERT(ShaderDebugData::MAX_QUEUED_OPS * mathOpResultByteSize <
+              m_DebugData.ReadbackBuffer.TotalSize());
+    RDCASSERT(sampleGatherOpResultsStart +
+                  ShaderDebugData::MAX_QUEUED_OPS * sampleGatherOpResultByteSize <
+              m_DebugData.ReadbackBuffer.TotalSize());
   }
 
   ~VulkanAPIWrapper()
   {
+    CHECK_DEVICE_THREAD();
     m_pDriver->FlushQ();
 
     VkDevice dev = m_pDriver->GetDev();
@@ -331,6 +272,7 @@ public:
 
   void ResetReplay()
   {
+    CHECK_DEVICE_THREAD();
     if(!m_ResourcesDirty)
     {
       VkMarkerRegion region("ResetReplay");
@@ -341,98 +283,403 @@ public:
     m_ResourcesDirty = true;
   }
 
-  virtual void AddDebugMessage(MessageCategory c, MessageSeverity sv, MessageSource src,
-                               rdcstr d) override
+  virtual void AddDebugMessage(MessageCategory cat, MessageSeverity sev, MessageSource src,
+                               rdcstr desc) override
   {
-    m_pDriver->AddDebugMessage(c, sv, src, d);
+    CHECK_DEVICE_THREAD();
+    m_pDriver->AddDebugMessage(cat, sev, src, desc);
   }
 
-  virtual uint64_t GetBufferLength(BindpointIndex bind) override
+  virtual GraphicsAPI GetGraphicsAPI() override { return GraphicsAPI::Vulkan; }
+
+  virtual bool SimulateThreaded() override { return Vulkan_Debug_EnableShaderDebugMT(); }
+
+  virtual ResourceId GetShaderID() override { return m_ShaderID; }
+
+  virtual uint64_t GetBufferLength(const ShaderBindIndex &bind) override
   {
-    return PopulateBuffer(bind).size();
+    rdcspv::DeviceOpResult opResult;
+    size_t length = 0;
+    // BufferFunction guarantees the buffer cache readlock whilst the function is called
+    bool succeeded = BufferFunction(
+        bind, [&length](bytebuf *data) { length = data->size(); }, opResult);
+    RDCASSERT(succeeded);
+    RDCASSERTEQUAL(opResult, rdcspv::DeviceOpResult::Succeeded);
+    return length;
   }
 
-  virtual void ReadBufferValue(BindpointIndex bind, uint64_t offset, uint64_t byteSize,
+  virtual void ReadLocationValue(int32_t location, ShaderVariable &var) override
+  {
+    RDCERR("Invalid by-location read");
+  }
+
+  virtual void ReadBufferValue(const ShaderBindIndex &bind, uint64_t offset, uint64_t byteSize,
                                void *dst) override
   {
-    const bytebuf &data = PopulateBuffer(bind);
-
-    if(offset + byteSize <= data.size())
-      memcpy(dst, data.data() + (size_t)offset, (size_t)byteSize);
+    rdcspv::DeviceOpResult opResult;
+    // BufferFunction guarantees the buffer cache readlock whilst the function is called
+    bool succeeded = BufferFunction(
+        bind,
+        [offset, byteSize, dst](bytebuf *data) {
+          if(offset + byteSize <= data->size())
+            memcpy(dst, data->data() + (size_t)offset, (size_t)byteSize);
+        },
+        opResult);
+    RDCASSERT(succeeded);
+    RDCASSERTEQUAL(opResult, rdcspv::DeviceOpResult::Succeeded);
   }
 
-  virtual void WriteBufferValue(BindpointIndex bind, uint64_t offset, uint64_t byteSize,
+  virtual void WriteBufferValue(const ShaderBindIndex &bind, uint64_t offset, uint64_t byteSize,
                                 const void *src) override
   {
-    bytebuf &data = PopulateBuffer(bind);
-
-    if(offset + byteSize <= data.size())
-      memcpy(data.data() + (size_t)offset, src, (size_t)byteSize);
+    rdcspv::DeviceOpResult opResult;
+    // BufferFunction guarantees the buffer cache readlock whilst the function is called
+    bool succeeded = BufferFunction(
+        bind,
+        [offset, byteSize, src](bytebuf *data) {
+          if(offset + byteSize <= data->size())
+            memcpy(data->data() + (size_t)offset, src, (size_t)byteSize);
+        },
+        opResult);
+    RDCASSERT(succeeded);
+    RDCASSERTEQUAL(opResult, rdcspv::DeviceOpResult::Succeeded);
   }
 
-  virtual bool ReadTexel(BindpointIndex imageBind, const ShaderVariable &coord, uint32_t sample,
-                         ShaderVariable &output) override
+  virtual void ReadAddress(uint64_t address, uint64_t byteSize, void *dst) override
   {
-    ImageData &data = PopulateImage(imageBind);
+    rdcspv::DeviceOpResult opResult;
+    // BufferFunction guarantees the buffer cache readlock whilst the function is called
+    bool succeeded = BufferFunction(
+        address,
+        [byteSize, dst](bytebuf *data, size_t offset) {
+          if(offset + byteSize <= data->size())
+            memcpy(dst, data->data() + offset, (size_t)byteSize);
+        },
+        opResult);
+    RDCASSERT(succeeded);
+    RDCASSERTEQUAL(opResult, rdcspv::DeviceOpResult::Succeeded);
+  }
 
-    if(data.width == 0)
-      return false;
+  virtual void WriteAddress(uint64_t address, uint64_t byteSize, const void *src) override
+  {
+    rdcspv::DeviceOpResult opResult;
+    // BufferFunction guarantees the buffer cache readlock whilst the function is called
+    bool succeeded = BufferFunction(
+        address,
+        [byteSize, src](bytebuf *data, size_t offset) {
+          if(offset + byteSize <= data->size())
+            memcpy(data->data() + offset, src, (size_t)byteSize);
+        },
+        opResult);
+    RDCASSERT(succeeded);
+    RDCASSERTEQUAL(opResult, rdcspv::DeviceOpResult::Succeeded);
+  }
 
-    uint32_t coords[4];
-    for(int i = 0; i < 4; i++)
-      coords[i] = uintComp(coord, i);
-
-    if(coords[0] > data.width || coords[1] > data.height || coords[2] > data.depth)
+  // Called from any thread
+  // Caller guarantees that if the image data is not cached then we are on the device thread
+  virtual rdcspv::DeviceOpResult ReadTexel(const ShaderBindIndex &imageBind,
+                                           const ShaderVariable &coord, uint32_t sample,
+                                           ShaderVariable &output) override
+  {
+    rdcspv::DeviceOpResult opResult;
+    bool isCached = false;
     {
-      m_pDriver->AddDebugMessage(
-          MessageCategory::Execution, MessageSeverity::High, MessageSource::RuntimeWarning,
-          StringFormat::Fmt(
-              "Out of bounds access to image, coord %u,%u,%u outside of dimensions %ux%ux%u",
-              coords[0], coords[1], coords[2], data.width, data.height, data.depth));
-      return false;
+      SCOPED_READLOCK(imageCacheLock);
+      isCached = GetImageDataFromCache(imageBind, opResult) != NULL;
+      RDCASSERTNOTEQUAL(opResult, rdcspv::DeviceOpResult::NeedsDevice);
     }
 
-    RDCASSERTEQUAL(data.texelSize, VarTypeByteSize(output.type) * output.columns);
-    memcpy(output.value.u8v.data(), data.texel(coords, sample), data.texelSize);
-
-    return true;
-  }
-
-  virtual bool WriteTexel(BindpointIndex imageBind, const ShaderVariable &coord, uint32_t sample,
-                          const ShaderVariable &value) override
-  {
-    ImageData &data = PopulateImage(imageBind);
-
-    if(data.width == 0)
-      return false;
-
-    uint32_t coords[4];
-    for(int i = 0; i < 4; i++)
-      coords[i] = uintComp(coord, i);
-
-    if(coords[0] > data.width || coords[1] > data.height || coords[2] > data.depth)
+    if(!isCached)
     {
-      m_pDriver->AddDebugMessage(
-          MessageCategory::Execution, MessageSeverity::High, MessageSource::RuntimeWarning,
-          StringFormat::Fmt(
-              "Out of bounds access to image, coord %u,%u,%u outside of dimensions %ux%ux%u",
-              coords[0], coords[1], coords[2], data.width, data.height, data.depth));
-      return false;
+      // Add image data to the cache : cache should not be locked by this thread
+      PopulateImage(imageBind);
     }
 
-    RDCASSERTEQUAL(data.texelSize, VarTypeByteSize(value.type) * value.columns);
-    memcpy(data.texel(coords, sample), value.value.u8v.data(), data.texelSize);
+    {
+      SCOPED_READLOCK(imageCacheLock);
+      ImageData *result = GetImageDataFromCache(imageBind, opResult);
+      if(!result)
+      {
+        RDCASSERTEQUAL(opResult, rdcspv::DeviceOpResult::Failed);
+        return rdcspv::DeviceOpResult::Failed;
+      }
 
-    return true;
+      ImageData &data = *result;
+      if(data.width == 0)
+        return rdcspv::DeviceOpResult::Failed;
+
+      uint32_t coords[4] = {};
+      for(int i = 0; i < coord.columns; i++)
+        coords[i] = uintComp(coord, i);
+
+      if(coords[0] >= data.width || coords[1] >= data.height || coords[2] >= data.depth)
+      {
+        if(!IsDeviceThread())
+          return rdcspv::DeviceOpResult::NeedsDevice;
+
+        CHECK_DEVICE_THREAD();
+        m_pDriver->AddDebugMessage(
+            MessageCategory::Execution, MessageSeverity::High, MessageSource::RuntimeWarning,
+            StringFormat::Fmt(
+                "Out of bounds access to image, coord %u,%u,%u outside of dimensions %ux%ux%u",
+                coords[0], coords[1], coords[2], data.width, data.height, data.depth));
+        return rdcspv::DeviceOpResult::Failed;
+      }
+
+      CompType varComp = VarTypeCompType(output.type);
+
+      set0001(output);
+
+      ShaderVariable input;
+      input.columns = data.fmt.compCount;
+
+      // the only 'irregular' format we need to worry about handling for integer types is
+      // 10:10:10:2. All others are float/uint
+      if(data.fmt.type == ResourceFormatType::R10G10B10A2)
+      {
+        PixelValue val;
+        DecodePixelData(data.fmt, data.texel(coords, sample), val);
+
+        if(data.fmt.compType == CompType::UInt)
+          input.type = VarType::UInt;
+        else if(data.fmt.compType == CompType::SInt)
+          input.type = VarType::SInt;
+        else
+          input.type = VarType::Float;
+
+        memcpy(input.value.u32v.data(), val.uintValue.data(), val.uintValue.byteSize());
+
+        for(uint8_t c = 0; c < RDCMIN(output.columns, input.columns); c++)
+        {
+          if(data.fmt.compType == CompType::UInt)
+            setUintComp(output, c, uintComp(input, c));
+          else if(data.fmt.compType == CompType::SInt)
+            setIntComp(output, c, intComp(input, c));
+          else
+            setFloatComp(output, c, input.value.f32v[c]);
+        }
+      }
+      else if(data.fmt.compType == CompType::UInt)
+      {
+        RDCASSERT(varComp == CompType::UInt, varComp);
+
+        // set up input type for proper expansion below
+        if(data.fmt.compByteWidth == 1)
+          input.type = VarType::UByte;
+        else if(data.fmt.compByteWidth == 2)
+          input.type = VarType::UShort;
+        else if(data.fmt.compByteWidth == 4)
+          input.type = VarType::UInt;
+        else if(data.fmt.compByteWidth == 8)
+          input.type = VarType::ULong;
+
+        memcpy(input.value.u8v.data(), data.texel(coords, sample), data.texelSize);
+
+        for(uint8_t c = 0; c < RDCMIN(output.columns, input.columns); c++)
+          setUintComp(output, c, uintComp(input, c));
+      }
+      else if(data.fmt.compType == CompType::SInt)
+      {
+        RDCASSERT(varComp == CompType::SInt, varComp);
+
+        // set up input type for proper expansion below
+        if(data.fmt.compByteWidth == 1)
+          input.type = VarType::SByte;
+        else if(data.fmt.compByteWidth == 2)
+          input.type = VarType::SShort;
+        else if(data.fmt.compByteWidth == 4)
+          input.type = VarType::SInt;
+        else if(data.fmt.compByteWidth == 8)
+          input.type = VarType::SLong;
+
+        memcpy(input.value.u8v.data(), data.texel(coords, sample), data.texelSize);
+
+        for(uint8_t c = 0; c < RDCMIN(output.columns, input.columns); c++)
+          setIntComp(output, c, intComp(input, c));
+      }
+      else
+      {
+        RDCASSERT(varComp == CompType::Float, varComp);
+
+        // do the decode of whatever unorm/float/etc the format is
+        FloatVector v = DecodeFormattedComponents(data.fmt, data.texel(coords, sample));
+
+        // set it into f32v
+        input.value.f32v[0] = v.x;
+        input.value.f32v[1] = v.y;
+        input.value.f32v[2] = v.z;
+        input.value.f32v[3] = v.w;
+
+        // read as floats
+        input.type = VarType::Float;
+
+        for(uint8_t c = 0; c < RDCMIN(output.columns, input.columns); c++)
+          setFloatComp(output, c, input.value.f32v[c]);
+      }
+    }
+
+    return rdcspv::DeviceOpResult::Succeeded;
   }
 
-  virtual void FillInputValue(ShaderVariable &var, ShaderBuiltin builtin, uint32_t location,
-                              uint32_t component) override
+  // Called from any thread
+  // Caller guarantees that if the image data is not cached then we are on the device thread
+  virtual rdcspv::DeviceOpResult WriteTexel(const ShaderBindIndex &imageBind,
+                                            const ShaderVariable &coord, uint32_t sample,
+                                            const ShaderVariable &input) override
   {
+    rdcspv::DeviceOpResult opResult;
+    ImageData *result = NULL;
+    {
+      SCOPED_READLOCK(imageCacheLock);
+      result = GetImageDataFromCache(imageBind, opResult);
+      RDCASSERTNOTEQUAL(opResult, rdcspv::DeviceOpResult::NeedsDevice);
+    }
+
+    if(!result)
+    {
+      // Add image data to the cache : cache should not be locked by this thread
+      PopulateImage(imageBind);
+    }
+
+    {
+      SCOPED_READLOCK(imageCacheLock);
+      result = GetImageDataFromCache(imageBind, opResult);
+      if(!result)
+        return rdcspv::DeviceOpResult::Failed;
+
+      ImageData &data = *result;
+      if(data.width == 0)
+        return rdcspv::DeviceOpResult::Failed;
+
+      uint32_t coords[4] = {};
+      for(int i = 0; i < coord.columns; i++)
+        coords[i] = uintComp(coord, i);
+
+      if(coords[0] >= data.width || coords[1] >= data.height || coords[2] >= data.depth)
+      {
+        if(!IsDeviceThread())
+          return rdcspv::DeviceOpResult::NeedsDevice;
+
+        CHECK_DEVICE_THREAD();
+        m_pDriver->AddDebugMessage(
+            MessageCategory::Execution, MessageSeverity::High, MessageSource::RuntimeWarning,
+            StringFormat::Fmt(
+                "Out of bounds access to image, coord %u,%u,%u outside of dimensions %ux%ux%u",
+                coords[0], coords[1], coords[2], data.width, data.height, data.depth));
+        return rdcspv::DeviceOpResult::Failed;
+      }
+
+      CompType varComp = VarTypeCompType(input.type);
+
+      ShaderVariable output;
+      output.columns = data.fmt.compCount;
+
+      // the only 'irregular' format we need to worry about handling for integer types is
+      // 10:10:10:2. All others are float/uint
+      if(data.fmt.type == ResourceFormatType::R10G10B10A2)
+      {
+        // image writes are required to write a whole texel so we know we should have 4 components
+        RDCASSERTEQUAL(input.columns, 4);
+
+        uint32_t encoded = 0;
+
+        if(data.fmt.compType == CompType::SNorm)
+          encoded = ConvertToR10G10B10A2SNorm(Vec4f(input.value.f32v[0], input.value.f32v[1],
+                                                    input.value.f32v[2], input.value.f32v[3]));
+        else if(data.fmt.compType == CompType::UInt)
+          encoded = ConvertToR10G10B10A2(Vec4u(input.value.u32v[0], input.value.u32v[1],
+                                               input.value.u32v[2], input.value.u32v[3]));
+        else
+          encoded = ConvertToR10G10B10A2(Vec4f(input.value.f32v[0], input.value.f32v[1],
+                                               input.value.f32v[2], input.value.f32v[3]));
+
+        memcpy(data.texel(coords, sample), &encoded, sizeof(uint32_t));
+      }
+      else if(data.fmt.compType == CompType::UInt)
+      {
+        RDCASSERT(varComp == CompType::UInt, varComp);
+
+        // set up output type for proper expansion below
+        if(data.fmt.compByteWidth == 1)
+          output.type = VarType::UByte;
+        else if(data.fmt.compByteWidth == 2)
+          output.type = VarType::UShort;
+        else if(data.fmt.compByteWidth == 4)
+          output.type = VarType::UInt;
+        else if(data.fmt.compByteWidth == 8)
+          output.type = VarType::ULong;
+
+        for(uint8_t c = 0; c < RDCMIN(output.columns, input.columns); c++)
+          setUintComp(output, c, uintComp(input, c));
+
+        memcpy(data.texel(coords, sample), output.value.u8v.data(), data.texelSize);
+      }
+      else if(data.fmt.compType == CompType::SInt)
+      {
+        RDCASSERT(varComp == CompType::SInt, varComp);
+
+        // set up input type for proper expansion below
+        if(data.fmt.compByteWidth == 1)
+          output.type = VarType::SByte;
+        else if(data.fmt.compByteWidth == 2)
+          output.type = VarType::SShort;
+        else if(data.fmt.compByteWidth == 4)
+          output.type = VarType::SInt;
+        else if(data.fmt.compByteWidth == 8)
+          output.type = VarType::SLong;
+
+        for(uint8_t c = 0; c < RDCMIN(output.columns, input.columns); c++)
+          setIntComp(output, c, intComp(input, c));
+
+        memcpy(data.texel(coords, sample), output.value.u8v.data(), data.texelSize);
+      }
+      else
+      {
+        RDCASSERT(varComp == CompType::Float, varComp);
+
+        // read as floats
+        output.type = VarType::Float;
+
+        for(uint8_t c = 0; c < RDCMIN(output.columns, input.columns); c++)
+          setFloatComp(output, c, input.value.f32v[c]);
+
+        FloatVector v;
+
+        // set it into f32v
+        v.x = input.value.f32v[0];
+        v.y = input.value.f32v[1];
+        v.z = input.value.f32v[2];
+        v.w = input.value.f32v[3];
+
+        EncodeFormattedComponents(data.fmt, v, data.texel(coords, sample));
+      }
+    }
+    return rdcspv::DeviceOpResult::Succeeded;
+  }
+
+  // Can be called from any thread
+  virtual void FillInputValue(ShaderVariable &var, ShaderBuiltin builtin, uint32_t threadIndex,
+                              uint32_t location, uint32_t component) const override
+  {
+    if(!inputVarsReadOnly)
+    {
+      RDCERR("Input variables still being filled in");
+      return;
+    }
     if(builtin != ShaderBuiltin::Undefined)
     {
-      auto it = builtin_inputs.find(builtin);
-      if(it != builtin_inputs.end())
+      if(threadIndex < thread_builtins.size())
+      {
+        auto it = thread_builtins[threadIndex].find(builtin);
+        if(it != thread_builtins[threadIndex].end())
+        {
+          var.value = it->second.value;
+          return;
+        }
+      }
+
+      auto it = global_builtins.find(builtin);
+      if(it != global_builtins.end())
       {
         var.value = it->second.value;
         return;
@@ -442,81 +689,53 @@ public:
       return;
     }
 
-    if(location < location_inputs.size())
+    if(threadIndex < location_inputs.size())
     {
-      if(var.rows == 1)
+      if(location < location_inputs[threadIndex].size())
       {
-        if(component + var.columns > 4)
-          RDCERR("Unexpected component %u for column count %u", component, var.columns);
+        if(var.rows == 1)
+        {
+          if(component + var.columns > 4)
+            RDCERR("Unexpected component %u for column count %u", component, var.columns);
 
-        for(uint8_t c = 0; c < var.columns; c++)
-          copyComp(var, c, location_inputs[location], component + c);
-      }
-      else
-      {
-        RDCASSERTEQUAL(component, 0);
-        for(uint8_t r = 0; r < var.rows; r++)
           for(uint8_t c = 0; c < var.columns; c++)
-            copyComp(var, r * var.columns + c, location_inputs[location + c], r);
+            copyComp(var, c, location_inputs[threadIndex][location], component + c);
+        }
+        else
+        {
+          RDCASSERTEQUAL(component, 0);
+          for(uint8_t r = 0; r < var.rows; r++)
+            for(uint8_t c = 0; c < var.columns; c++)
+              copyComp(var, r * var.columns + c, location_inputs[threadIndex][location + c], r);
+        }
+        return;
       }
-      return;
     }
 
-    RDCERR("Couldn't get input for %s at location=%u, component=%u", var.name.c_str(), location,
-           component);
+    RDCERR("Couldn't get input for %s at thread=%u, location=%u, component=%u", var.name.c_str(),
+           threadIndex, location, component);
   }
 
-  virtual DerivativeDeltas GetDerivative(ShaderBuiltin builtin, uint32_t location,
-                                         uint32_t component, VarType type) override
+  uint32_t GetThreadProperty(uint32_t threadIndex, rdcspv::ThreadProperty prop) override
   {
-    if(builtin != ShaderBuiltin::Undefined)
-    {
-      auto it = builtin_derivatives.find(builtin);
-      if(it != builtin_derivatives.end())
-        return it->second;
+    CHECK_DEVICE_THREAD();
+    if(prop >= rdcspv::ThreadProperty::Count)
+      return 0;
+    if(threadIndex >= thread_props.size())
+      return 0;
 
-      RDCERR("Couldn't get input for %s", ToStr(builtin).c_str());
-      return DerivativeDeltas();
-    }
-
-    if(location < location_derivatives.size())
-    {
-      const DerivativeDeltas &deriv = location_derivatives[location];
-
-      DerivativeDeltas ret;
-
-      ret.ddxcoarse.type = type;
-      ret.ddxfine.type = type;
-      ret.ddycoarse.type = type;
-      ret.ddyfine.type = type;
-
-      RDCASSERT(component < 4, component);
-
-      // rebase from component into [0]..
-
-      for(uint32_t src = component, dst = 0; src < 4; src++, dst++)
-      {
-        copyComp(ret.ddxcoarse, dst, deriv.ddxcoarse, src);
-        copyComp(ret.ddxfine, dst, deriv.ddxfine, src);
-        copyComp(ret.ddycoarse, dst, deriv.ddycoarse, src);
-        copyComp(ret.ddyfine, dst, deriv.ddyfine, src);
-      }
-
-      return ret;
-    }
-
-    RDCERR("Couldn't get derivative for location=%u, component=%u", location, component);
-    return DerivativeDeltas();
+    return thread_props[threadIndex][(size_t)prop];
   }
 
-  bool CalculateSampleGather(rdcspv::ThreadState &lane, rdcspv::Op opcode,
-                             DebugAPIWrapper::TextureType texType, BindpointIndex imageBind,
-                             BindpointIndex samplerBind, const ShaderVariable &uv,
-                             const ShaderVariable &ddxCalc, const ShaderVariable &ddyCalc,
-                             const ShaderVariable &compare, rdcspv::GatherChannel gatherChannel,
-                             const rdcspv::ImageOperandsAndParamDatas &operands,
-                             ShaderVariable &output) override
+  bool QueueSampleGather(rdcspv::ThreadState &lane, rdcspv::Op opcode,
+                         DebugAPIWrapper::TextureType texType, const ShaderBindIndex &imageBind,
+                         const ShaderBindIndex &samplerBind, const ShaderVariable &uv,
+                         const ShaderVariable &ddxCalc, const ShaderVariable &ddyCalc,
+                         const ShaderVariable &compare, rdcspv::GatherChannel gatherChannel,
+                         const rdcspv::ImageOperandsAndParamDatas &operands, ShaderVariable &output,
+                         bool &hasResult) override
   {
+    CHECK_DEVICE_THREAD();
     ShaderConstParameters constParams = {};
     ShaderUniformParameters uniformParams = {};
 
@@ -527,32 +746,62 @@ public:
     // fetch the right type of descriptor depending on if we're buffer or not
     bool valid = true;
     rdcstr access = StringFormat::Fmt("performing %s operation", ToStr(opcode).c_str());
-    const VkDescriptorImageInfo &imageInfo =
-        buffer ? GetDescriptor<VkDescriptorImageInfo>(access, invalidBind, valid)
-               : GetDescriptor<VkDescriptorImageInfo>(access, imageBind, valid);
-    const VkBufferView &bufferView = buffer
-                                         ? GetDescriptor<VkBufferView>(access, imageBind, valid)
-                                         : GetDescriptor<VkBufferView>(access, invalidBind, valid);
+    const Descriptor &imageDescriptor = buffer ? GetDescriptor(access, ShaderBindIndex(), valid)
+                                               : GetDescriptor(access, imageBind, valid);
+    const Descriptor &bufferViewDescriptor = buffer
+                                                 ? GetDescriptor(access, imageBind, valid)
+                                                 : GetDescriptor(access, ShaderBindIndex(), valid);
 
     // fetch the sampler (if there's no sampler, this will silently return dummy data without
     // marking invalid
-    const VkDescriptorImageInfo &samplerInfo =
-        GetDescriptor<VkDescriptorImageInfo>(access, samplerBind, valid);
+    const SamplerDescriptor &samplerDescriptor = GetSamplerDescriptor(access, samplerBind, valid);
 
     // if any descriptor lookup failed, return now
     if(!valid)
+    {
+      hasResult = false;
       return false;
+    }
 
-    VkMarkerRegion markerRegion("CalculateSampleGather");
+    VkMarkerRegion markerRegion("QueueSampleGather");
 
-    VkSampler sampler = samplerInfo.sampler;
-    VkImageView view = imageInfo.imageView;
-    VkImageLayout layout = imageInfo.imageLayout;
+    VkBufferView bufferView =
+        m_pDriver->GetResourceManager()->GetHandle<VkBufferView>(bufferViewDescriptor.view);
+
+    VkSampler sampler =
+        m_pDriver->GetResourceManager()->GetHandle<VkSampler>(samplerDescriptor.object);
+    VkImageView view = m_pDriver->GetResourceManager()->GetHandle<VkImageView>(imageDescriptor.view);
+    VkImageLayout layout = convert((DescriptorSlotImageLayout)imageDescriptor.byteOffset);
+
+    // NULL view : return 0,0,0,0
+    if(!buffer && (view == VK_NULL_HANDLE))
+    {
+      memset(&output.value, 0, sizeof(output.value));
+      hasResult = true;
+      return true;
+    }
 
     // promote view to Array view
+    VulkanCreationInfo::ImageView defaultViewProps = {};
+    VulkanCreationInfo::Image defaultImageProps = {};
+    VulkanCreationInfo::Buffer defaultBufferProps = {};
+    VulkanCreationInfo::Sampler defaultSamplerProps = {};
 
-    const VulkanCreationInfo::ImageView &viewProps = m_Creation.m_ImageView[GetResID(view)];
-    const VulkanCreationInfo::Image &imageProps = m_Creation.m_Image[viewProps.image];
+    const VulkanCreationInfo::ImageView &viewProps =
+        buffer ? defaultViewProps : m_Creation.GetImageViewInfo(GetResID(view));
+
+    // NULL image : return 0,0,0,0
+    if(!buffer && (viewProps.image == ResourceId()))
+    {
+      memset(&output.value, 0, sizeof(output.value));
+      hasResult = true;
+      return true;
+    }
+
+    const VulkanCreationInfo::Image &imageProps =
+        buffer ? defaultImageProps : m_Creation.GetImageInfo(viewProps.image);
+
+    const bool depthTex = IsDepthOrStencilFormat(viewProps.format);
 
     VkDevice dev = m_pDriver->GetDev();
 
@@ -619,11 +868,13 @@ public:
         output.value.u32v[0] = viewProps.range.levelCount;
         if(viewProps.range.levelCount == VK_REMAINING_MIP_LEVELS)
           output.value.u32v[0] = imageProps.mipLevels - viewProps.range.baseMipLevel;
+        hasResult = true;
         return true;
       }
       case rdcspv::Op::ImageQuerySamples:
       {
         output.value.u32v[0] = (uint32_t)imageProps.samples;
+        hasResult = true;
         return true;
       }
       case rdcspv::Op::ImageQuerySize:
@@ -652,20 +903,37 @@ public:
 
         if(buffer)
         {
-          const VulkanCreationInfo::BufferView &bufViewProps =
-              m_Creation.m_BufferView[GetResID(bufferView)];
-
-          VkDeviceSize size = bufViewProps.size;
-
-          if(size == VK_WHOLE_SIZE)
+          VkDeviceSize size;
+          VkFormat format;
+          if(bufferView == VK_NULL_HANDLE)
           {
-            const VulkanCreationInfo::Buffer &bufProps = m_Creation.m_Buffer[bufViewProps.buffer];
-            size = bufProps.size - bufViewProps.offset;
+            // descriptor buffer case - there is no buffer view so read directly out of the determined descriptor
+            format = MakeVkFormat(bufferViewDescriptor.format);
+            // size is not allowed to be VK_WHOLE_SIZE
+            size = bufferViewDescriptor.byteSize;
+          }
+          else
+          {
+            const VulkanCreationInfo::BufferView &bufViewProps =
+                m_Creation.GetBufferViewInfo(GetResID(bufferView));
+
+            size = bufViewProps.size;
+            format = bufViewProps.format;
+
+            if(size == VK_WHOLE_SIZE)
+            {
+              const VulkanCreationInfo::Buffer &bufProps =
+                  bufViewProps.buffer == ResourceId()
+                      ? defaultBufferProps
+                      : m_Creation.GetBufferInfo(bufViewProps.buffer);
+              size = bufProps.size - bufViewProps.offset;
+            }
           }
 
-          setUintComp(output, 0, uint32_t(size / GetByteSize(1, 1, 1, bufViewProps.format, 0)));
+          setUintComp(output, 0, uint32_t(size / GetByteSize(1, 1, 1, format, 0)));
         }
 
+        hasResult = true;
         return true;
       }
       default: break;
@@ -676,7 +944,7 @@ public:
     if(sampleView == VK_NULL_HANDLE && view != VK_NULL_HANDLE)
     {
       VkImageViewCreateInfo viewInfo = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-      viewInfo.image = m_pDriver->GetResourceManager()->GetCurrentHandle<VkImage>(viewProps.image);
+      viewInfo.image = m_pDriver->GetResourceManager()->GetHandle<VkImage>(viewProps.image);
       viewInfo.format = viewProps.format;
       viewInfo.viewType = viewProps.viewType;
       if(viewInfo.viewType == VK_IMAGE_VIEW_TYPE_1D)
@@ -699,7 +967,7 @@ public:
       }
 
       VkResult vkr = m_pDriver->vkCreateImageView(dev, &viewInfo, NULL, &sampleView);
-      m_pDriver->CheckVkResult(vkr);
+      CHECK_VKR(m_pDriver, vkr);
 
       m_SampleViews[GetResID(view)] = sampleView;
     }
@@ -708,12 +976,8 @@ public:
     {
       const ShaderVariable &biasVar = lane.GetSrc(operands.bias);
 
-      float bias = biasVar.value.f32v[0];
       // silently cast parameters to 32-bit floats
-      if(biasVar.type == VarType::Half)
-        bias = ConvertFromHalf(biasVar.value.u16v[0]);
-      else if(biasVar.type == VarType::Double)
-        bias = (float)biasVar.value.f64v[0];
+      float bias = floatComp(biasVar, 0);
 
       if(bias != 0.0f)
       {
@@ -728,7 +992,9 @@ public:
         auto insertIt = m_BiasSamplers.insert(std::make_pair(key, VkSampler()));
         if(insertIt.second)
         {
-          const VulkanCreationInfo::Sampler &samplerProps = m_Creation.m_Sampler[key.first];
+          const VulkanCreationInfo::Sampler &samplerProps =
+              (sampler == VK_NULL_HANDLE) ? defaultSamplerProps
+                                          : m_Creation.GetSamplerInfo(key.first);
 
           VkSamplerCreateInfo sampInfo = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
           sampInfo.magFilter = samplerProps.magFilter;
@@ -761,8 +1027,7 @@ public:
           if(samplerProps.ycbcr != ResourceId())
           {
             ycbcrInfo.conversion =
-                m_pDriver->GetResourceManager()->GetCurrentHandle<VkSamplerYcbcrConversion>(
-                    viewProps.image);
+                m_pDriver->GetResourceManager()->GetHandle<VkSamplerYcbcrConversion>(viewProps.image);
 
             ycbcrInfo.pNext = sampInfo.pNext;
             sampInfo.pNext = &ycbcrInfo;
@@ -783,7 +1048,7 @@ public:
           sampInfo.mipLodBias += bias;
 
           VkResult vkr = m_pDriver->vkCreateSampler(dev, &sampInfo, NULL, &sampler);
-          m_pDriver->CheckVkResult(vkr);
+          CHECK_VKR(m_pDriver, vkr);
 
           insertIt.first->second = sampler;
         }
@@ -852,6 +1117,8 @@ public:
       default: break;
     }
 
+    bool gatherOp = false;
+
     switch(opcode)
     {
       case rdcspv::Op::ImageFetch:
@@ -877,25 +1144,14 @@ public:
       case rdcspv::Op::ImageGather:
       case rdcspv::Op::ImageDrefGather:
       {
+        gatherOp = true;
+
         // silently cast parameters to 32-bit floats
-        if(uv.type == VarType::Float)
-        {
-          for(int i = 0; i < coords; i++)
-            uniformParams.uvwa[i] = uv.value.f32v[i];
-        }
-        else if(uv.type == VarType::Half)
-        {
-          for(int i = 0; i < coords; i++)
-            uniformParams.uvwa[i] = ConvertFromHalf(uv.value.u16v[i]);
-        }
-        else if(uv.type == VarType::Double)
-        {
-          for(int i = 0; i < coords; i++)
-            uniformParams.uvwa[i] = (float)uv.value.f64v[i];
-        }
+        for(int i = 0; i < coords; i++)
+          uniformParams.uvwa[i] = floatComp(uv, i);
 
         if(useCompare)
-          uniformParams.compare = compare.value.f32v[0];
+          uniformParams.compare = floatComp(compare, 0);
 
         constParams.gatherChannel = gatherChannel;
 
@@ -933,45 +1189,6 @@ public:
           constParams.gatherOffsets.v3 = constOffsets.members[3].value.s32v[1];
         }
 
-        if(operands.flags & rdcspv::ImageOperands::ConstOffset)
-        {
-          ShaderVariable constOffset = lane.GetSrc(operands.constOffset);
-
-          // sign extend variables lower than 32-bits
-          for(uint8_t c = 0; c < constOffset.columns; c++)
-          {
-            if(constOffset.type == VarType::SByte)
-              constOffset.value.s32v[c] = constOffset.value.s8v[c];
-            else if(constOffset.type == VarType::SShort)
-              constOffset.value.s32v[c] = constOffset.value.s16v[c];
-          }
-
-          uniformParams.offset.x = constOffset.value.s32v[0];
-          if(gradCoords >= 2)
-            uniformParams.offset.y = constOffset.value.s32v[1];
-          if(gradCoords >= 3)
-            uniformParams.offset.z = constOffset.value.s32v[2];
-        }
-        else if(operands.flags & rdcspv::ImageOperands::Offset)
-        {
-          ShaderVariable offset = lane.GetSrc(operands.offset);
-
-          // sign extend variables lower than 32-bits
-          for(uint8_t c = 0; c < offset.columns; c++)
-          {
-            if(offset.type == VarType::SByte)
-              offset.value.s32v[c] = offset.value.s8v[c];
-            else if(offset.type == VarType::SShort)
-              offset.value.s32v[c] = offset.value.s16v[c];
-          }
-
-          uniformParams.offset.x = offset.value.s32v[0];
-          if(gradCoords >= 2)
-            uniformParams.offset.y = offset.value.s32v[1];
-          if(gradCoords >= 3)
-            uniformParams.offset.z = offset.value.s32v[2];
-        }
-
         break;
       }
       case rdcspv::Op::ImageQueryLod:
@@ -985,21 +1202,8 @@ public:
       case rdcspv::Op::ImageSampleProjDrefImplicitLod:
       {
         // silently cast parameters to 32-bit floats
-        if(uv.type == VarType::Float)
-        {
-          for(int i = 0; i < coords; i++)
-            uniformParams.uvwa[i] = uv.value.f32v[i];
-        }
-        else if(uv.type == VarType::Half)
-        {
-          for(int i = 0; i < coords; i++)
-            uniformParams.uvwa[i] = ConvertFromHalf(uv.value.u16v[i]);
-        }
-        else if(uv.type == VarType::Double)
-        {
-          for(int i = 0; i < coords; i++)
-            uniformParams.uvwa[i] = (float)uv.value.f64v[i];
-        }
+        for(int i = 0; i < coords; i++)
+          uniformParams.uvwa[i] = floatComp(uv, i);
 
         if(proj)
         {
@@ -1009,11 +1213,7 @@ public:
 
           // do the divide ourselves rather than severely complicating the sample shader (as proj
           // variants need non-arrayed textures)
-          float q = uv.value.f32v[coords];
-          if(uv.type == VarType::Half)
-            q = ConvertFromHalf(uv.value.u16v[coords]);
-          else if(uv.type == VarType::Double)
-            q = (float)uv.value.f64v[coords];
+          float q = floatComp(uv, coords);
 
           uniformParams.uvwa[0] /= q;
           uniformParams.uvwa[1] /= q;
@@ -1024,34 +1224,22 @@ public:
         {
           const ShaderVariable &minLodVar = lane.GetSrc(operands.minLod);
 
-          uniformParams.minlod = minLodVar.value.f32v[0];
           // silently cast parameters to 32-bit floats
-          if(minLodVar.type == VarType::Half)
-            uniformParams.minlod = ConvertFromHalf(minLodVar.value.u16v[0]);
-          else if(minLodVar.type == VarType::Double)
-            uniformParams.minlod = (float)minLodVar.value.f64v[0];
+          uniformParams.minlod = floatComp(minLodVar, 0);
         }
 
         if(useCompare)
         {
-          uniformParams.compare = compare.value.f32v[0];
           // silently cast parameters to 32-bit floats
-          if(compare.type == VarType::Half)
-            uniformParams.compare = ConvertFromHalf(compare.value.u16v[0]);
-          else if(compare.type == VarType::Double)
-            uniformParams.compare = (float)compare.value.f64v[0];
+          uniformParams.compare = floatComp(compare, 0);
         }
 
         if(operands.flags & rdcspv::ImageOperands::Lod)
         {
           const ShaderVariable &lodVar = lane.GetSrc(operands.lod);
 
-          uniformParams.lod = lodVar.value.f32v[0];
           // silently cast parameters to 32-bit floats
-          if(lodVar.type == VarType::Half)
-            uniformParams.lod = ConvertFromHalf(lodVar.value.u16v[0]);
-          else if(lodVar.type == VarType::Double)
-            uniformParams.lod = (float)lodVar.value.f64v[0];
+          uniformParams.lod = floatComp(lodVar, 0);
           constParams.useGradOrGatherOffsets = VK_FALSE;
         }
         else if(operands.flags & rdcspv::ImageOperands::Grad)
@@ -1063,29 +1251,10 @@ public:
 
           // silently cast parameters to 32-bit floats
           RDCASSERTEQUAL(ddx.type, ddy.type);
-          if(ddx.type == VarType::Float)
+          for(int i = 0; i < gradCoords; i++)
           {
-            for(int i = 0; i < gradCoords; i++)
-            {
-              uniformParams.ddx[i] = ddx.value.f32v[i];
-              uniformParams.ddy[i] = ddy.value.f32v[i];
-            }
-          }
-          else if(ddx.type == VarType::Half)
-          {
-            for(int i = 0; i < gradCoords; i++)
-            {
-              uniformParams.ddx[i] = ConvertFromHalf(ddx.value.u16v[i]);
-              uniformParams.ddy[i] = ConvertFromHalf(ddy.value.u16v[i]);
-            }
-          }
-          else if(ddx.type == VarType::Double)
-          {
-            for(int i = 0; i < gradCoords; i++)
-            {
-              uniformParams.ddx[i] = (float)ddx.value.f64v[i];
-              uniformParams.ddy[i] = (float)ddy.value.f64v[i];
-            }
+            uniformParams.ddx[i] = floatComp(ddx, i);
+            uniformParams.ddy[i] = floatComp(ddy, i);
           }
         }
 
@@ -1097,69 +1266,18 @@ public:
 
           // silently cast parameters to 32-bit floats
           RDCASSERTEQUAL(ddxCalc.type, ddyCalc.type);
-          if(ddxCalc.type == VarType::Float)
+          for(int i = 0; i < gradCoords; i++)
           {
-            for(int i = 0; i < gradCoords; i++)
-            {
-              uniformParams.ddx[i] = ddxCalc.value.f32v[i];
-              uniformParams.ddy[i] = ddyCalc.value.f32v[i];
-            }
-          }
-          else if(ddxCalc.type == VarType::Half)
-          {
-            for(int i = 0; i < gradCoords; i++)
-            {
-              uniformParams.ddx[i] = ConvertFromHalf(ddxCalc.value.u16v[i]);
-              uniformParams.ddy[i] = ConvertFromHalf(ddyCalc.value.u16v[i]);
-            }
-          }
-          else if(ddxCalc.type == VarType::Double)
-          {
-            for(int i = 0; i < gradCoords; i++)
-            {
-              uniformParams.ddx[i] = (float)ddxCalc.value.f64v[i];
-              uniformParams.ddy[i] = (float)ddyCalc.value.f64v[i];
-            }
+            uniformParams.ddx[i] = floatComp(ddxCalc, i);
+            uniformParams.ddy[i] = floatComp(ddyCalc, i);
           }
         }
-
-        if(operands.flags & rdcspv::ImageOperands::ConstOffset)
+        if((opcode == rdcspv::Op::ImageSampleProjDrefExplicitLod) ||
+           (opcode == rdcspv::Op::ImageSampleProjDrefImplicitLod))
         {
-          ShaderVariable constOffset = lane.GetSrc(operands.constOffset);
-
-          // sign extend variables lower than 32-bits
-          for(uint8_t c = 0; c < constOffset.columns; c++)
-          {
-            if(constOffset.type == VarType::SByte)
-              constOffset.value.s32v[c] = constOffset.value.s8v[c];
-            else if(constOffset.type == VarType::SShort)
-              constOffset.value.s32v[c] = constOffset.value.s16v[c];
-          }
-
-          uniformParams.offset.x = constOffset.value.s32v[0];
-          if(gradCoords >= 2)
-            uniformParams.offset.y = constOffset.value.s32v[1];
-          if(gradCoords >= 3)
-            uniformParams.offset.z = constOffset.value.s32v[2];
-        }
-        else if(operands.flags & rdcspv::ImageOperands::Offset)
-        {
-          ShaderVariable offset = lane.GetSrc(operands.offset);
-
-          // sign extend variables lower than 32-bits
-          for(uint8_t c = 0; c < offset.columns; c++)
-          {
-            if(offset.type == VarType::SByte)
-              offset.value.s32v[c] = offset.value.s8v[c];
-            else if(offset.type == VarType::SShort)
-              offset.value.s32v[c] = offset.value.s16v[c];
-          }
-
-          uniformParams.offset.x = offset.value.s32v[0];
-          if(gradCoords >= 2)
-            uniformParams.offset.y = offset.value.s32v[1];
-          if(gradCoords >= 3)
-            uniformParams.offset.z = offset.value.s32v[2];
+          RDCASSERT(useCompare);
+          float q = floatComp(uv, coords);
+          uniformParams.compare /= q;
         }
 
         break;
@@ -1171,10 +1289,60 @@ public:
       }
     }
 
-    // we don't support constant offsets, they're always promoted to dynamic offsets to avoid
-    // needing to potentially compile lots of pipelines with different offsets. If we're actually
-    // using them and the device doesn't support the extended gather feature, the result will be
-    // wrong.
+    if(operands.flags & rdcspv::ImageOperands::ConstOffset)
+    {
+      ShaderVariable constOffset = lane.GetSrc(operands.constOffset);
+
+      // sign extend variables lower than 32-bits
+      for(uint8_t c = 0; c < constOffset.columns; c++)
+      {
+        if(constOffset.type == VarType::SByte)
+          constOffset.value.s32v[c] = constOffset.value.s8v[c];
+        else if(constOffset.type == VarType::SShort)
+          constOffset.value.s32v[c] = constOffset.value.s16v[c];
+      }
+
+      // pass offsets as uniform where possible - when the feature (widely available) on gather
+      // operations. On non-gather operations we are forced to use const offsets and must specialise
+      // the pipeline.
+      if(m_pDriver->GetDeviceEnabledFeatures().shaderImageGatherExtended && gatherOp)
+      {
+        uniformParams.offset.x = constOffset.value.s32v[0];
+        if(gradCoords >= 2)
+          uniformParams.offset.y = constOffset.value.s32v[1];
+        if(gradCoords >= 3)
+          uniformParams.offset.z = constOffset.value.s32v[2];
+      }
+      else
+      {
+        constParams.constOffsets.x = constOffset.value.s32v[0];
+        if(gradCoords >= 2)
+          constParams.constOffsets.y = constOffset.value.s32v[1];
+        if(gradCoords >= 3)
+          constParams.constOffsets.z = constOffset.value.s32v[2];
+      }
+    }
+    else if(operands.flags & rdcspv::ImageOperands::Offset)
+    {
+      ShaderVariable offset = lane.GetSrc(operands.offset);
+
+      // sign extend variables lower than 32-bits
+      for(uint8_t c = 0; c < offset.columns; c++)
+      {
+        if(offset.type == VarType::SByte)
+          offset.value.s32v[c] = offset.value.s8v[c];
+        else if(offset.type == VarType::SShort)
+          offset.value.s32v[c] = offset.value.s16v[c];
+      }
+
+      // if the app's shader used a dynamic offset, we can too!
+      uniformParams.offset.x = offset.value.s32v[0];
+      if(gradCoords >= 2)
+        uniformParams.offset.y = offset.value.s32v[1];
+      if(gradCoords >= 3)
+        uniformParams.offset.z = offset.value.s32v[2];
+    }
+
     if(!m_pDriver->GetDeviceEnabledFeatures().shaderImageGatherExtended &&
        (uniformParams.offset.x != 0 || uniformParams.offset.y != 0 || uniformParams.offset.z != 0))
     {
@@ -1185,7 +1353,7 @@ public:
                             uniformParams.offset.x, uniformParams.offset.y, uniformParams.offset.z));
     }
 
-    VkPipeline pipe = MakePipe(constParams, 32, uintTex, sintTex);
+    VkPipeline pipe = MakePipe(constParams, 32, depthTex, uintTex, sintTex);
 
     if(pipe == VK_NULL_HANDLE)
     {
@@ -1195,153 +1363,206 @@ public:
       return false;
     }
 
+    VkCommandBuffer cmd = queuedOpCmdBuffer;
+    if(cmd == VK_NULL_HANDLE)
+    {
+      if(StartQueuedOps())
+        cmd = queuedOpCmdBuffer;
+    }
+    if(cmd == VK_NULL_HANDLE)
+      return false;
+
+    if(queueIndex >= ShaderDebugData::MAX_QUEUED_OPS)
+    {
+      m_pDriver->AddDebugMessage(MessageCategory::Execution, MessageSeverity::High,
+                                 MessageSource::RuntimeWarning, "Too many GPU queued operations");
+      return false;
+    }
+
     VkDescriptorImageInfo samplerWriteInfo = {Unwrap(sampler), VK_NULL_HANDLE,
                                               VK_IMAGE_LAYOUT_UNDEFINED};
     VkDescriptorImageInfo imageWriteInfo = {VK_NULL_HANDLE, Unwrap(sampleView), layout};
 
     VkDescriptorBufferInfo uniformWriteInfo = {};
     m_DebugData.ConstantsBuffer.FillDescriptor(uniformWriteInfo);
+    const VkDescriptorSet realDescSet = Unwrap(m_DebugData.DescSets[queueIndex++]);
 
     VkWriteDescriptorSet writeSets[] = {
         {
-            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, Unwrap(m_DebugData.DescSet),
-            (uint32_t)ShaderDebugBind::Constants, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, NULL,
-            &uniformWriteInfo, NULL,
+            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            NULL,
+            realDescSet,
+            (uint32_t)ShaderDebugBind::Constants,
+            0,
+            1,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+            NULL,
+            &uniformWriteInfo,
+            NULL,
         },
         {
-            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, Unwrap(m_DebugData.DescSet),
-            (uint32_t)constParams.dim, 0, 1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &imageWriteInfo,
-            NULL, NULL,
+            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            NULL,
+            realDescSet,
+            (uint32_t)constParams.dim,
+            0,
+            1,
+            VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            &imageWriteInfo,
+            NULL,
+            NULL,
         },
         {
-            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, Unwrap(m_DebugData.DescSet),
-            (uint32_t)ShaderDebugBind::Sampler, 0, 1, VK_DESCRIPTOR_TYPE_SAMPLER, &samplerWriteInfo,
-            NULL, NULL,
+            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            NULL,
+            realDescSet,
+            (uint32_t)ShaderDebugBind::Sampler,
+            0,
+            1,
+            VK_DESCRIPTOR_TYPE_SAMPLER,
+            &samplerWriteInfo,
+            NULL,
+            NULL,
         },
     };
 
     if(buffer)
     {
+      if(bufferView == VK_NULL_HANDLE)
+      {
+        // descriptor buffer, must create our own
+
+        BufViewKey key = {bufferViewDescriptor.resource, bufferViewDescriptor.byteOffset,
+                          bufferViewDescriptor.byteSize, MakeVkFormat(bufferViewDescriptor.format)};
+
+        bufferView = m_SampleBufViews[key];
+        if(bufferView == VK_NULL_HANDLE)
+        {
+          VkBufferViewCreateInfo viewInfo = {
+              VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+              NULL,
+              0,
+              m_pDriver->GetResourceManager()->GetHandle<VkBuffer>(bufferViewDescriptor.resource),
+              key.format,
+              bufferViewDescriptor.byteOffset,
+              bufferViewDescriptor.byteSize,
+          };
+
+          VkResult vkr = m_pDriver->vkCreateBufferView(dev, &viewInfo, NULL, &bufferView);
+          CHECK_VKR(m_pDriver, vkr);
+
+          m_SampleBufViews[key] = bufferView;
+        }
+      }
+
       writeSets[1].pTexelBufferView = UnwrapPtr(bufferView);
       writeSets[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
     }
 
     // reset descriptor sets to dummy state
-    uint32_t resetIndex = 0;
-    if(uintTex)
-      resetIndex = 1;
-    else if(sintTex)
-      resetIndex = 2;
-    ObjDisp(dev)->UpdateDescriptorSets(Unwrap(dev), ARRAY_COUNT(m_DebugData.DummyWrites[resetIndex]),
-                                       m_DebugData.DummyWrites[resetIndex], 0, NULL);
+    if(depthTex)
+    {
+      uint32_t resetIndex = 3;
+
+      rdcarray<VkWriteDescriptorSet> writes;
+
+      for(size_t i = 0; i < ARRAY_COUNT(m_DebugData.DummyWrites[resetIndex]); i++)
+      {
+        // not all textures may be supported for depth, so only update those that are valid
+        if(m_DebugData.DummyWrites[resetIndex][i].descriptorCount != 0)
+        {
+          m_DebugData.DummyWrites[resetIndex][i].dstSet = realDescSet;
+          writes.push_back(m_DebugData.DummyWrites[resetIndex][i]);
+        }
+      }
+
+      ObjDisp(dev)->UpdateDescriptorSets(Unwrap(dev), (uint32_t)writes.count(), writes.data(), 0,
+                                         NULL);
+    }
+    else
+    {
+      uint32_t resetIndex = 0;
+      if(uintTex)
+        resetIndex = 1;
+      else if(sintTex)
+        resetIndex = 2;
+
+      for(size_t i = 0; i < ARRAY_COUNT(m_DebugData.DummyWrites[resetIndex]); i++)
+      {
+        if(m_DebugData.DummyWrites[resetIndex][i].descriptorCount != 0)
+          m_DebugData.DummyWrites[resetIndex][i].dstSet = realDescSet;
+      }
+      ObjDisp(dev)->UpdateDescriptorSets(Unwrap(dev),
+                                         ARRAY_COUNT(m_DebugData.DummyWrites[resetIndex]),
+                                         m_DebugData.DummyWrites[resetIndex], 0, NULL);
+    }
 
     // overwrite with our data
     ObjDisp(dev)->UpdateDescriptorSets(Unwrap(dev), sampler != VK_NULL_HANDLE ? 3 : 2, writeSets, 0,
                                        NULL);
 
-    void *constants = m_DebugData.ConstantsBuffer.Map(NULL, 0);
+    uint32_t constsOffset = 0;
+    void *constants = m_DebugData.ConstantsBuffer.Map(&constsOffset, 0);
+    if(!constants)
+      return false;
 
     memcpy(constants, &uniformParams, sizeof(uniformParams));
 
     m_DebugData.ConstantsBuffer.Unmap();
 
-    {
-      VkCommandBuffer cmd = m_pDriver->GetNextCmd();
+    VkClearValue clear = {};
 
-      if(cmd == VK_NULL_HANDLE)
-        return false;
+    const uint32_t sampleFormat = SampleFormatIndex(uintTex, sintTex);
 
-      VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
-                                            VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    VkRenderPassBeginInfo rpbegin = {
+        VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        NULL,
+        Unwrap(m_DebugData.RenderPass[sampleFormat]),
+        Unwrap(m_DebugData.Framebuffer[sampleFormat]),
+        {{0, 0}, {1, 1}},
+        1,
+        &clear,
+    };
+    ObjDisp(cmd)->CmdBeginRenderPass(Unwrap(cmd), &rpbegin, VK_SUBPASS_CONTENTS_INLINE);
 
-      VkResult vkr = ObjDisp(cmd)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
-      m_pDriver->CheckVkResult(vkr);
+    ObjDisp(cmd)->CmdBindPipeline(Unwrap(cmd), VK_PIPELINE_BIND_POINT_GRAPHICS, Unwrap(pipe));
+    ObjDisp(cmd)->CmdBindDescriptorSets(Unwrap(cmd), VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        Unwrap(m_DebugData.PipeLayout), 0, 1, &realDescSet, 1,
+                                        &constsOffset);
 
-      VkClearValue clear = {};
+    // push uvw/ddx/ddy for the vertex shader
+    ObjDisp(cmd)->CmdPushConstants(Unwrap(cmd), Unwrap(m_DebugData.PipeLayout), VK_SHADER_STAGE_ALL,
+                                   sizeof(Vec4f) * 0, sizeof(Vec4f), &uniformParams.uvwa);
+    ObjDisp(cmd)->CmdPushConstants(Unwrap(cmd), Unwrap(m_DebugData.PipeLayout), VK_SHADER_STAGE_ALL,
+                                   sizeof(Vec4f) * 1, sizeof(Vec3f), &uniformParams.ddx);
+    ObjDisp(cmd)->CmdPushConstants(Unwrap(cmd), Unwrap(m_DebugData.PipeLayout), VK_SHADER_STAGE_ALL,
+                                   sizeof(Vec4f) * 2, sizeof(Vec3f), &uniformParams.ddy);
 
-      VkRenderPassBeginInfo rpbegin = {
-          VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-          NULL,
-          Unwrap(m_DebugData.RenderPass),
-          Unwrap(m_DebugData.Framebuffer),
-          {{0, 0}, {1, 1}},
-          1,
-          &clear,
-      };
-      ObjDisp(cmd)->CmdBeginRenderPass(Unwrap(cmd), &rpbegin, VK_SUBPASS_CONTENTS_INLINE);
+    ObjDisp(cmd)->CmdDraw(Unwrap(cmd), 3, 1, 0, 0);
 
-      ObjDisp(cmd)->CmdBindPipeline(Unwrap(cmd), VK_PIPELINE_BIND_POINT_GRAPHICS, Unwrap(pipe));
-      ObjDisp(cmd)->CmdBindDescriptorSets(Unwrap(cmd), VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                          Unwrap(m_DebugData.PipeLayout), 0, 1,
-                                          UnwrapPtr(m_DebugData.DescSet), 0, NULL);
+    ObjDisp(cmd)->CmdEndRenderPass(Unwrap(cmd));
 
-      // push uvw/ddx/ddy for the vertex shader
-      ObjDisp(cmd)->CmdPushConstants(Unwrap(cmd), Unwrap(m_DebugData.PipeLayout), VK_SHADER_STAGE_ALL,
-                                     sizeof(Vec4f) * 0, sizeof(Vec4f), &uniformParams.uvwa);
-      ObjDisp(cmd)->CmdPushConstants(Unwrap(cmd), Unwrap(m_DebugData.PipeLayout), VK_SHADER_STAGE_ALL,
-                                     sizeof(Vec4f) * 1, sizeof(Vec3f), &uniformParams.ddx);
-      ObjDisp(cmd)->CmdPushConstants(Unwrap(cmd), Unwrap(m_DebugData.PipeLayout), VK_SHADER_STAGE_ALL,
-                                     sizeof(Vec4f) * 2, sizeof(Vec3f), &uniformParams.ddy);
+    RDCASSERT(sampleGatherOpResultOffset + sampleGatherOpResultByteSize <=
+                  m_DebugData.ReadbackBuffer.TotalSize(),
+              sampleGatherOpResultOffset, sampleGatherOpResultByteSize,
+              m_DebugData.ReadbackBuffer.TotalSize());
+    VkBufferImageCopy region = {
+        sampleGatherOpResultOffset,           sizeof(Vec4f), 1,
+        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},     {1, 1, 1},
+    };
+    sampleGatherOpResultOffset += sampleGatherOpResultByteSize;
+    ObjDisp(cmd)->CmdCopyImageToBuffer(Unwrap(cmd), Unwrap(m_DebugData.Image),
+                                       VK_IMAGE_LAYOUT_GENERAL,
+                                       m_DebugData.ReadbackBuffer.UnwrappedBuffer(), 1, &region);
 
-      ObjDisp(cmd)->CmdDraw(Unwrap(cmd), 3, 1, 0, 0);
-
-      ObjDisp(cmd)->CmdEndRenderPass(Unwrap(cmd));
-
-      VkBufferImageCopy region = {
-          0, sizeof(Vec4f), 1, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {1, 1, 1},
-      };
-      ObjDisp(cmd)->CmdCopyImageToBuffer(Unwrap(cmd), Unwrap(m_DebugData.Image),
-                                         VK_IMAGE_LAYOUT_GENERAL,
-                                         Unwrap(m_DebugData.ReadbackBuffer.buf), 1, &region);
-
-      VkBufferMemoryBarrier bufBarrier = {
-          VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-          NULL,
-          VK_ACCESS_TRANSFER_WRITE_BIT,
-          VK_ACCESS_HOST_READ_BIT,
-          VK_QUEUE_FAMILY_IGNORED,
-          VK_QUEUE_FAMILY_IGNORED,
-          Unwrap(m_DebugData.ReadbackBuffer.buf),
-          0,
-          VK_WHOLE_SIZE,
-      };
-
-      // wait for copy to finish before reading back to host
-      DoPipelineBarrier(cmd, 1, &bufBarrier);
-
-      vkr = ObjDisp(cmd)->EndCommandBuffer(Unwrap(cmd));
-      m_pDriver->CheckVkResult(vkr);
-
-      m_pDriver->SubmitCmds();
-      m_pDriver->FlushQ();
-    }
-
-    float *ret = (float *)m_DebugData.ReadbackBuffer.Map(NULL, 0);
-
-    // convert float results, we did all sampling at 32-bit precision
-    if(output.type == VarType::Half)
-    {
-      for(uint8_t c = 0; c < 4; c++)
-        output.value.u16v[c] = ConvertToHalf(ret[c]);
-    }
-    else if(output.type == VarType::Double)
-    {
-      for(uint8_t c = 0; c < 4; c++)
-        output.value.f64v[c] = ret[c];
-    }
-    else
-    {
-      memcpy(output.value.u32v.data(), ret, sizeof(Vec4f));
-    }
-
-    m_DebugData.ReadbackBuffer.Unmap();
-
+    hasResult = false;
     return true;
   }
 
-  virtual bool CalculateMathOp(rdcspv::ThreadState &lane, rdcspv::GLSLstd450 op,
-                               const rdcarray<ShaderVariable> &params, ShaderVariable &output) override
+  virtual bool QueueCalculateMathOp(rdcspv::Op opcode, rdcspv::GLSLstd450 glslop,
+                                    const rdcarray<ShaderVariable> &params) override
   {
+    CHECK_DEVICE_THREAD();
     RDCASSERT(params.size() <= 3, params.size());
 
     int floatSizeIdx = 0;
@@ -1355,7 +1576,7 @@ public:
       ShaderConstParameters pipeParams = {};
       pipeParams.operation = (uint32_t)rdcspv::Op::ExtInst;
       m_DebugData.MathPipe[floatSizeIdx] =
-          MakePipe(pipeParams, VarTypeByteSize(params[0].type) * 8, false, false);
+          MakePipe(pipeParams, VarTypeByteSize(params[0].type) * 8, false, false, false);
 
       if(m_DebugData.MathPipe[floatSizeIdx] == VK_NULL_HANDLE)
       {
@@ -1366,14 +1587,38 @@ public:
       }
     }
 
+    VkCommandBuffer cmd = queuedOpCmdBuffer;
+    if(cmd == VK_NULL_HANDLE)
+    {
+      if(StartQueuedOps())
+        cmd = queuedOpCmdBuffer;
+    }
+    if(cmd == VK_NULL_HANDLE)
+      return false;
+
+    if(queueIndex >= ShaderDebugData::MAX_QUEUED_OPS)
+    {
+      m_pDriver->AddDebugMessage(MessageCategory::Execution, MessageSeverity::High,
+                                 MessageSource::RuntimeWarning, "Too many GPU queued operations");
+      return false;
+    }
     VkDescriptorBufferInfo storageWriteInfo = {};
     m_DebugData.MathResult.FillDescriptor(storageWriteInfo);
 
+    const VkDescriptorSet realDescSet = Unwrap(m_DebugData.DescSets[queueIndex++]);
+
     VkWriteDescriptorSet writeSets[] = {
         {
-            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, Unwrap(m_DebugData.DescSet),
-            (uint32_t)ShaderDebugBind::MathResult, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL,
-            &storageWriteInfo, NULL,
+            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            NULL,
+            realDescSet,
+            (uint32_t)ShaderDebugBind::MathResult,
+            0,
+            1,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            NULL,
+            &storageWriteInfo,
+            NULL,
         },
     };
 
@@ -1381,114 +1626,281 @@ public:
 
     ObjDisp(dev)->UpdateDescriptorSets(Unwrap(dev), 1, writeSets, 0, NULL);
 
+    VkMarkerRegion markerRegion("QueueCalculateMathOp");
+
+    ObjDisp(cmd)->CmdBindPipeline(Unwrap(cmd), VK_PIPELINE_BIND_POINT_COMPUTE,
+                                  Unwrap(m_DebugData.MathPipe[floatSizeIdx]));
+
+    uint32_t constsOffset = 0;
+    ObjDisp(cmd)->CmdBindDescriptorSets(Unwrap(cmd), VK_PIPELINE_BIND_POINT_COMPUTE,
+                                        Unwrap(m_DebugData.PipeLayout), 0, 1, &realDescSet, 1,
+                                        &constsOffset);
+
+    // push the parameters
+    for(size_t i = 0; i < params.size(); i++)
     {
-      VkCommandBuffer cmd = m_pDriver->GetNextCmd();
-
-      if(cmd == VK_NULL_HANDLE)
-        return false;
-
-      VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
-                                            VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-
-      VkResult vkr = ObjDisp(cmd)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
-      m_pDriver->CheckVkResult(vkr);
-
-      ObjDisp(cmd)->CmdBindPipeline(Unwrap(cmd), VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    Unwrap(m_DebugData.MathPipe[floatSizeIdx]));
-
-      ObjDisp(cmd)->CmdBindDescriptorSets(Unwrap(cmd), VK_PIPELINE_BIND_POINT_COMPUTE,
-                                          Unwrap(m_DebugData.PipeLayout), 0, 1,
-                                          UnwrapPtr(m_DebugData.DescSet), 0, NULL);
-
-      // push the parameters
-      for(size_t i = 0; i < params.size(); i++)
-      {
-        RDCASSERTEQUAL(params[i].type, params[0].type);
-        double p[4] = {};
-        memcpy(p, params[i].value.f32v.data(), VarTypeByteSize(params[i].type) * params[i].columns);
-        ObjDisp(cmd)->CmdPushConstants(Unwrap(cmd), Unwrap(m_DebugData.PipeLayout),
-                                       VK_SHADER_STAGE_ALL, uint32_t(sizeof(p) * i), sizeof(p), p);
-      }
-
-      // push the operation afterwards
+      RDCASSERTEQUAL(params[i].type, params[0].type);
+      double p[4] = {};
+      memcpy(p, params[i].value.f32v.data(), VarTypeByteSize(params[i].type) * params[i].columns);
       ObjDisp(cmd)->CmdPushConstants(Unwrap(cmd), Unwrap(m_DebugData.PipeLayout),
-                                     VK_SHADER_STAGE_ALL, sizeof(Vec4f) * 6, sizeof(uint32_t), &op);
-
-      ObjDisp(cmd)->CmdDispatch(Unwrap(cmd), 1, 1, 1);
-
-      VkBufferMemoryBarrier bufBarrier = {
-          VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-          NULL,
-          VK_ACCESS_SHADER_WRITE_BIT,
-          VK_ACCESS_TRANSFER_READ_BIT,
-          VK_QUEUE_FAMILY_IGNORED,
-          VK_QUEUE_FAMILY_IGNORED,
-          Unwrap(m_DebugData.MathResult.buf),
-          0,
-          VK_WHOLE_SIZE,
-      };
-
-      DoPipelineBarrier(cmd, 1, &bufBarrier);
-
-      VkBufferCopy bufCopy = {0, 0, 0};
-      bufCopy.size = sizeof(Vec4f) * 2;
-      ObjDisp(cmd)->CmdCopyBuffer(Unwrap(cmd), Unwrap(m_DebugData.MathResult.buf),
-                                  Unwrap(m_DebugData.ReadbackBuffer.buf), 1, &bufCopy);
-
-      bufBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-      bufBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-      bufBarrier.buffer = Unwrap(m_DebugData.ReadbackBuffer.buf);
-
-      // wait for copy to finish before reading back to host
-      DoPipelineBarrier(cmd, 1, &bufBarrier);
-
-      vkr = ObjDisp(cmd)->EndCommandBuffer(Unwrap(cmd));
-      m_pDriver->CheckVkResult(vkr);
-
-      m_pDriver->SubmitCmds();
-      m_pDriver->FlushQ();
+                                     VK_SHADER_STAGE_ALL, uint32_t(sizeof(p) * i), sizeof(p), p);
     }
 
-    byte *ret = (byte *)m_DebugData.ReadbackBuffer.Map(NULL, 0);
+    // push the operation afterwards
 
-    // these two operations change the type of the output
-    if(op == rdcspv::GLSLstd450::Length || op == rdcspv::GLSLstd450::Distance)
-      output.columns = 1;
+    if(glslop == rdcspv::GLSLstd450::Invalid)
+    {
+      RDCCOMPILE_ASSERT(rdcspv::GLSLstd450::Max < (rdcspv::GLSLstd450)1000,
+                        "GLSL std450 ops max is higher than expected");
+      glslop = (rdcspv::GLSLstd450)(1000 + (uint32_t)opcode);
+    }
 
-    memcpy(output.value.u32v.data(), ret, VarTypeByteSize(output.type) * output.columns);
+    ObjDisp(cmd)->CmdPushConstants(Unwrap(cmd), Unwrap(m_DebugData.PipeLayout), VK_SHADER_STAGE_ALL,
+                                   sizeof(Vec4f) * 6, sizeof(uint32_t), &glslop);
 
-    m_DebugData.ReadbackBuffer.Unmap();
+    ObjDisp(cmd)->CmdDispatch(Unwrap(cmd), 1, 1, 1);
 
+    VkBufferMemoryBarrier bufBarrier = {
+        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        NULL,
+        VK_ACCESS_SHADER_WRITE_BIT,
+        VK_ACCESS_TRANSFER_READ_BIT,
+        VK_QUEUE_FAMILY_IGNORED,
+        VK_QUEUE_FAMILY_IGNORED,
+        m_DebugData.MathResult.UnwrappedBuffer(),
+        0,
+        VK_WHOLE_SIZE,
+    };
+
+    DoPipelineBarrier(cmd, 1, &bufBarrier);
+
+    RDCASSERT(mathOpResultOffset + mathOpResultByteSize <= m_DebugData.ReadbackBuffer.TotalSize(),
+              mathOpResultOffset, mathOpResultByteSize, m_DebugData.ReadbackBuffer.TotalSize());
+    VkBufferCopy bufCopy = {0, mathOpResultOffset, mathOpResultByteSize};
+    mathOpResultOffset += mathOpResultByteSize;
+    ObjDisp(cmd)->CmdCopyBuffer(Unwrap(cmd), m_DebugData.MathResult.UnwrappedBuffer(),
+                                m_DebugData.ReadbackBuffer.UnwrappedBuffer(), 1, &bufCopy);
     return true;
   }
 
-  std::map<ShaderBuiltin, ShaderVariable> builtin_inputs;
-  rdcarray<ShaderVariable> location_inputs;
+  bool StartQueuedOps()
+  {
+    CHECK_DEVICE_THREAD();
 
-  std::map<ShaderBuiltin, DerivativeDeltas> builtin_derivatives;
-  rdcarray<DerivativeDeltas> location_derivatives;
+    RDCASSERTEQUAL(queueIndex, 0);
+    RDCASSERTEQUAL(queuedOpCmdBuffer, VK_NULL_HANDLE);
+    RDCASSERTEQUAL(mathOpResultOffset, 0);
+    RDCASSERTEQUAL(sampleGatherOpResultOffset, 0);
+
+    if(queuedOpCmdBuffer != VK_NULL_HANDLE)
+      return false;
+
+    queuedOpCmdBuffer = m_pDriver->GetNextCmd();
+    if(queuedOpCmdBuffer == VK_NULL_HANDLE)
+      return false;
+
+    VkCommandBuffer cmd = queuedOpCmdBuffer;
+    VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                          VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+
+    VkResult vkr = ObjDisp(cmd)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
+    CHECK_VKR(m_pDriver, vkr);
+
+    sampleGatherOpResultOffset = sampleGatherOpResultsStart;
+    return true;
+  }
+
+  virtual bool GetQueuedResults(rdcarray<ShaderVariable *> &mathOpResults,
+                                rdcarray<ShaderVariable *> &sampleGatherResults) override
+  {
+    CHECK_DEVICE_THREAD();
+    if(queuedOpCmdBuffer == VK_NULL_HANDLE)
+      return false;
+
+    VkBufferMemoryBarrier bufBarrier = {
+        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        NULL,
+        VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_HOST_READ_BIT,
+        VK_QUEUE_FAMILY_IGNORED,
+        VK_QUEUE_FAMILY_IGNORED,
+        m_DebugData.ReadbackBuffer.UnwrappedBuffer(),
+        0,
+        VK_WHOLE_SIZE,
+    };
+
+    VkCommandBuffer cmd = queuedOpCmdBuffer;
+    if(cmd == VK_NULL_HANDLE)
+      return false;
+
+    // wait for copy to finish before reading back to host
+    DoPipelineBarrier(cmd, 1, &bufBarrier);
+
+    VkResult vkr = ObjDisp(cmd)->EndCommandBuffer(Unwrap(cmd));
+    CHECK_VKR(m_pDriver, vkr);
+
+    m_pDriver->SubmitCmds();
+    m_pDriver->FlushQ();
+
+    queueIndex = 0;
+    queuedOpCmdBuffer = VK_NULL_HANDLE;
+    mathOpResultOffset = 0;
+    sampleGatherOpResultOffset = 0;
+
+    byte *gpuResults = (byte *)m_DebugData.ReadbackBuffer.Map(NULL, 0);
+    if(!gpuResults)
+      return false;
+
+    uintptr_t bufferEnd = (uintptr_t)(gpuResults + m_DebugData.ReadbackBuffer.TotalSize());
+
+    byte *gpuMathOpResults = gpuResults;
+    for(ShaderVariable *result : mathOpResults)
+    {
+      size_t countBytes = VarTypeByteSize(result->type) * result->columns;
+      RDCASSERT((uintptr_t)gpuMathOpResults + countBytes <= bufferEnd, (uintptr_t)gpuMathOpResults,
+                countBytes, bufferEnd);
+      RDCASSERT(countBytes <= mathOpResultByteSize, countBytes, mathOpResultByteSize);
+      memcpy(result->value.u32v.data(), gpuMathOpResults, countBytes);
+      gpuMathOpResults += mathOpResultByteSize;
+    }
+
+    byte *gpuSampleGatherOpResults = gpuResults + sampleGatherOpResultsStart;
+    for(ShaderVariable *result : sampleGatherResults)
+    {
+      float *retf = (float *)gpuSampleGatherOpResults;
+      uint32_t *retu = (uint32_t *)gpuSampleGatherOpResults;
+      int32_t *reti = (int32_t *)gpuSampleGatherOpResults;
+
+      size_t countBytes = 16;
+      RDCASSERT((uintptr_t)gpuSampleGatherOpResults + countBytes <= bufferEnd,
+                (uintptr_t)gpuSampleGatherOpResults, countBytes, bufferEnd);
+      RDCASSERT(countBytes <= sampleGatherOpResultByteSize, countBytes, sampleGatherOpResultByteSize);
+      // convert full precision results, we did all sampling at 32-bit precision
+      ShaderVariable &output = *result;
+      for(uint8_t c = 0; c < 4; c++)
+      {
+        if(VarTypeCompType(output.type) == CompType::Float)
+          setFloatComp(output, c, retf[c]);
+        else if(VarTypeCompType(output.type) == CompType::SInt)
+          setIntComp(output, c, reti[c]);
+        else
+          setUintComp(output, c, retu[c]);
+      }
+      gpuSampleGatherOpResults += sampleGatherOpResultByteSize;
+    }
+
+    m_DebugData.ReadbackBuffer.Unmap();
+    return true;
+  }
+
+  virtual bool QueuedOpsHasSpace() override { return queueIndex < ShaderDebugData::MAX_QUEUED_OPS; }
+
+  // Device thread only for mutable state
+  std::unordered_map<ShaderBuiltin, ShaderVariable> &GetGlobalBuiltins()
+  {
+    CHECK_DEVICE_THREAD();
+    if(inputVarsReadOnly)
+      RDCERR("Input variables can't be modified");
+    return global_builtins;
+  }
+
+  // Device thread only for mutable state
+  rdcarray<std::unordered_map<ShaderBuiltin, ShaderVariable>> &GetThreadBuiltins()
+  {
+    CHECK_DEVICE_THREAD();
+    if(inputVarsReadOnly)
+      RDCERR("Input variables can't be modified");
+    return thread_builtins;
+  }
+
+  // Device thread only for mutable state
+  rdcarray<rdcarray<ShaderVariable>> &GetLocationInputs()
+  {
+    CHECK_DEVICE_THREAD();
+    if(inputVarsReadOnly)
+      RDCERR("Input variables can't be modified");
+    return location_inputs;
+  }
+
+  // Device thread only for mutable state
+  void SetInputVarsToReadOnly()
+  {
+    CHECK_DEVICE_THREAD();
+    inputVarsReadOnly = true;
+  }
+
+  rdcarray<rdcfixedarray<uint32_t, arraydim<rdcspv::ThreadProperty>()>> thread_props;
+
+  uint64_t GetDeviceThreadID() const { return deviceThreadID; }
+  bool IsDeviceThread() const { return Threading::GetCurrentID() == GetDeviceThreadID(); }
 
 private:
   WrappedVulkan *m_pDriver = NULL;
   ShaderDebugData &m_DebugData;
-  VulkanCreationInfo &m_Creation;
+  const VulkanCreationInfo &m_Creation;
 
   bool m_ResourcesDirty = false;
   uint32_t m_EventID;
+  ResourceId m_ShaderID;
+
+  bool inputVarsReadOnly = false;
+  // global over all threads
+  std::unordered_map<ShaderBuiltin, ShaderVariable> global_builtins;
+  // per-thread builtins
+  rdcarray<std::unordered_map<ShaderBuiltin, ShaderVariable>> thread_builtins;
+  // per-thread custom inputs by location [thread][location]
+  rdcarray<rdcarray<ShaderVariable>> location_inputs;
+
+  rdcarray<DescriptorAccess> m_Access;
+  rdcarray<Descriptor> m_Descriptors;
+  rdcarray<SamplerDescriptor> m_SamplerDescriptors;
 
   std::map<ResourceId, VkImageView> m_SampleViews;
+  struct BufViewKey
+  {
+    ResourceId buf;
+    VkDeviceSize offs, size;
+    VkFormat format;
+    bool operator==(const BufViewKey &o) const
+    {
+      return buf == o.buf && offs == o.offs && size == o.size && format == o.format;
+    }
+    bool operator<(const BufViewKey &o) const
+    {
+      if(buf != o.buf)
+        return buf < o.buf;
+      if(offs != o.offs)
+        return offs < o.offs;
+      if(size != o.size)
+        return size < o.size;
+      if(format != o.format)
+        return format < o.format;
+      return false;
+    }
+  };
+  rdcflatmap<BufViewKey, VkBufferView> m_SampleBufViews;
 
   typedef rdcpair<ResourceId, float> SamplerBiasKey;
   std::map<SamplerBiasKey, VkSampler> m_BiasSamplers;
 
-  bytebuf pushData;
+  Threading::RWLock bufferCacheLock;
+  std::map<ShaderBindIndex, bytebuf> bufferCache;
 
-  std::map<BindpointIndex, bytebuf> bufferCache;
+  VkCommandBuffer queuedOpCmdBuffer = VK_NULL_HANDLE;
+  VkDeviceSize mathOpResultOffset = 0;
+  VkDeviceSize sampleGatherOpResultOffset = 0;
+  uint32_t queueIndex = 0;
+  const VkDeviceSize mathOpResultByteSize = sizeof(Vec4f) * 2;
+  const VkDeviceSize sampleGatherOpResultByteSize = sizeof(Vec4f);
+  const VkDeviceSize sampleGatherOpResultsStart =
+      ShaderDebugData::MAX_QUEUED_OPS * mathOpResultByteSize;
 
   struct ImageData
   {
     uint32_t width = 0, height = 0, depth = 0;
-    uint32_t texelSize = 0, rowPitch = 0, slicePitch = 0, samplePitch = 0;
+    uint32_t texelSize = 0;
+    uint64_t rowPitch = 0, slicePitch = 0, samplePitch = 0;
+    ResourceFormat fmt;
     bytebuf bytes;
 
     byte *texel(const uint32_t *coord, uint32_t sample)
@@ -1504,135 +1916,336 @@ private:
     }
   };
 
-  std::map<BindpointIndex, ImageData> imageCache;
+  Threading::RWLock imageCacheLock;
+  std::map<ShaderBindIndex, ImageData> imageCache;
 
-  template <typename T>
-  const T &GetDescriptor(const rdcstr &access, BindpointIndex index, bool &valid)
+  const Descriptor &GetDescriptor(const rdcstr &access, const ShaderBindIndex &index, bool &valid)
   {
-    static T dummy = {};
+    CHECK_DEVICE_THREAD();
+    static Descriptor dummy;
 
-    if(index == invalidBind)
+    if(index.category == DescriptorCategory::Unknown)
     {
       // invalid index, return a dummy data but don't mark as invalid
       return dummy;
     }
 
-    if(index.bindset < 0 || index.bindset >= m_DescSets.count())
-    {
-      m_pDriver->AddDebugMessage(
-          MessageCategory::Execution, MessageSeverity::High, MessageSource::RuntimeWarning,
-          StringFormat::Fmt(
-              "Out of bounds access to unbound descriptor set %u (binding %u) when %s",
-              index.bindset, index.bind, access.c_str()));
-      valid = false;
-      return dummy;
-    }
+    int32_t a = m_Access.indexOf(index);
 
-    const DescSetSnapshot &setData = m_DescSets[index.bindset];
-
-    if(index.bind < 0 || index.bind >= setData.bindings.count())
-    {
-      m_pDriver->AddDebugMessage(
-          MessageCategory::Execution, MessageSeverity::High, MessageSource::RuntimeWarning,
-          StringFormat::Fmt(
-              "Out of bounds access to non-existant descriptor set %u binding %u when %s",
-              index.bindset, index.bind, access.c_str()));
-      valid = false;
-      return dummy;
-    }
-
-    const DescSetBindingSnapshot &bindData = setData.bindings[index.bind];
-
-    const rdcarray<T> &elemData = bindData.get<T>();
-
-    if(elemData.empty())
-    {
-      m_pDriver->AddDebugMessage(
-          MessageCategory::Execution, MessageSeverity::High, MessageSource::RuntimeWarning,
-          StringFormat::Fmt("descriptor set %u binding %u is not bound, when %s", index.bindset,
-                            index.bind, access.c_str()));
-      valid = false;
-      return dummy;
-    }
-
-    if(index.arrayIndex >= elemData.size())
+    // this should not happen unless the debugging references an array element that we didn't
+    // detect dynamically. We could improve this by retrieving a more conservative access set
+    // internally so that all descriptors are 'accessed'
+    if(a < 0)
     {
       m_pDriver->AddDebugMessage(MessageCategory::Execution, MessageSeverity::High,
                                  MessageSource::RuntimeWarning,
-                                 StringFormat::Fmt("descriptor set %u binding %u has %zu "
-                                                   "descriptors, index %u is out of bounds when %s",
-                                                   index.bindset, index.bind, elemData.size(),
-                                                   index.arrayIndex, access.c_str()));
+                                 StringFormat::Fmt("Internal error: Binding %s %u[%u] did not "
+                                                   "exist in calculated descriptor access when %s.",
+                                                   ToStr(index.category).c_str(), index.index,
+                                                   index.arrayElement, access.c_str()));
       valid = false;
       return dummy;
     }
 
-    return elemData[index.arrayIndex];
+    return m_Descriptors[a];
   }
 
-  bytebuf &PopulateBuffer(BindpointIndex bind)
+  const SamplerDescriptor &GetSamplerDescriptor(const rdcstr &access, const ShaderBindIndex &index,
+                                                bool &valid)
   {
-    auto insertIt = bufferCache.insert(std::make_pair(bind, bytebuf()));
-    bytebuf &data = insertIt.first->second;
-    if(insertIt.second)
-    {
-      if(bind.bindset == PushConstantBindSet)
-      {
-        data = pushData;
-      }
-      else
-      {
-        bool valid = true;
-        const VkDescriptorBufferInfo &bufData =
-            GetDescriptor<VkDescriptorBufferInfo>("accessing buffer value", bind, valid);
-        if(valid)
-        {
-          // if the resources might be dirty from side-effects from the action, replay back to right
-          // before it.
-          if(m_ResourcesDirty)
-          {
-            VkMarkerRegion region("un-dirtying resources");
-            m_pDriver->ReplayLog(0, m_EventID, eReplay_WithoutDraw);
-            m_ResourcesDirty = false;
-          }
+    CHECK_DEVICE_THREAD();
+    static SamplerDescriptor dummy;
 
-          if(bufData.buffer != VK_NULL_HANDLE)
-          {
-            m_pDriver->GetDebugManager()->GetBufferData(GetResID(bufData.buffer), bufData.offset,
-                                                        bufData.range, data);
-          }
-        }
+    if(index.category == DescriptorCategory::Unknown)
+    {
+      // invalid index, return a dummy data but don't mark as invalid
+      return dummy;
+    }
+
+    int32_t a = m_Access.indexOf(index);
+
+    // this should not happen unless the debugging references an array element that we didn't
+    // detect dynamically. We could improve this by retrieving a more conservative access set
+    // internally so that all descriptors are 'accessed'
+    if(a < 0)
+    {
+      m_pDriver->AddDebugMessage(MessageCategory::Execution, MessageSeverity::High,
+                                 MessageSource::RuntimeWarning,
+                                 StringFormat::Fmt("Internal error: Binding %s %u[%u] did not "
+                                                   "exist in calculated descriptor access when %s.",
+                                                   ToStr(index.category).c_str(), index.index,
+                                                   index.arrayElement, access.c_str()));
+      valid = false;
+      return dummy;
+    }
+
+    return m_SamplerDescriptors[a];
+  }
+
+  // Called from any thread
+  ShaderBindIndex GenerateBufferBind(const uint64_t address, size_t &offs)
+  {
+    ResourceId id;
+    uint64_t ptrOffs;
+    m_pDriver->GetResIDFromAddr(address, id, ptrOffs);
+    offs = size_t(ptrOffs);
+
+    ShaderBindIndex bind;
+    bind.arrayElement = (address - offs) & 0xFFFFFFFFU;
+
+    return bind;
+  }
+
+  // Called from any thread
+  bool IsBufferCached(const ShaderBindIndex &bind) override
+  {
+    SCOPED_READLOCK(bufferCacheLock);
+    return bufferCache.find(bind) != bufferCache.end();
+  }
+
+  // Called from any thread
+  bool IsBufferCached(uint64_t address) override
+  {
+    size_t offs = 0;
+    ShaderBindIndex bind = GenerateBufferBind(address, offs);
+    return IsBufferCached(bind);
+  }
+
+  // Called from any thread
+  bytebuf *GetBufferDataFromCache(const ShaderBindIndex &bind, rdcspv::DeviceOpResult &opResult)
+  {
+    // Calling function responsible for acquiring bufferCache Read lock
+    auto findIt = bufferCache.find(bind);
+    if(findIt != bufferCache.end())
+    {
+      opResult = rdcspv::DeviceOpResult::Succeeded;
+      return &findIt->second;
+    }
+
+    opResult = rdcspv::DeviceOpResult::Failed;
+
+    // Not in the cache : populate must happen on the device thread
+    if(!IsDeviceThread())
+      opResult = rdcspv::DeviceOpResult::NeedsDevice;
+
+    return NULL;
+  }
+
+  // Called from any thread
+  bool BufferFunction(const ShaderBindIndex &bind, const std::function<void(bytebuf *data)> &func,
+                      rdcspv::DeviceOpResult &opResult)
+  {
+    bool isCached = false;
+    {
+      SCOPED_READLOCK(bufferCacheLock);
+      isCached = GetBufferDataFromCache(bind, opResult) != NULL;
+      if(opResult == rdcspv::DeviceOpResult::NeedsDevice)
+        return false;
+    }
+
+    if(!isCached)
+    {
+      // Add buffer data to the cache : cache should not be locked by this thread
+      PopulateBuffer(bind);
+    }
+
+    {
+      SCOPED_READLOCK(bufferCacheLock);
+      bytebuf *result = GetBufferDataFromCache(bind, opResult);
+      if(result)
+      {
+        // Guarantee the buffer cache readlock whilst the function is called
+        func(result);
+        return true;
+      }
+
+      RDCASSERTEQUAL(opResult, rdcspv::DeviceOpResult::Failed);
+      opResult = rdcspv::DeviceOpResult::Failed;
+      return false;
+    }
+  }
+
+  // Called from any thread
+  bool BufferFunction(uint64_t address, const std::function<void(bytebuf *data, size_t offset)> &func,
+                      rdcspv::DeviceOpResult &opResult)
+  {
+    size_t offs = 0;
+    ShaderBindIndex bind = GenerateBufferBind(address, offs);
+    bool isCached = false;
+    {
+      SCOPED_READLOCK(bufferCacheLock);
+      isCached = GetBufferDataFromCache(bind, opResult) != NULL;
+      if(opResult == rdcspv::DeviceOpResult::NeedsDevice)
+        return false;
+    }
+
+    if(!isCached)
+    {
+      // Add buffer data to the cache : cache should not be locked by this thread
+      PopulateBuffer(address, bind);
+    }
+
+    {
+      SCOPED_READLOCK(bufferCacheLock);
+      bytebuf *result = GetBufferDataFromCache(bind, opResult);
+      if(result)
+      {
+        // Guarantee the buffer cache readlock whilst the function is called
+        func(result, offs);
+        return true;
+      }
+
+      RDCASSERTEQUAL(opResult, rdcspv::DeviceOpResult::Failed);
+      opResult = rdcspv::DeviceOpResult::Failed;
+      return false;
+    }
+  }
+
+  // Must be called from the replay manager thread (the debugger thread)
+  void PopulateBuffer(uint64_t address, ShaderBindIndex bind)
+  {
+    CHECK_DEVICE_THREAD();
+    // pick a non-overlapping bind namespace for direct pointer access
+    ResourceId id;
+    uint64_t ptrOffs;
+
+    m_pDriver->GetResIDFromAddr(address, id, ptrOffs);
+    if(id == ResourceId())
+    {
+      ShaderBindIndex noBind;
+      CHECK_DEVICE_THREAD();
+      auto insertIt = bufferCache.insert(std::make_pair(noBind, bytebuf()));
+      m_pDriver->AddDebugMessage(MessageCategory::Execution, MessageSeverity::High,
+                                 MessageSource::RuntimeWarning,
+                                 StringFormat::Fmt("invalid or OOB pointer access detected ."));
+      return;
+    }
+
+    // if the resources might be dirty from side-effects from the action, replay back to right
+    // before it.
+    if(m_ResourcesDirty)
+    {
+      VkMarkerRegion region("un-dirtying resources");
+      m_pDriver->ReplayLog(0, m_EventID, eReplay_WithoutDraw);
+      m_ResourcesDirty = false;
+    }
+
+    bytebuf data;
+    m_pDriver->GetDebugManager()->GetBufferData(id, 0, 0, data);
+
+    {
+      // Insert atomically with all the data filled in : to prevent race conditions
+      SCOPED_WRITELOCK(bufferCacheLock);
+      auto insertIt = bufferCache.insert(std::make_pair(bind, data));
+      RDCASSERT(insertIt.second);
+    }
+  }
+
+  // Must be called from the replay manager thread (the debugger thread)
+  void PopulateBuffer(const ShaderBindIndex &bind)
+  {
+    CHECK_DEVICE_THREAD();
+    bytebuf data;
+
+    bool valid = true;
+    const Descriptor &bufData = GetDescriptor("accessing buffer value", bind, valid);
+    if(valid)
+    {
+      // if the resources might be dirty from side-effects from the action, replay back to right
+      // before it.
+      if(m_ResourcesDirty)
+      {
+        VkMarkerRegion region("un-dirtying resources");
+        m_pDriver->ReplayLog(0, m_EventID, eReplay_WithoutDraw);
+        m_ResourcesDirty = false;
+      }
+
+      if(bufData.resource != ResourceId())
+      {
+        m_pDriver->GetReplay()->GetBufferData(bufData.resource, bufData.byteOffset,
+                                              bufData.byteSize, data);
       }
     }
 
-    return data;
+    {
+      // Insert atomically with all the data filled in : to prevent race conditions
+      SCOPED_WRITELOCK(bufferCacheLock);
+      auto insertIt = bufferCache.insert(std::make_pair(bind, data));
+      RDCASSERT(insertIt.second);
+    }
   }
 
-  ImageData &PopulateImage(BindpointIndex bind)
+  // Must be called from the replay manager thread (the debugger thread)
+  void PopulateImage(const ShaderBindIndex &bind)
   {
-    auto insertIt = imageCache.insert(std::make_pair(bind, ImageData()));
-    ImageData &data = insertIt.first->second;
-    if(insertIt.second)
+    CHECK_DEVICE_THREAD();
+
+    ImageData data;
+    bool valid = true;
+    const Descriptor &imgData = GetDescriptor("performing image load/store", bind, valid);
+    if(valid)
     {
-      bool valid = true;
-      const VkDescriptorImageInfo &imgData =
-          GetDescriptor<VkDescriptorImageInfo>("performing image load/store", bind, valid);
-      if(valid)
+      // if the resources might be dirty from side-effects from the action, replay back to right
+      // before it.
+      if(m_ResourcesDirty)
       {
-        // if the resources might be dirty from side-effects from the action, replay back to right
-        // before it.
-        if(m_ResourcesDirty)
+        VkMarkerRegion region("un-dirtying resources");
+        m_pDriver->ReplayLog(0, m_EventID, eReplay_WithoutDraw);
+        m_ResourcesDirty = false;
+      }
+
+      if(imgData.type == DescriptorType::TypedBuffer ||
+         imgData.type == DescriptorType::ReadWriteTypedBuffer)
+      {
+        VkFormat format;
+        VkDeviceSize byteWidth;
+        VkDeviceSize offset;
+        ResourceId buffer;
+
+        if(imgData.view == ResourceId())
         {
-          VkMarkerRegion region("un-dirtying resources");
-          m_pDriver->ReplayLog(0, m_EventID, eReplay_WithoutDraw);
-          m_ResourcesDirty = false;
+          // descriptor buffer, no buffer view
+          buffer = imgData.resource;
+          offset = imgData.byteOffset;
+          format = MakeVkFormat(imgData.format);
+          byteWidth = imgData.byteSize;
+        }
+        else
+        {
+          const VulkanCreationInfo::BufferView &viewProps =
+              m_Creation.GetBufferViewInfo(imgData.view);
+          buffer = viewProps.buffer;
+          offset = viewProps.offset;
+          format = viewProps.format;
+          byteWidth = viewProps.size;
         }
 
-        if(imgData.imageView != VK_NULL_HANDLE)
+        VulkanCreationInfo::Buffer defaultBufferProps = {};
+        const VulkanCreationInfo::Buffer &bufferProps =
+            (buffer == ResourceId()) ? defaultBufferProps : m_Creation.GetBufferInfo(buffer);
+
+        // width in bytes, either from the view or from the remainder of the buffer
+        if(byteWidth == VK_WHOLE_SIZE)
+          byteWidth = bufferProps.size - offset;
+
+        data.fmt = MakeResourceFormat(format);
+        data.texelSize = (uint32_t)GetByteSize(1, 1, 1, format, 0);
+
+        // convert to a texel width, rounding down as per spec (only possible from VK_WHOLE_SIZE)
+        data.width = uint32_t(byteWidth / data.texelSize);
+        data.height = 1;
+        data.depth = 1;
+
+        data.samplePitch = data.slicePitch = data.rowPitch = data.width * data.texelSize;
+
+        m_pDriver->GetReplay()->GetBufferData(imgData.resource, offset, data.rowPitch, data.bytes);
+      }
+      else if(imgData.view != ResourceId())
+      {
+        const VulkanCreationInfo::ImageView &viewProps = m_Creation.GetImageViewInfo(imgData.view);
+        if(viewProps.image != ResourceId())
         {
-          const VulkanCreationInfo::ImageView &viewProps =
-              m_Creation.m_ImageView[GetResID(imgData.imageView)];
-          const VulkanCreationInfo::Image &imageProps = m_Creation.m_Image[viewProps.image];
+          const VulkanCreationInfo::Image &imageProps = m_Creation.GetImageInfo(viewProps.image);
 
           uint32_t mip = viewProps.range.baseMipLevel;
 
@@ -1649,15 +2262,18 @@ private:
               data.depth = imageProps.arrayLayers - viewProps.range.baseArrayLayer;
           }
 
-          data.texelSize = GetByteSize(1, 1, 1, imageProps.format, 0);
-          data.rowPitch = GetByteSize(data.width, 1, 1, imageProps.format, 0);
+          ResourceFormat fmt = MakeResourceFormat(imageProps.format);
+
+          data.fmt = MakeResourceFormat(imageProps.format);
+          data.texelSize = (uint32_t)GetByteSize(1, 1, 1, imageProps.format, 0);
+          data.rowPitch = (uint32_t)GetByteSize(data.width, 1, 1, imageProps.format, 0);
           data.slicePitch = GetByteSize(data.width, data.height, 1, imageProps.format, 0);
           data.samplePitch = GetByteSize(data.width, data.height, data.depth, imageProps.format, 0);
 
           const uint32_t numSlices = imageProps.type == VK_IMAGE_TYPE_3D ? 1 : data.depth;
           const uint32_t numSamples = (uint32_t)imageProps.samples;
 
-          data.bytes.reserve(data.samplePitch * numSamples);
+          data.bytes.reserve(size_t(data.samplePitch * numSamples));
 
           // defaults are fine - no interpretation. Maybe we could use the view's typecast?
           const GetTextureDataParams params = GetTextureDataParams();
@@ -1685,12 +2301,55 @@ private:
       }
     }
 
-    return data;
+    {
+      // Insert atomically with all the data filled in : to prevent race conditions
+      SCOPED_WRITELOCK(imageCacheLock);
+      auto insertIt = imageCache.insert(std::make_pair(bind, data));
+      RDCASSERT(insertIt.second);
+    }
   }
 
-  VkPipeline MakePipe(const ShaderConstParameters &params, uint32_t floatBitSize, bool uintTex,
-                      bool sintTex)
+  // Called from any thread
+  bool IsImageCached(const ShaderBindIndex &bind) override
   {
+    SCOPED_READLOCK(imageCacheLock);
+    return imageCache.find(bind) != imageCache.end();
+  }
+
+  // Called from any thread
+  ImageData *GetImageDataFromCache(const ShaderBindIndex &bind, rdcspv::DeviceOpResult &opResult)
+  {
+    // Calling function responsible for acquiring imageCache Read lock
+    auto findIt = imageCache.find(bind);
+    if(findIt != imageCache.end())
+    {
+      opResult = rdcspv::DeviceOpResult::Succeeded;
+      return &findIt->second;
+    }
+
+    opResult = rdcspv::DeviceOpResult::Failed;
+
+    // Not in the cache : populate must happen on the device thread
+    if(!IsDeviceThread())
+      opResult = rdcspv::DeviceOpResult::NeedsDevice;
+
+    return NULL;
+  }
+
+  static uint32_t SampleFormatIndex(bool uintTex, bool sintTex)
+  {
+    if(uintTex)
+      return ShaderDebugData::SampleFormat_UInt;
+    else if(sintTex)
+      return ShaderDebugData::SampleFormat_SInt;
+
+    return ShaderDebugData::SampleFormat_Float;
+  }
+
+  VkPipeline MakePipe(const ShaderConstParameters &params, uint32_t floatBitSize, bool depthTex,
+                      bool uintTex, bool sintTex)
+  {
+    CHECK_DEVICE_THREAD();
     VkSpecializationMapEntry specMaps[sizeof(params) / sizeof(uint32_t)];
     for(size_t i = 0; i < ARRAY_COUNT(specMaps); i++)
     {
@@ -1706,18 +2365,20 @@ private:
     specInfo.pMapEntries = specMaps;
 
     uint32_t shaderIndex = 0;
-    if(uintTex)
+    if(depthTex)
       shaderIndex = 1;
-    else if(sintTex)
+    if(uintTex)
       shaderIndex = 2;
+    else if(sintTex)
+      shaderIndex = 3;
 
     if(params.operation == (uint32_t)rdcspv::Op::ExtInst)
     {
-      shaderIndex = 3;
+      shaderIndex = 4;
       if(floatBitSize == 16)
-        shaderIndex = 4;
-      else if(floatBitSize == 64)
         shaderIndex = 5;
+      else if(floatBitSize == 64)
+        shaderIndex = 6;
     }
 
     if(m_DebugData.Module[shaderIndex] == VK_NULL_HANDLE)
@@ -1732,7 +2393,7 @@ private:
       {
         RDCASSERTMSG("Assume sampling happens with 32-bit float inputs", floatBitSize == 32,
                      floatBitSize);
-        GenerateSamplingShaderModule(spirv, uintTex, sintTex);
+        GenerateSamplingShaderModule(spirv, depthTex, uintTex, sintTex);
       }
 
       VkShaderModuleCreateInfo moduleCreateInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -1741,11 +2402,12 @@ private:
 
       VkResult vkr = m_pDriver->vkCreateShaderModule(m_pDriver->GetDev(), &moduleCreateInfo, NULL,
                                                      &m_DebugData.Module[shaderIndex]);
-      m_pDriver->CheckVkResult(vkr);
+      CHECK_VKR(m_pDriver, vkr);
 
       const char *filename[] = {
-          "/debug_psgather_float.spv", "/debug_psgather_uint.spv", "/debug_psgather_sint.spv",
-          "/debug_psmath32.spv",       "/debug_psmath16.spv",      "/debug_psmath64.spv",
+          "/debug_psgather_float.spv", "/debug_psgather_depth.spv", "/debug_psgather_uint.spv",
+          "/debug_psgather_sint.spv",  "/debug_psmath32.spv",       "/debug_psmath16.spv",
+          "/debug_psmath64.spv",
       };
 
       if(!Vulkan_Debug_PSDebugDumpDirPath().empty())
@@ -1791,6 +2453,8 @@ private:
       return pipe;
     }
 
+    const uint32_t sampleFormat = SampleFormatIndex(uintTex, sintTex);
+
     const VkPipelineShaderStageCreateInfo shaderStages[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT,
          m_pDriver->GetShaderCache()->GetBuiltinModule(BuiltinShader::ShaderDebugSampleVS), "main",
@@ -1804,7 +2468,10 @@ private:
     };
 
     const VkPipelineMultisampleStateCreateInfo msaa = {
-        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, NULL, 0, VK_SAMPLE_COUNT_1_BIT,
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        NULL,
+        0,
+        VK_SAMPLE_COUNT_1_BIT,
     };
 
     const VkPipelineDepthStencilStateCreateInfo depthStencil = {
@@ -1869,7 +2536,7 @@ private:
         &colorBlend,
         &dynamicState,
         m_DebugData.PipeLayout,
-        m_DebugData.RenderPass,
+        m_DebugData.RenderPass[sampleFormat],
         0,                 // sub pass
         VK_NULL_HANDLE,    // base pipeline handle
         -1,                // base pipeline index
@@ -1892,6 +2559,7 @@ private:
 
   void GenerateMathShaderModule(rdcarray<uint32_t> &spirv, uint32_t floatBitSize)
   {
+    CHECK_DEVICE_THREAD();
     rdcspv::Editor editor(spirv);
 
     // create as SPIR-V 1.0 for best compatibility
@@ -1980,8 +2648,10 @@ private:
     func.add(rdcspv::OpLabel(editor.MakeId()));
 
     rdcspv::Id consts[] = {
-        editor.AddConstantImmediate<uint32_t>(0), editor.AddConstantImmediate<uint32_t>(1),
-        editor.AddConstantImmediate<uint32_t>(2), editor.AddConstantImmediate<uint32_t>(3),
+        editor.AddConstantImmediate<uint32_t>(0),
+        editor.AddConstantImmediate<uint32_t>(1),
+        editor.AddConstantImmediate<uint32_t>(2),
+        editor.AddConstantImmediate<uint32_t>(3),
     };
 
     rdcspv::Id zerof;
@@ -2013,7 +2683,7 @@ private:
     rdcspv::Id breakLabel = editor.MakeId();
     rdcspv::Id defaultLabel = editor.MakeId();
 
-    rdcarray<rdcspv::PairLiteralIntegerIdRef> targets;
+    rdcarray<rdcspv::SwitchPairU32LiteralId> targets;
 
     rdcspv::OperationList cases;
 
@@ -2118,8 +2788,24 @@ private:
       cases.add(rdcspv::OpBranch(breakLabel));
     }
 
+    // non-glsl opcodes
+    if(m_pDriver->PreciseFMAMask() & floatBitSize)
+    {
+      editor.AddCapability(rdcspv::Capability::FMAKHR);
+
+      uint32_t op = 1000 + (uint32_t)rdcspv::Op::FmaKHR;
+
+      rdcspv::Id label = editor.MakeId();
+      targets.push_back({(uint32_t)op, label});
+
+      cases.add(rdcspv::OpLabel(label));
+      rdcspv::Id result = cases.add(rdcspv::OpFmaKHR(vec4Type, editor.MakeId(), a, b, c));
+      cases.add(rdcspv::OpStore(outVar, result));
+      cases.add(rdcspv::OpBranch(breakLabel));
+    }
+
     func.add(rdcspv::OpSelectionMerge(breakLabel, rdcspv::SelectionControl::None));
-    func.add(rdcspv::OpSwitch(opParam, defaultLabel, targets));
+    func.add(rdcspv::OpSwitch32(opParam, defaultLabel, targets));
 
     func.append(cases);
 
@@ -2136,8 +2822,10 @@ private:
     editor.AddFunction(func);
   }
 
-  void GenerateSamplingShaderModule(rdcarray<uint32_t> &spirv, bool uintTex, bool sintTex)
+  void GenerateSamplingShaderModule(rdcarray<uint32_t> &spirv, bool depthTex, bool uintTex,
+                                    bool sintTex)
   {
+    CHECK_DEVICE_THREAD();
     // this could be done as a glsl shader, but glslang has some bugs compiling the specialisation
     // constants, so we generate it by hand - which isn't too hard
 
@@ -2248,9 +2936,9 @@ private:
     DECL_UNIFORM(float, dudy, ddy[0]);
     DECL_UNIFORM(float, dvdy, ddy[1]);
     DECL_UNIFORM(float, dwdy, ddy[2]);
-    DECL_UNIFORM(int32_t, offset_x, offset.x);
-    DECL_UNIFORM(int32_t, offset_y, offset.y);
-    DECL_UNIFORM(int32_t, offset_z, offset.z);
+    DECL_UNIFORM(int32_t, dynoffset_u, offset.x);
+    DECL_UNIFORM(int32_t, dynoffset_v, offset.y);
+    DECL_UNIFORM(int32_t, dynoffset_w, offset.z);
     DECL_UNIFORM(int32_t, sampleIdx, sampleIdx);
     DECL_UNIFORM(float, compare, compare);
     DECL_UNIFORM(float, lod, lod);
@@ -2265,6 +2953,15 @@ private:
           rdcspv::DecorationParam<rdcspv::Decoration::Offset>(m.memberIndex * sizeof(uint32_t))));
       editor.SetMemberName(cbufferStructID, m.memberIndex, m.name);
     }
+
+    rdcspv::Id constoffset_u = gather_u0;
+    rdcspv::Id constoffset_uv = editor.AddConstant(
+        rdcspv::OpSpecConstantComposite(v2i32, editor.MakeId(), {gather_u0, gather_v0}));
+    rdcspv::Id constoffset_uvw = editor.AddConstant(
+        rdcspv::OpSpecConstantComposite(v3i32, editor.MakeId(), {gather_u0, gather_v0, gather_u1}));
+    editor.SetName(constoffset_u, "constoffset_u");
+    editor.SetName(constoffset_uv, "constoffset_uv");
+    editor.SetName(constoffset_uvw, "constoffset_uvw");
 
     rdcspv::Id gather_0 = editor.AddConstant(
         rdcspv::OpSpecConstantComposite(v2i32, editor.MakeId(), {gather_u0, gather_v0}));
@@ -2322,6 +3019,14 @@ private:
     {
       rdcspv::StorageClass storageClass = rdcspv::StorageClass::UniformConstant;
 
+      if(depthTex)
+      {
+        if(i == (size_t)ShaderDebugBind::Tex3D && !m_pDriver->GetReplay()->Depth3DSupported())
+          continue;
+        else if(i == (size_t)ShaderDebugBind::TexCube && !m_pDriver->GetReplay()->DepthCubeSupported())
+          continue;
+      }
+
       if(i == (size_t)ShaderDebugBind::Constants)
         storageClass = rdcspv::StorageClass::Uniform;
 
@@ -2337,9 +3042,11 @@ private:
 
     editor.SetName(bindVars[(size_t)ShaderDebugBind::Tex1D], "Tex1D");
     editor.SetName(bindVars[(size_t)ShaderDebugBind::Tex2D], "Tex2D");
-    editor.SetName(bindVars[(size_t)ShaderDebugBind::Tex3D], "Tex3D");
+    if(bindVars[(size_t)ShaderDebugBind::Tex3D] != rdcspv::Id())
+      editor.SetName(bindVars[(size_t)ShaderDebugBind::Tex3D], "Tex3D");
     editor.SetName(bindVars[(size_t)ShaderDebugBind::Tex2DMS], "Tex2DMS");
-    editor.SetName(bindVars[(size_t)ShaderDebugBind::TexCube], "TexCube");
+    if(bindVars[(size_t)ShaderDebugBind::TexCube] != rdcspv::Id())
+      editor.SetName(bindVars[(size_t)ShaderDebugBind::TexCube], "TexCube");
     editor.SetName(bindVars[(size_t)ShaderDebugBind::Buffer], "Buffer");
     editor.SetName(bindVars[(size_t)ShaderDebugBind::Sampler], "Sampler");
     editor.SetName(bindVars[(size_t)ShaderDebugBind::Constants], "CBuffer");
@@ -2406,13 +3113,13 @@ private:
     editor.SetName(ddy_uv, "ddy_uv");
     editor.SetName(ddy_uvw, "ddy_uvw");
 
-    rdcspv::Id offset_xy =
-        func.add(rdcspv::OpCompositeConstruct(v2i32, editor.MakeId(), {offset_x, offset_y}));
-    rdcspv::Id offset_xyz = func.add(
-        rdcspv::OpCompositeConstruct(v3i32, editor.MakeId(), {offset_x, offset_y, offset_z}));
+    rdcspv::Id dynoffset_uv =
+        func.add(rdcspv::OpCompositeConstruct(v2i32, editor.MakeId(), {dynoffset_u, dynoffset_v}));
+    rdcspv::Id dynoffset_uvw = func.add(rdcspv::OpCompositeConstruct(
+        v3i32, editor.MakeId(), {dynoffset_u, dynoffset_v, dynoffset_w}));
 
-    editor.SetName(offset_xy, "offset_xy");
-    editor.SetName(offset_xyz, "offset_xyz");
+    editor.SetName(dynoffset_uv, "dynoffset_uv");
+    editor.SetName(dynoffset_uvw, "dynoffset_uvw");
 
     rdcspv::Id input_uvwa = func.add(rdcspv::OpLoad(v4f32, editor.MakeId(), input_uvwa_var));
     rdcspv::Id input_uvw =
@@ -2434,7 +3141,7 @@ private:
     switchVal = func.add(rdcspv::OpIAdd(u32, editor.MakeId(), switchVal, dim));
 
     // switch on the combined operation and image type value
-    rdcarray<rdcspv::PairLiteralIntegerIdRef> targets;
+    rdcarray<rdcspv::SwitchPairU32LiteralId> targets;
 
     rdcspv::OperationList cases;
 
@@ -2469,14 +3176,24 @@ private:
         u,                         // Buffer - u
     };
 
-    rdcspv::Id offsets[(uint32_t)ShaderDebugBind::Count] = {
+    rdcspv::Id constoffset[(uint32_t)ShaderDebugBind::Count] = {
         rdcspv::Id(),
-        offset_x,        // 1D - u
-        offset_xy,       // 2D - u,v
-        offset_xyz,      // 3D - u,v,w
-        offset_xy,       // 2DMS - u,v
-        rdcspv::Id(),    // Cube - not valid
-        offset_x,        // Buffer - u
+        constoffset_u,      // 1D - u
+        constoffset_uv,     // 2D - u,v
+        constoffset_uvw,    // 3D - u,v,w
+        constoffset_uv,     // 2DMS - u,v
+        rdcspv::Id(),       // Cube - not valid
+        constoffset_u,      // Buffer - u
+    };
+
+    rdcspv::Id dynoffset[(uint32_t)ShaderDebugBind::Count] = {
+        rdcspv::Id(),
+        dynoffset_u,      // 1D - u
+        dynoffset_uv,     // 2D - u,v
+        dynoffset_uvw,    // 3D - u,v,w
+        dynoffset_uv,     // 2DMS - u,v
+        rdcspv::Id(),     // Cube - not valid
+        dynoffset_u,      // Buffer - u
     };
 
     rdcspv::Id ddxs[(uint32_t)ShaderDebugBind::Count] = {
@@ -2508,6 +3225,18 @@ private:
       if(i == sampIdx || i == (uint32_t)ShaderDebugBind::Constants)
         continue;
 
+      if(bindVars[i] == rdcspv::Id())
+        continue;
+
+      rdcspv::ImageOperandsAndParamDatas imageOperandsWithOffsets;
+
+      // most operations support offsets, set the operands commonly here.
+      // with the shaderImageGatherExtended feature, gather opcodes will always get their operands
+      // via uniforms to cut down on pipeline specialisations a little, but all other cases the
+      // offsets must be constant.
+      if(constoffset[i] != rdcspv::Id())
+        imageOperandsWithOffsets.setConstOffset(constoffset[i]);
+
       // can't fetch from cubemaps
       if(i != (uint32_t)ShaderDebugBind::TexCube)
       {
@@ -2516,18 +3245,18 @@ private:
         rdcspv::Id label = editor.MakeId();
         targets.push_back({(uint32_t)op * 10 + i, label});
 
-        rdcspv::ImageOperandsAndParamDatas imageOperands;
+        rdcspv::ImageOperandsAndParamDatas operands = imageOperandsWithOffsets;
 
         if(i != (uint32_t)ShaderDebugBind::Buffer && i != (uint32_t)ShaderDebugBind::Tex2DMS)
-          imageOperands.setLod(texel_lod);
+          operands.setLod(texel_lod);
 
         if(i == (uint32_t)ShaderDebugBind::Tex2DMS)
-          imageOperands.setSample(sampleIdx);
+          operands.setSample(sampleIdx);
 
         cases.add(rdcspv::OpLabel(label));
         rdcspv::Id loaded = cases.add(rdcspv::OpLoad(texSampTypes[i], editor.MakeId(), bindVars[i]));
-        rdcspv::Id sampleResult = cases.add(rdcspv::OpImageFetch(
-            resultType, editor.MakeId(), loaded, texel_coord[i], imageOperands));
+        rdcspv::Id sampleResult = cases.add(
+            rdcspv::OpImageFetch(resultType, editor.MakeId(), loaded, texel_coord[i], operands));
         cases.add(rdcspv::OpStore(outVar, sampleResult));
         cases.add(rdcspv::OpBranch(breakLabel));
       }
@@ -2571,8 +3300,6 @@ private:
         rdcspv::Id label = editor.MakeId();
         targets.push_back({(uint32_t)op * 10 + i, label});
 
-        rdcspv::ImageOperandsAndParamDatas imageOperands;
-
         cases.add(rdcspv::OpLabel(label));
         rdcspv::Id loadedImage =
             cases.add(rdcspv::OpLoad(texSampTypes[i], editor.MakeId(), bindVars[i]));
@@ -2588,7 +3315,7 @@ private:
         rdcspv::Id lodResult;
         {
           cases.add(rdcspv::OpLabel(lodCase));
-          rdcspv::ImageOperandsAndParamDatas operands = imageOperands;
+          rdcspv::ImageOperandsAndParamDatas operands = imageOperandsWithOffsets;
           operands.setLod(lod);
           rdcspv::Id combined = cases.add(rdcspv::OpSampledImage(
               texSampCombinedTypes[i], editor.MakeId(), loadedImage, loadedSampler));
@@ -2602,7 +3329,7 @@ private:
         rdcspv::Id gradResult;
         {
           cases.add(rdcspv::OpLabel(gradCase));
-          rdcspv::ImageOperandsAndParamDatas operands = imageOperands;
+          rdcspv::ImageOperandsAndParamDatas operands = imageOperandsWithOffsets;
           operands.setGrad(ddxs[i], ddys[i]);
           if(m_pDriver->GetDeviceEnabledFeatures().shaderResourceMinLod)
             operands.setMinLod(minlod);
@@ -2622,22 +3349,27 @@ private:
         cases.add(rdcspv::OpBranch(breakLabel));
       }
 
-      bool emitDRef = true;
-
       // on Qualcomm we only emit Dref instructions against 2D textures, otherwise the compiler may
       // crash.
       if(m_pDriver->GetDriverInfo().QualcommDrefNon2DCompileCrash())
-        emitDRef = (i == (uint32_t)ShaderDebugBind::Tex2D);
+        depthTex &= (i == (uint32_t)ShaderDebugBind::Tex2D);
 
-      if(emitDRef)
+      // VUID-StandaloneSpirv-OpImage-04777
+      // OpImage*Dref must not consume an image whose Dim is 3D
+      if(i == (uint32_t)ShaderDebugBind::Tex3D)
+        depthTex = false;
+
+      // don't emit dref's for uint/sint textures
+      if(uintTex || sintTex)
+        depthTex = false;
+
+      if(depthTex)
       {
         for(rdcspv::Op op :
             {rdcspv::Op::ImageSampleDrefExplicitLod, rdcspv::Op::ImageSampleDrefImplicitLod})
         {
           rdcspv::Id label = editor.MakeId();
           targets.push_back({(uint32_t)op * 10 + i, label});
-
-          rdcspv::ImageOperandsAndParamDatas imageOperands;
 
           cases.add(rdcspv::OpLabel(label));
           rdcspv::Id loadedImage =
@@ -2654,7 +3386,7 @@ private:
           rdcspv::Id lodResult;
           {
             cases.add(rdcspv::OpLabel(lodCase));
-            rdcspv::ImageOperandsAndParamDatas operands = imageOperands;
+            rdcspv::ImageOperandsAndParamDatas operands = imageOperandsWithOffsets;
             operands.setLod(lod);
             rdcspv::Id combined = cases.add(rdcspv::OpSampledImage(
                 texSampCombinedTypes[i], editor.MakeId(), loadedImage, loadedSampler));
@@ -2668,7 +3400,7 @@ private:
           rdcspv::Id gradResult;
           {
             cases.add(rdcspv::OpLabel(gradCase));
-            rdcspv::ImageOperandsAndParamDatas operands = imageOperands;
+            rdcspv::ImageOperandsAndParamDatas operands = imageOperandsWithOffsets;
             operands.setGrad(ddxs[i], ddys[i]);
             if(m_pDriver->GetDeviceEnabledFeatures().shaderResourceMinLod)
               operands.setMinLod(minlod);
@@ -2697,10 +3429,11 @@ private:
 
       for(rdcspv::Op op : {rdcspv::Op::ImageGather, rdcspv::Op::ImageDrefGather})
       {
+        if(op == rdcspv::Op::ImageDrefGather && !depthTex)
+          continue;
+
         rdcspv::Id label = editor.MakeId();
         targets.push_back({(uint32_t)op * 10 + i, label});
-
-        rdcspv::ImageOperandsAndParamDatas imageOperands;
 
         cases.add(rdcspv::OpLabel(label));
         rdcspv::Id loadedImage =
@@ -2720,21 +3453,21 @@ private:
           rdcspv::Id baseResult;
           {
             cases.add(rdcspv::OpLabel(baseCase));
-            rdcspv::ImageOperandsAndParamDatas operands = imageOperands;
 
-            if(m_pDriver->GetDeviceEnabledFeatures().shaderImageGatherExtended &&
-               offsets[i] != rdcspv::Id())
-              imageOperands.setOffset(offsets[i]);
+            rdcspv::ImageOperandsAndParamDatas operands;
+
+            if(dynoffset[i] != rdcspv::Id())
+              operands.setOffset(dynoffset[i]);
 
             rdcspv::Id combined = cases.add(rdcspv::OpSampledImage(
                 texSampCombinedTypes[i], editor.MakeId(), loadedImage, loadedSampler));
 
             if(op == rdcspv::Op::ImageGather)
               baseResult = cases.add(rdcspv::OpImageGather(resultType, editor.MakeId(), combined,
-                                                           coord[i], gatherChannel, imageOperands));
+                                                           coord[i], gatherChannel, operands));
             else
               baseResult = cases.add(rdcspv::OpImageDrefGather(
-                  resultType, editor.MakeId(), combined, coord[i], compare, imageOperands));
+                  resultType, editor.MakeId(), combined, coord[i], compare, operands));
 
             cases.add(rdcspv::OpBranch(mergeLabel));
           }
@@ -2742,23 +3475,24 @@ private:
           rdcspv::Id constsResult;
           {
             cases.add(rdcspv::OpLabel(constsCase));
-            rdcspv::ImageOperandsAndParamDatas operands = imageOperands;
+            rdcspv::ImageOperandsAndParamDatas operands;    // don't use the offsets above
 
             // if this feature isn't available, this path will never be exercised (since we only
             // come in here when the actual shader used const offsets) so it's fine to drop it in
             // that case to ensure the module is still legal.
-            if(m_pDriver->GetDeviceEnabledFeatures().shaderImageGatherExtended)
+            if(m_pDriver->GetDeviceEnabledFeatures().shaderImageGatherExtended &&
+               i != (uint32_t)ShaderDebugBind::TexCube)
               operands.setConstOffsets(gatherOffsets);
 
             rdcspv::Id combined = cases.add(rdcspv::OpSampledImage(
                 texSampCombinedTypes[i], editor.MakeId(), loadedImage, loadedSampler));
 
             if(op == rdcspv::Op::ImageGather)
-              constsResult = cases.add(rdcspv::OpImageGather(
-                  resultType, editor.MakeId(), combined, coord[i], gatherChannel, imageOperands));
+              constsResult = cases.add(rdcspv::OpImageGather(resultType, editor.MakeId(), combined,
+                                                             coord[i], gatherChannel, operands));
             else
               constsResult = cases.add(rdcspv::OpImageDrefGather(
-                  resultType, editor.MakeId(), combined, coord[i], compare, imageOperands));
+                  resultType, editor.MakeId(), combined, coord[i], compare, operands));
 
             cases.add(rdcspv::OpBranch(mergeLabel));
           }
@@ -2769,19 +3503,17 @@ private:
         }
         else
         {
-          if(m_pDriver->GetDeviceEnabledFeatures().shaderImageGatherExtended &&
-             offsets[i] != rdcspv::Id())
-            imageOperands.setOffset(offsets[i]);
+          rdcspv::ImageOperandsAndParamDatas operands = imageOperandsWithOffsets;
 
           rdcspv::Id combined = cases.add(rdcspv::OpSampledImage(
               texSampCombinedTypes[i], editor.MakeId(), loadedImage, loadedSampler));
 
           if(op == rdcspv::Op::ImageGather)
             sampleResult = cases.add(rdcspv::OpImageGather(resultType, editor.MakeId(), combined,
-                                                           coord[i], gatherChannel, imageOperands));
+                                                           coord[i], gatherChannel, operands));
           else
             sampleResult = cases.add(rdcspv::OpImageDrefGather(
-                resultType, editor.MakeId(), combined, coord[i], compare, imageOperands));
+                resultType, editor.MakeId(), combined, coord[i], compare, operands));
         }
 
         cases.add(rdcspv::OpStore(outVar, sampleResult));
@@ -2790,7 +3522,7 @@ private:
     }
 
     func.add(rdcspv::OpSelectionMerge(breakLabel, rdcspv::SelectionControl::None));
-    func.add(rdcspv::OpSwitch(switchVal, defaultLabel, targets));
+    func.add(rdcspv::OpSwitch32(switchVal, defaultLabel, targets));
 
     func.append(cases);
 
@@ -2806,324 +3538,770 @@ private:
 
     editor.AddFunction(func);
   }
-};
 
-enum StorageMode
-{
-  Binding,
-  EXT_bda,
-  KHR_bda,
+  const uint64_t deviceThreadID;
 };
 
 enum class InputSpecConstant
 {
   Address = 0,
+  AddressMSB,
   ArrayLength,
   DestX,
   DestY,
-  AddressMSB,
+  DestThreadIDX,
+  DestThreadIDY,
+  DestThreadIDZ,
+  DestInstance,
+  DestVertex,
+  DestView,
   Count,
 };
 
-static const uint32_t validMagicNumber = 12345;
-
-struct PSHit
+struct SpecData
 {
-  Vec4f pos;
-  uint32_t prim;
-  uint32_t sample;
-  uint32_t valid;
-  float ddxDerivCheck;
-  // PSInput base, ddx, ....
+  VkDeviceAddress bufferAddress;
+  uint32_t arrayLength;
+  uint32_t destVertex;
+  uint32_t destInstance;
+  uint32_t destView;
+  float destX;
+  float destY;
+  uint32_t globalThreadIdX;
+  uint32_t globalThreadIdY;
+  uint32_t globalThreadIdZ;
 };
 
-static void CreatePSInputFetcher(rdcarray<uint32_t> &fragspv, uint32_t &structStride,
-                                 VulkanCreationInfo::ShaderModuleReflection &shadRefl,
-                                 const uint32_t paramAlign, StorageMode storageMode,
-                                 bool usePrimitiveID, bool useSampleID)
+static const VkSpecializationMapEntry specMapsTemplate[] = {
+    {
+        (uint32_t)InputSpecConstant::Address,
+        offsetof(SpecData, bufferAddress),
+        // EXT_bda uses a 64-bit constant, as well as KHR_bda64
+        0,
+    },
+    {
+        (uint32_t)InputSpecConstant::ArrayLength,
+        offsetof(SpecData, arrayLength),
+        sizeof(SpecData::arrayLength),
+    },
+    {
+        (uint32_t)InputSpecConstant::DestX,
+        offsetof(SpecData, destX),
+        sizeof(SpecData::destX),
+    },
+    {
+        (uint32_t)InputSpecConstant::DestY,
+        offsetof(SpecData, destY),
+        sizeof(SpecData::destY),
+    },
+    {
+        (uint32_t)InputSpecConstant::DestThreadIDX,
+        offsetof(SpecData, globalThreadIdX),
+        sizeof(SpecData::globalThreadIdX),
+    },
+    {
+        (uint32_t)InputSpecConstant::DestThreadIDY,
+        offsetof(SpecData, globalThreadIdY),
+        sizeof(SpecData::globalThreadIdY),
+    },
+    {
+        (uint32_t)InputSpecConstant::DestThreadIDZ,
+        offsetof(SpecData, globalThreadIdZ),
+        sizeof(SpecData::globalThreadIdZ),
+    },
+    {
+        (uint32_t)InputSpecConstant::DestInstance,
+        offsetof(SpecData, destInstance),
+        sizeof(SpecData::destInstance),
+    },
+    {
+        (uint32_t)InputSpecConstant::DestVertex,
+        offsetof(SpecData, destVertex),
+        sizeof(SpecData::destVertex),
+    },
+    {
+        (uint32_t)InputSpecConstant::DestView,
+        offsetof(SpecData, destView),
+        sizeof(SpecData::destView),
+    },
+    {
+        (uint32_t)InputSpecConstant::AddressMSB,
+        offsetof(SpecData, bufferAddress) + 4,
+        sizeof(uint32_t),
+    },
+};
+
+RDCCOMPILE_ASSERT((size_t)InputSpecConstant::Count == ARRAY_COUNT(specMapsTemplate),
+                  "Spec constants changed");
+
+enum class SubgroupCapability : uint32_t
 {
-  rdcspv::Editor editor(fragspv);
+  None = 0,
+  EXTBallot,
+  Vulkan1_1_NoBallot,
+  Vulkan1_1,
+};
+
+static const uint32_t validMagicNumber = 12345;
+static const uint32_t NumReservedBindings = 1;
+
+// we use the message passing method from the quadoverdraw to swap data between quad neighbours
+// using fine derivatives. This is based on "Shader Amortization using Pixel Quad Message Passing",
+// Eric Penner, GPU Pro 2.
+//
+// broadly, if we take ddx_fine and either add or subtract it we can swap horizontal information,
+// and similarly vertical for ddy_fine. To swap across the diagonal we perform one fine derivative
+// swap, and then use the other fine derivative on the result of that swap.
+//
+// +---+---+
+// | 0 | 1 |
+// +---+---+
+// | 2 | 3 |
+// +---+---+
+//
+// fine derivatives are obtained by subtracting the right-most neighbour from left-most in each row,
+// and the bottom-most neighbour from top-most in each column.
+//
+// the pseudocode is as follows (following the quad overdraw closely) where X is the type of our value:
+//
+//
+// bool quadX = (quadLaneIndex & 1) != 0;
+// bool quadY = (quadLaneIndex & 2) != 0;
+//
+// bool readX = (readIndex & 1) != 0;
+// bool readY = (readIndex & 2) != 0;
+//
+// float sign_x = quadX ? -1 : 1;
+// float sign_y = quadY ? -1 : 1;
+//
+// X c1 = c0 + sign_x * ddx_fine(c0);
+// X c2 = c0 + sign_y * ddy_fine(c0);
+// X c3 = c2 + sign_x * ddx_fine(c2);
+//
+// if(readIndex == quadLaneIndex) // identity, handle gracefully
+//   return c0;
+// else if(readY == quadY) // horizontal neighbour
+//   return c1;
+// else if(readX == quadX) // vertical neighbour
+//	return c2;
+// else
+//   return c3; // diagonal neighbour
+//
+
+static rdcspv::Id AddQuadSwizzleHelper(rdcspv::Editor &editor, uint32_t count)
+{
+  rdcspv::Id func = editor.MakeId();
+
+  rdcspv::OperationList ops;
+
+  rdcspv::Id u32 = editor.DeclareType(rdcspv::scalar<uint32_t>());
+
+  rdcspv::Id type;
+  if(count == 1)
+    type = editor.DeclareType(rdcspv::scalar<float>());
+  else
+    type = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<float>(), count));
+
+  rdcspv::Id funcType = editor.DeclareType(rdcspv::FunctionType(type, {type, u32, u32}));
+
+  ops.add(rdcspv::OpFunction(type, func, rdcspv::FunctionControl::None, funcType));
+  rdcspv::Id c0 = ops.add(rdcspv::OpFunctionParameter(type, editor.MakeId()));
+  rdcspv::Id quadLaneIndex = ops.add(rdcspv::OpFunctionParameter(u32, editor.MakeId()));
+  rdcspv::Id readIndex = ops.add(rdcspv::OpFunctionParameter(u32, editor.MakeId()));
+  ops.add(rdcspv::OpLabel(editor.MakeId()));
+
+  editor.SetName(c0, "c0");
+  editor.SetName(quadLaneIndex, "quadLaneIndex");
+  editor.SetName(readIndex, "readIndex");
+
+  rdcspv::Id zero = editor.AddConstantImmediate<uint32_t>(0U);
+  rdcspv::Id one = editor.AddConstantImmediate<uint32_t>(1U);
+  rdcspv::Id two = editor.AddConstantImmediate<uint32_t>(2U);
+
+  rdcspv::Id posOne = editor.AddConstantImmediate<float>(1.0f);
+  rdcspv::Id negOne = editor.AddConstantImmediate<float>(-1.0f);
+
+  rdcspv::Id boolType = editor.DeclareType(rdcspv::scalar<bool>());
+
+  rdcspv::Id quadX = ops.add(rdcspv::OpBitwiseAnd(u32, editor.MakeId(), quadLaneIndex, one));
+  quadX = ops.add(rdcspv::OpINotEqual(boolType, editor.MakeId(), quadX, zero));
+  rdcspv::Id quadY = ops.add(rdcspv::OpBitwiseAnd(u32, editor.MakeId(), quadLaneIndex, two));
+  quadY = ops.add(rdcspv::OpINotEqual(boolType, editor.MakeId(), quadY, zero));
+
+  rdcspv::Id readX = ops.add(rdcspv::OpBitwiseAnd(u32, editor.MakeId(), readIndex, one));
+  readX = ops.add(rdcspv::OpINotEqual(boolType, editor.MakeId(), readX, zero));
+  rdcspv::Id readY = ops.add(rdcspv::OpBitwiseAnd(u32, editor.MakeId(), readIndex, two));
+  readY = ops.add(rdcspv::OpINotEqual(boolType, editor.MakeId(), readY, zero));
+
+  rdcspv::Id horizNeighbour =
+      ops.add(rdcspv::OpLogicalEqual(boolType, editor.MakeId(), readY, quadY));
+  rdcspv::Id vertNeighbour = ops.add(rdcspv::OpLogicalEqual(boolType, editor.MakeId(), readX, quadX));
+  rdcspv::Id isIdentity =
+      ops.add(rdcspv::OpIEqual(boolType, editor.MakeId(), quadLaneIndex, readIndex));
+
+  editor.SetName(quadX, "quadX");
+  editor.SetName(quadY, "quadY");
+  editor.SetName(readX, "readX");
+  editor.SetName(readY, "readY");
+
+  if(count >= 2)
+  {
+    rdcspv::Id floatNtype = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<float>(), count));
+    rdcspv::Id boolNtype = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<bool>(), count));
+
+    rdcarray<rdcspv::Id> bcast;
+
+    bcast.fill(count, posOne);
+    posOne = ops.add(rdcspv::OpCompositeConstruct(floatNtype, editor.MakeId(), bcast));
+    bcast.fill(count, negOne);
+    negOne = ops.add(rdcspv::OpCompositeConstruct(floatNtype, editor.MakeId(), bcast));
+
+    bcast.fill(count, quadX);
+    quadX = ops.add(rdcspv::OpCompositeConstruct(boolNtype, editor.MakeId(), bcast));
+    bcast.fill(count, quadY);
+    quadY = ops.add(rdcspv::OpCompositeConstruct(boolNtype, editor.MakeId(), bcast));
+  }
+
+  rdcspv::Id sign_x = ops.add(rdcspv::OpSelect(type, editor.MakeId(), quadX, negOne, posOne));
+  rdcspv::Id sign_y = ops.add(rdcspv::OpSelect(type, editor.MakeId(), quadY, negOne, posOne));
+  editor.SetName(sign_x, "sign_x");
+  editor.SetName(sign_y, "sign_y");
+
+  rdcspv::Id ddxFine = ops.add(rdcspv::OpDPdxFine(type, editor.MakeId(), c0));
+  rdcspv::Id ddyFine = ops.add(rdcspv::OpDPdyFine(type, editor.MakeId(), c0));
+
+  rdcspv::Id c1 = ops.add(rdcspv::OpFMul(type, editor.MakeId(), sign_x, ddxFine));
+  c1 = ops.add(rdcspv::OpFAdd(type, editor.MakeId(), c0, c1));
+  editor.SetName(c1, "c1");
+
+  rdcspv::Id c2 = ops.add(rdcspv::OpFMul(type, editor.MakeId(), sign_y, ddyFine));
+  c2 = ops.add(rdcspv::OpFAdd(type, editor.MakeId(), c0, c2));
+  editor.SetName(c2, "c2");
+
+  rdcspv::Id ddxC2 = ops.add(rdcspv::OpDPdxFine(type, editor.MakeId(), c2));
+
+  rdcspv::Id c3 = ops.add(rdcspv::OpFMul(type, editor.MakeId(), sign_x, ddxC2));
+  c3 = ops.add(rdcspv::OpFAdd(type, editor.MakeId(), c2, c3));
+  editor.SetName(c3, "c3");
+
+  rdcspv::Id trueBranch = editor.MakeId(), falseBranch = editor.MakeId(),
+             mergeBranch = editor.MakeId();
+
+  // we'll want to read lane 0 on all lanes for the quadId, so handle that specially
+  ops.add(rdcspv::OpSelectionMerge(mergeBranch, rdcspv::SelectionControl::None));
+  ops.add(rdcspv::OpBranchConditional(isIdentity, trueBranch, falseBranch));
+
+  ops.add(rdcspv::OpLabel(trueBranch));
+  ops.add(rdcspv::OpReturnValue(c0));
+  ops.add(rdcspv::OpLabel(falseBranch));
+  ops.add(rdcspv::OpBranch(mergeBranch));
+  ops.add(rdcspv::OpLabel(mergeBranch));
+
+  // expanded flow control. Impossible labels happen after returns on both branches
+  //
+  // if(isIdentity) {
+  //   ident;
+  // }
+  // notident;
+  //
+  // if(horizNeighbour) {
+  //   horiz;
+  // } else {
+  //   notHoriz;
+  //   if(vertNeighbour) { vert; } else { diagonal; }
+  //   impossible1;
+  // }
+  // impossible2;
+  rdcspv::Id horiz = editor.MakeId(), notHoriz = editor.MakeId(), vert = editor.MakeId(),
+             diagonal = editor.MakeId(), imposs1 = editor.MakeId(), imposs2 = editor.MakeId();
+
+  ops.add(rdcspv::OpSelectionMerge(imposs2, rdcspv::SelectionControl::None));
+  ops.add(rdcspv::OpBranchConditional(horizNeighbour, horiz, notHoriz));
+
+  ops.add(rdcspv::OpLabel(horiz));
+  ops.add(rdcspv::OpReturnValue(c1));
+  ops.add(rdcspv::OpLabel(notHoriz));
+
+  ops.add(rdcspv::OpSelectionMerge(imposs1, rdcspv::SelectionControl::None));
+  ops.add(rdcspv::OpBranchConditional(vertNeighbour, vert, diagonal));
+
+  ops.add(rdcspv::OpLabel(vert));
+  ops.add(rdcspv::OpReturnValue(c2));
+  ops.add(rdcspv::OpLabel(diagonal));
+  ops.add(rdcspv::OpReturnValue(c3));
+
+  ops.add(rdcspv::OpLabel(imposs1));
+  ops.add(rdcspv::OpUnreachable());
+  ops.add(rdcspv::OpLabel(imposs2));
+  ops.add(rdcspv::OpUnreachable());
+
+  ops.add(rdcspv::OpFunctionEnd());
+
+  editor.AddFunction(ops);
+  editor.SetName(func, "quadSwizzleHelper");
+
+  return func;
+}
+
+static void CreateInputFetcher(rdcarray<uint32_t> &spv, const rdcarray<SpecConstant> &userSpec,
+                               VulkanCreationInfo::ShaderModuleReflection &shadRefl,
+                               BufferStorageMode storageMode, bool usePrimitiveID, bool useSampleID,
+                               bool useViewIndex, SubgroupCapability subgroupCapability,
+                               uint32_t maxSubgroupSize)
+{
+  rdcspv::Editor editor(spv);
+
+  ShaderStage stage = ShaderStage(shadRefl.stageIndex);
+  rdcspv::ThreadScope threadScope = shadRefl.patchData.threadScope;
+
+  uint32_t paramAlign = 16;
+
+  for(const SigParameter &sig : shadRefl.refl->inputSignature)
+  {
+    if(VarTypeByteSize(sig.varType) * sig.compCount > paramAlign)
+      paramAlign = 32;
+  }
+
+  // conservatively calculate structure stride with full amount for every input element
+  uint32_t structStride = (uint32_t)shadRefl.refl->inputSignature.size() * paramAlign;
+
+  switch(stage)
+  {
+    case ShaderStage::Vertex: structStride += sizeof(rdcspv::VertexLaneData); break;
+    case ShaderStage::Pixel: structStride += sizeof(rdcspv::PixelLaneData); break;
+    case ShaderStage::Task:
+    case ShaderStage::Mesh:
+    case ShaderStage::Compute: structStride += sizeof(rdcspv::ComputeLaneData); break;
+    default: break;
+  }
+
+  if(threadScope & rdcspv::ThreadScope::Subgroup)
+  {
+    structStride += sizeof(rdcspv::SubgroupLaneData);
+  }
+
+  // simulating full subgroups with ballot ability to read other lanes, we read all lanes data
+  const bool fullSubgroups = (subgroupCapability == SubgroupCapability::EXTBallot ||
+                              subgroupCapability == SubgroupCapability::Vulkan1_1) &&
+                             (threadScope & rdcspv::ThreadScope::Subgroup);
+  // faking subgroups without reading a subgroup's worth of data but we still read lane index and elect value
+  const bool minimalSubgroups = subgroupCapability != SubgroupCapability::None &&
+                                (threadScope & rdcspv::ThreadScope::Subgroup);
 
   editor.Prepare();
+  editor.SetBufferStorageMode(storageMode);
 
-  rdcspv::Id entryID;
+  editor.FlattenSpecConstants(userSpec);
 
-  // first delete all functions. We will recreate the entry point with just what we need
+  // remove any OpSource
   {
-    rdcarray<rdcspv::Id> removedIds;
-
-    rdcspv::Iter it = editor.Begin(rdcspv::Section::Functions);
-    rdcspv::Iter end = editor.End(rdcspv::Section::Functions);
+    // remove any OpName that refers to deleted IDs - functions or results
+    rdcspv::Iter it = editor.Begin(rdcspv::Section::DebugStringSource);
+    rdcspv::Iter end = editor.End(rdcspv::Section::DebugStringSource);
     while(it < end)
     {
-      removedIds.push_back(rdcspv::OpDecoder(it).result);
-      editor.Remove(it);
-      it++;
-    }
-
-    it = editor.Begin(rdcspv::Section::EntryPoints);
-    end = editor.End(rdcspv::Section::EntryPoints);
-    while(it < end)
-    {
-      rdcspv::OpEntryPoint e(it);
-      if(e.name == shadRefl.entryPoint && e.executionModel == rdcspv::ExecutionModel::Fragment)
+      if(it.opcode() == rdcspv::Op::Source || it.opcode() == rdcspv::Op::SourceContinued)
       {
-        // remember the Id of our entry point
-        entryID = e.entryPoint;
-      }
-      else
-      {
-        // remove all other entry points
-        removedIds.push_back(e.entryPoint);
         editor.Remove(it);
       }
       it++;
     }
-
-    // remove any OpName that refers to deleted IDs - functions or results
-    it = editor.Begin(rdcspv::Section::DebugNames);
-    end = editor.End(rdcspv::Section::DebugNames);
-    while(it < end)
-    {
-      if(it.opcode() == rdcspv::Op::Name)
-      {
-        rdcspv::OpName name(it);
-
-        if(removedIds.contains(name.target))
-          editor.Remove(it);
-      }
-      it++;
-    }
-
-    // same for decorations
-    it = editor.Begin(rdcspv::Section::Annotations);
-    end = editor.End(rdcspv::Section::Annotations);
-    while(it < end)
-    {
-      if(it.opcode() == rdcspv::Op::Decorate)
-      {
-        rdcspv::OpDecorate dec(it);
-
-        if(removedIds.contains(dec.target))
-          editor.Remove(it);
-      }
-      else if(it.opcode() == rdcspv::Op::DecorateId)
-      {
-        rdcspv::OpDecorateId dec(it);
-
-        if(removedIds.contains(dec.target))
-          editor.Remove(it);
-      }
-      it++;
-    }
   }
+
+  editor.OffsetBindingsToMatchReservation(NumReservedBindings);
+
+  // the original entry ID we're patching
+  rdcspv::Id originalEntry = editor.FindEntryID({shadRefl.entryPoint, stage});
+  // the new wrapped entry function we'll add
+  rdcspv::Id entryID = editor.MakeId();
+
+  // repoint the entry declaration
+  editor.ChangeEntry(originalEntry, entryID);
 
   rdcspv::MemoryAccessAndParamDatas alignedAccess;
   alignedAccess.setAligned(sizeof(uint32_t));
 
+  rdcspv::MemoryAccessAndParamDatas aligned8Access;
+  alignedAccess.setAligned(sizeof(uint64_t));
+
   rdcspv::Id uint32Type = editor.DeclareType(rdcspv::scalar<uint32_t>());
+  rdcspv::Id sint32Type = editor.DeclareType(rdcspv::scalar<int32_t>());
   rdcspv::Id floatType = editor.DeclareType(rdcspv::scalar<float>());
   rdcspv::Id boolType = editor.DeclareType(rdcspv::scalar<bool>());
+  rdcspv::Id uint2Type = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<uint32_t>(), 2));
+  rdcspv::Id uint3Type = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<uint32_t>(), 3));
+  rdcspv::Id uint4Type = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<uint32_t>(), 4));
+  rdcspv::Id float4Type = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<float>(), 4));
+  rdcspv::Id float3Type = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<float>(), 3));
+  rdcspv::Id float2Type = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<float>(), 2));
+  rdcspv::Id bool4Type = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<bool>(), 4));
 
-  rdcarray<rdcspv::Id> uintConsts;
+  rdcarray<rdcspv::Id> newGlobals;
 
-  auto getUIntConst = [&uintConsts, &editor](uint32_t c) {
-    for(uint32_t i = (uint32_t)uintConsts.size(); i <= c; i++)
-      uintConsts.push_back(editor.AddConstantImmediate<uint32_t>(uint32_t(i)));
+  rdcspv::Id LaneDataStruct;
 
-    return uintConsts[c];
+  enum ResultBaseMember
+  {
+    ResultBase_pos,
+    ResultBase_prim,
+    ResultBase_sample,
+    ResultBase_view,
+    ResultBase_valid,
+    ResultBase_ddxDerivCheck,
+    ResultBase_quadLaneIndex,
+    ResultBase_laneIndex,
+    ResultBase_subgroupSize,
+    ResultBase_globalBallot,
+    ResultBase_electBallot,
+    ResultBase_helperBallot,
+    ResultBase_numSubgroups,
+    ResultBase_shadRate,
+    ResultBase_firstUser,
   };
 
-  rdcspv::StorageClass bufferClass;
-
-  if(storageMode == Binding)
-    bufferClass = editor.StorageBufferClass();
-  else
-    bufferClass = rdcspv::StorageClass::PhysicalStorageBuffer;
-
-  rdcarray<rdcspv::Id> addedInputs;
-
-  // builtin inputs we need
-  struct BuiltinAccess
+  struct laneValue
   {
-    rdcspv::Id base;
+    rdcstr name;
+    // index in the LaneData struct
+    size_t structIndex;
+    // type ID of the value (float4, uint, etc)
     rdcspv::Id type;
-    uint32_t member = ~0U;
-  } fragCoord, primitiveID, sampleIndex;
+    // direct loaded value per-lane
+    rdcspv::Id base;
 
-  // look to see which ones are already provided
-  for(size_t i = 0; i < shadRefl.refl->inputSignature.size(); i++)
-  {
-    const SigParameter &param = shadRefl.refl->inputSignature[i];
+    // for pixel shaders, the quad's worth of swizzled data to load helper info from, whether or not
+    // we have subgroups active
+    rdcarray<rdcspv::Id> quadSwizzledData;
 
-    BuiltinAccess *access = NULL;
+    // the loadOps to prepare the base value, done separately so we can push each fixed value into
+    // an array while creating the struct to all be processed agnostically, instead of separating adding
+    // them to the struct from loading them OR interleaving struct definition while preparing our function
+    rdcspv::OperationList loadOps;
 
-    if(param.systemValue == ShaderBuiltin::Position)
-    {
-      access = &fragCoord;
-    }
-    else if(param.systemValue == ShaderBuiltin::PrimitiveIndex)
-    {
-      access = &primitiveID;
-
-      access->type = VarTypeCompType(param.varType) == CompType::SInt
-                         ? editor.DeclareType(rdcspv::scalar<int32_t>())
-                         : editor.DeclareType(rdcspv::scalar<uint32_t>());
-    }
-    else if(param.systemValue == ShaderBuiltin::MSAASampleIndex)
-    {
-      access = &sampleIndex;
-
-      access->type = VarTypeCompType(param.varType) == CompType::SInt
-                         ? editor.DeclareType(rdcspv::scalar<int32_t>())
-                         : editor.DeclareType(rdcspv::scalar<uint32_t>());
-    }
-
-    if(access)
-    {
-      SPIRVInterfaceAccess &patch = shadRefl.patchData.inputs[i];
-      access->base = patch.ID;
-      // should only be one deep at most, built-in interface block isn't allowed to be nested
-      RDCASSERT(patch.accessChain.size() <= 1);
-      if(!patch.accessChain.empty())
-        access->member = patch.accessChain[0];
-    }
-  }
-
-  // now declare any variables we didn't already have
-  if(fragCoord.base == rdcspv::Id())
-  {
-    rdcspv::Id type = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<float>(), 4));
-    rdcspv::Id ptrType = editor.DeclareType(rdcspv::Pointer(type, rdcspv::StorageClass::Input));
-
-    fragCoord.base =
-        editor.AddVariable(rdcspv::OpVariable(ptrType, editor.MakeId(), rdcspv::StorageClass::Input));
-    fragCoord.type = type;
-
-    editor.AddDecoration(rdcspv::OpDecorate(
-        fragCoord.base,
-        rdcspv::DecorationParam<rdcspv::Decoration::BuiltIn>(rdcspv::BuiltIn::FragCoord)));
-
-    addedInputs.push_back(fragCoord.base);
-  }
-  if(primitiveID.base == rdcspv::Id() && usePrimitiveID)
-  {
-    rdcspv::Id type = editor.DeclareType(rdcspv::scalar<uint32_t>());
-    rdcspv::Id ptrType = editor.DeclareType(rdcspv::Pointer(type, rdcspv::StorageClass::Input));
-
-    primitiveID.base =
-        editor.AddVariable(rdcspv::OpVariable(ptrType, editor.MakeId(), rdcspv::StorageClass::Input));
-    primitiveID.type = type;
-
-    editor.AddDecoration(rdcspv::OpDecorate(
-        primitiveID.base,
-        rdcspv::DecorationParam<rdcspv::Decoration::BuiltIn>(rdcspv::BuiltIn::PrimitiveId)));
-    editor.AddDecoration(rdcspv::OpDecorate(primitiveID.base, rdcspv::Decoration::Flat));
-
-    addedInputs.push_back(primitiveID.base);
-
-    editor.AddCapability(rdcspv::Capability::Geometry);
-  }
-  if(sampleIndex.base == rdcspv::Id() && useSampleID)
-  {
-    rdcspv::Id type = editor.DeclareType(rdcspv::scalar<uint32_t>());
-    rdcspv::Id ptrType = editor.DeclareType(rdcspv::Pointer(type, rdcspv::StorageClass::Input));
-
-    sampleIndex.base =
-        editor.AddVariable(rdcspv::OpVariable(ptrType, editor.MakeId(), rdcspv::StorageClass::Input));
-    sampleIndex.type = type;
-
-    editor.AddDecoration(rdcspv::OpDecorate(
-        sampleIndex.base,
-        rdcspv::DecorationParam<rdcspv::Decoration::BuiltIn>(rdcspv::BuiltIn::SampleId)));
-    editor.AddDecoration(rdcspv::OpDecorate(sampleIndex.base, rdcspv::Decoration::Flat));
-
-    addedInputs.push_back(sampleIndex.base);
-
-    editor.AddCapability(rdcspv::Capability::SampleRateShading);
-  }
-
-  rdcspv::Id PSInput;
-
-  enum Variant
-  {
-    Variant_Base,
-    Variant_ddxcoarse,
-    Variant_ddycoarse,
-    Variant_ddxfine,
-    Variant_ddyfine,
-    Variant_Count,
+    bool flat = false;
   };
 
-  struct valueAndDerivs
-  {
-    rdcspv::Id valueType;
-    rdcspv::Id data[Variant_Count];
-    uint32_t structIndex;
-    rdcspv::OperationList storeOps;
-  };
+  rdcarray<laneValue> laneValues;
 
-  rdcarray<valueAndDerivs> values;
-  values.resize(shadRefl.refl->inputSignature.size());
+  rdcspv::Id subgroupScope = editor.AddConstantImmediate<uint32_t>((uint32_t)rdcspv::Scope::Subgroup);
+
+  rdcspv::Id isHelper, quadLaneIndex, quadId;
 
   {
-    rdcarray<rdcspv::Id> ids;
-    rdcarray<uint32_t> offsets;
-    rdcarray<uint32_t> indices;
+    rdcarray<rdcspv::StructMember> structMembers;
+    uint32_t offset = 0;
+
+    // declare fixed lane data first
+
+    if(threadScope & rdcspv::ThreadScope::Subgroup)
+    {
+      laneValue elect;
+      elect.name = "__rd_globalElect";
+      elect.structIndex = structMembers.size();
+      elect.type = uint32Type;
+      // don't store elect value for legacy KHR path
+      if(subgroupCapability == SubgroupCapability::Vulkan1_1 ||
+         subgroupCapability == SubgroupCapability::Vulkan1_1_NoBallot)
+      {
+        elect.base = elect.loadOps.add(
+            rdcspv::OpGroupNonUniformElect(boolType, editor.MakeId(), subgroupScope));
+        elect.base = elect.loadOps.add(rdcspv::OpSelect(uint32Type, editor.MakeId(), elect.base,
+                                                        editor.AddConstantImmediate<uint32_t>(1),
+                                                        editor.AddConstantImmediate<uint32_t>(0)));
+        editor.SetName(elect.base, elect.name);
+      }
+      else
+      {
+        elect.base = editor.AddConstantImmediate<uint32_t>(0);
+        elect.flat = true;
+      }
+      laneValues.push_back(elect);
+      structMembers.push_back(
+          {uint32Type, elect.name, offset + (uint32_t)offsetof(rdcspv::SubgroupLaneData, elect)});
+
+      // we implicitly only write data for active lanes so we just set isActive to 1 always
+      laneValue isActive;
+      isActive.name = "__rd_active";
+      isActive.structIndex = structMembers.size();
+      isActive.type = uint32Type;
+      isActive.base = editor.AddConstantImmediate<uint32_t>(1);
+      isActive.flat = true;
+      laneValues.push_back(isActive);
+      structMembers.push_back({uint32Type, isActive.name,
+                               offset + (uint32_t)offsetof(rdcspv::SubgroupLaneData, isActive)});
+
+      structMembers.push_back(
+          {uint32Type, "__pad", offset + (uint32_t)offsetof(rdcspv::SubgroupLaneData, padding)});
+      structMembers.push_back(
+          {uint32Type, "__pad",
+           uint32_t(offset + offsetof(rdcspv::SubgroupLaneData, padding) + sizeof(uint32_t))});
+
+      offset += sizeof(rdcspv::SubgroupLaneData);
+      RDCCOMPILE_ASSERT((sizeof(rdcspv::SubgroupLaneData) / sizeof(Vec4f)) * sizeof(Vec4f) ==
+                            sizeof(rdcspv::SubgroupLaneData),
+                        "SubgroupLaneData is misaligned, ensure 16-byte aligned");
+    }
+
+    if(stage == ShaderStage::Vertex)
+    {
+      laneValue inst;
+      inst.name = "__rd_inst";
+      inst.structIndex = structMembers.size();
+      inst.type = uint32Type;
+      inst.base = editor.AddBuiltinInputLoad(inst.loadOps, newGlobals, stage,
+                                             rdcspv::BuiltIn::InstanceIndex, uint32Type);
+      editor.SetName(inst.base, inst.name);
+      laneValues.push_back(inst);
+      structMembers.push_back(
+          {uint32Type, inst.name, offset + (uint32_t)offsetof(rdcspv::VertexLaneData, inst)});
+
+      laneValue vert;
+      vert.name = "__rd_vert";
+      vert.structIndex = structMembers.size();
+      vert.type = uint32Type;
+      vert.base = editor.AddBuiltinInputLoad(vert.loadOps, newGlobals, stage,
+                                             rdcspv::BuiltIn::VertexIndex, uint32Type);
+      editor.SetName(vert.base, vert.name);
+      laneValues.push_back(vert);
+      structMembers.push_back(
+          {uint32Type, vert.name, offset + (uint32_t)offsetof(rdcspv::VertexLaneData, vert)});
+
+      if(useViewIndex)
+      {
+        laneValue view;
+        view.name = "__rd_view";
+        view.structIndex = structMembers.size();
+        view.type = uint32Type;
+        view.base = editor.AddBuiltinInputLoad(view.loadOps, newGlobals, stage,
+                                               rdcspv::BuiltIn::ViewIndex, uint32Type);
+        editor.SetName(view.base, view.name);
+        laneValues.push_back(view);
+        structMembers.push_back(
+            {uint32Type, view.name, offset + (uint32_t)offsetof(rdcspv::VertexLaneData, view)});
+
+        structMembers.push_back(
+            {uint32Type, "__pad", offset + (uint32_t)offsetof(rdcspv::VertexLaneData, padding)});
+      }
+      else
+      {
+        structMembers.push_back(
+            {uint32Type, "__rd_view", offset + (uint32_t)offsetof(rdcspv::VertexLaneData, view)});
+        structMembers.push_back(
+            {uint32Type, "__pad", offset + (uint32_t)offsetof(rdcspv::VertexLaneData, padding)});
+      }
+
+      offset += sizeof(rdcspv::VertexLaneData);
+      RDCCOMPILE_ASSERT((sizeof(rdcspv::VertexLaneData) / sizeof(Vec4f)) * sizeof(Vec4f) ==
+                            sizeof(rdcspv::VertexLaneData),
+                        "VertexLaneData is misaligned, ensure 16-byte aligned");
+    }
+    else if(stage == ShaderStage::Pixel)
+    {
+      laneValue fragCoord;
+      fragCoord.name = "__rd_pixelPos";
+      fragCoord.structIndex = structMembers.size();
+      fragCoord.type = float4Type;
+      fragCoord.base = editor.AddBuiltinInputLoad(fragCoord.loadOps, newGlobals, stage,
+                                                  rdcspv::BuiltIn::FragCoord, float4Type);
+      editor.SetName(fragCoord.base, fragCoord.name);
+      laneValues.push_back(fragCoord);
+      structMembers.push_back({float4Type, fragCoord.name,
+                               offset + (uint32_t)offsetof(rdcspv::PixelLaneData, fragCoord)});
+
+      laneValue helper;
+      helper.name = "__rd_isHelper";
+      helper.structIndex = structMembers.size();
+      helper.type = uint32Type;
+      helper.base = editor.AddBuiltinInputLoad(helper.loadOps, newGlobals, stage,
+                                               rdcspv::BuiltIn::HelperInvocation, boolType);
+      helper.base = helper.loadOps.add(rdcspv::OpSelect(uint32Type, editor.MakeId(), helper.base,
+                                                        editor.AddConstantImmediate<uint32_t>(1),
+                                                        editor.AddConstantImmediate<uint32_t>(0)));
+      editor.SetName(helper.base, helper.name);
+      laneValues.push_back(helper);
+      structMembers.push_back(
+          {uint32Type, helper.name, offset + (uint32_t)offsetof(rdcspv::PixelLaneData, isHelper)});
+
+      laneValue quad;
+      quad.name = "__rd_quadId";
+      quad.structIndex = structMembers.size();
+      quad.type = uint32Type;
+      quad.flat = true;
+      // this will be handled specially similarly to helper
+      quad.base = editor.MakeId();
+      editor.SetName(quad.base, quad.name);
+      laneValues.push_back(quad);
+      structMembers.push_back(
+          {uint32Type, quad.name, offset + (uint32_t)offsetof(rdcspv::PixelLaneData, quadId)});
+
+      laneValue quadLane;
+      quadLane.name = "__rd_quadLane";
+      quadLane.structIndex = structMembers.size();
+      quadLane.type = uint32Type;
+      quadLane.base = editor.MakeId();
+      editor.SetName(quadLane.base, quadLane.name);
+      laneValues.push_back(quadLane);
+      structMembers.push_back({uint32Type, quadLane.name,
+                               offset + (uint32_t)offsetof(rdcspv::PixelLaneData, quadLaneIndex)});
+
+      // quad properties will be handled specially
+      isHelper = helper.base;
+      quadId = quad.base;
+      quadLaneIndex = quadLane.base;
+
+      structMembers.push_back(
+          {uint32Type, "__pad", offset + (uint32_t)offsetof(rdcspv::PixelLaneData, padding)});
+
+      offset += sizeof(rdcspv::PixelLaneData);
+      RDCCOMPILE_ASSERT((sizeof(rdcspv::PixelLaneData) / sizeof(Vec4f)) * sizeof(Vec4f) ==
+                            sizeof(rdcspv::PixelLaneData),
+                        "PixelLaneData is misaligned, ensure 16-byte aligned");
+    }
+    else if(stage == ShaderStage::Compute || stage == ShaderStage::Task || stage == ShaderStage::Mesh)
+    {
+      laneValue threadid;
+      threadid.name = "__rd_threadid";
+      threadid.structIndex = structMembers.size();
+      threadid.type = uint3Type;
+      threadid.base = editor.AddBuiltinInputLoad(threadid.loadOps, newGlobals, stage,
+                                                 rdcspv::BuiltIn::LocalInvocationId, uint3Type);
+      editor.SetName(threadid.base, threadid.name);
+      laneValues.push_back(threadid);
+      structMembers.push_back({uint3Type, threadid.name,
+                               offset + (uint32_t)offsetof(rdcspv::ComputeLaneData, threadid)});
+
+      laneValue subid;
+      subid.name = "__rd_subgroupid";
+      subid.structIndex = structMembers.size();
+      subid.type = uint32Type;
+      subid.base = editor.AddBuiltinInputLoad(subid.loadOps, newGlobals, stage,
+                                              rdcspv::BuiltIn::SubgroupId, uint32Type);
+      editor.SetName(subid.base, subid.name);
+      laneValues.push_back(subid);
+      structMembers.push_back({uint32Type, subid.name,
+                               offset + (uint32_t)offsetof(rdcspv::ComputeLaneData, subIdxInGroup)});
+
+      offset += sizeof(rdcspv::ComputeLaneData);
+      RDCCOMPILE_ASSERT((sizeof(rdcspv::ComputeLaneData) / sizeof(Vec4f)) * sizeof(Vec4f) ==
+                            sizeof(rdcspv::ComputeLaneData),
+                        "ComputeLaneData is misaligned, ensure 16-byte aligned");
+    }
+
+    // now add input signature values
+
     for(size_t i = 0; i < shadRefl.refl->inputSignature.size(); i++)
     {
+      const SPIRVInterfaceAccess &access = shadRefl.patchData.inputs[i];
       const SigParameter &param = shadRefl.refl->inputSignature[i];
 
       rdcspv::Scalar base = rdcspv::scalar(param.varType);
 
-      values[i].structIndex = (uint32_t)offsets.size();
-
       uint32_t width = (base.width / 8);
+
+      rdcspv::Id loadType;
+
+      if(param.compCount == 1)
+        loadType = editor.DeclareType(base);
+      else
+        loadType = editor.DeclareType(rdcspv::Vector(base, param.compCount));
+
+      rdcspv::Id valueType;
 
       // treat bools as uints
       if(base.type == rdcspv::Op::TypeBool)
         width = 4;
 
-      offsets.push_back(structStride);
-      structStride += param.compCount * width;
+      // we immediately upconvert any sub-32-bit types
+      if(width < 4)
+      {
+        width = 4;
+        base.width = 32;
 
-      if(param.compCount == 1)
-        values[i].valueType = editor.DeclareType(base);
+        if(param.compCount == 1)
+          valueType = editor.DeclareType(base);
+        else
+          valueType = editor.DeclareType(rdcspv::Vector(base, param.compCount));
+      }
       else
-        values[i].valueType = editor.DeclareType(rdcspv::Vector(base, param.compCount));
+      {
+        valueType = loadType;
+      }
 
-      if(values[i].valueType == boolType)
-        ids.push_back(uint32Type);
+      rdcarray<rdcspv::Id> accessIndices;
+      for(uint32_t idx : access.accessChain)
+        accessIndices.push_back(editor.AddConstantImmediate<uint32_t>(idx));
+
+      rdcspv::Id inputPtrType =
+          editor.DeclareType(rdcspv::Pointer(loadType, rdcspv::StorageClass::Input));
+
+      laneValue value;
+      value.name = param.varName;
+      value.structIndex = structMembers.size();
+      value.type = valueType;
+
+      if(value.name.beginsWith("gl_"))
+        value.name = "__rd_" + value.name.substr(3);
+
+      // if we have no access chain it's a global pointer of the type we want, so just load
+      // straight out of it
+      rdcspv::Id ptr;
+      if(accessIndices.empty())
+        ptr = access.ID;
       else
-        ids.push_back(values[i].valueType);
+        ptr = value.loadOps.add(
+            rdcspv::OpAccessChain(inputPtrType, editor.MakeId(), access.ID, accessIndices));
+
+      value.base = value.loadOps.add(rdcspv::OpLoad(loadType, editor.MakeId(), ptr));
+      if(valueType == boolType)
+      {
+        valueType = uint32Type;
+        // can't store bools directly, need to convert to uint
+        value.base = value.loadOps.add(rdcspv::OpSelect(valueType, editor.MakeId(), value.base,
+                                                        editor.AddConstantImmediate<uint32_t>(1),
+                                                        editor.AddConstantImmediate<uint32_t>(0)));
+      }
+      if(valueType != loadType)
+      {
+        if(VarTypeCompType(param.varType) == CompType::Float)
+          value.base = value.loadOps.add(rdcspv::OpFConvert(valueType, editor.MakeId(), value.base));
+        else if(VarTypeCompType(param.varType) == CompType::SInt)
+          value.base = value.loadOps.add(rdcspv::OpSConvert(valueType, editor.MakeId(), value.base));
+        else if(VarTypeCompType(param.varType) == CompType::UInt)
+          value.base = value.loadOps.add(rdcspv::OpUConvert(valueType, editor.MakeId(), value.base));
+      }
+      editor.SetName(value.base, StringFormat::Fmt("__rd_base_%zu_%s", i, param.varName.c_str()));
+      // non-float inputs are considered flat
+      // doubles are also flat
+      value.flat =
+          VarTypeCompType(param.varType) != CompType::Float || param.varType == VarType::Double;
+
+      // mark this as non-flat so we still derive it for helper lanes as it will vary
+      if(param.systemValue == ShaderBuiltin::IndexInSubgroup ||
+         param.systemValue == ShaderBuiltin::PackedFragRate)
+        value.flat = false;
+
+      laneValues.push_back(value);
+
+      if(valueType == boolType)
+        structMembers.push_back({uint32Type, value.name, offset});
+      else
+        structMembers.push_back({valueType, value.name, offset});
+      offset += param.compCount * width;
 
       // align offset conservatively, to 16-byte aligned. We do this with explicit uints so we can
       // preview with spirv-cross (and because it doesn't cost anything particularly)
-      uint32_t paddingWords = ((16 - (structStride % 16)) / 4) % 4;
+      uint32_t paddingWords = ((paramAlign - (offset % paramAlign)) / 4) % (paramAlign / 4);
       for(uint32_t p = 0; p < paddingWords; p++)
       {
-        ids.push_back(uint32Type);
-        offsets.push_back(structStride);
-        structStride += 4;
+        structMembers.push_back({uint32Type, "__pad", offset});
+        offset += 4;
       }
     }
 
-    PSInput = editor.DeclareStructType(ids);
+    RDCASSERT(offset <= structStride);
 
-    for(size_t i = 0; i < offsets.size(); i++)
-    {
-      editor.AddDecoration(rdcspv::OpMemberDecorate(
-          PSInput, uint32_t(i), rdcspv::DecorationParam<rdcspv::Decoration::Offset>(offsets[i])));
-    }
-
-    for(size_t i = 0; i < values.size(); i++)
-      editor.SetMemberName(PSInput, values[i].structIndex, shadRefl.refl->inputSignature[i].varName);
-
-    editor.SetName(PSInput, "__rd_PSInput");
+    LaneDataStruct = editor.DeclareStructType("__rd_LaneData", structMembers);
   }
-
-  rdcspv::Id float4Type = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<float>(), 4));
-  rdcspv::Id float2Type = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<float>(), 2));
 
   rdcspv::Id arrayLength =
       editor.AddSpecConstantImmediate<uint32_t>(1U, (uint32_t)InputSpecConstant::ArrayLength);
@@ -3141,244 +4319,111 @@ static void CreatePSInputFetcher(rdcarray<uint32_t> &fragspv, uint32_t &structSt
 
   editor.SetName(destXY, "destXY");
 
-  rdcspv::Id PSHit = editor.DeclareStructType({
-      // float4 pos;
-      float4Type,
-      // uint prim;
-      uint32Type,
-      // uint sample;
-      uint32Type,
-      // uint valid;
-      uint32Type,
-      // float ddxDerivCheck;
-      floatType,
+  rdcspv::Id destThreadIDX =
+      editor.AddSpecConstantImmediate<uint32_t>(0, (uint32_t)InputSpecConstant::DestThreadIDX);
+  rdcspv::Id destThreadIDY =
+      editor.AddSpecConstantImmediate<uint32_t>(0, (uint32_t)InputSpecConstant::DestThreadIDY);
+  rdcspv::Id destThreadIDZ =
+      editor.AddSpecConstantImmediate<uint32_t>(0, (uint32_t)InputSpecConstant::DestThreadIDZ);
 
-      // IN
-      PSInput,
-      // INddxcoarse
-      PSInput,
-      // INddycoarse
-      PSInput,
-      // INddxfine
-      PSInput,
-      // INddxfine
-      PSInput,
-  });
+  editor.SetName(destThreadIDX, "destThreadIDX");
+  editor.SetName(destThreadIDY, "destThreadIDY");
+  editor.SetName(destThreadIDZ, "destThreadIDZ");
+
+  rdcspv::Id destThreadID = editor.AddConstant(rdcspv::OpSpecConstantComposite(
+      uint3Type, editor.MakeId(), {destThreadIDX, destThreadIDY, destThreadIDZ}));
+
+  editor.SetName(destThreadID, "destThreadID");
+
+  rdcspv::Id destInstance =
+      editor.AddSpecConstantImmediate<uint32_t>(0, (uint32_t)InputSpecConstant::DestInstance);
+  rdcspv::Id destVertex =
+      editor.AddSpecConstantImmediate<uint32_t>(0, (uint32_t)InputSpecConstant::DestVertex);
+  rdcspv::Id destView =
+      editor.AddSpecConstantImmediate<uint32_t>(0, (uint32_t)InputSpecConstant::DestView);
+
+  editor.SetName(destInstance, "destInstance");
+  editor.SetName(destVertex, "destVertex");
+  editor.SetName(destView, "destView");
+
+  rdcspv::Id ResultDataBaseType;
+
+  uint32_t numLanes = 1;
+
+  if(stage == ShaderStage::Pixel)
+    numLanes = 4;
+
+  if(threadScope & rdcspv::ThreadScope::Quad)
+    numLanes = 4;
+
+  // if we need full subgroup scope (and we have ballots to read the lanes) declare a subgroup's worth of data
+  if(fullSubgroups)
+    numLanes = RDCMAX(numLanes, maxSubgroupSize);
+
+  // note we don't need to care about workgroup access - that is only possible on compute and we fill
+  // in the rest of the workgroup without reading its inputs, since on compute the only subgroup data
+  // we need is size + layout and we assume we can figure out the layout with one subgroup's worth of data
 
   {
-    editor.SetName(PSHit, "__rd_PSHit");
+    rdcarray<rdcspv::StructMember> members;
 
-    uint32_t offs = 0, member = 0;
+    members.push_back({float4Type, "pos", offsetof(rdcspv::ResultDataBase, pos)});
+    members.push_back({uint32Type, "prim", offsetof(rdcspv::ResultDataBase, prim)});
+    members.push_back({uint32Type, "sample", offsetof(rdcspv::ResultDataBase, sample)});
+    members.push_back({uint32Type, "view", offsetof(rdcspv::ResultDataBase, view)});
+    members.push_back({uint32Type, "valid", offsetof(rdcspv::ResultDataBase, valid)});
+    members.push_back({floatType, "ddxDerivCheck", offsetof(rdcspv::ResultDataBase, ddxDerivCheck)});
+    members.push_back({uint32Type, "quadLaneIndex", offsetof(rdcspv::ResultDataBase, quadLaneIndex)});
+    members.push_back({uint32Type, "laneIndex", offsetof(rdcspv::ResultDataBase, laneIndex)});
+    members.push_back({uint32Type, "subgroupSize", offsetof(rdcspv::ResultDataBase, subgroupSize)});
+    members.push_back({uint4Type, "globalBallot", offsetof(rdcspv::ResultDataBase, globalBallot)});
+    members.push_back({uint4Type, "electBallot", offsetof(rdcspv::ResultDataBase, electBallot)});
+    members.push_back({uint4Type, "helperBallot", offsetof(rdcspv::ResultDataBase, helperBallot)});
+    members.push_back({uint32Type, "numSubgroups", offsetof(rdcspv::ResultDataBase, numSubgroups)});
+    members.push_back({uint32Type, "shadRate", offsetof(rdcspv::ResultDataBase, shadRate)});
 
-    editor.AddDecoration(rdcspv::OpMemberDecorate(
-        PSHit, member, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(offs)));
-    editor.SetMemberName(PSHit, member, "pos");
-    offs += sizeof(Vec4f);
-    member++;
+    // uint2 padding
 
-    editor.AddDecoration(rdcspv::OpMemberDecorate(
-        PSHit, member, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(offs)));
-    editor.SetMemberName(PSHit, member, "prim");
-    offs += sizeof(uint32_t);
-    member++;
+    const uint32_t dataStart = (uint32_t)AlignUp(sizeof(rdcspv::ResultDataBase), sizeof(Vec4f));
 
-    editor.AddDecoration(rdcspv::OpMemberDecorate(
-        PSHit, member, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(offs)));
-    editor.SetMemberName(PSHit, member, "sample");
-    offs += sizeof(uint32_t);
-    member++;
+    RDCASSERT((structStride % paramAlign) == 0);
 
-    editor.AddDecoration(rdcspv::OpMemberDecorate(
-        PSHit, member, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(offs)));
-    editor.SetMemberName(PSHit, member, "valid");
-    offs += sizeof(uint32_t);
-    member++;
+    rdcspv::Id LaneDataArray = editor.AddType(rdcspv::OpTypeArray(
+        editor.MakeId(), LaneDataStruct, editor.AddConstantImmediate<uint32_t>(numLanes)));
+    editor.AddDecoration(rdcspv::OpDecorate(
+        LaneDataArray, rdcspv::DecorationParam<rdcspv::Decoration::ArrayStride>(structStride)));
 
-    editor.AddDecoration(rdcspv::OpMemberDecorate(
-        PSHit, member, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(offs)));
-    editor.SetMemberName(PSHit, member, "ddxDerivCheck");
-    offs += sizeof(uint32_t);
-    member++;
+    members.push_back({LaneDataArray, "LaneData", dataStart});
 
-    RDCASSERT((offs % sizeof(Vec4f)) == 0);
-    RDCASSERT((structStride % sizeof(Vec4f)) == 0);
-
-    editor.AddDecoration(rdcspv::OpMemberDecorate(
-        PSHit, member, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(offs)));
-    editor.SetMemberName(PSHit, member, "IN");
-    offs += structStride;
-    member++;
-
-    editor.AddDecoration(rdcspv::OpMemberDecorate(
-        PSHit, member, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(offs)));
-    editor.SetMemberName(PSHit, member, "INddxcoarse");
-    offs += structStride;
-    member++;
-
-    editor.AddDecoration(rdcspv::OpMemberDecorate(
-        PSHit, member, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(offs)));
-    editor.SetMemberName(PSHit, member, "INddycoarse");
-    offs += structStride;
-    member++;
-
-    editor.AddDecoration(rdcspv::OpMemberDecorate(
-        PSHit, member, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(offs)));
-    editor.SetMemberName(PSHit, member, "INddxfine");
-    offs += structStride;
-    member++;
-
-    editor.AddDecoration(rdcspv::OpMemberDecorate(
-        PSHit, member, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(offs)));
-    editor.SetMemberName(PSHit, member, "INddyfine");
-    offs += structStride;
-    member++;
+    ResultDataBaseType = editor.DeclareStructType("ResultData", members);
   }
 
-  rdcspv::Id PSHitRTArray = editor.AddType(rdcspv::OpTypeRuntimeArray(editor.MakeId(), PSHit));
+  rdcspv::Id ResultDataRTArray =
+      editor.AddType(rdcspv::OpTypeRuntimeArray(editor.MakeId(), ResultDataBaseType));
 
+  const uint32_t resultStride = structStride * numLanes + sizeof(rdcspv::ResultDataBase);
   editor.AddDecoration(rdcspv::OpDecorate(
-      PSHitRTArray, rdcspv::DecorationParam<rdcspv::Decoration::ArrayStride>(structStride * 5 +
-                                                                             sizeof(Vec4f) * 2)));
+      ResultDataRTArray, rdcspv::DecorationParam<rdcspv::Decoration::ArrayStride>(resultStride)));
 
-  rdcspv::Id bufBase = editor.DeclareStructType({
-      // uint hit_count;
-      uint32Type,
-      // uint test;
-      uint32Type,
-      // <uint3 padding>
+  RDCASSERT((resultStride % paramAlign) == 0);
 
-      //  PSHit hits[];
-      PSHitRTArray,
-  });
-
-  rdcspv::Id ssboVar;
-
-  {
-    editor.SetName(bufBase, "__rd_HitStorage");
-
-    editor.AddDecoration(rdcspv::OpMemberDecorate(
-        bufBase, 0, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(0)));
-    editor.SetMemberName(bufBase, 0, "hit_count");
-
-    editor.AddDecoration(rdcspv::OpMemberDecorate(
-        bufBase, 1, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(sizeof(uint32_t))));
-    editor.SetMemberName(bufBase, 1, "total_count");
-
-    editor.AddDecoration(rdcspv::OpMemberDecorate(
-        bufBase, 2, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(sizeof(Vec4f))));
-    editor.SetMemberName(bufBase, 2, "hits");
-  }
-
-  rdcspv::Id bufptrtype;
-  rdcspv::Id addressConstant;
-
-  if(storageMode == Binding)
-  {
-    // the pointers are SSBO pointers
-    bufptrtype = editor.DeclareType(rdcspv::Pointer(bufBase, bufferClass));
-
-    // patch all bindings up by 1
-    for(rdcspv::Iter it = editor.Begin(rdcspv::Section::Annotations),
-                     end = editor.End(rdcspv::Section::Annotations);
-        it < end; ++it)
-    {
-      // we will use descriptor set 0 for our own purposes if we don't have a buffer address.
-      //
-      // Since bindings are arbitrary, we just increase all user bindings to make room, and we'll
-      // redeclare the descriptor set layouts and pipeline layout. This is inevitable in the case
-      // where all descriptor sets are already used. In theory we only have to do this with set 0,
-      // but that requires knowing which variables are in set 0 and it's simpler to increase all
-      // bindings.
-      if(it.opcode() == rdcspv::Op::Decorate)
+  rdcspv::Id bufBase = editor.DeclareStructType(
+      "__rd_ResultBaseBuffer",
       {
-        rdcspv::OpDecorate dec(it);
-        if(dec.decoration == rdcspv::Decoration::Binding)
-        {
-          RDCASSERT(dec.decoration.binding != 0xffffffff);
-          dec.decoration.binding += 1;
-          it = dec;
-        }
-      }
-    }
+          {uint32Type, "hit_count", offsetof(rdcspv::ResultBaseBuffer, hit_count)},
+          {uint32Type, "total_count", offsetof(rdcspv::ResultBaseBuffer, total_count)},
+          {uint32Type, "dummy", offsetof(rdcspv::ResultBaseBuffer, dummy)},
+          {ResultDataRTArray, "hits", offsetof(rdcspv::ResultBaseBuffer, hits)},
+      });
 
-    // add our SSBO variable, at set 0 binding 0
-    ssboVar = editor.MakeId();
-    editor.AddVariable(rdcspv::OpVariable(bufptrtype, ssboVar, bufferClass));
-    editor.AddDecoration(
-        rdcspv::OpDecorate(ssboVar, rdcspv::DecorationParam<rdcspv::Decoration::DescriptorSet>(0)));
-    editor.AddDecoration(
-        rdcspv::OpDecorate(ssboVar, rdcspv::DecorationParam<rdcspv::Decoration::Binding>(0)));
+  rdcspv::StorageClass bufferClass = editor.PrepareAddedBufferAccess();
 
-    editor.SetName(ssboVar, "__rd_HitBuffer");
+  rdcpair<rdcspv::Id, rdcspv::Id> hitBuffer = editor.AddBufferVariable(
+      newGlobals, bufBase, "__rd_HitBuffer", 0, (uint32_t)InputSpecConstant::Address, 0);
 
-    editor.DecorateStorageBufferStruct(bufBase);
-  }
-  else
-  {
-    bufptrtype = editor.DeclareType(rdcspv::Pointer(bufBase, bufferClass));
-
-    // add the extension
-    editor.AddExtension(storageMode == KHR_bda ? "SPV_KHR_physical_storage_buffer"
-                                               : "SPV_EXT_physical_storage_buffer");
-
-    // change the memory model to physical storage buffer 64
-    rdcspv::Iter it = editor.Begin(rdcspv::Section::MemoryModel);
-    rdcspv::OpMemoryModel model(it);
-    model.addressingModel = rdcspv::AddressingModel::PhysicalStorageBuffer64;
-    it = model;
-
-    // add capabilities
-    editor.AddCapability(rdcspv::Capability::PhysicalStorageBufferAddresses);
-
-    // declare the address constant which we will specialise later. There is a chicken-and-egg where
-    // this function determines how big the buffer needs to be so instead of hardcoding the address
-    // here we let it be allocated later and specialised in.
-    if(storageMode == KHR_bda)
-    {
-      rdcspv::Id addressConstantLSB =
-          editor.AddSpecConstantImmediate<uint32_t>(0U, (uint32_t)InputSpecConstant::Address);
-      rdcspv::Id addressConstantMSB =
-          editor.AddSpecConstantImmediate<uint32_t>(0U, (uint32_t)InputSpecConstant::AddressMSB);
-
-      rdcspv::Id uint2 = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<uint32_t>(), 2));
-
-      addressConstant = editor.AddConstant(rdcspv::OpSpecConstantComposite(
-          uint2, editor.MakeId(), {addressConstantLSB, addressConstantMSB}));
-    }
-    else
-    {
-      editor.AddCapability(rdcspv::Capability::Int64);
-
-      addressConstant =
-          editor.AddSpecConstantImmediate<uint64_t>(0ULL, (uint32_t)InputSpecConstant::Address);
-    }
-
-    editor.SetName(addressConstant, "__rd_bufAddress");
-
-    // struct is block decorated
-    editor.AddDecoration(rdcspv::OpDecorate(bufBase, rdcspv::Decoration::Block));
-  }
-
-  if(editor.EntryPointAllGlobals())
-    addedInputs.push_back(ssboVar);
-
-  // add our inputs to the entry point's ID list. Since we're expanding the list we have to copy,
-  // erase, and insert. Modifying in-place doesn't support expanding
-  if(!addedInputs.empty())
-  {
-    rdcspv::Iter it = editor.GetEntry(entryID);
-
-    // this copies into the helper struct
-    rdcspv::OpEntryPoint entry(it);
-
-    // add our IDs
-    entry.iface.append(addedInputs);
-
-    // erase the old one
-    editor.Remove(it);
-
-    editor.AddOperation(it, entry);
-  }
+  RDCCOMPILE_ASSERT(
+      uint32_t(InputSpecConstant::Address) + 1 == (uint32_t)InputSpecConstant::AddressMSB,
+      "Address spec constant IDs must be contiguous with MSB second");
 
   rdcspv::Id float4InPtr =
       editor.DeclareType(rdcspv::Pointer(float4Type, rdcspv::StorageClass::Input));
@@ -3387,325 +4432,1139 @@ static void CreatePSInputFetcher(rdcarray<uint32_t> &fragspv, uint32_t &structSt
   rdcspv::Id uint32InPtr =
       editor.DeclareType(rdcspv::Pointer(uint32Type, rdcspv::StorageClass::Input));
   rdcspv::Id uint32BufPtr = editor.DeclareType(rdcspv::Pointer(uint32Type, bufferClass));
+  rdcspv::Id uint4BufPtr = editor.DeclareType(rdcspv::Pointer(uint4Type, bufferClass));
   rdcspv::Id floatBufPtr = editor.DeclareType(rdcspv::Pointer(floatType, bufferClass));
 
   rdcspv::Id glsl450 = editor.ImportExtInst("GLSL.std.450");
 
-  editor.AddCapability(rdcspv::Capability::DerivativeControl);
+  // allow pixel shaders to use fine derivatives
+  if(stage == ShaderStage::Pixel)
+    editor.AddCapability(rdcspv::Capability::DerivativeControl);
+
+  // declare capabilities we might need
+  if(threadScope & rdcspv::ThreadScope::Subgroup)
+  {
+    if(subgroupCapability == SubgroupCapability::None)
+    {
+      // nothing, ignore, this could only happen if the shader uses only EXT_shader_subgroup_vote
+      // which we treat as degenerate
+    }
+    else if(subgroupCapability == SubgroupCapability::EXTBallot)
+    {
+      // this should already be present but let's be sure
+      editor.AddCapability(rdcspv::Capability::SubgroupBallotKHR);
+    }
+    else if(subgroupCapability == SubgroupCapability::Vulkan1_1_NoBallot)
+    {
+      // this should also already be present
+      editor.AddCapability(rdcspv::Capability::GroupNonUniform);
+    }
+    else if(subgroupCapability == SubgroupCapability::Vulkan1_1)
+    {
+      editor.AddCapability(rdcspv::Capability::GroupNonUniform);
+
+      // add this, the shader might not have used it but we need it to read other lanes
+      editor.AddCapability(rdcspv::Capability::GroupNonUniformBallot);
+      editor.AddCapability(rdcspv::Capability::GroupNonUniformVote);
+    }
+  }
+
+  rdcspv::Id vecNType[5] = {rdcspv::Id(), floatType, float2Type, float3Type, float4Type};
+  rdcspv::Id quadSwizzleHelper[5] = {};
+
+  if(stage == ShaderStage::Pixel)
+  {
+    for(uint32_t i = 1; i <= 4; i++)
+    {
+      quadSwizzleHelper[i] = AddQuadSwizzleHelper(editor, i);
+    }
+  }
 
   {
     rdcspv::OperationList ops;
 
     rdcspv::Id voidType = editor.DeclareType(rdcspv::scalar<void>());
+    rdcspv::Id uintPtr = editor.DeclareType(rdcspv::Pointer(uint32Type, bufferClass));
+
+    rdcspv::Id scope = editor.AddConstantImmediate<uint32_t>((uint32_t)rdcspv::Scope::Device);
+    rdcspv::Id semantics =
+        editor.AddConstantImmediate<uint32_t>((uint32_t)rdcspv::MemorySemantics::AcquireRelease);
 
     ops.add(rdcspv::OpFunction(voidType, entryID, rdcspv::FunctionControl::None,
                                editor.DeclareType(rdcspv::FunctionType(voidType, {}))));
 
+    rdcspv::Id structPtr;
+
     ops.add(rdcspv::OpLabel(editor.MakeId()));
     {
-      // grab all the values here and get any derivatives we need now before we branch non-uniformly
-      for(size_t i = 0; i < values.size(); i++)
+      structPtr = editor.LoadBufferVariable(ops, hitBuffer);
+
+      // we store ddx as a derivative check - it is expected to be 1.0 so store that as fixed for other stages
+      rdcspv::Id fragCoord, ddxDerivativeCheck = editor.AddConstantImmediate<float>(1.0f);
+      rdcspv::Id laneIndex;
+
+      rdcspv::Id shadRate = editor.AddConstantImmediate<uint32_t>(0);
+
+      // identify the candidate thread in a stage-specific way
+      rdcspv::Id candidateThread;
+
+      // prepare stage-specific inputs and condition
+      if(stage == ShaderStage::Vertex)
       {
-        const SPIRVInterfaceAccess &access = shadRefl.patchData.inputs[i];
-        const SigParameter &param = shadRefl.refl->inputSignature[i];
+        // we should only be fetching data like this for full subgroups
+        RDCASSERT(fullSubgroups);
 
-        rdcarray<rdcspv::Id> accessIndices;
-        for(uint32_t idx : access.accessChain)
-          accessIndices.push_back(getUIntConst(idx));
+        rdcspv::Id vert = editor.AddBuiltinInputLoad(ops, newGlobals, stage,
+                                                     rdcspv::BuiltIn::VertexIndex, uint32Type);
+        rdcspv::Id inst = editor.AddBuiltinInputLoad(ops, newGlobals, stage,
+                                                     rdcspv::BuiltIn::InstanceIndex, uint32Type);
 
-        rdcspv::Id valueType = values[i].valueType;
+        rdcspv::Id equalVert = ops.add(rdcspv::OpIEqual(boolType, editor.MakeId(), vert, destVertex));
+        rdcspv::Id equalInstance =
+            ops.add(rdcspv::OpIEqual(boolType, editor.MakeId(), inst, destInstance));
 
-        rdcspv::Id ptrType =
-            editor.DeclareType(rdcspv::Pointer(valueType, rdcspv::StorageClass::Input));
+        candidateThread =
+            ops.add(rdcspv::OpLogicalAnd(boolType, editor.MakeId(), equalVert, equalInstance));
 
-        // if we have no access chain it's a global pointer of the type we want, so just load
-        // straight out of it
-        rdcspv::Id ptr;
-        if(accessIndices.empty())
-          ptr = access.ID;
-        else
-          ptr = ops.add(rdcspv::OpAccessChain(ptrType, editor.MakeId(), access.ID, accessIndices));
-
-        rdcspv::Id base = ops.add(rdcspv::OpLoad(valueType, editor.MakeId(), ptr));
-
-        if(valueType == boolType)
+        if(useViewIndex)
         {
-          valueType = uint32Type;
-          // can't store bools directly, need to convert to uint
-          base = ops.add(
-              rdcspv::OpSelect(valueType, editor.MakeId(), base, getUIntConst(1), getUIntConst(0)));
-        }
-
-        values[i].data[Variant_Base] = base;
-
-        editor.SetName(base, StringFormat::Fmt("__rd_base_%zu_%s", i, param.varName.c_str()));
-
-        // only float values have derivatives
-        if(VarTypeCompType(param.varType) == CompType::Float)
-        {
-          values[i].data[Variant_ddxcoarse] =
-              ops.add(rdcspv::OpDPdxCoarse(valueType, editor.MakeId(), base));
-          values[i].data[Variant_ddycoarse] =
-              ops.add(rdcspv::OpDPdyCoarse(valueType, editor.MakeId(), base));
-          values[i].data[Variant_ddxfine] =
-              ops.add(rdcspv::OpDPdxFine(valueType, editor.MakeId(), base));
-          values[i].data[Variant_ddyfine] =
-              ops.add(rdcspv::OpDPdyFine(valueType, editor.MakeId(), base));
-
-          editor.SetName(values[i].data[Variant_ddxcoarse],
-                         StringFormat::Fmt("__rd_ddxcoarse_%zu_%s", i, param.varName.c_str()));
-          editor.SetName(values[i].data[Variant_ddycoarse],
-                         StringFormat::Fmt("__rd_ddycoarse_%zu_%s", i, param.varName.c_str()));
-          editor.SetName(values[i].data[Variant_ddxfine],
-                         StringFormat::Fmt("__rd_ddxfine_%zu_%s", i, param.varName.c_str()));
-          editor.SetName(values[i].data[Variant_ddyfine],
-                         StringFormat::Fmt("__rd_ddyfine_%zu_%s", i, param.varName.c_str()));
-        }
-        else
-        {
-          values[i].data[Variant_ddxcoarse] = values[i].data[Variant_ddycoarse] =
-              values[i].data[Variant_ddxfine] = values[i].data[Variant_ddyfine] =
-                  editor.AddConstant(rdcspv::OpConstantNull(valueType, editor.MakeId()));
-
-          editor.SetName(values[i].data[Variant_ddxcoarse],
-                         StringFormat::Fmt("__rd_noderiv_%zu_%s", i, param.varName.c_str()));
+          rdcspv::Id view = editor.AddBuiltinInputLoad(ops, newGlobals, stage,
+                                                       rdcspv::BuiltIn::ViewIndex, uint32Type);
+          rdcspv::Id equalView = ops.add(rdcspv::OpIEqual(boolType, editor.MakeId(), view, destView));
+          candidateThread =
+              ops.add(rdcspv::OpLogicalAnd(boolType, editor.MakeId(), candidateThread, equalView));
         }
       }
-
-      rdcspv::Id structPtr = ssboVar;
-
-      if(structPtr == rdcspv::Id())
+      else if(stage == ShaderStage::Pixel)
       {
-        // if we don't have the struct as a bind, we need to cast it from the pointer. In
-        // KHR_buffer_device_address we bitcast since we store it as a uint2
-        if(storageMode == KHR_bda)
-          structPtr = ops.add(rdcspv::OpBitcast(bufptrtype, editor.MakeId(), addressConstant));
-        else
-          structPtr = ops.add(rdcspv::OpConvertUToPtr(bufptrtype, editor.MakeId(), addressConstant));
+        fragCoord = editor.AddBuiltinInputLoad(ops, newGlobals, stage, rdcspv::BuiltIn::FragCoord,
+                                               float4Type);
 
-        editor.SetName(structPtr, "HitBuffer");
-      }
+        ddxDerivativeCheck = ops.add(rdcspv::OpDPdx(float4Type, editor.MakeId(), fragCoord));
+        editor.SetName(ddxDerivativeCheck, "ddxDerivativeCheck");
+        ddxDerivativeCheck =
+            ops.add(rdcspv::OpCompositeExtract(floatType, editor.MakeId(), ddxDerivativeCheck, {0}));
+        editor.SetName(ddxDerivativeCheck, "ddxDerivativeCheck_x");
 
-      rdcspv::Id uintPtr = editor.DeclareType(rdcspv::Pointer(uint32Type, bufferClass));
+        // grab x and y
+        rdcspv::Id fragXY = ops.add(
+            rdcspv::OpVectorShuffle(float2Type, editor.MakeId(), fragCoord, fragCoord, {0, 1}));
 
-      // get a pointer to buffer.hit_count
-      rdcspv::Id hit_count =
-          ops.add(rdcspv::OpAccessChain(uintPtr, editor.MakeId(), structPtr, {getUIntConst(0)}));
+        // masks in the quad are usually 1 apart
+        rdcspv::Id xmask = editor.AddConstantImmediate<uint32_t>(1);
+        rdcspv::Id ymask = editor.AddConstantImmediate<uint32_t>(1);
 
-      // get a pointer to buffer.total_count
-      rdcspv::Id total_count =
-          ops.add(rdcspv::OpAccessChain(uintPtr, editor.MakeId(), structPtr, {getUIntConst(1)}));
+        // optionally we may need to shift, if shading rate makes the step larger than 1 to ensure
+        // we still get the 0, 1, 2, 3 quad indices we expect
+        rdcspv::Id xshift, yshift;
 
-      rdcspv::Id scope = editor.AddConstantImmediate<uint32_t>((uint32_t)rdcspv::Scope::Device);
-      rdcspv::Id semantics =
-          editor.AddConstantImmediate<uint32_t>((uint32_t)rdcspv::MemorySemantics::AcquireRelease);
+        rdcspv::Id half = editor.AddConstantImmediate<float>(0.5f);
+        rdcspv::Id half2D = editor.AddConstant(
+            rdcspv::OpConstantComposite(float2Type, editor.MakeId(), {half, half}));
 
-      // increment total_count
-      ops.add(rdcspv::OpAtomicIAdd(uint32Type, editor.MakeId(), total_count, scope, semantics,
-                                   getUIntConst(1)));
+        rdcspv::Id destCentre;
 
-      // look up the fragcoord
-      rdcspv::Id fragCoordLoaded = editor.MakeId();
-      if(fragCoord.member == ~0U)
-      {
-        ops.add(rdcspv::OpLoad(float4Type, fragCoordLoaded, fragCoord.base));
-      }
-      else
-      {
-        rdcspv::Id posptr =
-            ops.add(rdcspv::OpAccessChain(float4InPtr, editor.MakeId(), fragCoord.base,
-                                          {editor.AddConstantImmediate(fragCoord.member)}));
-        ops.add(rdcspv::OpLoad(float4Type, fragCoordLoaded, posptr));
-      }
-
-      rdcspv::Id fragCoord_ddx =
-          ops.add(rdcspv::OpDPdx(float4Type, editor.MakeId(), fragCoordLoaded));
-
-      rdcspv::Id bool2Type = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<bool>(), 2));
-
-      // grab x and y
-      rdcspv::Id fragXY = ops.add(rdcspv::OpVectorShuffle(
-          float2Type, editor.MakeId(), fragCoordLoaded, fragCoordLoaded, {0, 1}));
-
-      // subtract from the destination co-ord
-      rdcspv::Id fragXYRelative =
-          ops.add(rdcspv::OpFSub(float2Type, editor.MakeId(), fragXY, destXY));
-
-      // abs()
-      rdcspv::Id fragXYAbs = ops.add(rdcspv::OpGLSL450(float2Type, editor.MakeId(), glsl450,
-                                                       rdcspv::GLSLstd450::FAbs, {fragXYRelative}));
-
-      rdcspv::Id half = editor.AddConstantImmediate<float>(0.5f);
-      rdcspv::Id threshold =
-          editor.AddConstant(rdcspv::OpConstantComposite(float2Type, editor.MakeId(), {half, half}));
-
-      // less than 0.5
-      rdcspv::Id inPixelXY =
-          ops.add(rdcspv::OpFOrdLessThan(bool2Type, editor.MakeId(), fragXYAbs, threshold));
-
-      // both less than 0.5
-      rdcspv::Id inPixel = ops.add(rdcspv::OpAll(boolType, editor.MakeId(), inPixelXY));
-
-      // bool inPixel = all(abs(gl_FragCoord.xy - dest.xy) < 0.5f);
-
-      rdcspv::Id killLabel = editor.MakeId();
-      rdcspv::Id continueLabel = editor.MakeId();
-      ops.add(rdcspv::OpSelectionMerge(killLabel, rdcspv::SelectionControl::None));
-      ops.add(rdcspv::OpBranchConditional(inPixel, continueLabel, killLabel));
-      ops.add(rdcspv::OpLabel(continueLabel));
-
-      // allocate a slot with atomic add
-      rdcspv::Id slot = ops.add(rdcspv::OpAtomicIAdd(uint32Type, editor.MakeId(), hit_count, scope,
-                                                     semantics, getUIntConst(1)));
-
-      editor.SetName(slot, "slot");
-
-      rdcspv::Id inRange = ops.add(rdcspv::OpULessThan(boolType, editor.MakeId(), slot, arrayLength));
-
-      rdcspv::Id killLabel2 = editor.MakeId();
-      continueLabel = editor.MakeId();
-      ops.add(rdcspv::OpSelectionMerge(killLabel2, rdcspv::SelectionControl::None));
-      ops.add(rdcspv::OpBranchConditional(inRange, continueLabel, killLabel2));
-      ops.add(rdcspv::OpLabel(continueLabel));
-
-      rdcspv::Id hitptr = editor.DeclareType(rdcspv::Pointer(PSHit, bufferClass));
-
-      // get a pointer to the hit for our slot
-      rdcspv::Id hit =
-          ops.add(rdcspv::OpAccessChain(hitptr, editor.MakeId(), structPtr, {getUIntConst(2), slot}));
-
-      // store fixed properties
-
-      rdcspv::Id storePtr =
-          ops.add(rdcspv::OpAccessChain(float4BufPtr, editor.MakeId(), hit, {getUIntConst(0)}));
-      ops.add(rdcspv::OpStore(storePtr, fragCoordLoaded, alignedAccess));
-
-      rdcspv::Id loaded;
-      if(primitiveID.base != rdcspv::Id())
-      {
-        if(primitiveID.member == ~0U)
+        // when fragment shading rate is active, we need to adjust the expected co-ordinates for a
+        // quad, as only half/quarter of the pixels will be shaded so our normal calculations won't
+        // work.
+        //
+        // effectively the xmask and ymask above are taken from the shading rate in each direction,
+        // and the dest pixel co-ordinate is adjusted. so that instead of
+        //
+        // destCentre = destXY + 0.5, 0.5
+        //
+        // we do:
+        //
+        // roundedDestXY = (destXY >> shadingRateXY) << shadingRateXY
+        // destCentre = roundedDestXY + (shadingRateXY/2.0f)
+        //
+        // to first truncate the lower bits first to get the 'quad' or 'oct-area' and then add on
+        // half the shading rate to get to the centre co-ordinate
+        //
+        // since pixels at 0,0  0,1  1,0  and 1,1 are all shaded as one and the 'centre' becomes 1,1
+        // since that is the co-ordinate for exactly in the middle (normally when shading 1,1 at
+        // full rate the centre is 1.5, 1.5 as above).
+        //
+        // xmask/ymask is also adjusted to get the quadLaneIndex based on proportionally larger quads
+        if(editor.HasCapability(rdcspv::Capability::FragmentShadingRateKHR))
         {
-          loaded = ops.add(rdcspv::OpLoad(primitiveID.type, editor.MakeId(), primitiveID.base));
+          shadRate = editor.AddBuiltinInputLoad(ops, newGlobals, stage,
+                                                rdcspv::BuiltIn::ShadingRateKHR, uint32Type);
+
+          RDCCOMPILE_ASSERT(uint32_t(rdcspv::FragmentShadingRate::Vertical2Pixels) == 1,
+                            "Vertical mask isn't as expected");
+          RDCCOMPILE_ASSERT(uint32_t(rdcspv::FragmentShadingRate::Vertical4Pixels) == 2,
+                            "Vertical mask isn't as expected");
+          RDCCOMPILE_ASSERT(uint32_t(rdcspv::FragmentShadingRate::Horizontal2Pixels) == 4,
+                            "Vertical mask isn't as expected");
+          RDCCOMPILE_ASSERT(uint32_t(rdcspv::FragmentShadingRate::Horizontal4Pixels) == 8,
+                            "Vertical mask isn't as expected");
+
+          const uint32_t vertMask = uint32_t(rdcspv::FragmentShadingRate::Vertical2Pixels |
+                                             rdcspv::FragmentShadingRate::Vertical4Pixels);
+          const uint32_t horizMask = uint32_t(rdcspv::FragmentShadingRate::Horizontal2Pixels |
+                                              rdcspv::FragmentShadingRate::Horizontal4Pixels);
+
+          rdcspv::Id vertRate =
+              ops.add(rdcspv::OpBitwiseAnd(uint32Type, editor.MakeId(), shadRate,
+                                           editor.AddConstantImmediate<uint32_t>(vertMask)));
+          editor.SetName(vertRate, "vertRate");
+
+          // shift horizRate to be in the right spot
+          rdcspv::Id horizRate =
+              ops.add(rdcspv::OpBitwiseAnd(uint32Type, editor.MakeId(), shadRate,
+                                           editor.AddConstantImmediate<uint32_t>(horizMask)));
+          horizRate = ops.add(rdcspv::OpShiftRightLogical(
+              uint32Type, editor.MakeId(), horizRate, editor.AddConstantImmediate<uint32_t>(2)));
+          editor.SetName(horizRate, "horizRate");
+
+          xshift = horizRate;
+          yshift = vertRate;
+
+          rdcspv::Id shadingRateXY = ops.add(
+              rdcspv::OpCompositeConstruct(uint2Type, editor.MakeId(), {horizRate, vertRate}));
+          editor.SetName(shadingRateXY, "shadingRateXY");
+
+          rdcspv::Id destXYint = ops.add(rdcspv::OpConvertFToU(uint2Type, editor.MakeId(), destXY));
+          editor.SetName(destXYint, "destXYint");
+          rdcspv::Id destXYshifted = ops.add(
+              rdcspv::OpShiftRightLogical(uint2Type, editor.MakeId(), destXYint, shadingRateXY));
+          rdcspv::Id roundedDestXY = ops.add(
+              rdcspv::OpShiftLeftLogical(uint2Type, editor.MakeId(), destXYshifted, shadingRateXY));
+          roundedDestXY = ops.add(rdcspv::OpConvertUToF(float2Type, editor.MakeId(), roundedDestXY));
+          editor.SetName(roundedDestXY, "roundedDestXY");
+
+          rdcspv::Id one = editor.AddConstantImmediate<uint32_t>(1U);
+
+          // the masks are 1 shifted from the rate, because rate is 0=full rate, 1=2x2, 2=4x4
+          // we also need to max with 1
+          xmask = ops.add(rdcspv::OpShiftLeftLogical(uint32Type, editor.MakeId(), horizRate,
+                                                     editor.AddConstantImmediate<uint32_t>(1)));
+          xmask = ops.add(rdcspv::OpGLSL450(uint32Type, editor.MakeId(), glsl450,
+                                            rdcspv::GLSLstd450::UMax, {xmask, one}));
+          ymask = ops.add(rdcspv::OpShiftLeftLogical(uint32Type, editor.MakeId(), vertRate,
+                                                     editor.AddConstantImmediate<uint32_t>(1)));
+          ymask = ops.add(rdcspv::OpGLSL450(uint32Type, editor.MakeId(), glsl450,
+                                            rdcspv::GLSLstd450::UMax, {ymask, one}));
+
+          rdcspv::Id pixelWidthX = ops.add(rdcspv::OpConvertUToF(floatType, editor.MakeId(), xmask));
+          rdcspv::Id pixelWidthY = ops.add(rdcspv::OpConvertUToF(floatType, editor.MakeId(), ymask));
+          rdcspv::Id halfPixelX =
+              ops.add(rdcspv::OpFMul(floatType, editor.MakeId(), pixelWidthX, half));
+          rdcspv::Id halfPixelY =
+              ops.add(rdcspv::OpFMul(floatType, editor.MakeId(), pixelWidthY, half));
+          rdcspv::Id halfPixelWidth = ops.add(
+              rdcspv::OpCompositeConstruct(float2Type, editor.MakeId(), {halfPixelX, halfPixelY}));
+
+          destCentre =
+              ops.add(rdcspv::OpFAdd(float2Type, editor.MakeId(), roundedDestXY, halfPixelWidth));
         }
         else
         {
-          rdcspv::Id inPtrType =
-              editor.DeclareType(rdcspv::Pointer(primitiveID.type, rdcspv::StorageClass::Input));
-
-          rdcspv::Id posptr =
-              ops.add(rdcspv::OpAccessChain(inPtrType, editor.MakeId(), primitiveID.base,
-                                            {editor.AddConstantImmediate(primitiveID.member)}));
-          loaded = ops.add(rdcspv::OpLoad(primitiveID.type, editor.MakeId(), posptr));
+          // without shading rate the pixel centre is just 0.5, 0.5 from the dest integer co-ordinate
+          destCentre = ops.add(rdcspv::OpFAdd(float2Type, editor.MakeId(), destXY, half2D));
         }
 
-        // if it was loaded as signed int by the shader and not as unsigned by us, bitcast to
-        // unsigned.
-        if(primitiveID.type != uint32Type)
-          loaded = ops.add(rdcspv::OpBitcast(uint32Type, editor.MakeId(), loaded));
+        editor.SetName(xmask, "xmask");
+        editor.SetName(ymask, "ymask");
+        editor.SetName(destCentre, "destCentre");
+
+        // figure out the TL pixel's coords and calculate our index relative to it. Assume even top
+        // left (towards 0,0) though the spec does not guarantee this is the actual quad
+
+        // int x01 = x & 1;
+        rdcspv::Id xInt =
+            ops.add(rdcspv::OpCompositeExtract(floatType, editor.MakeId(), fragXY, {0}));
+        xInt = ops.add(rdcspv::OpConvertFToU(uint32Type, editor.MakeId(), xInt));
+        rdcspv::Id x01 = ops.add(rdcspv::OpBitwiseAnd(uint32Type, editor.MakeId(), xInt, xmask));
+
+        if(xshift)
+          x01 = ops.add(rdcspv::OpShiftRightLogical(uint32Type, editor.MakeId(), x01, xshift));
+
+        // int y01 = y & 1;
+        rdcspv::Id yInt =
+            ops.add(rdcspv::OpCompositeExtract(floatType, editor.MakeId(), fragXY, {1}));
+        yInt = ops.add(rdcspv::OpConvertFToU(uint32Type, editor.MakeId(), yInt));
+        rdcspv::Id y01 = ops.add(rdcspv::OpBitwiseAnd(uint32Type, editor.MakeId(), yInt, ymask));
+
+        if(yshift)
+          y01 = ops.add(rdcspv::OpShiftRightLogical(uint32Type, editor.MakeId(), y01, yshift));
+
+        // int destIdx = x01 + 2 * y01;
+        rdcspv::Id sum = ops.add(rdcspv::OpIMul(uint32Type, editor.MakeId(),
+                                                editor.AddConstantImmediate<uint32_t>(2), y01));
+        ops.add(rdcspv::OpIAdd(uint32Type, quadLaneIndex, sum, x01));
+        laneIndex = quadLaneIndex;
+        editor.SetName(quadLaneIndex, "quadLaneIndex");
+
+        // subtract frag coord from the destination co-ord in x-y to get relative
+        rdcspv::Id fragXYRelative =
+            ops.add(rdcspv::OpFSub(float2Type, editor.MakeId(), fragXY, destCentre));
+
+        // abs()
+        rdcspv::Id fragXYAbs = ops.add(rdcspv::OpGLSL450(
+            float2Type, editor.MakeId(), glsl450, rdcspv::GLSLstd450::FAbs, {fragXYRelative}));
+
+        rdcspv::Id bool2Type = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<bool>(), 2));
+
+        // less than 0.5 component-wise
+        rdcspv::Id inPixelXY =
+            ops.add(rdcspv::OpFOrdLessThan(bool2Type, editor.MakeId(), fragXYAbs, half2D));
+
+        // both less than threshold
+        candidateThread = ops.add(rdcspv::OpAll(boolType, editor.MakeId(), inPixelXY));
       }
-      else
+      else if(stage == ShaderStage::Compute || stage == ShaderStage::Task ||
+              stage == ShaderStage::Mesh)
       {
-        // explicitly store 0
-        loaded = getUIntConst(0);
+        // we should only be fetching data like this for full subgroups
+        RDCASSERT(fullSubgroups);
+
+        rdcspv::Id globalThread = editor.AddBuiltinInputLoad(
+            ops, newGlobals, stage, rdcspv::BuiltIn::GlobalInvocationId, uint3Type);
+
+        rdcspv::Id bool3Type = editor.DeclareType(rdcspv::Vector(rdcspv::scalar<bool>(), 3));
+        rdcspv::Id equal3 =
+            ops.add(rdcspv::OpIEqual(bool3Type, editor.MakeId(), globalThread, destThreadID));
+
+        candidateThread = ops.add(rdcspv::OpAll(boolType, editor.MakeId(), equal3));
       }
 
-      storePtr =
-          ops.add(rdcspv::OpAccessChain(uint32BufPtr, editor.MakeId(), hit, {getUIntConst(1)}));
-      ops.add(rdcspv::OpStore(storePtr, loaded, alignedAccess));
+      rdcspv::Id quadIdxConst[4] = {
+          editor.AddConstantImmediate<uint32_t>(0),
+          editor.AddConstantImmediate<uint32_t>(1),
+          editor.AddConstantImmediate<uint32_t>(2),
+          editor.AddConstantImmediate<uint32_t>(3),
+      };
 
-      if(sampleIndex.base != rdcspv::Id())
+      // load all data per-thread and calculate quad swizzled neighbour data as needed
+      for(laneValue &val : laneValues)
       {
-        if(sampleIndex.member == ~0U)
+        ops.append(val.loadOps);
+
+        // for pixel shaders we always need to grab quad swizzled data.
+        // we skip this for values we classify as flat as well as for the magic isHelper/quadLaneIndex
+        // which are handled specially and will be fixed up later when we go to store these
+        if(stage == ShaderStage::Pixel && val.base != isHelper && val.base != quadLaneIndex &&
+           !val.flat)
         {
-          loaded = ops.add(rdcspv::OpLoad(sampleIndex.type, editor.MakeId(), sampleIndex.base));
-        }
-        else
-        {
-          rdcspv::Id inPtrType =
-              editor.DeclareType(rdcspv::Pointer(sampleIndex.type, rdcspv::StorageClass::Input));
+          val.quadSwizzledData.resize(4);
 
-          rdcspv::Id posptr =
-              ops.add(rdcspv::OpAccessChain(inPtrType, editor.MakeId(), sampleIndex.base,
-                                            {editor.AddConstantImmediate(sampleIndex.member)}));
-          loaded = ops.add(rdcspv::OpLoad(sampleIndex.type, editor.MakeId(), posptr));
-        }
+          const rdcspv::DataType &dataType = editor.GetDataType(val.type);
 
-        // if it was loaded as signed int by the shader and not as unsigned by us, bitcast to
-        // unsigned.
-        if(sampleIndex.type != uint32Type)
-          loaded = ops.add(rdcspv::OpBitcast(uint32Type, editor.MakeId(), loaded));
-      }
-      else
-      {
-        // explicitly store 0
-        loaded = getUIntConst(0);
-      }
-
-      storePtr =
-          ops.add(rdcspv::OpAccessChain(uint32BufPtr, editor.MakeId(), hit, {getUIntConst(2)}));
-      ops.add(rdcspv::OpStore(storePtr, loaded, alignedAccess));
-
-      storePtr =
-          ops.add(rdcspv::OpAccessChain(uint32BufPtr, editor.MakeId(), hit, {getUIntConst(3)}));
-      ops.add(rdcspv::OpStore(storePtr, editor.AddConstantImmediate(validMagicNumber), alignedAccess));
-
-      // store ddx(gl_FragCoord.x) to check that derivatives are working
-      storePtr = ops.add(rdcspv::OpAccessChain(floatBufPtr, editor.MakeId(), hit, {getUIntConst(4)}));
-      rdcspv::Id fragCoord_ddx_x =
-          ops.add(rdcspv::OpCompositeExtract(floatType, editor.MakeId(), fragCoord_ddx, {0}));
-      ops.add(rdcspv::OpStore(storePtr, fragCoord_ddx_x, alignedAccess));
-
-      {
-        rdcspv::Id inputPtrType = editor.DeclareType(rdcspv::Pointer(PSInput, bufferClass));
-
-        rdcspv::Id outputPtrs[Variant_Count] = {
-            ops.add(rdcspv::OpAccessChain(inputPtrType, editor.MakeId(), hit, {getUIntConst(5)})),
-            ops.add(rdcspv::OpAccessChain(inputPtrType, editor.MakeId(), hit, {getUIntConst(6)})),
-            ops.add(rdcspv::OpAccessChain(inputPtrType, editor.MakeId(), hit, {getUIntConst(7)})),
-            ops.add(rdcspv::OpAccessChain(inputPtrType, editor.MakeId(), hit, {getUIntConst(8)})),
-            ops.add(rdcspv::OpAccessChain(inputPtrType, editor.MakeId(), hit, {getUIntConst(9)})),
-        };
-
-        for(size_t i = 0; i < values.size(); i++)
-        {
-          rdcspv::Id valueType = values[i].valueType;
-          if(valueType == boolType)
-            valueType = uint32Type;
-          rdcspv::Id ptrType = editor.DeclareType(rdcspv::Pointer(valueType, bufferClass));
-
-          for(size_t j = 0; j < Variant_Count; j++)
+          if(dataType.IsU32())
           {
-            rdcspv::Id ptr = ops.add(rdcspv::OpAccessChain(ptrType, editor.MakeId(), outputPtrs[j],
-                                                           {getUIntConst(values[i].structIndex)}));
-            ops.add(rdcspv::OpStore(ptr, values[i].data[j], alignedAccess));
+            for(uint32_t q = 0; q < 4; q++)
+            {
+              rdcspv::Id valQ = val.base;
+              valQ = ops.add(rdcspv::OpConvertUToF(floatType, editor.MakeId(), valQ));
+              valQ = ops.add(rdcspv::OpFunctionCall(floatType, editor.MakeId(), quadSwizzleHelper[1],
+                                                    {valQ, quadLaneIndex, quadIdxConst[q]}));
+              // named as convenience because spirv-cross declares a variable here and then does the cast at the usage
+              editor.SetName(valQ, StringFormat::Fmt("%s_swiz%u", val.name.c_str(), q));
+
+              valQ = ops.add(rdcspv::OpConvertFToU(uint32Type, editor.MakeId(), valQ));
+              editor.SetName(valQ, StringFormat::Fmt("%s_swiz%u_u", val.name.c_str(), q));
+
+              val.quadSwizzledData[q] = valQ;
+            }
+          }
+          else if(dataType.IsS32())
+          {
+            for(uint32_t q = 0; q < 4; q++)
+            {
+              rdcspv::Id valQ = val.base;
+              valQ = ops.add(rdcspv::OpConvertSToF(floatType, editor.MakeId(), valQ));
+              valQ = ops.add(rdcspv::OpFunctionCall(floatType, editor.MakeId(), quadSwizzleHelper[1],
+                                                    {valQ, quadLaneIndex, quadIdxConst[q]}));
+              // named as convenience because spirv-cross declares a variable here and then does the cast at the usage
+              editor.SetName(valQ, StringFormat::Fmt("%s_swiz%u", val.name.c_str(), q));
+
+              valQ = ops.add(rdcspv::OpConvertFToS(sint32Type, editor.MakeId(), valQ));
+              editor.SetName(valQ, StringFormat::Fmt("%s_swiz%u_u", val.name.c_str(), q));
+
+              val.quadSwizzledData[q] = valQ;
+            }
+          }
+          else
+          {
+            // all other inputs that aren't uint32 should be floats, otherwise they should have been marked as flat
+            RDCASSERT(dataType.scalar().type == rdcspv::Op::TypeFloat);
+
+            uint32_t width = RDCMAX(1U, dataType.vector().count);
+
+            for(uint32_t q = 0; q < 4; q++)
+            {
+              val.quadSwizzledData[q] = ops.add(
+                  rdcspv::OpFunctionCall(vecNType[width], editor.MakeId(), quadSwizzleHelper[width],
+                                         {val.base, quadLaneIndex, quadIdxConst[q]}));
+              editor.SetName(val.quadSwizzledData[q],
+                             StringFormat::Fmt("%s_swiz%u", val.name.c_str(), q));
+            }
           }
         }
       }
 
-      // join up with the early-outs we did
-      ops.add(rdcspv::OpBranch(killLabel2));
-      ops.add(rdcspv::OpLabel(killLabel2));
-      ops.add(rdcspv::OpBranch(killLabel));
-      ops.add(rdcspv::OpLabel(killLabel));
+      rdcspv::Id subgroupSize, numSubgroups, globalBallot, electBallot, helperBallot;
+
+      // if we are doing even minimal subgroups, read the subgroup-relative lane index and subgroup size
+      if(minimalSubgroups || fullSubgroups)
+      {
+        if(subgroupCapability == SubgroupCapability::EXTBallot)
+        {
+          globalBallot = ops.add(rdcspv::OpSubgroupBallotKHR(
+              uint4Type, editor.MakeId(), editor.AddConstantImmediate<bool>(true)));
+          electBallot = editor.AddConstant(rdcspv::OpConstantNull(uint4Type, editor.MakeId()));
+
+          if(stage == ShaderStage::Pixel)
+          {
+            helperBallot = ops.add(rdcspv::OpINotEqual(boolType, editor.MakeId(), isHelper,
+                                                       editor.AddConstantImmediate<uint32_t>(0)));
+            helperBallot =
+                ops.add(rdcspv::OpSubgroupBallotKHR(uint4Type, editor.MakeId(), helperBallot));
+          }
+          else
+          {
+            helperBallot = editor.AddConstant(rdcspv::OpConstantNull(uint4Type, editor.MakeId()));
+          }
+        }
+        else
+        {
+          globalBallot = ops.add(rdcspv::OpGroupNonUniformBallot(
+              uint4Type, editor.MakeId(), subgroupScope, editor.AddConstantImmediate<bool>(true)));
+          electBallot =
+              ops.add(rdcspv::OpGroupNonUniformElect(boolType, editor.MakeId(), subgroupScope));
+          electBallot = ops.add(rdcspv::OpGroupNonUniformBallot(uint4Type, editor.MakeId(),
+                                                                subgroupScope, electBallot));
+
+          if(stage == ShaderStage::Pixel)
+          {
+            helperBallot = ops.add(rdcspv::OpINotEqual(boolType, editor.MakeId(), isHelper,
+                                                       editor.AddConstantImmediate<uint32_t>(0)));
+            helperBallot = ops.add(rdcspv::OpGroupNonUniformBallot(uint4Type, editor.MakeId(),
+                                                                   subgroupScope, helperBallot));
+          }
+          else
+          {
+            helperBallot = editor.AddConstant(rdcspv::OpConstantNull(uint4Type, editor.MakeId()));
+          }
+        }
+
+        laneIndex = editor.AddBuiltinInputLoad(
+            ops, newGlobals, stage, rdcspv::BuiltIn::SubgroupLocalInvocationId, uint32Type);
+        subgroupSize = editor.AddBuiltinInputLoad(ops, newGlobals, stage,
+                                                  rdcspv::BuiltIn::SubgroupSize, uint32Type);
+        editor.SetName(laneIndex, "laneIndex");
+        editor.SetName(subgroupSize, "subgroupSize");
+
+        // subgroup ID & num subgroups is only available for compute
+        if(stage == ShaderStage::Compute || stage == ShaderStage::Task || stage == ShaderStage::Mesh)
+        {
+          numSubgroups = editor.AddBuiltinInputLoad(ops, newGlobals, stage,
+                                                    rdcspv::BuiltIn::NumSubgroups, uint32Type);
+          editor.SetName(numSubgroups, "numSubgroups");
+        }
+        else
+        {
+          numSubgroups = editor.AddConstantImmediate<uint32_t>(0);
+        }
+      }
+      else
+      {
+        globalBallot = editor.AddConstant(rdcspv::OpConstantNull(uint4Type, editor.MakeId()));
+        electBallot = editor.AddConstant(rdcspv::OpConstantNull(uint4Type, editor.MakeId()));
+        helperBallot = editor.AddConstant(rdcspv::OpConstantNull(uint4Type, editor.MakeId()));
+        subgroupSize = editor.AddConstantImmediate<uint32_t>(0);
+        numSubgroups = editor.AddConstantImmediate<uint32_t>(0);
+      }
+      editor.SetName(globalBallot, "globalBallot");
+
+      // in a pixel shader we need to take extra steps to ensure we get helper data, and it depends
+      // on if we're fetching subgroups or not.
+      // if we're not fetching subgroups, we always fetch all 4 helpers and store them since that's
+      // all our data. if we ARE fetching subgroups, helper lanes will not write their own data so
+      // we do that from the candidate thread (only for the helper lanes, conditionally). We also
+      // store into the lane index of each quad with subgroups, as opposed to just 0-3 for a plain
+      // quad.
+      // if we're not in a pixel shader we don't do any of this
+      rdcspv::Id isHelperPerQuad[4] = {};
+      rdcspv::Id shouldStoreHelperPerQuad[4] = {};
+      rdcspv::Id quadLaneStoreIdx[4] = {};
+
+      if(stage == ShaderStage::Pixel)
+      {
+        // calculate the quadId that we need for pixels, the top-left thread's lane index
+        rdcspv::Id quadIdSwizzle =
+            ops.add(rdcspv::OpConvertUToF(floatType, editor.MakeId(), laneIndex));
+        quadIdSwizzle =
+            ops.add(rdcspv::OpFunctionCall(floatType, editor.MakeId(), quadSwizzleHelper[1],
+                                           {quadIdSwizzle, quadLaneIndex, quadIdxConst[0]}));
+
+        quadIdSwizzle = ops.add(rdcspv::OpConvertFToU(uint32Type, editor.MakeId(), quadIdSwizzle));
+        // add offset so that quad IDs are always non-zero
+        quadId = ops.add(rdcspv::OpIAdd(uint32Type, quadId, quadIdSwizzle,
+                                        editor.AddConstantImmediate<uint32_t>(10000)));
+
+        for(uint32_t q = 0; q < 4; q++)
+        {
+          isHelperPerQuad[q] = ops.add(rdcspv::OpConvertUToF(floatType, editor.MakeId(), isHelper));
+          isHelperPerQuad[q] =
+              ops.add(rdcspv::OpFunctionCall(floatType, editor.MakeId(), quadSwizzleHelper[1],
+                                             {isHelperPerQuad[q], quadLaneIndex, quadIdxConst[q]}));
+          isHelperPerQuad[q] =
+              ops.add(rdcspv::OpConvertFToU(uint32Type, editor.MakeId(), isHelperPerQuad[q]));
+        }
+
+        if(fullSubgroups)
+        {
+          for(uint32_t q = 0; q < 4; q++)
+          {
+            shouldStoreHelperPerQuad[q] =
+                ops.add(rdcspv::OpINotEqual(boolType, editor.MakeId(), isHelperPerQuad[q],
+                                            editor.AddConstantImmediate<uint32_t>(0)));
+
+            quadLaneStoreIdx[q] =
+                ops.add(rdcspv::OpConvertUToF(floatType, editor.MakeId(), laneIndex));
+            quadLaneStoreIdx[q] = ops.add(
+                rdcspv::OpFunctionCall(floatType, editor.MakeId(), quadSwizzleHelper[1],
+                                       {quadLaneStoreIdx[q], quadLaneIndex, quadIdxConst[q]}));
+            quadLaneStoreIdx[q] =
+                ops.add(rdcspv::OpConvertFToU(uint32Type, editor.MakeId(), quadLaneStoreIdx[q]));
+
+            editor.SetName(isHelperPerQuad[q], StringFormat::Fmt("isHelper%u", q));
+            editor.SetName(shouldStoreHelperPerQuad[q], StringFormat::Fmt("shouldStore%u", q));
+            editor.SetName(quadLaneStoreIdx[q], StringFormat::Fmt("quadLaneStoreIdx%u", q));
+          }
+        }
+        else
+        {
+          for(uint32_t q = 0; q < 4; q++)
+          {
+            shouldStoreHelperPerQuad[q] = editor.AddConstantImmediate<bool>(true);
+            quadLaneStoreIdx[q] = quadIdxConst[q];
+          }
+        }
+      }
+
+      // get a pointer to buffer.hit_count
+      rdcspv::Id hit_count = ops.add(rdcspv::OpAccessChain(
+          uintPtr, editor.MakeId(), structPtr, {editor.AddConstantImmediate<uint32_t>(0)}));
+
+      // get a pointer to buffer.total_count
+      rdcspv::Id total_count = ops.add(rdcspv::OpAccessChain(
+          uintPtr, editor.MakeId(), structPtr, {editor.AddConstantImmediate<uint32_t>(1)}));
+
+      editor.SetName(candidateThread, "candidateThread");
+
+      // if we are fetching full subgroups in a pixel shader, we need to know which threads are quad
+      // neighbours of the candidate so we can write their quad lane index properly
+      rdcspv::Id candidateThreadInQuad;
+      if(fullSubgroups && stage == ShaderStage::Pixel)
+      {
+        rdcspv::Id zeroF = editor.AddConstantImmediate<float>(0.0f);
+
+        // we do a simple check here - if candidateThread is true, or any ddx/ddy is non-zero, we're
+        // in the candidate quad
+
+        rdcspv::Id candidateThreadF = ops.add(rdcspv::OpSelect(
+            uint32Type, editor.MakeId(), candidateThread, editor.AddConstantImmediate<uint32_t>(1),
+            editor.AddConstantImmediate<uint32_t>(0)));
+        candidateThreadF =
+            ops.add(rdcspv::OpConvertUToF(floatType, editor.MakeId(), candidateThreadF));
+
+        rdcspv::Id candidateThreadDDXFine =
+            ops.add(rdcspv::OpDPdxFine(floatType, editor.MakeId(), candidateThreadF));
+        candidateThreadDDXFine = ops.add(
+            rdcspv::OpFOrdGreaterThan(boolType, editor.MakeId(), candidateThreadDDXFine, zeroF));
+
+        rdcspv::Id candidateThreadDDYFine =
+            ops.add(rdcspv::OpDPdyFine(floatType, editor.MakeId(), candidateThreadF));
+        candidateThreadDDYFine = ops.add(
+            rdcspv::OpFOrdGreaterThan(boolType, editor.MakeId(), candidateThreadDDYFine, zeroF));
+
+        rdcspv::Id candidateThreadDDXCoarse =
+            ops.add(rdcspv::OpDPdxCoarse(floatType, editor.MakeId(), candidateThreadF));
+        candidateThreadDDXCoarse = ops.add(
+            rdcspv::OpFOrdGreaterThan(boolType, editor.MakeId(), candidateThreadDDXCoarse, zeroF));
+
+        rdcspv::Id candidateThreadDDYCoarse =
+            ops.add(rdcspv::OpDPdyCoarse(floatType, editor.MakeId(), candidateThreadF));
+        candidateThreadDDYCoarse = ops.add(
+            rdcspv::OpFOrdGreaterThan(boolType, editor.MakeId(), candidateThreadDDYCoarse, zeroF));
+
+        candidateThreadInQuad = ops.add(rdcspv::OpLogicalOr(
+            boolType, editor.MakeId(), candidateThread, candidateThreadDDXFine));
+        candidateThreadInQuad = ops.add(rdcspv::OpLogicalOr(
+            boolType, editor.MakeId(), candidateThreadInQuad, candidateThreadDDYFine));
+        candidateThreadInQuad = ops.add(rdcspv::OpLogicalOr(
+            boolType, editor.MakeId(), candidateThreadInQuad, candidateThreadDDXCoarse));
+        candidateThreadInQuad = ops.add(rdcspv::OpLogicalOr(
+            boolType, editor.MakeId(), candidateThreadInQuad, candidateThreadDDYCoarse));
+        editor.SetName(candidateThreadInQuad, "candidateThreadInQuad");
+      }
+
+      rdcarray<rdcspv::Id> killLabels;
+      killLabels.push_back(editor.MakeId());
+      rdcspv::Id writeLabel = editor.MakeId();
+
+      rdcspv::Id writeCondition = candidateThread;
+
+      // if we're doing proper subgroup readback, keep the whole subgroup, otherwise branch non-uniformly
+      if(fullSubgroups)
+      {
+        if(subgroupCapability == SubgroupCapability::Vulkan1_1)
+        {
+          writeCondition = ops.add(rdcspv::OpGroupNonUniformAny(boolType, editor.MakeId(),
+                                                                subgroupScope, candidateThread));
+        }
+        else
+        {
+          // KHR path, emulate a vote with any(ballot() != 0u) so we don't depend on the vote
+          // extension - we probably can, but don't have to
+          writeCondition =
+              ops.add(rdcspv::OpSubgroupBallotKHR(uint4Type, editor.MakeId(), candidateThread));
+          writeCondition = ops.add(rdcspv::OpINotEqual(
+              bool4Type, editor.MakeId(), writeCondition,
+              editor.AddConstant(rdcspv::OpConstantNull(uint4Type, editor.MakeId()))));
+          writeCondition = ops.add(rdcspv::OpAny(boolType, editor.MakeId(), writeCondition));
+        }
+      }
+
+      ops.add(rdcspv::OpSelectionMerge(killLabels.back(), rdcspv::SelectionControl::None));
+      ops.add(rdcspv::OpBranchConditional(writeCondition, writeLabel, killLabels.back()));
+
+      ops.add(rdcspv::OpLabel(writeLabel));
+
+      // for pixel shaders with subgroups, ensure we mask off helper lanes from the subgroup so they
+      // don't take part in the elect
+      if(fullSubgroups && stage == ShaderStage::Pixel)
+      {
+        killLabels.push_back(editor.MakeId());
+        writeLabel = editor.MakeId();
+        rdcspv::Id helperCondition = ops.add(rdcspv::OpIEqual(
+            boolType, editor.MakeId(), isHelper, editor.AddConstantImmediate<uint32_t>(0)));
+        ops.add(rdcspv::OpSelectionMerge(killLabels.back(), rdcspv::SelectionControl::None));
+        ops.add(rdcspv::OpBranchConditional(helperCondition, writeLabel, killLabels.back()));
+        ops.add(rdcspv::OpLabel(writeLabel));
+      }
+
+      rdcspv::Id slotAllocLabel = editor.MakeId(), slotMergeLabel = editor.MakeId();
+
+      // for subgroups the whole subgroup is in here, ensure we only alloc a slot with one lane
+      if(fullSubgroups)
+      {
+        rdcspv::Id nonHelperElected;
+
+        if(subgroupCapability == SubgroupCapability::Vulkan1_1)
+          nonHelperElected =
+              ops.add(rdcspv::OpGroupNonUniformElect(boolType, editor.MakeId(), subgroupScope));
+        else
+          nonHelperElected = ops.add(rdcspv::OpSubgroupFirstInvocationKHR(
+              boolType, editor.MakeId(), editor.AddConstantImmediate<bool>(true)));
+        ops.add(rdcspv::OpSelectionMerge(slotMergeLabel, rdcspv::SelectionControl::None));
+        ops.add(rdcspv::OpBranchConditional(nonHelperElected, slotAllocLabel, slotMergeLabel));
+      }
+      else
+      {
+        ops.add(rdcspv::OpBranch(slotAllocLabel));
+      }
+
+      ops.add(rdcspv::OpLabel(slotAllocLabel));
+
+      // increment total_count
+      ops.add(rdcspv::OpAtomicIAdd(uint32Type, editor.MakeId(), total_count, scope, semantics,
+                                   editor.AddConstantImmediate<uint32_t>(1)));
+
+      // allocate a slot with atomic add
+      rdcspv::Id slot =
+          ops.add(rdcspv::OpAtomicIAdd(uint32Type, editor.MakeId(), hit_count, scope, semantics,
+                                       editor.AddConstantImmediate<uint32_t>(1)));
+
+      editor.SetName(slot, "slotAlloc");
+
+      ops.add(rdcspv::OpBranch(slotMergeLabel));
+
+      ops.add(rdcspv::OpLabel(slotMergeLabel));
+
+      // now if we're in a subgroup we need to broadcast the slot to the whole group, and also OpPhi
+      // the previous slot depending on where we got it from
+      if(fullSubgroups)
+      {
+        slot = ops.add(rdcspv::OpPhi(
+            uint32Type, editor.MakeId(),
+            {{slot, slotAllocLabel}, {editor.AddConstantImmediate<uint32_t>(0U), writeLabel}}));
+        editor.SetName(slot, "slotToBroadcast");
+
+        if(subgroupCapability == SubgroupCapability::Vulkan1_1)
+          slot = ops.add(rdcspv::OpGroupNonUniformBroadcastFirst(uint32Type, editor.MakeId(),
+                                                                 subgroupScope, slot));
+        else
+          slot = ops.add(rdcspv::OpSubgroupFirstInvocationKHR(uint32Type, editor.MakeId(), slot));
+        editor.SetName(slot, "slot");
+      }
+
+      rdcspv::Id inRange = ops.add(rdcspv::OpULessThan(boolType, editor.MakeId(), slot, arrayLength));
+
+      killLabels.push_back(editor.MakeId());
+      writeLabel = editor.MakeId();
+      ops.add(rdcspv::OpSelectionMerge(killLabels.back(), rdcspv::SelectionControl::None));
+      ops.add(rdcspv::OpBranchConditional(inRange, writeLabel, killLabels.back()));
+      ops.add(rdcspv::OpLabel(writeLabel));
+
+      rdcspv::Id hitptr = editor.DeclareType(rdcspv::Pointer(ResultDataBaseType, bufferClass));
+
+      // get a pointer to the hit for our slot
+      rdcspv::Id hit = ops.add(rdcspv::OpAccessChain(
+          hitptr, editor.MakeId(), structPtr, {editor.AddConstantImmediate<uint32_t>(3), slot}));
+
+      // store fixed properties. In the subgroup case this needs to be conditional for only the candidate thread
+      rdcspv::Id fixedDataLabel = editor.MakeId(), fixedDataMerge = editor.MakeId();
+
+      if(fullSubgroups)
+      {
+        ops.add(rdcspv::OpSelectionMerge(fixedDataMerge, rdcspv::SelectionControl::None));
+        ops.add(rdcspv::OpBranchConditional(candidateThread, fixedDataLabel, fixedDataMerge));
+      }
+      else
+      {
+        ops.add(rdcspv::OpBranch(fixedDataLabel));
+      }
+
+      ops.add(rdcspv::OpLabel(fixedDataLabel));
+
+      rdcspv::Id storePtr =
+          ops.add(rdcspv::OpAccessChain(float4BufPtr, editor.MakeId(), hit,
+                                        {editor.AddConstantImmediate<uint32_t>(ResultBase_pos)}));
+      if(fragCoord != rdcspv::Id())
+        ops.add(rdcspv::OpStore(storePtr, fragCoord, alignedAccess));
+
+      rdcspv::Id primitiveID;
+      if(usePrimitiveID)
+      {
+        primitiveID = editor.AddBuiltinInputLoad(ops, newGlobals, stage,
+                                                 rdcspv::BuiltIn::PrimitiveId, uint32Type);
+        editor.AddCapability(rdcspv::Capability::Geometry);
+      }
+      else
+      {
+        primitiveID = editor.AddConstantImmediate<uint32_t>(0);
+      }
+
+      storePtr =
+          ops.add(rdcspv::OpAccessChain(uint32BufPtr, editor.MakeId(), hit,
+                                        {editor.AddConstantImmediate<uint32_t>(ResultBase_prim)}));
+      ops.add(rdcspv::OpStore(storePtr, primitiveID, alignedAccess));
+
+      rdcspv::Id sampleIndex;
+      if(useSampleID)
+      {
+        sampleIndex = editor.AddBuiltinInputLoad(ops, newGlobals, stage, rdcspv::BuiltIn::SampleId,
+                                                 uint32Type);
+        editor.AddCapability(rdcspv::Capability::SampleRateShading);
+      }
+      else
+      {
+        sampleIndex = editor.AddConstantImmediate<uint32_t>(0);
+      }
+
+      storePtr =
+          ops.add(rdcspv::OpAccessChain(uint32BufPtr, editor.MakeId(), hit,
+                                        {editor.AddConstantImmediate<uint32_t>(ResultBase_sample)}));
+      ops.add(rdcspv::OpStore(storePtr, sampleIndex, alignedAccess));
+
+      rdcspv::Id viewIndex;
+      if(useViewIndex)
+      {
+        viewIndex = editor.AddBuiltinInputLoad(ops, newGlobals, stage, rdcspv::BuiltIn::ViewIndex,
+                                               uint32Type);
+        editor.AddCapability(rdcspv::Capability::MultiView);
+        editor.AddExtension("SPV_KHR_multiview");
+      }
+      else
+      {
+        viewIndex = editor.AddConstantImmediate<uint32_t>(0);
+      }
+
+      storePtr =
+          ops.add(rdcspv::OpAccessChain(uint32BufPtr, editor.MakeId(), hit,
+                                        {editor.AddConstantImmediate<uint32_t>(ResultBase_view)}));
+      ops.add(rdcspv::OpStore(storePtr, viewIndex, alignedAccess));
+
+      storePtr =
+          ops.add(rdcspv::OpAccessChain(uint32BufPtr, editor.MakeId(), hit,
+                                        {editor.AddConstantImmediate<uint32_t>(ResultBase_valid)}));
+      ops.add(rdcspv::OpStore(storePtr, editor.AddConstantImmediate(validMagicNumber), alignedAccess));
+
+      // store derivative health check for pixel shaders
+      storePtr = ops.add(
+          rdcspv::OpAccessChain(floatBufPtr, editor.MakeId(), hit,
+                                {editor.AddConstantImmediate<uint32_t>(ResultBase_ddxDerivCheck)}));
+      ops.add(rdcspv::OpStore(storePtr, ddxDerivativeCheck, alignedAccess));
+
+      // store the quadLaneIndex (in case it's different to laneIndex)
+      storePtr = ops.add(
+          rdcspv::OpAccessChain(uint32BufPtr, editor.MakeId(), hit,
+                                {editor.AddConstantImmediate<uint32_t>(ResultBase_quadLaneIndex)}));
+      if(quadLaneIndex != rdcspv::Id())
+        ops.add(rdcspv::OpStore(storePtr, quadLaneIndex, alignedAccess));
+
+      // store the laneIndex
+      storePtr = ops.add(
+          rdcspv::OpAccessChain(uint32BufPtr, editor.MakeId(), hit,
+                                {editor.AddConstantImmediate<uint32_t>(ResultBase_laneIndex)}));
+      ops.add(rdcspv::OpStore(storePtr, laneIndex, alignedAccess));
+
+      // if we have them, store subgroup properties, if they're not present they will be 0
+      storePtr = ops.add(
+          rdcspv::OpAccessChain(uint32BufPtr, editor.MakeId(), hit,
+                                {editor.AddConstantImmediate<uint32_t>(ResultBase_subgroupSize)}));
+      ops.add(rdcspv::OpStore(storePtr, subgroupSize, alignedAccess));
+      storePtr = ops.add(
+          rdcspv::OpAccessChain(uint4BufPtr, editor.MakeId(), hit,
+                                {editor.AddConstantImmediate<uint32_t>(ResultBase_globalBallot)}));
+      ops.add(rdcspv::OpStore(storePtr, globalBallot, alignedAccess));
+      storePtr = ops.add(
+          rdcspv::OpAccessChain(uint4BufPtr, editor.MakeId(), hit,
+                                {editor.AddConstantImmediate<uint32_t>(ResultBase_electBallot)}));
+      ops.add(rdcspv::OpStore(storePtr, electBallot, alignedAccess));
+      storePtr = ops.add(
+          rdcspv::OpAccessChain(uint4BufPtr, editor.MakeId(), hit,
+                                {editor.AddConstantImmediate<uint32_t>(ResultBase_helperBallot)}));
+      ops.add(rdcspv::OpStore(storePtr, helperBallot, alignedAccess));
+      storePtr = ops.add(
+          rdcspv::OpAccessChain(uint32BufPtr, editor.MakeId(), hit,
+                                {editor.AddConstantImmediate<uint32_t>(ResultBase_numSubgroups)}));
+      ops.add(rdcspv::OpStore(storePtr, numSubgroups, alignedAccess));
+      storePtr = ops.add(
+          rdcspv::OpAccessChain(uint32BufPtr, editor.MakeId(), hit,
+                                {editor.AddConstantImmediate<uint32_t>(ResultBase_shadRate)}));
+      ops.add(rdcspv::OpStore(storePtr, shadRate, alignedAccess));
+
+      // merge after doing the fixed data section
+      ops.add(rdcspv::OpBranch(fixedDataMerge));
+      ops.add(rdcspv::OpLabel(fixedDataMerge));
+
+      rdcspv::Id LaneDataPtrType = editor.DeclareType(rdcspv::Pointer(LaneDataStruct, bufferClass));
+
+      // now we conditionally store each helper lane. Only relevant for pixel shaders but we need
+      // all helper lanes for all active lanes to ensure we can get derivatives for any of them
+      if(stage == ShaderStage::Pixel)
+      {
+        for(uint32_t q = 0; q < 4; q++)
+        {
+          rdcspv::Id doHelperLabel = editor.MakeId(), skipHelperLabel = editor.MakeId();
+
+          ops.add(rdcspv::OpSelectionMerge(skipHelperLabel, rdcspv::SelectionControl::None));
+          ops.add(rdcspv::OpBranchConditional(shouldStoreHelperPerQuad[q], doHelperLabel,
+                                              skipHelperLabel));
+          ops.add(rdcspv::OpLabel(doHelperLabel));
+
+          rdcspv::Id outputPtr = ops.add(rdcspv::OpAccessChain(
+              LaneDataPtrType, editor.MakeId(), hit,
+              {editor.AddConstantImmediate<uint32_t>(ResultBase_firstUser), quadLaneStoreIdx[q]}));
+
+          for(laneValue &val : laneValues)
+          {
+            rdcspv::Id valueType = val.type;
+            if(valueType == boolType)
+              valueType = uint32Type;
+            rdcspv::Id ptrType = editor.DeclareType(rdcspv::Pointer(valueType, bufferClass));
+
+            rdcspv::Id valPtr = ops.add(rdcspv::OpAccessChain(
+                ptrType, editor.MakeId(), outputPtr,
+                {editor.AddConstantImmediate<uint32_t>((uint32_t)val.structIndex)}));
+
+            const rdcspv::DataType &dataType = editor.GetDataType(val.type);
+            rdcspv::MemoryAccessAndParamDatas access = alignedAccess;
+            if(dataType.scalar().width == 8)
+              access = aligned8Access;
+
+            if(val.base == isHelper)
+            {
+              ops.add(rdcspv::OpStore(valPtr, isHelperPerQuad[q], access));
+            }
+            else if(val.base == quadLaneIndex)
+            {
+              ops.add(rdcspv::OpStore(valPtr, quadIdxConst[q], access));
+            }
+            else if(val.flat)
+            {
+              ops.add(rdcspv::OpStore(valPtr, val.base, access));
+            }
+            else
+            {
+              RDCASSERT(!val.quadSwizzledData.empty());
+              ops.add(rdcspv::OpStore(valPtr, val.quadSwizzledData[q], access));
+            }
+          }
+
+          ops.add(rdcspv::OpBranch(skipHelperLabel));
+          ops.add(rdcspv::OpLabel(skipHelperLabel));
+        }
+      }
+
+      // if we have full subgroups, each subgroup now writes its own data here, if we are in a
+      // non-pixel shader without subgroups we store the single thread's data here.
+      // the non-subgroup pixel shader case is handled above in the helper lanes (which will all store)
+      if(fullSubgroups || stage != ShaderStage::Pixel)
+      {
+        rdcspv::Id idx;
+
+        if(fullSubgroups)
+          idx = laneIndex;
+        else
+          idx = editor.AddConstantImmediate<uint32_t>(0U);
+
+        rdcspv::Id outputPtr = ops.add(rdcspv::OpAccessChain(
+            LaneDataPtrType, editor.MakeId(), hit,
+            {editor.AddConstantImmediate<uint32_t>(ResultBase_firstUser), idx}));
+
+        for(laneValue &val : laneValues)
+        {
+          rdcspv::Id valueType = val.type;
+          if(valueType == boolType)
+            valueType = uint32Type;
+          rdcspv::Id ptrType = editor.DeclareType(rdcspv::Pointer(valueType, bufferClass));
+
+          rdcspv::Id valPtr = ops.add(rdcspv::OpAccessChain(
+              ptrType, editor.MakeId(), outputPtr,
+              {editor.AddConstantImmediate<uint32_t>((uint32_t)val.structIndex)}));
+
+          const rdcspv::DataType &dataType = editor.GetDataType(val.type);
+          rdcspv::MemoryAccessAndParamDatas access = alignedAccess;
+          if(dataType.scalar().width == 8)
+            access = aligned8Access;
+
+          ops.add(rdcspv::OpStore(valPtr, val.base, access));
+        }
+      }
+
+      // join up with the early-outs we did, in reverse order
+      for(size_t i = 0; i < killLabels.size(); i++)
+      {
+        rdcspv::Id label = killLabels[killLabels.size() - 1 - i];
+        ops.add(rdcspv::OpBranch(label));
+        ops.add(rdcspv::OpLabel(label));
+      }
     }
-    // don't return, kill. This makes it well-defined that we don't write anything to our outputs
-    ops.add(rdcspv::OpKill());
+
+    // we want to "call" the original function to ensure the compiler does hopefully as close
+    // codegen as possible to the original but we don't want to actually execute it. To do this we
+    // use an atomic max with a dummy value and only call the function if the value is *larger* -
+    // the compiler can't know what value was pre-existing in the buffer (though we know it was
+    // zero) so it can't eliminate either branch, but in practice we will always return
+
+    rdcspv::Id trueLabel = editor.MakeId();
+    rdcspv::Id falseLabel = editor.MakeId();
+
+    // get a pointer to buffer.dummy
+    rdcspv::Id dummy = ops.add(rdcspv::OpAccessChain(uintPtr, editor.MakeId(), structPtr,
+                                                     {editor.AddConstantImmediate<uint32_t>(2)}));
+
+    dummy = ops.add(rdcspv::OpAtomicUMax(uint32Type, editor.MakeId(), dummy, scope, semantics,
+                                         editor.AddConstantImmediate<uint32_t>(1)));
+    editor.SetName(dummy, "dummy");
+    rdcspv::Id dummyCompare = ops.add(rdcspv::OpULessThan(
+        boolType, editor.MakeId(), dummy, editor.AddConstantImmediate<uint32_t>(2)));
+
+    ops.add(rdcspv::OpSelectionMerge(falseLabel, rdcspv::SelectionControl::None));
+    ops.add(rdcspv::OpBranchConditional(dummyCompare, trueLabel, falseLabel));
+
+    ops.add(rdcspv::OpLabel(trueLabel));
+
+    //  don't return, kill. This makes it well-defined that we don't write anything to our outputs
+    if(ShaderStage(shadRefl.stageIndex) == ShaderStage::Pixel)
+      ops.add(rdcspv::OpKill());
+    else
+      ops.add(rdcspv::OpReturn());
+
+    ops.add(rdcspv::OpLabel(falseLabel));
+
+    ops.add(rdcspv::OpFunctionCall(voidType, editor.MakeId(), originalEntry));
+
+    ops.add(rdcspv::OpReturn());
 
     ops.add(rdcspv::OpFunctionEnd());
 
     editor.AddFunction(ops);
   }
+
+  editor.AddEntryGlobals(entryID, newGlobals);
+}
+
+rdcpair<uint32_t, uint32_t> GetAlignAndOutputSize(VulkanCreationInfo::ShaderModuleReflection &shadRefl)
+{
+  uint32_t paramAlign = 16;
+
+  for(const SigParameter &sig : shadRefl.refl->inputSignature)
+  {
+    if(VarTypeByteSize(sig.varType) * sig.compCount > paramAlign)
+      paramAlign = 32;
+  }
+
+  // conservatively calculate structure stride with full amount for every input element
+  uint32_t structStride = (uint32_t)shadRefl.refl->inputSignature.size() * paramAlign;
+
+  if(shadRefl.refl->stage == ShaderStage::Vertex)
+    structStride += sizeof(rdcspv::VertexLaneData);
+  else if(shadRefl.refl->stage == ShaderStage::Pixel)
+    structStride += sizeof(rdcspv::PixelLaneData);
+  else if(shadRefl.refl->stage == ShaderStage::Compute ||
+          shadRefl.refl->stage == ShaderStage::Task || shadRefl.refl->stage == ShaderStage::Mesh)
+    structStride += sizeof(rdcspv::ComputeLaneData);
+
+  if(shadRefl.patchData.threadScope & rdcspv::ThreadScope::Subgroup)
+  {
+    structStride += sizeof(rdcspv::SubgroupLaneData);
+  }
+
+  return {paramAlign, structStride};
+}
+
+VkDescriptorSetLayoutBinding MakeNewBinding(VkShaderStageFlagBits stage)
+{
+  return {
+      0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, NULL,
+  };
+}
+
+static void ComputeSubgroupMasks(VulkanAPIWrapper *apiWrapper, uint32_t numThreads)
+{
+  rdcarray<std::unordered_map<ShaderBuiltin, ShaderVariable>> &allthread_builtins =
+      apiWrapper->GetThreadBuiltins();
+
+  uint32_t subgroupSize = apiWrapper->GetGlobalBuiltins()[ShaderBuiltin::SubgroupSize].value.u32v[0];
+
+  // Create the subgroup mask builtins (uvec4's)
+  for(uint32_t t = 0; t < numThreads; ++t)
+  {
+    if(apiWrapper->thread_props[t][(size_t)rdcspv::ThreadProperty::Active] == 0)
+      continue;
+
+    std::unordered_map<ShaderBuiltin, ShaderVariable> &thread_builtins = allthread_builtins[t];
+
+    uint32_t id = thread_builtins[ShaderBuiltin::IndexInSubgroup].value.u32v[0];
+
+    ShaderVariable &varEQ = thread_builtins[ShaderBuiltin::SubgroupEqualMask];
+    varEQ.rows = 1;
+    varEQ.columns = 4;
+    varEQ.type = VarType::UInt;
+    ShaderVariable &varGE = thread_builtins[ShaderBuiltin::SubgroupGreaterEqualMask];
+    varGE.rows = 1;
+    varGE.columns = 4;
+    varGE.type = VarType::UInt;
+    ShaderVariable &varGT = thread_builtins[ShaderBuiltin::SubgroupGreaterMask];
+    varGT.rows = 1;
+    varGT.columns = 4;
+    varGT.type = VarType::UInt;
+    ShaderVariable &varLE = thread_builtins[ShaderBuiltin::SubgroupLessEqualMask];
+    varLE.rows = 1;
+    varLE.columns = 4;
+    varLE.type = VarType::UInt;
+    ShaderVariable &varLT = thread_builtins[ShaderBuiltin::SubgroupLessMask];
+    varLT.rows = 1;
+    varLT.columns = 4;
+    varLT.type = VarType::UInt;
+
+    for(uint32_t i = 0; i < subgroupSize; ++i)
+    {
+      uint32_t idx = i / 32;
+      uint32_t mask = 1U << (i % 32);
+      if(i == id)
+        varEQ.value.u32v[idx] |= mask;
+      if(i >= id)
+        varGE.value.u32v[idx] |= mask;
+      if(i > id)
+        varGT.value.u32v[idx] |= mask;
+      if(i <= id)
+        varLE.value.u32v[idx] |= mask;
+      if(i < id)
+        varLT.value.u32v[idx] |= mask;
+    }
+  }
+}
+
+void VulkanReplay::CalculateSubgroupProperties(uint32_t &maxSubgroupSize,
+                                               SubgroupCapability &subgroupCapability)
+{
+  maxSubgroupSize = 4;
+
+  // if we don't have subgroup ballots we assume we have no real meaningful subgroup capabilities at
+  // all except for 'basic'. The only thing basic lets you do is fetch the subgroup ID, and
+  // determine which lane is the first active (OpGroupNonUniformElect).
+  // in this case we effectively consider it non-subgroup and just read those values directly to
+  // fill in, but otherwise simulate as if there were no subgroup use.
+
+  // for our purposes vulkan 1.1 fully deprecated the old EXT_shader_subgroup_* pair of extensions
+  // as the only thing that wasn't deprecated was a non-constant broadcast ID which we don't need
+  if(m_pDriver->GetExtensions(NULL).vulkanVersion >= VK_API_VERSION_1_1)
+  {
+    VkPhysicalDeviceSubgroupProperties subProps = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES,
+    };
+
+    VkPhysicalDeviceProperties2 availBase = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    availBase.pNext = &subProps;
+    m_pDriver->vkGetPhysicalDeviceProperties2(m_pDriver->GetPhysDev(), &availBase);
+
+    maxSubgroupSize = subProps.subgroupSize;
+    subgroupCapability = SubgroupCapability::Vulkan1_1_NoBallot;
+    const VkSubgroupFeatureFlags requiredFlags =
+        (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_VOTE_BIT);
+    if((subProps.supportedOperations & requiredFlags) == requiredFlags)
+      subgroupCapability = SubgroupCapability::Vulkan1_1;
+
+    if(m_pDriver->GetExtensions(NULL).ext_EXT_subgroup_size_control)
+    {
+      VkPhysicalDeviceSubgroupSizeControlProperties subSizeProps = {
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES,
+      };
+      availBase.pNext = &subSizeProps;
+      m_pDriver->vkGetPhysicalDeviceProperties2(m_pDriver->GetPhysDev(), &availBase);
+
+      // use new upper bound in case it's higher with variable sizes
+      maxSubgroupSize = RDCMAX(maxSubgroupSize, subSizeProps.maxSubgroupSize);
+    }
+  }
+  else if(m_pDriver->GetExtensions(NULL).ext_EXT_shader_subgroup_ballot)
+  {
+    // the ballot extension only proides the subgroup size on the GPU so we need to allocate worst case up front
+
+    RDCWARN("Subgroup ballot extension is best extension enabled - using worst case subgroup size");
+
+    maxSubgroupSize = 128;
+    subgroupCapability = SubgroupCapability::EXTBallot;
+  }
+  else if(m_pDriver->GetExtensions(NULL).ext_EXT_shader_subgroup_vote)
+  {
+    // if only the vote extension is enabled we have no way to determine the subgroup size or
+    // anything, so we just fall back to treating this as a degenerate case with a single thread
+
+    RDCWARN("Subgroup vote extension is only subgroup feature enabled - treating as degenerate");
+
+    maxSubgroupSize = 1;
+    subgroupCapability = SubgroupCapability::None;
+  }
+}
+
+VkSpecializationInfo VulkanReplay::MakeSpecInfo(SpecData &specData, VkSpecializationMapEntry *specMaps)
+{
+  memcpy(specMaps, specMapsTemplate, sizeof(specMapsTemplate));
+
+  specMaps[(uint32_t)InputSpecConstant::Address].size =
+      (m_StorageMode == BufferStorageMode::KHR_bda32 ? sizeof(uint32_t) : sizeof(uint64_t));
+
+  VkSpecializationInfo ret = {};
+  ret.dataSize = sizeof(specData);
+  ret.pData = &specData;
+  ret.mapEntryCount = (uint32_t)InputSpecConstant::Count;
+  ret.pMapEntries = specMaps;
+  return ret;
 }
 
 ShaderDebugTrace *VulkanReplay::DebugVertex(uint32_t eventId, uint32_t vertid, uint32_t instid,
                                             uint32_t idx, uint32_t view)
 {
-  if(!GetAPIProperties().shaderDebugging)
-  {
-    RDCUNIMPLEMENTED("Vertex debugging not yet implemented for Vulkan");
-    return new ShaderDebugTrace;
-  }
-
   const VulkanRenderState &state = m_pDriver->GetRenderState();
   VulkanCreationInfo &c = m_pDriver->m_CreationInfo;
 
@@ -3736,12 +5595,14 @@ ShaderDebugTrace *VulkanReplay::DebugVertex(uint32_t eventId, uint32_t vertid, u
   m_pDriver->ReplayLog(0, eventId, eReplay_WithoutDraw);
 
   const VulkanCreationInfo::Pipeline &pipe = c.m_Pipeline[state.graphics.pipeline];
-  VulkanCreationInfo::ShaderModule &shader = c.m_ShaderModule[pipe.shaders[0].module];
-  rdcstr entryPoint = pipe.shaders[0].entryPoint;
-  const rdcarray<SpecConstant> &spec = pipe.shaders[0].specialization;
+  const VulkanCreationInfo::ShaderEntry &shaderEntry =
+      state.graphics.shaderObject ? c.m_ShaderObject[state.shaderObjects[0]].shad : pipe.shaders[0];
+  VulkanCreationInfo::ShaderModule &shader = c.m_ShaderModule[shaderEntry.module];
+  rdcstr entryPoint = shaderEntry.entryPoint;
+  const rdcarray<SpecConstant> &spec = shaderEntry.specialization;
 
   VulkanCreationInfo::ShaderModuleReflection &shadRefl =
-      shader.GetReflection(entryPoint, state.graphics.pipeline);
+      shader.GetReflection(ShaderStage::Vertex, entryPoint, state.graphics.pipeline);
 
   if(!shadRefl.refl->debugInfo.debuggable)
   {
@@ -3749,216 +5610,512 @@ ShaderDebugTrace *VulkanReplay::DebugVertex(uint32_t eventId, uint32_t vertid, u
     return new ShaderDebugTrace();
   }
 
-  shadRefl.PopulateDisassembly(shader.spirv);
-
-  VulkanAPIWrapper *apiWrapper =
-      new VulkanAPIWrapper(m_pDriver, c, VK_SHADER_STAGE_VERTEX_BIT, eventId);
-
-  // clamp the view index to the number of multiviews, just to be sure
-  size_t numViews = c.m_RenderPass[state.renderPass].subpasses[state.subpass].multiviews.size();
-  if(numViews > 1)
-    view = RDCMIN((uint32_t)numViews - 1, view);
-  else
-    view = 0;
-
-  std::map<ShaderBuiltin, ShaderVariable> &builtins = apiWrapper->builtin_inputs;
-  builtins[ShaderBuiltin::BaseInstance] =
-      ShaderVariable(rdcstr(), action->instanceOffset, 0U, 0U, 0U);
-  builtins[ShaderBuiltin::BaseVertex] = ShaderVariable(
-      rdcstr(), (action->flags & ActionFlags::Indexed) ? action->baseVertex : action->vertexOffset,
-      0U, 0U, 0U);
-  builtins[ShaderBuiltin::DeviceIndex] = ShaderVariable(rdcstr(), 0U, 0U, 0U, 0U);
-  builtins[ShaderBuiltin::DrawIndex] = ShaderVariable(rdcstr(), action->drawIndex, 0U, 0U, 0U);
-  if(action->flags & ActionFlags::Indexed)
-    builtins[ShaderBuiltin::VertexIndex] = ShaderVariable(rdcstr(), idx, 0U, 0U, 0U);
-  else
-    builtins[ShaderBuiltin::VertexIndex] = ShaderVariable(rdcstr(), vertid + vertOffset, 0U, 0U, 0U);
-  builtins[ShaderBuiltin::InstanceIndex] = ShaderVariable(rdcstr(), instid + instOffset, 0U, 0U, 0U);
-  builtins[ShaderBuiltin::ViewportIndex] = ShaderVariable(rdcstr(), view, 0U, 0U, 0U);
-
-  rdcarray<ShaderVariable> &locations = apiWrapper->location_inputs;
-  for(const VulkanCreationInfo::Pipeline::Attribute &attr : pipe.vertexAttrs)
+  if((shadRefl.patchData.threadScope & rdcspv::ThreadScope::Subgroup) &&
+     !m_pDriver->GetDeviceEnabledFeatures().vertexPipelineStoresAndAtomics)
   {
-    locations.resize_for_index(attr.location);
-
-    if(Vulkan_Debug_ShaderDebugLogging())
-      RDCLOG("Populating location %u", attr.location);
-
-    ShaderVariable &var = locations[attr.location];
-
-    bytebuf data;
-
-    size_t size = GetByteSize(1, 1, 1, attr.format, 0);
-
-    bool found = false;
-
-    for(const VulkanCreationInfo::Pipeline::Binding &bind : pipe.vertexBindings)
-    {
-      if(bind.vbufferBinding != attr.binding)
-        continue;
-
-      if(bind.vbufferBinding < state.vbuffers.size())
-      {
-        const VulkanRenderState::VertBuffer &vb = state.vbuffers[bind.vbufferBinding];
-
-        if(vb.buf != ResourceId())
-        {
-          VkDeviceSize vertexOffset = 0;
-
-          found = true;
-
-          if(bind.perInstance)
-          {
-            if(bind.instanceDivisor == 0)
-              vertexOffset = instOffset * vb.stride;
-            else
-              vertexOffset = (instOffset + (instid / bind.instanceDivisor)) * vb.stride;
-          }
-          else
-          {
-            vertexOffset = (idx + vertOffset) * vb.stride;
-          }
-
-          if(Vulkan_Debug_ShaderDebugLogging())
-          {
-            RDCLOG("Fetching from %s at %llu offset %zu bytes", ToStr(vb.buf).c_str(),
-                   vb.offs + attr.byteoffset + vertexOffset, size);
-          }
-
-          if(attr.byteoffset + vertexOffset < vb.size)
-            GetDebugManager()->GetBufferData(vb.buf, vb.offs + attr.byteoffset + vertexOffset, size,
-                                             data);
-        }
-      }
-      else if(Vulkan_Debug_ShaderDebugLogging())
-      {
-        RDCLOG("Vertex binding %u out of bounds from %zu vertex buffers", bind.vbufferBinding,
-               state.vbuffers.size());
-      }
-    }
-
-    if(!found)
-    {
-      if(Vulkan_Debug_ShaderDebugLogging())
-      {
-        RDCLOG("Attribute binding %u out of bounds from %zu bindings", attr.binding,
-               pipe.vertexBindings.size());
-      }
-    }
-
-    if(size > data.size())
-    {
-      // out of bounds read
-      m_pDriver->AddDebugMessage(
-          MessageCategory::Execution, MessageSeverity::Medium, MessageSource::RuntimeWarning,
-          StringFormat::Fmt(
-              "Attribute location %u from binding %u reads out of bounds at vertex %u "
-              "(index %u) in instance %u.",
-              attr.location, attr.binding, vertid, idx, instid));
-
-      if(IsUIntFormat(attr.format) || IsSIntFormat(attr.format))
-        var.type = VarType::UInt;
-      else
-        var.type = VarType::Float;
-
-      set0001(var);
-    }
-    else
-    {
-      ResourceFormat fmt = MakeResourceFormat(attr.format);
-
-      // integer formats need to be read as-is, rather than converted to floats
-      if(fmt.compType == CompType::UInt || fmt.compType == CompType::SInt)
-      {
-        if(fmt.type == ResourceFormatType::R10G10B10A2)
-        {
-          // this is the only packed UINT format
-          Vec4u decoded = ConvertFromR10G10B10A2UInt(*(uint32_t *)data.data());
-
-          var.type = VarType::UInt;
-
-          setUintComp(var, 0, decoded.x);
-          setUintComp(var, 1, decoded.y);
-          setUintComp(var, 2, decoded.z);
-          setUintComp(var, 3, decoded.w);
-        }
-        else
-        {
-          var.type = VarType::UInt;
-
-          if(fmt.compType == CompType::UInt)
-          {
-            if(fmt.compByteWidth == 1)
-              var.type = VarType::UByte;
-            else if(fmt.compByteWidth == 2)
-              var.type = VarType::UShort;
-            else if(fmt.compByteWidth == 4)
-              var.type = VarType::UInt;
-            else if(fmt.compByteWidth == 8)
-              var.type = VarType::ULong;
-          }
-          else if(fmt.compType == CompType::SInt)
-          {
-            if(fmt.compByteWidth == 1)
-              var.type = VarType::SByte;
-            else if(fmt.compByteWidth == 2)
-              var.type = VarType::SShort;
-            else if(fmt.compByteWidth == 4)
-              var.type = VarType::SInt;
-            else if(fmt.compByteWidth == 8)
-              var.type = VarType::SLong;
-          }
-
-          RDCASSERTEQUAL(fmt.compByteWidth, VarTypeByteSize(var.type));
-          memcpy(var.value.u8v.data(), data.data(), fmt.compByteWidth * fmt.compCount);
-        }
-      }
-      else
-      {
-        FloatVector decoded = DecodeFormattedComponents(fmt, data.data());
-
-        var.type = VarType::Float;
-
-        setFloatComp(var, 0, decoded.x);
-        setFloatComp(var, 1, decoded.y);
-        setFloatComp(var, 2, decoded.z);
-        setFloatComp(var, 3, decoded.w);
-      }
-    }
-  }
-
-  rdcspv::Debugger *debugger = new rdcspv::Debugger;
-  debugger->Parse(shader.spirv.GetSPIRV());
-  ShaderDebugTrace *ret = debugger->BeginDebug(apiWrapper, ShaderStage::Vertex, entryPoint, spec,
-                                               shadRefl.instructionLines, shadRefl.patchData, 0);
-  apiWrapper->ResetReplay();
-
-  return ret;
-}
-
-ShaderDebugTrace *VulkanReplay::DebugPixel(uint32_t eventId, uint32_t x, uint32_t y,
-                                           uint32_t sample, uint32_t primitive)
-{
-  if(!GetAPIProperties().shaderDebugging)
-  {
-    RDCUNIMPLEMENTED("Pixel debugging not yet implemented for Vulkan");
+    RDCWARN("Subgroup vertex debugging is not supported without vertex stores");
     return new ShaderDebugTrace;
   }
 
+  shadRefl.PopulateDisassembly(shader.spirv);
+
+  VulkanAPIWrapper *apiWrapper =
+      new VulkanAPIWrapper(m_pDriver, c, ShaderStage::Vertex, eventId, shadRefl.refl->resourceId);
+
+  // clamp the view index to the number of multiviews, just to be sure
+  uint32_t numViews = 1;
+
+  if(state.dynamicRendering.active)
+    numViews = state.dynamicRendering.viewMask == ~0U
+                   ? 32
+                   : RDCMAX(numViews, Log2Ceil(state.dynamicRendering.viewMask + 1));
+  else
+    numViews =
+        (uint32_t)c.m_RenderPass[state.GetRenderPass()].subpasses[state.subpass].multiviews.size();
+  if(numViews > 1)
+    view = RDCMIN(numViews - 1, view);
+  else
+    view = 0;
+
+  SubgroupCapability subgroupCapability = SubgroupCapability::None;
+  uint32_t maxSubgroupSize = 1;
+  CalculateSubgroupProperties(maxSubgroupSize, subgroupCapability);
+
+  uint32_t numThreads = 1;
+
+  if(shadRefl.patchData.threadScope & rdcspv::ThreadScope::Subgroup)
+    numThreads = RDCMAX(numThreads, maxSubgroupSize);
+
+  rdcarray<rdcarray<ShaderVariable>> &location_inputs = apiWrapper->GetLocationInputs();
+  rdcarray<std::unordered_map<ShaderBuiltin, ShaderVariable>> &allthread_builtins =
+      apiWrapper->GetThreadBuiltins();
+  location_inputs.resize(numThreads);
+  allthread_builtins.resize(numThreads);
+  apiWrapper->thread_props.resize(numThreads);
+
+  apiWrapper->thread_props[0][(size_t)rdcspv::ThreadProperty::Active] = 1;
+
+  std::unordered_map<ShaderBuiltin, ShaderVariable> &global_builtins =
+      apiWrapper->GetGlobalBuiltins();
+  global_builtins[ShaderBuiltin::BaseInstance] =
+      ShaderVariable(rdcstr(), action->instanceOffset, 0U, 0U, 0U);
+  global_builtins[ShaderBuiltin::BaseVertex] = ShaderVariable(
+      rdcstr(), (action->flags & ActionFlags::Indexed) ? action->baseVertex : action->vertexOffset,
+      0U, 0U, 0U);
+  global_builtins[ShaderBuiltin::DeviceIndex] = ShaderVariable(rdcstr(), 0U, 0U, 0U, 0U);
+  global_builtins[ShaderBuiltin::DrawIndex] = ShaderVariable(rdcstr(), action->drawIndex, 0U, 0U, 0U);
+  global_builtins[ShaderBuiltin::ViewportIndex] = ShaderVariable(rdcstr(), view, 0U, 0U, 0U);
+  global_builtins[ShaderBuiltin::MultiViewIndex] = ShaderVariable(rdcstr(), view, 0U, 0U, 0U);
+
+  bool useViewIndex = (view == ~0U) ? false : true;
+  if(useViewIndex)
+  {
+    ResourceId rp = state.GetRenderPass();
+    if(rp != ResourceId())
+    {
+      const VulkanCreationInfo::RenderPass &rpInfo =
+          m_pDriver->GetDebugManager()->GetRenderPassInfo(rp);
+      for(auto it = rpInfo.subpasses.begin(); it != rpInfo.subpasses.end(); ++it)
+      {
+        if(it->multiviews.isEmpty())
+        {
+          if(Vulkan_Debug_ShaderDebugLogging())
+            RDCLOG(
+                "Disabling useViewIndex because at least one subpass does not have multiple views");
+          useViewIndex = false;
+          break;
+        }
+      }
+    }
+    else
+    {
+      useViewIndex =
+          (state.dynamicRendering.active ? state.dynamicRendering.viewMask : pipe.viewMask) != 0;
+      if(!useViewIndex && Vulkan_Debug_ShaderDebugLogging())
+        RDCLOG("Disabling useViewIndex because viewMask is zero");
+    }
+  }
+  else
+  {
+    if(Vulkan_Debug_ShaderDebugLogging())
+      RDCLOG("Disabling useViewIndex from input view %u", view);
+  }
+
+  // if we need to fetch subgroup data, do that now.
+  uint32_t laneIndex = 0;
+  if(numThreads > 1)
+  {
+    SpecData specData = {};
+
+    if(action->flags & ActionFlags::Indexed)
+      specData.destVertex = idx;
+    else
+      specData.destVertex = vertid + vertOffset;
+    specData.destInstance = instid + instOffset;
+    specData.destView = view == ~0U ? 0 : view;
+
+    uint32_t paramAlign, structStride;
+    rdctie(paramAlign, structStride) = GetAlignAndOutputSize(shadRefl);
+
+    uint32_t maxHits = 4;    // we should only ever get one hit
+
+    // struct size is rdcspv::ResultDataBase header plus Nx structStride for the number of threads
+    uint32_t structSize = sizeof(rdcspv::ResultDataBase) + structStride * numThreads;
+
+    VkDeviceSize feedbackStorageSize = maxHits * structSize + 1024;
+
+    if(Vulkan_Debug_ShaderDebugLogging())
+    {
+      RDCLOG("Output structure is %u sized, output buffer is %llu bytes", structStride,
+             feedbackStorageSize);
+    }
+
+    m_PatchedShaderFeedback.ResizeFeedbackBuffer(m_pDriver, feedbackStorageSize);
+
+    specData.arrayLength = maxHits;
+
+    // make copy of state to draw from
+    VulkanRenderState modifiedstate = state;
+
+    RDCCOMPILE_ASSERT(NumReservedBindings == 1, "NumReservedBindings is wrong");
+    AddedDescriptorData patchedBufferdata = PrepareExtraBufferDescriptor(
+        modifiedstate, false, {MakeNewBinding(VK_SHADER_STAGE_VERTEX_BIT)}, false);
+
+    if(patchedBufferdata.empty())
+    {
+      delete apiWrapper;
+
+      ShaderDebugTrace *ret = new ShaderDebugTrace;
+      ret->stage = ShaderStage::Vertex;
+
+      return ret;
+    }
+
+    if(!patchedBufferdata.descSets.empty())
+      m_PatchedShaderFeedback.FeedbackBuffer.WriteDescriptor(Unwrap(patchedBufferdata.descSets[0]),
+                                                             0, 0);
+
+    specData.bufferAddress = m_PatchedShaderFeedback.FeedbackBuffer.Address();
+    if(specData.bufferAddress && Vulkan_Debug_ShaderDebugLogging())
+    {
+      RDCLOG("Got buffer address of %llu", specData.bufferAddress);
+    }
+
+    // create shader with modified code
+
+    VkSpecializationMapEntry specMaps[(size_t)InputSpecConstant::Count];
+    RDCCOMPILE_ASSERT(sizeof(specMaps) == sizeof(specMapsTemplate),
+                      "Specialisation maps have changed");
+
+    VkSpecializationInfo patchedSpecInfo = MakeSpecInfo(specData, specMaps);
+
+    auto patchCallback = [this, &spec, &shadRefl, &patchedSpecInfo, useViewIndex, subgroupCapability,
+                          maxSubgroupSize](const AddedDescriptorData &patchedBufferdata,
+                                           VkShaderStageFlagBits stage, const char *entryName,
+                                           const rdcarray<uint32_t> &origSpirv,
+                                           rdcarray<uint32_t> &modSpirv,
+                                           const VkSpecializationInfo *&specInfo) {
+      if(stage != VK_SHADER_STAGE_VERTEX_BIT)
+        return false;
+
+      modSpirv = origSpirv;
+
+      if(!Vulkan_Debug_PSDebugDumpDirPath().empty())
+        FileIO::WriteAll(Vulkan_Debug_PSDebugDumpDirPath() + "/debug_vsinput_before.spv", modSpirv);
+
+      CreateInputFetcher(modSpirv, spec, shadRefl, m_StorageMode, false, false, useViewIndex,
+                         subgroupCapability, maxSubgroupSize);
+
+      if(!Vulkan_Debug_PSDebugDumpDirPath().empty())
+        FileIO::WriteAll(Vulkan_Debug_PSDebugDumpDirPath() + "/debug_vsinput_after.spv", modSpirv);
+
+      // overwrite user's specialisation info. We flattened the user's spec constants when patching the SPIR-V above.
+      specInfo = &patchedSpecInfo;
+
+      return true;
+    };
+
+    PrepareStateForPatchedShader(patchedBufferdata, modifiedstate, false, patchCallback);
+
+    if(!RunFeedbackAction(feedbackStorageSize, action, modifiedstate))
+    {
+      delete apiWrapper;
+
+      ShaderDebugTrace *ret = new ShaderDebugTrace;
+      ret->stage = ShaderStage::Vertex;
+
+      return ret;
+    }
+
+    bytebuf data;
+    GetDebugManager()->GetBufferData(m_PatchedShaderFeedback.FeedbackBuffer, 0, 0, data);
+
+    byte *base = data.data();
+    uint32_t hit_count = ((uint32_t *)base)[0];
+    // uint32_t total_count = ((uint32_t *)base)[1];
+
+    RDCASSERTMSG("Should only get one hit for vertex shaders", hit_count == 1, hit_count);
+
+    base += offsetof(rdcspv::ResultBaseBuffer, hits);
+
+    rdcspv::ResultDataBase *winner = (rdcspv::ResultDataBase *)base;
+
+    if(winner->valid != validMagicNumber)
+    {
+      RDCWARN("Hit doesn't have valid magic number");
+
+      delete apiWrapper;
+
+      ShaderDebugTrace *ret = new ShaderDebugTrace;
+      ret->stage = ShaderStage::Vertex;
+
+      return ret;
+    }
+
+    rdcspv::Debugger *debugger = new rdcspv::Debugger;
+    debugger->Parse(shader.spirv.GetSPIRV());
+
+    // the per-thread data immediately follows the rdcspv::ResultDataBase header. Every piece of
+    // data is uniformly aligned, either 16-byte by default or 32-byte if larger components exist.
+    // The output is in input signature order.
+    byte *LaneData = (byte *)(winner + 1);
+
+    numThreads = 4;
+
+    if(shadRefl.patchData.threadScope & rdcspv::ThreadScope::Subgroup)
+    {
+      RDCASSERTNOTEQUAL(winner->subgroupSize, 0);
+      numThreads = RDCMAX(numThreads, winner->subgroupSize);
+    }
+
+    location_inputs.resize(numThreads);
+    allthread_builtins.resize(numThreads);
+    apiWrapper->thread_props.resize(numThreads);
+
+    for(uint32_t t = 0; t < numThreads; t++)
+    {
+      byte *value = LaneData + t * structStride;
+
+      {
+        rdcspv::SubgroupLaneData *subgroupData = (rdcspv::SubgroupLaneData *)value;
+        apiWrapper->thread_props[t][(size_t)rdcspv::ThreadProperty::Active] = subgroupData->isActive;
+        apiWrapper->thread_props[t][(size_t)rdcspv::ThreadProperty::Elected] = subgroupData->elect;
+        apiWrapper->thread_props[t][(size_t)rdcspv::ThreadProperty::SubgroupId] = t;
+
+        value += sizeof(rdcspv::SubgroupLaneData);
+      }
+
+      // read VertexLaneData
+      {
+        rdcspv::VertexLaneData *vertData = (rdcspv::VertexLaneData *)value;
+
+        allthread_builtins[t][ShaderBuiltin::InstanceIndex] =
+            ShaderVariable("InstanceIndex"_lit, vertData->inst, 0U, 0U, 0U);
+        allthread_builtins[t][ShaderBuiltin::VertexIndex] =
+            ShaderVariable("VertexIndex"_lit, vertData->vert, 0U, 0U, 0U);
+        allthread_builtins[t][ShaderBuiltin::MultiViewIndex] =
+            ShaderVariable("VertexIndex"_lit, vertData->view, 0U, 0U, 0U);
+
+        if(view != ~0U)
+          RDCASSERTEQUAL(vertData->view, view);
+      }
+      value += sizeof(rdcspv::VertexLaneData);
+
+      for(size_t i = 0; i < shadRefl.refl->inputSignature.size(); i++)
+      {
+        const SigParameter &param = shadRefl.refl->inputSignature[i];
+
+        bool builtin = true;
+        if(param.systemValue == ShaderBuiltin::Undefined)
+        {
+          builtin = false;
+          location_inputs[t].resize(RDCMAX((uint32_t)location_inputs.size(), param.regIndex + 1));
+        }
+
+        ShaderVariable &var =
+            builtin ? allthread_builtins[t][param.systemValue] : location_inputs[t][param.regIndex];
+
+        var.rows = 1;
+        var.columns = param.compCount & 0xff;
+        var.type = param.varType;
+
+        const uint32_t comp = Bits::CountTrailingZeroes(uint32_t(param.regChannelMask));
+        const uint32_t elemSize = VarTypeByteSize(param.varType);
+
+        const size_t sz = elemSize * param.compCount;
+
+        memcpy((var.value.u8v.data()) + elemSize * comp, value + i * paramAlign, sz);
+      }
+    }
+
+    global_builtins[ShaderBuiltin::SubgroupSize] = ShaderVariable(rdcstr(), numThreads, 0U, 0U, 0U);
+    apiWrapper->SetInputVarsToReadOnly();
+    ShaderDebugTrace *ret = debugger->BeginDebug(apiWrapper, ShaderStage::Vertex, entryPoint, spec,
+                                                 shadRefl.instructionLines, shadRefl.patchData,
+                                                 winner->laneIndex, numThreads, numThreads);
+    apiWrapper->ResetReplay();
+
+    return ret;
+  }
+  else
+  {
+    // otherwise we can do a simple manual fetch of vertex inputs
+    laneIndex = 0;
+
+    std::unordered_map<ShaderBuiltin, ShaderVariable> &thread_builtins =
+        allthread_builtins[laneIndex];
+    if(action->flags & ActionFlags::Indexed)
+      thread_builtins[ShaderBuiltin::VertexIndex] = ShaderVariable(rdcstr(), idx, 0U, 0U, 0U);
+    else
+      thread_builtins[ShaderBuiltin::VertexIndex] =
+          ShaderVariable(rdcstr(), vertid + vertOffset, 0U, 0U, 0U);
+    thread_builtins[ShaderBuiltin::InstanceIndex] =
+        ShaderVariable(rdcstr(), instid + instOffset, 0U, 0U, 0U);
+
+    rdcarray<ShaderVariable> &locations = location_inputs[laneIndex];
+    for(const VkVertexInputAttributeDescription2EXT &attr : state.vertexAttributes)
+    {
+      locations.resize_for_index(attr.location);
+
+      if(Vulkan_Debug_ShaderDebugLogging())
+        RDCLOG("Populating location %u", attr.location);
+
+      ShaderVariable &var = locations[attr.location];
+
+      bytebuf data;
+
+      size_t size = (size_t)GetByteSize(1, 1, 1, attr.format, 0);
+
+      bool found = false;
+
+      for(const VkVertexInputBindingDescription2EXT &bind : state.vertexBindings)
+      {
+        if(bind.binding != attr.binding)
+          continue;
+
+        if(bind.binding < state.vbuffers.size())
+        {
+          const VulkanRenderState::VertBuffer &vb = state.vbuffers[bind.binding];
+
+          if(vb.buf != ResourceId())
+          {
+            VkDeviceSize vertexOffset = 0;
+
+            found = true;
+
+            if(bind.inputRate == VK_VERTEX_INPUT_RATE_INSTANCE)
+            {
+              if(bind.divisor == 0)
+                vertexOffset = instOffset * vb.stride;
+              else
+                vertexOffset = (instOffset + (instid / bind.divisor)) * vb.stride;
+            }
+            else
+            {
+              vertexOffset = (idx + vertOffset) * vb.stride;
+            }
+
+            if(Vulkan_Debug_ShaderDebugLogging())
+            {
+              RDCLOG("Fetching from %s at %llu offset %zu bytes", ToStr(vb.buf).c_str(),
+                     vb.offs + attr.offset + vertexOffset, size);
+            }
+
+            if(attr.offset + vertexOffset < vb.size)
+              GetDebugManager()->GetBufferData(vb.buf, vb.offs + attr.offset + vertexOffset, size,
+                                               data);
+          }
+        }
+        else if(Vulkan_Debug_ShaderDebugLogging())
+        {
+          RDCLOG("Vertex binding %u out of bounds from %zu vertex buffers", bind.binding,
+                 state.vbuffers.size());
+        }
+      }
+
+      if(!found)
+      {
+        if(Vulkan_Debug_ShaderDebugLogging())
+        {
+          RDCLOG("Attribute binding %u out of bounds from %zu bindings", attr.binding,
+                 pipe.vertexBindings.size());
+        }
+      }
+
+      if(size > data.size())
+      {
+        // out of bounds read
+        m_pDriver->AddDebugMessage(
+            MessageCategory::Execution, MessageSeverity::Medium, MessageSource::RuntimeWarning,
+            StringFormat::Fmt(
+                "Attribute location %u from binding %u reads out of bounds at vertex %u "
+                "(index %u) in instance %u.",
+                attr.location, attr.binding, vertid, idx, instid));
+
+        if(IsUIntFormat(attr.format) || IsSIntFormat(attr.format))
+          var.type = VarType::UInt;
+        else
+          var.type = VarType::Float;
+
+        set0001(var);
+      }
+      else
+      {
+        ResourceFormat fmt = MakeResourceFormat(attr.format);
+
+        // integer formats need to be read as-is, rather than converted to floats
+        if(fmt.compType == CompType::UInt || fmt.compType == CompType::SInt)
+        {
+          if(fmt.type == ResourceFormatType::R10G10B10A2)
+          {
+            // this is the only packed UINT format
+            Vec4u decoded = ConvertFromR10G10B10A2UInt(*(uint32_t *)data.data());
+
+            var.type = VarType::UInt;
+
+            setUintComp(var, 0, decoded.x);
+            setUintComp(var, 1, decoded.y);
+            setUintComp(var, 2, decoded.z);
+            setUintComp(var, 3, decoded.w);
+          }
+          else
+          {
+            var.type = VarType::UInt;
+
+            if(fmt.compType == CompType::UInt)
+            {
+              if(fmt.compByteWidth == 1)
+                var.type = VarType::UByte;
+              else if(fmt.compByteWidth == 2)
+                var.type = VarType::UShort;
+              else if(fmt.compByteWidth == 4)
+                var.type = VarType::UInt;
+              else if(fmt.compByteWidth == 8)
+                var.type = VarType::ULong;
+            }
+            else if(fmt.compType == CompType::SInt)
+            {
+              if(fmt.compByteWidth == 1)
+                var.type = VarType::SByte;
+              else if(fmt.compByteWidth == 2)
+                var.type = VarType::SShort;
+              else if(fmt.compByteWidth == 4)
+                var.type = VarType::SInt;
+              else if(fmt.compByteWidth == 8)
+                var.type = VarType::SLong;
+            }
+
+            RDCASSERTEQUAL(fmt.compByteWidth, VarTypeByteSize(var.type));
+            memcpy(var.value.u8v.data(), data.data(), fmt.compByteWidth * fmt.compCount);
+          }
+        }
+        else
+        {
+          FloatVector decoded = DecodeFormattedComponents(fmt, data.data());
+
+          var.type = VarType::Float;
+
+          setFloatComp(var, 0, decoded.x);
+          setFloatComp(var, 1, decoded.y);
+          setFloatComp(var, 2, decoded.z);
+          setFloatComp(var, 3, decoded.w);
+        }
+      }
+    }
+
+    rdcspv::Debugger *debugger = new rdcspv::Debugger;
+    debugger->Parse(shader.spirv.GetSPIRV());
+
+    global_builtins[ShaderBuiltin::SubgroupSize] = ShaderVariable(rdcstr(), numThreads, 0U, 0U, 0U);
+
+    apiWrapper->SetInputVarsToReadOnly();
+    ShaderDebugTrace *ret = debugger->BeginDebug(apiWrapper, ShaderStage::Vertex, entryPoint, spec,
+                                                 shadRefl.instructionLines, shadRefl.patchData,
+                                                 laneIndex, numThreads, numThreads);
+    apiWrapper->ResetReplay();
+
+    return ret;
+  }
+}
+
+ShaderDebugTrace *VulkanReplay::DebugPixel(uint32_t eventId, uint32_t x, uint32_t y,
+                                           const DebugPixelInputs &inputs)
+{
   if(!m_pDriver->GetDeviceEnabledFeatures().fragmentStoresAndAtomics)
   {
     RDCWARN("Pixel debugging is not supported without fragment stores");
     return new ShaderDebugTrace;
   }
 
-  VkDevice dev = m_pDriver->GetDev();
-  VkResult vkr = VK_SUCCESS;
+  uint32_t sample = inputs.sample;
+  uint32_t primitive = inputs.primitive;
+  uint32_t view = inputs.view;
 
   const VulkanRenderState &state = m_pDriver->GetRenderState();
   VulkanCreationInfo &c = m_pDriver->m_CreationInfo;
 
-  rdcstr regionName = StringFormat::Fmt("DebugPixel @ %u of (%u,%u) sample %u primitive %u",
-                                        eventId, x, y, sample, primitive);
+  rdcstr regionName = StringFormat::Fmt("DebugPixel @ %u of (%u,%u) sample %u primitive %u view %u",
+                                        eventId, x, y, sample, primitive, view);
 
   VkMarkerRegion region(regionName);
 
@@ -3967,15 +6124,16 @@ ShaderDebugTrace *VulkanReplay::DebugPixel(uint32_t eventId, uint32_t x, uint32_
 
   const ActionDescription *action = m_pDriver->GetAction(eventId);
 
-  if(!(action->flags & ActionFlags::Drawcall))
+  if(!(action->flags & (ActionFlags::MeshDispatch | ActionFlags::Drawcall)))
   {
     RDCLOG("No drawcall selected");
     return new ShaderDebugTrace();
   }
 
   const VulkanCreationInfo::Pipeline &pipe = c.m_Pipeline[state.graphics.pipeline];
+  ResourceId fragId = state.graphics.shaderObject ? state.shaderObjects[4] : pipe.shaders[4].module;
 
-  if(pipe.shaders[4].module == ResourceId())
+  if(fragId == ResourceId())
   {
     RDCLOG("No pixel shader bound at draw");
     return new ShaderDebugTrace();
@@ -3984,12 +6142,14 @@ ShaderDebugTrace *VulkanReplay::DebugPixel(uint32_t eventId, uint32_t x, uint32_
   // get ourselves in pristine state before this action (without any side effects it may have had)
   m_pDriver->ReplayLog(0, eventId, eReplay_WithoutDraw);
 
-  VulkanCreationInfo::ShaderModule &shader = c.m_ShaderModule[pipe.shaders[4].module];
-  rdcstr entryPoint = pipe.shaders[4].entryPoint;
-  const rdcarray<SpecConstant> &spec = pipe.shaders[4].specialization;
+  const VulkanCreationInfo::ShaderEntry &fragEntry =
+      state.graphics.shaderObject ? c.m_ShaderObject[state.shaderObjects[4]].shad : pipe.shaders[4];
+  VulkanCreationInfo::ShaderModule &shader = c.m_ShaderModule[fragEntry.module];
+  rdcstr entryPoint = fragEntry.entryPoint;
+  const rdcarray<SpecConstant> &spec = fragEntry.specialization;
 
   VulkanCreationInfo::ShaderModuleReflection &shadRefl =
-      shader.GetReflection(entryPoint, state.graphics.pipeline);
+      shader.GetReflection(ShaderStage::Pixel, entryPoint, state.graphics.pipeline);
 
   if(!shadRefl.refl->debugInfo.debuggable)
   {
@@ -4000,32 +6160,56 @@ ShaderDebugTrace *VulkanReplay::DebugPixel(uint32_t eventId, uint32_t x, uint32_
   shadRefl.PopulateDisassembly(shader.spirv);
 
   VulkanAPIWrapper *apiWrapper =
-      new VulkanAPIWrapper(m_pDriver, c, VK_SHADER_STAGE_FRAGMENT_BIT, eventId);
+      new VulkanAPIWrapper(m_pDriver, c, ShaderStage::Pixel, eventId, shadRefl.refl->resourceId);
 
-  std::map<ShaderBuiltin, ShaderVariable> &builtins = apiWrapper->builtin_inputs;
-  builtins[ShaderBuiltin::DeviceIndex] = ShaderVariable(rdcstr(), 0U, 0U, 0U, 0U);
-  builtins[ShaderBuiltin::DrawIndex] = ShaderVariable(rdcstr(), action->drawIndex, 0U, 0U, 0U);
-  builtins[ShaderBuiltin::Position] =
-      ShaderVariable(rdcstr(), float(x) + 0.5f, float(y) + 0.5f, 0.0f, 0.0f);
+  SubgroupCapability subgroupCapability = SubgroupCapability::None;
+  uint32_t maxSubgroupSize = 1;
+  CalculateSubgroupProperties(maxSubgroupSize, subgroupCapability);
+
+  uint32_t numThreads = 4;
+
+  if(shadRefl.patchData.threadScope & rdcspv::ThreadScope::Subgroup)
+    numThreads = RDCMAX(numThreads, maxSubgroupSize);
+
+  std::unordered_map<ShaderBuiltin, ShaderVariable> &global_builtins =
+      apiWrapper->GetGlobalBuiltins();
+  global_builtins[ShaderBuiltin::DeviceIndex] = ShaderVariable(rdcstr(), 0U, 0U, 0U, 0U);
+  global_builtins[ShaderBuiltin::DrawIndex] = ShaderVariable(rdcstr(), action->drawIndex, 0U, 0U, 0U);
 
   // If the pipe contains a geometry shader, then Primitive ID cannot be used in the pixel
   // shader without being emitted from the geometry shader. For now, check if this semantic
   // will succeed in a new pixel shader with the rest of the pipe unchanged
   bool usePrimitiveID = false;
-  if(pipe.shaders[3].module != ResourceId())
+
+  ShaderStage prevStage = ShaderStage::Geometry;
+
+  ResourceId prevId = state.graphics.shaderObject ? state.shaderObjects[(size_t)prevStage]
+                                                  : pipe.shaders[(size_t)prevStage].module;
+
+  if(prevId == ResourceId())
   {
-    VulkanCreationInfo::ShaderModuleReflection &gsRefl =
-        c.m_ShaderModule[pipe.shaders[3].module].GetReflection(pipe.shaders[3].entryPoint,
-                                                               state.graphics.pipeline);
+    prevStage = ShaderStage::Mesh;
+    prevId = state.graphics.shaderObject ? state.shaderObjects[(size_t)prevStage]
+                                         : pipe.shaders[(size_t)prevStage].module;
+  }
+
+  if(prevId != ResourceId())
+  {
+    const VulkanCreationInfo::ShaderEntry &prevEntry =
+        state.graphics.shaderObject ? c.m_ShaderObject[state.shaderObjects[(size_t)prevStage]].shad
+                                    : pipe.shaders[(size_t)prevStage];
+    VulkanCreationInfo::ShaderModuleReflection &prevRefl =
+        c.m_ShaderModule[prevEntry.module].GetReflection(prevStage, prevEntry.entryPoint,
+                                                         state.graphics.pipeline);
 
     // check to see if the shader outputs a primitive ID
-    for(const SigParameter &e : gsRefl.refl->outputSignature)
+    for(const SigParameter &e : prevRefl.refl->outputSignature)
     {
       if(e.systemValue == ShaderBuiltin::PrimitiveIndex)
       {
         if(Vulkan_Debug_ShaderDebugLogging())
         {
-          RDCLOG("Geometry shader exports primitive ID, can use");
+          RDCLOG("Geometry/mesh shader exports primitive ID, can use");
         }
 
         usePrimitiveID = true;
@@ -4036,7 +6220,7 @@ ShaderDebugTrace *VulkanReplay::DebugPixel(uint32_t eventId, uint32_t x, uint32_
     if(Vulkan_Debug_ShaderDebugLogging())
     {
       if(!usePrimitiveID)
-        RDCLOG("Geometry shader doesn't export primitive ID, can't use");
+        RDCLOG("Geometry/mesh shader doesn't export primitive ID, can't use");
     }
   }
   else
@@ -4057,68 +6241,65 @@ ShaderDebugTrace *VulkanReplay::DebugPixel(uint32_t eventId, uint32_t x, uint32_
     RDCLOG("useSampleID is %u because of bare capability", useSampleID);
   }
 
-  StorageMode storageMode = Binding;
-
-  if(m_pDriver->GetExtensions(NULL).ext_KHR_buffer_device_address)
+  // don't fetch sample ID if it would interfere with fragment rate fetch and wouldn't be needed
+  // probably we could disable this entirely if MSAA is not in use, but this is the case that has
+  // side effects as it disabled the VRS rates
+  if(state.rastSamples == VK_SAMPLE_COUNT_1_BIT)
   {
-    storageMode = KHR_bda;
-
-    if(Vulkan_Debug_ShaderDebugLogging())
+    for(size_t i = 0; i < shadRefl.refl->inputSignature.size(); i++)
     {
-      RDCLOG("Using KHR_buffer_device_address");
-    }
-  }
-  else if(m_pDriver->GetExtensions(NULL).ext_EXT_buffer_device_address)
-  {
-    if(m_pDriver->GetDeviceEnabledFeatures().shaderInt64)
-    {
-      storageMode = EXT_bda;
-
-      if(Vulkan_Debug_ShaderDebugLogging())
+      if(shadRefl.refl->inputSignature[i].systemValue == ShaderBuiltin::PackedFragRate)
       {
-        RDCLOG("Using EXT_buffer_device_address");
+        useSampleID = false;
+        break;
       }
     }
-    else if(Vulkan_Debug_ShaderDebugLogging())
+  }
+
+  bool useViewIndex = (view == ~0U) ? false : true;
+  if(useViewIndex)
+  {
+    ResourceId rp = state.GetRenderPass();
+    if(rp != ResourceId())
     {
-      RDCLOG(
-          "EXT_buffer_device_address is available but shaderInt64 isn't, falling back to binding "
-          "storage mode");
+      const VulkanCreationInfo::RenderPass &rpInfo = GetDebugManager()->GetRenderPassInfo(rp);
+      for(auto it = rpInfo.subpasses.begin(); it != rpInfo.subpasses.end(); ++it)
+      {
+        if(it->multiviews.isEmpty())
+        {
+          if(Vulkan_Debug_ShaderDebugLogging())
+            RDCLOG(
+                "Disabling useViewIndex because at least one subpass does not have multiple views");
+          useViewIndex = false;
+          break;
+        }
+      }
+    }
+    else
+    {
+      useViewIndex =
+          (state.dynamicRendering.active ? state.dynamicRendering.viewMask : pipe.viewMask) != 0;
+      if(!useViewIndex && Vulkan_Debug_ShaderDebugLogging())
+        RDCLOG("Disabling useViewIndex because viewMask is zero");
     }
   }
-
-  if(Vulkan_Debug_DisableBufferDeviceAddress() ||
-     m_pDriver->GetDriverInfo().BufferDeviceAddressBrokenDriver())
-    storageMode = Binding;
-
-  rdcarray<uint32_t> fragspv = shader.spirv.GetSPIRV();
-
-  if(!Vulkan_Debug_PSDebugDumpDirPath().empty())
-    FileIO::WriteAll(Vulkan_Debug_PSDebugDumpDirPath() + "/debug_psinput_before.spv", fragspv);
-
-  uint32_t paramAlign = 16;
-
-  for(const SigParameter &sig : shadRefl.refl->inputSignature)
+  else
   {
-    if(VarTypeByteSize(sig.varType) * sig.compCount > paramAlign)
-      paramAlign = 32;
+    if(Vulkan_Debug_ShaderDebugLogging())
+      RDCLOG("Disabling useViewIndex from input view %u", view);
+  }
+  if(useViewIndex)
+  {
+    global_builtins[ShaderBuiltin::MultiViewIndex] = ShaderVariable(rdcstr(), view, 0U, 0U, 0U);
   }
 
-  uint32_t structStride = 0;
-  CreatePSInputFetcher(fragspv, structStride, shadRefl, paramAlign, storageMode, usePrimitiveID,
-                       useSampleID);
-
-  if(!Vulkan_Debug_PSDebugDumpDirPath().empty())
-    FileIO::WriteAll(Vulkan_Debug_PSDebugDumpDirPath() + "/debug_psinput_after.spv", fragspv);
+  uint32_t paramAlign, structStride;
+  rdctie(paramAlign, structStride) = GetAlignAndOutputSize(shadRefl);
 
   uint32_t overdrawLevels = 100;    // maximum number of overdraw levels
 
-  VkGraphicsPipelineCreateInfo graphicsInfo = {};
-
-  m_pDriver->GetShaderCache()->MakeGraphicsPipelineInfo(graphicsInfo, state.graphics.pipeline);
-
-  // struct size is PSHit header plus 5x structStride = base, ddxcoarse, ddycoarse, ddxfine, ddyfine
-  uint32_t structSize = sizeof(PSHit) + structStride * 5;
+  // struct size is rdcspv::ResultDataBase header plus Nx structStride for the number of threads
+  uint32_t structSize = sizeof(rdcspv::ResultDataBase) + structStride * numThreads;
 
   VkDeviceSize feedbackStorageSize = overdrawLevels * structSize + sizeof(Vec4f) + 1024;
 
@@ -4128,304 +6309,103 @@ ShaderDebugTrace *VulkanReplay::DebugPixel(uint32_t eventId, uint32_t x, uint32_
            feedbackStorageSize);
   }
 
-  if(feedbackStorageSize > m_BindlessFeedback.FeedbackBuffer.sz)
-  {
-    uint32_t flags = GPUBuffer::eGPUBufferGPULocal | GPUBuffer::eGPUBufferSSBO;
+  m_PatchedShaderFeedback.ResizeFeedbackBuffer(m_pDriver, feedbackStorageSize);
 
-    if(storageMode != Binding)
-      flags |= GPUBuffer::eGPUBufferAddressable;
-
-    m_BindlessFeedback.FeedbackBuffer.Destroy();
-    m_BindlessFeedback.FeedbackBuffer.Create(m_pDriver, dev, feedbackStorageSize, 1, flags);
-  }
-
-  struct SpecData
-  {
-    VkDeviceAddress bufferAddress;
-    uint32_t arrayLength;
-    float destX;
-    float destY;
-  } specData = {};
+  SpecData specData = {};
 
   specData.arrayLength = overdrawLevels;
-  specData.destX = float(x) + 0.5f;
-  specData.destY = float(y) + 0.5f;
-
-  VkDescriptorPool descpool = VK_NULL_HANDLE;
-  rdcarray<VkDescriptorSetLayout> setLayouts;
-  rdcarray<VkDescriptorSet> descSets;
-
-  VkPipelineLayout pipeLayout = VK_NULL_HANDLE;
-
-  if(storageMode != Binding)
-  {
-    RDCCOMPILE_ASSERT(VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO ==
-                          VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_EXT,
-                      "KHR and EXT buffer_device_address should be interchangeable here.");
-    VkBufferDeviceAddressInfo getAddressInfo = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
-    getAddressInfo.buffer = m_BindlessFeedback.FeedbackBuffer.buf;
-
-    if(storageMode == KHR_bda)
-      specData.bufferAddress = m_pDriver->vkGetBufferDeviceAddress(dev, &getAddressInfo);
-    else
-      specData.bufferAddress = m_pDriver->vkGetBufferDeviceAddressEXT(dev, &getAddressInfo);
-
-    if(Vulkan_Debug_ShaderDebugLogging())
-    {
-      RDCLOG("Got buffer address of %llu", specData.bufferAddress);
-    }
-  }
-  else
-  {
-    VkDescriptorSetLayoutBinding newBindings[] = {
-        {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VkShaderStageFlags(VK_SHADER_STAGE_FRAGMENT_BIT),
-         NULL},
-    };
-    RDCCOMPILE_ASSERT(ARRAY_COUNT(newBindings) == 1,
-                      "Should only be one new descriptor for fetching PS inputs");
-
-    // create a duplicate set of descriptor sets, all visible to compute, with bindings shifted to
-    // account for new ones we need. This also copies the existing bindings into the new sets
-    PatchReservedDescriptors(state.graphics, descpool, setLayouts, descSets,
-                             VkShaderStageFlagBits(), newBindings, ARRAY_COUNT(newBindings));
-
-    // if the pool failed due to limits, it will be NULL so bail now
-    if(descpool == VK_NULL_HANDLE)
-    {
-      delete apiWrapper;
-
-      ShaderDebugTrace *ret = new ShaderDebugTrace;
-      ret->stage = ShaderStage::Pixel;
-
-      return ret;
-    }
-
-    // create pipeline layout with new descriptor set layouts
-    const rdcarray<VkPushConstantRange> &push = c.m_PipelineLayout[pipe.layout].pushRanges;
-
-    VkPipelineLayoutCreateInfo pipeLayoutInfo = {
-        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        NULL,
-        0,
-        (uint32_t)setLayouts.size(),
-        setLayouts.data(),
-        (uint32_t)push.size(),
-        push.data(),
-    };
-
-    vkr = m_pDriver->vkCreatePipelineLayout(dev, &pipeLayoutInfo, NULL, &pipeLayout);
-    CheckVkResult(vkr);
-
-    graphicsInfo.layout = pipeLayout;
-
-    // vkUpdateDescriptorSet desc set to point to buffer
-    VkDescriptorBufferInfo desc = {0};
-
-    m_BindlessFeedback.FeedbackBuffer.FillDescriptor(desc);
-
-    VkWriteDescriptorSet write = {
-        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        NULL,
-        Unwrap(descSets[0]),
-        0,
-        0,
-        1,
-        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        NULL,
-        &desc,
-        NULL,
-    };
-
-    ObjDisp(dev)->UpdateDescriptorSets(Unwrap(dev), 1, &write, 0, NULL);
-  }
-
-  // create fragment shader with modified code
-  VkShaderModuleCreateInfo moduleCreateInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-
-  VkSpecializationMapEntry specMaps[] = {
-      {
-          (uint32_t)InputSpecConstant::Address, offsetof(SpecData, bufferAddress), sizeof(uint32_t),
-      },
-      {
-          (uint32_t)InputSpecConstant::ArrayLength, offsetof(SpecData, arrayLength),
-          sizeof(SpecData::arrayLength),
-      },
-      {
-          (uint32_t)InputSpecConstant::DestX, offsetof(SpecData, destX), sizeof(SpecData::destX),
-      },
-      {
-          (uint32_t)InputSpecConstant::DestY, offsetof(SpecData, destY), sizeof(SpecData::destY),
-      },
-      {
-          (uint32_t)InputSpecConstant::AddressMSB, offsetof(SpecData, bufferAddress) + 4,
-          sizeof(uint32_t),
-      },
-  };
-
-  VkSpecializationInfo specInfo = {};
-  specInfo.dataSize = sizeof(specData);
-  specInfo.pData = &specData;
-  specInfo.mapEntryCount = ARRAY_COUNT(specMaps);
-  specInfo.pMapEntries = specMaps;
-
-  RDCCOMPILE_ASSERT((size_t)InputSpecConstant::Count == ARRAY_COUNT(specMaps),
-                    "Spec constants changed");
-
-  if(storageMode == EXT_bda)
-  {
-    // don't pass AddressMSB for EXT_buffer_device_address, we pass a uint64
-    specInfo.mapEntryCount--;
-    specMaps[0].size = sizeof(SpecData::bufferAddress);
-  }
-
-  rdcarray<VkShaderModule> modules;
-
-  for(uint32_t i = 0; i < graphicsInfo.stageCount; i++)
-  {
-    VkPipelineShaderStageCreateInfo &stage =
-        (VkPipelineShaderStageCreateInfo &)graphicsInfo.pStages[i];
-
-    if(stage.stage == VK_SHADER_STAGE_FRAGMENT_BIT)
-    {
-      moduleCreateInfo.pCode = fragspv.data();
-      moduleCreateInfo.codeSize = fragspv.size() * sizeof(uint32_t);
-
-      vkr = m_pDriver->vkCreateShaderModule(dev, &moduleCreateInfo, NULL, &stage.module);
-      CheckVkResult(vkr);
-
-      stage.pSpecializationInfo = &specInfo;
-
-      modules.push_back(stage.module);
-    }
-    else if(storageMode == Binding)
-    {
-      // if we're stealing a binding point, we need to patch all other shaders
-      rdcarray<uint32_t> spirv = c.m_ShaderModule[GetResID(stage.module)].spirv.GetSPIRV();
-
-      {
-        rdcspv::Editor editor(spirv);
-
-        editor.Prepare();
-
-        // patch all bindings up by 1
-        for(rdcspv::Iter it = editor.Begin(rdcspv::Section::Annotations),
-                         end = editor.End(rdcspv::Section::Annotations);
-            it < end; ++it)
-        {
-          if(it.opcode() == rdcspv::Op::Decorate)
-          {
-            rdcspv::OpDecorate dec(it);
-            if(dec.decoration == rdcspv::Decoration::Binding)
-            {
-              RDCASSERT(dec.decoration.binding != 0xffffffff);
-              dec.decoration.binding += 1;
-              it = dec;
-            }
-          }
-        }
-      }
-
-      moduleCreateInfo.pCode = spirv.data();
-      moduleCreateInfo.codeSize = spirv.size() * sizeof(uint32_t);
-
-      vkr = m_pDriver->vkCreateShaderModule(dev, &moduleCreateInfo, NULL, &stage.module);
-      CheckVkResult(vkr);
-
-      modules.push_back(stage.module);
-    }
-  }
-
-  // we don't use a pipeline cache here because our spec constants will cause failures often and
-  // bloat the cache. Even if we avoided the high-frequency x/y and stored them e.g. in the feedback
-  // buffer, we'd still want to spec-constant the address when possible so we're always going to
-  // have some varying value.
-  VkPipeline inputsPipe;
-  vkr =
-      m_pDriver->vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &graphicsInfo, NULL, &inputsPipe);
-  CheckVkResult(vkr);
+  specData.destX = float(x);
+  specData.destY = float(y);
 
   // make copy of state to draw from
   VulkanRenderState modifiedstate = state;
 
-  // bind created pipeline to partial replay state
-  modifiedstate.graphics.pipeline = GetResID(inputsPipe);
+  AddedDescriptorData patchedBufferdata = PrepareExtraBufferDescriptor(
+      modifiedstate, false, {MakeNewBinding(VK_SHADER_STAGE_FRAGMENT_BIT)}, false);
 
-  if(storageMode == Binding)
+  if(patchedBufferdata.empty())
   {
-    // Treplace descriptor set IDs with our temporary sets. The offsets we keep the same. If the
-    // original draw had no sets, we ensure there's room (with no offsets needed)
-    if(modifiedstate.graphics.descSets.empty())
-      modifiedstate.graphics.descSets.resize(1);
+    delete apiWrapper;
 
-    for(size_t i = 0; i < descSets.size(); i++)
-    {
-      modifiedstate.graphics.descSets[i].pipeLayout = GetResID(pipeLayout);
-      modifiedstate.graphics.descSets[i].descSet = GetResID(descSets[i]);
-    }
+    ShaderDebugTrace *ret = new ShaderDebugTrace;
+    ret->stage = ShaderStage::Pixel;
+
+    return ret;
   }
 
+  if(!patchedBufferdata.descSets.empty())
+    m_PatchedShaderFeedback.FeedbackBuffer.WriteDescriptor(Unwrap(patchedBufferdata.descSets[0]), 0,
+                                                           0);
+
+  specData.bufferAddress = m_PatchedShaderFeedback.FeedbackBuffer.Address();
+  if(specData.bufferAddress && Vulkan_Debug_ShaderDebugLogging())
   {
-    VkCommandBuffer cmd = m_pDriver->GetNextCmd();
+    RDCLOG("Got buffer address of %llu", specData.bufferAddress);
+  }
 
-    if(cmd == VK_NULL_HANDLE)
-      return new ShaderDebugTrace;
+  // create  shader with modified code
 
-    VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
-                                          VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+  VkSpecializationMapEntry specMaps[(size_t)InputSpecConstant::Count];
+  RDCCOMPILE_ASSERT(sizeof(specMaps) == sizeof(specMapsTemplate),
+                    "Specialisation maps have changed");
 
-    vkr = ObjDisp(dev)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
-    CheckVkResult(vkr);
+  VkSpecializationInfo patchedSpecInfo = MakeSpecInfo(specData, specMaps);
 
-    // fill destination buffer with 0s to ensure a baseline to then feedback against
-    ObjDisp(dev)->CmdFillBuffer(Unwrap(cmd), Unwrap(m_BindlessFeedback.FeedbackBuffer.buf), 0,
-                                feedbackStorageSize, 0);
+  auto patchCallback = [this, &spec, &shadRefl, &patchedSpecInfo, usePrimitiveID, useSampleID,
+                        useViewIndex, subgroupCapability, maxSubgroupSize](
+                           const AddedDescriptorData &patchedBufferdata, VkShaderStageFlagBits stage,
+                           const char *entryName, const rdcarray<uint32_t> &origSpirv,
+                           rdcarray<uint32_t> &modSpirv, const VkSpecializationInfo *&specInfo) {
+    if(stage != VK_SHADER_STAGE_FRAGMENT_BIT)
+      return false;
 
-    VkBufferMemoryBarrier feedbackbufBarrier = {
-        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-        NULL,
-        VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_ACCESS_SHADER_WRITE_BIT,
-        VK_QUEUE_FAMILY_IGNORED,
-        VK_QUEUE_FAMILY_IGNORED,
-        Unwrap(m_BindlessFeedback.FeedbackBuffer.buf),
-        0,
-        feedbackStorageSize,
-    };
+    modSpirv = origSpirv;
 
-    // wait for the above fill to finish.
-    DoPipelineBarrier(cmd, 1, &feedbackbufBarrier);
+    if(!Vulkan_Debug_PSDebugDumpDirPath().empty())
+      FileIO::WriteAll(Vulkan_Debug_PSDebugDumpDirPath() + "/debug_psinput_before.spv", modSpirv);
 
-    modifiedstate.BeginRenderPassAndApplyState(m_pDriver, cmd, VulkanRenderState::BindGraphics);
+    CreateInputFetcher(modSpirv, spec, shadRefl, m_StorageMode, usePrimitiveID, useSampleID,
+                       useViewIndex, subgroupCapability, maxSubgroupSize);
 
-    m_pDriver->ReplayDraw(cmd, *action);
+    if(!Vulkan_Debug_PSDebugDumpDirPath().empty())
+      FileIO::WriteAll(Vulkan_Debug_PSDebugDumpDirPath() + "/debug_psinput_after.spv", modSpirv);
 
-    modifiedstate.EndRenderPass(cmd);
+    // overwrite user's specialisation info. We flattened the user's spec constants when patching the SPIR-V above.
+    specInfo = &patchedSpecInfo;
 
-    vkr = ObjDisp(dev)->EndCommandBuffer(Unwrap(cmd));
-    CheckVkResult(vkr);
+    return true;
+  };
 
-    m_pDriver->SubmitCmds();
-    m_pDriver->FlushQ();
+  PrepareStateForPatchedShader(patchedBufferdata, modifiedstate, false, patchCallback);
+
+  if(!RunFeedbackAction(feedbackStorageSize, action, modifiedstate))
+  {
+    delete apiWrapper;
+
+    ShaderDebugTrace *ret = new ShaderDebugTrace;
+    ret->stage = ShaderStage::Pixel;
+
+    return ret;
   }
 
   bytebuf data;
-  GetBufferData(GetResID(m_BindlessFeedback.FeedbackBuffer.buf), 0, 0, data);
+  GetDebugManager()->GetBufferData(m_PatchedShaderFeedback.FeedbackBuffer, 0, 0, data);
 
   byte *base = data.data();
-  uint32_t numHits = ((uint32_t *)base)[0];
-  uint32_t totalHits = ((uint32_t *)base)[1];
+  uint32_t hit_count = ((uint32_t *)base)[0];
+  uint32_t total_count = ((uint32_t *)base)[1];
 
-  if(numHits > overdrawLevels)
+  if(hit_count > overdrawLevels)
   {
-    RDCERR("%u hits, more than max overdraw levels allowed %u. Clamping", numHits, overdrawLevels);
-    numHits = overdrawLevels;
+    RDCERR("%u hits, more than max overdraw levels allowed %u. Clamping", hit_count, overdrawLevels);
+    hit_count = overdrawLevels;
   }
 
-  base += sizeof(Vec4f);
+  base += offsetof(rdcspv::ResultBaseBuffer, hits);
 
-  PSHit *winner = NULL;
+  rdcspv::ResultDataBase *winner = NULL;
 
-  RDCLOG("Got %u hit candidates out of %u total instances", numHits, totalHits);
+  RDCLOG("Got %u hit candidates out of %u total instances", hit_count, total_count);
 
   // if we encounter multiple hits at our destination pixel co-ord (or any other) we
   // check to see if a specific primitive was requested (via primitive parameter not
@@ -4433,23 +6413,15 @@ ShaderDebugTrace *VulkanReplay::DebugPixel(uint32_t eventId, uint32_t x, uint32_
   // of which fragment was the last to successfully depth test and debug that, just by
   // checking if the depth test is ordered and picking the final fragment in the series
 
-  // figure out the TL pixel's coords. Assume even top left (towards 0,0)
-  // this isn't spec'd but is a reasonable assumption.
-  int xTL = x & (~1);
-  int yTL = y & (~1);
-
-  // get the index of our desired pixel
-  int destIdx = (x - xTL) + 2 * (y - yTL);
-
   VkCompareOp depthOp = state.depthCompareOp;
 
   // depth tests disabled acts the same as always compare mode
   if(!state.depthTestEnable)
     depthOp = VK_COMPARE_OP_ALWAYS;
 
-  for(uint32_t i = 0; i < numHits; i++)
+  for(uint32_t i = 0; i < hit_count; i++)
   {
-    PSHit *hit = (PSHit *)(base + structSize * i);
+    rdcspv::ResultDataBase *hit = (rdcspv::ResultDataBase *)(base + structSize * i);
 
     if(hit->valid != validMagicNumber)
     {
@@ -4457,10 +6429,23 @@ ShaderDebugTrace *VulkanReplay::DebugPixel(uint32_t eventId, uint32_t x, uint32_
       continue;
     }
 
-    if(hit->ddxDerivCheck != 1.0f)
+    float ddxExpectation = 1.0f;
+    if(hit->shadRate & (uint32_t)rdcspv::FragmentShadingRate::Horizontal2Pixels)
+      ddxExpectation = 2.0f;
+    else if(hit->shadRate & (uint32_t)rdcspv::FragmentShadingRate::Horizontal4Pixels)
+      ddxExpectation = 4.0f;
+
+    if(hit->ddxDerivCheck != ddxExpectation)
     {
       RDCWARN("Hit %u doesn't have valid derivatives", i);
       continue;
+    }
+
+    // if we're looking for a specific view, ignore hits from the wrong view
+    if(useViewIndex)
+    {
+      if(hit->view != view)
+        continue;
     }
 
     // see if this hit is a closer match than the previous winner.
@@ -4542,59 +6527,128 @@ ShaderDebugTrace *VulkanReplay::DebugPixel(uint32_t eventId, uint32_t x, uint32_
     rdcspv::Debugger *debugger = new rdcspv::Debugger;
     debugger->Parse(shader.spirv.GetSPIRV());
 
-    // the data immediately follows the PSHit header. Every piece of data is uniformly aligned,
-    // either 16-byte by default or 32-byte if larger components exist. The output is in input
-    // signature order.
-    byte *PSInputs = (byte *)(winner + 1);
-    byte *value = (byte *)(PSInputs + 0 * structStride);
-    byte *ddxcoarse = (byte *)(PSInputs + 1 * structStride);
-    byte *ddycoarse = (byte *)(PSInputs + 2 * structStride);
-    byte *ddxfine = (byte *)(PSInputs + 3 * structStride);
-    byte *ddyfine = (byte *)(PSInputs + 4 * structStride);
+    // the per-thread data immediately follows the rdcspv::ResultDataBase header. Every piece of
+    // data is uniformly aligned, either 16-byte by default or 32-byte if larger components exist.
+    // The output is in input signature order.
+    byte *LaneData = (byte *)(winner + 1);
 
-    for(size_t i = 0; i < shadRefl.refl->inputSignature.size(); i++)
+    numThreads = 4;
+
+    if(shadRefl.patchData.threadScope & rdcspv::ThreadScope::Subgroup)
     {
-      const SigParameter &param = shadRefl.refl->inputSignature[i];
-
-      bool builtin = true;
-      if(param.systemValue == ShaderBuiltin::Undefined)
-      {
-        builtin = false;
-        apiWrapper->location_inputs.resize(
-            RDCMAX((uint32_t)apiWrapper->location_inputs.size(), param.regIndex + 1));
-        apiWrapper->location_derivatives.resize(
-            RDCMAX((uint32_t)apiWrapper->location_derivatives.size(), param.regIndex + 1));
-      }
-
-      ShaderVariable &var = builtin ? apiWrapper->builtin_inputs[param.systemValue]
-                                    : apiWrapper->location_inputs[param.regIndex];
-      rdcspv::DebugAPIWrapper::DerivativeDeltas &deriv =
-          builtin ? apiWrapper->builtin_derivatives[param.systemValue]
-                  : apiWrapper->location_derivatives[param.regIndex];
-
-      var.rows = 1;
-      var.columns = param.compCount & 0xff;
-      var.type = param.varType;
-
-      deriv.ddxcoarse = var;
-      deriv.ddycoarse = var;
-      deriv.ddxfine = var;
-      deriv.ddyfine = var;
-
-      const uint32_t comp = Bits::CountTrailingZeroes(uint32_t(param.regChannelMask));
-      const uint32_t elemSize = VarTypeByteSize(param.varType);
-
-      const size_t sz = elemSize * param.compCount;
-
-      memcpy((var.value.u8v.data()) + elemSize * comp, value + i * paramAlign, sz);
-      memcpy((deriv.ddxcoarse.value.u8v.data()) + elemSize * comp, ddxcoarse + i * paramAlign, sz);
-      memcpy((deriv.ddycoarse.value.u8v.data()) + elemSize * comp, ddycoarse + i * paramAlign, sz);
-      memcpy((deriv.ddxfine.value.u8v.data()) + elemSize * comp, ddxfine + i * paramAlign, sz);
-      memcpy((deriv.ddyfine.value.u8v.data()) + elemSize * comp, ddyfine + i * paramAlign, sz);
+      RDCASSERTNOTEQUAL(winner->subgroupSize, 0);
+      numThreads = RDCMAX(numThreads, winner->subgroupSize);
     }
 
+    rdcarray<rdcarray<ShaderVariable>> &location_inputs = apiWrapper->GetLocationInputs();
+    rdcarray<std::unordered_map<ShaderBuiltin, ShaderVariable>> &allthread_builtins =
+        apiWrapper->GetThreadBuiltins();
+    location_inputs.resize(numThreads);
+    allthread_builtins.resize(numThreads);
+    apiWrapper->thread_props.resize(numThreads);
+
+    for(uint32_t t = 0; t < numThreads; t++)
+    {
+      byte *value = LaneData + t * structStride;
+
+      if(shadRefl.patchData.threadScope & rdcspv::ThreadScope::Subgroup)
+      {
+        rdcspv::SubgroupLaneData *subgroupData = (rdcspv::SubgroupLaneData *)value;
+        apiWrapper->thread_props[t][(size_t)rdcspv::ThreadProperty::Active] = subgroupData->isActive;
+        apiWrapper->thread_props[t][(size_t)rdcspv::ThreadProperty::Elected] = subgroupData->elect;
+        apiWrapper->thread_props[t][(size_t)rdcspv::ThreadProperty::SubgroupId] = t;
+
+        value += sizeof(rdcspv::SubgroupLaneData);
+      }
+
+      // read PixelLaneData
+      {
+        rdcspv::PixelLaneData *pixelData = (rdcspv::PixelLaneData *)value;
+
+        {
+          ShaderVariable &var = allthread_builtins[t][ShaderBuiltin::Position];
+
+          var.rows = 1;
+          var.columns = 4;
+          var.type = VarType::Float;
+
+          memcpy(var.value.u8v.data(), &pixelData->fragCoord, sizeof(Vec4f));
+        }
+
+        {
+          ShaderVariable &var = allthread_builtins[t][ShaderBuiltin::IsHelper];
+
+          var.rows = 1;
+          var.columns = 1;
+          var.type = VarType::Bool;
+
+          memcpy(var.value.u8v.data(), &pixelData->isHelper, sizeof(uint32_t));
+        }
+
+        if(numThreads == 4)
+          apiWrapper->thread_props[t][(size_t)rdcspv::ThreadProperty::Active] = 1;
+        apiWrapper->thread_props[t][(size_t)rdcspv::ThreadProperty::Helper] = pixelData->isHelper;
+        apiWrapper->thread_props[t][(size_t)rdcspv::ThreadProperty::QuadId] = pixelData->quadId;
+        apiWrapper->thread_props[t][(size_t)rdcspv::ThreadProperty::QuadLane] =
+            pixelData->quadLaneIndex;
+      }
+      value += sizeof(rdcspv::PixelLaneData);
+
+      for(size_t i = 0; i < shadRefl.refl->inputSignature.size(); i++)
+      {
+        const SigParameter &param = shadRefl.refl->inputSignature[i];
+
+        bool builtin = true;
+        if(param.systemValue == ShaderBuiltin::Undefined)
+        {
+          builtin = false;
+          location_inputs[t].resize(RDCMAX((uint32_t)location_inputs.size(), param.regIndex + 1));
+        }
+
+        ShaderVariable &var =
+            builtin ? allthread_builtins[t][param.systemValue] : location_inputs[t][param.regIndex];
+
+        var.rows = 1;
+        var.columns = param.compCount & 0xff;
+        var.type = param.varType;
+
+        const uint32_t firstComp = Bits::CountTrailingZeroes(uint32_t(param.regChannelMask));
+        const uint32_t elemSize = VarTypeByteSize(param.varType);
+
+        // we always store in 32-bit types
+        const size_t sz = RDCMAX(4U, elemSize) * param.compCount;
+
+        memcpy((var.value.u8v.data()) + elemSize * firstComp, value + i * paramAlign, sz);
+
+        // convert down from stored 32-bit types if they were smaller
+        if(elemSize == 1)
+        {
+          ShaderVariable tmp = var;
+
+          for(uint32_t comp = 0; comp < param.compCount; comp++)
+            var.value.u8v[comp] = tmp.value.u32v[comp] & 0xff;
+        }
+        else if(elemSize == 2)
+        {
+          ShaderVariable tmp = var;
+
+          for(uint32_t comp = 0; comp < param.compCount; comp++)
+          {
+            if(VarTypeCompType(param.varType) == CompType::Float)
+              var.value.f16v[comp] = rdhalf::make(tmp.value.f32v[comp]);
+            else
+              var.value.u16v[comp] = tmp.value.u32v[comp] & 0xffff;
+          }
+        }
+      }
+    }
+
+    global_builtins[ShaderBuiltin::SubgroupSize] = ShaderVariable(rdcstr(), numThreads, 0U, 0U, 0U);
+
+    apiWrapper->SetInputVarsToReadOnly();
     ret = debugger->BeginDebug(apiWrapper, ShaderStage::Pixel, entryPoint, spec,
-                               shadRefl.instructionLines, shadRefl.patchData, destIdx);
+                               shadRefl.instructionLines, shadRefl.patchData, winner->laneIndex,
+                               numThreads, numThreads);
     apiWrapper->ResetReplay();
   }
   else
@@ -4606,28 +6660,7 @@ ShaderDebugTrace *VulkanReplay::DebugPixel(uint32_t eventId, uint32_t x, uint32_
     ret->stage = ShaderStage::Pixel;
   }
 
-  if(descpool != VK_NULL_HANDLE)
-  {
-    // delete descriptors. Technically we don't have to free the descriptor sets, but our tracking
-    // on replay doesn't handle destroying children of pooled objects so we do it explicitly anyway.
-    m_pDriver->vkFreeDescriptorSets(dev, descpool, (uint32_t)descSets.size(), descSets.data());
-
-    m_pDriver->vkDestroyDescriptorPool(dev, descpool, NULL);
-  }
-
-  for(VkDescriptorSetLayout layout : setLayouts)
-    m_pDriver->vkDestroyDescriptorSetLayout(dev, layout, NULL);
-
-  // delete pipeline layout
-  m_pDriver->vkDestroyPipelineLayout(dev, pipeLayout, NULL);
-
-  // delete pipeline
-  m_pDriver->vkDestroyPipeline(dev, inputsPipe, NULL);
-
-  // delete shader modules
-  for(VkShaderModule s : modules)
-    m_pDriver->vkDestroyShaderModule(dev, s, NULL);
-
+  patchedBufferdata.Free();
   return ret;
 }
 
@@ -4635,18 +6668,26 @@ ShaderDebugTrace *VulkanReplay::DebugThread(uint32_t eventId,
                                             const rdcfixedarray<uint32_t, 3> &groupid,
                                             const rdcfixedarray<uint32_t, 3> &threadid)
 {
-  if(!GetAPIProperties().shaderDebugging)
-  {
-    RDCUNIMPLEMENTED("Compute debugging not yet implemented for Vulkan");
-    return new ShaderDebugTrace;
-  }
+  return DebugComputeCommon(ShaderStage::Compute, eventId, groupid, threadid);
+}
 
+ShaderDebugTrace *VulkanReplay::DebugMeshThread(uint32_t eventId,
+                                                const rdcfixedarray<uint32_t, 3> &groupid,
+                                                const rdcfixedarray<uint32_t, 3> &threadid)
+{
+  return DebugComputeCommon(ShaderStage::Mesh, eventId, groupid, threadid);
+}
+
+ShaderDebugTrace *VulkanReplay::DebugComputeCommon(ShaderStage stage, uint32_t eventId,
+                                                   const rdcfixedarray<uint32_t, 3> &groupid,
+                                                   const rdcfixedarray<uint32_t, 3> &threadid)
+{
   const VulkanRenderState &state = m_pDriver->GetRenderState();
   VulkanCreationInfo &c = m_pDriver->m_CreationInfo;
 
   rdcstr regionName =
-      StringFormat::Fmt("DebugThread @ %u of (%u,%u,%u) (%u,%u,%u)", eventId, groupid[0],
-                        groupid[1], groupid[2], threadid[0], threadid[1], threadid[2]);
+      StringFormat::Fmt("Debug %s @ %u of (%u,%u,%u) (%u,%u,%u)", ToStr(stage).c_str(), eventId,
+                        groupid[0], groupid[1], groupid[2], threadid[0], threadid[1], threadid[2]);
 
   VkMarkerRegion region(regionName);
 
@@ -4655,22 +6696,38 @@ ShaderDebugTrace *VulkanReplay::DebugThread(uint32_t eventId,
 
   const ActionDescription *action = m_pDriver->GetAction(eventId);
 
-  if(!(action->flags & ActionFlags::Dispatch))
+  if(stage == ShaderStage::Compute)
   {
-    RDCLOG("No dispatch selected");
-    return new ShaderDebugTrace();
+    if(!(action->flags & ActionFlags::Dispatch))
+    {
+      RDCLOG("No dispatch selected");
+      return new ShaderDebugTrace();
+    }
+  }
+  else
+  {
+    if(!(action->flags & ActionFlags::MeshDispatch))
+    {
+      RDCLOG("No dispatch selected");
+      return new ShaderDebugTrace();
+    }
   }
 
   // get ourselves in pristine state before this dispatch (without any side effects it may have had)
   m_pDriver->ReplayLog(0, eventId, eReplay_WithoutDraw);
 
-  const VulkanCreationInfo::Pipeline &pipe = c.m_Pipeline[state.compute.pipeline];
-  VulkanCreationInfo::ShaderModule &shader = c.m_ShaderModule[pipe.shaders[5].module];
-  rdcstr entryPoint = pipe.shaders[5].entryPoint;
-  const rdcarray<SpecConstant> &spec = pipe.shaders[5].specialization;
+  const VulkanStatePipeline &stagePipeState =
+      stage == ShaderStage::Compute ? state.compute : state.graphics;
+  const VulkanCreationInfo::Pipeline &pipe = c.m_Pipeline[stagePipeState.pipeline];
+  const VulkanCreationInfo::ShaderEntry &shaderEntry =
+      stagePipeState.shaderObject ? c.m_ShaderObject[state.shaderObjects[(size_t)stage]].shad
+                                  : pipe.shaders[(size_t)stage];
+  VulkanCreationInfo::ShaderModule &shader = c.m_ShaderModule[shaderEntry.module];
+  rdcstr entryPoint = shaderEntry.entryPoint;
+  const rdcarray<SpecConstant> &spec = shaderEntry.specialization;
 
   VulkanCreationInfo::ShaderModuleReflection &shadRefl =
-      shader.GetReflection(entryPoint, state.compute.pipeline);
+      shader.GetReflection(stage, entryPoint, stagePipeState.pipeline);
 
   if(!shadRefl.refl->debugInfo.debuggable)
   {
@@ -4681,38 +6738,590 @@ ShaderDebugTrace *VulkanReplay::DebugThread(uint32_t eventId,
   shadRefl.PopulateDisassembly(shader.spirv);
 
   VulkanAPIWrapper *apiWrapper =
-      new VulkanAPIWrapper(m_pDriver, c, VK_SHADER_STAGE_COMPUTE_BIT, eventId);
+      new VulkanAPIWrapper(m_pDriver, c, stage, eventId, shadRefl.refl->resourceId);
 
   uint32_t threadDim[3];
   threadDim[0] = shadRefl.refl->dispatchThreadsDimension[0];
   threadDim[1] = shadRefl.refl->dispatchThreadsDimension[1];
   threadDim[2] = shadRefl.refl->dispatchThreadsDimension[2];
 
-  std::map<ShaderBuiltin, ShaderVariable> &builtins = apiWrapper->builtin_inputs;
-  builtins[ShaderBuiltin::DispatchSize] =
+  if((threadid[0] >= threadDim[0]) || (threadid[1] >= threadDim[1]) || (threadid[2] >= threadDim[2]))
+  {
+    RDCLOG("Invalid threadid %d,%d,%d selected from group %dx%dx%d", threadid[0], threadid[1],
+           threadid[2], threadDim[0], threadDim[1], threadDim[2]);
+    return new ShaderDebugTrace();
+  }
+  if((groupid[0] >= action->dispatchDimension[0]) || (groupid[1] >= action->dispatchDimension[1]) ||
+     (groupid[2] >= action->dispatchDimension[2]))
+  {
+    RDCLOG("Invalid groupid %d,%d,%d selected from dispatch %dx%dx%d", groupid[0], groupid[1],
+           groupid[2], action->dispatchDimension[0], action->dispatchDimension[1],
+           action->dispatchDimension[2]);
+    return new ShaderDebugTrace();
+  }
+
+  SubgroupCapability subgroupCapability = SubgroupCapability::None;
+  uint32_t maxSubgroupSize = 1;
+  CalculateSubgroupProperties(maxSubgroupSize, subgroupCapability);
+
+  uint32_t numThreads = 1;
+
+  bool hasQuadScope = (shadRefl.patchData.threadScope & rdcspv::ThreadScope::Quad) ? true : false;
+  bool hasQuadDerivatives =
+      (shadRefl.patchData.derivativeMode != rdcspv::ComputeDerivativeMode::None);
+  bool hasSubgroupScoope =
+      (shadRefl.patchData.threadScope & rdcspv::ThreadScope::Subgroup) ? true : false;
+  bool hasWorkgroupScope =
+      (shadRefl.patchData.threadScope & rdcspv::ThreadScope::Workgroup) ? true : false;
+
+  if(hasQuadDerivatives || hasQuadScope)
+    numThreads = RDCMAX(numThreads, 4U);
+  if(hasSubgroupScoope)
+    numThreads = RDCMAX(numThreads, maxSubgroupSize);
+  if(hasWorkgroupScope)
+    numThreads = RDCMAX(numThreads, threadDim[0] * threadDim[1] * threadDim[2]);
+
+  rdcarray<std::unordered_map<ShaderBuiltin, ShaderVariable>> &allthread_builtins =
+      apiWrapper->GetThreadBuiltins();
+  allthread_builtins.resize(numThreads);
+  apiWrapper->thread_props.resize(numThreads);
+
+  std::unordered_map<ShaderBuiltin, ShaderVariable> &global_builtins =
+      apiWrapper->GetGlobalBuiltins();
+  global_builtins[ShaderBuiltin::DispatchSize] =
       ShaderVariable(rdcstr(), action->dispatchDimension[0], action->dispatchDimension[1],
                      action->dispatchDimension[2], 0U);
-  builtins[ShaderBuiltin::DispatchThreadIndex] = ShaderVariable(
-      rdcstr(), groupid[0] * threadDim[0] + threadid[0], groupid[1] * threadDim[1] + threadid[1],
-      groupid[2] * threadDim[2] + threadid[2], 0U);
-  builtins[ShaderBuiltin::GroupIndex] =
-      ShaderVariable(rdcstr(), groupid[0], groupid[1], groupid[2], 0U);
-  builtins[ShaderBuiltin::GroupSize] =
+  global_builtins[ShaderBuiltin::GroupSize] =
       ShaderVariable(rdcstr(), threadDim[0], threadDim[1], threadDim[2], 0U);
-  builtins[ShaderBuiltin::GroupThreadIndex] =
-      ShaderVariable(rdcstr(), threadid[0], threadid[1], threadid[2], 0U);
-  builtins[ShaderBuiltin::GroupFlatIndex] = ShaderVariable(
-      rdcstr(), threadid[2] * threadDim[0] * threadDim[1] + threadid[1] * threadDim[0] + threadid[0],
-      0U, 0U, 0U);
-  builtins[ShaderBuiltin::DeviceIndex] = ShaderVariable(rdcstr(), 0U, 0U, 0U, 0U);
+  global_builtins[ShaderBuiltin::DeviceIndex] = ShaderVariable(rdcstr(), 0U, 0U, 0U, 0U);
+  global_builtins[ShaderBuiltin::GroupIndex] =
+      ShaderVariable(rdcstr(), groupid[0], groupid[1], groupid[2], 0U);
 
-  rdcspv::Debugger *debugger = new rdcspv::Debugger;
-  debugger->Parse(shader.spirv.GetSPIRV());
-  ShaderDebugTrace *ret = debugger->BeginDebug(apiWrapper, ShaderStage::Compute, entryPoint, spec,
-                                               shadRefl.instructionLines, shadRefl.patchData, 0);
-  apiWrapper->ResetReplay();
+  const uint32_t quadIdOffset = 10000;
+  const uint32_t quadDerivMode = (uint32_t)shadRefl.patchData.derivativeMode;
 
-  return ret;
+  uint32_t countQuadX = ~0U;
+  uint32_t countQuadY = ~0U;
+  uint32_t quadW = ~0U;
+  uint32_t quadH = ~0U;
+
+  if(hasQuadDerivatives)
+  {
+    // linear: 4x1x1
+    // quad: 2x2x1
+    const uint32_t quadWidths[3] = {~0U, 4, 2};
+    const uint32_t quadHeights[3] = {~0U, 1, 2};
+    quadW = quadWidths[quadDerivMode];
+    quadH = quadHeights[quadDerivMode];
+    countQuadX = threadDim[0] / quadW;
+    countQuadY = threadDim[1] / quadH;
+    hasQuadScope = true;
+  }
+  else if(hasQuadScope)
+  {
+    // Choose linear layout
+    quadW = 4;
+    quadH = 1;
+    countQuadX = threadDim[0] / quadW;
+    countQuadY = threadDim[1] / quadH;
+  }
+
+  if(hasQuadScope)
+  {
+    RDCASSERTEQUAL(threadDim[0], countQuadX * quadW);
+    RDCASSERTEQUAL(threadDim[1], countQuadY * quadH);
+  }
+
+  // if we need to fetch subgroup data, do that now
+  uint32_t laneIndex = 0;
+  if(hasSubgroupScoope)
+  {
+    SpecData specData = {};
+
+    specData.globalThreadIdX = groupid[0] * threadDim[0] + threadid[0];
+    specData.globalThreadIdY = groupid[1] * threadDim[1] + threadid[1];
+    specData.globalThreadIdZ = groupid[2] * threadDim[2] + threadid[2];
+
+    uint32_t paramAlign, structStride;
+    rdctie(paramAlign, structStride) = GetAlignAndOutputSize(shadRefl);
+
+    uint32_t maxHits = 4;    // we should only ever get one hit
+
+    // struct size is rdcspv::ResultDataBase header plus Nx structStride for the number of threads
+    uint32_t structSize = sizeof(rdcspv::ResultDataBase) + structStride * maxSubgroupSize;
+
+    VkDeviceSize feedbackStorageSize = maxHits * structSize + 1024;
+
+    if(Vulkan_Debug_ShaderDebugLogging())
+    {
+      RDCLOG("Output structure is %u sized, output buffer is %llu bytes", structStride,
+             feedbackStorageSize);
+    }
+
+    m_PatchedShaderFeedback.ResizeFeedbackBuffer(m_pDriver, feedbackStorageSize);
+
+    specData.arrayLength = maxHits;
+
+    // make copy of state to draw from
+    VulkanRenderState modifiedstate = state;
+
+    VkShaderStageFlagBits stageBit = (VkShaderStageFlagBits)ShaderMaskFromIndex(shadRefl.stageIndex);
+    AddedDescriptorData patchedBufferdata = PrepareExtraBufferDescriptor(
+        modifiedstate, stage == ShaderStage::Compute, {MakeNewBinding(stageBit)}, false);
+
+    if(patchedBufferdata.empty())
+    {
+      delete apiWrapper;
+
+      ShaderDebugTrace *ret = new ShaderDebugTrace;
+      ret->stage = stage;
+
+      return ret;
+    }
+
+    if(!patchedBufferdata.descSets.empty())
+      m_PatchedShaderFeedback.FeedbackBuffer.WriteDescriptor(Unwrap(patchedBufferdata.descSets[0]),
+                                                             0, 0);
+
+    specData.bufferAddress = m_PatchedShaderFeedback.FeedbackBuffer.Address();
+    if(specData.bufferAddress && Vulkan_Debug_ShaderDebugLogging())
+    {
+      RDCLOG("Got buffer address of %llu", specData.bufferAddress);
+    }
+
+    // create shader with modified code
+
+    VkSpecializationMapEntry specMaps[(size_t)InputSpecConstant::Count];
+    RDCCOMPILE_ASSERT(sizeof(specMaps) == sizeof(specMapsTemplate),
+                      "Specialisation maps have changed");
+
+    VkSpecializationInfo patchedSpecInfo = MakeSpecInfo(specData, specMaps);
+
+    auto patchCallback = [this, stageBit, &spec, &shadRefl, &patchedSpecInfo, subgroupCapability,
+                          maxSubgroupSize](const AddedDescriptorData &patchedBufferdata,
+                                           VkShaderStageFlagBits stage, const char *entryName,
+                                           const rdcarray<uint32_t> &origSpirv,
+                                           rdcarray<uint32_t> &modSpirv,
+                                           const VkSpecializationInfo *&specInfo) {
+      if(stage != stageBit)
+        return false;
+
+      modSpirv = origSpirv;
+
+      uint32_t idx = shadRefl.stageIndex;
+
+      static const rdcstr filename[NumShaderStages] = {
+          "shadinput_vertex.spv",   "shadinput_hull.spv",  "shadinput_domain.spv",
+          "shadinput_geometry.spv", "shadinput_pixel.spv", "shadinput_compute.spv",
+          "shadinput_task.spv",     "shadinput_mesh.spv",
+      };
+
+      if(!Vulkan_Debug_PSDebugDumpDirPath().empty())
+        FileIO::WriteAll(Vulkan_Debug_PSDebugDumpDirPath() + "/before_" + filename[idx], modSpirv);
+
+      CreateInputFetcher(modSpirv, spec, shadRefl, m_StorageMode, false, false, false,
+                         subgroupCapability, maxSubgroupSize);
+
+      if(!Vulkan_Debug_PSDebugDumpDirPath().empty())
+        FileIO::WriteAll(Vulkan_Debug_PSDebugDumpDirPath() + "/after_" + filename[idx], modSpirv);
+
+      // overwrite user's specialisation info. We flattened the user's spec constants when patching the SPIR-V above.
+      specInfo = &patchedSpecInfo;
+
+      return true;
+    };
+
+    PrepareStateForPatchedShader(patchedBufferdata, modifiedstate, stage == ShaderStage::Compute,
+                                 patchCallback);
+
+    if(!RunFeedbackAction(feedbackStorageSize, action, modifiedstate))
+    {
+      delete apiWrapper;
+
+      ShaderDebugTrace *ret = new ShaderDebugTrace;
+      ret->stage = stage;
+
+      return ret;
+    }
+
+    bytebuf data;
+    GetDebugManager()->GetBufferData(m_PatchedShaderFeedback.FeedbackBuffer, 0, 0, data);
+
+    byte *base = data.data();
+    uint32_t hit_count = ((uint32_t *)base)[0];
+    // uint32_t total_count = ((uint32_t *)base)[1];
+
+    if(hit_count > maxHits)
+    {
+      RDCERR("%u hits, more than max overdraw levels allowed %u. Clamping", hit_count, maxHits);
+      hit_count = maxHits;
+    }
+
+    base += offsetof(rdcspv::ResultBaseBuffer, hits);
+
+    rdcspv::ResultDataBase *winner = (rdcspv::ResultDataBase *)base;
+
+    if(winner->valid != validMagicNumber)
+    {
+      RDCWARN("Hit doesn't have valid magic number");
+
+      delete apiWrapper;
+
+      ShaderDebugTrace *ret = new ShaderDebugTrace;
+      ret->stage = stage;
+
+      return ret;
+    }
+
+    rdcspv::Debugger *debugger = new rdcspv::Debugger;
+    debugger->Parse(shader.spirv.GetSPIRV());
+
+    // the per-thread data immediately follows the rdcspv::ResultDataBase header. Every piece of
+    // data is uniformly aligned, either 16-byte by default or 32-byte if larger components exist.
+    // The output is in input signature order.
+    byte *LaneData = (byte *)(winner + 1);
+
+    const uint32_t subgroupSize = winner->subgroupSize;
+
+    RDCASSERTNOTEQUAL(subgroupSize, 0);
+    numThreads = RDCMAX(numThreads, subgroupSize);
+
+    if(hasWorkgroupScope)
+      numThreads = RDCMAX(numThreads, threadDim[0] * threadDim[1] * threadDim[2]);
+
+    if(hasQuadScope)
+      RDCASSERT(numThreads >= 4);
+
+    global_builtins[ShaderBuiltin::NumSubgroups] =
+        ShaderVariable(rdcstr(), winner->numSubgroups, 0U, 0U, 0U);
+
+    apiWrapper->thread_props.resize(numThreads);
+
+    laneIndex = ~0U;
+
+    for(uint32_t t = 0; t < subgroupSize; t++)
+    {
+      byte *value = LaneData + t * structStride;
+
+      rdcspv::SubgroupLaneData *subgroupData = (rdcspv::SubgroupLaneData *)value;
+      value += sizeof(rdcspv::SubgroupLaneData);
+
+      rdcspv::ComputeLaneData *compData = (rdcspv::ComputeLaneData *)value;
+      value += sizeof(rdcspv::ComputeLaneData);
+
+      uint32_t lane = t;
+
+      uint32_t quadId = ~0U;
+      uint32_t quadLaneIndex = ~0U;
+      if(hasQuadScope)
+      {
+        uint32_t quadX = (compData->threadid[0] / quadW);
+        uint32_t quadY = (compData->threadid[1] / quadH);
+        uint32_t quadZ = compData->threadid[2];
+        quadId = quadX + (quadY * countQuadX) + (quadZ * countQuadY * countQuadX);
+        quadLaneIndex = (compData->threadid[0] % quadW) + (compData->threadid[1] % quadH) * 2;
+      }
+
+      if(hasWorkgroupScope)
+      {
+        if(hasQuadScope)
+        {
+          // There won't be any data them for inactive lanes
+          if(subgroupData->isActive == 0)
+            continue;
+
+          // quad scope, derive the lane from the quad layout
+          lane = quadId * 4 + quadLaneIndex;
+        }
+        else
+        {
+          // Assume linear layout for the subgroup : tightly wrapped
+          lane = compData->threadid[2] * threadDim[0] * threadDim[1] +
+                 compData->threadid[1] * threadDim[0] + compData->threadid[0];
+        }
+      }
+
+      if(hasQuadScope)
+      {
+        apiWrapper->thread_props[lane][(size_t)rdcspv::ThreadProperty::QuadLane] = quadLaneIndex;
+        apiWrapper->thread_props[lane][(size_t)rdcspv::ThreadProperty::QuadId] =
+            quadId + quadIdOffset;
+      }
+
+      if(rdcfixedarray<uint32_t, 3>(compData->threadid) == threadid && subgroupData->isActive)
+        laneIndex = lane;
+
+      apiWrapper->thread_props[lane][(size_t)rdcspv::ThreadProperty::Active] = subgroupData->isActive;
+      apiWrapper->thread_props[lane][(size_t)rdcspv::ThreadProperty::Elected] = subgroupData->elect;
+      apiWrapper->thread_props[lane][(size_t)rdcspv::ThreadProperty::SubgroupId] = t;
+
+      allthread_builtins[lane][ShaderBuiltin::DispatchThreadIndex] =
+          ShaderVariable(rdcstr(), groupid[0] * threadDim[0] + compData->threadid[0],
+                         groupid[1] * threadDim[1] + compData->threadid[1],
+                         groupid[2] * threadDim[2] + compData->threadid[2], 0U);
+      allthread_builtins[lane][ShaderBuiltin::GroupThreadIndex] = ShaderVariable(
+          rdcstr(), compData->threadid[0], compData->threadid[1], compData->threadid[2], 0U);
+      allthread_builtins[lane][ShaderBuiltin::GroupFlatIndex] =
+          ShaderVariable(rdcstr(),
+                         compData->threadid[2] * threadDim[0] * threadDim[1] +
+                             compData->threadid[1] * threadDim[0] + compData->threadid[0],
+                         0U, 0U, 0U);
+      allthread_builtins[lane][ShaderBuiltin::IndexInSubgroup] =
+          ShaderVariable(rdcstr(), t, 0U, 0U, 0U);
+      allthread_builtins[lane][ShaderBuiltin::SubgroupIndexInWorkgroup] =
+          ShaderVariable(rdcstr(), compData->subIdxInGroup, 0U, 0U, 0U);
+    }
+
+    if(laneIndex == ~0U)
+    {
+      RDCERR("Didn't find desired lane in subgroup data");
+      laneIndex = 0;
+    }
+
+    // if we're simulating the whole workgroup we need to fill in the thread IDs of other threads
+    if(hasWorkgroupScope)
+    {
+      for(uint32_t tz = 0; tz < threadDim[2]; tz++)
+      {
+        for(uint32_t ty = 0; ty < threadDim[1]; ty++)
+        {
+          for(uint32_t tx = 0; tx < threadDim[0]; tx++)
+          {
+            uint32_t quadId = ~0U;
+            uint32_t quadLaneIndex = ~0U;
+
+            uint32_t lane = ~0U;
+            if(hasQuadScope)
+            {
+              // quad scope, derive the lane from the quad layout
+              uint32_t quadX = (tx / quadW);
+              uint32_t quadY = (ty / quadH);
+              uint32_t quadZ = tz;
+              quadId = quadX + (quadY * countQuadX) + (quadZ * countQuadY * countQuadX);
+              quadLaneIndex = (tx % quadW) + (ty % quadH) * 2;
+              lane = quadId * 4 + quadLaneIndex;
+            }
+            else
+            {
+              // Assume linear layout for the subgroup : tightly wrapped
+              lane = tz * threadDim[0] * threadDim[1] + ty * threadDim[0] + tx;
+            }
+            std::unordered_map<ShaderBuiltin, ShaderVariable> &thread_builtins =
+                allthread_builtins[lane];
+
+            thread_builtins[ShaderBuiltin::GroupThreadIndex] =
+                ShaderVariable(rdcstr(), tx, ty, tz, 0U);
+            thread_builtins[ShaderBuiltin::GroupFlatIndex] = ShaderVariable(
+                rdcstr(), tz * threadDim[0] * threadDim[1] + ty * threadDim[0] + tx, 0U, 0U, 0U);
+
+            if(apiWrapper->thread_props[lane][(size_t)rdcspv::ThreadProperty::Active])
+            {
+              // assert that this is the thread we expect it to be
+              RDCASSERTEQUAL(thread_builtins[ShaderBuiltin::DispatchThreadIndex].value.u32v[0],
+                             groupid[0] * threadDim[0] + tx);
+              RDCASSERTEQUAL(thread_builtins[ShaderBuiltin::DispatchThreadIndex].value.u32v[1],
+                             groupid[1] * threadDim[1] + ty);
+              RDCASSERTEQUAL(thread_builtins[ShaderBuiltin::DispatchThreadIndex].value.u32v[2],
+                             groupid[2] * threadDim[2] + tz);
+
+              RDCASSERTEQUAL(thread_builtins[ShaderBuiltin::IndexInSubgroup].value.u32v[0],
+                             lane % subgroupSize);
+              RDCASSERTEQUAL(thread_builtins[ShaderBuiltin::SubgroupIndexInWorkgroup].value.u32v[0],
+                             lane / subgroupSize);
+
+              if(hasQuadScope)
+              {
+                RDCASSERTEQUAL(
+                    apiWrapper->thread_props[lane][(size_t)rdcspv::ThreadProperty::QuadLane],
+                    quadLaneIndex);
+                RDCASSERTEQUAL(apiWrapper->thread_props[lane][(size_t)rdcspv::ThreadProperty::QuadId],
+                               quadId + quadIdOffset);
+              }
+            }
+            else
+            {
+              thread_builtins[ShaderBuiltin::DispatchThreadIndex] =
+                  ShaderVariable(rdcstr(), groupid[0] * threadDim[0] + tx,
+                                 groupid[1] * threadDim[1] + ty, groupid[2] * threadDim[2] + tz, 0U);
+              // tightly wrap subgroups, this is likely not how the GPU actually assigns them
+              thread_builtins[ShaderBuiltin::IndexInSubgroup] =
+                  ShaderVariable(rdcstr(), lane % subgroupSize, 0U, 0U, 0U);
+              thread_builtins[ShaderBuiltin::SubgroupIndexInWorkgroup] =
+                  ShaderVariable(rdcstr(), lane / subgroupSize, 0U, 0U, 0U);
+              apiWrapper->thread_props[lane][(size_t)rdcspv::ThreadProperty::Active] = 1;
+              apiWrapper->thread_props[lane][(size_t)rdcspv::ThreadProperty::SubgroupId] =
+                  lane % subgroupSize;
+
+              if(hasQuadScope)
+              {
+                apiWrapper->thread_props[lane][(size_t)rdcspv::ThreadProperty::QuadLane] =
+                    quadLaneIndex;
+                apiWrapper->thread_props[lane][(size_t)rdcspv::ThreadProperty::QuadId] = quadId;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Each member of a quad should belong to the same subgroup. We assume this and do not validate it
+
+    // Add inactive padding lanes to round up to the subgroup size
+    const uint32_t numPaddingThreads = AlignUp(numThreads, subgroupSize) - numThreads;
+    if(numPaddingThreads > 0)
+    {
+      uint32_t newNumThreads = numThreads + numPaddingThreads;
+      apiWrapper->thread_props.resize(newNumThreads);
+      allthread_builtins.resize(newNumThreads);
+      for(uint32_t i = numThreads; i < newNumThreads; ++i)
+      {
+        std::unordered_map<ShaderBuiltin, ShaderVariable> &thread_builtins = allthread_builtins[i];
+
+        thread_builtins[ShaderBuiltin::DispatchThreadIndex] =
+            ShaderVariable(rdcstr(), -1, -1, -1, -1);
+        thread_builtins[ShaderBuiltin::GroupThreadIndex] = ShaderVariable(rdcstr(), -1, -1, -1, -1);
+        thread_builtins[ShaderBuiltin::GroupFlatIndex] = ShaderVariable(rdcstr(), -1, -1, -1, -1);
+        thread_builtins[ShaderBuiltin::IndexInSubgroup] =
+            ShaderVariable(rdcstr(), i % subgroupSize, 0U, 0U, 0U);
+        thread_builtins[ShaderBuiltin::SubgroupIndexInWorkgroup] =
+            ShaderVariable(rdcstr(), i / subgroupSize, 0U, 0U, 0U);
+        apiWrapper->thread_props[i][(size_t)rdcspv::ThreadProperty::Active] = 0;
+        apiWrapper->thread_props[i][(size_t)rdcspv::ThreadProperty::SubgroupId] = i % subgroupSize;
+      }
+      numThreads = newNumThreads;
+    }
+    global_builtins[ShaderBuiltin::SubgroupSize] = ShaderVariable(rdcstr(), subgroupSize, 0U, 0U, 0U);
+
+    ComputeSubgroupMasks(apiWrapper, numThreads);
+
+    apiWrapper->SetInputVarsToReadOnly();
+    ShaderDebugTrace *ret =
+        debugger->BeginDebug(apiWrapper, stage, entryPoint, spec, shadRefl.instructionLines,
+                             shadRefl.patchData, laneIndex, numThreads, subgroupSize);
+    apiWrapper->ResetReplay();
+
+    return ret;
+  }
+  else
+  {
+    // if we need to simulate the whole workgroup.
+    // we assume the layout of this is irrelevant and don't attempt to read it back from the GPU
+    // like we do with subgroups. We lay things out in plain linear order, along X and then Y and
+    // then Z, with groups iterated together.
+    if(hasWorkgroupScope)
+    {
+      uint32_t i = 0;
+      for(uint32_t tz = 0; tz < threadDim[2]; tz++)
+      {
+        for(uint32_t ty = 0; ty < threadDim[1]; ty++)
+        {
+          for(uint32_t tx = 0; tx < threadDim[0]; tx++)
+          {
+            std::unordered_map<ShaderBuiltin, ShaderVariable> &thread_builtins =
+                allthread_builtins[i];
+            thread_builtins[ShaderBuiltin::DispatchThreadIndex] =
+                ShaderVariable(rdcstr(), groupid[0] * threadDim[0] + tx,
+                               groupid[1] * threadDim[1] + ty, groupid[2] * threadDim[2] + tz, 0U);
+            thread_builtins[ShaderBuiltin::GroupThreadIndex] =
+                ShaderVariable(rdcstr(), tx, ty, tz, 0U);
+            thread_builtins[ShaderBuiltin::GroupFlatIndex] = ShaderVariable(
+                rdcstr(), tz * threadDim[0] * threadDim[1] + ty * threadDim[0] + tx, 0U, 0U, 0U);
+            apiWrapper->thread_props[i][(size_t)rdcspv::ThreadProperty::Active] = 1;
+
+            if(hasQuadScope)
+            {
+              uint32_t quadX = (tx / quadW);
+              uint32_t quadY = (ty / quadH);
+              uint32_t quadZ = tz;
+              uint32_t quadId =
+                  quadIdOffset + quadX + (quadY * countQuadX) + (quadZ * countQuadY * countQuadX);
+              uint32_t quadLaneIndex = (tx % quadW) + (ty % quadH) * 2;
+
+              apiWrapper->thread_props[i][(size_t)rdcspv::ThreadProperty::QuadLane] = quadLaneIndex;
+              apiWrapper->thread_props[i][(size_t)rdcspv::ThreadProperty::QuadId] = quadId;
+            }
+
+            if(rdcfixedarray<uint32_t, 3>({tx, ty, tz}) == threadid)
+            {
+              laneIndex = i;
+            }
+
+            i++;
+          }
+        }
+      }
+    }
+    else if(hasQuadScope)
+    {
+      // need to simulate the whole quad, do not readback from the GPU like we do with subgroups
+      // the quad is guaranteed to be in the same subgroup
+      // We lay things out in linear or quad order
+      RDCASSERTEQUAL(numThreads, 4U);
+      uint32_t txMin = (threadid[0] / quadW) * quadW;
+      uint32_t tyMin = (threadid[1] / quadH) * quadH;
+      uint32_t tz = threadid[2];
+      uint32_t quadZ = tz;
+      for(uint32_t i = 0; i < 4U; ++i)
+      {
+        uint32_t tx = txMin + (i % quadW);
+        uint32_t ty = tyMin + (i / quadW);
+        std::unordered_map<ShaderBuiltin, ShaderVariable> &thread_builtins = allthread_builtins[i];
+        thread_builtins[ShaderBuiltin::DispatchThreadIndex] =
+            ShaderVariable(rdcstr(), groupid[0] * threadDim[0] + tx, groupid[1] * threadDim[1] + ty,
+                           groupid[2] * threadDim[2] + tz, 0U);
+        thread_builtins[ShaderBuiltin::GroupThreadIndex] = ShaderVariable(rdcstr(), tx, ty, tz, 0U);
+        thread_builtins[ShaderBuiltin::GroupFlatIndex] = ShaderVariable(
+            rdcstr(), tz * threadDim[0] * threadDim[1] + ty * threadDim[0] + tx, 0U, 0U, 0U);
+        apiWrapper->thread_props[i][(size_t)rdcspv::ThreadProperty::Active] = 1;
+
+        uint32_t quadX = (tx / quadW);
+        uint32_t quadY = (ty / quadH);
+        uint32_t quadId =
+            quadIdOffset + quadX + (quadY * countQuadX) + (quadZ * countQuadY * countQuadX);
+        uint32_t quadLaneIndex = (tx % quadW) + (ty % quadH) * 2;
+
+        apiWrapper->thread_props[i][(size_t)rdcspv::ThreadProperty::QuadLane] = quadLaneIndex;
+        apiWrapper->thread_props[i][(size_t)rdcspv::ThreadProperty::QuadId] = quadId;
+
+        if(rdcfixedarray<uint32_t, 3>({tx, ty, tz}) == threadid)
+          laneIndex = i;
+      }
+    }
+    else
+    {
+      RDCASSERTEQUAL(numThreads, 1U);
+      // simple single-thread case
+      apiWrapper->thread_props[0][(size_t)rdcspv::ThreadProperty::Active] = 1;
+      apiWrapper->thread_props[0][(size_t)rdcspv::ThreadProperty::SubgroupId] = 0;
+
+      std::unordered_map<ShaderBuiltin, ShaderVariable> &thread_builtins = allthread_builtins[0];
+
+      thread_builtins[ShaderBuiltin::DispatchThreadIndex] = ShaderVariable(
+          rdcstr(), groupid[0] * threadDim[0] + threadid[0],
+          groupid[1] * threadDim[1] + threadid[1], groupid[2] * threadDim[2] + threadid[2], 0U);
+      thread_builtins[ShaderBuiltin::GroupThreadIndex] =
+          ShaderVariable(rdcstr(), threadid[0], threadid[1], threadid[2], 0U);
+      thread_builtins[ShaderBuiltin::GroupFlatIndex] = ShaderVariable(
+          rdcstr(),
+          threadid[2] * threadDim[0] * threadDim[1] + threadid[1] * threadDim[0] + threadid[0], 0U,
+          0U, 0U);
+    }
+
+    rdcspv::Debugger *debugger = new rdcspv::Debugger;
+    debugger->Parse(shader.spirv.GetSPIRV());
+
+    global_builtins[ShaderBuiltin::SubgroupSize] = ShaderVariable(rdcstr(), 1U, 0U, 0U, 0U);
+
+    ComputeSubgroupMasks(apiWrapper, numThreads);
+
+    apiWrapper->SetInputVarsToReadOnly();
+    ShaderDebugTrace *ret =
+        debugger->BeginDebug(apiWrapper, stage, entryPoint, spec, shadRefl.instructionLines,
+                             shadRefl.patchData, laneIndex, numThreads, 1);
+    apiWrapper->ResetReplay();
+
+    return ret;
+  }
 }
 
 rdcarray<ShaderDebugState> VulkanReplay::ContinueDebug(ShaderDebugger *debugger)
@@ -4728,6 +7337,9 @@ rdcarray<ShaderDebugState> VulkanReplay::ContinueDebug(ShaderDebugger *debugger)
   {
     for(size_t dim = 0; dim < ARRAY_COUNT(m_TexRender.DummyImageViews[0]); dim++)
     {
+      if(m_TexRender.DummyImageViews[fmt][dim] == VK_NULL_HANDLE)
+        continue;
+
       m_ShaderDebugData.DummyImageInfos[fmt][dim].imageLayout =
           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       m_ShaderDebugData.DummyImageInfos[fmt][dim].imageView =
@@ -4737,7 +7349,7 @@ rdcarray<ShaderDebugState> VulkanReplay::ContinueDebug(ShaderDebugger *debugger)
       m_ShaderDebugData.DummyWrites[fmt][dim].descriptorCount = 1;
       m_ShaderDebugData.DummyWrites[fmt][dim].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
       m_ShaderDebugData.DummyWrites[fmt][dim].dstBinding = uint32_t(dim + 1);
-      m_ShaderDebugData.DummyWrites[fmt][dim].dstSet = Unwrap(m_ShaderDebugData.DescSet);
+      m_ShaderDebugData.DummyWrites[fmt][dim].dstSet = VK_NULL_HANDLE;
       m_ShaderDebugData.DummyWrites[fmt][dim].pImageInfo =
           &m_ShaderDebugData.DummyImageInfos[fmt][dim];
     }
@@ -4748,16 +7360,19 @@ rdcarray<ShaderDebugState> VulkanReplay::ContinueDebug(ShaderDebugger *debugger)
     m_ShaderDebugData.DummyWrites[fmt][5].descriptorCount = 1;
     m_ShaderDebugData.DummyWrites[fmt][5].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
     m_ShaderDebugData.DummyWrites[fmt][5].dstBinding = (uint32_t)ShaderDebugBind::Sampler;
-    m_ShaderDebugData.DummyWrites[fmt][5].dstSet = Unwrap(m_ShaderDebugData.DescSet);
+    m_ShaderDebugData.DummyWrites[fmt][5].dstSet = VK_NULL_HANDLE;
     m_ShaderDebugData.DummyWrites[fmt][5].pImageInfo = &m_ShaderDebugData.DummyImageInfos[fmt][5];
 
-    m_ShaderDebugData.DummyWrites[fmt][6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    m_ShaderDebugData.DummyWrites[fmt][6].descriptorCount = 1;
-    m_ShaderDebugData.DummyWrites[fmt][6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
-    m_ShaderDebugData.DummyWrites[fmt][6].dstBinding = (uint32_t)ShaderDebugBind::Buffer;
-    m_ShaderDebugData.DummyWrites[fmt][6].dstSet = Unwrap(m_ShaderDebugData.DescSet);
-    m_ShaderDebugData.DummyWrites[fmt][6].pTexelBufferView =
-        UnwrapPtr(m_TexRender.DummyBufferView[fmt]);
+    if(m_TexRender.DummyBufferView[fmt] != VK_NULL_HANDLE)
+    {
+      m_ShaderDebugData.DummyWrites[fmt][6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      m_ShaderDebugData.DummyWrites[fmt][6].descriptorCount = 1;
+      m_ShaderDebugData.DummyWrites[fmt][6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+      m_ShaderDebugData.DummyWrites[fmt][6].dstBinding = (uint32_t)ShaderDebugBind::Buffer;
+      m_ShaderDebugData.DummyWrites[fmt][6].dstSet = VK_NULL_HANDLE;
+      m_ShaderDebugData.DummyWrites[fmt][6].pTexelBufferView =
+          UnwrapPtr(m_TexRender.DummyBufferView[fmt]);
+    }
   }
 
   rdcarray<ShaderDebugState> ret = spvDebugger->ContinueDebug();
@@ -4771,4 +7386,5 @@ rdcarray<ShaderDebugState> VulkanReplay::ContinueDebug(ShaderDebugger *debugger)
 void VulkanReplay::FreeDebugger(ShaderDebugger *debugger)
 {
   delete debugger;
+  Threading::JobSystem::SyncAllJobs();
 }

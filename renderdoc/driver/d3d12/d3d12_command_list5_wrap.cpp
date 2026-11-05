@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -40,7 +40,8 @@ bool WrappedID3D12GraphicsCommandList::Serialise_RSSetShadingRate(
   {
     if(GetWrapped(pCommandList)->GetReal5() == NULL)
     {
-      RDCERR("Can't replay ID3D12GraphicsCommandList5 command");
+      SET_ERROR_RESULT(m_Cmd->m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Capture requires ID3D12GraphicsCommandList5 which isn't available");
       return false;
     }
 
@@ -59,13 +60,12 @@ bool WrappedID3D12GraphicsCommandList::Serialise_RSSetShadingRate(
         return true;
       }
 
-      RDCERR(
-          "Can't replay WrappedID3D12GraphicsCommandList::RSSetShadingRate with "
-          "D3D12_VARIABLE_SHADING_RATE_TIER_NOT_SUPPORTED");
+      SET_ERROR_RESULT(m_Cmd->m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Capture requires variable rate shading support which isn't available");
       return false;
     }
 
-    m_Cmd->m_LastCmdListID = GetResourceManager()->GetOriginalID(GetResID(pCommandList));
+    m_Cmd->m_LastCmdListID = GetResID(pCommandList);
 
     bool stateUpdate = false;
 
@@ -86,7 +86,6 @@ bool WrappedID3D12GraphicsCommandList::Serialise_RSSetShadingRate(
     else
     {
       Unwrap5(pCommandList)->RSSetShadingRate(baseShadingRate, combiners);
-      GetCrackedList5()->RSSetShadingRate(baseShadingRate, combiners);
 
       stateUpdate = true;
     }
@@ -141,7 +140,8 @@ bool WrappedID3D12GraphicsCommandList::Serialise_RSSetShadingRateImage(Serialise
   {
     if(GetWrapped(pCommandList)->GetReal5() == NULL)
     {
-      RDCERR("Can't replay ID3D12GraphicsCommandList5 command");
+      SET_ERROR_RESULT(m_Cmd->m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Capture requires ID3D12GraphicsCommandList5 which isn't available");
       return false;
     }
 
@@ -154,13 +154,12 @@ bool WrappedID3D12GraphicsCommandList::Serialise_RSSetShadingRateImage(Serialise
         return true;
       }
 
-      RDCERR(
-          "Can't replay WrappedID3D12GraphicsCommandList::RSSetShadingRate with "
-          "D3D12_VARIABLE_SHADING_RATE_TIER_NOT_SUPPORTED");
+      SET_ERROR_RESULT(m_Cmd->m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Capture requires variable rate shading support which isn't available");
       return false;
     }
 
-    m_Cmd->m_LastCmdListID = GetResourceManager()->GetOriginalID(GetResID(pCommandList));
+    m_Cmd->m_LastCmdListID = GetResID(pCommandList);
 
     bool stateUpdate = false;
 
@@ -181,7 +180,6 @@ bool WrappedID3D12GraphicsCommandList::Serialise_RSSetShadingRateImage(Serialise
     else
     {
       Unwrap5(pCommandList)->RSSetShadingRateImage(Unwrap(shadingRateImage));
-      GetCrackedList5()->RSSetShadingRateImage(Unwrap(shadingRateImage));
 
       stateUpdate = true;
     }

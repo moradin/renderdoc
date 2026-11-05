@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,16 +26,13 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QContextMenuEvent>
-#include <QDesktopWidget>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QProxyStyle>
 #include <QScrollBar>
 #include <QStack>
-#include <QStylePainter>
 #include <QWheelEvent>
 #include "Code/QRDUtils.h"
 #include "Code/Resources.h"
@@ -117,87 +114,6 @@ QSize RDTreeViewDelegate::sizeHint(const QStyleOptionViewItem &option, const QMo
   return ret;
 }
 
-RDTipLabel::RDTipLabel(QWidget *listener) : QLabel(NULL), mouseListener(listener)
-{
-  int margin = style()->pixelMetric(QStyle::PM_ToolTipLabelFrameWidth, NULL, this);
-  int opacity = style()->styleHint(QStyle::SH_ToolTipLabel_Opacity, NULL, this);
-
-  setWindowFlags(Qt::ToolTip);
-  setAttribute(Qt::WA_TransparentForMouseEvents);
-  setForegroundRole(QPalette::ToolTipText);
-  setBackgroundRole(QPalette::ToolTipBase);
-  setMargin(margin + 1);
-  setFrameStyle(QFrame::NoFrame);
-  setAlignment(Qt::AlignLeft);
-  setIndent(1);
-  setWindowOpacity(opacity / 255.0);
-}
-
-QSize RDTipLabel::configureTip(QWidget *, QModelIndex, QString text)
-{
-  setText(text);
-  return minimumSizeHint();
-}
-
-void RDTipLabel::showTip(QPoint pos)
-{
-  move(pos);
-  show();
-}
-
-bool RDTipLabel::forceTip(QWidget *widget, QModelIndex idx)
-{
-  return false;
-}
-
-void RDTipLabel::paintEvent(QPaintEvent *ev)
-{
-  QStylePainter p(this);
-  QStyleOptionFrame opt;
-  opt.init(this);
-  p.drawPrimitive(QStyle::PE_PanelTipLabel, opt);
-  p.end();
-
-  QLabel::paintEvent(ev);
-}
-
-void RDTipLabel::mousePressEvent(QMouseEvent *e)
-{
-  if(mouseListener)
-    sendListenerEvent(e);
-}
-
-void RDTipLabel::sendListenerEvent(QMouseEvent *e)
-{
-  QMouseEvent *duplicate =
-      new QMouseEvent(e->type(), mouseListener->mapFromGlobal(e->globalPos()), e->windowPos(),
-                      e->globalPos(), e->button(), e->buttons(), e->modifiers(), e->source());
-  QCoreApplication::postEvent(mouseListener, duplicate);
-}
-
-void RDTipLabel::mouseReleaseEvent(QMouseEvent *e)
-{
-  if(mouseListener)
-    sendListenerEvent(e);
-}
-
-void RDTipLabel::mouseDoubleClickEvent(QMouseEvent *e)
-{
-  if(mouseListener)
-    sendListenerEvent(e);
-}
-
-void RDTipLabel::resizeEvent(QResizeEvent *e)
-{
-  QStyleHintReturnMask frameMask;
-  QStyleOption option;
-  option.init(this);
-  if(style()->styleHint(QStyle::SH_ToolTip_Mask, &option, this, &frameMask))
-    setMask(frameMask.region);
-
-  QLabel::resizeEvent(e);
-}
-
 RDTreeView::RDTreeView(QWidget *parent) : QTreeView(parent)
 {
   setMouseTracking(true);
@@ -205,7 +121,7 @@ RDTreeView::RDTreeView(QWidget *parent) : QTreeView(parent)
   m_delegate = new RDTreeViewDelegate(this);
   QTreeView::setItemDelegate(m_delegate);
 
-  m_TooltipLabel = new RDTipLabel(viewport());
+  m_TooltipLabel = new RDToolTip(viewport());
   m_TooltipLabel->hide();
   m_CurrentTooltipElided = false;
 
@@ -258,27 +174,7 @@ void RDTreeView::mouseMoveEvent(QMouseEvent *e)
           // We don't use QToolTip since we have a custom tooltip for showing elided results, and we
           // use that for consistency. This also makes it easier to slot in a custom tooltip widget
           // externally.
-          QPoint p = QCursor::pos();
-
-          // estimate, as this is not easily queryable
-          const QPoint cursorSize(16, 16);
-          const QRect screenAvailGeom = QApplication::desktop()->availableGeometry(p);
-
-          // start with the tooltip placed bottom-right of the cursor, as the default
-          QRect tooltipRect;
-          tooltipRect.setTopLeft(p + cursorSize);
-          tooltipRect.setSize(m_Tooltip->configureTip(this, m_currentHoverIndex, tooltip));
-
-          // clip by the available geometry in x
-          if(tooltipRect.right() > screenAvailGeom.right())
-            tooltipRect.moveRight(screenAvailGeom.right());
-
-          // if we'd go out of bounds in y, place the tooltip above the cursor. Don't just clip like
-          // in x, because that could place the tooltip over the cursor.
-          if(tooltipRect.bottom() > screenAvailGeom.bottom())
-            tooltipRect.moveBottom(p.y() - cursorSize.y());
-
-          m_Tooltip->showTip(tooltipRect.topLeft());
+          m_Tooltip->showTip(this, tooltip, m_currentHoverIndex);
           m_CurrentTooltipElided = false;
         }
       }
@@ -359,6 +255,8 @@ void RDTreeView::contextMenuEvent(QContextMenuEvent *event)
   QObject::connect(&collapseAllAction, &QAction::triggered, [this, index]() { collapseAll(index); });
 
   QObject::connect(&copy, &QAction::triggered, [this, index, pos]() { copyIndex(pos, index); });
+
+  emit customContextMenu(index, &contextMenu);
 
   RDDialog::show(&contextMenu, viewport()->mapToGlobal(pos));
 }
@@ -457,8 +355,8 @@ bool RDTreeView::viewportEvent(QEvent *event)
             // need to use a custom label tooltip since the QToolTip freaks out as we're placing it
             // underneath the cursor instead of next to it (so that the tooltip lines up over the
             // row)
-            m_Tooltip->configureTip(this, index, fullText);
-            m_Tooltip->showTip(viewport()->mapToGlobal(option.rect.topLeft()));
+            m_Tooltip->configureTip(this, fullText, index);
+            m_Tooltip->showTipAtPos(viewport()->mapToGlobal(option.rect.topLeft()));
             m_CurrentTooltipElided = true;
           }
         }
@@ -554,6 +452,52 @@ void RDTreeView::applyExpansion(const RDTreeViewExpansionState &state, const Exp
 {
   for(int i = 0; i < model()->rowCount(); i++)
     applyExpansionToRow(state, model()->index(i, 0), 0, keygen);
+}
+
+RDTreeViewSelectedItemState RDTreeView::saveSelectedItemState()
+{
+  RDTreeViewSelectedItemState ret;
+  QModelIndexList sel = selectionModel()->selectedIndexes();
+  if(!sel.empty())
+  {
+    QModelIndex i = sel[0].sibling(sel[0].row(), 0);
+    while(i.isValid())
+    {
+      ret.insert(0, qHash(i.data(Qt::DisplayRole).toString()));
+      i = i.parent();
+    }
+  }
+
+  return ret;
+}
+
+void RDTreeView::applySelectedItemState(RDTreeViewSelectedItemState state)
+{
+  QModelIndex cur;
+
+  for(int i = 0; i < state.count(); i++)
+  {
+    bool found = false;
+
+    for(int row = 0, count = model()->rowCount(cur); row < count; row++)
+    {
+      QModelIndex check = model()->index(row, 0, cur);
+      if(qHash(model()->data(check).toString()) == state[i])
+      {
+        found = true;
+        cur = check;
+        break;
+      }
+    }
+
+    if(!found)
+      return;
+  }
+
+  QItemSelection sel(cur, cur.sibling(cur.row(), model()->columnCount() - 1));
+
+  scrollTo(cur);
+  selectionModel()->select(sel, QItemSelectionModel::ClearAndSelect);
 }
 
 void RDTreeView::copySelection()
@@ -771,20 +715,29 @@ void RDTreeView::drawBranches(QPainter *painter, const QRect &rect, const QModel
     idx = idx.parent();
   }
 
-  opt.rect = rect;
-  opt.rect.setWidth(depth * indentation());
+  opt.rect = allLinesRect;
   opt.showDecorationSelected = true;
+  opt.backgroundBrush = index.data(Qt::BackgroundRole).value<QBrush>();
+  QVariant foreColVar = index.data(Qt::ForegroundRole);
+  QColor foreCol;
+
+  if(foreColVar.isValid())
+  {
+    foreCol = foreColVar.value<QBrush>().color();
+    opt.palette.setColor(QPalette::Foreground, foreCol);
+    opt.palette.setColor(QPalette::Text, foreCol);
+  }
+
   style()->drawPrimitive(QStyle::PE_PanelItemViewItem, &opt, painter, this);
 
-  QBrush back = index.data(Qt::BackgroundRole).value<QBrush>();
-
-  if(!selectionModel()->isSelected(index) && back.style() != Qt::NoBrush)
-  {
-    painter->fillRect(allLinesRect, back);
-  }
+  QPen oldPen = painter->pen();
 
   if(m_VisibleBranches)
   {
+    // set the desired colour for RDTweakedNativeStyle via a huge hack - see
+    // RDTweakedNativeStyle::drawPrimitive for QStyle::PE_IndicatorBranch
+    if(foreColVar.isValid())
+      painter->setPen(QPen(foreCol, 1234.5));
     QTreeView::drawBranches(painter, rect, index);
   }
   else
@@ -811,22 +764,23 @@ void RDTreeView::drawBranches(QPainter *painter, const QRect &rect, const QModel
     if(isExpanded(index))
       branchopt.state |= QStyle::State_Open;
 
+    branchopt.palette = opt.palette;
+
     style()->drawPrimitive(QStyle::PE_IndicatorBranch, &branchopt, painter, this);
   }
 
   // we now iterate from the top-most parent down, moving in from the left
   // we draw this after calling into drawBranches() so we paint on top of the built-in lines
-  QPen oldPen = painter->pen();
   while(!parents.isEmpty())
   {
     parent = parents.pop();
 
-    back = parent.data(RDTreeView::TreeLineColorRole).value<QBrush>();
+    QBrush line = parent.data(RDTreeView::TreeLineColorRole).value<QBrush>();
 
-    if(back.style() != Qt::NoBrush)
+    if(line.style() != Qt::NoBrush)
     {
       // draw a centred pen vertically down the middle of branchRect
-      painter->setPen(QPen(QBrush(back), m_treeColorLineWidth));
+      painter->setPen(QPen(line, m_treeColorLineWidth));
 
       QPoint topCentre = QRect(branchRect).center();
       QPoint bottomCentre = topCentre;

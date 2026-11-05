@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -90,6 +90,10 @@ DOCUMENT(R"(Specifies the panel to add a menu item into.
 .. data:: TextureViewer
 
   The :class:`TextureViewer`.
+
+.. data:: BufferViewer
+
+  Any non-mesh previewing :class:`BufferViewer`.
 )");
 enum class PanelMenu
 {
@@ -98,6 +102,7 @@ enum class PanelMenu
   PipelineStateViewer,
   MeshPreview,
   TextureViewer,
+  BufferViewer,
 };
 
 DECLARE_REFLECTION_ENUM(PanelMenu);
@@ -128,6 +133,14 @@ DOCUMENT(R"(Specifies the panel to add a menu item into.
 
   Adds the item to the context menu for GS/Tess output in the mesh previewing :class:`BufferViewer`.
 
+.. data:: MeshPreview_TaskOutVertex
+
+  Adds the item to the context menu for task shader output in the mesh previewing :class:`BufferViewer`.
+
+.. data:: MeshPreview_MeshOutVertex
+
+  Adds the item to the context menu for mesh shader output in the mesh previewing :class:`BufferViewer`.
+
 .. data:: TextureViewer_Thumbnail
 
   Adds the item to the context menu for all thumbnails in the :class:`TextureViewer`.
@@ -148,6 +161,8 @@ enum class ContextMenu
   MeshPreview_VSInVertex,
   MeshPreview_VSOutVertex,
   MeshPreview_GSOutVertex,
+  MeshPreview_TaskOutVertex,
+  MeshPreview_MeshOutVertex,
   TextureViewer_Thumbnail,
   TextureViewer_InputThumbnail,
   TextureViewer_OutputThumbnail,
@@ -264,7 +279,12 @@ BITMASK_OPERATORS(DialogButton);
 DISABLE_PYTHON_FLAG_ENUMS;
 #endif
 
-DOCUMENT("The metadata for an extension.");
+DOCUMENT(R"(
+ExtensionMetadata()
+ExtensionMetadata(other: ExtensionMetadata)
+
+The metadata for an extension.
+)");
 struct ExtensionMetadata
 {
   DOCUMENT("");
@@ -295,29 +315,69 @@ struct ExtensionMetadata
     return false;
   }
 
-  DOCUMENT("The version of the extension API that this extension is written against");
+  DOCUMENT(R"(The version of the extension API that this extension is written against
+
+:type: int
+)");
   int extensionAPI;
 
-  DOCUMENT("The location of this package on disk");
+  DOCUMENT(R"(The location of this package on disk
+
+:type: str
+)");
   rdcstr filePath;
 
-  DOCUMENT("The python package for this extension, e.g. foo.bar");
+  DOCUMENT(R"(The python package for this extension, e.g. foo.bar
+
+:type: str
+)");
   rdcstr package;
 
-  DOCUMENT("The short friendly name for the extension");
+  DOCUMENT(R"(The short friendly name for the extension
+
+:type: str
+)");
   rdcstr name;
 
-  DOCUMENT("The version of the extension");
+  DOCUMENT(R"(The version of the extension
+
+:type: str
+)");
   rdcstr version;
 
-  DOCUMENT("The author of the extension, optionally with an email contact");
+  DOCUMENT(R"(The author of the extension, optionally with an email contact
+
+:type: str
+)");
   rdcstr author;
 
-  DOCUMENT("The URL for where the extension is fetched from");
+  DOCUMENT(R"(The URL for where the extension is fetched from
+
+:type: str
+)");
   rdcstr extensionURL;
 
-  DOCUMENT("A longer description of what the extension does");
+  DOCUMENT(R"(A longer description of what the extension does
+
+:type: str
+)");
   rdcstr description;
+
+  DOCUMENT(R"(A flag indicating that the extension has changed on disk since the last time it was loaded.
+
+This will always be false if the extension is unloaded.
+
+:type: bool
+)");
+  bool hasChanges = false;
+
+  DOCUMENT(R"(A flag indicating that the extension failed to load properly.
+
+This will always be false if the extension is unloaded.
+
+:type: bool
+)");
+  bool failedLoad = false;
 };
 
 DECLARE_REFLECTION_STRUCT(ExtensionMetadata);
@@ -330,6 +390,8 @@ helper exposes a small subset of Qt via RenderDoc's python bindings.
 
 The intention is not to allow fully flexible building of Qt panels, but to allow access to some
 basic UI building tools for simple data input and display which can be used on any RenderDoc build.
+
+This manager is retrieved by calling :meth:`ExtensionManager.GetMiniQtHelper`.
 
 .. note::
   The widget handles returned are PySide2 widgets where that is available, so this can be used to
@@ -346,9 +408,9 @@ basic UI building tools for simple data input and display which can be used on a
   :param QWidget widget: The widget sending the callback.
   :param str text: Additional data for the call, such as the current or selected text.
 
-.. function:: InvokeCallback(context, widget, text)
+.. function:: UIInvokeCallback()
 
-  Not a member function - the signature for any ``InvokeCallback`` callbacks.
+  Not a member function - the signature for any ``UIInvokeCallback`` callbacks.
 
   Callback for invoking onto the UI thread from another thread (in particular the replay thread).
   Takes no parameters as the callback is expected to store its own state.
@@ -356,7 +418,7 @@ basic UI building tools for simple data input and display which can be used on a
 struct IMiniQtHelper
 {
   typedef std::function<void(ICaptureContext *, QWidget *, rdcstr)> WidgetCallback;
-  typedef std::function<void()> InvokeCallback;
+  typedef std::function<void()> UIInvokeCallback;
 
   DOCUMENT(R"(Invoke a callback on the UI thread. All widget accesses must come from the UI thread,
 so if work has been done on the render thread then this function can be used to asynchronously and
@@ -369,9 +431,10 @@ immediately before returning.
   No parameters are provided to the callback, it is assumed that the callback will maintain its own
   context as needed.
 
-:param InvokeCallback callback: The callback to invoke on the UI thread.
+:param Callable[[], None] callback: The callback to invoke on the UI thread.
+  Callback function signature must match :func:`UIInvokeCallback`.
 )");
-  virtual void InvokeOntoUIThread(InvokeCallback callback) = 0;
+  virtual void InvokeOntoUIThread(UIInvokeCallback callback) = 0;
 
   // top level widgets
 
@@ -385,13 +448,15 @@ is a layout type widget, to allow customising how children are added. By default
 added in a vertical layout.
 
 :param str windowTitle: The title of any window with this widget as its root.
-:param WidgetCallback closed: A callback that will be called when the widget is closed by the user.
+:param Optional[Callable[[CaptureContext, QWidget, str], None]] closed=None: **Optional parameter**. A callback
+  that will be called when the widget is closed by the user.
   This implicitly deletes the widget and all its children, which will no longer be valid even if a
   handle to them exists.
+  Callback function signature must match :func:`WidgetCallback`.
 :return: The handle to the newly created widget.
 :rtype: QWidget
 )");
-  virtual QWidget *CreateToplevelWidget(const rdcstr &windowTitle, WidgetCallback closed) = 0;
+  virtual QWidget *CreateToplevelWidget(const rdcstr &windowTitle, WidgetCallback closed = NULL) = 0;
 
   DOCUMENT(R"(Closes a top-level widget as if the user had clicked to close.
 
@@ -475,7 +540,7 @@ layout type widgets.
   virtual QWidget *GetChild(QWidget *parent, int32_t index) = 0;
 
   DOCUMENT(R"(Destroy a widget. Widgets stay alive unless explicitly destroyed here, OR in one other
-case when they are in a widget hiearchy under a top-level window which the user closes, which can
+case when they are in a widget hierarchy under a top-level window which the user closes, which can
 be detected with the callback parameter in :meth:`CreateToplevelWidget`.
 
 If the widget being destroyed is a top-level window, it will be closed. Otherwise if it is part of a
@@ -507,8 +572,8 @@ The dialog is only closed when the user closes the window explicitly or if you c
   DOCUMENT(R"(Close the active modal dialog. This does nothing if no dialog is being shown.
 
 .. note::
-  Closing a dialog 'sucessfully' does nothing except modify the return value of
-  :meth:`CloseCurrentDialog`. It allows quick distinguishing between OK and Cancel actions without
+  Closing a dialog 'successfully' does nothing except modify the return value of
+  :meth:`ShowWidgetAsDialog`. It allows quick distinguishing between OK and Cancel actions without
   having to carry that information separately in a global or other state.
 
 :param bool success: ``True`` if the dialog was successful (the user clicked an OK/Accept type
@@ -611,6 +676,23 @@ added anywhere.
 )");
   virtual void InsertWidget(QWidget *parent, int32_t index, QWidget *child) = 0;
 
+  DOCUMENT(R"(Set the internal spacing in pixels between items. If the widget is not a layout
+(either grid or horizontal/vertical) this call will have no effect.
+
+:param QWidget layout: The layout widget.
+:param int spacing: The spacing in pixels to use between items
+)");
+  virtual void SetLayoutSpacing(QWidget *layout, int32_t spacing) = 0;
+
+  DOCUMENT(R"(Set the external margins on the outside of all of the items in the layout. If
+the widget is not a layout (either grid or horizontal/vertical) this call will have no effect.
+
+:param QWidget layout: The layout widget.
+:param int horizontal: The horizontal margins on the left and right.
+:param int vertical: The vertical margins on the top and bottom.
+)");
+  virtual void SetLayoutMargins(QWidget *layout, int32_t horizontal, int32_t vertical) = 0;
+
   // widget manipulation
 
   DOCUMENT(R"(Set the 'text' of a widget. How this manifests depends on the type of the widget, for
@@ -622,6 +704,17 @@ add text next to it.
 )");
   virtual void SetWidgetText(QWidget *widget, const rdcstr &text) = 0;
 
+  DOCUMENT(R"(Appends to the 'text' of a widget. For most widgets this will not be different from
+getting the text with :meth:`GetWidgetText`, appending to the string, and setting with :meth:`SetWidgetText`
+but for multi-line widgets like text edits this can give a better experience with better scrolling.
+
+This will also scroll to and move the cursor to the end of the text.
+
+:param QWidget widget: The widget to append text for.
+:param str text: The text to append to the widget's text.
+)");
+  virtual void AppendText(QWidget *widget, const rdcstr &text) = 0;
+
   DOCUMENT(R"(Return the current text of a widget. See :meth:`SetWidgetText`.
 
 :param QWidget widget: The widget to query.
@@ -630,7 +723,24 @@ add text next to it.
 )");
   virtual rdcstr GetWidgetText(QWidget *widget) = 0;
 
+  DOCUMENT(R"(Scroll the widget's vertical scrollbar to the top. If the widget has no scrollbar
+this will do nothing
+
+:param QWidget widget: The widget to scroll in.
+)");
+  virtual void ScrollToTop(QWidget *widget) = 0;
+
+  DOCUMENT(R"(Scroll the widget's vertical scrollbar to the bottom. If the widget has no scrollbar
+this will do nothing
+
+:param QWidget widget: The widget to scroll in.
+)");
+  virtual void ScrollToBottom(QWidget *widget) = 0;
+
   DOCUMENT(R"(Change the font properties of a widget.
+
+The font string can be set either to '_default' or '_fixed' to choose the user-selected default
+font or monospaced fonts respectively.
 
 :param QWidget widget: The widget to change font of.
 :param str font: The new font family to use, or an empty string to leave the font family the same.
@@ -699,11 +809,13 @@ The widget needs to be added to a parent to become part of a panel or window.
 
   DOCUMENT(R"(Create a normal button widget.
 
-:param WidgetCallback pressed: Callback to be called when the button is pressed.
+:param Optional[Callable[[CaptureContext, QWidget, str], None]] pressed=None: **Optional parameter**. Callback
+  to be called when the button is pressed.
+  Callback function signature must match :func:`WidgetCallback`.
 :return: The handle to the newly created widget.
 :rtype: QWidget
 )");
-  virtual QWidget *CreateButton(WidgetCallback pressed) = 0;
+  virtual QWidget *CreateButton(WidgetCallback pressed = NULL) = 0;
 
   DOCUMENT(R"(Create a read-only label widget.
 
@@ -772,12 +884,12 @@ When a capture is closed and all outputs are destroyed, the widget will automati
 output so there is no need to do that manually.
 
 :param QWidget widget: The widget to set the output for.
-:param renderdoc.ReplayOutput output: The new output to set, or ``None`` to unset any previous
-  output.
+:param Optional[renderdoc.ReplayOutput] output: The new output to set, or ``None`` to unset any
+  previous output.
 )");
   virtual void SetWidgetReplayOutput(QWidget *widget, IReplayOutput *output) = 0;
 
-  DOCUMENT(R"(Set the default backkground color for a rendering widget. This background color is
+  DOCUMENT(R"(Set the default background color for a rendering widget. This background color is
 used when no output is currently configured, e.g. when a capture is closed.
 
 For all other widget types this has no effect.
@@ -795,11 +907,13 @@ checkerboard to be rendered instead. This is the default behaviour when a widget
   DOCUMENT(R"(Create a checkbox widget which can be toggled between unchecked and checked. When
 created the checkbox is unchecked.
 
-:param WidgetCallback changed: Callback to be called when the widget is toggled.
+:param Optional[Callable[[CaptureContext, QWidget, str], None]] changed=None: **Optional parameter**. Callback
+  to be called when the widget is toggled.
+  Callback function signature must match :func:`WidgetCallback`.
 :return: The handle to the newly created widget.
 :rtype: QWidget
 )");
-  virtual QWidget *CreateCheckbox(WidgetCallback changed) = 0;
+  virtual QWidget *CreateCheckbox(WidgetCallback changed = NULL) = 0;
 
   DOCUMENT(R"(Create a radio box widget which can be toggled between unchecked and checked but with
 at most one radio box in any group of sibling radio boxes being checked.
@@ -807,14 +921,16 @@ at most one radio box in any group of sibling radio boxes being checked.
 Upon creation the radio box is unchecked, even in a group of other radio boxes that are unchecked.
 If you want a default radio box to be checked, you should use :meth:`SetWidgetChecked`.
 
-:param WidgetCallback changed: Callback to be called when the widget is toggled.
+:param Optional[Callable[[CaptureContext, QWidget, str], None]] changed=None: **Optional parameter**. Callback
+  to be called when the widget is toggled.
+  Callback function signature must match :func:`WidgetCallback`.
 :return: The handle to the newly created widget.
 :rtype: QWidget
 )");
-  virtual QWidget *CreateRadiobox(WidgetCallback changed) = 0;
+  virtual QWidget *CreateRadiobox(WidgetCallback changed = NULL) = 0;
 
   DOCUMENT(R"(Set whether the widget is checked or not. This only affects checkboxes and radio
-boxes. If another type of widget is passed nothing will happen.
+boxes and group box. If another type of widget is passed nothing will happen.
 
 :param QWidget checkableWidget: The widget to check or uncheck.
 :param bool checked: ``True`` if the widget should be checked.
@@ -822,7 +938,7 @@ boxes. If another type of widget is passed nothing will happen.
   virtual void SetWidgetChecked(QWidget *checkableWidget, bool checked) = 0;
 
   DOCUMENT(R"(Return the current checked-state of a widget. See :meth:`SetWidgetChecked`. If another
-type of widget is passed other than a checkbox or radio box ``False`` will be returned.
+type of widget is passed other than a checkbox or radio box or group box ``False`` will be returned.
 
 :param QWidget checkableWidget: The widget to query.
 :return: ``True`` if the widget is currently checked.
@@ -877,11 +993,13 @@ happen.
 
 :param bool singleLine: ``True`` if the widget should be a single-line entry, otherwise it is a
   multi-line text box.
-:param WidgetCallback changed: Callback to be called when the text in the textbox is changed.
+:param Optional[Callable[[CaptureContext, QWidget, str], None]] changed=None: **Optional parameter**. Callback
+  to be called when the text in the textbox is changed.
+  Callback function signature must match :func:`WidgetCallback`.
 :return: The handle to the newly created widget.
 :rtype: QWidget
 )");
-  virtual QWidget *CreateTextBox(bool singleLine, WidgetCallback changed) = 0;
+  virtual QWidget *CreateTextBox(bool singleLine, WidgetCallback changed = NULL) = 0;
 
   DOCUMENT(R"(Create a drop-down combo box widget.
 
@@ -890,12 +1008,14 @@ When created there are no pre-defined entries in the drop-down section. This can
 
 :param bool editable: ``True`` if the widget should allow the user to enter any text they wish as
   well as being able to select a pre-defined entry.
-:param WidgetCallback changed: Callback to be called when the text in the combobox is changed. This
+:param Optional[Callable[[CaptureContext, QWidget, str], None]] changed=None: **Optional parameter**. Callback
+  to be called when the text in the combobox is changed. This
   will be called both when a new option is selected or when the user edits the text.
+  Callback function signature must match :func:`WidgetCallback`.
 :return: The handle to the newly created widget.
 :rtype: QWidget
 )");
-  virtual QWidget *CreateComboBox(bool editable, WidgetCallback changed) = 0;
+  virtual QWidget *CreateComboBox(bool editable, WidgetCallback changed = NULL) = 0;
 
   DOCUMENT(R"(Set the pre-defined options in a drop-down combo box. If another type of widget is
 passed nothing will happen.
@@ -904,6 +1024,98 @@ passed nothing will happen.
 :param List[str] options: The new options for the combo box.
 )");
   virtual void SetComboOptions(QWidget *combo, const rdcarray<rdcstr> &options) = 0;
+
+  DOCUMENT(R"(Get the number of options in a drop-down combo box. If another type of widget is
+passed ``0`` will be returned.
+
+:param QWidget combo: The combo box.
+:return: The current number of options.
+:rtype: int
+)")
+  virtual size_t GetComboCount(QWidget *combo) = 0;
+
+  DOCUMENT(R"(Select the current option in a drop-down combo box. If another type of widget or
+an unknown option is passed, nothing will happen.
+
+:param QWidget combo: The combo box.
+:param str option: The option to select.
+)")
+  virtual void SelectComboOption(QWidget *combo, const rdcstr &option) = 0;
+
+  DOCUMENT(R"(Create a progress bar widget.
+
+By default the progress bar has minimum and maximum values of 0 and 100. These can be changed with
+:meth:`SetProgressBarRange`.
+
+:param bool horizontal: the progress bar orientation, true for horizontal otherwise vertical.
+:return: The handle to the newly created widget.
+:rtype: QWidget
+
+)")
+  virtual QWidget *CreateProgressBar(bool horizontal) = 0;
+
+  DOCUMENT(R"(Reset a progress bar widget.
+
+Rewinds the progress bar's indicator and hides the indicator's label (theme dependent). If you want
+to keep the label visible, call :meth:`SetProgressBarValue` with ``0`` instead. The minimum and maximum values
+are not changed.
+
+:param QWidget pbar: the progress bar.
+)")
+  virtual void ResetProgressBar(QWidget *pbar) = 0;
+
+  DOCUMENT(R"(Set the progress bar's current value.
+
+Attempting to change the current value outside the minimum and maximum range does not affect
+the current value.
+
+:param QWidget pbar: the progress bar.
+:param int value: the new current value.
+)")
+  virtual void SetProgressBarValue(QWidget *pbar, int32_t value) = 0;
+
+  DOCUMENT(R"(Set the progress bar's current value relative to the existing value.
+
+:param QWidget pbar: the progress bar.
+:param int delta: the relative value to update the current value.
+)")
+  virtual void UpdateProgressBarValue(QWidget *pbar, int32_t delta) = 0;
+
+  DOCUMENT(R"(Get the progress bar's current value.
+
+:param QWidget pbar: the progress bar.
+:return: The current value of the progress bar.
+:rtype: int
+)")
+  virtual int32_t GetProgressBarValue(QWidget *pbar) = 0;
+
+  DOCUMENT(R"(Set a progress bar's minimum and maximum values.
+
+If maximum is smaller than minimum, minimum is set as the maximum, too. If the current value falls
+outside the new range, the progress bar is reset. Use range (0, 0) to set the progress bar to
+indeterminate state (the progress cannot be estimated or is not being calculated).
+
+:param QWidget pbar: the progress bar.
+:param int minimum: the minimum value.
+:param int maximum: the maximum value.
+)")
+  virtual void SetProgressBarRange(QWidget *pbar, int32_t minimum, int32_t maximum) = 0;
+
+  DOCUMENT(R"(Get the minimum value of the progress bar's range.
+
+:param QWidget pbar: the progress bar.
+:return: The minimum value of the range.
+:rtype: int
+)")
+  virtual int32_t GetProgressBarMinimum(QWidget *pbar) = 0;
+
+  DOCUMENT(R"(Get the maximum value of the progress bar's range.
+
+:param QWidget pbar: the progress bar.
+:return: The maximum value of the range.
+:rtype: int
+)")
+  virtual int32_t GetProgressBarMaximum(QWidget *pbar) = 0;
 
 protected:
   DOCUMENT("");
@@ -916,6 +1128,8 @@ DECLARE_REFLECTION_STRUCT(IMiniQtHelper);
 DOCUMENT(R"(A manager for listing available and active extensions, as well as the interface for
 extensions to register hooks and additional functionality.
 
+This manager is retrieved by calling :meth:`CaptureContext.Extensions`.
+
 .. function:: ExtensionCallback(context, data)
 
   Not a member function - the signature for any ``ExtensionCallback`` callbacks.
@@ -924,7 +1138,7 @@ extensions to register hooks and additional functionality.
   was registered.
 
   :param CaptureContext context: The current capture context.
-  :param dict data: Additional data for the call, as a dictionary with string keys.
+  :param Dict[str, Any] data: Additional data for the call, as a dictionary with string keys.
     Context-dependent based on what generated the callback
 )");
 struct IExtensionManager
@@ -950,13 +1164,31 @@ struct IExtensionManager
 )");
   virtual bool IsExtensionLoaded(rdcstr name) = 0;
 
+  DOCUMENT(R"(Retrieve a list of loaded extensions.
+
+:return: The list of installed extension names.
+:rtype: List[str]
+)");
+  virtual rdcarray<rdcstr> GetLoadedExtensions() = 0;
+
   DOCUMENT(R"(Enable an extension by name. If the extension is already enabled, this will reload it.
 
 :param str name: The qualified name of the extension, e.g. ``foo.bar``
-:return: If the extension loaded successfully or not.
+:return: If the extension loaded successfully, an empty string, otherwise the errors encountered
+  while loading it.
+:rtype: str
+)");
+  virtual rdcstr LoadExtension(rdcstr name) = 0;
+
+  DOCUMENT(R"(Check if a python debugger is connected.
+
+.. note::
+  If python debugging is not supported or failed to load, this will return ``False``.
+
+:return: If a python debugger is connected.
 :rtype: bool
 )");
-  virtual bool LoadExtension(rdcstr name) = 0;
+  virtual bool IsPythonDebuggerConnected() = 0;
 
   //////////////////////////////////////////////////////////////////////////
   // UI hook/callback registration
@@ -972,7 +1204,9 @@ struct IExtensionManager
 :param List[str] submenus: A list of strings containing the submenus to add before the item. The
   last string will be the name of the menu item itself. Must contain at least one entry, or two
   entries if ``base`` is :data:`WindowMenu.NewMenu`.
-:param ExtensionCallback callback: The function to callback when the menu item is selected.
+:param Callable[[CaptureContext, Dict[str, Any]], None] callback: The function to callback when
+  the menu item is selected.
+  Callback function signature must match :func:`ExtensionCallback`.
 )");
   virtual void RegisterWindowMenu(WindowMenu base, const rdcarray<rdcstr> &submenus,
                                   ExtensionCallback callback) = 0;
@@ -987,7 +1221,9 @@ struct IExtensionManager
 :param PanelMenu base: The panel to add the item to.
 :param List[str] submenus: A list of strings containing the submenus to add before the item. The
   last string will be the name of the menu item itself. Must contain at least one entry.
-:param ExtensionCallback callback: The function to callback when the menu item is selected.
+:param Callable[[CaptureContext, Dict[str, Any]], None] callback: The function to callback when
+  the menu item is selected.
+  Callback function signature must match :func:`ExtensionCallback`.
 )");
   virtual void RegisterPanelMenu(PanelMenu base, const rdcarray<rdcstr> &submenus,
                                  ExtensionCallback callback) = 0;
@@ -1002,7 +1238,9 @@ struct IExtensionManager
 :param ContextMenu base: The panel to add the item to.
 :param List[str] submenus: A list of strings containing the submenus to add before the item. The
   last string will be the name of the menu item itself. Must contain at least one entry.
-:param ExtensionCallback callback: The function to callback when the menu item is selected.
+:param Callable[[CaptureContext, Dict[str, Any]], None] callback: The function to callback when
+  the menu item is selected.
+  Callback function signature must match :func:`ExtensionCallback`.
 )");
   virtual void RegisterContextMenu(ContextMenu base, const rdcarray<rdcstr> &submenus,
                                    ExtensionCallback callback) = 0;
@@ -1020,60 +1258,58 @@ struct IExtensionManager
   DOCUMENT(R"(Display a simple informational message dialog.
 
 :param str text: The text of the dialog itself, required.
-:param str title: The dialog title, optional.
+:param str title="": **Optional parameter**. The dialog title.
 )");
-  virtual void MessageDialog(const rdcstr &text,
-                             const rdcstr &title = "Python Extension Message") = 0;
+  virtual void MessageDialog(const rdcstr &text, const rdcstr &title = "") = 0;
 
   DOCUMENT(R"(Display an error message dialog.
 
 :param str text: The text of the dialog itself, required.
-:param str title: The dialog title, optional.
+:param str title="": **Optional parameter**. The dialog title.
 )");
-  virtual void ErrorDialog(const rdcstr &text, const rdcstr &title = "Python Extension Error") = 0;
+  virtual void ErrorDialog(const rdcstr &text, const rdcstr &title = "") = 0;
 
   DOCUMENT(R"(Display an error message dialog.
 
 :param str text: The text of the dialog itself, required.
 :param List[DialogButton] options: The buttons to display on the dialog.
-:param str title: The dialog title, optional.
+:param str title="": **Optional parameter**. The dialog title.
 :return: The button that was clicked on.
 :rtype: DialogButton
 )");
   virtual DialogButton QuestionDialog(const rdcstr &text, const rdcarray<DialogButton> &options,
-                                      const rdcstr &title = "Python Extension Prompt") = 0;
+                                      const rdcstr &title = "") = 0;
 
   DOCUMENT(R"(Browse for a filename to open.
 
-:param str caption: The dialog title, optional.
-:param str dir: The starting directory for browsing, optional.
-:param str filter: The filter to apply for filenames, optional.
+:param str caption="": **Optional parameter**. The dialog title.
+:param str dir="": **Optional parameter**. The starting directory for browsing.
+:param str filter="": **Optional parameter**. The filter to apply for filenames.
 :return: The filename selected, or an empty string if nothing was selected.
 :rtype: str
 )");
-  virtual rdcstr OpenFileName(const rdcstr &caption = "Open a file", const rdcstr &dir = rdcstr(),
-                              const rdcstr &filter = rdcstr()) = 0;
+  virtual rdcstr OpenFileName(const rdcstr &caption = "", const rdcstr &dir = "",
+                              const rdcstr &filter = "") = 0;
 
   DOCUMENT(R"(Browse for a directory to open.
 
-:param str caption: The dialog title, optional.
-:param str dir: The starting directory for browsing, optional.
+:param str caption="": **Optional parameter**. The dialog title.
+:param str dir="": **Optional parameter**. The starting directory for browsing.
 :return: The directory selected, or an empty string if nothing was selected.
 :rtype: str
 )");
-  virtual rdcstr OpenDirectoryName(const rdcstr &caption = "Open a directory",
-                                   const rdcstr &dir = rdcstr()) = 0;
+  virtual rdcstr OpenDirectoryName(const rdcstr &caption = "", const rdcstr &dir = "") = 0;
 
   DOCUMENT(R"(Browse for a filename to save to.
 
-:param str caption: The dialog title, optional.
-:param str dir: The starting directory for browsing, optional.
-:param str filter: The filter to apply for filenames, optional.
+:param str caption="": **Optional parameter**. The dialog title.
+:param str dir="": **Optional parameter**. The starting directory for browsing.
+:param str filter="": **Optional parameter**. The filter to apply for filenames.
 :return: The filename selected, or an empty string if nothing was selected.
 :rtype: str
 )");
-  virtual rdcstr SaveFileName(const rdcstr &caption = "Save a file", const rdcstr &dir = rdcstr(),
-                              const rdcstr &filter = rdcstr()) = 0;
+  virtual rdcstr SaveFileName(const rdcstr &caption = "", const rdcstr &dir = "",
+                              const rdcstr &filter = "") = 0;
 
 #if !defined(SWIG) && !defined(SWIG_GENERATED)
   // not exposed to SWIG, only used internally. For when a menu is displayed dynamically in a panel,

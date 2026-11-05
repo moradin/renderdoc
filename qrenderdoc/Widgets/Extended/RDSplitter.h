@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -50,6 +50,7 @@ protected:
   virtual void paintEvent(QPaintEvent *event);
   virtual void mouseDoubleClickEvent(QMouseEvent *event);
 
+  QSplitter *m_parent;
   QString m_title;
   int m_index;
   bool m_isCollapsed;

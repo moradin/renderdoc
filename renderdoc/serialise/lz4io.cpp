@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,7 @@
 
 #include "lz4io.h"
 
-static const uint64_t lz4BlockSize = 64 * 1024;
+static const uint64_t lz4BlockSize = 1024 * 1024;
 
 LZ4Compressor::LZ4Compressor(StreamWriter *write, Ownership own) : Compressor(write, own)
 {
@@ -57,7 +57,7 @@ bool LZ4Compressor::Write(const void *data, uint64_t numBytes)
   // The basic plan is:
   // Write into page N incrementally until it is completely full. When full, flush it out to lz4 and
   // swap pages.
-  // This keeps lz4 happy with 64kb of history each time it compresses.
+  // This keeps lz4 happy with 1 block of history each time it compresses.
   // If we are writing some data the crosses the boundary between pages, we write the part that will
   // fit on one page, flush & swap, write the rest into the next page.
 
@@ -112,7 +112,7 @@ bool LZ4Compressor::Write(const void *data, uint64_t numBytes)
 bool LZ4Compressor::Finish()
 {
   // This function just writes the current page and closes lz4. Since we assume all blocks are
-  // precisely 64kb in size
+  // uniform in size
   // only the last one can be smaller, so we only write a partial page when finishing.
   // Calling Write() after Finish() is illegal
   return FlushPage0();
@@ -131,18 +131,22 @@ bool LZ4Compressor::FlushPage0()
 
   if(compSize < 0)
   {
-    RDCERR("Error compressing: %i", compSize);
     FreeAlignedBuffer(m_Page[0]);
     FreeAlignedBuffer(m_Page[1]);
     FreeAlignedBuffer(m_CompressBuffer);
     m_Page[0] = m_Page[1] = m_CompressBuffer = NULL;
+    SET_ERROR_RESULT(m_Error, ResultCode::CompressionFailed, "LZ4 compression failed: %i", compSize);
     return false;
   }
 
   bool success = true;
 
   success &= m_Write->Write(compSize);
+  if(!success)
+    m_Error = m_Write->GetError();
   success &= m_Write->Write(m_CompressBuffer, compSize);
+  if(!success)
+    m_Error = m_Write->GetError();
 
   // swap pages
   std::swap(m_Page[0], m_Page[1]);
@@ -184,7 +188,12 @@ bool LZ4Decompressor::Recompress(Compressor *comp)
   {
     success &= FillPage0();
     if(success)
+    {
       success &= comp->Write(m_Page[0], m_PageLength);
+
+      if(!success)
+        m_Error = comp->GetError();
+    }
   }
   success &= comp->Finish();
 
@@ -263,22 +272,32 @@ bool LZ4Decompressor::FillPage0()
   success &= m_Read->Read(compSize);
   if(!success || compSize < 0 || compSize > (int)LZ4_COMPRESSBOUND(lz4BlockSize))
   {
-    RDCERR("Error reading size: %i", compSize);
     FreeAlignedBuffer(m_Page[0]);
     FreeAlignedBuffer(m_Page[1]);
     FreeAlignedBuffer(m_CompressBuffer);
     m_Page[0] = m_Page[1] = m_CompressBuffer = NULL;
+
+    if(success)
+    {
+      m_Error = m_Read->GetError();
+    }
+    else
+    {
+      SET_ERROR_RESULT(m_Error, ResultCode::CompressionFailed,
+                       "LZ4 decompression encountered invalid compressed block size: %i", compSize);
+    }
     return false;
   }
+
   success &= m_Read->Read(m_CompressBuffer, compSize);
 
   if(!success)
   {
-    RDCERR("Error reading block: %i", compSize);
     FreeAlignedBuffer(m_Page[0]);
     FreeAlignedBuffer(m_Page[1]);
     FreeAlignedBuffer(m_CompressBuffer);
     m_Page[0] = m_Page[1] = m_CompressBuffer = NULL;
+    m_Error = m_Read->GetError();
     return false;
   }
 
@@ -287,11 +306,14 @@ bool LZ4Decompressor::FillPage0()
 
   if(decompSize < 0)
   {
-    RDCERR("Error decompressing: %i", decompSize);
     FreeAlignedBuffer(m_Page[0]);
     FreeAlignedBuffer(m_Page[1]);
     FreeAlignedBuffer(m_CompressBuffer);
     m_Page[0] = m_Page[1] = m_CompressBuffer = NULL;
+
+    SET_ERROR_RESULT(m_Error, ResultCode::CompressionFailed,
+                     "LZ4 decompression failed on block: %i", decompSize);
+
     return false;
   }
 

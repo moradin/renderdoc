@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,6 +23,8 @@
  ******************************************************************************/
 
 #include "common/formatting.h"
+#include "core/settings.h"
+#include "maths/half_convert.h"
 #include "spirv_op_helpers.h"
 #include "spirv_reflect.h"
 
@@ -50,7 +52,7 @@ struct StructuredCFG
   rdcspv::Id continueTarget;
 
   // only valid for switches
-  rdcarray<rdcspv::PairLiteralIntegerIdRef> caseTargets;
+  rdcarray<rdcspv::SwitchPairU64LiteralId> caseTargets;
   rdcspv::Id defaultTarget;
 };
 
@@ -116,15 +118,34 @@ static rdcstr StringiseBinaryOperation(const std::function<rdcstr(rdcspv::Id)> &
   return ret;
 }
 
+static rdcstr EscapeString(const rdcstr &ret)
+{
+  rdcstr escaped = "\"";
+
+  for(size_t i = 0; i < ret.size(); i++)
+  {
+    if(ret[i] == '\r')
+      escaped += "\\r";
+    else if(ret[i] == '\t')
+      escaped += "\\t";
+    else if(ret[i] == '\n')
+      escaped += "\\n";
+    else
+      escaped += ret[i];
+  }
+
+  escaped.push_back('"');
+  return escaped;
+}
+
 namespace rdcspv
 {
-rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
+rdcstr Reflector::Disassemble(const rdcstr &entryPoint, const rdcarray<SpecConstant> &specInfo,
                               std::map<size_t, uint32_t> &instructionLines) const
 {
-  std::set<rdcstr> usedNames;
-  std::map<Id, rdcstr> dynamicNames;
+  SparseIdMap<rdcstr> dynamicNames;
 
-  auto idName = [this, &dynamicNames](Id id) -> rdcstr {
+  auto idName = [this, &dynamicNames, &specInfo](Id id) -> rdcstr {
     // see if we have a dynamic name assigned (to disambiguate), if so use that
     auto it = dynamicNames.find(id);
     if(it != dynamicNames.end())
@@ -137,42 +158,30 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
       // escape and truncate any multiline strings
       if(ret.indexOf('\n') >= 0 || ret.indexOf('\r') >= 0)
       {
-        rdcstr escaped = "\"";
-
-        for(size_t i = 0; i < ret.size(); i++)
+        if(ret.size() > 100)
         {
-          if(i == 100 && i + 1 < ret.size())
-          {
-            escaped += "...";
-            break;
-          }
-
-          if(ret[i] == '\r')
-            escaped += "\\r";
-          else if(ret[i] == '\t')
-            escaped += "\\t";
-          else if(ret[i] == '\n')
-            escaped += "\\n";
-          else
-            escaped += ret[i];
+          ret.resize(100);
+          ret += "...";
         }
 
-        escaped.push_back('"');
-        return escaped;
+        ret = EscapeString(ret);
       }
+
       return ret;
     }
 
     // for non specialised constants, see if we can stringise them directly if they're unnamed
-    ret = StringiseConstant(id);
+    ret = StringiseConstant(id, specInfo);
     if(!ret.empty())
       return ret;
 
     // if we *still* have nothing, just stringise the id itself
     return StringFormat::Fmt("_%u", id.value());
   };
-  auto constIntVal = [this](Id id) { return EvaluateConstant(id, {}).value.u32v[0]; };
-  auto declName = [this, &idName, &usedNames, &dynamicNames](Id typeId, Id id) -> rdcstr {
+  auto constIntVal = [this, &specInfo](Id id) {
+    return EvaluateConstant(id, specInfo).value.u32v[0];
+  };
+  auto declName = [this, &idName](Id typeId, Id id) -> rdcstr {
     if(typeId == Id())
       return idName(id);
 
@@ -185,23 +194,9 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
 
     rdcstr basename = strings[id];
     if(basename.empty())
-    {
-      return ret + " " + StringFormat::Fmt("_%u", id.value());
-    }
+      basename = StringFormat::Fmt("_%u", id.value());
 
-    rdcstr name = basename;
-
-    int alias = 2;
-    while(usedNames.find(name) != usedNames.end())
-    {
-      name = basename + "@" + ToStr(alias);
-      alias++;
-    }
-
-    usedNames.insert(name);
-    dynamicNames[id] = name;
-
-    return ret + " " + name;
+    return ret + " " + basename;
   };
   auto getDecorationString = [&idName](const Decorations &dec) -> rdcstr {
     if(!dec.HasDecorations())
@@ -219,6 +214,8 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
       ret += "RowMajor, ";
     if(dec.flags & Decorations::ColMajor)
       ret += "ColMajor, ";
+    if(dec.flags & Decorations::UTF8)
+      ret += "UTF-8, ";
 
     if(dec.flags & Decorations::HasDescriptorSet)
       ret += StringFormat::Fmt("DescriptorSet(%u), ", dec.set);
@@ -284,8 +281,15 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
   // stack of structured CFG constructs
   rdcarray<StructuredCFG> cfgStack;
 
+  std::map<Id, size_t> escapeHatches;
+
+  // struct types that contain a UTF-8 member so we expect them to be abort messages
+  std::set<Id> utfMemberTypes;
+
   // set of labels that must be printed because we have gotos for them
   std::set<Id> printLabels;
+
+  uint32_t loop_continue = 0;
 
   Id currentBlock;
 
@@ -328,14 +332,33 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
           break;
         }
 
+        // split the interface list onto separate lines to avoid hugely long lines on some shaders
+        case Op::EntryPoint:
+        {
+          OpEntryPoint decoded(it);
+          ret += rdcstr("EntryPoint("_lit) + ParamToStr(idName, decoded.executionModel) + ", " +
+                 ParamToStr(idName, decoded.entryPoint) + ", " + ParamToStr(idName, decoded.name) +
+                 ", {\n";
+          lineNum++;
+          for(size_t i = 0; i < decoded.iface.size(); i++)
+          {
+            ret += "    " + ParamToStr(idName, decoded.iface[i]);
+            if(i + 1 < decoded.iface.size())
+              ret += ", ";
+            ret += "\n";
+            lineNum++;
+          }
+          ret += "  })";
+          break;
+        }
+
         // ignore these operations entirely
         case Op::SourceContinued:
         case Op::Line:
         case Op::String:
         case Op::Name:
         case Op::MemberName:
-        case Op::ExtInstImport:
-          continue;
+        case Op::ExtInstImport: continue;
 
         // ignore decorations too, we already have these cached
         case Op::Decorate:
@@ -345,8 +368,7 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
         case Op::MemberDecorateString:
         case Op::DecorationGroup:
         case Op::GroupDecorate:
-        case Op::GroupMemberDecorate:
-          continue;
+        case Op::GroupMemberDecorate: continue;
 
         // suppress almost all types
         case Op::TypeVoid:
@@ -361,7 +383,8 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
         case Op::TypeSampler:
         case Op::TypeSampledImage:
         case Op::TypeFunction:
-        case Op::TypeRuntimeArray: continue;
+        case Op::TypeRuntimeArray:
+        case Op::TypeRayQueryKHR: continue;
 
         case Op::TypeForwardPointer:
         {
@@ -379,6 +402,20 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
           OpTypeStruct decoded(it);
 
           const DataType &type = dataTypes[decoded.result];
+
+          bool hasUtfMember = false;
+          for(size_t i = 0; i < type.children.size(); i++)
+          {
+            if(decorations[type.children[i].type].flags & Decorations::UTF8)
+            {
+              utfMemberTypes.insert(decoded.result);
+              hasUtfMember = true;
+              break;
+            }
+          }
+
+          if(hasUtfMember)
+            continue;
 
           ret += "struct " + idName(decoded.result) +
                  getDecorationString(decorations[decoded.result]) + " {\n";
@@ -408,6 +445,10 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
         case Op::ConstantNull:
         case Op::Undef: continue;
 
+        // ditto for string constants
+        case Op::ConstantDataKHR:
+        case Op::SpecConstantDataKHR: continue;
+
         case Op::SpecConstant:
         case Op::Constant:
         {
@@ -429,29 +470,32 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
           ret +=
               StringFormat::Fmt("const %s = ", declName(decoded.resultType, decoded.result).c_str());
 
-          // evalute the value with no specialisation
-          ShaderValue value = EvaluateConstant(decoded.result, {}).value;
+          ShaderValue value = EvaluateConstant(decoded.result, specInfo).value;
 
           switch(type.scalar().Type())
           {
-            case VarType::Float:
-            case VarType::Half: ret += ToStr(value.f32v[0]); break;
+            case VarType::Half: ret += ToStr(value.f16v[0]); break;
+            case VarType::Float: ret += ToStr(value.f32v[0]); break;
             case VarType::Double: ret += ToStr(value.f64v[0]); break;
-            case VarType::SInt:
-            case VarType::SShort:
-            case VarType::SByte: ret += ToStr(value.s32v[0]); break;
+            case VarType::SInt: ret += ToStr(value.s32v[0]); break;
+            case VarType::SShort: ret += ToStr(value.s16v[0]); break;
+            case VarType::SByte: ret += ToStr(value.s8v[0]); break;
             case VarType::Bool: ret += value.u32v[0] ? "true" : "false"; break;
-            case VarType::UInt:
-            case VarType::UShort:
-            case VarType::UByte: ret += ToStr(value.u32v[0]); break;
+            case VarType::UInt: ret += ToStr(value.u32v[0]); break;
+            case VarType::UShort: ret += ToStr(value.u16v[0]); break;
+            case VarType::UByte: ret += ToStr(value.u8v[0]); break;
             case VarType::SLong: ret += ToStr(value.s64v[0]); break;
+            case VarType::ULong: ret += ToStr(value.u64v[0]); break;
+            // none of these types are expected, either because they're opaque or (for struct)
+            // because ConstantComposite should have been used
+            case VarType::Enum:
+            case VarType::Struct:
             case VarType::Unknown:
             case VarType::GPUPointer:
             case VarType::ConstantBlock:
             case VarType::ReadOnlyResource:
             case VarType::ReadWriteResource:
-            case VarType::Sampler:
-            case VarType::ULong: ret += ToStr(value.u64v[0]); break;
+            case VarType::Sampler: ret += "???"; break;
           }
 
           ret += getDecorationString(decorations[decoded.result]);
@@ -670,7 +714,9 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
         {
           ret += "}\n\n";
           lineNum += 2;
-          indent.resize(indent.size() - 2);
+          // completely reset indent, just in case something went wrong in a previous function and
+          // it didn't reset itself
+          indent.clear();
           continue;
         }
         // indent around control flow
@@ -709,13 +755,52 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
           {
             cfg.type = StructuredCFG::Switch;
 
-            OpSwitch decodedswitch(it);
+            OpSwitch32 switch32(it);
+            // selector and default are common beteen 32-bit and 64-bit versions of OpSwitch
+            Id selector = switch32.selector;
+            cfg.defaultTarget = switch32.def;
 
-            cfg.caseTargets = decodedswitch.target;
-            cfg.defaultTarget = decodedswitch.def;
+            // a heuristic - ignore slang's dummy switch(0) as they are often not needed
+            if(constants.find(selector) != constants.end() &&
+               specConstants.find(selector) == specConstants.end())
+            {
+              int32_t val = EvaluateConstant(selector, specInfo).value.s32v[0];
+
+              if(val == 0 && switch32.targets.empty())
+              {
+                // we might see a goto to this, if this is an inlined function with a return that
+                // needs to jump over several ifs (effectively). If we print this label, then need
+                // to truncate the cfgs to close the ifs
+                escapeHatches[cfg.mergeTarget] = cfgStack.size();
+                continue;
+              }
+            }
+
+            const DataType &type = dataTypes[idTypes[selector]];
+            RDCASSERT(type.type == DataType::ScalarType);
+            const uint32_t selectorWidth = type.scalar().width;
+
+            const bool longLiterals = (selectorWidth == 64);
+            if(!longLiterals)
+            {
+              for(size_t i = 0; i < switch32.targets.size(); ++i)
+              {
+                SwitchPairU32LiteralId target = switch32.targets[i];
+                cfg.caseTargets.push_back({target.literal, target.target});
+              }
+            }
+            else
+            {
+              OpSwitch64 switch64(it);
+              for(size_t i = 0; i < switch64.targets.size(); ++i)
+              {
+                SwitchPairU64LiteralId target = switch64.targets[i];
+                cfg.caseTargets.push_back({target.literal, target.target});
+              }
+            }
 
             ret += indent;
-            ret += StringFormat::Fmt("switch(%s) {\n", idName(decodedswitch.selector).c_str());
+            ret += StringFormat::Fmt("switch(%s) {\n", idName(selector).c_str());
             lineNum++;
 
             // add another level - each case label will be un-intended.
@@ -738,6 +823,20 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
             // next opcode *must* be a label because this is the end of a block
             RDCASSERTEQUAL(nextit.opcode(), Op::Label);
             OpLabel decodedlabel(nextit);
+
+            // if the next label was the merge target that implies that we will eventually go from
+            // that flow into the other case, not a strict if/else but an if() ...
+            // For our purposes use the other label as merge target since that's when we will clean up the if()
+            if(decodedbranch.trueLabel == decodedlabel.result &&
+               decodedbranch.trueLabel == cfg.mergeTarget)
+            {
+              cfg.mergeTarget = decodedbranch.falseLabel;
+            }
+            else if(decodedbranch.falseLabel == decodedlabel.result &&
+                    decodedbranch.falseLabel == cfg.mergeTarget)
+            {
+              cfg.mergeTarget = decodedbranch.trueLabel;
+            }
 
             if(decodedbranch.trueLabel == decodedlabel.result ||
                decodedbranch.falseLabel == decodedlabel.result)
@@ -922,13 +1021,13 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
 
           if(!cfgStack.empty() && cfgStack.back().type == StructuredCFG::Switch)
           {
-            for(const PairLiteralIntegerIdRef &caseTarget : cfgStack.back().caseTargets)
+            for(const SwitchPairU64LiteralId &caseTarget : cfgStack.back().caseTargets)
             {
-              if(caseTarget.second == decoded.result)
+              if(caseTarget.target == decoded.result)
               {
                 // if this is the current switch's default: then print it
                 ret += indent.substr(0, indent.size() - 2);
-                ret += StringFormat::Fmt("case %u:\n", caseTarget.first);
+                ret += StringFormat::Fmt("case %llu:\n", caseTarget.literal);
                 lineNum++;
                 break;
               }
@@ -938,6 +1037,24 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
           // print the label if we decided it was needed
           if(printLabels.find(decoded.result) != printLabels.end())
           {
+            auto escapeIt = escapeHatches.find(decoded.result);
+            if(escapeIt != escapeHatches.end())
+            {
+              while(cfgStack.size() > escapeIt->second)
+              {
+                indent.resize(indent.size() - 2);
+
+                if(cfgStack.back().type == StructuredCFG::Switch)
+                  indent.resize(indent.size() - 2);
+
+                ret += indent;
+                ret += "} // escape hatch\n";
+                lineNum++;
+
+                cfgStack.pop_back();
+              }
+            }
+
             ret += idName(decoded.result) + ":\n";
             lineNum++;
           }
@@ -977,17 +1094,59 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
           while(nextit.opcode() == Op::Line || nextit.opcode() == Op::NoLine)
             nextit++;
 
-          // next opcode *must* be a label because this is the end of a block
-          RDCASSERTEQUAL(nextit.opcode(), Op::Label);
-          OpLabel decodedlabel(nextit);
+          // next opcode *must* be a label because this is the end of a block, unless there are no more blocks
+          Id decodedlabelId;
+          if(nextit.opcode() == Op::FunctionEnd)
+          {
+            // if we just hit the end of the function we have to wrap up any CFG constructs to at
+            // least match their braces. We also try to explicitly annotate what is happening next -
+            // an if can silently drop its scope but a switch or loop should have a break/continue.
+            // This situation only happens with strange block ordering
+            while(!cfgStack.empty())
+            {
+              if(cfgStack.back().mergeTarget == decoded.targetLabel)
+              {
+                ret += indent + "break;\n";
+                lineNum++;
+              }
+              else if((cfgStack.back().continueTarget == currentBlock &&
+                       cfgStack.back().headerBlock == decoded.targetLabel) ||
+                      cfgStack.back().continueTarget == decoded.targetLabel)
+              {
+                ret += indent + "continue;\n";
+                lineNum++;
+              }
+
+              // if this is the latest merge block print a closing brace and reduce the indent
+              indent.resize(indent.size() - 2);
+
+              // if this is a switch, remove another level
+              if(cfgStack.back().type == StructuredCFG::Switch)
+                indent.resize(indent.size() - 2);
+
+              ret += indent;
+              ret += "}\n\n";
+              lineNum += 2;
+
+              cfgStack.pop_back();
+            }
+
+            // don't do any more processing of this branch, we're done
+            continue;
+          }
+          else
+          {
+            RDCASSERTEQUAL(nextit.opcode(), Op::Label);
+            decodedlabelId = OpLabel(nextit).result;
+          }
 
           // always skip redundant gotos
-          if(decodedlabel.result == decoded.targetLabel)
+          if(decodedlabelId == decoded.targetLabel)
           {
             // however if we're in a switch we might want to print a clarifying fallthrough comment
-            // or end-of-case break
+            // or end-of-case break, and in a loop we could need a break
 
-            if(!cfgStack.empty() && cfgStack.back().type == StructuredCFG::Switch)
+            if(!cfgStack.empty() && cfgStack.back().type != StructuredCFG::If)
             {
               // add a break even for the final branch to the merge block
               if(cfgStack.back().mergeTarget == decoded.targetLabel)
@@ -996,15 +1155,18 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
                 lineNum++;
                 continue;
               }
+            }
 
+            if(!cfgStack.empty() && cfgStack.back().type == StructuredCFG::Switch)
+            {
               // if we're falling through to the next case, print a comment
-              for(const PairLiteralIntegerIdRef &caseTarget : cfgStack.back().caseTargets)
+              for(const SwitchPairU64LiteralId &caseTarget : cfgStack.back().caseTargets)
               {
-                if(caseTarget.second == decoded.targetLabel)
+                if(caseTarget.target == decoded.targetLabel)
                 {
                   ret += indent;
-                  ret +=
-                      StringFormat::Fmt("// deliberate fallthrough to case %u\n", caseTarget.first);
+                  ret += StringFormat::Fmt("// deliberate fallthrough to case %llu\n",
+                                           caseTarget.literal);
                   lineNum++;
                   break;
                 }
@@ -1022,7 +1184,7 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
 
           // if we're in an if, skip branches to the merge block if the next block is the 'else'
           if(!cfgStack.empty() && cfgStack.back().type == StructuredCFG::If &&
-             cfgStack.back().elseTarget == decodedlabel.result &&
+             cfgStack.back().elseTarget == decodedlabelId &&
              cfgStack.back().mergeTarget == decoded.targetLabel)
             continue;
 
@@ -1047,13 +1209,22 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
             continue;
           }
 
-          // if we're in a loop, branches to the continue target are printed as 'continue'
+          // if we're in a loop, branches to the header target are printed as 'continue' - notably
+          // branches to the continue block are _not_ because they may contain the increment code
           if(lastLoopSwitch && lastLoopSwitch->type == StructuredCFG::Loop &&
-             lastLoopSwitch->continueTarget == decoded.targetLabel)
+             lastLoopSwitch->headerBlock == decoded.targetLabel)
           {
             ret += indent + "continue;\n";
             lineNum++;
             continue;
+          }
+
+          if(lastLoopSwitch && lastLoopSwitch->type == StructuredCFG::Loop &&
+             lastLoopSwitch->continueTarget == decoded.targetLabel)
+          {
+            if(dynamicNames.find(decoded.targetLabel) == dynamicNames.end())
+              dynamicNames[decoded.targetLabel] =
+                  StringFormat::Fmt("loop_continue%u", ++loop_continue);
           }
 
           // if we're in a switch and we're about to print a goto, see if it's a case label and
@@ -1063,11 +1234,11 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
           {
             bool printed = false;
 
-            for(const PairLiteralIntegerIdRef &caseTarget : lastLoopSwitch->caseTargets)
+            for(const SwitchPairU64LiteralId &caseTarget : lastLoopSwitch->caseTargets)
             {
-              if(caseTarget.second == decoded.targetLabel)
+              if(caseTarget.target == decoded.targetLabel)
               {
-                ret += StringFormat::Fmt("goto case %u;\n", caseTarget.first);
+                ret += StringFormat::Fmt("goto case %llu;\n", caseTarget.literal);
                 lineNum++;
                 printed = true;
                 break;
@@ -1204,9 +1375,9 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
           break;
         }
 
-        ////////////////////////////////////////////////////////////////////////////////////////
-        // pretty printing unary instructions
-        ////////////////////////////////////////////////////////////////////////////////////////
+          ////////////////////////////////////////////////////////////////////////////////////////
+          // pretty printing unary instructions
+          ////////////////////////////////////////////////////////////////////////////////////////
 
         case Op::SNegate:
         case Op::FNegate:
@@ -1234,9 +1405,9 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
           break;
         }
 
-        ////////////////////////////////////////////////////////////////////////////////////////
-        // pretty printing binary instructions
-        ////////////////////////////////////////////////////////////////////////////////////////
+          ////////////////////////////////////////////////////////////////////////////////////////
+          // pretty printing binary instructions
+          ////////////////////////////////////////////////////////////////////////////////////////
 
         case Op::IAdd:
         case Op::FAdd:
@@ -1435,6 +1606,7 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
           break;
         }
         case Op::AccessChain:
+        case Op::InBoundsAccessChain:
         {
           OpAccessChain decoded(it);
           ret += indent;
@@ -1452,10 +1624,9 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
           {
             int32_t idx = -1;
 
-            // if it's a non-specialised constant, get its value
-            if(constants.find(decoded.indexes[i]) != constants.end() &&
-               specConstants.find(decoded.indexes[i]) == specConstants.end())
-              idx = EvaluateConstant(decoded.indexes[i], {}).value.s32v[0];
+            // if it's a constant, get its value
+            if(constants.find(decoded.indexes[i]) != constants.end())
+              idx = EvaluateConstant(decoded.indexes[i], specInfo).value.s32v[0];
 
             // if it's a struct we must have an OpConstant to use, if it's a vector and we did get a
             // constant then do better than a basic array index syntax.
@@ -1522,7 +1693,10 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
               uint32_t c = decoded.components[i];
 
               ret += idName(c < vec1Cols ? decoded.vector1 : decoded.vector2) + ".";
-              ret.push_back(comps[c % vec1Cols]);
+              if(c == ~0U)
+                ret.push_back('_');
+              else
+                ret.push_back(comps[c < vec1Cols ? c : c - vec1Cols]);
 
               if(i + 1 < decoded.components.size())
                 ret += ", ";
@@ -1533,44 +1707,237 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
           break;
         }
 
-        // need to handle this by hand anyway
-        case Op::ExtInst:
+        case Op::CompositeConstruct:
         {
-          OpDecoder decoded(it);
-          ret += indent;
-          ret += StringFormat::Fmt("%s = ", declName(decoded.resultType, decoded.result).c_str());
+          OpConstantComposite comp(it);
 
-          rdcstr setname = extSets.find(Id::fromWord(it.word(3)))->second;
+          if(utfMemberTypes.find(comp.resultType) != utfMemberTypes.end())
+          {
+            // skip any CompositeConstruct of utf-member types as we assume they'll be used for an abort
+            continue;
+          }
+          else
+          {
+            ret += indent;
+            ret += OpDecoder::Disassemble(it, declName, idName, constIntVal);
+
+            OpDecoder decoded(it);
+
+            if(decoded.result != Id())
+              ret += getDecorationString(decorations[decoded.result]);
+          }
+
+          break;
+        }
+
+        case Op::AbortKHR:
+        {
+          OpAbortKHR decoded(it);
+          ret += indent;
+          ret += "abort(";
+
+          const DataType &type = dataTypes[decoded.messageType];
+
+          bool printed = false;
+
+          // the message is allowed to be anything, but if it's a struct constant treat that as
+          // parameters to abort() and try to split up if we can
+          if(type.type == DataType::StructType)
+          {
+            ConstIter msg = GetID(decoded.message);
+
+            // skip any copy logicals
+            while(msg.opcode() == Op::CopyLogical)
+              msg = GetID(OpCopyLogical(msg).operand);
+
+            // composite construct we might have hacked if we snooped a UTF-8 member...
+            if(msg.opcode() == Op::CompositeConstruct)
+            {
+              OpConstantComposite comp(msg);
+
+              if(utfMemberTypes.find(comp.resultType) != utfMemberTypes.end())
+              {
+                for(size_t i = 0; i < comp.constituents.size(); i++)
+                {
+                  if(i != 0)
+                    ret += ", ";
+                  ret += idName(comp.constituents[i]);
+                }
+
+                printed = true;
+              }
+            }
+            else if(msg.opcode() == Op::ConstantComposite)
+            {
+              OpConstantComposite comp(msg);
+
+              for(size_t i = 0; i < comp.constituents.size(); i++)
+              {
+                if(i != 0)
+                  ret += ", ";
+                ret += idName(comp.constituents[i]);
+              }
+
+              printed = true;
+            }
+          }
+
+          // if we didn't print as split parameters, just print the constant directly - it might be a plain string
+          if(!printed)
+            ret += idName(decoded.message);
+
+          ret += ")";
+          break;
+        }
+
+        case Op::ExtInst:
+        case Op::ExtInstWithForwardRefsKHR:
+        {
+          OpExtInst decoded(it);
+
+          rdcstr setname = extSets.find(decoded.set)->second;
           uint32_t inst = it.word(4);
 
-          const bool IsGLSL450 = (setname == "GLSL.std.450");
-          const bool IsDebugPrintf = (setname == "NonSemantic.DebugPrintf");
+          const bool IsGLSL450 = knownExtSet[ExtSet_GLSL450] == decoded.set;
+          const bool IsDebugPrintf = knownExtSet[ExtSet_Printf] == decoded.set;
+          const bool IsShaderDbg = knownExtSet[ExtSet_ShaderDbg] == decoded.set;
+          const bool IsDebugBreak = knownExtSet[ExtSet_DebugBreak] == decoded.set;
           // GLSL.std.450 all parameters are Ids
           const bool idParams = IsGLSL450 || setname.beginsWith("NonSemantic.");
 
-          if(IsGLSL450)
-            ret += StringFormat::Fmt("%s::%s(", setname.c_str(), ToStr(GLSLstd450(inst)).c_str());
-          else if(IsDebugPrintf)
-            ret += "DebugPrintf(";
-          else
-            ret += StringFormat::Fmt("%s::[%u](", setname.c_str(), inst);
-
-          for(size_t i = 5; i < it.size(); i++)
+          // most vulkan debug info instructions don't get printed explicitly, and those that do
+          // have no return value that we print
+          if(IsShaderDbg)
           {
-            if(i == 5 && IsDebugPrintf)
-              ret += "\"";
+            OpShaderDbg dbg(it);
 
-            // TODO could generate this from the instruction set grammar.
-            ret += idParams ? idName(Id::fromWord(it.word(i))) : ToStr(it.word(i));
-
-            if(i == 5 && IsDebugPrintf)
-              ret += "\"";
-
-            if(i + 1 < it.size())
+            if(dbg.inst == ShaderDbg::Source)
+            {
+              dynamicNames[dbg.result] = idName(dbg.arg<Id>(0));
+              continue;
+            }
+            else if(dbg.inst == ShaderDbg::CompilationUnit)
+            {
+              uint32_t lang = EvaluateConstant(dbg.arg<Id>(3), specInfo).value.u32v[0];
+              ret += indent;
+              ret += "DebugCompilationUnit(";
+              ret += idName(dbg.arg<Id>(2));
               ret += ", ";
-          }
+              ret += ToStr(rdcspv::SourceLanguage(lang));
+              ret += ")";
+            }
+            else if(dbg.inst == ShaderDbg::EntryPoint)
+            {
+              ret += indent;
+              ret += "DebugEntryPoint(";
+              OpShaderDbg debugFunc(GetID(dbg.arg<Id>(0)));
+              ret += idName(debugFunc.arg<Id>(0));
+              ret += ", ";
+              rdcstr gen = ToStr(m_Generator);
+              int i = gen.indexOf('-');
+              if(i > 0)
+                gen.erase(i - 1, ~0u);
+              ret += gen;
+              ret += " ";
+              ret += idName(dbg.arg<Id>(2));
+              rdcstr args = idName(dbg.arg<Id>(3));
+              if(!args.empty())
+              {
+                ret += ",\n";
+                lineNum++;
+                ret += indent + "    command line: ";
+                ret += args;
+              }
 
-          ret += ")";
+              ret += ")";
+            }
+            else if(dbg.inst == ShaderDbg::Scope)
+            {
+              ret += indent;
+              ret += "// DebugScope(";
+
+              OpShaderDbg scope(GetID(dbg.arg<Id>(0)));
+
+              rdcstr line;
+
+              if(scope.inst == ShaderDbg::Function)
+                line = idName(scope.arg<Id>(3));
+              else if(scope.inst == ShaderDbg::LexicalBlock)
+                line = idName(scope.arg<Id>(1));
+
+              while(scope.inst == ShaderDbg::LexicalBlock && scope.arg<Id>(3) != Id())
+                scope = OpShaderDbg(GetID(scope.arg<Id>(3)));
+
+              if(scope.inst == ShaderDbg::Function)
+              {
+                ret += idName(scope.arg<Id>(0));
+                ret += ":";
+                ret += line;
+              }
+              else
+              {
+                ret += "<unknown_function>";
+                ret += ":";
+                ret += line;
+              }
+
+              if(dbg.params.size() >= 2)
+                ret += " (in-lined)";
+              ret += ")";
+            }
+            else if(dbg.inst == ShaderDbg::Value)
+            {
+              OpShaderDbg localVar(GetID(dbg.arg<Id>(0)));
+              ret += indent;
+              ret += "// DebugValue(";
+              ret += idName(dbg.arg<Id>(1));
+              ret += " is ";
+              ret += idName(localVar.arg<Id>(0));
+              ret += " @ ";
+              ret += idName(localVar.arg<Id>(2));
+              ret += ":";
+              ret += idName(localVar.arg<Id>(3));
+
+              if(dbg.params.size() > 3)
+                ret += " (subset)";
+              ret += ")";
+            }
+            else
+            {
+              continue;
+            }
+          }
+          else
+          {
+            ret += indent;
+            ret += StringFormat::Fmt("%s = ", declName(decoded.resultType, decoded.result).c_str());
+
+            if(IsGLSL450)
+              ret += StringFormat::Fmt("%s::%s(", setname.c_str(), ToStr(GLSLstd450(inst)).c_str());
+            else if(IsDebugPrintf)
+              ret += "DebugPrintf(";
+            else if(IsDebugBreak)
+              ret += "DebugBreak(";
+            else
+              ret += StringFormat::Fmt("%s::[%u](", setname.c_str(), inst);
+
+            for(uint32_t i = 0; i < decoded.params.size(); i++)
+            {
+              if(i == 0 && IsDebugPrintf)
+                ret += "\"";
+
+              // TODO could generate this from the instruction set grammar.
+              ret += idParams ? idName(decoded.arg<Id>(i)) : ToStr(decoded.arg<uint32_t>(i));
+
+              if(i == 0 && IsDebugPrintf)
+                ret += "\"";
+
+              if(i + 1 < decoded.params.size())
+                ret += ", ";
+            }
+
+            ret += ")";
+          }
           break;
         }
 
@@ -1597,12 +1964,37 @@ rdcstr Reflector::Disassemble(const rdcstr &entryPoint,
   return ret;
 }
 
-rdcstr Reflector::StringiseConstant(rdcspv::Id id) const
+rdcstr Reflector::StringiseConstant(rdcspv::Id id, const rdcarray<SpecConstant> &specInfo) const
 {
   // only stringise constants
   auto cit = constants.find(id);
   if(cit == constants.end())
     return rdcstr();
+
+  // print UTF constant data (all of it, realistically) as a string
+  if(cit->second.op == Op::ConstantDataKHR || cit->second.op == Op::SpecConstantDataKHR)
+  {
+    ConstIter data = GetID(id);
+    OpDecoder decoded(data);
+
+    if(decorations[decoded.resultType].flags & Decorations::UTF8)
+    {
+      const DataType &type = dataTypes[decoded.resultType];
+
+      RDCASSERT(type.type == DataType::ArrayType);
+
+      const char *str = (const char *)(data.words() + 3);
+      const uint32_t length = EvaluateConstant(type.length, specInfo).value.u32v[0];
+
+      rdcstr ret(str, length);
+
+      // remove any extra NULL characters that may be in there - glslang
+      while(!ret.empty() && ret.back() == 0)
+        ret.pop_back();
+
+      return EscapeString(ret);
+    }
+  }
 
   // don't stringise spec constants either
   if(specConstants.find(id) != specConstants.end())
@@ -1632,24 +2024,26 @@ rdcstr Reflector::StringiseConstant(rdcspv::Id id) const
 
     switch(value.type)
     {
-      case VarType::Float:
-      case VarType::Half: return ToStr(value.value.f32v[0]);
+      case VarType::Half: return ToStr(value.value.f16v[0]);
+      case VarType::Float: return ToStr(value.value.f32v[0]);
       case VarType::Double: return ToStr(value.value.f64v[0]);
-      case VarType::SInt:
-      case VarType::SShort:
-      case VarType::SByte: return ToStr(value.value.s32v[0]);
+      case VarType::SInt: return ToStr(value.value.s32v[0]);
+      case VarType::SShort: return ToStr(value.value.s16v[0]);
+      case VarType::SByte: return ToStr(value.value.s8v[0]);
       case VarType::Bool: return value.value.u32v[0] ? "true" : "false";
-      case VarType::UInt:
-      case VarType::UShort:
-      case VarType::UByte: return ToStr(value.value.u32v[0]);
+      case VarType::UInt: return ToStr(value.value.u32v[0]);
+      case VarType::UShort: return ToStr(value.value.u16v[0]);
+      case VarType::UByte: return ToStr(value.value.u8v[0]);
       case VarType::SLong: return ToStr(value.value.s64v[0]);
+      case VarType::ULong: return ToStr(value.value.u64v[0]);
+      case VarType::Enum:
+      case VarType::Struct:
       case VarType::Unknown:
       case VarType::GPUPointer:
       case VarType::ConstantBlock:
       case VarType::ReadOnlyResource:
       case VarType::ReadWriteResource:
-      case VarType::Sampler:
-      case VarType::ULong: return ToStr(value.value.u64v[0]);
+      case VarType::Sampler: return "???";
     }
   }
   else if(type.type == DataType::VectorType)
@@ -1659,24 +2053,26 @@ rdcstr Reflector::StringiseConstant(rdcspv::Id id) const
     {
       switch(value.type)
       {
-        case VarType::Float:
-        case VarType::Half: ret += ToStr(value.value.f32v[i]); break;
+        case VarType::Half: ret += ToStr(value.value.f16v[i]); break;
+        case VarType::Float: ret += ToStr(value.value.f32v[i]); break;
         case VarType::Double: ret += ToStr(value.value.f64v[i]); break;
-        case VarType::SInt:
-        case VarType::SShort:
-        case VarType::SByte: ret += ToStr(value.value.s32v[i]); break;
-        case VarType::UInt:
-        case VarType::UShort:
-        case VarType::UByte: ret += ToStr(value.value.u32v[i]); break;
+        case VarType::SInt: ret += ToStr(value.value.s32v[i]); break;
+        case VarType::SShort: ret += ToStr(value.value.s16v[i]); break;
+        case VarType::SByte: ret += ToStr(value.value.s8v[i]); break;
+        case VarType::Bool: ret += value.value.u32v[i] ? "true" : "false"; break;
+        case VarType::UInt: ret += ToStr(value.value.u32v[i]); break;
+        case VarType::UShort: ret += ToStr(value.value.u16v[i]); break;
+        case VarType::UByte: ret += ToStr(value.value.u8v[i]); break;
         case VarType::SLong: ret += ToStr(value.value.s64v[i]); break;
-        case VarType::Bool: return value.value.u32v[0] ? "true" : "false";
+        case VarType::ULong: ret += ToStr(value.value.u64v[i]); break;
+        case VarType::Enum:
+        case VarType::Struct:
         case VarType::Unknown:
         case VarType::GPUPointer:
         case VarType::ConstantBlock:
         case VarType::ReadOnlyResource:
         case VarType::ReadWriteResource:
-        case VarType::Sampler:
-        case VarType::ULong: ret += ToStr(value.value.u64v[i]); break;
+        case VarType::Sampler: ret += "???"; break;
       }
       if(i + 1 < value.columns)
         ret += ", ";

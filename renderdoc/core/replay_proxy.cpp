@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -54,6 +54,7 @@ rdcstr DoStringise(const ReplayProxyPacket &el)
     STRINGISE_ENUM_NAMED(eReplayProxy_GetBuffer, "GetBuffer");
     STRINGISE_ENUM_NAMED(eReplayProxy_GetShaderEntryPoints, "GetShaderEntryPoints");
     STRINGISE_ENUM_NAMED(eReplayProxy_GetShader, "GetShader");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetShaderReflectionByPointer, "GetShaderReflectionByPointer");
     STRINGISE_ENUM_NAMED(eReplayProxy_GetDebugMessages, "GetDebugMessages");
 
     STRINGISE_ENUM_NAMED(eReplayProxy_GetBufferData, "GetBufferData");
@@ -61,7 +62,6 @@ rdcstr DoStringise(const ReplayProxyPacket &el)
 
     STRINGISE_ENUM_NAMED(eReplayProxy_SavePipelineState, "SavePipelineState");
     STRINGISE_ENUM_NAMED(eReplayProxy_GetUsage, "GetUsage");
-    STRINGISE_ENUM_NAMED(eReplayProxy_GetLiveID, "GetLiveID");
     STRINGISE_ENUM_NAMED(eReplayProxy_GetFrameRecord, "GetFrameRecord");
     STRINGISE_ENUM_NAMED(eReplayProxy_IsRenderOutput, "IsRenderOutput");
     STRINGISE_ENUM_NAMED(eReplayProxy_NeedRemapForFetch, "NeedRemapForFetch");
@@ -97,6 +97,12 @@ rdcstr DoStringise(const ReplayProxyPacket &el)
 
     STRINGISE_ENUM_NAMED(eReplayProxy_ContinueDebug, "ContinueDebug");
     STRINGISE_ENUM_NAMED(eReplayProxy_FreeDebugger, "FreeDebugger");
+
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetDescriptors, "GetDescriptors");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetSamplerDescriptors, "GetSamplerDescriptors");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetDescriptorAccess, "GetDescriptorAccess");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetDescriptorLocations, "GetDescriptorLocations");
+    STRINGISE_ENUM_NAMED(eReplayProxy_GetDescriptorStores, "GetDescriptorStores");
   }
   END_ENUM_STRINGISE();
 }
@@ -129,37 +135,37 @@ rdcstr DoStringise(const ReplayProxyPacket &el)
 // begin serialising a return value. We begin a chunk here in either the writing or reading case
 // since this chunk is used purely to send/receive the return value and is fully handled within the
 // function.
-#define SERIALISE_RETURN(retval)                                                          \
-  {                                                                                       \
-    ReplayStatus fatalStatus = ReplayStatus::Succeeded;                                   \
-    if(m_RemoteServer)                                                                    \
-      fatalStatus = m_Remote->FatalErrorCheck();                                          \
-    ReturnSerialiser &ser = retser;                                                       \
-    PACKET_HEADER(packet);                                                                \
-    SERIALISE_ELEMENT(retval);                                                            \
-    GET_SERIALISER.Serialise("fatalStatus"_lit, fatalStatus);                             \
-    GET_SERIALISER.Serialise("packet"_lit, packet);                                       \
-    ser.EndChunk();                                                                       \
-    if(fatalStatus != ReplayStatus::Succeeded && m_FatalError == ReplayStatus::Succeeded) \
-      m_FatalError = fatalStatus;                                                         \
-    CheckError(packet, expectedPacket);                                                   \
+#define SERIALISE_RETURN(retval)                                                      \
+  {                                                                                   \
+    RDResult fatalStatus = ResultCode::Succeeded;                                     \
+    if(m_RemoteServer)                                                                \
+      fatalStatus = m_Remote->FatalErrorCheck();                                      \
+    ReturnSerialiser &ser = retser;                                                   \
+    PACKET_HEADER(packet);                                                            \
+    SERIALISE_ELEMENT(retval);                                                        \
+    GET_SERIALISER.Serialise("fatalStatus"_lit, fatalStatus);                         \
+    GET_SERIALISER.Serialise("packet"_lit, packet);                                   \
+    ser.EndChunk();                                                                   \
+    if(fatalStatus != ResultCode::Succeeded && m_FatalError == ResultCode::Succeeded) \
+      m_FatalError = fatalStatus;                                                     \
+    CheckError(packet, expectedPacket);                                               \
   }
 
 // similar to the above, but for void functions that don't return anything. We still want to check
 // that both sides of the communication are on the same page.
-#define SERIALISE_RETURN_VOID()                                                           \
-  {                                                                                       \
-    ReplayStatus fatalStatus = ReplayStatus::Succeeded;                                   \
-    if(m_RemoteServer)                                                                    \
-      fatalStatus = m_Remote->FatalErrorCheck();                                          \
-    ReturnSerialiser &ser = retser;                                                       \
-    PACKET_HEADER(packet);                                                                \
-    SERIALISE_ELEMENT(packet);                                                            \
-    GET_SERIALISER.Serialise("fatalStatus"_lit, fatalStatus);                             \
-    ser.EndChunk();                                                                       \
-    if(fatalStatus != ReplayStatus::Succeeded && m_FatalError == ReplayStatus::Succeeded) \
-      m_FatalError = fatalStatus;                                                         \
-    CheckError(packet, expectedPacket);                                                   \
+#define SERIALISE_RETURN_VOID()                                                       \
+  {                                                                                   \
+    RDResult fatalStatus = ResultCode::Succeeded;                                     \
+    if(m_RemoteServer)                                                                \
+      fatalStatus = m_Remote->FatalErrorCheck();                                      \
+    ReturnSerialiser &ser = retser;                                                   \
+    PACKET_HEADER(packet);                                                            \
+    SERIALISE_ELEMENT(packet);                                                        \
+    GET_SERIALISER.Serialise("fatalStatus"_lit, fatalStatus);                         \
+    ser.EndChunk();                                                                   \
+    if(fatalStatus != ResultCode::Succeeded && m_FatalError == ResultCode::Succeeded) \
+      m_FatalError = fatalStatus;                                                     \
+    CheckError(packet, expectedPacket);                                               \
   }
 
 // defines the area where we're executing on the remote host. To avoid timeouts, the remote side
@@ -184,7 +190,7 @@ struct RemoteExecution
 #define REMOTE_EXECUTION() RemoteExecution exec(this);
 
 // uncomment the following to print verbose debugging prints for the remote proxy packets
-//#define PROXY_DEBUG(...) RDCDEBUG(__VA_ARGS__)
+// #define PROXY_DEBUG(...) RDCDEBUG(__VA_ARGS__)
 
 #if !defined(PROXY_DEBUG)
 #define PROXY_DEBUG(...) \
@@ -216,6 +222,8 @@ ReplayProxy::ReplayProxy(ReadSerialiser &reader, WriteSerialiser &writer, IRemot
 
   m_APIProps = m_Remote->GetAPIProperties();
 
+  m_APIProps.rgpCapture = false;
+
   InitRemoteExecutionThread();
 
   if(m_Replay)
@@ -229,9 +237,11 @@ ReplayProxy::ReplayProxy(ReadSerialiser &reader, WriteSerialiser &writer, IRemot
     m_GLPipelineState = new GLPipe::State;
   else if(m_APIProps.pipelineType == GraphicsAPI::Vulkan)
     m_VulkanPipelineState = new VKPipe::State;
+  else if(m_APIProps.pipelineType == GraphicsAPI::D3D9)
+    m_D3D9PipelineState = new D3D9Pipe::State;
 
   m_Remote->SetPipelineStates(m_D3D11PipelineState, m_D3D12PipelineState, m_GLPipelineState,
-                              m_VulkanPipelineState);
+                              m_VulkanPipelineState, m_D3D9PipelineState);
 }
 
 ReplayProxy::ReplayProxy(ReadSerialiser &reader, WriteSerialiser &writer, IReplayDriver *proxy)
@@ -257,6 +267,7 @@ ReplayProxy::~ReplayProxy()
     SAFE_DELETE(m_D3D12PipelineState);
     SAFE_DELETE(m_GLPipelineState);
     SAFE_DELETE(m_VulkanPipelineState);
+    SAFE_DELETE(m_D3D9PipelineState);
   }
 
   ShutdownRemoteExecutionThread();
@@ -268,6 +279,9 @@ ReplayProxy::~ReplayProxy()
   m_Proxy = NULL;
 
   for(auto it = m_ShaderReflectionCache.begin(); it != m_ShaderReflectionCache.end(); ++it)
+    delete it->second;
+
+  for(auto it = m_PointerReflectionCache.begin(); it != m_PointerReflectionCache.end(); ++it)
     delete it->second;
 }
 
@@ -358,6 +372,7 @@ APIProperties ReplayProxy::Proxied_GetAPIProperties(ParamSerialiser &paramser,
   {
     ret.localRenderer = m_Proxy->GetAPIProperties().localRenderer;
     ret.remoteReplay = true;
+    ret.rgpCapture = false;
   }
 
   m_APIProps = ret;
@@ -523,6 +538,35 @@ TextureDescription ReplayProxy::Proxied_GetTexture(ParamSerialiser &paramser,
 TextureDescription ReplayProxy::GetTexture(ResourceId id)
 {
   PROXY_FUNCTION(GetTexture, id);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<DescriptorStoreDescription> ReplayProxy::Proxied_GetDescriptorStores(
+    ParamSerialiser &paramser, ReturnSerialiser &retser)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetDescriptorStores;
+  ReplayProxyPacket packet = eReplayProxy_GetDescriptorStores;
+  rdcarray<DescriptorStoreDescription> ret;
+
+  {
+    BEGIN_PARAMS();
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetDescriptorStores();
+  }
+
+  SERIALISE_RETURN(ret);
+
+  return ret;
+}
+
+rdcarray<DescriptorStoreDescription> ReplayProxy::GetDescriptorStores()
+{
+  PROXY_FUNCTION(GetDescriptorStores);
 }
 
 template <typename ParamSerialiser, typename ReturnSerialiser>
@@ -708,51 +752,6 @@ FrameRecord ReplayProxy::GetFrameRecord()
 }
 
 template <typename ParamSerialiser, typename ReturnSerialiser>
-ResourceId ReplayProxy::Proxied_GetLiveID(ParamSerialiser &paramser, ReturnSerialiser &retser,
-                                          ResourceId id)
-{
-  if(paramser.IsWriting())
-  {
-    if(m_LiveIDs.find(id) != m_LiveIDs.end())
-      return m_LiveIDs[id];
-
-    if(m_LocalTextures.find(id) != m_LocalTextures.end())
-      return id;
-  }
-
-  if(paramser.IsErrored() || retser.IsErrored() || m_IsErrored)
-    return ResourceId();
-
-  const ReplayProxyPacket expectedPacket = eReplayProxy_GetLiveID;
-  ReplayProxyPacket packet = eReplayProxy_GetLiveID;
-  ResourceId ret;
-
-  {
-    BEGIN_PARAMS();
-    SERIALISE_ELEMENT(id);
-    END_PARAMS();
-  }
-
-  {
-    REMOTE_EXECUTION();
-    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
-      ret = m_Remote->GetLiveID(id);
-  }
-
-  SERIALISE_RETURN(ret);
-
-  if(paramser.IsWriting())
-    m_LiveIDs[id] = ret;
-
-  return ret;
-}
-
-ResourceId ReplayProxy::GetLiveID(ResourceId id)
-{
-  PROXY_FUNCTION(GetLiveID, id);
-}
-
-template <typename ParamSerialiser, typename ReturnSerialiser>
 rdcarray<CounterResult> ReplayProxy::Proxied_FetchCounters(ParamSerialiser &paramser,
                                                            ReturnSerialiser &retser,
                                                            const rdcarray<GPUCounter> &counters)
@@ -846,8 +845,9 @@ CounterDescription ReplayProxy::DescribeCounter(GPUCounter counterID)
 template <typename ParamSerialiser, typename ReturnSerialiser>
 void ReplayProxy::Proxied_FillCBufferVariables(ParamSerialiser &paramser, ReturnSerialiser &retser,
                                                ResourceId pipeline, ResourceId shader,
-                                               rdcstr entryPoint, uint32_t cbufSlot,
-                                               rdcarray<ShaderVariable> &outvars, const bytebuf &data)
+                                               ShaderStage stage, rdcstr entryPoint,
+                                               uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
+                                               const bytebuf &data)
 {
   const ReplayProxyPacket expectedPacket = eReplayProxy_FillCBufferVariables;
   ReplayProxyPacket packet = eReplayProxy_FillCBufferVariables;
@@ -856,6 +856,7 @@ void ReplayProxy::Proxied_FillCBufferVariables(ParamSerialiser &paramser, Return
     BEGIN_PARAMS();
     SERIALISE_ELEMENT(pipeline);
     SERIALISE_ELEMENT(shader);
+    SERIALISE_ELEMENT(stage);
     SERIALISE_ELEMENT(entryPoint);
     SERIALISE_ELEMENT(cbufSlot);
     SERIALISE_ELEMENT(data);
@@ -865,17 +866,17 @@ void ReplayProxy::Proxied_FillCBufferVariables(ParamSerialiser &paramser, Return
   {
     REMOTE_EXECUTION();
     if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
-      m_Remote->FillCBufferVariables(pipeline, shader, entryPoint, cbufSlot, outvars, data);
+      m_Remote->FillCBufferVariables(pipeline, shader, stage, entryPoint, cbufSlot, outvars, data);
   }
 
   SERIALISE_RETURN(outvars);
 }
 
-void ReplayProxy::FillCBufferVariables(ResourceId pipeline, ResourceId shader, rdcstr entryPoint,
-                                       uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
-                                       const bytebuf &data)
+void ReplayProxy::FillCBufferVariables(ResourceId pipeline, ResourceId shader, ShaderStage stage,
+                                       rdcstr entryPoint, uint32_t cbufSlot,
+                                       rdcarray<ShaderVariable> &outvars, const bytebuf &data)
 {
-  PROXY_FUNCTION(FillCBufferVariables, pipeline, shader, entryPoint, cbufSlot, outvars, data);
+  PROXY_FUNCTION(FillCBufferVariables, pipeline, shader, stage, entryPoint, cbufSlot, outvars, data);
 }
 
 template <typename ParamSerialiser, typename ReturnSerialiser>
@@ -1090,18 +1091,20 @@ void ReplayProxy::InitPostVSBuffers(const rdcarray<uint32_t> &events)
 }
 
 template <typename ParamSerialiser, typename ReturnSerialiser>
-MeshFormat ReplayProxy::Proxied_GetPostVSBuffers(ParamSerialiser &paramser, ReturnSerialiser &retser,
-                                                 uint32_t eventId, uint32_t instID, uint32_t viewID,
-                                                 MeshDataStage stage)
+rdcarray<MeshFormat> ReplayProxy::Proxied_GetBatchPostVSBuffers(ParamSerialiser &paramser,
+                                                                ReturnSerialiser &retser,
+                                                                uint32_t eventId,
+                                                                const rdcarray<uint32_t> &instIDs,
+                                                                uint32_t viewID, MeshDataStage stage)
 {
   const ReplayProxyPacket expectedPacket = eReplayProxy_GetPostVS;
   ReplayProxyPacket packet = eReplayProxy_GetPostVS;
-  MeshFormat ret = {};
+  rdcarray<MeshFormat> ret = {};
 
   {
     BEGIN_PARAMS();
     SERIALISE_ELEMENT(eventId);
-    SERIALISE_ELEMENT(instID);
+    SERIALISE_ELEMENT(instIDs);
     SERIALISE_ELEMENT(viewID);
     SERIALISE_ELEMENT(stage);
     END_PARAMS();
@@ -1110,7 +1113,7 @@ MeshFormat ReplayProxy::Proxied_GetPostVSBuffers(ParamSerialiser &paramser, Retu
   {
     REMOTE_EXECUTION();
     if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
-      ret = m_Remote->GetPostVSBuffers(eventId, instID, viewID, stage);
+      ret = m_Remote->GetBatchPostVSBuffers(eventId, instIDs, viewID, stage);
   }
 
   SERIALISE_RETURN(ret);
@@ -1118,10 +1121,11 @@ MeshFormat ReplayProxy::Proxied_GetPostVSBuffers(ParamSerialiser &paramser, Retu
   return ret;
 }
 
-MeshFormat ReplayProxy::GetPostVSBuffers(uint32_t eventId, uint32_t instID, uint32_t viewID,
-                                         MeshDataStage stage)
+rdcarray<MeshFormat> ReplayProxy::GetBatchPostVSBuffers(uint32_t eventId,
+                                                        const rdcarray<uint32_t> &instIDs,
+                                                        uint32_t viewID, MeshDataStage stage)
 {
-  PROXY_FUNCTION(GetPostVSBuffers, eventId, instID, viewID, stage);
+  PROXY_FUNCTION(GetBatchPostVSBuffers, eventId, instIDs, viewID, stage);
 }
 
 template <typename ParamSerialiser, typename ReturnSerialiser>
@@ -1193,16 +1197,16 @@ rdcarray<ShaderEntryPoint> ReplayProxy::GetShaderEntryPoints(ResourceId id)
 }
 
 template <typename ParamSerialiser, typename ReturnSerialiser>
-ShaderReflection *ReplayProxy::Proxied_GetShader(ParamSerialiser &paramser,
-                                                 ReturnSerialiser &retser, ResourceId pipeline,
-                                                 ResourceId shader, ShaderEntryPoint entry)
+const ShaderReflection *ReplayProxy::Proxied_GetShader(ParamSerialiser &paramser,
+                                                       ReturnSerialiser &retser, ResourceId pipeline,
+                                                       ResourceId shader, ShaderEntryPoint entry)
 {
   const ReplayProxyPacket expectedPacket = eReplayProxy_GetShader;
   ReplayProxyPacket packet = eReplayProxy_GetShader;
-  ShaderReflection *ret = NULL;
+  const ShaderReflection *ret = NULL;
 
   // only consider eventID part of the key on APIs where shaders are mutable
-  ShaderReflKey key(m_APIProps.shadersMutable ? m_EventID : 0, pipeline, shader, entry);
+  ShaderReflKey key(pipeline, shader, entry);
 
   if(retser.IsReading() && m_ShaderReflectionCache.find(key) != m_ShaderReflectionCache.end())
     return m_ShaderReflectionCache[key];
@@ -1242,10 +1246,71 @@ ShaderReflection *ReplayProxy::Proxied_GetShader(ParamSerialiser &paramser,
   return m_ShaderReflectionCache[key];
 }
 
-ShaderReflection *ReplayProxy::GetShader(ResourceId pipeline, ResourceId shader,
-                                         ShaderEntryPoint entry)
+const ShaderReflection *ReplayProxy::GetShader(ResourceId pipeline, ResourceId shader,
+                                               ShaderEntryPoint entry)
 {
   PROXY_FUNCTION(GetShader, pipeline, shader, entry);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+const ShaderReflection *ReplayProxy::Proxied_GetShaderReflectionByPointer(ParamSerialiser &paramser,
+                                                                          ReturnSerialiser &retser,
+                                                                          uint64_t reflectionPointer)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetShaderReflectionByPointer;
+  ReplayProxyPacket packet = eReplayProxy_GetShaderReflectionByPointer;
+
+  const ShaderReflection *reflection = NULL;
+
+  // Host-side cache check, before requesting on the remote
+  if(retser.IsReading())
+  {
+    auto it = m_PointerReflectionCache.find(reflectionPointer);
+
+    if(it != m_PointerReflectionCache.end())
+      return it->second;
+  }
+
+  // Serialize the request containing the opaque pointer value.
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(reflectionPointer);
+    END_PARAMS();
+  }
+
+  // Only the remote can dereference this pointer.
+  if(paramser.IsReading())
+  {
+    reflection = (const ShaderReflection *)(uintptr_t)reflectionPointer;
+  }
+
+  // Allocate a local copy of the ShaderReflection object on the host
+  // and store it in the cache
+  {
+    ReturnSerialiser &ser = retser;
+    PACKET_HEADER(packet);
+    SERIALISE_ELEMENT_OPT(reflection);
+    SERIALISE_ELEMENT(packet);
+    ser.EndChunk();
+
+    // The remote pointer is only a lookup token, so the reflection is serialised to create a local
+    // copy. The serialiser owns this allocation; setting the pointer to NULL effectively steals it
+    // into the cache, which takes ownership.
+    if(ser.IsReading())
+    {
+      m_PointerReflectionCache[reflectionPointer] = reflection;
+      reflection = NULL;
+    }
+  }
+
+  CheckError(packet, expectedPacket);
+
+  return m_PointerReflectionCache[reflectionPointer];
+}
+
+const ShaderReflection *ReplayProxy::GetShaderReflectionByPointer(uint64_t reflectionPointer)
+{
+  PROXY_FUNCTION(GetShaderReflectionByPointer, reflectionPointer);
 }
 
 template <typename ParamSerialiser, typename ReturnSerialiser>
@@ -1277,8 +1342,7 @@ rdcstr ReplayProxy::Proxied_DisassembleShader(ParamSerialiser &paramser, ReturnS
 
   if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
   {
-    refl =
-        m_Remote->GetShader(m_Remote->GetLiveID(pipeline), m_Remote->GetLiveID(Shader), EntryPoint);
+    refl = m_Remote->GetShader(pipeline, Shader, EntryPoint);
     ret = m_Remote->DisassembleShader(pipeline, refl, target);
   }
 
@@ -1349,6 +1413,66 @@ void ReplayProxy::Proxied_FreeTargetResource(ParamSerialiser &paramser, ReturnSe
 void ReplayProxy::FreeTargetResource(ResourceId id)
 {
   PROXY_FUNCTION(FreeTargetResource, id);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_ClearReplayCache(ParamSerialiser &paramser, ReturnSerialiser &retser)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_ClearReplayCache;
+  ReplayProxyPacket packet = eReplayProxy_ClearReplayCache;
+
+  {
+    BEGIN_PARAMS();
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->ClearReplayCache();
+  }
+
+  SERIALISE_RETURN_VOID();
+}
+
+void ReplayProxy::ClearReplayCache()
+{
+  PROXY_FUNCTION(ClearReplayCache);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+void ReplayProxy::Proxied_ReloadShaderDebugInformation(ParamSerialiser &paramser,
+                                                       ReturnSerialiser &retser)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_ReloadShaderDebugInformation;
+  ReplayProxyPacket packet = eReplayProxy_ReloadShaderDebugInformation;
+
+  // Clear the shader reflection cache
+  for(auto it = m_ShaderReflectionCache.begin(); it != m_ShaderReflectionCache.end(); ++it)
+    delete it->second;
+  m_ShaderReflectionCache.clear();
+
+  for(auto it = m_PointerReflectionCache.begin(); it != m_PointerReflectionCache.end(); ++it)
+    delete it->second;
+  m_PointerReflectionCache.clear();
+
+  {
+    BEGIN_PARAMS();
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      m_Remote->ReloadShaderDebugInformation();
+  }
+
+  SERIALISE_RETURN_VOID();
+}
+
+void ReplayProxy::ReloadShaderDebugInformation()
+{
+  PROXY_FUNCTION(ReloadShaderDebugInformation);
 }
 
 template <typename ParamSerialiser, typename ReturnSerialiser>
@@ -1566,7 +1690,7 @@ ShaderDebugTrace *ReplayProxy::DebugVertex(uint32_t eventId, uint32_t vertid, ui
 template <typename ParamSerialiser, typename ReturnSerialiser>
 ShaderDebugTrace *ReplayProxy::Proxied_DebugPixel(ParamSerialiser &paramser, ReturnSerialiser &retser,
                                                   uint32_t eventId, uint32_t x, uint32_t y,
-                                                  uint32_t sample, uint32_t primitive)
+                                                  const DebugPixelInputs &inputs)
 {
   const ReplayProxyPacket expectedPacket = eReplayProxy_DebugPixel;
   ReplayProxyPacket packet = eReplayProxy_DebugPixel;
@@ -1577,15 +1701,14 @@ ShaderDebugTrace *ReplayProxy::Proxied_DebugPixel(ParamSerialiser &paramser, Ret
     SERIALISE_ELEMENT(eventId);
     SERIALISE_ELEMENT(x);
     SERIALISE_ELEMENT(y);
-    SERIALISE_ELEMENT(sample);
-    SERIALISE_ELEMENT(primitive);
+    SERIALISE_ELEMENT(inputs);
     END_PARAMS();
   }
 
   {
     REMOTE_EXECUTION();
     if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
-      ret = m_Remote->DebugPixel(eventId, x, y, sample, primitive);
+      ret = m_Remote->DebugPixel(eventId, x, y, inputs);
     else
       ret = new ShaderDebugTrace;
   }
@@ -1595,10 +1718,10 @@ ShaderDebugTrace *ReplayProxy::Proxied_DebugPixel(ParamSerialiser &paramser, Ret
   return ret;
 }
 
-ShaderDebugTrace *ReplayProxy::DebugPixel(uint32_t eventId, uint32_t x, uint32_t y, uint32_t sample,
-                                          uint32_t primitive)
+ShaderDebugTrace *ReplayProxy::DebugPixel(uint32_t eventId, uint32_t x, uint32_t y,
+                                          const DebugPixelInputs &inputs)
 {
-  PROXY_FUNCTION(DebugPixel, eventId, x, y, sample, primitive);
+  PROXY_FUNCTION(DebugPixel, eventId, x, y, inputs);
 }
 
 template <typename ParamSerialiser, typename ReturnSerialiser>
@@ -1637,6 +1760,44 @@ ShaderDebugTrace *ReplayProxy::DebugThread(uint32_t eventId,
                                            const rdcfixedarray<uint32_t, 3> &threadid)
 {
   PROXY_FUNCTION(DebugThread, eventId, groupid, threadid);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+ShaderDebugTrace *ReplayProxy::Proxied_DebugMeshThread(ParamSerialiser &paramser,
+                                                       ReturnSerialiser &retser, uint32_t eventId,
+                                                       const rdcfixedarray<uint32_t, 3> &groupid,
+                                                       const rdcfixedarray<uint32_t, 3> &threadid)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_DebugMeshThread;
+  ReplayProxyPacket packet = eReplayProxy_DebugMeshThread;
+  ShaderDebugTrace *ret;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(eventId);
+    SERIALISE_ELEMENT(groupid);
+    SERIALISE_ELEMENT(threadid);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->DebugMeshThread(eventId, groupid, threadid);
+    else
+      ret = new ShaderDebugTrace;
+  }
+
+  SERIALISE_RETURN(*ret);
+
+  return ret;
+}
+
+ShaderDebugTrace *ReplayProxy::DebugMeshThread(uint32_t eventId,
+                                               const rdcfixedarray<uint32_t, 3> &groupid,
+                                               const rdcfixedarray<uint32_t, 3> &threadid)
+{
+  PROXY_FUNCTION(DebugMeshThread, eventId, groupid, threadid);
 }
 
 template <typename ParamSerialiser, typename ReturnSerialiser>
@@ -1741,6 +1902,10 @@ void ReplayProxy::Proxied_SavePipelineState(ParamSerialiser &paramser, ReturnSer
     {
       SERIALISE_ELEMENT(*m_VulkanPipelineState);
     }
+    else if(m_APIProps.pipelineType == GraphicsAPI::D3D9)
+    {
+      SERIALISE_ELEMENT(*m_D3D9PipelineState);
+    }
     SERIALISE_ELEMENT(packet);
     ser.EndChunk();
 
@@ -1754,15 +1919,18 @@ void ReplayProxy::Proxied_SavePipelineState(ParamSerialiser &paramser, ReturnSer
             &m_D3D11PipelineState->pixelShader,  &m_D3D11PipelineState->computeShader,
         };
 
-        for(int i = 0; i < 6; i++)
-          if(stages[i]->resourceId != ResourceId())
+        for(size_t i = 0; i < ARRAY_COUNT(stages); i++)
+          if(stages[i]->reflection != 0)
+          {
             stages[i]->reflection =
-                GetShader(ResourceId(), GetLiveID(stages[i]->resourceId), ShaderEntryPoint());
+                GetShaderReflectionByPointer((uint64_t)(uintptr_t)stages[i]->reflection);
+          }
 
-        if(m_D3D11PipelineState->inputAssembly.resourceId != ResourceId())
-          m_D3D11PipelineState->inputAssembly.bytecode =
-              GetShader(ResourceId(), GetLiveID(m_D3D11PipelineState->inputAssembly.resourceId),
-                        ShaderEntryPoint());
+        if(m_D3D11PipelineState->inputAssembly.bytecode != NULL)
+        {
+          m_D3D11PipelineState->inputAssembly.bytecode = GetShaderReflectionByPointer(
+              (uint64_t)(uintptr_t)m_D3D11PipelineState->inputAssembly.bytecode);
+        }
       }
       else if(m_APIProps.pipelineType == GraphicsAPI::D3D12 && m_D3D12PipelineState)
       {
@@ -1770,14 +1938,13 @@ void ReplayProxy::Proxied_SavePipelineState(ParamSerialiser &paramser, ReturnSer
             &m_D3D12PipelineState->vertexShader, &m_D3D12PipelineState->hullShader,
             &m_D3D12PipelineState->domainShader, &m_D3D12PipelineState->geometryShader,
             &m_D3D12PipelineState->pixelShader,  &m_D3D12PipelineState->computeShader,
+            &m_D3D12PipelineState->ampShader,    &m_D3D12PipelineState->meshShader,
         };
 
-        ResourceId pipe = GetLiveID(m_D3D12PipelineState->pipelineResourceId);
-
-        for(int i = 0; i < 6; i++)
-          if(stages[i]->resourceId != ResourceId())
+        for(size_t i = 0; i < ARRAY_COUNT(stages); i++)
+          if(stages[i]->reflection != 0)
             stages[i]->reflection =
-                GetShader(pipe, GetLiveID(stages[i]->resourceId), ShaderEntryPoint());
+                GetShaderReflectionByPointer((uint64_t)(uintptr_t)stages[i]->reflection);
       }
       else if(m_APIProps.pipelineType == GraphicsAPI::OpenGL && m_GLPipelineState)
       {
@@ -1787,10 +1954,22 @@ void ReplayProxy::Proxied_SavePipelineState(ParamSerialiser &paramser, ReturnSer
             &m_GLPipelineState->fragmentShader, &m_GLPipelineState->computeShader,
         };
 
-        for(int i = 0; i < 6; i++)
-          if(stages[i]->shaderResourceId != ResourceId())
+        for(size_t i = 0; i < ARRAY_COUNT(stages); i++)
+          if(stages[i]->reflection != 0)
             stages[i]->reflection =
-                GetShader(ResourceId(), GetLiveID(stages[i]->shaderResourceId), ShaderEntryPoint());
+                GetShaderReflectionByPointer((uint64_t)(uintptr_t)stages[i]->reflection);
+      }
+      else if(m_APIProps.pipelineType == GraphicsAPI::D3D9 && m_D3D9PipelineState)
+      {
+        D3D9Pipe::Shader *stages[] = {
+            &m_D3D9PipelineState->vertexShader,
+            &m_D3D9PipelineState->pixelShader,
+        };
+
+        for(size_t i = 0; i < ARRAY_COUNT(stages); i++)
+          if(stages[i]->reflection != 0)
+            stages[i]->reflection =
+                GetShaderReflectionByPointer((uint64_t)(uintptr_t)stages[i]->reflection);
       }
       else if(m_APIProps.pipelineType == GraphicsAPI::Vulkan && m_VulkanPipelineState)
       {
@@ -1798,19 +1977,14 @@ void ReplayProxy::Proxied_SavePipelineState(ParamSerialiser &paramser, ReturnSer
             &m_VulkanPipelineState->vertexShader,   &m_VulkanPipelineState->tessControlShader,
             &m_VulkanPipelineState->tessEvalShader, &m_VulkanPipelineState->geometryShader,
             &m_VulkanPipelineState->fragmentShader, &m_VulkanPipelineState->computeShader,
+            &m_VulkanPipelineState->taskShader,     &m_VulkanPipelineState->meshShader,
         };
 
-        ResourceId pipe = GetLiveID(m_VulkanPipelineState->graphics.pipelineResourceId);
-
-        for(int i = 0; i < 6; i++)
+        for(size_t i = 0; i < ARRAY_COUNT(stages); i++)
         {
-          if(i == 5)
-            pipe = GetLiveID(m_VulkanPipelineState->compute.pipelineResourceId);
-
-          if(stages[i]->resourceId != ResourceId())
+          if(stages[i]->reflection != 0)
             stages[i]->reflection =
-                GetShader(pipe, GetLiveID(stages[i]->resourceId),
-                          ShaderEntryPoint(stages[i]->entryPoint, stages[i]->stage));
+                GetShaderReflectionByPointer((uint64_t)(uintptr_t)stages[i]->reflection);
         }
       }
     }
@@ -1822,6 +1996,137 @@ void ReplayProxy::Proxied_SavePipelineState(ParamSerialiser &paramser, ReturnSer
 void ReplayProxy::SavePipelineState(uint32_t eventId)
 {
   PROXY_FUNCTION(SavePipelineState, eventId);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<Descriptor> ReplayProxy::Proxied_GetDescriptors(ParamSerialiser &paramser,
+                                                         ReturnSerialiser &retser,
+                                                         ResourceId descriptorStore,
+                                                         const rdcarray<DescriptorRange> &ranges)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetDescriptors;
+  ReplayProxyPacket packet = eReplayProxy_GetDescriptors;
+  rdcarray<Descriptor> ret;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(descriptorStore);
+    SERIALISE_ELEMENT(ranges);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetDescriptors(descriptorStore, ranges);
+  }
+
+  SERIALISE_RETURN(ret);
+
+  return ret;
+}
+
+rdcarray<Descriptor> ReplayProxy::GetDescriptors(ResourceId descriptorStore,
+                                                 const rdcarray<DescriptorRange> &ranges)
+{
+  PROXY_FUNCTION(GetDescriptors, descriptorStore, ranges);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<SamplerDescriptor> ReplayProxy::Proxied_GetSamplerDescriptors(
+    ParamSerialiser &paramser, ReturnSerialiser &retser, ResourceId descriptorStore,
+    const rdcarray<DescriptorRange> &ranges)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetSamplerDescriptors;
+  ReplayProxyPacket packet = eReplayProxy_GetSamplerDescriptors;
+  rdcarray<SamplerDescriptor> ret;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(descriptorStore);
+    SERIALISE_ELEMENT(ranges);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetSamplerDescriptors(descriptorStore, ranges);
+  }
+
+  SERIALISE_RETURN(ret);
+
+  return ret;
+}
+
+rdcarray<SamplerDescriptor> ReplayProxy::GetSamplerDescriptors(ResourceId descriptorStore,
+                                                               const rdcarray<DescriptorRange> &ranges)
+{
+  PROXY_FUNCTION(GetSamplerDescriptors, descriptorStore, ranges);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<DescriptorAccess> ReplayProxy::Proxied_GetDescriptorAccess(ParamSerialiser &paramser,
+                                                                    ReturnSerialiser &retser,
+                                                                    uint32_t eventId)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetDescriptorAccess;
+  ReplayProxyPacket packet = eReplayProxy_GetDescriptorAccess;
+  rdcarray<DescriptorAccess> ret;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(eventId);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetDescriptorAccess(eventId);
+  }
+
+  SERIALISE_RETURN(ret);
+
+  return ret;
+}
+
+rdcarray<DescriptorAccess> ReplayProxy::GetDescriptorAccess(uint32_t eventId)
+{
+  PROXY_FUNCTION(GetDescriptorAccess, eventId);
+}
+
+template <typename ParamSerialiser, typename ReturnSerialiser>
+rdcarray<DescriptorLogicalLocation> ReplayProxy::Proxied_GetDescriptorLocations(
+    ParamSerialiser &paramser, ReturnSerialiser &retser, ResourceId descriptorStore,
+    const rdcarray<DescriptorRange> &ranges)
+{
+  const ReplayProxyPacket expectedPacket = eReplayProxy_GetDescriptorLocations;
+  ReplayProxyPacket packet = eReplayProxy_GetDescriptorLocations;
+  rdcarray<DescriptorLogicalLocation> ret;
+
+  {
+    BEGIN_PARAMS();
+    SERIALISE_ELEMENT(descriptorStore);
+    SERIALISE_ELEMENT(ranges);
+    END_PARAMS();
+  }
+
+  {
+    REMOTE_EXECUTION();
+    if(paramser.IsReading() && !paramser.IsErrored() && !m_IsErrored)
+      ret = m_Remote->GetDescriptorLocations(descriptorStore, ranges);
+  }
+
+  SERIALISE_RETURN(ret);
+
+  return ret;
+}
+
+rdcarray<DescriptorLogicalLocation> ReplayProxy::GetDescriptorLocations(
+    ResourceId descriptorStore, const rdcarray<DescriptorRange> &ranges)
+{
+  PROXY_FUNCTION(GetDescriptorLocations, descriptorStore, ranges);
 }
 
 template <typename ParamSerialiser, typename ReturnSerialiser>
@@ -1981,7 +2286,10 @@ void ReplayProxy::DeltaTransferBytes(SerialiserType &xferser, bytebuf &reference
         if(offs < uncompSize)
         {
           if(uncompSize - offs > 128)
+          {
             RDCERR("Unexpected amount of padding: %llu", uncompSize - offs);
+            m_IsErrored = true;
+          }
           ser.GetReader()->Read(NULL, uncompSize - offs);
         }
       }
@@ -1989,6 +2297,7 @@ void ReplayProxy::DeltaTransferBytes(SerialiserType &xferser, bytebuf &reference
       if(deltas.empty())
       {
         RDCERR("Unexpected empty delta list");
+        m_IsErrored = true;
       }
       else if(referenceData.empty())
       {
@@ -2144,7 +2453,8 @@ void ReplayProxy::DeltaTransferBytes(SerialiserType &xferser, bytebuf &reference
     }
 
     // serialise as an array, move the storage from the list into here
-    rdcarray<DeltaSection> deltas(deltasList.size());
+    rdcarray<DeltaSection> deltas;
+    deltas.resize(deltasList.size());
 
     {
       // swap between the list and array, so all the buffers just move storage
@@ -2294,7 +2604,7 @@ void ReplayProxy::RemapProxyTextureIfNeeded(TextureDescription &tex, GetTextureD
     params.remap = RemapTexture::RGBA32;
     tex.format.compCount = 4;
     tex.format.compByteWidth = 4;
-    tex.format.compType = CompType::Float;
+    params.typeCast = tex.format.compType = CompType::Float;
     tex.format.type = ResourceFormatType::Regular;
     tex.creationFlags &= ~TextureCategory::DepthTarget;
     return;
@@ -2308,6 +2618,10 @@ void ReplayProxy::RemapProxyTextureIfNeeded(TextureDescription &tex, GetTextureD
     switch(tex.format.type)
     {
       case ResourceFormatType::S8:
+        tex.format.compType = CompType::UInt;
+        params.remap = RemapTexture::RGBA8;
+        tex.creationFlags &= ~TextureCategory::DepthTarget;
+        break;
       case ResourceFormatType::D16S8:
       case ResourceFormatType::D24S8:
       case ResourceFormatType::D32S8:
@@ -2341,8 +2655,14 @@ void ReplayProxy::RemapProxyTextureIfNeeded(TextureDescription &tex, GetTextureD
       case ResourceFormatType::R5G5B5A1:
       case ResourceFormatType::R4G4:
       case ResourceFormatType::R4G4B4A4:
-      case ResourceFormatType::ETC2: params.remap = RemapTexture::RGBA8; break;
-      case ResourceFormatType::R10G10B10A2: params.remap = RemapTexture::RGBA16; break;
+      case ResourceFormatType::ETC2:
+        params.remap = RemapTexture::RGBA8;
+        tex.format.compType = CompType::UNorm;
+        break;
+      case ResourceFormatType::R10G10B10A2:
+        params.remap = RemapTexture::RGBA16;
+        tex.format.compType = CompType::Float;
+        break;
       default:
         RDCERR("Don't know how to remap resource format type %u, falling back to RGBA32",
                tex.format.type);
@@ -2379,6 +2699,8 @@ void ReplayProxy::RemapProxyTextureIfNeeded(TextureDescription &tex, GetTextureD
       tex.format.compType = CompType::Float;
     }
   }
+
+  params.typeCast = tex.format.compType;
 
   tex.format.SetBGRAOrder(false);
   tex.format.type = ResourceFormatType::Regular;
@@ -2439,16 +2761,21 @@ void ReplayProxy::EnsureTexCached(ResourceId &texid, CompType &typeCast, const S
     }
 
     const ProxyTextureProperties &proxy = proxyit->second;
+    const bool allSamples = sub.sample == ~0U;
 
-    for(uint32_t sample = 0; sample < proxy.msSamp; sample++)
+    uint32_t numSamplesToFetch = allSamples ? proxy.msSamp : 1;
+    for(uint32_t sample = 0; sample < numSamplesToFetch; sample++)
     {
       Subresource s = sub;
-      s.sample = sample;
+      if(allSamples)
+        s.sample = sample;
 
       TextureCacheEntry sampleArrayEntry = {texid, s};
 
       GetTextureDataParams params = proxy.params;
 
+      if(typeCast == CompType::Typeless)
+        typeCast = params.typeCast;
       params.typeCast = typeCast;
       params.standardLayout = true;
 
@@ -2467,7 +2794,11 @@ void ReplayProxy::EnsureTexCached(ResourceId &texid, CompType &typeCast, const S
   }
 
   if(proxyit->second.params.remap != RemapTexture::NoRemap)
-    typeCast = BaseRemapType(typeCast);
+  {
+    typeCast = BaseRemapType(proxyit->second.params.remap, typeCast);
+    if(typeCast == CompType::Typeless)
+      typeCast = proxyit->second.params.typeCast;
+  }
 
   // change texid to the proxy texture's ID for passing to our proxy renderer
   texid = proxyit->second.id;
@@ -2606,10 +2937,6 @@ void ReplayProxy::RefreshPreviewWindow()
       // if we didn't get any target, use the copy destination
       if(cfg.resourceId == ResourceId())
         cfg.resourceId = curDraw->copyDestination;
-
-      // if we did get a texture, get the live ID for it
-      if(cfg.resourceId != ResourceId())
-        cfg.resourceId = m_Replay->GetLiveID(cfg.resourceId);
 
       if(cfg.resourceId != ResourceId())
       {
@@ -2779,7 +3106,7 @@ void ReplayProxy::RemoteExecutionThreadEntry()
   }
 }
 
-ReplayStatus ReplayProxy::FatalErrorCheck()
+RDResult ReplayProxy::FatalErrorCheck()
 {
   // this isn't proxied since it's called at relatively high frequency. Whenever we proxy a
   // function, we also return the the remote side's status
@@ -2787,24 +3114,28 @@ ReplayStatus ReplayProxy::FatalErrorCheck()
   {
     // if we're error'd due to a network issue (i.e. the other side crashed and disconnected) we
     // won't have a status, set a generic one
-    if(m_FatalError == ReplayStatus::Succeeded)
-      m_FatalError = ReplayStatus::RemoteServerConnectionLost;
+    if(m_FatalError == ResultCode::Succeeded)
+      m_FatalError = ResultCode::RemoteServerConnectionLost;
 
     return m_FatalError;
   }
 
-  return ReplayStatus::Succeeded;
+  return ResultCode::Succeeded;
 }
 
 IReplayDriver *ReplayProxy::MakeDummyDriver()
 {
   // gather up the shaders we've allocated to pass to the dummy driver
-  rdcarray<ShaderReflection *> shaders;
+  rdcarray<const ShaderReflection *> shaders;
   for(auto it = m_ShaderReflectionCache.begin(); it != m_ShaderReflectionCache.end(); ++it)
     shaders.push_back(it->second);
   m_ShaderReflectionCache.clear();
 
-  IReplayDriver *dummy = new DummyDriver(this, shaders);
+  for(auto it : m_PointerReflectionCache)
+    shaders.push_back(it.second);
+  m_PointerReflectionCache.clear();
+
+  IReplayDriver *dummy = new DummyDriver(this, shaders, m_StructuredFile, {});
 
   // the dummy driver now owns the file, remove our reference
   m_StructuredFile = NULL;
@@ -2814,10 +3145,10 @@ IReplayDriver *ReplayProxy::MakeDummyDriver()
 
 bool ReplayProxy::CheckError(ReplayProxyPacket receivedPacket, ReplayProxyPacket expectedPacket)
 {
-  if(m_FatalError != ReplayStatus::Succeeded)
+  if(m_FatalError != ResultCode::Succeeded)
   {
     RDCERR("Fatal error detected while processing %s: %s", ToStr(expectedPacket).c_str(),
-           ToStr(m_FatalError).c_str());
+           ResultDetails(m_FatalError).Message().c_str());
     m_IsErrored = true;
     return true;
   }
@@ -2868,6 +3199,7 @@ bool ReplayProxy::Tick(int type)
     case eReplayProxy_GetBuffer: GetBuffer(ResourceId()); break;
     case eReplayProxy_GetShaderEntryPoints: GetShaderEntryPoints(ResourceId()); break;
     case eReplayProxy_GetShader: GetShader(ResourceId(), ResourceId(), ShaderEntryPoint()); break;
+    case eReplayProxy_GetShaderReflectionByPointer: GetShaderReflectionByPointer(0); break;
     case eReplayProxy_GetDebugMessages: GetDebugMessages(); break;
     case eReplayProxy_GetBufferData:
     {
@@ -2882,8 +3214,12 @@ bool ReplayProxy::Tick(int type)
       break;
     }
     case eReplayProxy_SavePipelineState: SavePipelineState(0); break;
+    case eReplayProxy_GetDescriptors: GetDescriptors(ResourceId(), {}); break;
+    case eReplayProxy_GetSamplerDescriptors: GetSamplerDescriptors(ResourceId(), {}); break;
+    case eReplayProxy_GetDescriptorAccess: GetDescriptorAccess(0); break;
+    case eReplayProxy_GetDescriptorLocations: GetDescriptorLocations(ResourceId(), {}); break;
+    case eReplayProxy_GetDescriptorStores: GetDescriptorStores(); break;
     case eReplayProxy_GetUsage: GetUsage(ResourceId()); break;
-    case eReplayProxy_GetLiveID: GetLiveID(ResourceId()); break;
     case eReplayProxy_GetFrameRecord: GetFrameRecord(); break;
     case eReplayProxy_IsRenderOutput: IsRenderOutput(ResourceId()); break;
     case eReplayProxy_NeedRemapForFetch: NeedRemapForFetch(ResourceFormat()); break;
@@ -2900,7 +3236,7 @@ bool ReplayProxy::Tick(int type)
     {
       rdcarray<ShaderVariable> vars;
       bytebuf data;
-      FillCBufferVariables(ResourceId(), ResourceId(), "", 0, vars, data);
+      FillCBufferVariables(ResourceId(), ResourceId(), ShaderStage::Count, "", 0, vars, data);
       break;
     }
     case eReplayProxy_InitPostVS: InitPostVSBuffers(0); break;
@@ -2910,7 +3246,7 @@ bool ReplayProxy::Tick(int type)
       InitPostVSBuffers(dummy);
       break;
     }
-    case eReplayProxy_GetPostVS: GetPostVSBuffers(0, 0, 0, MeshDataStage::Unknown); break;
+    case eReplayProxy_GetPostVS: GetBatchPostVSBuffers(0, {}, 0, MeshDataStage::VSIn); break;
     case eReplayProxy_BuildTargetShader:
     {
       rdcstr entry;
@@ -2922,8 +3258,10 @@ bool ReplayProxy::Tick(int type)
     }
     case eReplayProxy_ReplaceResource: ReplaceResource(ResourceId(), ResourceId()); break;
     case eReplayProxy_RemoveReplacement: RemoveReplacement(ResourceId()); break;
+    case eReplayProxy_ClearReplayCache: ClearReplayCache(); break;
+    case eReplayProxy_ReloadShaderDebugInformation: ReloadShaderDebugInformation(); break;
     case eReplayProxy_DebugVertex: DebugVertex(0, 0, 0, 0, 0); break;
-    case eReplayProxy_DebugPixel: DebugPixel(0, 0, 0, 0, 0); break;
+    case eReplayProxy_DebugPixel: DebugPixel(0, 0, 0, DebugPixelInputs()); break;
     case eReplayProxy_DebugThread:
     {
       DebugThread(0, {}, {});

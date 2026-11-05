@@ -300,6 +300,29 @@
      <number>2</number>
     </property>
     <item>
+     <widget class="QToolButton" name="toggleLog">
+      <property name="toolTip">
+       <string>Show/Hide Debug Info Logging Panel</string>
+      </property>
+      <property name="checkable">
+       <bool>true</bool>
+      </property>
+      <property name="text">
+       <string>Debug Info</string>
+      </property>
+      <property name="icon">
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/information.png</normaloff>:/information.png</iconset>
+      </property>
+      <property name="toolButtonStyle">
+       <enum>Qt::ToolButtonTextBesideIcon</enum>
+      </property>
+      <property name="autoRaise">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
      <widget class="QToolButton" name="findReplace">
       <property name="toolTip">
        <string>Find &amp; Replace</string>
@@ -320,6 +343,29 @@
      </widget>
     </item>
     <item>
+     <widget class="QToolButton" name="bookmark">
+      <property name="toolTip">
+       <string>Add, remove or jump to bookmarks in current file</string>
+      </property>
+      <property name="text">
+       <string>Bookmark...</string>
+      </property>
+      <property name="icon">
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/bookmark_blue.png</normaloff>:/bookmark_blue.png</iconset>
+      </property>
+      <property name="popupMode">
+       <enum>QToolButton::InstantPopup</enum>
+      </property>
+      <property name="toolButtonStyle">
+       <enum>Qt::ToolButtonTextBesideIcon</enum>
+      </property>
+      <property name="autoRaise">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
      <widget class="Line" name="line">
       <property name="orientation">
        <enum>Qt::Vertical</enum>
@@ -327,12 +373,32 @@
      </widget>
     </item>
     <item>
-     <widget class="QToolButton" name="refresh">
+     <widget class="QToolButton" name="resetEdits">
       <property name="toolTip">
-       <string>Compile Shader &amp; Refresh changes</string>
+       <string>Remove all source edits and restore original shader</string>
       </property>
       <property name="text">
-       <string>Refresh</string>
+       <string>Reset</string>
+      </property>
+      <property name="icon">
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/del.png</normaloff>:/del.png</iconset>
+      </property>
+      <property name="toolButtonStyle">
+       <enum>Qt::ToolButtonTextBesideIcon</enum>
+      </property>
+      <property name="autoRaise">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QToolButton" name="refresh">
+      <property name="toolTip">
+       <string>Compile shader &amp; apply changes</string>
+      </property>
+      <property name="text">
+       <string>Apply changes</string>
       </property>
       <property name="icon">
        <iconset resource="../Resources/resources.qrc">
@@ -343,6 +409,36 @@
       </property>
       <property name="autoRaise">
        <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QToolButton" name="unrefresh">
+      <property name="toolTip">
+       <string>Use original shader</string>
+      </property>
+      <property name="text">
+       <string>Remove changes</string>
+      </property>
+      <property name="icon">
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/arrow_undo.png</normaloff>:/arrow_undo.png</iconset>
+      </property>
+      <property name="toolButtonStyle">
+       <enum>Qt::ToolButtonTextBesideIcon</enum>
+      </property>
+      <property name="autoRaise">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QLabel" name="editStatusLabel">
+      <property name="toolTip">
+       <string>The replay currently has the original shader active</string>
+      </property>
+      <property name="text">
+       <string>Status: Original Shader Active</string>
       </property>
      </widget>
     </item>
@@ -389,7 +485,7 @@
         <normaloff>:/control_reverse_blue@2x.png</normaloff>:/control_reverse_blue@2x.png</iconset>
       </property>
       <property name="popupMode">
-       <enum>QToolButton::MenuButtonPopup</enum>
+       <enum>QToolButton::InstantPopup</enum>
       </property>
       <property name="toolButtonStyle">
        <enum>Qt::ToolButtonTextBesideIcon</enum>
@@ -412,7 +508,7 @@
         <normaloff>:/control_play_blue.png</normaloff>:/control_play_blue.png</iconset>
       </property>
       <property name="popupMode">
-       <enum>QToolButton::MenuButtonPopup</enum>
+       <enum>QToolButton::InstantPopup</enum>
       </property>
       <property name="toolButtonStyle">
        <enum>Qt::ToolButtonTextBesideIcon</enum>
@@ -502,7 +598,7 @@
     </item>
    </layout>
   </widget>
-  <widget class="RDTableWidget" name="watch">
+  <widget class="RDTreeWidget" name="watch">
    <property name="geometry">
     <rect>
      <x>520</x>
@@ -598,10 +694,10 @@
     </rect>
    </property>
    <layout class="QGridLayout" name="gridLayout">
-    <item row="1" column="0">
-     <widget class="QLabel" name="label_3">
+    <item row="0" column="0">
+     <widget class="QLabel" name="label">
       <property name="text">
-       <string>Compiler:</string>
+       <string>Entry Point:</string>
       </property>
       <property name="alignment">
        <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
@@ -624,23 +720,49 @@
       </property>
      </widget>
     </item>
-    <item row="2" column="1">
-     <spacer name="verticalSpacer">
-      <property name="orientation">
-       <enum>Qt::Vertical</enum>
-      </property>
-      <property name="sizeHint" stdset="0">
-       <size>
-        <width>20</width>
-        <height>40</height>
-       </size>
-      </property>
-     </spacer>
-    </item>
     <item row="0" column="2">
      <widget class="QLabel" name="label_4">
       <property name="text">
        <string>Source Type:</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+      </property>
+     </widget>
+    </item>
+    <item row="0" column="3">
+     <widget class="QComboBox" name="encoding">
+      <property name="minimumSize">
+       <size>
+        <width>0</width>
+        <height>20</height>
+       </size>
+      </property>
+      <property name="insertPolicy">
+       <enum>QComboBox::NoInsert</enum>
+      </property>
+      <property name="sizeAdjustPolicy">
+       <enum>QComboBox::AdjustToContents</enum>
+      </property>
+     </widget>
+    </item>
+    <item row="0" column="4">
+     <spacer name="horizontalSpacer_2">
+      <property name="orientation">
+       <enum>Qt::Horizontal</enum>
+      </property>
+      <property name="sizeHint" stdset="0">
+       <size>
+        <width>40</width>
+        <height>20</height>
+       </size>
+      </property>
+     </spacer>
+    </item>
+    <item row="1" column="0">
+     <widget class="QLabel" name="label_3">
+      <property name="text">
+       <string>Compiler:</string>
       </property>
       <property name="alignment">
        <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
@@ -669,45 +791,6 @@
       </property>
      </widget>
     </item>
-    <item row="0" column="3">
-     <widget class="QComboBox" name="encoding">
-      <property name="minimumSize">
-       <size>
-        <width>0</width>
-        <height>20</height>
-       </size>
-      </property>
-      <property name="insertPolicy">
-       <enum>QComboBox::NoInsert</enum>
-      </property>
-      <property name="sizeAdjustPolicy">
-       <enum>QComboBox::AdjustToContents</enum>
-      </property>
-     </widget>
-    </item>
-    <item row="0" column="0">
-     <widget class="QLabel" name="label">
-      <property name="text">
-       <string>Entry Point:</string>
-      </property>
-      <property name="alignment">
-       <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-      </property>
-     </widget>
-    </item>
-    <item row="0" column="4">
-     <spacer name="horizontalSpacer_2">
-      <property name="orientation">
-       <enum>Qt::Horizontal</enum>
-      </property>
-      <property name="sizeHint" stdset="0">
-       <size>
-        <width>40</width>
-        <height>20</height>
-       </size>
-      </property>
-     </spacer>
-    </item>
     <item row="1" column="2" rowspan="2" colspan="3">
      <widget class="QTextEdit" name="toolCommandLine">
       <property name="minimumSize">
@@ -721,15 +804,23 @@
       </property>
      </widget>
     </item>
+    <item row="2" column="1">
+     <spacer name="verticalSpacer">
+      <property name="orientation">
+       <enum>Qt::Vertical</enum>
+      </property>
+      <property name="sizeHint" stdset="0">
+       <size>
+        <width>20</width>
+        <height>40</height>
+       </size>
+      </property>
+     </spacer>
+    </item>
    </layout>
   </widget>
  </widget>
  <customwidgets>
-  <customwidget>
-   <class>RDTableWidget</class>
-   <extends>QTableWidget</extends>
-   <header>Widgets/Extended/RDTableWidget.h</header>
-  </customwidget>
   <customwidget>
    <class>RDTreeWidget</class>
    <extends>QTreeView</extends>

@@ -1,0 +1,40 @@
+RDOC 049300: [08:06:25]             core.cpp( 848) - Log     - Replay application 'E:\Projects\renderdoc\x64\Development\qrenderdoc.exe' launched
+RDOC 049300: [08:06:25]     d3d11_replay.cpp(4044) - Debug   - Creating a D3D11 replay device
+QTRD 049300: [08:06:25]    PythonContext.cpp( 379) - Log     - Not modifying stubs of version  "1.48 (b8b377)" in "C:/Users/Balazs/AppData/Roaming/qrenderdoc/pystubs/v1_48"
+QTRD 049300: [08:06:25]    PythonContext.cpp( 379) - Log     - Not modifying stubs of version  "1.48 (b8b377)" in "C:/Users/Balazs/AppData/Roaming/qrenderdoc/pystubs/latest"
+QTRD 049300: [08:06:25]    PythonContext.cpp( 435) - Log     - Stubs generation processed in 1 ms
+RDOC 049300: [08:06:25]     d3d11_replay.cpp(4358) - Debug   - Creating D3D11 replay device, NULL adapter, driver type D3D_DRIVER_TYPE_HARDWARE, flags 0, 2 feature levels (first D3D_FEATURE_LEVEL_11_1)
+RDOC 049300: [08:06:25]     d3d11_device.cpp( 234) - Debug   - Couldn't get ID3D11InfoQueue.
+RDOC 049300: [08:06:25]     d3d11_replay.cpp( 147) - Log     - Running replay on nVidia / NVIDIA GeForce RTX 4070 Ti 32.0.16.1088
+RDOC 049300: [08:06:25]     d3d12_replay.cpp(4536) - Debug   - Creating a D3D12 replay device
+RDOC 049300: [08:06:25] d3d12_sdk_select.cpp( 376) - Log     - System D3D12 runtime is version 616
+QTRD 049300: [08:06:25]       MainWindow.cpp(3353) - Log     - LoadLayout  0
+RDOC 049300: [08:06:25]    android_tools.cpp( 347) - Log     - Initialising adb using 'adb'
+RDOC 049300: [08:06:25]    android_tools.cpp( 354) - Warning - Couldn't locate adb. Ensure adb is in PATH, ANDROID_SDK or ANDROID_HOME is set, or you configure your SDK location
+QTRD 049300: [08:06:25] ToolWindowManager.cpp(1571) - Warning - area parameter ignored for this type
+QTRD 049300: [08:06:25]                     (   0) - Warning - QFileSystemWatcher::addPaths: list is empty
+QTRD 049300: [08:06:25]       qrenderdoc.cpp( 710) - Log     - running "C:\\Users\\Balazs\\AppData\\Local\\Temp\\claude\\90f834f7a055dbe2\\a648b5f7-d682-4d16-a0ea-7456b36dec91\\scratchpad\\p3\\run_check.py"
+RDOC 049300: [08:06:25]             core.cpp( 848) - Log     - Replay application 'E:\Projects\renderdoc\x64\Development\qrenderdoc.exe' launched
+RDOC 049300: [08:06:25]          rdcfile.cpp( 246) - Log     - Opening RDCFile C:\Users\Balazs\AppData\Local\Temp\claude\90f834f7a055dbe2\a648b5f7-d682-4d16-a0ea-7456b36dec91\scratchpad\p3\cap\D3D9Ex_Wrapping_Check\D3D9Ex_Wrapping_Check_frame38969.rdc
+RDOC 049300: [08:06:25]     d3d11_replay.cpp(4044) - Debug   - Creating a D3D11 replay device
+RDOC 049300: [08:06:25]          rdcfile.cpp( 311) - Debug   - Opened capture file for read
+RDOC 049300: [08:06:25]             core.cpp( 246) - Log     - Not enabling API validation during replay
+RDOC 049300: [08:06:25]             core.cpp( 251) - Log     - Using default GPU replay selection algorithm
+RDOC 049300: [08:06:25]             core.cpp( 260) - Log     - Replay optimisation level: Balanced
+RDOC 049300: [08:06:25]     d3d11_replay.cpp(4358) - Debug   - Creating D3D11 replay device, NULL adapter, driver type D3D_DRIVER_TYPE_HARDWARE, flags 0, 2 feature levels (first D3D_FEATURE_LEVEL_11_1)
+RDOC 049300: [08:06:25]     d3d12_device.cpp( 937) - Debug   - Couldn't get ID3D12InfoQueue.
+RDOC 049300: [08:06:25]     d3d12_replay.cpp( 149) - Log     - Running replay on nVidia / NVIDIA GeForce RTX 4070 Ti 32.0.16.1088
+RDOC 049300: [08:06:25]     d3d11_device.cpp( 234) - Debug   - Couldn't get ID3D11InfoQueue.
+RDOC 049300: [08:06:25]     d3d11_replay.cpp( 147) - Log     - Running replay on nVidia / NVIDIA GeForce RTX 4070 Ti 32.0.16.1088
+RDOC 049300: [08:06:25]        vk_replay.cpp(5727) - Debug   - Creating a VulkanReplay replay device
+RDOC 049300: [08:06:25]     d3d12_replay.cpp(4536) - Debug   - Creating a D3D12 replay device
+RDOC 049300: [08:06:26]     d3d12_device.cpp( 937) - Debug   - Couldn't get ID3D12InfoQueue.
+RDOC 049300: [08:06:26]     d3d12_replay.cpp( 149) - Log     - Running replay on nVidia / NVIDIA GeForce RTX 4070 Ti 32.0.16.1088
+RDOC 049300: [08:06:26]        vk_replay.cpp(5727) - Debug   - Creating a VulkanReplay replay device
+RDOC 049300: [08:06:26]        vk_replay.cpp(5810) - Log     - Created device.
+RDOC 049300: [08:06:26]        vk_replay.cpp(5810) - Log     - Created device.
+RDOC 049300: [08:06:26]             core.cpp( 997) - Log     - GPU: nVidia - NVIDIA GeForce RTX 4070 Ti (driver: --)
+RDOC 049300: [08:06:26]             core.cpp( 997) - Log     - GPU: Software - WARP Rasterizer (driver: --)
+RDOC 049300: [08:06:26]             core.cpp(1015) - Log     - Driver: 'C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispig.inf_amd64_cc526ccc3287f5cd\nvwgf2umx.dll' 32.0.16.1088 2026-08-18
+RDOC 049300: [08:06:26]      d3d9_replay.cpp( 903) - Debug   - Creating a D3D9 replay device
+RDOC 049300: [08:06:26]      d3d9_replay.cpp( 938) - Log     - Capture was made on NVIDIA GeForce RTX 4070 Ti

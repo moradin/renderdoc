@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,29 +25,13 @@
 /******************************************************************************
  * Generated from Khronos SPIR-V machine-readable JSON grammar.
  *
- * Copyright (c) 2014-2020 The Khronos Group Inc.
+ * Copyright: 2014-2024 The Khronos Group Inc.
+ * License: MIT
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and/or associated documentation files (the "Materials"),
- * to deal in the Materials without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Materials, and to permit persons to whom the
- * Materials are furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Materials.
- *
- * MODIFICATIONS TO THIS FILE MAY MEAN IT NO LONGER ACCURATELY REFLECTS KHRONOS
- * STANDARDS. THE UNMODIFIED, NORMATIVE VERSIONS OF KHRONOS SPECIFICATIONS AND
- * HEADER INFORMATION ARE LOCATED AT https://www.khronos.org/registry/
- *
- * THE MATERIALS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM,OUT OF OR IN CONNECTION WITH THE MATERIALS OR THE USE OR OTHER DEALINGS
- * IN THE MATERIALS.
+ * MODIFICATIONS TO THIS FILE MAY MEAN IT NO LONGER ACCURATELY REFLECTS
+ * KHRONOS STANDARDS. THE UNMODIFIED, NORMATIVE VERSIONS OF KHRONOS
+ * SPECIFICATIONS AND HEADER INFORMATION ARE LOCATED AT
+ * https://www.khronos.org/registry/
  ******************************************************************************/
 
 #pragma once
@@ -71,9 +55,9 @@ namespace rdcspv
 {
 static const uint32_t MagicNumber = 0x07230203;
 static const uint32_t VersionMajor = 1;
-static const uint32_t VersionMinor = 5;
-static const uint32_t VersionRevision = 4;
-static const uint32_t VersionPacked = (1 << 16) | (5 << 8);
+static const uint32_t VersionMinor = 6;
+static const uint32_t VersionRevision = 7;
+static const uint32_t VersionPacked = (1 << 16) | (6 << 8);
 static const uint32_t OpCodeMask = 0xffff;
 static const uint32_t WordCountShift = 16;
 static const uint32_t FirstRealWord = 5;
@@ -116,6 +100,27 @@ enum class Generator : uint32_t
   MessiahShaderCompiler = 25,
   XeniaEmulatorMicrocodeTranslator = 26,
   RustGPUCompilerBackend = 27,
+  Naga = 28,
+  MSPShaderCompiler = 29,
+  SpvGenTwoSPIRVIRTools = 30,
+  SkiaSkSL = 31,
+  BeehiveSPIRVToolkit = 32,
+  ShaderWriter = 33,
+  SPIRVSmith = 34,
+  Shady = 35,
+  Taichi = 36,
+  HeroCCompiler = 37,
+  SparkSL = 38,
+  NazaraShaderLangCompiler = 39,
+  SlangCompiler = 40,
+  ZigCompiler = 41,
+  spq = 42,
+  LLVMSPIRVBackend = 43,
+  Kongruent = 44,
+  NuvkSPIRVEmitterandDLSLcompiler = 45,
+  Arc3DShaderCompiler = 49,
+  Pred = 50,
+  ApilaJaiCompiler = 51,
 };
 
 enum class ImageOperands : uint32_t
@@ -130,15 +135,13 @@ enum class ImageOperands : uint32_t
   Sample = 0x0040,
   MinLod = 0x0080,
   MakeTexelAvailable = 0x0100,
-  MakeTexelAvailableKHR = 0x0100,
   MakeTexelVisible = 0x0200,
-  MakeTexelVisibleKHR = 0x0200,
   NonPrivateTexel = 0x0400,
-  NonPrivateTexelKHR = 0x0400,
   VolatileTexel = 0x0800,
-  VolatileTexelKHR = 0x0800,
   SignExtend = 0x1000,
   ZeroExtend = 0x2000,
+  Nontemporal = 0x4000,
+  Offsets = 0x10000,
   Max,
   Invalid = ~0U,
 };
@@ -153,6 +156,9 @@ enum class FPFastMathMode : uint32_t
   NSZ = 0x0004,
   AllowRecip = 0x0008,
   Fast = 0x0010,
+  AllowContract = 0x10000,
+  AllowReassoc = 0x20000,
+  AllowTransform = 0x40000,
   Max,
   Invalid = ~0U,
 };
@@ -182,13 +188,17 @@ enum class LoopControl : uint32_t
   IterationMultiple = 0x0040,
   PeelCount = 0x0080,
   PartialCount = 0x0100,
-  InitiationIntervalINTEL = 0x10000,
-  MaxConcurrencyINTEL = 0x20000,
-  DependencyArrayINTEL = 0x40000,
-  PipelineEnableINTEL = 0x80000,
-  LoopCoalesceINTEL = 0x100000,
-  MaxInterleavingINTEL = 0x200000,
-  SpeculatedIterationsINTEL = 0x400000,
+  InitiationIntervalALTERA = 0x10000,
+  MaxConcurrencyALTERA = 0x20000,
+  DependencyArrayALTERA = 0x40000,
+  PipelineEnableALTERA = 0x80000,
+  LoopCoalesceALTERA = 0x100000,
+  MaxInterleavingALTERA = 0x200000,
+  SpeculatedIterationsALTERA = 0x400000,
+  NoFusionALTERA = 0x800000,
+  LoopCountALTERA = 0x1000000,
+  MaxReinvocationDelayALTERA = 0x2000000,
+  MultipleWaitQueuesQCOM = 0x10000000,
   Max,
   Invalid = ~0U,
 };
@@ -202,6 +212,7 @@ enum class FunctionControl : uint32_t
   DontInline = 0x0002,
   Pure = 0x0004,
   Const = 0x0008,
+  OptNoneEXT = 0x10000,
   Max,
   Invalid = ~0U,
 };
@@ -211,7 +222,6 @@ BITMASK_OPERATORS(FunctionControl);
 enum class MemorySemantics : uint32_t
 {
   Relaxed = 0x0000,
-  None = 0x0000,
   Acquire = 0x0002,
   Release = 0x0004,
   AcquireRelease = 0x0008,
@@ -223,11 +233,8 @@ enum class MemorySemantics : uint32_t
   AtomicCounterMemory = 0x0400,
   ImageMemory = 0x0800,
   OutputMemory = 0x1000,
-  OutputMemoryKHR = 0x1000,
   MakeAvailable = 0x2000,
-  MakeAvailableKHR = 0x2000,
   MakeVisible = 0x4000,
-  MakeVisibleKHR = 0x4000,
   Volatile = 0x8000,
   Max,
   Invalid = ~0U,
@@ -242,11 +249,10 @@ enum class MemoryAccess : uint32_t
   Aligned = 0x0002,
   Nontemporal = 0x0004,
   MakePointerAvailable = 0x0008,
-  MakePointerAvailableKHR = 0x0008,
   MakePointerVisible = 0x0010,
-  MakePointerVisibleKHR = 0x0010,
   NonPrivatePointer = 0x0020,
-  NonPrivatePointerKHR = 0x0020,
+  AliasScopeINTELMask = 0x10000,
+  NoAliasINTELMask = 0x20000,
   Max,
   Invalid = ~0U,
 };
@@ -276,6 +282,7 @@ enum class RayFlags : uint32_t
   CullNoOpaqueKHR = 0x0080,
   SkipTrianglesKHR = 0x0100,
   SkipAABBsKHR = 0x0200,
+  ForceOpacityMicromap2StateKHR = 0x0400,
   Max,
   Invalid = ~0U,
 };
@@ -294,6 +301,17 @@ enum class FragmentShadingRate : uint32_t
 
 BITMASK_OPERATORS(FragmentShadingRate);
 
+enum class RawAccessChainOperands : uint32_t
+{
+  None = 0x0000,
+  RobustnessPerComponentNV = 0x0001,
+  RobustnessPerElementNV = 0x0002,
+  Max,
+  Invalid = ~0U,
+};
+
+BITMASK_OPERATORS(RawAccessChainOperands);
+
 enum class SourceLanguage : uint32_t
 {
   Unknown = 0,
@@ -302,6 +320,16 @@ enum class SourceLanguage : uint32_t
   OpenCL_C = 3,
   OpenCL_CPP = 4,
   HLSL = 5,
+  CPP_for_OpenCL = 6,
+  SYCL = 7,
+  HERO_C = 8,
+  NZSL = 9,
+  WGSL = 10,
+  Slang = 11,
+  Zig = 12,
+  Rust = 13,
+  Pred = 14,
+  ApilaJai = 15,
   Max,
   Invalid = ~0U,
 };
@@ -317,18 +345,14 @@ enum class ExecutionModel : uint32_t
   Kernel = 6,
   TaskNV = 5267,
   MeshNV = 5268,
-  RayGenerationNV = 5313,
   RayGenerationKHR = 5313,
-  IntersectionNV = 5314,
   IntersectionKHR = 5314,
-  AnyHitNV = 5315,
   AnyHitKHR = 5315,
-  ClosestHitNV = 5316,
   ClosestHitKHR = 5316,
-  MissNV = 5317,
   MissKHR = 5317,
-  CallableNV = 5318,
   CallableKHR = 5318,
+  TaskEXT = 5364,
+  MeshEXT = 5365,
   Max,
   Invalid = ~0U,
 };
@@ -339,7 +363,6 @@ enum class AddressingModel : uint32_t
   Physical32 = 1,
   Physical64 = 2,
   PhysicalStorageBuffer64 = 5348,
-  PhysicalStorageBuffer64EXT = 5348,
   Max,
   Invalid = ~0U,
 };
@@ -350,7 +373,6 @@ enum class MemoryModel : uint32_t
   GLSL450 = 1,
   OpenCL = 2,
   Vulkan = 3,
-  VulkanKHR = 3,
   Max,
   Invalid = ~0U,
 };
@@ -395,28 +417,67 @@ enum class ExecutionMode : uint32_t
   SubgroupsPerWorkgroupId = 37,
   LocalSizeId = 38,
   LocalSizeHintId = 39,
+  NonCoherentColorAttachmentReadEXT = 4169,
+  NonCoherentDepthAttachmentReadEXT = 4170,
+  NonCoherentStencilAttachmentReadEXT = 4171,
+  SubgroupUniformControlFlowKHR = 4421,
   PostDepthCoverage = 4446,
   DenormPreserve = 4459,
   DenormFlushToZero = 4460,
   SignedZeroInfNanPreserve = 4461,
   RoundingModeRTE = 4462,
   RoundingModeRTZ = 4463,
+  NonCoherentTileAttachmentReadQCOM = 4489,
+  TileShadingRateQCOM = 4490,
+  EarlyAndLateFragmentTestsAMD = 5017,
   StencilRefReplacingEXT = 5027,
-  OutputLinesNV = 5269,
-  OutputPrimitivesNV = 5270,
-  DerivativeGroupQuadsNV = 5289,
-  DerivativeGroupLinearNV = 5290,
-  OutputTrianglesNV = 5298,
+  CoalescingAMDX = 5069,
+  IsApiEntryAMDX = 5070,
+  MaxNodeRecursionAMDX = 5071,
+  StaticNumWorkgroupsAMDX = 5072,
+  ShaderIndexAMDX = 5073,
+  MaxNumWorkgroupsAMDX = 5077,
+  StencilRefUnchangedFrontAMD = 5079,
+  StencilRefGreaterFrontAMD = 5080,
+  StencilRefLessFrontAMD = 5081,
+  StencilRefUnchangedBackAMD = 5082,
+  StencilRefGreaterBackAMD = 5083,
+  StencilRefLessBackAMD = 5084,
+  QuadDerivativesKHR = 5088,
+  RequireFullQuadsKHR = 5089,
+  SharesInputWithAMDX = 5102,
+  ArithmeticPoisonKHR = 5157,
+  OutputLinesEXT = 5269,
+  OutputPrimitivesEXT = 5270,
+  DerivativeGroupQuadsKHR = 5289,
+  DerivativeGroupLinearKHR = 5290,
+  OutputTrianglesEXT = 5298,
   PixelInterlockOrderedEXT = 5366,
   PixelInterlockUnorderedEXT = 5367,
   SampleInterlockOrderedEXT = 5368,
   SampleInterlockUnorderedEXT = 5369,
   ShadingRateInterlockOrderedEXT = 5370,
   ShadingRateInterlockUnorderedEXT = 5371,
+  Shader64BitIndexingEXT = 5427,
+  SharedLocalMemorySizeINTEL = 5618,
+  RoundingModeRTPINTEL = 5620,
+  RoundingModeRTNINTEL = 5621,
+  FloatingPointModeALTINTEL = 5622,
+  FloatingPointModeIEEEINTEL = 5623,
   MaxWorkgroupSizeINTEL = 5893,
   MaxWorkDimINTEL = 5894,
   NoGlobalOffsetINTEL = 5895,
   NumSIMDWorkitemsINTEL = 5896,
+  SchedulerTargetFmaxMhzINTEL = 5903,
+  MaximallyReconvergesKHR = 6023,
+  FPFastMathDefault = 6028,
+  OpacityMicromapIdKHR = 6031,
+  StreamingInterfaceINTEL = 6154,
+  RegisterMapInterfaceINTEL = 6160,
+  NamedBarrierCountINTEL = 6417,
+  MaximumRegistersINTEL = 6461,
+  MaximumRegistersIdINTEL = 6462,
+  NamedMaximumRegistersINTEL = 6463,
   Max,
   Invalid = ~0U,
 };
@@ -436,21 +497,22 @@ enum class StorageClass : uint32_t
   AtomicCounter = 10,
   Image = 11,
   StorageBuffer = 12,
-  CallableDataNV = 5328,
+  TileImageEXT = 4172,
+  TileAttachmentQCOM = 4491,
+  NodePayloadAMDX = 5068,
   CallableDataKHR = 5328,
-  IncomingCallableDataNV = 5329,
   IncomingCallableDataKHR = 5329,
-  RayPayloadNV = 5338,
   RayPayloadKHR = 5338,
-  HitAttributeNV = 5339,
   HitAttributeKHR = 5339,
-  IncomingRayPayloadNV = 5342,
   IncomingRayPayloadKHR = 5342,
-  ShaderRecordBufferNV = 5343,
   ShaderRecordBufferKHR = 5343,
   PhysicalStorageBuffer = 5349,
-  PhysicalStorageBufferEXT = 5349,
+  HitObjectAttributeNV = 5385,
+  TaskPayloadWorkgroupEXT = 5402,
+  HitObjectAttributeEXT = 5411,
   CodeSectionINTEL = 5605,
+  DeviceOnlyALTERA = 5936,
+  HostOnlyALTERA = 5937,
   Max,
   Invalid = ~0U,
 };
@@ -464,6 +526,7 @@ enum class Dim : uint32_t
   Rect = 4,
   Buffer = 5,
   SubpassData = 6,
+  TileImageDataEXT = 4173,
   Max,
   Invalid = ~0U,
 };
@@ -580,6 +643,15 @@ enum class ImageChannelDataType : uint32_t
   Float = 14,
   UnormInt24 = 15,
   UnormInt101010_2 = 16,
+  UnormInt10X6EXT = 17,
+  UnsignedIntRaw10EXT = 19,
+  UnsignedIntRaw12EXT = 20,
+  UnormInt2_101010EXT = 21,
+  UnsignedInt10X6EXT = 22,
+  UnsignedInt12X4EXT = 23,
+  UnsignedInt14X2EXT = 24,
+  UnormInt12X4EXT = 25,
+  UnormInt14X2EXT = 26,
   Max,
   Invalid = ~0U,
 };
@@ -594,10 +666,52 @@ enum class FPRoundingMode : uint32_t
   Invalid = ~0U,
 };
 
+enum class FPDenormMode : uint32_t
+{
+  Preserve = 0,
+  FlushToZero = 1,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class QuantizationModes : uint32_t
+{
+  TRN = 0,
+  TRN_ZERO = 1,
+  RND = 2,
+  RND_ZERO = 3,
+  RND_INF = 4,
+  RND_MIN_INF = 5,
+  RND_CONV = 6,
+  RND_CONV_ODD = 7,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class FPOperationMode : uint32_t
+{
+  IEEE = 0,
+  ALT = 1,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class OverflowModes : uint32_t
+{
+  WRAP = 0,
+  SAT = 1,
+  SAT_ZERO = 2,
+  SAT_SYM = 3,
+  Max,
+  Invalid = ~0U,
+};
+
 enum class LinkageType : uint32_t
 {
   Export = 0,
   Import = 1,
+  LinkOnceODR = 2,
+  WeakAMD = 3,
   Max,
   Invalid = ~0U,
 };
@@ -607,6 +721,16 @@ enum class AccessQualifier : uint32_t
   ReadOnly = 0,
   WriteOnly = 1,
   ReadWrite = 2,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class HostAccessQualifier : uint32_t
+{
+  NoneINTEL = 0,
+  ReadINTEL = 1,
+  WriteINTEL = 2,
+  ReadWriteINTEL = 3,
   Max,
   Invalid = ~0U,
 };
@@ -621,6 +745,7 @@ enum class FunctionParameterAttribute : uint32_t
   NoCapture = 5,
   NoWrite = 6,
   NoReadWrite = 7,
+  RuntimeAlignedALTERA = 5940,
   Max,
   Invalid = ~0U,
 };
@@ -674,41 +799,109 @@ enum class Decoration : uint32_t
   MaxByteOffset = 45,
   AlignmentId = 46,
   MaxByteOffsetId = 47,
+  SaturatedToLargestFloat8NormalConversionEXT = 4216,
   NoSignedWrap = 4469,
   NoUnsignedWrap = 4470,
+  WeightTextureQCOM = 4487,
+  BlockMatchTextureQCOM = 4488,
+  BlockMatchSamplerQCOM = 4499,
   ExplicitInterpAMD = 4999,
+  NodeSharesPayloadLimitsWithAMDX = 5019,
+  NodeMaxPayloadsAMDX = 5020,
+  TrackFinishWritingAMDX = 5078,
+  PayloadNodeNameAMDX = 5091,
+  PayloadNodeBaseIndexAMDX = 5098,
+  PayloadNodeSparseArrayAMDX = 5099,
+  PayloadNodeArraySizeAMDX = 5100,
+  PayloadDispatchIndirectAMDX = 5105,
+  ArrayStrideIdEXT = 5124,
+  OffsetIdEXT = 5125,
+  UTFEncodedKHR = 5145,
   OverrideCoverageNV = 5248,
   PassthroughNV = 5250,
   ViewportRelativeNV = 5252,
   SecondaryViewportRelativeNV = 5256,
-  PerPrimitiveNV = 5271,
+  PerPrimitiveEXT = 5271,
   PerViewNV = 5272,
   PerTaskNV = 5273,
-  PerVertexNV = 5285,
+  PerVertexKHR = 5285,
   NonUniform = 5300,
-  NonUniformEXT = 5300,
   RestrictPointer = 5355,
-  RestrictPointerEXT = 5355,
   AliasedPointer = 5356,
-  AliasedPointerEXT = 5356,
+  MemberOffsetNV = 5358,
+  HitObjectShaderRecordBufferNV = 5386,
+  HitObjectShaderRecordBufferEXT = 5389,
+  BankNV = 5397,
+  BindlessSamplerNV = 5398,
+  BindlessImageNV = 5399,
+  BoundSamplerNV = 5400,
+  BoundImageNV = 5401,
+  SIMTCallINTEL = 5599,
   ReferencedIndirectlyINTEL = 5602,
+  ClobberINTEL = 5607,
+  SideEffectsINTEL = 5608,
+  VectorComputeVariableINTEL = 5624,
+  FuncParamIOKindINTEL = 5625,
+  VectorComputeFunctionINTEL = 5626,
+  StackCallINTEL = 5627,
+  GlobalVariableOffsetINTEL = 5628,
   CounterBuffer = 5634,
-  HlslCounterBufferGOOGLE = 5634,
   UserSemantic = 5635,
-  HlslSemanticGOOGLE = 5635,
   UserTypeGOOGLE = 5636,
-  RegisterINTEL = 5825,
-  MemoryINTEL = 5826,
-  NumbanksINTEL = 5827,
-  BankwidthINTEL = 5828,
-  MaxPrivateCopiesINTEL = 5829,
-  SinglepumpINTEL = 5830,
-  DoublepumpINTEL = 5831,
-  MaxReplicatesINTEL = 5832,
-  SimpleDualPortINTEL = 5833,
-  MergeINTEL = 5834,
-  BankBitsINTEL = 5835,
-  ForcePow2DepthINTEL = 5836,
+  FunctionRoundingModeINTEL = 5822,
+  FunctionDenormModeINTEL = 5823,
+  RegisterALTERA = 5825,
+  MemoryALTERA = 5826,
+  NumbanksALTERA = 5827,
+  BankwidthALTERA = 5828,
+  MaxPrivateCopiesALTERA = 5829,
+  SinglepumpALTERA = 5830,
+  DoublepumpALTERA = 5831,
+  MaxReplicatesALTERA = 5832,
+  SimpleDualPortALTERA = 5833,
+  MergeALTERA = 5834,
+  BankBitsALTERA = 5835,
+  ForcePow2DepthALTERA = 5836,
+  StridesizeALTERA = 5883,
+  WordsizeALTERA = 5884,
+  TrueDualPortALTERA = 5885,
+  BurstCoalesceALTERA = 5899,
+  CacheSizeALTERA = 5900,
+  DontStaticallyCoalesceALTERA = 5901,
+  PrefetchALTERA = 5902,
+  StallEnableALTERA = 5905,
+  FuseLoopsInFunctionALTERA = 5907,
+  MathOpDSPModeALTERA = 5909,
+  AliasScopeINTEL = 5914,
+  NoAliasINTEL = 5915,
+  InitiationIntervalALTERA = 5917,
+  MaxConcurrencyALTERA = 5918,
+  PipelineEnableALTERA = 5919,
+  BufferLocationALTERA = 5921,
+  IOPipeStorageALTERA = 5944,
+  FunctionFloatingPointModeINTEL = 6080,
+  SingleElementVectorINTEL = 6085,
+  VectorComputeCallableFunctionINTEL = 6087,
+  MediaBlockIOINTEL = 6140,
+  StallFreeALTERA = 6151,
+  FPMaxErrorDecorationINTEL = 6170,
+  LatencyControlLabelALTERA = 6172,
+  LatencyControlConstraintALTERA = 6173,
+  ConduitKernelArgumentALTERA = 6175,
+  RegisterMapKernelArgumentALTERA = 6176,
+  MMHostInterfaceAddressWidthALTERA = 6177,
+  MMHostInterfaceDataWidthALTERA = 6178,
+  MMHostInterfaceLatencyALTERA = 6179,
+  MMHostInterfaceReadWriteModeALTERA = 6180,
+  MMHostInterfaceMaxBurstALTERA = 6181,
+  MMHostInterfaceWaitRequestALTERA = 6182,
+  StableKernelArgumentALTERA = 6183,
+  HostAccessINTEL = 6188,
+  InitModeALTERA = 6190,
+  ImplementInRegisterMapALTERA = 6191,
+  ConditionalINTEL = 6247,
+  CacheControlLoadINTEL = 6442,
+  CacheControlStoreINTEL = 6443,
   Max,
   Invalid = ~0U,
 };
@@ -756,16 +949,16 @@ enum class BuiltIn : uint32_t
   SubgroupLocalInvocationId = 41,
   VertexIndex = 42,
   InstanceIndex = 43,
+  CoreIDARM = 4160,
+  CoreCountARM = 4161,
+  CoreMaxIDARM = 4162,
+  WarpIDARM = 4163,
+  WarpMaxIDARM = 4164,
   SubgroupEqMask = 4416,
   SubgroupGeMask = 4417,
   SubgroupGtMask = 4418,
   SubgroupLeMask = 4419,
   SubgroupLtMask = 4420,
-  SubgroupEqMaskKHR = 4416,
-  SubgroupGeMaskKHR = 4417,
-  SubgroupGtMaskKHR = 4418,
-  SubgroupLeMaskKHR = 4419,
-  SubgroupLtMaskKHR = 4420,
   BaseVertex = 4424,
   BaseInstance = 4425,
   DrawIndex = 4426,
@@ -773,6 +966,9 @@ enum class BuiltIn : uint32_t
   DeviceIndex = 4438,
   ViewIndex = 4440,
   ShadingRateKHR = 4444,
+  TileOffsetQCOM = 4492,
+  TileDimensionQCOM = 4493,
+  TileApronSizeQCOM = 4494,
   BaryCoordNoPerspAMD = 4992,
   BaryCoordNoPerspCentroidAMD = 4993,
   BaryCoordNoPerspSampleAMD = 4994,
@@ -781,6 +977,10 @@ enum class BuiltIn : uint32_t
   BaryCoordSmoothSampleAMD = 4997,
   BaryCoordPullModelAMD = 4998,
   FragStencilRefEXT = 5014,
+  RemainingRecursionLevelsAMDX = 5021,
+  ShaderIndexAMDX = 5073,
+  SamplerHeapEXT = 5122,
+  ResourceHeapEXT = 5123,
   ViewportMaskNV = 5253,
   SecondaryPositionNV = 5257,
   SecondaryViewportMaskNV = 5258,
@@ -795,44 +995,47 @@ enum class BuiltIn : uint32_t
   LayerPerViewNV = 5279,
   MeshViewCountNV = 5280,
   MeshViewIndicesNV = 5281,
-  BaryCoordNV = 5286,
-  BaryCoordNoPerspNV = 5287,
+  BaryCoordKHR = 5286,
+  BaryCoordNoPerspKHR = 5287,
   FragSizeEXT = 5292,
-  FragmentSizeNV = 5292,
   FragInvocationCountEXT = 5293,
-  InvocationsPerPixelNV = 5293,
-  LaunchIdNV = 5319,
+  PrimitivePointIndicesEXT = 5294,
+  PrimitiveLineIndicesEXT = 5295,
+  PrimitiveTriangleIndicesEXT = 5296,
+  CullPrimitiveEXT = 5299,
   LaunchIdKHR = 5319,
-  LaunchSizeNV = 5320,
   LaunchSizeKHR = 5320,
-  WorldRayOriginNV = 5321,
   WorldRayOriginKHR = 5321,
-  WorldRayDirectionNV = 5322,
   WorldRayDirectionKHR = 5322,
-  ObjectRayOriginNV = 5323,
   ObjectRayOriginKHR = 5323,
-  ObjectRayDirectionNV = 5324,
   ObjectRayDirectionKHR = 5324,
-  RayTminNV = 5325,
   RayTminKHR = 5325,
-  RayTmaxNV = 5326,
   RayTmaxKHR = 5326,
-  InstanceCustomIndexNV = 5327,
   InstanceCustomIndexKHR = 5327,
-  ObjectToWorldNV = 5330,
   ObjectToWorldKHR = 5330,
-  WorldToObjectNV = 5331,
   WorldToObjectKHR = 5331,
   HitTNV = 5332,
-  HitKindNV = 5333,
   HitKindKHR = 5333,
-  IncomingRayFlagsNV = 5351,
+  CurrentRayTimeNV = 5334,
+  HitTriangleVertexPositionsKHR = 5335,
+  HitMicroTriangleVertexPositionsNV = 5337,
+  HitMicroTriangleVertexBarycentricsNV = 5344,
   IncomingRayFlagsKHR = 5351,
   RayGeometryIndexKHR = 5352,
+  HitIsSphereNV = 5359,
+  HitIsLSSNV = 5360,
+  HitSpherePositionNV = 5361,
   WarpsPerSMNV = 5374,
   SMCountNV = 5375,
   WarpIDNV = 5376,
   SMIDNV = 5377,
+  HitLSSPositionsNV = 5396,
+  HitKindFrontFacingMicroTriangleNV = 5405,
+  HitKindBackFacingMicroTriangleNV = 5406,
+  HitSphereRadiusNV = 5420,
+  HitLSSRadiiNV = 5421,
+  ClusterIDNV = 5436,
+  CullMaskKHR = 6021,
   Max,
   Invalid = ~0U,
 };
@@ -845,7 +1048,6 @@ enum class Scope : uint32_t
   Subgroup = 3,
   Invocation = 4,
   QueueFamily = 5,
-  QueueFamilyKHR = 5,
   ShaderCallKHR = 6,
   Max,
   Invalid = ~0U,
@@ -857,9 +1059,9 @@ enum class GroupOperation : uint32_t
   InclusiveScan = 1,
   ExclusiveScan = 2,
   ClusteredReduce = 3,
-  PartitionedReduceNV = 6,
-  PartitionedInclusiveScanNV = 7,
-  PartitionedExclusiveScanNV = 8,
+  PartitionedReduceEXT = 6,
+  PartitionedInclusiveScanEXT = 7,
+  PartitionedExclusiveScanEXT = 8,
   Max,
   Invalid = ~0U,
 };
@@ -944,14 +1146,32 @@ enum class Capability : uint32_t
   GroupNonUniformQuad = 68,
   ShaderLayer = 69,
   ShaderViewportIndex = 70,
+  UniformDecoration = 71,
+  CoreBuiltinsARM = 4165,
+  TileImageColorReadAccessEXT = 4166,
+  TileImageDepthReadAccessEXT = 4167,
+  TileImageStencilReadAccessEXT = 4168,
+  TensorsARM = 4174,
+  StorageTensorArrayDynamicIndexingARM = 4175,
+  StorageTensorArrayNonUniformIndexingARM = 4176,
+  GraphARM = 4191,
+  CooperativeMatrixLayoutsARM = 4201,
+  Float8EXT = 4212,
+  Float8CooperativeMatrixEXT = 4213,
+  Float6EXT = 4228,
+  Float4EXT = 4229,
+  Float8UnsignedE8M0EXT = 4230,
+  MXInt8EXT = 4231,
+  BitcastExtractEXT = 4232,
   FragmentShadingRateKHR = 4422,
   SubgroupBallotKHR = 4423,
   DrawParameters = 4427,
+  WorkgroupMemoryExplicitLayoutKHR = 4428,
+  WorkgroupMemoryExplicitLayout8BitAccessKHR = 4429,
+  WorkgroupMemoryExplicitLayout16BitAccessKHR = 4430,
   SubgroupVoteKHR = 4431,
   StorageBuffer16BitAccess = 4433,
-  StorageUniformBufferBlock16 = 4433,
   UniformAndStorageBuffer16BitAccess = 4434,
-  StorageUniform16 = 4434,
   StoragePushConstant16 = 4435,
   StorageInputOutput16 = 4436,
   DeviceGroup = 4437,
@@ -970,8 +1190,18 @@ enum class Capability : uint32_t
   RoundingModeRTZ = 4468,
   RayQueryProvisionalKHR = 4471,
   RayQueryKHR = 4472,
+  UntypedPointersKHR = 4473,
   RayTraversalPrimitiveCullingKHR = 4478,
   RayTracingKHR = 4479,
+  TextureSampleWeightedQCOM = 4484,
+  TextureBoxFilterQCOM = 4485,
+  TextureBlockMatchQCOM = 4486,
+  TileShadingQCOM = 4495,
+  CooperativeMatrixConversionQCOM = 4496,
+  TextureBlockMatch2QCOM = 4498,
+  MultipleWaitQueuesQCOM = 4539,
+  ImageGatherLinearQCOM = 4543,
+  ImageGatherExtendedModesQCOM = 4544,
   Float16ImageAMD = 5008,
   ImageGatherBiasLodAMD = 5009,
   FragmentMaskAMD = 5010,
@@ -979,79 +1209,174 @@ enum class Capability : uint32_t
   ImageReadWriteLodAMD = 5015,
   Int64ImageEXT = 5016,
   ShaderClockKHR = 5055,
+  ShaderEnqueueAMDX = 5067,
+  QuadControlKHR = 5087,
+  Int4TypeINTEL = 5112,
+  Int4CooperativeMatrixINTEL = 5114,
+  BFloat16TypeKHR = 5116,
+  BFloat16DotProductKHR = 5117,
+  BFloat16CooperativeMatrixKHR = 5118,
+  AbortKHR = 5120,
+  DescriptorHeapEXT = 5128,
+  ConstantDataKHR = 5146,
+  PoisonFreezeKHR = 5156,
+  WeakLinkageAMD = 5181,
   SampleMaskOverrideCoverageNV = 5249,
   GeometryShaderPassthroughNV = 5251,
   ShaderViewportIndexLayerEXT = 5254,
-  ShaderViewportIndexLayerNV = 5254,
   ShaderViewportMaskNV = 5255,
   ShaderStereoViewNV = 5259,
   PerViewAttributesNV = 5260,
   FragmentFullyCoveredEXT = 5265,
   MeshShadingNV = 5266,
   ImageFootprintNV = 5282,
-  FragmentBarycentricNV = 5284,
-  ComputeDerivativeGroupQuadsNV = 5288,
+  MeshShadingEXT = 5283,
+  FragmentBarycentricKHR = 5284,
+  ComputeDerivativeGroupQuadsKHR = 5288,
   FragmentDensityEXT = 5291,
-  ShadingRateNV = 5291,
-  GroupNonUniformPartitionedNV = 5297,
+  GroupNonUniformPartitionedEXT = 5297,
   ShaderNonUniform = 5301,
-  ShaderNonUniformEXT = 5301,
   RuntimeDescriptorArray = 5302,
-  RuntimeDescriptorArrayEXT = 5302,
   InputAttachmentArrayDynamicIndexing = 5303,
-  InputAttachmentArrayDynamicIndexingEXT = 5303,
   UniformTexelBufferArrayDynamicIndexing = 5304,
-  UniformTexelBufferArrayDynamicIndexingEXT = 5304,
   StorageTexelBufferArrayDynamicIndexing = 5305,
-  StorageTexelBufferArrayDynamicIndexingEXT = 5305,
   UniformBufferArrayNonUniformIndexing = 5306,
-  UniformBufferArrayNonUniformIndexingEXT = 5306,
   SampledImageArrayNonUniformIndexing = 5307,
-  SampledImageArrayNonUniformIndexingEXT = 5307,
   StorageBufferArrayNonUniformIndexing = 5308,
-  StorageBufferArrayNonUniformIndexingEXT = 5308,
   StorageImageArrayNonUniformIndexing = 5309,
-  StorageImageArrayNonUniformIndexingEXT = 5309,
   InputAttachmentArrayNonUniformIndexing = 5310,
-  InputAttachmentArrayNonUniformIndexingEXT = 5310,
   UniformTexelBufferArrayNonUniformIndexing = 5311,
-  UniformTexelBufferArrayNonUniformIndexingEXT = 5311,
   StorageTexelBufferArrayNonUniformIndexing = 5312,
-  StorageTexelBufferArrayNonUniformIndexingEXT = 5312,
+  RayTracingPositionFetchKHR = 5336,
   RayTracingNV = 5340,
+  RayTracingMotionBlurNV = 5341,
   VulkanMemoryModel = 5345,
-  VulkanMemoryModelKHR = 5345,
   VulkanMemoryModelDeviceScope = 5346,
-  VulkanMemoryModelDeviceScopeKHR = 5346,
   PhysicalStorageBufferAddresses = 5347,
-  PhysicalStorageBufferAddressesEXT = 5347,
-  ComputeDerivativeGroupLinearNV = 5350,
+  ComputeDerivativeGroupLinearKHR = 5350,
   RayTracingProvisionalKHR = 5353,
   CooperativeMatrixNV = 5357,
   FragmentShaderSampleInterlockEXT = 5363,
   FragmentShaderShadingRateInterlockEXT = 5372,
   ShaderSMBuiltinsNV = 5373,
   FragmentShaderPixelInterlockEXT = 5378,
-  DemoteToHelperInvocationEXT = 5379,
+  DemoteToHelperInvocation = 5379,
+  DisplacementMicromapNV = 5380,
+  RayTracingOpacityMicromapKHR = 5381,
+  ShaderInvocationReorderNV = 5383,
+  ShaderInvocationReorderEXT = 5388,
+  BindlessTextureNV = 5390,
+  RayQueryPositionFetchKHR = 5391,
+  CooperativeVectorNV = 5394,
+  AtomicFloat16VectorNV = 5404,
+  RayTracingDisplacementMicromapNV = 5409,
+  RawAccessChainsNV = 5414,
+  RayTracingSpheresGeometryNV = 5418,
+  RayTracingLinearSweptSpheresGeometryNV = 5419,
+  PushConstantBanksNV = 5423,
+  LongVectorEXT = 5425,
+  Shader64BitIndexingEXT = 5426,
+  CooperativeMatrixReductionsNV = 5430,
+  CooperativeMatrixConversionsNV = 5431,
+  CooperativeMatrixPerElementOperationsNV = 5432,
+  CooperativeMatrixTensorAddressingNV = 5433,
+  CooperativeMatrixBlockLoadsNV = 5434,
+  CooperativeVectorTrainingNV = 5435,
+  RayTracingClusterAccelerationStructureNV = 5437,
+  TensorAddressingNV = 5439,
+  CooperativeMatrixDecodeVectorNV = 5447,
   SubgroupShuffleINTEL = 5568,
   SubgroupBufferBlockIOINTEL = 5569,
   SubgroupImageBlockIOINTEL = 5570,
   SubgroupImageMediaBlockIOINTEL = 5579,
+  RoundToInfinityINTEL = 5582,
+  FloatingPointModeINTEL = 5583,
   IntegerFunctions2INTEL = 5584,
   FunctionPointersINTEL = 5603,
   IndirectReferencesINTEL = 5604,
+  AsmINTEL = 5606,
+  AtomicFloat32MinMaxEXT = 5612,
+  AtomicFloat64MinMaxEXT = 5613,
+  AtomicFloat16MinMaxEXT = 5616,
+  VectorComputeINTEL = 5617,
+  VectorAnyINTEL = 5619,
+  ExpectAssumeKHR = 5629,
   SubgroupAvcMotionEstimationINTEL = 5696,
   SubgroupAvcMotionEstimationIntraINTEL = 5697,
   SubgroupAvcMotionEstimationChromaINTEL = 5698,
-  FPGAMemoryAttributesINTEL = 5824,
+  VariableLengthArrayINTEL = 5817,
+  FunctionFloatControlINTEL = 5821,
+  FPGAMemoryAttributesALTERA = 5824,
+  FPFastMathModeINTEL = 5837,
+  ArbitraryPrecisionIntegersALTERA = 5844,
+  ArbitraryPrecisionFloatingPointALTERA = 5845,
   UnstructuredLoopControlsINTEL = 5886,
-  FPGALoopControlsINTEL = 5888,
+  FPGALoopControlsALTERA = 5888,
   KernelAttributesINTEL = 5892,
   FPGAKernelAttributesINTEL = 5897,
-  BlockingPipesINTEL = 5945,
-  FPGARegINTEL = 5948,
+  FPGAMemoryAccessesALTERA = 5898,
+  FPGAClusterAttributesALTERA = 5904,
+  LoopFuseALTERA = 5906,
+  FPGADSPControlALTERA = 5908,
+  MemoryAccessAliasingINTEL = 5910,
+  FPGAInvocationPipeliningAttributesALTERA = 5916,
+  FPGABufferLocationALTERA = 5920,
+  ArbitraryPrecisionFixedPointALTERA = 5922,
+  USMStorageClassesALTERA = 5935,
+  RuntimeAlignedAttributeALTERA = 5939,
+  IOPipesALTERA = 5943,
+  BlockingPipesALTERA = 5945,
+  FPGARegALTERA = 5948,
+  DotProductInputAll = 6016,
+  DotProductInput4x8Bit = 6017,
+  DotProductInput4x8BitPacked = 6018,
+  DotProduct = 6019,
+  RayCullMaskKHR = 6020,
+  CooperativeMatrixKHR = 6022,
+  ReplicatedCompositesEXT = 6024,
+  BitInstructions = 6025,
+  GroupNonUniformRotateKHR = 6026,
+  FloatControls2 = 6029,
+  FMAKHR = 6030,
+  RayTracingOpacityMicromapExecutionModeKHR = 6032,
   AtomicFloat32AddEXT = 6033,
   AtomicFloat64AddEXT = 6034,
+  LongCompositesINTEL = 6089,
+  OptNoneEXT = 6094,
+  AtomicFloat16AddEXT = 6095,
+  DebugInfoModuleINTEL = 6114,
+  BFloat16ConversionINTEL = 6115,
+  SplitBarrierEXT = 6141,
+  ArithmeticFenceEXT = 6144,
+  FPGAClusterAttributesV2ALTERA = 6150,
+  FPGAKernelAttributesv2INTEL = 6161,
+  TaskSequenceALTERA = 6162,
+  FPMaxErrorINTEL = 6169,
+  FPGALatencyControlALTERA = 6171,
+  FPGAArgumentInterfacesALTERA = 6174,
+  GlobalVariableHostAccessINTEL = 6187,
+  GlobalVariableFPGADecorationsALTERA = 6189,
+  SubgroupBufferPrefetchINTEL = 6220,
+  Subgroup2DBlockIOINTEL = 6228,
+  Subgroup2DBlockTransformINTEL = 6229,
+  Subgroup2DBlockTransposeINTEL = 6230,
+  SubgroupMatrixMultiplyAccumulateINTEL = 6236,
+  TernaryBitwiseFunctionINTEL = 6241,
+  UntypedVariableLengthArrayINTEL = 6243,
+  SpecConditionalINTEL = 6245,
+  FunctionVariantsINTEL = 6246,
+  PredicatedIOINTEL = 6257,
+  RoundedDivideSqrtINTEL = 6265,
+  GroupUniformArithmeticKHR = 6400,
+  TensorFloat32RoundingINTEL = 6425,
+  MaskedGatherScatterINTEL = 6427,
+  CacheControlsINTEL = 6441,
+  RegisterLimitsINTEL = 6460,
+  BindlessImagesINTEL = 6528,
+  DotProductFloat16AccFloat32VALVE = 6912,
+  DotProductFloat16AccFloat16VALVE = 6913,
+  DotProductBFloat16AccVALVE = 6914,
+  DotProductFloat8AccFloat32VALVE = 6915,
   Max,
   Invalid = ~0U,
 };
@@ -1081,6 +1406,194 @@ enum class RayQueryCandidateIntersectionType : uint32_t
   Invalid = ~0U,
 };
 
+enum class PackedVectorFormat : uint32_t
+{
+  PackedVectorFormat4x8Bit = 0,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class CooperativeMatrixOperands : uint32_t
+{
+  NoneKHR = 0x0000,
+  MatrixASignedComponentsKHR = 0x0001,
+  MatrixBSignedComponentsKHR = 0x0002,
+  MatrixCSignedComponentsKHR = 0x0004,
+  MatrixResultSignedComponentsKHR = 0x0008,
+  SaturatingAccumulationKHR = 0x0010,
+  Max,
+  Invalid = ~0U,
+};
+
+BITMASK_OPERATORS(CooperativeMatrixOperands);
+
+enum class CooperativeMatrixLayout : uint32_t
+{
+  RowMajorKHR = 0,
+  ColumnMajorKHR = 1,
+  RowBlockedInterleavedARM = 4202,
+  ColumnBlockedInterleavedARM = 4203,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class CooperativeMatrixUse : uint32_t
+{
+  MatrixAKHR = 0,
+  MatrixBKHR = 1,
+  MatrixAccumulatorKHR = 2,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class CooperativeMatrixReduce : uint32_t
+{
+  Row = 0x0001,
+  Column = 0x0002,
+  _2x2 = 0x0004,
+  Max,
+  Invalid = ~0U,
+};
+
+BITMASK_OPERATORS(CooperativeMatrixReduce);
+
+enum class TensorClampMode : uint32_t
+{
+  Undefined = 0,
+  Constant = 1,
+  ClampToEdge = 2,
+  Repeat = 3,
+  RepeatMirrored = 4,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class TensorAddressingOperands : uint32_t
+{
+  None = 0x0000,
+  TensorView = 0x0001,
+  DecodeFunc = 0x0002,
+  DecodeVectorFunc = 0x0004,
+  Max,
+  Invalid = ~0U,
+};
+
+BITMASK_OPERATORS(TensorAddressingOperands);
+
+enum class InitializationModeQualifier : uint32_t
+{
+  InitOnDeviceReprogramALTERA = 0,
+  InitOnDeviceResetALTERA = 1,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class LoadCacheControl : uint32_t
+{
+  UncachedINTEL = 0,
+  CachedINTEL = 1,
+  StreamingINTEL = 2,
+  InvalidateAfterReadINTEL = 3,
+  ConstCachedINTEL = 4,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class StoreCacheControl : uint32_t
+{
+  UncachedINTEL = 0,
+  WriteThroughINTEL = 1,
+  WriteBackINTEL = 2,
+  StreamingINTEL = 3,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class NamedMaximumNumberOfRegisters : uint32_t
+{
+  AutoINTEL = 0,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class MatrixMultiplyAccumulateOperands : uint32_t
+{
+  None = 0x0,
+  MatrixASignedComponentsINTEL = 0x1,
+  MatrixBSignedComponentsINTEL = 0x2,
+  MatrixCBFloat16INTEL = 0x4,
+  MatrixResultBFloat16INTEL = 0x8,
+  MatrixAPackedInt8INTEL = 0x10,
+  MatrixBPackedInt8INTEL = 0x20,
+  MatrixAPackedInt4INTEL = 0x40,
+  MatrixBPackedInt4INTEL = 0x80,
+  MatrixATF32INTEL = 0x100,
+  MatrixBTF32INTEL = 0x200,
+  MatrixAPackedFloat16INTEL = 0x400,
+  MatrixBPackedFloat16INTEL = 0x800,
+  MatrixAPackedBFloat16INTEL = 0x1000,
+  MatrixBPackedBFloat16INTEL = 0x2000,
+  Max,
+  Invalid = ~0U,
+};
+
+BITMASK_OPERATORS(MatrixMultiplyAccumulateOperands);
+
+enum class FPEncoding : uint32_t
+{
+  BFloat16KHR = 0,
+  Float8E4M3EXT = 4214,
+  Float8E5M2EXT = 4215,
+  Float6E2M3EXT = 4223,
+  Float6E3M2EXT = 4224,
+  Float4E2M1EXT = 4225,
+  Float8UnsignedE8M0EXT = 4226,
+  MXInt8EXT = 4227,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class CooperativeVectorMatrixLayout : uint32_t
+{
+  RowMajorNV = 0,
+  ColumnMajorNV = 1,
+  InferencingOptimalNV = 2,
+  TrainingOptimalNV = 3,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class ComponentType : uint32_t
+{
+  Float16NV = 0,
+  Float32NV = 1,
+  Float64NV = 2,
+  SignedInt8NV = 3,
+  SignedInt16NV = 4,
+  SignedInt32NV = 5,
+  SignedInt64NV = 6,
+  UnsignedInt8NV = 7,
+  UnsignedInt16NV = 8,
+  UnsignedInt32NV = 9,
+  UnsignedInt64NV = 10,
+  SignedInt8PackedNV = 1000491000,
+  UnsignedInt8PackedNV = 1000491001,
+  FloatE4M3NV = 1000491002,
+  FloatE5M2NV = 1000491003,
+  Max,
+  Invalid = ~0U,
+};
+
+enum class GatherModes : uint32_t
+{
+  Gather4x1QCOM = 0,
+  GatherDQCOM = 1,
+  GatherH2QCOM = 2,
+  GatherV2QCOM = 3,
+  Max,
+  Invalid = ~0U,
+};
+
 using IdResultType = Id;
 
 using IdResult = Id;
@@ -1088,6 +1601,20 @@ using IdResult = Id;
 using IdMemorySemantics = Id;
 
 using IdScope = Id;
+
+enum class TensorOperands : uint32_t
+{
+  NoneARM = 0x0000,
+  NontemporalARM = 0x0001,
+  OutOfBoundsValueARM = 0x0002,
+  MakeElementAvailableARM = 0x0004,
+  MakeElementVisibleARM = 0x0008,
+  NonPrivateElementARM = 0x0010,
+  Max,
+  Invalid = ~0U,
+};
+
+BITMASK_OPERATORS(TensorOperands);
 
 struct GradParams
 {
@@ -1099,18 +1626,17 @@ struct ImageOperandsAndParamDatas
 {
   ImageOperandsAndParamDatas(ImageOperands f = ImageOperands::None) : flags(f) {}
   ImageOperands flags;
-  Id bias;
-  Id lod;
+  Id bias = {};
+  Id lod = {};
   GradParams grad;
-  Id constOffset;
-  Id offset;
-  Id constOffsets;
-  Id sample;
-  Id minLod;
-  IdScope makeTexelAvailable;
-  IdScope makeTexelAvailableKHR;
-  IdScope makeTexelVisible;
-  IdScope makeTexelVisibleKHR;
+  Id constOffset = {};
+  Id offset = {};
+  Id constOffsets = {};
+  Id sample = {};
+  Id minLod = {};
+  IdScope makeTexelAvailable = {};
+  IdScope makeTexelVisible = {};
+  Id offsets = {};
   
   operator ImageOperands() const { return flags; }
   bool operator &(const ImageOperands v) const { return bool(flags & v); }
@@ -1134,43 +1660,42 @@ struct ImageOperandsAndParamDatas
   void unsetMinLod() { flags &= ~ImageOperands::MinLod; }
   void setMakeTexelAvailable(IdScope makeTexelAvailableParam) { flags |= ImageOperands::MakeTexelAvailable; makeTexelAvailable = makeTexelAvailableParam; }
   void unsetMakeTexelAvailable() { flags &= ~ImageOperands::MakeTexelAvailable; }
-  void setMakeTexelAvailableKHR(IdScope makeTexelAvailableKHRParam) { flags |= ImageOperands::MakeTexelAvailableKHR; makeTexelAvailableKHR = makeTexelAvailableKHRParam; }
-  void unsetMakeTexelAvailableKHR() { flags &= ~ImageOperands::MakeTexelAvailableKHR; }
   void setMakeTexelVisible(IdScope makeTexelVisibleParam) { flags |= ImageOperands::MakeTexelVisible; makeTexelVisible = makeTexelVisibleParam; }
   void unsetMakeTexelVisible() { flags &= ~ImageOperands::MakeTexelVisible; }
-  void setMakeTexelVisibleKHR(IdScope makeTexelVisibleKHRParam) { flags |= ImageOperands::MakeTexelVisibleKHR; makeTexelVisibleKHR = makeTexelVisibleKHRParam; }
-  void unsetMakeTexelVisibleKHR() { flags &= ~ImageOperands::MakeTexelVisibleKHR; }
   void setNonPrivateTexel() { flags |= ImageOperands::NonPrivateTexel; }
   void unsetNonPrivateTexel() { flags &= ~ImageOperands::NonPrivateTexel; }
-  void setNonPrivateTexelKHR() { flags |= ImageOperands::NonPrivateTexelKHR; }
-  void unsetNonPrivateTexelKHR() { flags &= ~ImageOperands::NonPrivateTexelKHR; }
   void setVolatileTexel() { flags |= ImageOperands::VolatileTexel; }
   void unsetVolatileTexel() { flags &= ~ImageOperands::VolatileTexel; }
-  void setVolatileTexelKHR() { flags |= ImageOperands::VolatileTexelKHR; }
-  void unsetVolatileTexelKHR() { flags &= ~ImageOperands::VolatileTexelKHR; }
   void setSignExtend() { flags |= ImageOperands::SignExtend; }
   void unsetSignExtend() { flags &= ~ImageOperands::SignExtend; }
   void setZeroExtend() { flags |= ImageOperands::ZeroExtend; }
   void unsetZeroExtend() { flags &= ~ImageOperands::ZeroExtend; }
+  void setNontemporal() { flags |= ImageOperands::Nontemporal; }
+  void unsetNontemporal() { flags &= ~ImageOperands::Nontemporal; }
+  void setOffsets(Id offsetsParam) { flags |= ImageOperands::Offsets; offsets = offsetsParam; }
+  void unsetOffsets() { flags &= ~ImageOperands::Offsets; }
 };
 
 struct LoopControlAndParamDatas
 {
   LoopControlAndParamDatas(LoopControl f = LoopControl::None) : flags(f) {}
   LoopControl flags;
-  uint32_t dependencyLength;
-  uint32_t minIterations;
-  uint32_t maxIterations;
-  uint32_t iterationMultiple;
-  uint32_t peelCount;
-  uint32_t partialCount;
-  uint32_t initiationIntervalINTEL;
-  uint32_t maxConcurrencyINTEL;
-  uint32_t dependencyArrayINTEL;
-  uint32_t pipelineEnableINTEL;
-  uint32_t loopCoalesceINTEL;
-  uint32_t maxInterleavingINTEL;
-  uint32_t speculatedIterationsINTEL;
+  uint32_t dependencyLength = {};
+  uint32_t minIterations = {};
+  uint32_t maxIterations = {};
+  uint32_t iterationMultiple = {};
+  uint32_t peelCount = {};
+  uint32_t partialCount = {};
+  uint32_t initiationIntervalALTERA = {};
+  uint32_t maxConcurrencyALTERA = {};
+  uint32_t dependencyArrayALTERA = {};
+  uint32_t pipelineEnableALTERA = {};
+  uint32_t loopCoalesceALTERA = {};
+  uint32_t maxInterleavingALTERA = {};
+  uint32_t speculatedIterationsALTERA = {};
+  uint32_t loopCountALTERA = {};
+  uint32_t maxReinvocationDelayALTERA = {};
+  uint32_t multipleWaitQueuesQCOM = {};
   
   operator LoopControl() const { return flags; }
   bool operator &(const LoopControl v) const { return bool(flags & v); }
@@ -1194,31 +1719,39 @@ struct LoopControlAndParamDatas
   void unsetPeelCount() { flags &= ~LoopControl::PeelCount; }
   void setPartialCount(uint32_t partialCountParam) { flags |= LoopControl::PartialCount; partialCount = partialCountParam; }
   void unsetPartialCount() { flags &= ~LoopControl::PartialCount; }
-  void setInitiationIntervalINTEL(uint32_t initiationIntervalINTELParam) { flags |= LoopControl::InitiationIntervalINTEL; initiationIntervalINTEL = initiationIntervalINTELParam; }
-  void unsetInitiationIntervalINTEL() { flags &= ~LoopControl::InitiationIntervalINTEL; }
-  void setMaxConcurrencyINTEL(uint32_t maxConcurrencyINTELParam) { flags |= LoopControl::MaxConcurrencyINTEL; maxConcurrencyINTEL = maxConcurrencyINTELParam; }
-  void unsetMaxConcurrencyINTEL() { flags &= ~LoopControl::MaxConcurrencyINTEL; }
-  void setDependencyArrayINTEL(uint32_t dependencyArrayINTELParam) { flags |= LoopControl::DependencyArrayINTEL; dependencyArrayINTEL = dependencyArrayINTELParam; }
-  void unsetDependencyArrayINTEL() { flags &= ~LoopControl::DependencyArrayINTEL; }
-  void setPipelineEnableINTEL(uint32_t pipelineEnableINTELParam) { flags |= LoopControl::PipelineEnableINTEL; pipelineEnableINTEL = pipelineEnableINTELParam; }
-  void unsetPipelineEnableINTEL() { flags &= ~LoopControl::PipelineEnableINTEL; }
-  void setLoopCoalesceINTEL(uint32_t loopCoalesceINTELParam) { flags |= LoopControl::LoopCoalesceINTEL; loopCoalesceINTEL = loopCoalesceINTELParam; }
-  void unsetLoopCoalesceINTEL() { flags &= ~LoopControl::LoopCoalesceINTEL; }
-  void setMaxInterleavingINTEL(uint32_t maxInterleavingINTELParam) { flags |= LoopControl::MaxInterleavingINTEL; maxInterleavingINTEL = maxInterleavingINTELParam; }
-  void unsetMaxInterleavingINTEL() { flags &= ~LoopControl::MaxInterleavingINTEL; }
-  void setSpeculatedIterationsINTEL(uint32_t speculatedIterationsINTELParam) { flags |= LoopControl::SpeculatedIterationsINTEL; speculatedIterationsINTEL = speculatedIterationsINTELParam; }
-  void unsetSpeculatedIterationsINTEL() { flags &= ~LoopControl::SpeculatedIterationsINTEL; }
+  void setInitiationIntervalALTERA(uint32_t initiationIntervalALTERAParam) { flags |= LoopControl::InitiationIntervalALTERA; initiationIntervalALTERA = initiationIntervalALTERAParam; }
+  void unsetInitiationIntervalALTERA() { flags &= ~LoopControl::InitiationIntervalALTERA; }
+  void setMaxConcurrencyALTERA(uint32_t maxConcurrencyALTERAParam) { flags |= LoopControl::MaxConcurrencyALTERA; maxConcurrencyALTERA = maxConcurrencyALTERAParam; }
+  void unsetMaxConcurrencyALTERA() { flags &= ~LoopControl::MaxConcurrencyALTERA; }
+  void setDependencyArrayALTERA(uint32_t dependencyArrayALTERAParam) { flags |= LoopControl::DependencyArrayALTERA; dependencyArrayALTERA = dependencyArrayALTERAParam; }
+  void unsetDependencyArrayALTERA() { flags &= ~LoopControl::DependencyArrayALTERA; }
+  void setPipelineEnableALTERA(uint32_t pipelineEnableALTERAParam) { flags |= LoopControl::PipelineEnableALTERA; pipelineEnableALTERA = pipelineEnableALTERAParam; }
+  void unsetPipelineEnableALTERA() { flags &= ~LoopControl::PipelineEnableALTERA; }
+  void setLoopCoalesceALTERA(uint32_t loopCoalesceALTERAParam) { flags |= LoopControl::LoopCoalesceALTERA; loopCoalesceALTERA = loopCoalesceALTERAParam; }
+  void unsetLoopCoalesceALTERA() { flags &= ~LoopControl::LoopCoalesceALTERA; }
+  void setMaxInterleavingALTERA(uint32_t maxInterleavingALTERAParam) { flags |= LoopControl::MaxInterleavingALTERA; maxInterleavingALTERA = maxInterleavingALTERAParam; }
+  void unsetMaxInterleavingALTERA() { flags &= ~LoopControl::MaxInterleavingALTERA; }
+  void setSpeculatedIterationsALTERA(uint32_t speculatedIterationsALTERAParam) { flags |= LoopControl::SpeculatedIterationsALTERA; speculatedIterationsALTERA = speculatedIterationsALTERAParam; }
+  void unsetSpeculatedIterationsALTERA() { flags &= ~LoopControl::SpeculatedIterationsALTERA; }
+  void setNoFusionALTERA() { flags |= LoopControl::NoFusionALTERA; }
+  void unsetNoFusionALTERA() { flags &= ~LoopControl::NoFusionALTERA; }
+  void setLoopCountALTERA(uint32_t loopCountALTERAParam) { flags |= LoopControl::LoopCountALTERA; loopCountALTERA = loopCountALTERAParam; }
+  void unsetLoopCountALTERA() { flags &= ~LoopControl::LoopCountALTERA; }
+  void setMaxReinvocationDelayALTERA(uint32_t maxReinvocationDelayALTERAParam) { flags |= LoopControl::MaxReinvocationDelayALTERA; maxReinvocationDelayALTERA = maxReinvocationDelayALTERAParam; }
+  void unsetMaxReinvocationDelayALTERA() { flags &= ~LoopControl::MaxReinvocationDelayALTERA; }
+  void setMultipleWaitQueuesQCOM(uint32_t multipleWaitQueuesQCOMParam) { flags |= LoopControl::MultipleWaitQueuesQCOM; multipleWaitQueuesQCOM = multipleWaitQueuesQCOMParam; }
+  void unsetMultipleWaitQueuesQCOM() { flags &= ~LoopControl::MultipleWaitQueuesQCOM; }
 };
 
 struct MemoryAccessAndParamDatas
 {
   MemoryAccessAndParamDatas(MemoryAccess f = MemoryAccess::None) : flags(f) {}
   MemoryAccess flags;
-  uint32_t aligned;
-  IdScope makePointerAvailable;
-  IdScope makePointerAvailableKHR;
-  IdScope makePointerVisible;
-  IdScope makePointerVisibleKHR;
+  uint32_t aligned = {};
+  IdScope makePointerAvailable = {};
+  IdScope makePointerVisible = {};
+  Id aliasScopeINTELMask = {};
+  Id noAliasINTELMask = {};
   
   operator MemoryAccess() const { return flags; }
   bool operator &(const MemoryAccess v) const { return bool(flags & v); }
@@ -1232,16 +1765,14 @@ struct MemoryAccessAndParamDatas
   void unsetNontemporal() { flags &= ~MemoryAccess::Nontemporal; }
   void setMakePointerAvailable(IdScope makePointerAvailableParam) { flags |= MemoryAccess::MakePointerAvailable; makePointerAvailable = makePointerAvailableParam; }
   void unsetMakePointerAvailable() { flags &= ~MemoryAccess::MakePointerAvailable; }
-  void setMakePointerAvailableKHR(IdScope makePointerAvailableKHRParam) { flags |= MemoryAccess::MakePointerAvailableKHR; makePointerAvailableKHR = makePointerAvailableKHRParam; }
-  void unsetMakePointerAvailableKHR() { flags &= ~MemoryAccess::MakePointerAvailableKHR; }
   void setMakePointerVisible(IdScope makePointerVisibleParam) { flags |= MemoryAccess::MakePointerVisible; makePointerVisible = makePointerVisibleParam; }
   void unsetMakePointerVisible() { flags &= ~MemoryAccess::MakePointerVisible; }
-  void setMakePointerVisibleKHR(IdScope makePointerVisibleKHRParam) { flags |= MemoryAccess::MakePointerVisibleKHR; makePointerVisibleKHR = makePointerVisibleKHRParam; }
-  void unsetMakePointerVisibleKHR() { flags &= ~MemoryAccess::MakePointerVisibleKHR; }
   void setNonPrivatePointer() { flags |= MemoryAccess::NonPrivatePointer; }
   void unsetNonPrivatePointer() { flags &= ~MemoryAccess::NonPrivatePointer; }
-  void setNonPrivatePointerKHR() { flags |= MemoryAccess::NonPrivatePointerKHR; }
-  void unsetNonPrivatePointerKHR() { flags &= ~MemoryAccess::NonPrivatePointerKHR; }
+  void setAliasScopeINTELMask(Id aliasScopeINTELMaskParam) { flags |= MemoryAccess::AliasScopeINTELMask; aliasScopeINTELMask = aliasScopeINTELMaskParam; }
+  void unsetAliasScopeINTELMask() { flags &= ~MemoryAccess::AliasScopeINTELMask; }
+  void setNoAliasINTELMask(Id noAliasINTELMaskParam) { flags |= MemoryAccess::NoAliasINTELMask; noAliasINTELMask = noAliasINTELMaskParam; }
+  void unsetNoAliasINTELMask() { flags &= ~MemoryAccess::NoAliasINTELMask; }
 };
 
 struct LocalSizeParams
@@ -1265,6 +1796,40 @@ struct LocalSizeIdParams
   Id zsize;
 };
 
+struct LocalSizeHintIdParams
+{
+  Id xsizehint;
+  Id ysizehint;
+  Id zsizehint;
+};
+
+struct TileShadingRateQCOMParams
+{
+  uint32_t xrate;
+  uint32_t yrate;
+  uint32_t zrate;
+};
+
+struct StaticNumWorkgroupsAMDXParams
+{
+  Id xsize;
+  Id ysize;
+  Id zsize;
+};
+
+struct MaxNumWorkgroupsAMDXParams
+{
+  Id xsize;
+  Id ysize;
+  Id zsize;
+};
+
+struct SharesInputWithAMDXParams
+{
+  Id nodeName;
+  Id shaderIndex;
+};
+
 struct MaxWorkgroupSizeINTELParams
 {
   uint32_t max_x_size;
@@ -1272,12 +1837,19 @@ struct MaxWorkgroupSizeINTELParams
   uint32_t max_z_size;
 };
 
+struct FPFastMathDefaultParams
+{
+  Id targetType;
+  Id fastMathMode;
+};
+
 struct ExecutionModeAndParamData
 {
-  ExecutionModeAndParamData(ExecutionMode v = ExecutionMode::Invalid) : value(v) {}
+  ExecutionModeAndParamData(ExecutionMode v = ExecutionMode::Invalid) : value(v), _init(0) {}
   ExecutionMode value;
   union
   {
+    uint64_t _init;
     uint32_t invocations;
     LocalSizeParams localSize;
     LocalSizeHintParams localSizeHint;
@@ -1287,28 +1859,93 @@ struct ExecutionModeAndParamData
     uint32_t subgroupsPerWorkgroup;
     Id subgroupsPerWorkgroupId;
     LocalSizeIdParams localSizeId;
-    Id localSizeHintId;
+    LocalSizeHintIdParams localSizeHintId;
     uint32_t denormPreserve;
     uint32_t denormFlushToZero;
     uint32_t signedZeroInfNanPreserve;
     uint32_t roundingModeRTE;
     uint32_t roundingModeRTZ;
-    uint32_t outputPrimitivesNV;
+    TileShadingRateQCOMParams tileShadingRateQCOM;
+    Id isApiEntryAMDX;
+    Id maxNodeRecursionAMDX;
+    StaticNumWorkgroupsAMDXParams staticNumWorkgroupsAMDX;
+    Id shaderIndexAMDX;
+    MaxNumWorkgroupsAMDXParams maxNumWorkgroupsAMDX;
+    SharesInputWithAMDXParams sharesInputWithAMDX;
+    uint32_t outputPrimitivesEXT;
+    uint32_t sharedLocalMemorySizeINTEL;
+    uint32_t roundingModeRTPINTEL;
+    uint32_t roundingModeRTNINTEL;
+    uint32_t floatingPointModeALTINTEL;
+    uint32_t floatingPointModeIEEEINTEL;
     MaxWorkgroupSizeINTELParams maxWorkgroupSizeINTEL;
     uint32_t maxWorkDimINTEL;
     uint32_t numSIMDWorkitemsINTEL;
+    uint32_t schedulerTargetFmaxMhzINTEL;
+    FPFastMathDefaultParams fPFastMathDefault;
+    Id opacityMicromapIdKHR;
+    uint32_t streamingInterfaceINTEL;
+    uint32_t registerMapInterfaceINTEL;
+    uint32_t namedBarrierCountINTEL;
+    uint32_t maximumRegistersINTEL;
+    Id maximumRegistersIdINTEL;
+    NamedMaximumNumberOfRegisters namedMaximumRegistersINTEL;
   };
   
   operator ExecutionMode() const { return value; }
   bool operator ==(const ExecutionMode v) const { return value == v; }
 };
 
+struct FunctionRoundingModeINTELParams
+{
+  uint32_t targetWidth;
+  FPRoundingMode fPRoundingMode;
+};
+
+struct FunctionDenormModeINTELParams
+{
+  uint32_t targetWidth;
+  FPDenormMode fPDenormMode;
+};
+
+struct MathOpDSPModeALTERAParams
+{
+  uint32_t mode;
+  uint32_t propagate;
+};
+
+struct FunctionFloatingPointModeINTELParams
+{
+  uint32_t targetWidth;
+  FPOperationMode fPOperationMode;
+};
+
+struct LatencyControlConstraintALTERAParams
+{
+  uint32_t relativeTo;
+  uint32_t controlType;
+  uint32_t relativeCycle;
+};
+
+struct CacheControlLoadINTELParams
+{
+  uint32_t cacheLevel;
+  LoadCacheControl cacheControl;
+};
+
+struct CacheControlStoreINTELParams
+{
+  uint32_t cacheLevel;
+  StoreCacheControl cacheControl;
+};
+
 struct DecorationAndParamData
 {
-  DecorationAndParamData(Decoration v = Decoration::Invalid) : value(v) {}
+  DecorationAndParamData(Decoration v = Decoration::Invalid) : value(v), _init(0) {}
   Decoration value;
   union
   {
+    uint64_t _init;
     uint32_t specId;
     uint32_t arrayStride;
     uint32_t matrixStride;
@@ -1331,19 +1968,103 @@ struct DecorationAndParamData
     uint32_t maxByteOffset;
     Id alignmentId;
     Id maxByteOffsetId;
+    Id nodeSharesPayloadLimitsWithAMDX;
+    Id nodeMaxPayloadsAMDX;
+    Id payloadNodeNameAMDX;
+    Id payloadNodeBaseIndexAMDX;
+    Id payloadNodeArraySizeAMDX;
+    Id arrayStrideIdEXT;
+    Id offsetIdEXT;
     uint32_t secondaryViewportRelativeNV;
+    uint32_t memberOffsetNV;
+    uint32_t bankNV;
+    uint32_t sIMTCallINTEL;
+    uint32_t funcParamIOKindINTEL;
+    uint32_t globalVariableOffsetINTEL;
     Id counterBuffer;
-    Id hlslCounterBufferGOOGLE;
-    uint32_t numbanksINTEL;
-    uint32_t bankwidthINTEL;
-    uint32_t maxPrivateCopiesINTEL;
-    uint32_t maxReplicatesINTEL;
-    uint32_t bankBitsINTEL;
-    uint32_t forcePow2DepthINTEL;
+    FunctionRoundingModeINTELParams functionRoundingModeINTEL;
+    FunctionDenormModeINTELParams functionDenormModeINTEL;
+    uint32_t numbanksALTERA;
+    uint32_t bankwidthALTERA;
+    uint32_t maxPrivateCopiesALTERA;
+    uint32_t maxReplicatesALTERA;
+    uint32_t bankBitsALTERA;
+    uint32_t forcePow2DepthALTERA;
+    uint32_t stridesizeALTERA;
+    uint32_t wordsizeALTERA;
+    uint32_t cacheSizeALTERA;
+    uint32_t prefetchALTERA;
+    MathOpDSPModeALTERAParams mathOpDSPModeALTERA;
+    Id aliasScopeINTEL;
+    Id noAliasINTEL;
+    uint32_t initiationIntervalALTERA;
+    uint32_t maxConcurrencyALTERA;
+    uint32_t pipelineEnableALTERA;
+    uint32_t bufferLocationALTERA;
+    uint32_t iOPipeStorageALTERA;
+    FunctionFloatingPointModeINTELParams functionFloatingPointModeINTEL;
+    float fPMaxErrorDecorationINTEL;
+    uint32_t latencyControlLabelALTERA;
+    LatencyControlConstraintALTERAParams latencyControlConstraintALTERA;
+    uint32_t mMHostInterfaceAddressWidthALTERA;
+    uint32_t mMHostInterfaceDataWidthALTERA;
+    uint32_t mMHostInterfaceLatencyALTERA;
+    AccessQualifier mMHostInterfaceReadWriteModeALTERA;
+    uint32_t mMHostInterfaceMaxBurstALTERA;
+    uint32_t mMHostInterfaceWaitRequestALTERA;
+    InitializationModeQualifier initModeALTERA;
+    uint32_t implementInRegisterMapALTERA;
+    Id conditionalINTEL;
+    CacheControlLoadINTELParams cacheControlLoadINTEL;
+    CacheControlStoreINTELParams cacheControlStoreINTEL;
   };
   
   operator Decoration() const { return value; }
   bool operator ==(const Decoration v) const { return value == v; }
+};
+
+struct TensorAddressingOperandsAndParamDatas
+{
+  TensorAddressingOperandsAndParamDatas(TensorAddressingOperands f = TensorAddressingOperands::None) : flags(f) {}
+  TensorAddressingOperands flags;
+  Id tensorView = {};
+  Id decodeFunc = {};
+  Id decodeVectorFunc = {};
+  
+  operator TensorAddressingOperands() const { return flags; }
+  bool operator &(const TensorAddressingOperands v) const { return bool(flags & v); }
+  void setNone() { flags |= TensorAddressingOperands::None; }
+  void unsetNone() { flags &= ~TensorAddressingOperands::None; }
+  void setTensorView(Id tensorViewParam) { flags |= TensorAddressingOperands::TensorView; tensorView = tensorViewParam; }
+  void unsetTensorView() { flags &= ~TensorAddressingOperands::TensorView; }
+  void setDecodeFunc(Id decodeFuncParam) { flags |= TensorAddressingOperands::DecodeFunc; decodeFunc = decodeFuncParam; }
+  void unsetDecodeFunc() { flags &= ~TensorAddressingOperands::DecodeFunc; }
+  void setDecodeVectorFunc(Id decodeVectorFuncParam) { flags |= TensorAddressingOperands::DecodeVectorFunc; decodeVectorFunc = decodeVectorFuncParam; }
+  void unsetDecodeVectorFunc() { flags &= ~TensorAddressingOperands::DecodeVectorFunc; }
+};
+
+struct TensorOperandsAndParamDatas
+{
+  TensorOperandsAndParamDatas(TensorOperands f = TensorOperands::NoneARM) : flags(f) {}
+  TensorOperands flags;
+  Id outOfBoundsValueARM = {};
+  Id makeElementAvailableARM = {};
+  Id makeElementVisibleARM = {};
+  
+  operator TensorOperands() const { return flags; }
+  bool operator &(const TensorOperands v) const { return bool(flags & v); }
+  void setNoneARM() { flags |= TensorOperands::NoneARM; }
+  void unsetNoneARM() { flags &= ~TensorOperands::NoneARM; }
+  void setNontemporalARM() { flags |= TensorOperands::NontemporalARM; }
+  void unsetNontemporalARM() { flags &= ~TensorOperands::NontemporalARM; }
+  void setOutOfBoundsValueARM(Id outOfBoundsValueARMParam) { flags |= TensorOperands::OutOfBoundsValueARM; outOfBoundsValueARM = outOfBoundsValueARMParam; }
+  void unsetOutOfBoundsValueARM() { flags &= ~TensorOperands::OutOfBoundsValueARM; }
+  void setMakeElementAvailableARM(Id makeElementAvailableARMParam) { flags |= TensorOperands::MakeElementAvailableARM; makeElementAvailableARM = makeElementAvailableARMParam; }
+  void unsetMakeElementAvailableARM() { flags &= ~TensorOperands::MakeElementAvailableARM; }
+  void setMakeElementVisibleARM(Id makeElementVisibleARMParam) { flags |= TensorOperands::MakeElementVisibleARM; makeElementVisibleARM = makeElementVisibleARMParam; }
+  void unsetMakeElementVisibleARM() { flags &= ~TensorOperands::MakeElementVisibleARM; }
+  void setNonPrivateElementARM() { flags |= TensorOperands::NonPrivateElementARM; }
+  void unsetNonPrivateElementARM() { flags &= ~TensorOperands::NonPrivateElementARM; }
 };
 
 enum class Op : uint16_t
@@ -1692,18 +2413,59 @@ enum class Op : uint16_t
   PtrEqual = 401,
   PtrNotEqual = 402,
   PtrDiff = 403,
+  ColorAttachmentReadEXT = 4160,
+  DepthAttachmentReadEXT = 4161,
+  StencilAttachmentReadEXT = 4162,
+  TypeTensorARM = 4163,
+  TensorReadARM = 4164,
+  TensorWriteARM = 4165,
+  TensorQuerySizeARM = 4166,
+  GraphConstantARM = 4181,
+  GraphEntryPointARM = 4182,
+  GraphARM = 4183,
+  GraphInputARM = 4184,
+  GraphSetOutputARM = 4185,
+  GraphEndARM = 4186,
+  TypeGraphARM = 4190,
+  BitcastExtractEXT = 4195,
   TerminateInvocation = 4416,
+  TypeUntypedPointerKHR = 4417,
+  UntypedVariableKHR = 4418,
+  UntypedAccessChainKHR = 4419,
+  UntypedInBoundsAccessChainKHR = 4420,
   SubgroupBallotKHR = 4421,
   SubgroupFirstInvocationKHR = 4422,
+  UntypedPtrAccessChainKHR = 4423,
+  UntypedInBoundsPtrAccessChainKHR = 4424,
+  UntypedArrayLengthKHR = 4425,
+  UntypedPrefetchKHR = 4426,
+  FmaKHR = 4427,
   SubgroupAllKHR = 4428,
   SubgroupAnyKHR = 4429,
   SubgroupAllEqualKHR = 4430,
+  GroupNonUniformRotateKHR = 4431,
   SubgroupReadInvocationKHR = 4432,
+  ExtInstWithForwardRefsKHR = 4433,
+  UntypedGroupAsyncCopyKHR = 4434,
   TraceRayKHR = 4445,
   ExecuteCallableKHR = 4446,
   ConvertUToAccelerationStructureKHR = 4447,
   IgnoreIntersectionKHR = 4448,
   TerminateRayKHR = 4449,
+  SDot = 4450,
+  UDot = 4451,
+  SUDot = 4452,
+  SDotAccSat = 4453,
+  UDotAccSat = 4454,
+  SUDotAccSat = 4455,
+  TypeCooperativeMatrixKHR = 4456,
+  CooperativeMatrixLoadKHR = 4457,
+  CooperativeMatrixStoreKHR = 4458,
+  CooperativeMatrixMulAddKHR = 4459,
+  CooperativeMatrixLengthKHR = 4460,
+  ConstantCompositeReplicateEXT = 4461,
+  SpecConstantCompositeReplicateEXT = 4462,
+  CompositeConstructReplicateEXT = 4463,
   TypeRayQueryKHR = 4472,
   RayQueryInitializeKHR = 4473,
   RayQueryTerminateKHR = 4474,
@@ -1711,6 +2473,19 @@ enum class Op : uint16_t
   RayQueryConfirmIntersectionKHR = 4476,
   RayQueryProceedKHR = 4477,
   RayQueryGetIntersectionTypeKHR = 4479,
+  ImageSampleWeightedQCOM = 4480,
+  ImageBoxFilterQCOM = 4481,
+  ImageBlockMatchSSDQCOM = 4482,
+  ImageBlockMatchSADQCOM = 4483,
+  BitCastArrayQCOM = 4497,
+  ImageBlockMatchWindowSSDQCOM = 4500,
+  ImageBlockMatchWindowSADQCOM = 4501,
+  ImageBlockMatchGatherSSDQCOM = 4502,
+  ImageBlockMatchGatherSADQCOM = 4503,
+  CompositeConstructCoopMatQCOM = 4540,
+  CompositeExtractCoopMatQCOM = 4541,
+  ExtractSubArrayQCOM = 4542,
+  ImageGatherQCOM = 4545,
   GroupIAddNonUniformAMD = 5000,
   GroupFAddNonUniformAMD = 5001,
   GroupFMinNonUniformAMD = 5002,
@@ -1722,17 +2497,121 @@ enum class Op : uint16_t
   FragmentMaskFetchAMD = 5011,
   FragmentFetchAMD = 5012,
   ReadClockKHR = 5056,
+  AllocateNodePayloadsAMDX = 5074,
+  EnqueueNodePayloadsAMDX = 5075,
+  TypeNodePayloadArrayAMDX = 5076,
+  FinishWritingNodePayloadAMDX = 5078,
+  NodePayloadArrayLengthAMDX = 5090,
+  IsNodePayloadValidAMDX = 5101,
+  ConstantStringAMDX = 5103,
+  SpecConstantStringAMDX = 5104,
+  GroupNonUniformQuadAllKHR = 5110,
+  GroupNonUniformQuadAnyKHR = 5111,
+  TypeBufferEXT = 5115,
+  BufferPointerEXT = 5119,
+  AbortKHR = 5121,
+  UntypedImageTexelPointerEXT = 5126,
+  MemberDecorateIdEXT = 5127,
+  ConstantSizeOfEXT = 5129,
+  ConstantDataKHR = 5147,
+  SpecConstantDataKHR = 5148,
+  PoisonKHR = 5158,
+  FreezeKHR = 5159,
+  HitObjectRecordHitMotionNV = 5249,
+  HitObjectRecordHitWithIndexMotionNV = 5250,
+  HitObjectRecordMissMotionNV = 5251,
+  HitObjectGetWorldToObjectNV = 5252,
+  HitObjectGetObjectToWorldNV = 5253,
+  HitObjectGetObjectRayDirectionNV = 5254,
+  HitObjectGetObjectRayOriginNV = 5255,
+  HitObjectTraceRayMotionNV = 5256,
+  HitObjectGetShaderRecordBufferHandleNV = 5257,
+  HitObjectGetShaderBindingTableRecordIndexNV = 5258,
+  HitObjectRecordEmptyNV = 5259,
+  HitObjectTraceRayNV = 5260,
+  HitObjectRecordHitNV = 5261,
+  HitObjectRecordHitWithIndexNV = 5262,
+  HitObjectRecordMissNV = 5263,
+  HitObjectExecuteShaderNV = 5264,
+  HitObjectGetCurrentTimeNV = 5265,
+  HitObjectGetAttributesNV = 5266,
+  HitObjectGetHitKindNV = 5267,
+  HitObjectGetPrimitiveIndexNV = 5268,
+  HitObjectGetGeometryIndexNV = 5269,
+  HitObjectGetInstanceIdNV = 5270,
+  HitObjectGetInstanceCustomIndexNV = 5271,
+  HitObjectGetWorldRayDirectionNV = 5272,
+  HitObjectGetWorldRayOriginNV = 5273,
+  HitObjectGetRayTMaxNV = 5274,
+  HitObjectGetRayTMinNV = 5275,
+  HitObjectIsEmptyNV = 5276,
+  HitObjectIsHitNV = 5277,
+  HitObjectIsMissNV = 5278,
+  ReorderThreadWithHitObjectNV = 5279,
+  ReorderThreadWithHintNV = 5280,
+  TypeHitObjectNV = 5281,
   ImageSampleFootprintNV = 5283,
-  GroupNonUniformPartitionNV = 5296,
+  TypeVectorIdEXT = 5288,
+  CooperativeVectorMatrixMulNV = 5289,
+  CooperativeVectorOuterProductAccumulateNV = 5290,
+  CooperativeVectorReduceSumAccumulateNV = 5291,
+  CooperativeVectorMatrixMulAddNV = 5292,
+  CooperativeMatrixConvertNV = 5293,
+  EmitMeshTasksEXT = 5294,
+  SetMeshOutputsEXT = 5295,
+  GroupNonUniformPartitionEXT = 5296,
   WritePackedPrimitiveIndices4x8NV = 5299,
-  ReportIntersectionNV = 5334,
+  FetchMicroTriangleVertexPositionNV = 5300,
+  FetchMicroTriangleVertexBarycentricNV = 5301,
+  CooperativeVectorLoadNV = 5302,
+  CooperativeVectorStoreNV = 5303,
+  HitObjectRecordFromQueryEXT = 5304,
+  HitObjectRecordMissEXT = 5305,
+  HitObjectRecordMissMotionEXT = 5306,
+  HitObjectGetIntersectionTriangleVertexPositionsEXT = 5307,
+  HitObjectGetRayFlagsEXT = 5308,
+  HitObjectSetShaderBindingTableRecordIndexEXT = 5309,
+  HitObjectReorderExecuteShaderEXT = 5310,
+  HitObjectTraceReorderExecuteEXT = 5311,
+  HitObjectTraceMotionReorderExecuteEXT = 5312,
+  TypeHitObjectEXT = 5313,
+  ReorderThreadWithHintEXT = 5314,
+  ReorderThreadWithHitObjectEXT = 5315,
+  HitObjectTraceRayEXT = 5316,
+  HitObjectTraceRayMotionEXT = 5317,
+  HitObjectRecordEmptyEXT = 5318,
+  HitObjectExecuteShaderEXT = 5319,
+  HitObjectGetCurrentTimeEXT = 5320,
+  HitObjectGetAttributesEXT = 5321,
+  HitObjectGetHitKindEXT = 5322,
+  HitObjectGetPrimitiveIndexEXT = 5323,
+  HitObjectGetGeometryIndexEXT = 5324,
+  HitObjectGetInstanceIdEXT = 5325,
+  HitObjectGetInstanceCustomIndexEXT = 5326,
+  HitObjectGetObjectRayOriginEXT = 5327,
+  HitObjectGetObjectRayDirectionEXT = 5328,
+  HitObjectGetWorldRayDirectionEXT = 5329,
+  HitObjectGetWorldRayOriginEXT = 5330,
+  HitObjectGetObjectToWorldEXT = 5331,
+  HitObjectGetWorldToObjectEXT = 5332,
+  HitObjectGetRayTMaxEXT = 5333,
   ReportIntersectionKHR = 5334,
   IgnoreIntersectionNV = 5335,
   TerminateRayNV = 5336,
   TraceNV = 5337,
-  TypeAccelerationStructureNV = 5341,
+  TraceMotionNV = 5338,
+  TraceRayMotionNV = 5339,
+  RayQueryGetIntersectionTriangleVertexPositionsKHR = 5340,
   TypeAccelerationStructureKHR = 5341,
   ExecuteCallableNV = 5344,
+  RayQueryGetIntersectionClusterIdNV = 5345,
+  HitObjectGetClusterIdNV = 5346,
+  HitObjectGetRayTMinEXT = 5347,
+  HitObjectGetShaderBindingTableRecordIndexEXT = 5348,
+  HitObjectGetShaderRecordBufferHandleEXT = 5349,
+  HitObjectIsEmptyEXT = 5350,
+  HitObjectIsHitEXT = 5351,
+  HitObjectIsMissEXT = 5352,
   TypeCooperativeMatrixNV = 5358,
   CooperativeMatrixLoadNV = 5359,
   CooperativeMatrixStoreNV = 5360,
@@ -1740,8 +2619,46 @@ enum class Op : uint16_t
   CooperativeMatrixLengthNV = 5362,
   BeginInvocationInterlockEXT = 5364,
   EndInvocationInterlockEXT = 5365,
-  DemoteToHelperInvocationEXT = 5380,
+  CooperativeMatrixReduceNV = 5366,
+  CooperativeMatrixLoadTensorNV = 5367,
+  CooperativeMatrixStoreTensorNV = 5368,
+  CooperativeMatrixPerElementOpNV = 5369,
+  TypeTensorLayoutNV = 5370,
+  TypeTensorViewNV = 5371,
+  CreateTensorLayoutNV = 5372,
+  TensorLayoutSetDimensionNV = 5373,
+  TensorLayoutSetStrideNV = 5374,
+  TensorLayoutSliceNV = 5375,
+  TensorLayoutSetClampValueNV = 5376,
+  CreateTensorViewNV = 5377,
+  TensorViewSetDimensionNV = 5378,
+  TensorViewSetStrideNV = 5379,
+  DemoteToHelperInvocation = 5380,
   IsHelperInvocationEXT = 5381,
+  TensorViewSetClipNV = 5382,
+  TensorLayoutSetBlockSizeNV = 5384,
+  CooperativeMatrixTransposeNV = 5390,
+  ConvertUToImageNV = 5391,
+  ConvertUToSamplerNV = 5392,
+  ConvertImageToUNV = 5393,
+  ConvertSamplerToUNV = 5394,
+  ConvertUToSampledImageNV = 5395,
+  ConvertSampledImageToUNV = 5396,
+  SamplerImageAddressingModeNV = 5397,
+  RawAccessChainNV = 5398,
+  RayQueryGetIntersectionSpherePositionNV = 5427,
+  RayQueryGetIntersectionSphereRadiusNV = 5428,
+  RayQueryGetIntersectionLSSPositionsNV = 5429,
+  RayQueryGetIntersectionLSSRadiiNV = 5430,
+  RayQueryGetIntersectionLSSHitValueNV = 5431,
+  HitObjectGetSpherePositionNV = 5432,
+  HitObjectGetSphereRadiusNV = 5433,
+  HitObjectGetLSSPositionsNV = 5434,
+  HitObjectGetLSSRadiiNV = 5435,
+  HitObjectIsSphereHitNV = 5436,
+  HitObjectIsLSSHitNV = 5437,
+  RayQueryIsSphereHitNV = 5438,
+  RayQueryIsLSSHitNV = 5439,
   SubgroupShuffleINTEL = 5571,
   SubgroupShuffleDownINTEL = 5572,
   SubgroupShuffleUpINTEL = 5573,
@@ -1766,134 +2683,16 @@ enum class Op : uint16_t
   USubSatINTEL = 5596,
   IMul32x16INTEL = 5597,
   UMul32x16INTEL = 5598,
-  FunctionPointerINTEL = 5600,
-  FunctionPointerCallINTEL = 5601,
+  AtomicFMinEXT = 5614,
+  AtomicFMaxEXT = 5615,
+  AssumeTrueKHR = 5630,
+  ExpectKHR = 5631,
   DecorateString = 5632,
-  DecorateStringGOOGLE = 5632,
   MemberDecorateString = 5633,
-  MemberDecorateStringGOOGLE = 5633,
-  VmeImageINTEL = 5699,
-  TypeVmeImageINTEL = 5700,
-  TypeAvcImePayloadINTEL = 5701,
-  TypeAvcRefPayloadINTEL = 5702,
-  TypeAvcSicPayloadINTEL = 5703,
-  TypeAvcMcePayloadINTEL = 5704,
-  TypeAvcMceResultINTEL = 5705,
-  TypeAvcImeResultINTEL = 5706,
-  TypeAvcImeResultSingleReferenceStreamoutINTEL = 5707,
-  TypeAvcImeResultDualReferenceStreamoutINTEL = 5708,
-  TypeAvcImeSingleReferenceStreaminINTEL = 5709,
-  TypeAvcImeDualReferenceStreaminINTEL = 5710,
-  TypeAvcRefResultINTEL = 5711,
-  TypeAvcSicResultINTEL = 5712,
-  SubgroupAvcMceGetDefaultInterBaseMultiReferencePenaltyINTEL = 5713,
-  SubgroupAvcMceSetInterBaseMultiReferencePenaltyINTEL = 5714,
-  SubgroupAvcMceGetDefaultInterShapePenaltyINTEL = 5715,
-  SubgroupAvcMceSetInterShapePenaltyINTEL = 5716,
-  SubgroupAvcMceGetDefaultInterDirectionPenaltyINTEL = 5717,
-  SubgroupAvcMceSetInterDirectionPenaltyINTEL = 5718,
-  SubgroupAvcMceGetDefaultIntraLumaShapePenaltyINTEL = 5719,
-  SubgroupAvcMceGetDefaultInterMotionVectorCostTableINTEL = 5720,
-  SubgroupAvcMceGetDefaultHighPenaltyCostTableINTEL = 5721,
-  SubgroupAvcMceGetDefaultMediumPenaltyCostTableINTEL = 5722,
-  SubgroupAvcMceGetDefaultLowPenaltyCostTableINTEL = 5723,
-  SubgroupAvcMceSetMotionVectorCostFunctionINTEL = 5724,
-  SubgroupAvcMceGetDefaultIntraLumaModePenaltyINTEL = 5725,
-  SubgroupAvcMceGetDefaultNonDcLumaIntraPenaltyINTEL = 5726,
-  SubgroupAvcMceGetDefaultIntraChromaModeBasePenaltyINTEL = 5727,
-  SubgroupAvcMceSetAcOnlyHaarINTEL = 5728,
-  SubgroupAvcMceSetSourceInterlacedFieldPolarityINTEL = 5729,
-  SubgroupAvcMceSetSingleReferenceInterlacedFieldPolarityINTEL = 5730,
-  SubgroupAvcMceSetDualReferenceInterlacedFieldPolaritiesINTEL = 5731,
-  SubgroupAvcMceConvertToImePayloadINTEL = 5732,
-  SubgroupAvcMceConvertToImeResultINTEL = 5733,
-  SubgroupAvcMceConvertToRefPayloadINTEL = 5734,
-  SubgroupAvcMceConvertToRefResultINTEL = 5735,
-  SubgroupAvcMceConvertToSicPayloadINTEL = 5736,
-  SubgroupAvcMceConvertToSicResultINTEL = 5737,
-  SubgroupAvcMceGetMotionVectorsINTEL = 5738,
-  SubgroupAvcMceGetInterDistortionsINTEL = 5739,
-  SubgroupAvcMceGetBestInterDistortionsINTEL = 5740,
-  SubgroupAvcMceGetInterMajorShapeINTEL = 5741,
-  SubgroupAvcMceGetInterMinorShapeINTEL = 5742,
-  SubgroupAvcMceGetInterDirectionsINTEL = 5743,
-  SubgroupAvcMceGetInterMotionVectorCountINTEL = 5744,
-  SubgroupAvcMceGetInterReferenceIdsINTEL = 5745,
-  SubgroupAvcMceGetInterReferenceInterlacedFieldPolaritiesINTEL = 5746,
-  SubgroupAvcImeInitializeINTEL = 5747,
-  SubgroupAvcImeSetSingleReferenceINTEL = 5748,
-  SubgroupAvcImeSetDualReferenceINTEL = 5749,
-  SubgroupAvcImeRefWindowSizeINTEL = 5750,
-  SubgroupAvcImeAdjustRefOffsetINTEL = 5751,
-  SubgroupAvcImeConvertToMcePayloadINTEL = 5752,
-  SubgroupAvcImeSetMaxMotionVectorCountINTEL = 5753,
-  SubgroupAvcImeSetUnidirectionalMixDisableINTEL = 5754,
-  SubgroupAvcImeSetEarlySearchTerminationThresholdINTEL = 5755,
-  SubgroupAvcImeSetWeightedSadINTEL = 5756,
-  SubgroupAvcImeEvaluateWithSingleReferenceINTEL = 5757,
-  SubgroupAvcImeEvaluateWithDualReferenceINTEL = 5758,
-  SubgroupAvcImeEvaluateWithSingleReferenceStreaminINTEL = 5759,
-  SubgroupAvcImeEvaluateWithDualReferenceStreaminINTEL = 5760,
-  SubgroupAvcImeEvaluateWithSingleReferenceStreamoutINTEL = 5761,
-  SubgroupAvcImeEvaluateWithDualReferenceStreamoutINTEL = 5762,
-  SubgroupAvcImeEvaluateWithSingleReferenceStreaminoutINTEL = 5763,
-  SubgroupAvcImeEvaluateWithDualReferenceStreaminoutINTEL = 5764,
-  SubgroupAvcImeConvertToMceResultINTEL = 5765,
-  SubgroupAvcImeGetSingleReferenceStreaminINTEL = 5766,
-  SubgroupAvcImeGetDualReferenceStreaminINTEL = 5767,
-  SubgroupAvcImeStripSingleReferenceStreamoutINTEL = 5768,
-  SubgroupAvcImeStripDualReferenceStreamoutINTEL = 5769,
-  SubgroupAvcImeGetStreamoutSingleReferenceMajorShapeMotionVectorsINTEL = 5770,
-  SubgroupAvcImeGetStreamoutSingleReferenceMajorShapeDistortionsINTEL = 5771,
-  SubgroupAvcImeGetStreamoutSingleReferenceMajorShapeReferenceIdsINTEL = 5772,
-  SubgroupAvcImeGetStreamoutDualReferenceMajorShapeMotionVectorsINTEL = 5773,
-  SubgroupAvcImeGetStreamoutDualReferenceMajorShapeDistortionsINTEL = 5774,
-  SubgroupAvcImeGetStreamoutDualReferenceMajorShapeReferenceIdsINTEL = 5775,
-  SubgroupAvcImeGetBorderReachedINTEL = 5776,
-  SubgroupAvcImeGetTruncatedSearchIndicationINTEL = 5777,
-  SubgroupAvcImeGetUnidirectionalEarlySearchTerminationINTEL = 5778,
-  SubgroupAvcImeGetWeightingPatternMinimumMotionVectorINTEL = 5779,
-  SubgroupAvcImeGetWeightingPatternMinimumDistortionINTEL = 5780,
-  SubgroupAvcFmeInitializeINTEL = 5781,
-  SubgroupAvcBmeInitializeINTEL = 5782,
-  SubgroupAvcRefConvertToMcePayloadINTEL = 5783,
-  SubgroupAvcRefSetBidirectionalMixDisableINTEL = 5784,
-  SubgroupAvcRefSetBilinearFilterEnableINTEL = 5785,
-  SubgroupAvcRefEvaluateWithSingleReferenceINTEL = 5786,
-  SubgroupAvcRefEvaluateWithDualReferenceINTEL = 5787,
-  SubgroupAvcRefEvaluateWithMultiReferenceINTEL = 5788,
-  SubgroupAvcRefEvaluateWithMultiReferenceInterlacedINTEL = 5789,
-  SubgroupAvcRefConvertToMceResultINTEL = 5790,
-  SubgroupAvcSicInitializeINTEL = 5791,
-  SubgroupAvcSicConfigureSkcINTEL = 5792,
-  SubgroupAvcSicConfigureIpeLumaINTEL = 5793,
-  SubgroupAvcSicConfigureIpeLumaChromaINTEL = 5794,
-  SubgroupAvcSicGetMotionVectorMaskINTEL = 5795,
-  SubgroupAvcSicConvertToMcePayloadINTEL = 5796,
-  SubgroupAvcSicSetIntraLumaShapePenaltyINTEL = 5797,
-  SubgroupAvcSicSetIntraLumaModeCostFunctionINTEL = 5798,
-  SubgroupAvcSicSetIntraChromaModeCostFunctionINTEL = 5799,
-  SubgroupAvcSicSetBilinearFilterEnableINTEL = 5800,
-  SubgroupAvcSicSetSkcForwardTransformEnableINTEL = 5801,
-  SubgroupAvcSicSetBlockBasedRawSkipSadINTEL = 5802,
-  SubgroupAvcSicEvaluateIpeINTEL = 5803,
-  SubgroupAvcSicEvaluateWithSingleReferenceINTEL = 5804,
-  SubgroupAvcSicEvaluateWithDualReferenceINTEL = 5805,
-  SubgroupAvcSicEvaluateWithMultiReferenceINTEL = 5806,
-  SubgroupAvcSicEvaluateWithMultiReferenceInterlacedINTEL = 5807,
-  SubgroupAvcSicConvertToMceResultINTEL = 5808,
-  SubgroupAvcSicGetIpeLumaShapeINTEL = 5809,
-  SubgroupAvcSicGetBestIpeLumaDistortionINTEL = 5810,
-  SubgroupAvcSicGetBestIpeChromaDistortionINTEL = 5811,
-  SubgroupAvcSicGetPackedIpeLumaModesINTEL = 5812,
-  SubgroupAvcSicGetIpeChromaModeINTEL = 5813,
-  SubgroupAvcSicGetPackedSkcLumaCountThresholdINTEL = 5814,
-  SubgroupAvcSicGetPackedSkcLumaSumThresholdINTEL = 5815,
-  SubgroupAvcSicGetInterRawSadsINTEL = 5816,
+  VariableLengthArrayINTEL = 5818,
+  SaveMemoryINTEL = 5819,
+  RestoreMemoryINTEL = 5820,
   LoopControlINTEL = 5887,
-  ReadPipeBlockingINTEL = 5946,
-  WritePipeBlockingINTEL = 5947,
-  FPGARegINTEL = 5949,
   RayQueryGetRayTMinKHR = 6016,
   RayQueryGetRayFlagsKHR = 6017,
   RayQueryGetIntersectionTKHR = 6018,
@@ -1912,6 +2711,51 @@ enum class Op : uint16_t
   RayQueryGetIntersectionObjectToWorldKHR = 6031,
   RayQueryGetIntersectionWorldToObjectKHR = 6032,
   AtomicFAddEXT = 6035,
+  TypeBufferSurfaceINTEL = 6086,
+  TypeStructContinuedINTEL = 6090,
+  ConstantCompositeContinuedINTEL = 6091,
+  SpecConstantCompositeContinuedINTEL = 6092,
+  CompositeConstructContinuedINTEL = 6096,
+  ConvertFToBF16INTEL = 6116,
+  ConvertBF16ToFINTEL = 6117,
+  ControlBarrierArriveEXT = 6142,
+  ControlBarrierWaitEXT = 6143,
+  ArithmeticFenceEXT = 6145,
+  SubgroupBlockPrefetchINTEL = 6221,
+  Subgroup2DBlockLoadINTEL = 6231,
+  Subgroup2DBlockLoadTransformINTEL = 6232,
+  Subgroup2DBlockLoadTransposeINTEL = 6233,
+  Subgroup2DBlockPrefetchINTEL = 6234,
+  Subgroup2DBlockStoreINTEL = 6235,
+  SubgroupMatrixMultiplyAccumulateINTEL = 6237,
+  BitwiseFunctionINTEL = 6242,
+  UntypedVariableLengthArrayINTEL = 6244,
+  ConditionalExtensionINTEL = 6248,
+  ConditionalEntryPointINTEL = 6249,
+  ConditionalCapabilityINTEL = 6250,
+  SpecConstantTargetINTEL = 6251,
+  SpecConstantArchitectureINTEL = 6252,
+  SpecConstantCapabilitiesINTEL = 6253,
+  ConditionalCopyObjectINTEL = 6254,
+  PredicatedLoadINTEL = 6258,
+  PredicatedStoreINTEL = 6259,
+  GroupIMulKHR = 6401,
+  GroupFMulKHR = 6402,
+  GroupBitwiseAndKHR = 6403,
+  GroupBitwiseOrKHR = 6404,
+  GroupBitwiseXorKHR = 6405,
+  GroupLogicalAndKHR = 6406,
+  GroupLogicalOrKHR = 6407,
+  GroupLogicalXorKHR = 6408,
+  RoundFToTF32INTEL = 6426,
+  MaskedGatherINTEL = 6428,
+  MaskedScatterINTEL = 6429,
+  ConvertHandleToImageINTEL = 6529,
+  ConvertHandleToSamplerINTEL = 6530,
+  ConvertHandleToSampledImageINTEL = 6531,
+  FDot2MixAcc32VALVE = 6916,
+  FDot2MixAcc16VALVE = 6917,
+  FDot4MixAcc32VALVE = 6918,
 
   Max,
 };
@@ -2004,6 +2848,57 @@ enum class GLSLstd450 : uint32_t
   Invalid = ~0U,
 };
 
+enum class ShaderDbg : uint32_t
+{
+  InfoNone = 0,
+  CompilationUnit = 1,
+  TypeBasic = 2,
+  TypePointer = 3,
+  TypeQualifier = 4,
+  TypeArray = 5,
+  TypeVector = 6,
+  Typedef = 7,
+  TypeFunction = 8,
+  TypeEnum = 9,
+  TypeComposite = 10,
+  TypeMember = 11,
+  TypeInheritance = 12,
+  TypePtrToMember = 13,
+  TypeTemplate = 14,
+  TypeTemplateParameter = 15,
+  TypeTemplateTemplateParameter = 16,
+  TypeTemplateParameterPack = 17,
+  GlobalVariable = 18,
+  FunctionDeclaration = 19,
+  Function = 20,
+  LexicalBlock = 21,
+  LexicalBlockDiscriminator = 22,
+  Scope = 23,
+  NoScope = 24,
+  InlinedAt = 25,
+  LocalVariable = 26,
+  InlinedVariable = 27,
+  Declare = 28,
+  Value = 29,
+  Operation = 30,
+  Expression = 31,
+  MacroDef = 32,
+  MacroUndef = 33,
+  ImportedEntity = 34,
+  Source = 35,
+  FunctionDefinition = 101,
+  SourceContinued = 102,
+  Line = 103,
+  NoLine = 104,
+  BuildIdentifier = 105,
+  StoragePath = 106,
+  EntryPoint = 107,
+  TypeMatrix = 108,
+
+  Max,
+  Invalid = ~0U,
+};
+
 
 }; // namespace rdcspv
 
@@ -2020,6 +2915,7 @@ DECLARE_STRINGISE_TYPE(rdcspv::MemoryAccess);
 DECLARE_STRINGISE_TYPE(rdcspv::KernelProfilingInfo);
 DECLARE_STRINGISE_TYPE(rdcspv::RayFlags);
 DECLARE_STRINGISE_TYPE(rdcspv::FragmentShadingRate);
+DECLARE_STRINGISE_TYPE(rdcspv::RawAccessChainOperands);
 DECLARE_STRINGISE_TYPE(rdcspv::SourceLanguage);
 DECLARE_STRINGISE_TYPE(rdcspv::ExecutionModel);
 DECLARE_STRINGISE_TYPE(rdcspv::AddressingModel);
@@ -2033,8 +2929,13 @@ DECLARE_STRINGISE_TYPE(rdcspv::ImageFormat);
 DECLARE_STRINGISE_TYPE(rdcspv::ImageChannelOrder);
 DECLARE_STRINGISE_TYPE(rdcspv::ImageChannelDataType);
 DECLARE_STRINGISE_TYPE(rdcspv::FPRoundingMode);
+DECLARE_STRINGISE_TYPE(rdcspv::FPDenormMode);
+DECLARE_STRINGISE_TYPE(rdcspv::QuantizationModes);
+DECLARE_STRINGISE_TYPE(rdcspv::FPOperationMode);
+DECLARE_STRINGISE_TYPE(rdcspv::OverflowModes);
 DECLARE_STRINGISE_TYPE(rdcspv::LinkageType);
 DECLARE_STRINGISE_TYPE(rdcspv::AccessQualifier);
+DECLARE_STRINGISE_TYPE(rdcspv::HostAccessQualifier);
 DECLARE_STRINGISE_TYPE(rdcspv::FunctionParameterAttribute);
 DECLARE_STRINGISE_TYPE(rdcspv::Decoration);
 DECLARE_STRINGISE_TYPE(rdcspv::BuiltIn);
@@ -2045,3 +2946,20 @@ DECLARE_STRINGISE_TYPE(rdcspv::Capability);
 DECLARE_STRINGISE_TYPE(rdcspv::RayQueryIntersection);
 DECLARE_STRINGISE_TYPE(rdcspv::RayQueryCommittedIntersectionType);
 DECLARE_STRINGISE_TYPE(rdcspv::RayQueryCandidateIntersectionType);
+DECLARE_STRINGISE_TYPE(rdcspv::PackedVectorFormat);
+DECLARE_STRINGISE_TYPE(rdcspv::CooperativeMatrixOperands);
+DECLARE_STRINGISE_TYPE(rdcspv::CooperativeMatrixLayout);
+DECLARE_STRINGISE_TYPE(rdcspv::CooperativeMatrixUse);
+DECLARE_STRINGISE_TYPE(rdcspv::CooperativeMatrixReduce);
+DECLARE_STRINGISE_TYPE(rdcspv::TensorClampMode);
+DECLARE_STRINGISE_TYPE(rdcspv::TensorAddressingOperands);
+DECLARE_STRINGISE_TYPE(rdcspv::InitializationModeQualifier);
+DECLARE_STRINGISE_TYPE(rdcspv::LoadCacheControl);
+DECLARE_STRINGISE_TYPE(rdcspv::StoreCacheControl);
+DECLARE_STRINGISE_TYPE(rdcspv::NamedMaximumNumberOfRegisters);
+DECLARE_STRINGISE_TYPE(rdcspv::MatrixMultiplyAccumulateOperands);
+DECLARE_STRINGISE_TYPE(rdcspv::FPEncoding);
+DECLARE_STRINGISE_TYPE(rdcspv::CooperativeVectorMatrixLayout);
+DECLARE_STRINGISE_TYPE(rdcspv::ComponentType);
+DECLARE_STRINGISE_TYPE(rdcspv::GatherModes);
+DECLARE_STRINGISE_TYPE(rdcspv::TensorOperands);

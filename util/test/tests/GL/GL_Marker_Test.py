@@ -1,5 +1,4 @@
 import rdtest
-import renderdoc as rd
 
 
 class GL_Marker_Test(rdtest.TestCase):
@@ -23,7 +22,7 @@ class GL_Marker_Test(rdtest.TestCase):
         ]
 
         for n in names:
-            self.check(d.customName == n)
+            assert d.customName == n
             d = d.children[0]
 
         d = d.parent
@@ -45,9 +44,9 @@ class GL_Marker_Test(rdtest.TestCase):
 
         i = 0
         for name in names:
-            self.check(name == d.children[i].customName)
+            assert name == d.children[i].customName
             i += 1
 
-        self.check(i == len(names))
+        assert i == len(names)
 
-        self.check('glDrawArrays' in self.action_name(d.children[i]))
+        assert 'glDrawArrays' in self.action_name(d.children[i])

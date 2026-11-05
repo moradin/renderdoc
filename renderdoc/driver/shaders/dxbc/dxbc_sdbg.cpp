@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -30,8 +30,6 @@
 
 namespace DXBC
 {
-static const uint32_t FOURCC_SDBG = MAKE_FOURCC('S', 'D', 'B', 'G');
-
 SDBGChunk::SDBGChunk(void *data)
 {
   m_HasDebugInfo = false;
@@ -89,15 +87,18 @@ SDBGChunk::SDBGChunk(void *data)
         rdcstr(asciiDatabase + m_FileHeaders[i].filenameOffset, m_FileHeaders[i].filenameLen);
     rdcstr source = rdcstr(asciiDatabase + m_FileHeaders[i].sourceOffset, m_FileHeaders[i].sourceLen);
 
-    this->Files.push_back(make_rdcpair(filename, source));
+    this->Files.push_back({filename, source});
   }
 
   // successful grab of info
   m_HasDebugInfo = true;
 }
 
-void SDBGChunk::GetLineInfo(size_t instruction, uintptr_t offset, LineColumnInfo &lineInfo) const
+void SDBGChunk::GetLineInfo(size_t instruction, uintptr_t, LineColumnInfo &lineInfo) const
 {
+  if(instruction == ~0U)
+    instruction = 0;
+
   if(instruction < m_Instructions.size())
   {
     int32_t symID = m_Instructions[instruction].symbol;
@@ -120,11 +121,6 @@ void SDBGChunk::GetCallstack(size_t instruction, uintptr_t offset, rdcarray<rdcs
   {
     callstack = {m_Entry};
   }
-}
-
-bool SDBGChunk::HasSourceMapping() const
-{
-  return false;
 }
 
 void SDBGChunk::GetLocals(const DXBC::DXBCContainer *dxbc, size_t instruction, uintptr_t offset,

@@ -16,14 +16,35 @@
     <Filter Include="Replay">
       <UniqueIdentifier>{03d937fd-e33a-4b97-aa7e-5f2990163c9b}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Resources">
-      <UniqueIdentifier>{6434fd9d-f5c4-46df-b5f2-7cd37d39f2f5}</UniqueIdentifier>
-    </Filter>
     <Filter Include="PCH">
       <UniqueIdentifier>{3442a8df-5f4a-49c7-bbf4-854c57362fd3}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Wrapped">
+      <UniqueIdentifier>{7f1b8f2c-3d4e-4a5b-9c6d-1e2f3a4b5c6d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Serialise">
+      <UniqueIdentifier>{8a2c9e3d-4f5a-4b6c-8d7e-2f3a4b5c6d7e}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="d3d9_bytecode.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_shader_reflect.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_vs_emulate.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_ffp_vertex.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_postvs.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_shaders.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
     <ClCompile Include="d3d9_hooks.cpp">
       <Filter>Hooks</Filter>
     </ClCompile>
@@ -31,6 +52,30 @@
       <Filter>Debug</Filter>
     </ClCompile>
     <ClCompile Include="d3d9_device.cpp">
+      <Filter>Wrapped</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_device_wrap.cpp">
+      <Filter>Wrapped</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_direct3d.cpp">
+      <Filter>Wrapped</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_resources.cpp">
+      <Filter>Wrapped</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_contents.cpp">
+      <Filter>Wrapped</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_depth.cpp">
+      <Filter>Wrapped</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_swapchain.cpp">
+      <Filter>Wrapped</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_state.cpp">
+      <Filter>Wrapped</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_manager.cpp">
       <Filter>Common</Filter>
     </ClCompile>
     <ClCompile Include="d3d9_common.cpp">
@@ -39,24 +84,54 @@
     <ClCompile Include="d3d9_replay.cpp">
       <Filter>Replay</Filter>
     </ClCompile>
-    <ClCompile Include="d3d9_swapchain.cpp">
-      <Filter>Common</Filter>
+    <ClCompile Include="d3d9_replay_device.cpp">
+      <Filter>Replay</Filter>
     </ClCompile>
-    <ClCompile Include="d3d9_surface.cpp">
-      <Filter>Resources</Filter>
+    <ClCompile Include="d3d9_rendertexture.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_rendermesh.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_pixel.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_overlay.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_pipestate.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_device_serialise.cpp">
+      <Filter>Serialise</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_serialise.cpp">
+      <Filter>Serialise</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d9_stringise.cpp">
+      <Filter>Serialise</Filter>
     </ClCompile>
     <ClCompile Include="precompiled.cpp">
       <Filter>PCH</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="d3d9_bytecode.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_bytecode_test.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_shader_reflect.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_vs_emulate.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_ffp_vertex.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
     <ClInclude Include="..\dx\official\d3d9.h">
-      <Filter>official</Filter>
-    </ClInclude>
-    <ClInclude Include="..\dx\official\d3dcommon.h">
-      <Filter>official</Filter>
-    </ClInclude>
-    <ClInclude Include="..\dx\official\d3dcompiler.h">
       <Filter>official</Filter>
     </ClInclude>
     <ClInclude Include="..\dx\official\d3d9caps.h">
@@ -69,16 +144,28 @@
       <Filter>Debug</Filter>
     </ClInclude>
     <ClInclude Include="d3d9_device.h">
+      <Filter>Wrapped</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_resources.h">
+      <Filter>Wrapped</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_contents.h">
+      <Filter>Wrapped</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_swapchain.h">
+      <Filter>Wrapped</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_state.h">
+      <Filter>Wrapped</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_replay.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_manager.h">
       <Filter>Common</Filter>
     </ClInclude>
     <ClInclude Include="d3d9_common.h">
       <Filter>Common</Filter>
-    </ClInclude>
-    <ClInclude Include="d3d9_swapchain.h">
-      <Filter>Common</Filter>
-    </ClInclude>
-    <ClInclude Include="d3d9_surface.h">
-      <Filter>Resources</Filter>
     </ClInclude>
     <ClInclude Include="precompiled.h">
       <Filter>PCH</Filter>

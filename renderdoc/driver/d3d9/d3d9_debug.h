@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -51,6 +51,10 @@ public:
 
   void RenderTextInternal(float x, float y, const rdcstr &text);
 
+  struct SavedState;
+  void SaveState(SavedState &saved);
+  void RestoreState(SavedState &saved);
+
   static const int FONT_TEX_WIDTH = 256;
   static const int FONT_TEX_HEIGHT = 128;
   static const int FONT_MAX_CHARS = 256;
@@ -70,5 +74,7 @@ public:
 
   int m_width = 0;
   int m_height = 0;
-  WrappedD3DDevice9 *m_WrappedDevice;
+  // all drawing goes to the real device, so the application never sees our objects or state
+  IDirect3DDevice9 *m_Device;
+  bool m_IsEx;
 };

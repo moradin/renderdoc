@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -27,6 +27,7 @@
 
 class Vec3f;
 class Quatf;
+struct AxisMapping;
 
 #include <string.h>
 
@@ -34,6 +35,7 @@ class Matrix4f
 {
 public:
   Matrix4f() {}
+  Matrix4f(const AxisMapping &axisMapping);
   //////////////////////////////////////////////////////
   // Matrix generation functions
 

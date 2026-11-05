@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -27,7 +27,7 @@
 
 #include "os/os_specific.h"
 
-typedef std::function<void(void *)> FunctionLoadCallback;
+typedef std::function<void(void *, const char *)> FunctionLoadCallback;
 
 struct FunctionHook
 {
@@ -150,6 +150,10 @@ public:
   static void RemoveHookCallbacks();
 
   // platform specific implementations
+
+  // some platforms may unavoidably hook on replay, this gives them a chance to do any
+  // initialisation needed to ensure those hooks don't do anything
+  static void ReplayInitialise();
 
   // Removes hooks (where possible) and restores everything to an un-hooked state
   static void RemoveHooks();

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -61,6 +61,30 @@ void main()
 
 )EOSHADER";
 
+  const std::string comp = R"EOSHADER(
+
+struct PushData
+{
+  uint4 data;
+};
+
+[[vk::push_constant]]
+ConstantBuffer<PushData> push;
+
+StructuredBuffer<uint4> inbuf : register(b0);
+RWStructuredBuffer<uint4> outbuf : register(b1);
+
+[numthreads(1, 1, 1)]
+void hlsl_main ()
+{
+  outbuf[0].x += inbuf[0].x * push.data.x;
+  outbuf[0].y += inbuf[0].y * push.data.y;
+  outbuf[0].z += inbuf[0].z * push.data.z;
+  outbuf[0].w += inbuf[0].w * push.data.w;
+}
+
+)EOSHADER";
+
   int main()
   {
     // initialise, create window, create context, etc
@@ -99,7 +123,8 @@ void main()
 
     pipeCreateInfo.vertexInputState.vertexBindingDescriptions = {vkh::vertexBind(0, DefaultA2V)};
     pipeCreateInfo.vertexInputState.vertexAttributeDescriptions = {
-        vkh::vertexAttr(0, 0, DefaultA2V, pos), vkh::vertexAttr(1, 0, DefaultA2V, col),
+        vkh::vertexAttr(0, 0, DefaultA2V, pos),
+        vkh::vertexAttr(1, 0, DefaultA2V, col),
         vkh::vertexAttr(2, 0, DefaultA2V, uv),
     };
 
@@ -132,11 +157,49 @@ void main()
     VkPipeline pipe2 = createGraphicsPipeline(pipeCreateInfo);
 
     AllocatedBuffer vb(
-        this, vkh::BufferCreateInfo(sizeof(DefaultTri), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                                                            VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        this,
+        vkh::BufferCreateInfo(sizeof(DefaultTri),
+                              VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
 
     vb.upload(DefaultTri);
+
+    VkDescriptorSetLayout compSetLayout =
+        createDescriptorSetLayout(vkh::DescriptorSetLayoutCreateInfo({
+            {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT},
+            {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT},
+        }));
+
+    VkPipelineLayout compLayout = createPipelineLayout(vkh::PipelineLayoutCreateInfo(
+        {compSetLayout}, {
+                             vkh::PushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(Vec4i)),
+                         }));
+
+    VkPipeline compPipe1 = createComputePipeline(vkh::ComputePipelineCreateInfo(
+        compLayout, CompileShaderModule(comp, ShaderLang::hlsl, ShaderStage::comp, "hlsl_main")));
+
+    AllocatedBuffer bufin(this,
+                          vkh::BufferCreateInfo(1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                          VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+                          VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
+
+    AllocatedBuffer bufout(this,
+                           vkh::BufferCreateInfo(1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+                           VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
+
+    setName(bufin.buffer, "bufin");
+    setName(bufout.buffer, "bufout");
+
+    VkDescriptorSet compSet = allocateDescriptorSet(compSetLayout);
+
+    vkh::updateDescriptorSets(
+        device, {
+                    vkh::WriteDescriptorSet(compSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                            {vkh::DescriptorBufferInfo(bufin.buffer)}),
+                    vkh::WriteDescriptorSet(compSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                            {vkh::DescriptorBufferInfo(bufout.buffer)}),
+                });
 
     while(Running())
     {
@@ -147,8 +210,9 @@ void main()
       VkImage swapimg =
           StartUsingBackbuffer(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL);
 
-      vkCmdBeginRenderPass(cmd, vkh::RenderPassBeginInfo(renderPass, framebuffer, mainWindow->scissor,
-                                                         {vkh::ClearValue(0.2f, 0.2f, 0.2f, 1.0f)}),
+      vkCmdBeginRenderPass(cmd,
+                           vkh::RenderPassBeginInfo(renderPass, framebuffer, mainWindow->scissor,
+                                                    {vkh::ClearValue(0.2f, 0.2f, 0.2f, 1.0f)}),
                            VK_SUBPASS_CONTENTS_INLINE);
 
       VkViewport v = mainWindow->viewport;
@@ -180,6 +244,28 @@ void main()
       blitToSwap(cmd, img.image, VK_IMAGE_LAYOUT_GENERAL, swapimg, VK_IMAGE_LAYOUT_GENERAL);
 
       FinishUsingBackbuffer(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL);
+
+      // Fill bufin with 111
+      vkCmdFillBuffer(cmd, bufin.buffer, 0, 1024, 111);
+      // Fill bufout with 222
+      vkCmdFillBuffer(cmd, bufout.buffer, 0, 1024, 222);
+      vkh::cmdPipelineBarrier(
+          cmd, {},
+          {
+              vkh::BufferMemoryBarrier(VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                                       bufin.buffer, 0, 1024),
+              vkh::BufferMemoryBarrier(VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                                       bufout.buffer, 0, 1024),
+          });
+
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipe1);
+      vkh::cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compLayout, 0, {compSet}, {});
+
+      Vec4i push = {5, 6, 7, 8};
+      vkCmdPushConstants(cmd, compLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(Vec4i), &push);
+      setMarker(cmd, "Pre-Dispatch");
+      vkCmdDispatch(cmd, 1, 1, 1);
+      setMarker(cmd, "Post-Dispatch");
 
       vkEndCommandBuffer(cmd);
 

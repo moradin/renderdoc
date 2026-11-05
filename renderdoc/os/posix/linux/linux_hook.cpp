@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -76,6 +76,9 @@ __attribute__((visibility("default"))) void *dlopen(const char *filename, int fl
     return ret;
   }
 
+  if(RenderDoc::Inst().IsReplayApp())
+    return realdlopen(filename, flag);
+
   // don't do any hook processing inside here even if we call dlopen again
   Atomic::Inc32(&tlsbusyflag);
   void *ret = realdlopen(filename, flag);
@@ -97,8 +100,9 @@ void GetUnhookedEnvp(char *const *envp, rdcstr &envpStr, rdcarray<char *> &modif
 void GetHookedEnvp(char *const *envp, rdcstr &envpStr, rdcarray<char *> &modifiedEnv);
 void ResetHookingEnvVars();
 void StopAtMainInChild();
-bool StopChildAtMain(pid_t childPid);
+bool StopChildAtMain(pid_t childPid, bool *exitWithNoExec);
 void ResumeProcess(pid_t childPid, uint32_t delay = 0);
+int direct_setenv(const char *name, const char *value, int overwrite);
 
 ///////////////////////////////////////////////////////////////
 // exec hooks - we have to hook each variant since if the application calls the 'real' one of a
@@ -203,6 +207,9 @@ __attribute__((visibility("default"))) int execve(const char *pathname, char *co
     return passthru(pathname, argv, envp);
   }
 
+  if(RenderDoc::Inst().IsReplayApp())
+    return realexecve(pathname, argv, envp);
+
   rdcarray<char *> modifiedEnv;
   rdcstr envpStr;
 
@@ -236,6 +243,9 @@ __attribute__((visibility("default"))) int execvpe(const char *pathname, char *c
     return passthru(pathname, argv, envp);
   }
 
+  if(RenderDoc::Inst().IsReplayApp())
+    return realexecvpe(pathname, argv, envp);
+
   rdcarray<char *> modifiedEnv;
   rdcstr envpStr;
 
@@ -265,6 +275,9 @@ __attribute__((visibility("default"))) pid_t fork()
     return passthru();
   }
 
+  if(RenderDoc::Inst().IsReplayApp())
+    return realfork();
+
   // if we're not hooking children just call to the real one, we don't have to do anything
   if(!RenderDoc::Inst().GetCaptureOptions().hookIntoChildren)
   {
@@ -281,7 +294,7 @@ __attribute__((visibility("default"))) pid_t fork()
 
     pid_t ret = realfork();
     if(ret == 0)
-      unsetenv(RENDERDOC_VULKAN_LAYER_VAR);
+      direct_setenv(RENDERDOC_VULKAN_LAYER_VAR, "", true);
 
     return ret;
   }
@@ -311,9 +324,15 @@ __attribute__((visibility("default"))) pid_t fork()
     if(Linux_Debug_PtraceLogging())
       RDCLOG("hooked fork() in parent, child is %d", ret);
 
-    bool stopped = StopChildAtMain(ret);
+    bool exitWithNoExec = false;
+    bool stopped = StopChildAtMain(ret, &exitWithNoExec);
 
-    if(stopped)
+    if(exitWithNoExec)
+    {
+      if(Linux_Debug_PtraceLogging())
+        RDCLOG("hooked fork() child %d exited gracefully while waiting for exec(). Ignoring", ret);
+    }
+    else if(stopped)
     {
       int ident = GetIdentPort(ret);
 
@@ -362,6 +381,9 @@ __attribute__((visibility("default"))) pid_t fork()
       RenderDoc::Inst().AddChildThread((uint32_t)ret, handle);
     }
   }
+
+  if(Linux_Debug_PtraceLogging())
+    RDCLOG("Returning from fork");
 
   return ret;
 }
@@ -427,6 +449,28 @@ void plthook_lib(void *handle)
   plthook_close(plthook);
 }
 
+// multiple libraries names pointing at the same file are declared as hooks
+// in this case, if the second version gets loaded or when CheckLoadedLibraries is run,
+// hooks are run another time. Avoid this by clearing callbacks of hooks pointing at the same
+// library
+static void PreventDoubleHook(const void *loadedHandle)
+{
+  for(auto it = libraryHooks.begin(); it != libraryHooks.end(); ++it)
+  {
+    rdcstr libName = *it;
+    // if callbacks are empty, there is no risk of executing anything
+    if(libraryCallbacks[libName].empty())
+      continue;
+
+    void *handle = realdlopen(libName.c_str(), RTLD_NOW | RTLD_NOLOAD | RTLD_GLOBAL);
+    if(handle == loadedHandle)
+    {
+      // we have been loaded by a different name, don't run hooks again
+      libraryCallbacks[libName].clear();
+    }
+  }
+}
+
 static void CheckLoadedLibraries()
 {
   // don't process anything if the busy flag was set, otherwise set it ourselves
@@ -452,10 +496,11 @@ static void CheckLoadedLibraries()
 
       // don't call callbacks again if the library is dlopen'd again
       libraryCallbacks[libName].swap(callbacks);
+      PreventDoubleHook(handle);
 
       for(FunctionLoadCallback cb : callbacks)
         if(cb)
-          cb(handle);
+          cb(handle, libName.c_str());
     }
   }
 
@@ -493,12 +538,13 @@ void *intercept_dlopen(const char *filename, int flag, void *ret)
 
       // don't call callbacks again if the library is dlopen'd again
       libraryCallbacks[libName].swap(callbacks);
+      PreventDoubleHook(ret);
 
       for(FunctionLoadCallback cb : callbacks)
         if(cb)
-          cb(ret);
+          cb(ret, libName.c_str());
 
-      ret = realdlopen("librenderdoc.so", flag);
+      ret = realdlopen("lib" STRINGIZE(RDOC_BASE_NAME) ".so", flag);
       break;
     }
   }
@@ -508,6 +554,15 @@ void *intercept_dlopen(const char *filename, int flag, void *ret)
   CheckLoadedLibraries();
 
   return ret;
+}
+
+void LibraryHooks::ReplayInitialise()
+{
+  realdlopen = (DLOPENPROC)dlsym(RTLD_NEXT, "dlopen");
+  realfork = (FORKPROC)dlsym(RTLD_NEXT, "fork");
+  realexecle = (EXECLEPROC)dlsym(RTLD_NEXT, "execle");
+  realexecve = (EXECVEPROC)dlsym(RTLD_NEXT, "execve");
+  realexecvpe = (EXECVPEPROC)dlsym(RTLD_NEXT, "execvpe");
 }
 
 void LibraryHooks::BeginHookRegistration()

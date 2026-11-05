@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -326,13 +326,25 @@ void main()
     auto SetupTex = []() {
       const uint32_t checker[4 * 4] = {
           // X X O O
-          0xffffffff, 0xffffffff, 0, 0,
+          0xffffffff,
+          0xffffffff,
+          0,
+          0,
           // X X O O
-          0xffffffff, 0xffffffff, 0, 0,
+          0xffffffff,
+          0xffffffff,
+          0,
+          0,
           // O O X X
-          0, 0, 0xffffffff, 0xffffffff,
+          0,
+          0,
+          0xffffffff,
+          0xffffffff,
           // O O X X
-          0, 0, 0xffffffff, 0xffffffff,
+          0,
+          0,
+          0xffffffff,
+          0xffffffff,
       };
 
       GLuint tex = 0;

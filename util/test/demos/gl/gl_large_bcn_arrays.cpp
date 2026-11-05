@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -113,8 +113,10 @@ void main()
       GLenum texbind = arraySize > 1 ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D;
 
       const char *names[] = {
-          arraySize > 1 ? "BC4 array" : "BC4", arraySize > 1 ? "BC5 array" : "BC5",
-          arraySize > 1 ? "BC6 array" : "BC6", arraySize > 1 ? "BC7 array" : "BC7",
+          arraySize > 1 ? "BC4 array" : "BC4",
+          arraySize > 1 ? "BC5 array" : "BC5",
+          arraySize > 1 ? "BC6 array" : "BC6",
+          arraySize > 1 ? "BC7 array" : "BC7",
       };
 
       for(int fmt = 0; fmt < 4; fmt++)

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -137,20 +137,50 @@ float4 main(in prim2f IN) : SV_Target0
     ID3D12ResourcePtr vb = MakeBuffer().Data(DefaultTri);
 
     ID3D12RootSignaturePtr sig = MakeSig({});
-    ID3D12PipelineStatePtr pso[4] = {
-        MakePSO().RootSig(sig).InputLayout().VS(vsBlob).PS(psNoPrimBlob),
-        MakePSO().RootSig(sig).InputLayout().VS(vsBlob).PS(psPrimBlob),
-        MakePSO().RootSig(sig).InputLayout().VS(vsBlob).GS(gsNoPrimBlob).PS(psNoPrimBlob),
-        MakePSO().RootSig(sig).InputLayout().VS(vsBlob).GS(gsPrimBlob).PS(psPrimBlob)};
+
+    size_t countPSOs = 0;
+    ID3D12PipelineStatePtr psos[8];
+    psos[countPSOs++] = MakePSO().RootSig(sig).InputLayout().VS(vsBlob).PS(psNoPrimBlob);
+    psos[countPSOs++] = MakePSO().RootSig(sig).InputLayout().VS(vsBlob).PS(psPrimBlob);
+    psos[countPSOs++] =
+        MakePSO().RootSig(sig).InputLayout().VS(vsBlob).GS(gsNoPrimBlob).PS(psNoPrimBlob);
+    psos[countPSOs++] = MakePSO().RootSig(sig).InputLayout().VS(vsBlob).GS(gsPrimBlob).PS(psPrimBlob);
+    size_t sm6start = countPSOs;
+
+    if(m_DXILSupport)
+    {
+      ID3DBlobPtr vs6Blob = Compile(D3DDefaultVertex, "main", "vs_6_0");
+      ID3DBlobPtr gs6NoPrimBlob = Compile(common + geomNoPrim, "main", "gs_6_0");
+      ID3DBlobPtr gs6PrimBlob = Compile(common + geomPrim, "main", "gs_6_0");
+      ID3DBlobPtr ps6NoPrimBlob = Compile(common + pixelNoPrim, "main", "ps_6_0");
+      ID3DBlobPtr ps6PrimBlob = Compile(common + pixelPrim, "main", "ps_6_0");
+
+      psos[countPSOs++] = MakePSO().RootSig(sig).InputLayout().VS(vs6Blob).PS(ps6NoPrimBlob);
+      psos[countPSOs++] = MakePSO().RootSig(sig).InputLayout().VS(vs6Blob).PS(ps6PrimBlob);
+      psos[countPSOs++] =
+          MakePSO().RootSig(sig).InputLayout().VS(vs6Blob).GS(gs6NoPrimBlob).PS(ps6NoPrimBlob),
+      psos[countPSOs++] =
+          MakePSO().RootSig(sig).InputLayout().VS(vs6Blob).GS(gs6PrimBlob).PS(ps6PrimBlob);
+    }
 
     ResourceBarrier(vb, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
 
     float halfWidth = (float)screenWidth * 0.5f;
     float halfHeight = (float)screenHeight * 0.5f;
-    D3D12_VIEWPORT views[4] = {{0.0f, 0.0f, halfWidth, halfHeight, 0.0f, 1.0f},
-                               {halfWidth, 0.0f, halfWidth, halfHeight, 0.0f, 1.0f},
-                               {0.0f, halfHeight, halfWidth, halfHeight, 0.0f, 1.0f},
-                               {halfWidth, halfHeight, halfWidth, halfHeight, 0.0f, 1.0f}};
+    float quarterHeight = halfHeight * 0.5f;
+    D3D12_VIEWPORT views[] = {
+        {0.0f, 0.0f, halfWidth, quarterHeight, 0.0f, 1.0f},
+        {halfWidth, 0.0f, halfWidth, quarterHeight, 0.0f, 1.0f},
+        {0.0f, quarterHeight, halfWidth, quarterHeight, 0.0f, 1.0f},
+        {halfWidth, quarterHeight, halfWidth, quarterHeight, 0.0f, 1.0f},
+        {0.0f, 0.0f + halfHeight, halfWidth, quarterHeight, 0.0f, 1.0f},
+        {halfWidth, 0.0f + halfHeight, halfWidth, quarterHeight, 0.0f, 1.0f},
+        {0.0f, quarterHeight + halfHeight, halfWidth, quarterHeight, 0.0f, 1.0f},
+        {halfWidth, quarterHeight + halfHeight, halfWidth, quarterHeight, 0.0f, 1.0f},
+    };
+
+    static_assert(ARRAYSIZE(psos) == ARRAYSIZE(views), "Mismatched array sizes");
+
     while(Running())
     {
       ID3D12GraphicsCommandListPtr cmd = GetCommandBuffer();
@@ -167,11 +197,13 @@ float4 main(in prim2f IN) : SV_Target0
       ClearRenderTargetView(cmd, rtv, {0.2f, 0.2f, 0.2f, 1.0f});
 
       RSSetScissorRect(cmd, {0, 0, screenWidth, screenHeight});
-      cmd->SetMarker(1, "Test", (UINT)strlen("Test"));
-      for(int i = 0; i < 4; ++i)
+      setMarker(cmd, "SM5.0");
+      for(int i = 0; i < countPSOs; ++i)
       {
+        if(i == sm6start)
+          setMarker(cmd, "SM6.0");
         RSSetViewport(cmd, views[i]);
-        cmd->SetPipelineState(pso[i]);
+        cmd->SetPipelineState(psos[i]);
         cmd->DrawInstanced(3, 1, 0, 0);
       }
 

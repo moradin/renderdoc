@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -35,6 +35,7 @@ enum class BuiltinShader
   BlitVS,
   First = BlitVS,
   CheckerboardFS,
+  CheckerboardMultiviewFS,
   TexDisplayFS,
   FixedColFS,
   TextVS,
@@ -44,13 +45,12 @@ enum class BuiltinShader
   MeshFS,
   MeshCS,
   QuadResolveFS,
+  QuadResolveMultiviewFS,
   QuadWriteFS,
+  QuadWriteMultiviewFS,
   TrisizeGS,
   TrisizeFS,
-  MS2ArrayCS,
-  Array2MSCS,
-  DepthMS2ArrayFS,
-  DepthArray2MSFS,
+  TrisizeMultiviewFS,
   TexRemap,
   PixelHistoryMSCopyCS,
   PixelHistoryMSCopyDepthCS,
@@ -60,6 +60,12 @@ enum class BuiltinShader
   HistogramCS,
   MinMaxTileCS,
   MinMaxResultCS,
+  MS2BufferCS,
+  DepthMS2BufferCS,
+  Buffer2MSCS,
+  DepthBuf2MSFS,
+  DepthCopyFS,
+  DepthCopyMSFS,
   Count,
 };
 
@@ -111,9 +117,9 @@ public:
   VkPipelineCache GetPipeCache() { return m_PipelineCache; }
   void MakeGraphicsPipelineInfo(VkGraphicsPipelineCreateInfo &pipeCreateInfo, ResourceId pipeline);
   void MakeComputePipelineInfo(VkComputePipelineCreateInfo &pipeCreateInfo, ResourceId pipeline);
+  void MakeShaderObjectInfo(VkShaderCreateInfoEXT &shadCreateInfo, ResourceId shader);
 
-  bool IsMS2ArraySupported() { return m_MS2ArraySupported; }
-  bool IsArray2MSSupported() { return m_Array2MSSupported; }
+  bool IsBuffer2MSSupported() { return m_Buffer2MSSupported; }
   void SetCaching(bool enabled) { m_CacheShaders = enabled; }
 private:
   static const uint32_t m_ShaderCacheMagic = 0xf00d00d5;
@@ -125,10 +131,14 @@ private:
   WrappedVulkan *m_pDriver = NULL;
   VkDevice m_Device = VK_NULL_HANDLE;
 
+  // combined pipeline layouts constructed out of independent set pipeline layouts, for use in a
+  // single combined graphics pipeline create info
+  std::map<ResourceId, VkPipelineLayout> m_CombinedPipeLayouts;
+
   bytebuf m_PipeCacheBlob;
   VkPipelineCache m_PipelineCache = VK_NULL_HANDLE;
 
-  bool m_MS2ArraySupported = false, m_Array2MSSupported = false;
+  bool m_Buffer2MSSupported = false;
 
   bool m_ShaderCacheDirty = false, m_CacheShaders = false;
   std::map<uint32_t, SPIRVBlob> m_ShaderCache;

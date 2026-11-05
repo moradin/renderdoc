@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,10 +23,13 @@
  ******************************************************************************/
 
 #include "replay_driver.h"
+#include <float.h>
+#include <math.h>
 #include "compressonator/CMP_Core.h"
 #include "maths/formatpacking.h"
 #include "maths/half_convert.h"
 #include "serialise/serialiser.h"
+#include "strings/string_utils.h"
 
 template <>
 rdcstr DoStringise(const RemapTexture &el)
@@ -61,14 +64,15 @@ static bool PreviousNextExcludedMarker(ActionDescription *action)
                                ActionFlags::SetMarker | ActionFlags::MultiAction));
 }
 
-CompType BaseRemapType(CompType typeCast)
+CompType BaseRemapType(RemapTexture remap, CompType typeCast)
 {
   switch(typeCast)
   {
     case CompType::Float:
-    case CompType::UNorm:
     case CompType::SNorm:
-    case CompType::UNormSRGB: return CompType::Float;
+    case CompType::UNorm: return CompType::Float;
+    case CompType::UNormSRGB:
+      return remap == RemapTexture::RGBA8 ? CompType::UNormSRGB : CompType::Float;
     case CompType::UInt: return CompType::UInt;
     case CompType::SInt: return CompType::SInt;
     default: return typeCast;
@@ -117,8 +121,8 @@ static ActionDescription *SetupActionPointers(rdcarray<ActionDescription *> &act
     else
     {
       if(previous)
-        previous->next = action;
-      action->previous = previous;
+        previous->nextAction = action;
+      action->previousAction = previous;
 
       {
         // we also allow non-contiguous EIDs for fake markers that have high EIDs
@@ -163,7 +167,7 @@ void SetupActionPointers(rdcarray<ActionDescription *> &actionTable,
     {
       // point the previous pointer to the last non-marker action we got. If we haven't hit one yet
       // because this is near the start, this will just be NULL.
-      action->previous = previous;
+      action->previousAction = previous;
 
       // because there can be multiple markers consecutively we want to point all of their nexts to
       // the next action we encounter. Accumulate this list, though in most cases it will only be 1
@@ -177,7 +181,7 @@ void SetupActionPointers(rdcarray<ActionDescription *> &actionTable,
 
       // all previous markers point to this one
       for(ActionDescription *m : markers)
-        m->next = action;
+        m->nextAction = action;
 
       markers.clear();
     }
@@ -189,9 +193,15 @@ void PatchLineStripIndexBuffer(const ActionDescription *action, Topology topolog
 {
   const uint32_t restart = 0xffffffff;
 
-#define IDX_VALUE(offs)          \
-  (idx16 ? idx16[index + (offs)] \
-         : (idx32 ? idx32[index + (offs)] : (idx8 ? idx8[index + (offs)] : index + (offs))))
+  // For indexed draws the fetched index has baseVertex added to it.
+  // For non-indexed draws the index is generated and has vertexOffset added to it.
+  // clang-format off
+#define IDX_VALUE(offs)                                \
+  idx16   ? idx16[index + (offs)] + action->baseVertex \
+  : idx32 ? idx32[index + (offs)] + action->baseVertex \
+  : idx8  ? idx8[index + (offs)] + action->baseVertex  \
+          : index + (offs) + action->vertexOffset
+  // clang-format on
 
   switch(topology)
   {
@@ -340,7 +350,7 @@ void PatchTriangleFanRestartIndexBufer(rdcarray<uint32_t> &patchedIndices, uint3
   newIndices.swap(patchedIndices);
 }
 
-void StandardFillCBufferVariable(ResourceId shader, const ShaderConstantDescriptor &desc,
+void StandardFillCBufferVariable(ResourceId shader, const ShaderConstantType &desc,
                                  uint32_t dataOffset, const bytebuf &data, ShaderVariable &outvar,
                                  uint32_t matStride)
 {
@@ -361,7 +371,7 @@ void StandardFillCBufferVariable(ResourceId shader, const ShaderConstantDescript
   // so a matrix is a secondaryDim number of primaryDim-sized vectors
   uint32_t primaryDim = cols;
   uint32_t secondaryDim = rows;
-  if(rows > 1 && !outvar.rowMajor)
+  if(rows > 1 && outvar.ColMajor())
   {
     primaryDim = rows;
     secondaryDim = cols;
@@ -373,7 +383,6 @@ void StandardFillCBufferVariable(ResourceId shader, const ShaderConstantDescript
     const size_t avail = data.size() - dataOffset;
 
     byte *dstData = outvar.value.u8v.data();
-    const size_t dstStride = elemByteSize == 8 ? 8 : 4;
 
     // each secondaryDim element (row or column) is stored in a primaryDim-vector.
     // We copy each vector member individually to account for smaller than uint32 sized types.
@@ -382,7 +391,7 @@ void StandardFillCBufferVariable(ResourceId shader, const ShaderConstantDescript
       for(uint32_t p = 0; p < primaryDim; p++)
       {
         const size_t srcOffset = matStride * s + p * elemByteSize;
-        const size_t dstOffset = (primaryDim * s + p) * dstStride;
+        const size_t dstOffset = (primaryDim * s + p) * elemByteSize;
 
         if(srcOffset + elemByteSize <= avail)
           memcpy(dstData + dstOffset, srcData + srcOffset, elemByteSize);
@@ -390,7 +399,7 @@ void StandardFillCBufferVariable(ResourceId shader, const ShaderConstantDescript
     }
 
     // if it's a matrix and not row major, transpose
-    if(primaryDim > 1 && secondaryDim > 1 && !outvar.rowMajor)
+    if(primaryDim > 1 && secondaryDim > 1 && outvar.ColMajor())
     {
       ShaderVariable tmp = outvar;
 
@@ -400,42 +409,29 @@ void StandardFillCBufferVariable(ResourceId shader, const ShaderConstantDescript
           for(size_t ci = 0; ci < cols; ci++)
             outvar.value.u64v[ri * cols + ci] = tmp.value.u64v[ci * rows + ri];
       }
-      else
+      else if(elemByteSize == 4)
       {
         for(size_t ri = 0; ri < rows; ri++)
           for(size_t ci = 0; ci < cols; ci++)
             outvar.value.u32v[ri * cols + ci] = tmp.value.u32v[ci * rows + ri];
       }
-    }
-
-    // special case - decode halfs in-place, sign extend signed < 4 byte integers
-    if(type == VarType::Half)
-    {
-      for(size_t ri = 0; ri < rows; ri++)
+      else if(elemByteSize == 2)
       {
-        for(size_t ci = 0; ci < cols; ci++)
-        {
-          outvar.value.f32v[ri * cols + ci] =
-              ConvertFromHalf((uint16_t)outvar.value.u32v[ri * cols + ci]);
-        }
+        for(size_t ri = 0; ri < rows; ri++)
+          for(size_t ci = 0; ci < cols; ci++)
+            outvar.value.u16v[ri * cols + ci] = tmp.value.u16v[ci * rows + ri];
+      }
+      else if(elemByteSize == 1)
+      {
+        for(size_t ri = 0; ri < rows; ri++)
+          for(size_t ci = 0; ci < cols; ci++)
+            outvar.value.u8v[ri * cols + ci] = tmp.value.u8v[ci * rows + ri];
       }
     }
-    else if(type == VarType::SShort || type == VarType::SByte)
-    {
-      const uint32_t testMask = (type == VarType::SShort ? 0x8000 : 0x80);
-      const uint32_t extendMask = (type == VarType::SShort ? 0xffff0000 : 0xffffff00);
-
-      for(size_t ri = 0; ri < rows; ri++)
-      {
-        for(size_t ci = 0; ci < cols; ci++)
-        {
-          uint32_t &u = outvar.value.u32v[ri * cols + ci];
-
-          if(u & testMask)
-            u |= extendMask;
-        }
-      }
-    }
+  }
+  else
+  {
+    outvar.flags |= ShaderVariableFlags::Truncated;
   }
 
   if(desc.pointerTypeID != ~0U)
@@ -450,13 +446,13 @@ static void StandardFillCBufferVariables(ResourceId shader, const rdcarray<Shade
   {
     rdcstr basename = invars[v].name;
 
-    uint8_t rows = invars[v].type.descriptor.rows;
-    uint8_t cols = invars[v].type.descriptor.columns;
-    uint32_t elems = RDCMAX(1U, invars[v].type.descriptor.elements);
-    const bool rowMajor = invars[v].type.descriptor.rowMajorStorage != 0;
+    uint8_t rows = invars[v].type.rows;
+    uint8_t cols = invars[v].type.columns;
+    uint32_t elems = RDCMAX(1U, invars[v].type.elements);
+    const bool rowMajor = invars[v].type.RowMajor();
     const bool isArray = elems > 1;
 
-    const uint32_t matStride = invars[v].type.descriptor.matrixByteStride;
+    const uint32_t matStride = invars[v].type.matrixByteStride;
 
     uint32_t dataOffset = baseOffset + invars[v].byteOffset;
 
@@ -465,8 +461,9 @@ static void StandardFillCBufferVariables(ResourceId shader, const rdcarray<Shade
       ShaderVariable var;
       var.name = basename;
       var.rows = var.columns = 0;
-      var.type = VarType::Float;
-      var.rowMajor = rowMajor;
+      var.type = VarType::Struct;
+      if(rowMajor)
+        var.flags |= ShaderVariableFlags::RowMajorMatrix;
 
       rdcarray<ShaderVariable> varmembers;
 
@@ -478,21 +475,18 @@ static void StandardFillCBufferVariables(ResourceId shader, const rdcarray<Shade
           ShaderVariable &vr = var.members[i];
           vr.name = StringFormat::Fmt("%s[%u]", basename.c_str(), i);
           vr.rows = vr.columns = 0;
-          vr.type = VarType::Float;
-          vr.rowMajor = rowMajor;
+          vr.type = VarType::Struct;
+          if(rowMajor)
+            vr.flags |= ShaderVariableFlags::RowMajorMatrix;
 
           StandardFillCBufferVariables(shader, invars[v].type.members, vr.members, data, dataOffset);
 
-          dataOffset += invars[v].type.descriptor.arrayByteStride;
-
-          vr.isStruct = true;
+          dataOffset += invars[v].type.arrayByteStride;
         }
-
-        var.isStruct = false;
       }
       else
       {
-        var.isStruct = true;
+        var.type = VarType::Struct;
 
         StandardFillCBufferVariables(shader, invars[v].type.members, var.members, data, dataOffset);
       }
@@ -506,14 +500,14 @@ static void StandardFillCBufferVariables(ResourceId shader, const rdcarray<Shade
     outvars.push_back({});
 
     {
-      const VarType type = invars[v].type.descriptor.type;
+      const VarType type = invars[v].type.baseType;
 
       outvars[outIdx].name = basename;
       outvars[outIdx].rows = 1;
       outvars[outIdx].type = type;
-      outvars[outIdx].isStruct = false;
       outvars[outIdx].columns = cols;
-      outvars[outIdx].rowMajor = rowMajor;
+      if(rowMajor)
+        outvars[outIdx].flags |= ShaderVariableFlags::RowMajorMatrix;
 
       ShaderVariable &var = outvars[outIdx];
 
@@ -521,8 +515,8 @@ static void StandardFillCBufferVariables(ResourceId shader, const rdcarray<Shade
       {
         outvars[outIdx].rows = rows;
 
-        StandardFillCBufferVariable(shader, invars[v].type.descriptor, dataOffset, data,
-                                    outvars[outIdx], matStride);
+        StandardFillCBufferVariable(shader, invars[v].type, dataOffset, data, outvars[outIdx],
+                                    matStride);
       }
       else
       {
@@ -540,23 +534,246 @@ static void StandardFillCBufferVariables(ResourceId shader, const rdcarray<Shade
           varmembers[e].name = StringFormat::Fmt("%s[%u]", base.c_str(), e);
           varmembers[e].rows = rows;
           varmembers[e].type = type;
-          varmembers[e].isStruct = false;
           varmembers[e].columns = cols;
-          varmembers[e].rowMajor = rowMajor;
+          if(rowMajor)
+            varmembers[e].flags |= ShaderVariableFlags::RowMajorMatrix;
 
           uint32_t rowDataOffset = dataOffset;
 
-          dataOffset += invars[v].type.descriptor.arrayByteStride;
+          dataOffset += invars[v].type.arrayByteStride;
 
-          StandardFillCBufferVariable(shader, invars[v].type.descriptor, rowDataOffset, data,
-                                      varmembers[e], matStride);
+          StandardFillCBufferVariable(shader, invars[v].type, rowDataOffset, data, varmembers[e],
+                                      matStride);
         }
+
+        var.members = varmembers;
+      }
+    }
+  }
+}
+
+void PreprocessLineDirectives(rdcarray<ShaderSourceFile> &sourceFiles)
+{
+  struct SplitFile
+  {
+    rdcstr filename;
+    rdcarray<rdcstr> lines;
+    bool modified = false;
+  };
+
+  rdcarray<SplitFile> splitFiles;
+
+  splitFiles.resize(sourceFiles.size());
+
+  for(size_t i = 0; i < sourceFiles.size(); i++)
+    splitFiles[i].filename = sourceFiles[i].filename;
+
+  for(size_t i = 0; i < sourceFiles.size(); i++)
+  {
+    rdcarray<rdcstr> srclines;
+
+    // start off writing to the corresponding output file.
+    SplitFile *dstFile = &splitFiles[i];
+    bool changedFile = false;
+
+    size_t dstLine = 0;
+
+    // skip this file if it doesn't contain #line
+    if(!sourceFiles[i].contents.contains("#line"))
+      continue;
+
+    split(sourceFiles[i].contents, srclines, '\n');
+    srclines.push_back("");
+
+    // handle #line directives by inserting empty lines or erasing as necessary
+    bool seenLine = false;
+
+    for(size_t srcLine = 0; srcLine < srclines.size(); srcLine++)
+    {
+      if(srclines[srcLine].empty())
+      {
+        dstLine++;
+        continue;
+      }
+
+      char *c = &srclines[srcLine][0];
+      char *end = c + srclines[srcLine].size();
+
+      while(*c == '\t' || *c == ' ' || *c == '\r')
+        c++;
+
+      if(c == end)
+      {
+        // blank line, just advance line counter
+        dstLine++;
+        continue;
+      }
+
+      if(c + 5 > end || strncmp(c, "#line", 5) != 0)
+      {
+        // only consider the destination file 'modfied' (and so needing a merge later) if we've seen
+        // a #line statement. Otherwise we're just doing an identity copy so far. Without this, this
+        // can lead to problems e.g. if there are a few statements in a file before the #line we
+        // then create a truncated list of lines with only those and then start spitting the #line
+        // directives into other files. We still want to have the original file as-is so don't
+        // consider it modified. However if a #line directive targets the file it's already in we
+        // want to be sure that we have copied any existing implicit preamble to that file so it
+        // doesn't get lost when we re-merge
+        if(seenLine)
+          dstFile->modified = true;
 
         {
-          var.isStruct = false;
-          var.members = varmembers;
+          // resize up to account for the current line, if necessary
+          dstFile->lines.resize(RDCMAX(dstLine + 1, dstFile->lines.size()));
+
+          // if non-empty, append this line (to allow multiple lines on the same line
+          // number to be concatenated). To avoid screwing up line numbers we have to append with
+          // a comment and not a newline.
+
+          if(dstFile->lines[dstLine].empty())
+            dstFile->lines[dstLine] = srclines[srcLine];
+          else
+            dstFile->lines[dstLine] += " /* multiple #lines overlapping */ " + srclines[srcLine];
+        }
+
+        // advance line counter
+        dstLine++;
+
+        continue;
+      }
+
+      seenLine = true;
+
+      // we have a #line directive
+      c += 5;
+
+      if(c >= end)
+      {
+        // invalid #line, just advance line counter
+        dstLine++;
+        continue;
+      }
+
+      while(*c == '\t' || *c == ' ')
+        c++;
+
+      if(c >= end)
+      {
+        // invalid #line, just advance line counter
+        dstLine++;
+        continue;
+      }
+
+      // invalid #line, no line number. Skip/ignore and just advance line counter
+      if(*c < '0' || *c > '9')
+      {
+        dstLine++;
+        continue;
+      }
+
+      size_t newLineNum = 0;
+      while(*c >= '0' && *c <= '9')
+      {
+        newLineNum *= 10;
+        newLineNum += int((*c) - '0');
+        c++;
+      }
+
+      // convert to 0-indexed line number
+      if(newLineNum > 0)
+        newLineNum--;
+
+      while(*c == '\t' || *c == ' ')
+        c++;
+
+      if(*c == '"')
+      {
+        // filename
+        c++;
+
+        char *filename = c;
+
+        // parse out filename
+        while(*c != '"' && *c != 0)
+        {
+          if(*c == '\\')
+          {
+            // skip escaped characters
+            c += 2;
+          }
+          else
+          {
+            c++;
+          }
+        }
+
+        // parsed filename successfully
+        if(*c == '"')
+        {
+          *c = 0;
+
+          rdcstr fname = filename;
+          if(fname.empty())
+            fname = "unnamed_shader";
+
+          // find the new destination file
+          bool found = false;
+          size_t dstFileIdx = 0;
+
+          for(size_t f = 0; f < splitFiles.size(); f++)
+          {
+            if(splitFiles[f].filename == fname)
+            {
+              found = true;
+              dstFileIdx = f;
+              break;
+            }
+          }
+
+          if(found)
+          {
+            changedFile = (dstFile != &splitFiles[dstFileIdx]);
+            dstFile = &splitFiles[dstFileIdx];
+          }
+          else
+          {
+            RDCWARN("Couldn't find filename '%s' in #line directive in debug info", fname.c_str());
+
+            // make a dummy file to write into that won't be used.
+            splitFiles.push_back(SplitFile());
+            splitFiles.back().filename = fname;
+            splitFiles.back().modified = true;
+
+            changedFile = true;
+            dstFile = &splitFiles.back();
+          }
+
+          // set the next line number, and continue processing
+          dstLine = newLineNum;
+
+          continue;
+        }
+        else
+        {
+          // invalid #line, ignore
+          RDCERR("Couldn't parse #line directive: '%s'", srclines[srcLine].c_str());
+          continue;
         }
       }
+      else
+      {
+        // No filename. Set the next line number, and continue processing
+        dstLine = newLineNum;
+        continue;
+      }
+    }
+  }
+
+  for(size_t i = 0; i < sourceFiles.size(); i++)
+  {
+    if(sourceFiles[i].contents.empty() || splitFiles[i].modified)
+    {
+      merge(splitFiles[i].lines, sourceFiles[i].contents, '\n');
     }
   }
 }
@@ -604,8 +821,7 @@ FloatVector HighlightCache::InterpretVertex(const byte *data, uint32_t vert, con
 
     vert = indices[vert];
 
-    if(SupportsRestart(cfg.position.topology) && cfg.position.topology != Topology::TriangleFan &&
-       cfg.position.allowRestart)
+    if(cfg.position.topology != Topology::TriangleFan && cfg.position.allowRestart)
     {
       if((cfg.position.indexByteStride == 1 && vert == 0xff) ||
          (cfg.position.indexByteStride == 2 && vert == 0xffff) ||
@@ -733,7 +949,7 @@ void HighlightCache::CacheHighlightingData(uint32_t eventId, const MeshDisplay &
         maxIndex += add;
 
       uint32_t primRestart = 0;
-      if(SupportsRestart(cfg.position.topology) && cfg.position.allowRestart)
+      if(cfg.position.allowRestart)
       {
         if(cfg.position.indexByteStride == 1)
           primRestart = 0xff;
@@ -801,7 +1017,7 @@ bool HighlightCache::FetchHighlightPositions(const MeshDisplay &cfg, FloatVector
   activeVertex = InterpretVertex(data, idx, cfg, dataEnd, true, valid);
 
   uint32_t primRestart = 0;
-  if(SupportsRestart(meshtopo) && cfg.position.allowRestart)
+  if(cfg.position.allowRestart)
   {
     if(cfg.position.indexByteStride == 1)
       primRestart = 0xff;
@@ -1023,14 +1239,18 @@ bool HighlightCache::FetchHighlightPositions(const MeshDisplay &cfg, FloatVector
 
           // as above, unused since this is adjacency for previous triangle
           /*[3]=*/InterpretVertex(data, numidx - 5, cfg, dataEnd, true, valid),    // 9 in diagram
-          /*[4]=*/InterpretVertex(data, numidx - 4, cfg, dataEnd, true,
-                                  valid),    // 10 in diagram
-          /*[5]=*/InterpretVertex(data, numidx - 3, cfg, dataEnd, true,
-                                  valid),    // 11 in diagram
-          /*[6]=*/InterpretVertex(data, numidx - 2, cfg, dataEnd, true,
-                                  valid),    // 12 in diagram
-          /*[7]=*/InterpretVertex(data, numidx - 1, cfg, dataEnd, true,
-                                  valid),    // 13 in diagram
+
+          /*[4]=*/    // 10 in diagram
+          InterpretVertex(data, numidx - 4, cfg, dataEnd, true, valid),
+
+          /*[5]=*/    // 11 in diagram
+          InterpretVertex(data, numidx - 3, cfg, dataEnd, true, valid),
+
+          /*[6]=*/    // 12 in diagram
+          InterpretVertex(data, numidx - 2, cfg, dataEnd, true, valid),
+
+          /*[7]=*/    // 13 in diagram
+          InterpretVertex(data, numidx - 1, cfg, dataEnd, true, valid),
       };
 
       // these are the triangles on the far right of the MSDN diagram above
@@ -1136,6 +1356,17 @@ const Vec4f colorRamp[22] = {
     Vec4f(1.000000f, 0.376471f, 0.250980f, 1.0f), Vec4f(1.000000f, 0.125490f, 0.250980f, 1.0f),
     Vec4f(1.000000f, 0.376471f, 0.752941f, 1.0f), Vec4f(1.000000f, 0.627451f, 1.000000f, 1.0f),
     Vec4f(1.000000f, 0.878431f, 1.000000f, 1.0f), Vec4f(1.000000f, 1.000000f, 1.000000f, 1.0f),
+};
+
+// unique colors generated from https://mokole.com/palette.html
+const uint32_t uniqueColors[48] = {
+    0xff00008b, 0xff32cd32, 0xff8fbc8f, 0xff8b008b, 0xffb03060, 0xffd2b48c, 0xff9932cc, 0xffff0000,
+    0xffff8c00, 0xffffd700, 0xff00ff00, 0xff00ff7f, 0xff4169e1, 0xffe9967a, 0xffdc143c, 0xff00ffff,
+    0xff00bfff, 0xff0000ff, 0xffa020f0, 0xffadff2f, 0xffff6347, 0xffda70d6, 0xffff00ff, 0xfff0e68c,
+    0xffffff54, 0xff6495ed, 0xffdda0dd, 0xff90ee90, 0xff87ceeb, 0xffff1493, 0xff7fffd4, 0xffff69b4,
+    0xff808080, 0xffc0c0c0, 0xff2f4f4f, 0xff556b2f, 0xff8b4513, 0xff6b8e23, 0xff2e8b57, 0xff8b0000,
+    0xff483d8b, 0xff008000, 0xffb8860b, 0xff008b8b, 0xff4682b4, 0xffd2691e, 0xff9acd32, 0xffcd5c5c,
+
 };
 
 bytebuf GetDiscardPattern(DiscardType type, const ResourceFormat &fmt, uint32_t rowPitch, bool invert)
@@ -1597,3 +1828,433 @@ bytebuf GetDiscardPattern(DiscardType type, const ResourceFormat &fmt, uint32_t 
 
   return ret;
 }
+
+void DeriveNearFar(Vec4f pos, Vec4f pos0, float &nearp, float &farp, bool &found)
+{
+  //////////////////////////////////////////////////////////////////////////////////
+  // derive near/far, assuming a standard perspective matrix
+  //
+  // the transformation from from pre-projection {Z,W} to post-projection {Z,W}
+  // is linear. So we can say Zpost = Zpre*m + c . Here we assume Wpre = 1
+  // and we know Wpost = Zpre from the perspective matrix.
+  // we can then see from the perspective matrix that
+  // m = F/(F-N)
+  // c = -(F*N)/(F-N)
+  //
+  // with re-arranging and substitution, we then get:
+  // N = -c/m
+  // F = c/(1-m)
+  //
+  // so if we can derive m and c then we can determine N and F. We can do this with
+  // two points, and we pick them reasonably distinct on z to reduce floating-point
+  // error
+
+  // skip invalid vertices (w=0)
+  if(pos.w != 0.0f && fabsf(pos.w - pos0.w) > 0.01f && fabsf(pos.z - pos0.z) > 0.01f)
+  {
+    Vec2f A(pos0.w, pos0.z);
+    Vec2f B(pos.w, pos.z);
+
+    float m = (B.y - A.y) / (B.x - A.x);
+    float c = B.y - B.x * m;
+
+    if(m == 1.0f || c == 0.0f)
+      return;
+
+    if(-c / m <= 0.000001f)
+      return;
+
+    nearp = -c / m;
+    farp = c / (1 - m);
+
+    found = true;
+  }
+}
+
+#if ENABLED(ENABLE_UNIT_TESTS)
+
+#include "catch/catch.hpp"
+
+TEST_CASE("Check PreprocessLineDirectives", "[preprocess]")
+{
+  rdcarray<ShaderSourceFile> sources;
+
+  SECTION("Identity case, one file")
+  {
+    sources.push_back({"file.hlsl", "float4 foo;"});
+
+    PreprocessLineDirectives(sources);
+
+    CHECK(sources[0].filename == "file.hlsl");
+    CHECK(sources[0].contents == "float4 foo;");
+  }
+
+  SECTION("Identity case, two files")
+  {
+    sources.push_back({"file.hlsl", "float4 foo;"});
+    sources.push_back({"file2.hlsl", "int4 bar;"});
+
+    PreprocessLineDirectives(sources);
+
+    CHECK(sources[0].filename == "file.hlsl");
+    CHECK(sources[0].contents == "float4 foo;");
+    CHECK(sources[1].filename == "file2.hlsl");
+    CHECK(sources[1].contents == "int4 bar;");
+  }
+
+  SECTION("Identity case, empty filename")
+  {
+    sources.push_back({"file.hlsl", "float4 foo;"});
+    sources.push_back({"file2.hlsl", "int4 bar;"});
+    sources.push_back({"", "struct blah {};"});
+
+    PreprocessLineDirectives(sources);
+
+    CHECK(sources[0].filename == "file.hlsl");
+    CHECK(sources[0].contents == "float4 foo;");
+    CHECK(sources[1].filename == "file2.hlsl");
+    CHECK(sources[1].contents == "int4 bar;");
+    CHECK(sources[2].filename == "");
+    CHECK(sources[2].contents == "struct blah {};");
+  }
+
+  SECTION("Line number only, identity expansion")
+  {
+    sources.push_back({"file.hlsl", R"(#line 2
+float4 foo;
+#line 4
+int4 bar;)"});
+
+    PreprocessLineDirectives(sources);
+
+    CHECK(sources[0].filename == "file.hlsl");
+    CHECK(sources[0].contents == R"(
+float4 foo;
+
+int4 bar;)");
+  }
+
+  SECTION("Line number only, forward expansion")
+  {
+    sources.push_back({"file.hlsl", R"(#line 2
+float4 foo;
+#line 10
+int4 bar;)"});
+
+    PreprocessLineDirectives(sources);
+
+    CHECK(sources[0].filename == "file.hlsl");
+    CHECK(sources[0].contents == R"(
+float4 foo;
+
+
+
+
+
+
+
+int4 bar;)");
+  }
+
+  SECTION("Line number reversal")
+  {
+    sources.push_back({"file.hlsl", R"(#line 2
+float4 foo;
+
+
+
+
+
+#line 3
+int4 bar;)"});
+
+    PreprocessLineDirectives(sources);
+
+    CHECK(sources[0].filename == "file.hlsl");
+    CHECK(sources[0].contents == R"(
+float4 foo;
+int4 bar;)");
+  }
+
+  SECTION("Line number overlap")
+  {
+    sources.push_back({"file.hlsl", R"(#line 2
+float4 foo;
+
+
+
+
+
+#line 2
+int4 bar;)"});
+
+    PreprocessLineDirectives(sources);
+
+    CHECK(sources[0].filename == "file.hlsl");
+    CHECK(sources[0].contents == R"(
+float4 foo; /* multiple #lines overlapping */ int4 bar;)");
+  }
+
+  SECTION("Line and filename, single file")
+  {
+    rdcstr merged = R"(#line 2 "file.hlsl"
+float4 foo;
+
+
+#line 10 "file.hlsl"
+int4 bar;)";
+
+    sources.push_back({"merged.hlsl", merged});
+    sources.push_back({"file.hlsl", ""});
+
+    PreprocessLineDirectives(sources);
+
+    CHECK(sources[0].filename == "merged.hlsl");
+    CHECK(sources[0].contents == merged);
+    CHECK(sources[1].filename == "file.hlsl");
+    CHECK(sources[1].contents == R"(
+float4 foo;
+
+
+
+
+
+
+
+int4 bar;)");
+  }
+
+  SECTION("Line and filename, unreferenced file")
+  {
+    rdcstr merged = R"(#line 2 "file.hlsl"
+float4 foo;
+
+
+#line 10 "unknown.hlsl"
+int4 bar;)";
+
+    sources.push_back({"merged.hlsl", merged});
+    sources.push_back({"file.hlsl", ""});
+
+    // unknown.hlsl needs to be in the sources list to be filled in, shader debug information is
+    // assumed to at least include an empty referenced filename for used files
+
+    PreprocessLineDirectives(sources);
+
+    CHECK(sources[0].filename == "merged.hlsl");
+    CHECK(sources[0].contents == merged);
+    CHECK(sources[1].filename == "file.hlsl");
+    CHECK(sources[1].contents == R"(
+float4 foo;)");
+  }
+
+  SECTION("Line and filename, multiple files")
+  {
+    rdcstr merged = R"(#line 2 "file.hlsl"
+float4 foo;
+
+
+#line 10 "file2.hlsl"
+int4 bar;
+
+
+#line 10 "file.hlsl"
+struct blah {};)";
+
+    sources.push_back({"merged.hlsl", merged});
+    sources.push_back({"file.hlsl", ""});
+    sources.push_back({"file2.hlsl", ""});
+
+    PreprocessLineDirectives(sources);
+
+    CHECK(sources[0].filename == "merged.hlsl");
+    CHECK(sources[0].contents == merged);
+    CHECK(sources[1].filename == "file.hlsl");
+    CHECK(sources[1].contents == R"(
+float4 foo;
+
+
+
+
+
+
+
+struct blah {};)");
+    CHECK(sources[2].filename == "file2.hlsl");
+    CHECK(sources[2].contents == R"(
+
+
+
+
+
+
+
+
+int4 bar;)");
+  }
+
+  SECTION("Many-to-many file expansions")
+  {
+    rdcstr merged1 = R"(#line 2 "file.hlsl"
+float4 foo;
+
+
+#line 10 "file2.hlsl"
+int4 bar;
+
+
+#line 10 "file.hlsl"
+struct blah {};)";
+
+    rdcstr merged2 = R"(#line 3 "file.hlsl"
+// this was foo
+
+
+#line 11 "file2.hlsl"
+// this was bar
+
+
+#line 11 "file.hlsl"
+// this was a struct)";
+
+    sources.push_back({"merged1.hlsl", merged1});
+    sources.push_back({"merged2.hlsl", merged2});
+    sources.push_back({"file.hlsl", ""});
+    sources.push_back({"file2.hlsl", ""});
+
+    PreprocessLineDirectives(sources);
+
+    CHECK(sources[0].filename == "merged1.hlsl");
+    CHECK(sources[0].contents == merged1);
+    CHECK(sources[1].filename == "merged2.hlsl");
+    CHECK(sources[1].contents == merged2);
+    CHECK(sources[2].filename == "file.hlsl");
+    CHECK(sources[2].contents == R"(
+float4 foo;
+// this was foo
+
+
+
+
+
+
+struct blah {};
+// this was a struct)");
+    CHECK(sources[3].filename == "file2.hlsl");
+    CHECK(sources[3].contents == R"(
+
+
+
+
+
+
+
+
+int4 bar;
+// this was bar)");
+  }
+
+  SECTION("Preamble, with only line number changes")
+  {
+    sources.push_back({"file.hlsl", R"(
+// preamble
+#line 5
+float4 foo;
+
+
+
+
+
+#line 6
+int4 bar;)"});
+
+    PreprocessLineDirectives(sources);
+
+    CHECK(sources[0].filename == "file.hlsl");
+    CHECK(sources[0].contents == R"(
+// preamble
+
+
+float4 foo;
+int4 bar;)");
+  }
+
+  SECTION("Preamble with different filenames")
+  {
+    rdcstr merged = R"(
+// merged preamble
+
+#line 2 "file.hlsl"
+float4 foo;
+
+
+#line 10 "file2.hlsl"
+int4 bar;
+
+
+#line 10 "file.hlsl"
+struct blah {};)";
+
+    sources.push_back({"merged.hlsl", merged});
+    sources.push_back({"file.hlsl", ""});
+    sources.push_back({"file2.hlsl", ""});
+
+    PreprocessLineDirectives(sources);
+
+    CHECK(sources[0].filename == "merged.hlsl");
+    CHECK(sources[0].contents == merged);
+    CHECK(sources[1].filename == "file.hlsl");
+    CHECK(sources[1].contents == R"(
+float4 foo;
+
+
+
+
+
+
+
+struct blah {};)");
+    CHECK(sources[2].filename == "file2.hlsl");
+    CHECK(sources[2].contents == R"(
+
+
+
+
+
+
+
+
+int4 bar;)");
+  }
+
+  SECTION("Preamble with self filename")
+  {
+    rdcstr merged = R"(
+// merged preamble
+
+#line 5 "merged.hlsl"
+float4 foo;
+
+
+#line 10 "merged.hlsl"
+int4 bar;)";
+
+    sources.push_back({"merged.hlsl", merged});
+
+    PreprocessLineDirectives(sources);
+
+    CHECK(sources[0].filename == "merged.hlsl");
+    CHECK(sources[0].contents == R"(
+// merged preamble
+
+
+float4 foo;
+
+
+
+
+int4 bar;)");
+  }
+}
+
+#endif

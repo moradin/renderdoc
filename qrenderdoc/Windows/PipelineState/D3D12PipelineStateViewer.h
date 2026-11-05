@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,6 +34,7 @@ class D3D12PipelineStateViewer;
 
 class QXmlStreamWriter;
 
+class ComputeDebugSelector;
 class RDLabel;
 class RDTreeWidget;
 class RDTreeWidgetItem;
@@ -64,6 +65,7 @@ private slots:
   void on_showEmpty_toggled(bool checked);
   void on_exportHTML_clicked();
   void on_meshView_clicked();
+  void on_msMeshButton_clicked();
   void on_iaLayouts_itemActivated(RDTreeWidgetItem *item, int column);
   void on_iaBuffers_itemActivated(RDTreeWidgetItem *item, int column);
   void on_iaLayouts_mouseMove(QMouseEvent *event);
@@ -72,28 +74,34 @@ private slots:
 
   // manual slots
   void shaderView_clicked();
+  void rootSigView_clicked();
+  void predicateView_clicked();
   void shaderSave_clicked();
   void resource_itemActivated(RDTreeWidgetItem *item, int column);
   void cbuffer_itemActivated(RDTreeWidgetItem *item, int column);
   void vertex_leave(QEvent *e);
 
-  void on_debugThread_clicked();
+  void on_computeDebugSelector_clicked();
+  void computeDebugSelector_beginDebug(const rdcfixedarray<uint32_t, 3> &group,
+                                       const rdcfixedarray<uint32_t, 3> &thread);
 
 private:
   Ui::D3D12PipelineStateViewer *ui;
   ICaptureContext &m_Ctx;
   PipelineStateViewer &m_Common;
+  ComputeDebugSelector *m_ComputeDebugSelector;
 
-  void setShaderState(const rdcarray<D3D12Pipe::RootSignatureRange> &rootElements,
-                      const D3D12Pipe::Shader &stage, RDLabel *shader, RDLabel *rootSig,
-                      RDTreeWidget *tex, RDTreeWidget *samp, RDTreeWidget *cbuffer,
-                      RDTreeWidget *uavs);
+  void setOldMeshPipeFlow();
+  void setNewMeshPipeFlow();
 
-  void addResourceRow(const D3D12ViewTag &view, const Bindpoint *bind,
-                      const ShaderResource *shaderInput, RDTreeWidget *resources);
+  void setShaderState(const D3D12Pipe::Shader &stage, RDLabel *pipeline, RDLabel *shader,
+                      RDLabel *rootSig);
 
-  void clearShaderState(RDLabel *shader, RDLabel *rootSig, RDTreeWidget *tex, RDTreeWidget *samp,
-                        RDTreeWidget *cbuffer, RDTreeWidget *uavs);
+  void addResourceRow(const D3D12ViewTag &view, const ShaderResource *shaderInput, bool spacesUsed,
+                      RDTreeWidget *resources);
+
+  void clearShaderState(RDLabel *pipeline, RDLabel *shader, RDLabel *rootSig, RDTreeWidget *tex,
+                        RDTreeWidget *samp, RDTreeWidget *cbuffer, RDTreeWidget *uavs);
   void setState();
   void clearState();
 
@@ -105,23 +113,27 @@ private:
 
   void setViewDetails(RDTreeWidgetItem *node, const D3D12ViewTag &view, TextureDescription *tex);
   void setViewDetails(RDTreeWidgetItem *node, const D3D12ViewTag &view, BufferDescription *buf);
+  bool isByteAddress(const Descriptor &r, const ShaderResource *shaderInput);
 
   bool showNode(bool usedSlot, bool filledSlot);
 
   bool m_ShowUnused = false;
   bool m_ShowEmpty = false;
 
-  QVariantList exportViewHTML(const D3D12Pipe::View &view, bool rw,
+  QVariantList exportViewHTML(const Descriptor &descriptor, bool rw,
                               const ShaderResource *shaderInput, const QString &extraParams);
   void exportHTML(QXmlStreamWriter &xml, const D3D12Pipe::InputAssembly &ia);
-  void exportHTML(QXmlStreamWriter &xml, const D3D12Pipe::Shader &sh,
-                  const rdcarray<D3D12Pipe::RootSignatureRange> &els);
+  void exportHTML(QXmlStreamWriter &xml, const D3D12Pipe::Shader &sh);
   void exportHTML(QXmlStreamWriter &xml, const D3D12Pipe::StreamOut &so);
   void exportHTML(QXmlStreamWriter &xml, const D3D12Pipe::Rasterizer &rs);
   void exportHTML(QXmlStreamWriter &xml, const D3D12Pipe::OM &om);
+
+  QMap<QPair<ResourceId, uint32_t>, DescriptorLogicalLocation> m_Locations;
 
   // keep track of the VB nodes (we want to be able to highlight them easily on hover)
   QList<RDTreeWidgetItem *> m_VBNodes;
   // list of empty VB nodes that shouldn't be highlighted on hover
   QList<RDTreeWidgetItem *> m_EmptyNodes;
+
+  bool m_MeshPipe = false;
 };

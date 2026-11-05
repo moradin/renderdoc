@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -112,7 +112,7 @@ Scalar scalar(VarType t);
   }
 
 SCALAR_TYPE(void, Op::TypeVoid, 0, false);
-SCALAR_TYPE(bool, Op::TypeBool, 0, false);
+SCALAR_TYPE(bool, Op::TypeBool, 32, false);
 SCALAR_TYPE(uint8_t, Op::TypeInt, 8, false);
 SCALAR_TYPE(uint16_t, Op::TypeInt, 16, false);
 SCALAR_TYPE(uint32_t, Op::TypeInt, 32, false);
@@ -272,6 +272,9 @@ struct Decorations
     BufferBlock = 0x2,
     RowMajor = 0x4,
     ColMajor = 0x8,
+    Restrict = 0x10,
+    Aliased = 0x20,
+    UTF8 = 0x40,
 
     // which packed decorations have been set
     HasLocation = 0x01000000,
@@ -332,6 +335,8 @@ struct DataType
     ImageType,
     SamplerType,
     SampledImageType,
+    RayQueryType,
+    AccelerationStructureType,
   };
 
   struct Child
@@ -368,9 +373,38 @@ struct DataType
   const Vector &vector() const { return basicType.vector; }
   const Matrix &matrix() const { return basicType; }
   Id InnerType() const { return pointerType.baseId; }
+  bool IsU32() const
+  {
+    return type == Type::ScalarType && basicType.vector.scalar.width == 32 &&
+           basicType.vector.scalar.type == Op::TypeInt && !basicType.vector.scalar.signedness;
+  }
+  bool IsS32() const
+  {
+    return type == Type::ScalarType && basicType.vector.scalar.width == 32 &&
+           basicType.vector.scalar.type == Op::TypeInt && basicType.vector.scalar.signedness;
+  }
   bool IsOpaqueType() const
   {
-    return type == ImageType || type == SamplerType || type == SampledImageType;
+    switch(type)
+    {
+      case Type::ScalarType:
+      case Type::VectorType:
+      case Type::MatrixType:
+      case Type::StructType:
+      case Type::PointerType:
+      case Type::ArrayType: return false;
+      case Type::ImageType:
+      case Type::SamplerType:
+      case Type::SampledImageType:
+      case Type::RayQueryType:
+      case Type::AccelerationStructureType: return true;
+      default:
+      {
+        RDCWARN("Unknown SPIR-V type!");
+        break;
+      }
+    }
+    return false;
   }
   Id id;
   rdcstr name;
@@ -509,6 +543,23 @@ struct Section
   };
 };
 
+enum class ThreadScope : uint32_t
+{
+  Thread = 0,
+  Quad = 0x1,
+  Subgroup = 0x2,
+  Workgroup = 0x4,
+};
+
+BITMASK_OPERATORS(ThreadScope);
+
+enum class ComputeDerivativeMode : uint8_t
+{
+  None,
+  Linear,
+  Quad,
+};
+
 class Processor
 {
 public:
@@ -521,11 +572,33 @@ public:
   const rdcarray<EntryPoint> &GetEntries() { return entries; }
   const rdcarray<Variable> &GetGlobals() { return globals; }
   Id GetIDType(Id id) { return idTypes[id]; }
-  rdcarray<uint32_t> GetSPIRV() const { return m_SPIRV; }
+  DataType &GetDataType(Id id)
+  {
+    static DataType empty;
+    auto it = dataTypes.find(id);
+    if(it == dataTypes.end())
+      return empty;
+    return it->second;
+  }
+  const DataType &GetDataType(Id id) const
+  {
+    static DataType empty;
+    auto it = dataTypes.find(id);
+    if(it == dataTypes.end())
+      return empty;
+    return it->second;
+  }
+  const Decorations &GetDecorations(Id id) const { return decorations[id]; };
+  const rdcarray<uint32_t> &GetSPIRV() const { return m_SPIRV; }
 protected:
-  virtual void Parse(const rdcarray<uint32_t> &spirvWords);
+  bool Parse(rdcarray<uint32_t> &&spirvWords);
+  bool Parse(const void *spirvWords, size_t byteSize);
+  bool Parse(const rdcarray<uint32_t> &spirvWords);
+  bool Parse();
 
   rdcarray<uint32_t> m_SPIRV;
+
+  void UpdateMaxID(uint32_t maxId);
 
   // before parsing - e.g. to prepare any arrays that are max-id sized
   virtual void PreParse(uint32_t maxId);
@@ -537,6 +610,9 @@ protected:
   virtual void UnregisterOp(Iter iter);
   // after parsing - e.g. to do any deferred post-processing
   virtual void PostParse();
+
+  Iter GetID(Id id);
+  ConstIter GetID(Id id) const;
 
   ShaderVariable MakeNULL(const DataType &type, uint64_t value);
 
@@ -567,7 +643,17 @@ protected:
   SparseIdMap<SampledImage> sampledImageTypes;
   SparseIdMap<FunctionType> functionTypes;
 
+  enum ExtSet
+  {
+    ExtSet_GLSL450 = 0,
+    ExtSet_Printf = 1,
+    ExtSet_ShaderDbg = 2,
+    ExtSet_DebugBreak = 3,
+    ExtSet_Count,
+  };
+
   std::map<Id, rdcstr> extSets;
+  Id knownExtSet[ExtSet_Count];
 
   struct LogicalSection
   {
@@ -576,6 +662,8 @@ protected:
   };
 
   LogicalSection m_Sections[Section::Count];
+
+  ThreadScope m_ThreadScope = ThreadScope::Thread;
 
 private:
   struct DeferredMemberDecoration
@@ -586,6 +674,7 @@ private:
   };
 
   rdcarray<DeferredMemberDecoration> m_MemberDecorations;
+  bool m_DeferMemberDecorations = false;
 };
 
 };    // namespace rdcspv

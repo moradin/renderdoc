@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -54,18 +54,18 @@ struct RenderDocAnalysis : IDXGraphicsAnalysis
   // IDXGraphicsAnalysis
   void STDMETHODCALLTYPE BeginCapture()
   {
-    void *dev = NULL, *wnd = NULL;
-    RenderDoc::Inst().GetActiveWindow(dev, wnd);
+    DeviceOwnedWindow devWnd;
+    RenderDoc::Inst().GetActiveWindow(devWnd);
 
-    RenderDoc::Inst().StartFrameCapture(dev, wnd);
+    RenderDoc::Inst().StartFrameCapture(devWnd);
   }
 
   void STDMETHODCALLTYPE EndCapture()
   {
-    void *dev = NULL, *wnd = NULL;
-    RenderDoc::Inst().GetActiveWindow(dev, wnd);
+    DeviceOwnedWindow devWnd;
+    RenderDoc::Inst().GetActiveWindow(devWnd);
 
-    RenderDoc::Inst().EndFrameCapture(dev, wnd);
+    RenderDoc::Inst().EndFrameCapture(devWnd);
   }
 };
 

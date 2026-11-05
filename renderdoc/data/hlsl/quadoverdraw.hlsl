@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,7 +29,17 @@
 // https://github.com/selfshadow/demos/blob/master/QuadShading/QuadShading.fx
 ////////////////////////////////////////////////////////////////////////////////////////////
 
+#if !defined(UAV_SPACE) && defined(D3D12)
+// must match the define in hlsl_cbuffers.h
+#define UAV_SPACE space105202922
+#endif
+
+#if defined(D3D12)
+RWTexture2DArray<uint> overdrawUAV : register(u0, UAV_SPACE);
+#else
 RWTexture2DArray<uint> overdrawUAV : register(u0);
+#endif
+
 Texture2DArray<uint> overdrawSRV : register(t0);
 
 [earlydepthstencil] void RENDERDOC_QuadOverdrawPS(float4 vpos
@@ -39,7 +49,10 @@ Texture2DArray<uint> overdrawSRV : register(t0);
   // (* For more details, see:
   // "Shader Amortization using Pixel Quad Message Passing", Eric Penner, GPU Pro 2.)
   uint2 p = uint2(vpos.xy) & 1;
-  int2 sign = p ? -1 : 1;
+  int2 sign;
+  sign.x = p.x ? -1 : 1;
+  sign.y = p.y ? -1 : 1;
+
   uint c1 = c0 + sign.x * ddx_fine(c0);
   uint c2 = c0 + sign.y * ddy_fine(c0);
   uint c3 = c2 + sign.x * ddx_fine(c2);

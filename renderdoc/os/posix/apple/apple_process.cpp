@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,6 +29,7 @@
 #include <unistd.h>
 #include "common/common.h"
 #include "common/formatting.h"
+#include "core/core.h"
 #include "os/os_specific.h"
 
 char **GetCurrentEnvironment()
@@ -68,8 +69,8 @@ int GetIdentPort(pid_t childPid)
   rdcstr lsof = StringFormat::Fmt("lsof -p %d -a -i 4 -F n", (int)childPid);
   rdcstr result;
   uint32_t wait = 1;
-  // Wait for a maximum of ~8 seconds
-  for(int i = 0; i < 13; ++i)
+  // Wait for a maximum of ~16 seconds
+  for(int i = 0; i < 14; ++i)
   {
     result = execcmd(lsof.c_str());
     if(!result.empty())
@@ -89,11 +90,11 @@ int GetIdentPort(pid_t childPid)
   // n*:<PORT>
 
   rdcstr parseResult(result);
-  const size_t len = parseResult.length();
+  const int len = parseResult.count();
   if(parseResult[0] == 'p')
   {
-    size_t tokenStart = 1;
-    size_t i = tokenStart;
+    int tokenStart = 1;
+    int i = tokenStart;
     for(; i < len; i++)
     {
       if(parseResult[i] < '0' || parseResult[i] > '9')
@@ -113,7 +114,7 @@ int GetIdentPort(pid_t childPid)
         const int netStart = parseResult.find(netString, i);
         if(netStart >= 0)
         {
-          tokenStart = netStart + strlen(netString);
+          tokenStart = netStart + (int)strlen(netString);
           i = tokenStart;
           for(; i < len; i++)
           {
@@ -153,7 +154,7 @@ void StopAtMainInChild()
 {
 }
 
-bool StopChildAtMain(pid_t childPid)
+bool StopChildAtMain(pid_t childPid, bool *exitWithNoExec)
 {
   return false;
 }
@@ -162,25 +163,43 @@ void ResumeProcess(pid_t childPid, uint32_t delay)
 {
 }
 
-void CacheDebuggerPresent()
-{
-}
+// Apple requires that this only be called in debug builds
+#define DEBUGGER_DETECTION (DISABLED(RDOC_RELEASE))
+
+// OSUtility::DebuggerPresent is called a lot
+// cache the value at startup as an optimisation
+#if DEBUGGER_DETECTION
+static bool s_debuggerPresent = false;
+static bool s_debuggerCached = false;
+#endif
 
 // from https://developer.apple.com/library/mac/qa/qa1361/_index.html on how to detect the debugger
-bool OSUtility::DebuggerPresent()
+void CacheDebuggerPresent()
 {
-// apple requires that this only be called in debug builds
-#if ENABLED(RDOC_RELEASE)
-  return false;
-#else
+#if DEBUGGER_DETECTION
   int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
   kinfo_proc info = {};
   size_t size = sizeof(info);
-  sysctl(mib, ARRAY_COUNT(mib), &info, &size, NULL, 0);
-
-  return info.kp_proc.p_flag & P_TRACED;
+  if(!sysctl(mib, ARRAY_COUNT(mib), &info, &size, NULL, 0))
+  {
+    s_debuggerPresent = (info.kp_proc.p_flag & P_TRACED);
+    s_debuggerCached = true;
+  }
 #endif
 }
+
+bool OSUtility::DebuggerPresent()
+{
+#if DEBUGGER_DETECTION
+  if(!s_debuggerCached)
+    CacheDebuggerPresent();
+  return s_debuggerPresent;
+#else
+  return false;
+#endif
+}
+
+#undef DEBUGGER_DETECTION
 
 rdcstr Process::GetEnvVariable(const rdcstr &name)
 {
@@ -199,4 +218,11 @@ uint64_t Process::GetMemoryUsage()
     return 0;
 
   return taskInfo.resident_size;
+}
+
+// Helper method to avoid #include file conflicts between
+// <Carbon/Carbon.h> and "core/core.h"
+bool ShouldOutputDebugMon()
+{
+  return OSUtility::DebuggerPresent() && RenderDoc::Inst().IsReplayApp();
 }

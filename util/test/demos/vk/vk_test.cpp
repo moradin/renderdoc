@@ -1,28 +1,46 @@
 /******************************************************************************
-* The MIT License (MIT)
-*
-* Copyright (c) 2019-2021 Baldur Karlsson
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-* THE SOFTWARE.
-******************************************************************************/
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2018-2026 Baldur Karlsson
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ ******************************************************************************/
 
 #include "../test_common.h"
+
+std::string VKFullscreenQuadVertex = R"EOSHADER(
+
+#version 460 core
+
+void main()
+{
+	vec2 positions[] = {
+		vec2(-1.0f,  1.0f),
+		vec2( 1.0f,  1.0f),
+		vec2(-1.0f, -1.0f),
+		vec2( 1.0f, -1.0f),
+	};
+
+	gl_Position = vec4(positions[gl_VertexIndex], 0, 1);
+}
+
+)EOSHADER";
 
 static std::string common = R"EOSHADER(
 
@@ -75,6 +93,9 @@ void main()
 
 #pragma warning(push)
 #pragma warning(disable : 4127)
+#pragma warning(disable : 4189)
+#pragma warning(disable : 4324)
+#pragma warning(disable : 4505)
 
 #include "vk_headers.h"
 
@@ -84,8 +105,14 @@ void main()
 
 #if defined(WIN32)
 #include "../win32/win32_window.h"
-#else
+#elif defined(ANDROID)
+#include "../android/android_window.h"
+#elif defined(__linux__)
 #include "../linux/linux_window.h"
+#elif defined(__APPLE__)
+#include "../apple/apple_window.h"
+#else
+#error UNKNOWN PLATFORM
 #endif
 
 static VkBool32 VKAPI_PTR vulkanCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
@@ -93,6 +120,9 @@ static VkBool32 VKAPI_PTR vulkanCallback(VkDebugUtilsMessageSeverityFlagBitsEXT 
                                          const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData,
                                          void *pUserData)
 {
+  if(strstr(pCallbackData->pMessageIdName, "-01779"))
+    return false;
+
   TEST_WARN("Vulkan message: [%s] %s", pCallbackData->pMessageIdName, pCallbackData->pMessage);
 
   return false;
@@ -139,10 +169,23 @@ void VulkanGraphicsTest::Prepare(int argc, char **argv)
 
 #if defined(WIN32)
       enabledInstExts.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
-#else
+#elif defined(ANDROID)
+      enabledInstExts.push_back(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
+#elif defined(__linux__)
       enabledInstExts.push_back(VK_KHR_XCB_SURFACE_EXTENSION_NAME);
 
       X11Window::Init();
+#elif defined(__APPLE__)
+#if defined(VK_USE_PLATFORM_METAL_EXT)
+      enabledInstExts.push_back(VK_EXT_METAL_SURFACE_EXTENSION_NAME);
+#endif
+#if defined(VK_USE_PLATFORM_MACOS_MVK)
+      enabledInstExts.push_back(VK_MVK_MACOS_SURFACE_EXTENSION_NAME);
+#endif
+
+      AppleWindow::Init();
+#else
+#error UNKNOWN PLATFORM
 #endif
 
       std::vector<const char *> optInstExts;
@@ -152,6 +195,9 @@ void VulkanGraphicsTest::Prepare(int argc, char **argv)
 
       // enable debug utils when possible
       optInstExts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+
+      // ditto validation features
+      optInstExts.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
 
       CHECK_VKR(vkh::enumerateInstanceLayerProperties(availInstLayers));
 
@@ -253,6 +299,30 @@ void VulkanGraphicsTest::Prepare(int argc, char **argv)
           enabledInstExts.push_back(search);
       }
 
+      VkValidationFeaturesEXT featuresEXT = {VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};
+      VkValidationFeatureEnableEXT enableFeatures[] = {
+          VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT,
+          VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT,
+      };
+      featuresEXT.enabledValidationFeatureCount = ARRAY_COUNT(enableFeatures);
+      featuresEXT.pEnabledValidationFeatures = enableFeatures;
+
+      // allow command line override
+      for(int i = 0; i < argc; i++)
+      {
+        if(!strcmp(argv[i], "--gpuva"))
+        {
+          for(const char *a : enabledInstExts)
+          {
+            if(std::string(a) == VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME)
+            {
+              featuresEXT.pNext = instInfoNext;
+              instInfoNext = &featuresEXT;
+            }
+          }
+        }
+      }
+
       vulkanVersion = volkGetInstanceVersion();
 
       vkh::ApplicationInfo app("RenderDoc autotesting", VK_MAKE_VERSION(1, 0, 0),
@@ -336,9 +406,9 @@ void VulkanGraphicsTest::Prepare(int argc, char **argv)
   if(!volk)
     Avail = "volk did not initialise - vulkan library is not available";
   else if(!spv)
-    Avail = InternalSpvCompiler() ? "Internal SPIR-V compiler did not initialise"
-                                  : "Couldn't find 'glslc' or 'glslangValidator' in PATH - "
-                                    "required for SPIR-V compilation";
+    Avail =
+        "Couldn't find 'glslc' or 'glslangValidator' in PATH - "
+        "required for SPIR-V compilation";
   else if(instance == VK_NULL_HANDLE)
     Avail = "Vulkan instance did not initialise";
   else if(phys == VK_NULL_HANDLE)
@@ -548,6 +618,64 @@ void VulkanGraphicsTest::Prepare(int argc, char **argv)
       }
     }
   }
+
+  std::vector<VkQueueFamilyProperties> queueProps;
+  vkh::getQueueFamilyProperties(queueProps, phys);
+
+  for(uint32_t q = 0; q < queueProps.size(); q++)
+  {
+    if(queueProps[q].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+    {
+      if(graphicsQueueFamilyIndex == ~0U)
+        graphicsQueueFamilyIndex = q;
+    }
+    else if(queueProps[q].queueFlags & VK_QUEUE_COMPUTE_BIT)
+    {
+      if(computeQueueFamilyIndex == ~0U)
+        computeQueueFamilyIndex = q;
+    }
+    else if(queueProps[q].queueFlags & VK_QUEUE_TRANSFER_BIT)
+    {
+      if(transferQueueFamilyIndex == ~0U)
+        transferQueueFamilyIndex = q;
+    }
+  }
+
+  // if no queue has been selected, find it now
+  if(queueFamilyIndex == ~0U)
+  {
+    // try to find an exact match first
+    for(uint32_t q = 0; q < queueProps.size(); q++)
+    {
+      VkQueueFlags flags = queueProps[q].queueFlags;
+
+      if(flags == queueFlagsRequired)
+      {
+        queueFamilyIndex = q;
+        queueCount = 1;
+        break;
+      }
+    }
+  }
+
+  if(queueFamilyIndex == ~0U)
+  {
+    // if we didn't find an exact match, look for any that does satisfy what we want
+    for(uint32_t q = 0; q < queueProps.size(); q++)
+    {
+      VkQueueFlags flags = queueProps[q].queueFlags;
+
+      if(((flags & queueFlagsRequired) == queueFlagsRequired) && ((flags & queueFlagsBanned) == 0))
+      {
+        queueFamilyIndex = q;
+        queueCount = 1;
+        break;
+      }
+    }
+  }
+
+  if(queueFamilyIndex == ~0U)
+    Avail = "No satisfactory queue family available";
 }
 
 bool VulkanGraphicsTest::Init()
@@ -559,36 +687,11 @@ bool VulkanGraphicsTest::Init()
   if(debugDevice)
   {
     CHECK_VKR(vkCreateDebugUtilsMessengerEXT(
-        instance, vkh::DebugUtilsMessengerCreateInfoEXT(
-                      &vulkanCallback, NULL, VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT),
+        instance,
+        vkh::DebugUtilsMessengerCreateInfoEXT(&vulkanCallback, NULL,
+                                              VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                                  VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT),
         NULL, &debugUtilsMessenger));
-  }
-
-  std::vector<VkQueueFamilyProperties> queueProps;
-  vkh::getQueueFamilyProperties(queueProps, phys);
-
-  VkQueueFlags required = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
-
-  // if no queue has been selected, find it now
-  if(queueFamilyIndex == ~0U)
-  {
-    for(uint32_t q = 0; q < queueProps.size(); q++)
-    {
-      VkQueueFlags flags = queueProps[q].queueFlags;
-      if((flags & required) == required)
-      {
-        queueFamilyIndex = q;
-        queueCount = 1;
-        break;
-      }
-    }
-  }
-
-  if(queueFamilyIndex == ~0U)
-  {
-    TEST_ERROR("No graphics/compute queues available");
-    return false;
   }
 
   std::vector<VkExtensionProperties> supportedExts;
@@ -611,24 +714,48 @@ bool VulkanGraphicsTest::Init()
       devExts.push_back(search);
   }
 
+  const std::vector<float> priorities = {
+      1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+      1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+  };
+
+  std::vector<VkDeviceQueueCreateInfo> queueCreates = {
+      vkh::DeviceQueueCreateInfo(queueFamilyIndex, queueCount, priorities),
+  };
+
+  if(queueFamilyIndex != graphicsQueueFamilyIndex && forceGraphicsQueue)
+    queueCreates.push_back(vkh::DeviceQueueCreateInfo(graphicsQueueFamilyIndex, 1, priorities));
+  if(queueFamilyIndex != computeQueueFamilyIndex &&
+     (graphicsQueueFamilyIndex != computeQueueFamilyIndex || !forceGraphicsQueue) &&
+     computeQueueFamilyIndex != ~0U && forceComputeQueue)
+    queueCreates.push_back(vkh::DeviceQueueCreateInfo(computeQueueFamilyIndex, 1, priorities));
+  if(queueFamilyIndex != transferQueueFamilyIndex &&
+     graphicsQueueFamilyIndex != transferQueueFamilyIndex &&
+     computeQueueFamilyIndex != transferQueueFamilyIndex && transferQueueFamilyIndex != ~0U &&
+     forceTransferQueue)
+    queueCreates.push_back(vkh::DeviceQueueCreateInfo(transferQueueFamilyIndex, 1, priorities));
+
   CHECK_VKR(vkCreateDevice(
-      phys, vkh::DeviceCreateInfo({vkh::DeviceQueueCreateInfo(queueFamilyIndex, queueCount)},
-                                  enabledLayers, devExts, features)
-                .next(devInfoNext),
-      NULL, &device));
+      phys, vkh::DeviceCreateInfo(queueCreates, devExts, features).next(devInfoNext), NULL, &device));
 
   volkLoadDevice(device);
 
   vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
-  mainWindow = MakeWindow(screenWidth, screenHeight, "Autotesting");
 
-  if(!mainWindow->Initialised())
+  if(!headless)
   {
-    TEST_ERROR("Error creating surface");
-    return false;
-  };
+    mainWindow = MakeWindow(screenWidth, screenHeight, screenTitle);
+
+    if(!mainWindow->Initialised())
+    {
+      TEST_ERROR("Error creating surface");
+      return false;
+    }
+  }
 
   VmaVulkanFunctions funcs = {
+      vkGetInstanceProcAddr,
+      vkGetDeviceProcAddr,
       vkGetPhysicalDeviceProperties,
       vkGetPhysicalDeviceMemoryProperties,
       vkAllocateMemory,
@@ -645,21 +772,66 @@ bool VulkanGraphicsTest::Init()
       vkDestroyBuffer,
       vkCreateImage,
       vkDestroyImage,
+      vkCmdCopyBuffer,
       vkGetBufferMemoryRequirements2KHR,
       vkGetImageMemoryRequirements2KHR,
+      vkBindBufferMemory2KHR,
+      vkBindImageMemory2KHR,
+      vkGetPhysicalDeviceMemoryProperties2KHR,
+      vkGetDeviceBufferMemoryRequirements,
+      vkGetDeviceImageMemoryRequirements,
   };
 
   VmaAllocatorCreateInfo allocInfo = {};
+  allocInfo.instance = instance;
   allocInfo.physicalDevice = phys;
   allocInfo.device = device;
-  allocInfo.frameInUseCount = 4;
   allocInfo.pVulkanFunctions = &funcs;
+  allocInfo.vulkanApiVersion = devVersion;
   if(hasExt(VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME) && vmaDedicated)
     allocInfo.flags |= VMA_ALLOCATOR_CREATE_KHR_DEDICATED_ALLOCATION_BIT;
+  if((hasExt(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME) || devVersion >= VK_MAKE_VERSION(1, 2, 0)) &&
+     vmaBDA)
+    allocInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 
   vmaCreateAllocator(&allocInfo, &allocator);
 
-  TEST_LOG("Running Vulkan test on %s", physProperties.deviceName);
+  TEST_LOG("Running Vulkan test on %s (version %d.%d)", physProperties.deviceName,
+           VK_VERSION_MAJOR(physProperties.apiVersion), VK_VERSION_MINOR(physProperties.apiVersion));
+
+  headlessCmds = new VulkanCommands(this);
+
+  if(!headless)
+  {
+    VkPipelineLayout layout = createPipelineLayout(vkh::PipelineLayoutCreateInfo());
+
+    vkh::GraphicsPipelineCreateInfo pipeCreateInfo;
+
+    pipeCreateInfo.layout = layout;
+    pipeCreateInfo.renderPass = mainWindow->rp;
+
+    pipeCreateInfo.vertexInputState.vertexBindingDescriptions = {vkh::vertexBind(0, DefaultA2V)};
+    pipeCreateInfo.vertexInputState.vertexAttributeDescriptions = {
+        vkh::vertexAttr(0, 0, DefaultA2V, pos),
+        vkh::vertexAttr(1, 0, DefaultA2V, col),
+        vkh::vertexAttr(2, 0, DefaultA2V, uv),
+    };
+
+    pipeCreateInfo.stages = {
+        CompileShaderModule(VKDefaultVertex, ShaderLang::glsl, ShaderStage::vert, "main"),
+        CompileShaderModule(VKDefaultPixel, ShaderLang::glsl, ShaderStage::frag, "main"),
+    };
+
+    DefaultTriPipe = createGraphicsPipeline(pipeCreateInfo);
+
+    DefaultTriVB = AllocatedBuffer(
+        this,
+        vkh::BufferCreateInfo(sizeof(DefaultTri),
+                              VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
+
+    DefaultTriVB.upload(DefaultTri);
+  }
 
   return true;
 }
@@ -668,8 +840,14 @@ VulkanWindow *VulkanGraphicsTest::MakeWindow(int width, int height, const char *
 {
 #if defined(WIN32)
   GraphicsWindow *platWin = new Win32Window(width, height, title);
-#else
+#elif defined(ANDROID)
+  GraphicsWindow *platWin = new AndroidWindow(width, height, title);
+#elif defined(__linux__)
   GraphicsWindow *platWin = new X11Window(width, height, 0, title);
+#elif defined(__APPLE__)
+  GraphicsWindow *platWin = new AppleWindow(width, height, title);
+#else
+#error UNKNOWN PLATFORM
 #endif
 
   return new VulkanWindow(this, platWin);
@@ -718,6 +896,9 @@ void VulkanGraphicsTest::Shutdown()
       vmaDestroyBuffer(allocator, it.first, it.second);
 
     vmaDestroyAllocator(allocator);
+
+    if(headlessCmds)
+      delete headlessCmds;
 
     delete mainWindow;
 
@@ -770,37 +951,42 @@ void VulkanGraphicsTest::FinishUsingBackbuffer(VkCommandBuffer cmd, VkAccessFlag
 }
 
 void VulkanGraphicsTest::Submit(int index, int totalSubmits, const std::vector<VkCommandBuffer> &cmds,
-                                const std::vector<VkCommandBuffer> &seccmds, VulkanWindow *window,
-                                VkQueue q, bool sync2)
+                                const std::vector<VkCommandBuffer> &seccmds)
 {
-  if(window == NULL)
-    window = mainWindow;
-
-  if(q == VK_NULL_HANDLE)
-    q = queue;
-
-  window->Submit(index, totalSubmits, cmds, seccmds, q, sync2);
+  if(mainWindow)
+    mainWindow->Submit(index, totalSubmits, cmds, seccmds, queue);
+  else
+    headlessCmds->Submit(cmds, seccmds, queue, VK_NULL_HANDLE, VK_NULL_HANDLE);
 }
 
-void VulkanGraphicsTest::Present(VulkanWindow *window, VkQueue q)
+void VulkanGraphicsTest::SubmitAndPresent(const std::vector<VkCommandBuffer> &cmds)
 {
-  if(!window)
-    window = mainWindow;
-
-  if(q == VK_NULL_HANDLE)
-    q = queue;
-
-  window->Present(q);
+  Submit(0, 1, cmds, {});
+  Present();
 }
 
-VkPipelineShaderStageCreateInfo VulkanGraphicsTest::CompileShaderModule(
-    const std::string &source_text, ShaderLang lang, ShaderStage stage, const char *entry_point,
-    const std::map<std::string, std::string> &macros, SPIRVTarget target)
+void VulkanGraphicsTest::Present()
+{
+  mainWindow->Present(queue);
+}
+
+VkPipelineShaderStageCreateInfo VulkanGraphicsTest::LoadShaderModule(const std::string &filename,
+                                                                     ShaderStage stage,
+                                                                     const char *entry_point)
 {
   VkShaderModule ret = VK_NULL_HANDLE;
 
-  std::vector<uint32_t> spirv =
-      ::CompileShaderToSpv(source_text, target, lang, stage, entry_point, macros);
+  std::vector<uint32_t> spirv;
+
+  FILE *f = fopen(filename.c_str(), "rb");
+  if(f)
+  {
+    fseek(f, 0, SEEK_END);
+    spirv.resize(ftell(f) / sizeof(uint32_t));
+    fseek(f, 0, SEEK_SET);
+    fread(spirv.data(), sizeof(uint32_t), spirv.size(), f);
+    fclose(f);
+  }
 
   if(spirv.empty())
     return {};
@@ -821,36 +1007,102 @@ VkPipelineShaderStageCreateInfo VulkanGraphicsTest::CompileShaderModule(
   return vkh::PipelineShaderStageCreateInfo(ret, vkstage[(int)stage], entry_point);
 }
 
+VkPipelineShaderStageCreateInfo VulkanGraphicsTest::CompileShaderModule(
+    const std::string &source_text, ShaderLang lang, ShaderStage stage, const char *entry_point,
+    const std::map<std::string, std::string> &macros, SPIRVTarget target, uint32_t compileOptions)
+{
+  VkShaderModule ret = VK_NULL_HANDLE;
+
+  const bool separateDebug = ((compileOptions & CompileOptionFlags::SeparateDebug) != 0);
+  const bool relativeDebugName = ((compileOptions & CompileOptionFlags::RelativeDebugName) != 0);
+
+  std::vector<uint32_t> spirv =
+      ::CompileShaderToSpv(demoName, source_text, target, lang, stage, entry_point, macros);
+
+  if(spirv.empty())
+    return {};
+
+  std::string path;
+  if(separateDebug)
+  {
+    path = tmpPath + "/";
+
+    std::string filenames[] = {
+        "shader_vs.dbg", "shader_hs.dbg", "shader_ds.dbg", "shader_gs.dbg",
+        "shader_ps.dbg", "shader_cs.dbg", "shader_ms.dbg", "shader_as.dbg",
+    };
+
+    path += filenames[(int)stage];
+
+    FILE *f = fopen(path.c_str(), "wb");
+    if(f)
+    {
+      fwrite(spirv.data(), 1, spirv.size() * sizeof(uint32_t), f);
+      fclose(f);
+    }
+
+    spirv =
+        ::CompileShaderToSpv(demoName, source_text, target, lang, stage, entry_point, macros, false);
+  }
+
+  CHECK_VKR(vkCreateShaderModule(device, vkh::ShaderModuleCreateInfo(spirv), NULL, &ret));
+
+  if(relativeDebugName)
+  {
+    path.erase(0, path.find_last_of("/\\") + 1);
+    // keep the demo name so we don't have to set up tons of search paths
+    path = std::string(demoName) + "/" + path;
+  }
+
+  if(vkSetDebugUtilsObjectTagEXT && !path.empty())
+  {
+    VkDebugUtilsObjectTagInfoEXT info = {};
+    info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_TAG_INFO_EXT;
+    info.objectType = VK_OBJECT_TYPE_SHADER_MODULE;
+    info.objectHandle = (uint64_t)ret;
+    info.pTag = path.c_str();
+    info.tagSize = path.size();
+    info.tagName = RENDERDOC_ShaderDebugMagicValue_truncated;
+    vkSetDebugUtilsObjectTagEXT(device, &info);
+  }
+
+  shaders.push_back(ret);
+
+  VkShaderStageFlagBits vkstage[] = {
+      VK_SHADER_STAGE_VERTEX_BIT,
+      VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+      VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+      VK_SHADER_STAGE_GEOMETRY_BIT,
+      VK_SHADER_STAGE_FRAGMENT_BIT,
+      VK_SHADER_STAGE_COMPUTE_BIT,
+      VK_SHADER_STAGE_MESH_BIT_EXT,
+      VK_SHADER_STAGE_TASK_BIT_EXT,
+  };
+
+  return vkh::PipelineShaderStageCreateInfo(ret, vkstage[(int)stage], entry_point);
+}
+
 VkCommandBuffer VulkanGraphicsTest::GetCommandBuffer(VkCommandBufferLevel level, VulkanWindow *window)
 {
   if(window == NULL)
     window = mainWindow;
 
-  return window->GetCommandBuffer(level);
-}
+  if(window)
+    return window->GetCommandBuffer(level);
 
-VkCommandBuffer VulkanWindow::GetCommandBuffer(VkCommandBufferLevel level)
-{
-  std::vector<VkCommandBuffer> &buflist = freeCommandBuffers[level];
-
-  if(buflist.empty())
-  {
-    buflist.resize(4);
-
-    CHECK_VKR(vkAllocateCommandBuffers(
-        m_Test->device, vkh::CommandBufferAllocateInfo(cmdPool, 4, level), &buflist[0]));
-  }
-
-  VkCommandBuffer ret = buflist.back();
-  buflist.pop_back();
-
-  return ret;
+  return headlessCmds->GetCommandBuffer(level);
 }
 
 template <>
 void VulkanGraphicsTest::setName(VkPipeline obj, const std::string &name)
 {
   setName(VK_OBJECT_TYPE_PIPELINE, (uint64_t)obj, name);
+}
+
+template <>
+void VulkanGraphicsTest::setName(VkPipelineLayout obj, const std::string &name)
+{
+  setName(VK_OBJECT_TYPE_PIPELINE_LAYOUT, (uint64_t)obj, name);
 }
 
 template <>
@@ -866,6 +1118,12 @@ void VulkanGraphicsTest::setName(VkImage obj, const std::string &name)
 }
 
 template <>
+void VulkanGraphicsTest::setName(VkImageView obj, const std::string &name)
+{
+  setName(VK_OBJECT_TYPE_IMAGE_VIEW, (uint64_t)obj, name);
+}
+
+template <>
 void VulkanGraphicsTest::setName(VkSampler obj, const std::string &name)
 {
   setName(VK_OBJECT_TYPE_SAMPLER, (uint64_t)obj, name);
@@ -875,6 +1133,72 @@ template <>
 void VulkanGraphicsTest::setName(VkBuffer obj, const std::string &name)
 {
   setName(VK_OBJECT_TYPE_BUFFER, (uint64_t)obj, name);
+}
+
+template <>
+void VulkanGraphicsTest::setName(VkBufferView obj, const std::string &name)
+{
+  setName(VK_OBJECT_TYPE_BUFFER_VIEW, (uint64_t)obj, name);
+}
+
+template <>
+void VulkanGraphicsTest::setName(VkSemaphore obj, const std::string &name)
+{
+  setName(VK_OBJECT_TYPE_SEMAPHORE, (uint64_t)obj, name);
+}
+
+template <>
+void VulkanGraphicsTest::setName(VkFence obj, const std::string &name)
+{
+  setName(VK_OBJECT_TYPE_FENCE, (uint64_t)obj, name);
+}
+
+template <>
+void VulkanGraphicsTest::setName(VkAccelerationStructureKHR obj, const std::string &name)
+{
+  setName(VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR, (uint64_t)obj, name);
+}
+
+template <>
+void VulkanGraphicsTest::setName(VkDescriptorSetLayout obj, const std::string &name)
+{
+  setName(VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, (uint64_t)obj, name);
+}
+
+template <>
+void VulkanGraphicsTest::setName(VkDescriptorSet obj, const std::string &name)
+{
+  setName(VK_OBJECT_TYPE_DESCRIPTOR_SET, (uint64_t)obj, name);
+}
+
+template <>
+void VulkanGraphicsTest::setName(VkRenderPass obj, const std::string &name)
+{
+  setName(VK_OBJECT_TYPE_RENDER_PASS, (uint64_t)obj, name);
+}
+
+template <>
+void VulkanGraphicsTest::setName(VkCommandBuffer obj, const std::string &name)
+{
+  setName(VK_OBJECT_TYPE_COMMAND_BUFFER, (uint64_t)obj, name);
+}
+
+template <>
+void VulkanGraphicsTest::setName(VkCommandPool obj, const std::string &name)
+{
+  setName(VK_OBJECT_TYPE_COMMAND_POOL, (uint64_t)obj, name);
+}
+
+template <>
+void VulkanGraphicsTest::setName(VkQueue obj, const std::string &name)
+{
+  setName(VK_OBJECT_TYPE_QUEUE, (uint64_t)obj, name);
+}
+
+template <>
+void VulkanGraphicsTest::setName(VkShaderModule obj, const std::string &name)
+{
+  setName(VK_OBJECT_TYPE_SHADER_MODULE, (uint64_t)obj, name);
 }
 
 void VulkanGraphicsTest::setName(VkObjectType objType, uint64_t obj, const std::string &name)
@@ -1013,22 +1337,41 @@ VkDescriptorSet VulkanGraphicsTest::allocateDescriptorSet(VkDescriptorSetLayout 
   // failed to allocate, create a new pool and push it
   {
     VkDescriptorPool pool = VK_NULL_HANDLE;
+
+    std::vector<VkDescriptorPoolSize> poolSizes = {
+        {VK_DESCRIPTOR_TYPE_SAMPLER, 1024},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1024},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1024},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1024},
+        {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1024},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1024},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1024},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1024},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1024},
+        {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1024},
+    };
+
+    VkDescriptorPoolInlineUniformBlockCreateInfo inlineCreateInfo = {
+        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_INLINE_UNIFORM_BLOCK_CREATE_INFO,
+    };
+    void *next = NULL;
+
+    if(hasExt(VK_EXT_INLINE_UNIFORM_BLOCK_EXTENSION_NAME) || devVersion >= VK_MAKE_VERSION(1, 3, 0))
+    {
+      poolSizes.push_back({VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK, 128 * 4096});
+
+      inlineCreateInfo.maxInlineUniformBlockBindings = 1024;
+      next = &inlineCreateInfo;
+    }
+
+    if(hasExt(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME))
+    {
+      poolSizes.push_back({VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1024});
+    }
+
     CHECK_VKR(vkCreateDescriptorPool(
-        device, vkh::DescriptorPoolCreateInfo(128,
-                                              {
-                                                  {VK_DESCRIPTOR_TYPE_SAMPLER, 1024},
-                                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024},
-                                                  {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1024},
-                                                  {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1024},
-                                                  {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1024},
-                                                  {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1024},
-                                                  {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1024},
-                                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1024},
-                                                  {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1024},
-                                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1024},
-                                                  {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1024},
-                                              }),
-        NULL, &pool));
+        device, vkh::DescriptorPoolCreateInfo(128, poolSizes).next(next), NULL, &pool));
     descPools.push_back(pool);
 
     // this must succeed or we can't continue.
@@ -1111,22 +1454,124 @@ VkSampler VulkanGraphicsTest::createSampler(const VkSamplerCreateInfo *info)
   return ret;
 }
 
+VulkanCommands::VulkanCommands(VulkanGraphicsTest *test)
+{
+  m_Test = test;
+
+  CHECK_VKR(vkCreateCommandPool(
+      m_Test->device,
+      vkh::CommandPoolCreateInfo(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                                 m_Test->queueFamilyIndex),
+      NULL, &cmdPool));
+}
+
+VulkanCommands::~VulkanCommands()
+{
+  vkDestroyCommandPool(m_Test->device, cmdPool, NULL);
+
+  for(VkFence fence : fences)
+    vkDestroyFence(m_Test->device, fence, NULL);
+}
+
+VkCommandBuffer VulkanCommands::GetCommandBuffer(VkCommandBufferLevel level)
+{
+  std::vector<VkCommandBuffer> &buflist = freeCommandBuffers[level];
+
+  if(buflist.empty())
+  {
+    buflist.resize(4);
+
+    CHECK_VKR(vkAllocateCommandBuffers(
+        m_Test->device, vkh::CommandBufferAllocateInfo(cmdPool, 4, level), &buflist[0]));
+  }
+
+  VkCommandBuffer ret = buflist.back();
+  buflist.pop_back();
+
+  return ret;
+}
+
+void VulkanCommands::Submit(const std::vector<VkCommandBuffer> &cmds,
+                            const std::vector<VkCommandBuffer> &seccmds, VkQueue q,
+                            VkSemaphore wait, VkSemaphore signal)
+{
+  VkFence fence;
+  CHECK_VKR(vkCreateFence(m_Test->device, vkh::FenceCreateInfo(), NULL, &fence));
+
+  fences.insert(fence);
+
+  if(m_Test->hasExt(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME))
+  {
+    VkSubmitInfo2KHR submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO_2_KHR};
+
+    std::vector<VkCommandBufferSubmitInfoKHR> cmdSubmits;
+    for(VkCommandBuffer cmd : cmds)
+      cmdSubmits.push_back({VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO_KHR, NULL, cmd, 0});
+
+    submit.commandBufferInfoCount = (uint32_t)cmdSubmits.size();
+    submit.pCommandBufferInfos = cmdSubmits.data();
+
+    VkSemaphoreSubmitInfoKHR waitInfo = {}, signalInfo = {};
+
+    if(wait != VK_NULL_HANDLE)
+    {
+      waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR;
+      waitInfo.semaphore = wait;
+      waitInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
+
+      submit.waitSemaphoreInfoCount = 1;
+      submit.pWaitSemaphoreInfos = &waitInfo;
+    }
+
+    if(signal != VK_NULL_HANDLE)
+    {
+      signalInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR;
+      signalInfo.semaphore = signal;
+      signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
+
+      submit.signalSemaphoreInfoCount = 1;
+      submit.pSignalSemaphoreInfos = &signalInfo;
+    }
+
+    CHECK_VKR(vkQueueSubmit2KHR(q, 1, &submit, fence));
+  }
+  else
+  {
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+
+    VkSubmitInfo submit = vkh::SubmitInfo(cmds);
+
+    if(wait != VK_NULL_HANDLE)
+    {
+      submit.waitSemaphoreCount = 1;
+      submit.pWaitDstStageMask = &waitStage;
+      submit.pWaitSemaphores = &wait;
+    }
+
+    if(signal != VK_NULL_HANDLE)
+    {
+      submit.signalSemaphoreCount = 1;
+      submit.pSignalSemaphores = &signal;
+    }
+
+    CHECK_VKR(vkQueueSubmit(q, 1, &submit, fence));
+  }
+
+  for(const VkCommandBuffer &cmd : cmds)
+    pendingCommandBuffers[0].push_back(std::make_pair(cmd, fence));
+
+  for(const VkCommandBuffer &cmd : seccmds)
+    pendingCommandBuffers[1].push_back(std::make_pair(cmd, fence));
+}
+
 VulkanWindow::VulkanWindow(VulkanGraphicsTest *test, GraphicsWindow *win)
+    : GraphicsWindow(win->title), VulkanCommands(test)
 {
   m_Test = test;
   m_Win = win;
 
   {
     std::lock_guard<std::mutex> lock(m_Test->mutex);
-
-    CHECK_VKR(vkCreateCommandPool(
-        m_Test->device, vkh::CommandPoolCreateInfo(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT),
-        NULL, &cmdPool));
-
-    CHECK_VKR(
-        vkCreateSemaphore(m_Test->device, vkh::SemaphoreCreateInfo(), NULL, &renderStartSemaphore));
-    CHECK_VKR(
-        vkCreateSemaphore(m_Test->device, vkh::SemaphoreCreateInfo(), NULL, &renderEndSemaphore));
 
 #if defined(WIN32)
     VkWin32SurfaceCreateInfoKHR createInfo;
@@ -1138,7 +1583,16 @@ VulkanWindow::VulkanWindow(VulkanGraphicsTest *test, GraphicsWindow *win)
     createInfo.hinstance = GetModuleHandleA(NULL);
 
     vkCreateWin32SurfaceKHR(m_Test->instance, &createInfo, NULL, &surface);
-#else
+#elif defined(ANDROID)
+    VkAndroidSurfaceCreateInfoKHR createInfo;
+
+    createInfo.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+    createInfo.pNext = NULL;
+    createInfo.flags = 0;
+    createInfo.window = ((AndroidWindow *)win)->window;
+
+    vkCreateAndroidSurfaceKHR(m_Test->instance, &createInfo, NULL, &surface);
+#elif defined(__linux__)
     VkXcbSurfaceCreateInfoKHR createInfo;
 
     createInfo.sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR;
@@ -1148,6 +1602,26 @@ VulkanWindow::VulkanWindow(VulkanGraphicsTest *test, GraphicsWindow *win)
     createInfo.window = ((X11Window *)win)->xcb.window;
 
     vkCreateXcbSurfaceKHR(m_Test->instance, &createInfo, NULL, &surface);
+#elif defined(__APPLE__)
+#if defined(VK_USE_PLATFORM_METAL_EXT)
+    VkMetalSurfaceCreateInfoEXT mtlCreateInfo;
+    mtlCreateInfo.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
+    mtlCreateInfo.pNext = NULL;
+    mtlCreateInfo.flags = 0;
+    mtlCreateInfo.pLayer = ((AppleWindow *)win)->layer;
+    vkCreateMetalSurfaceEXT(m_Test->instance, &mtlCreateInfo, NULL, &surface);
+#endif
+#if defined(VK_USE_PLATFORM_MACOS_MVK)
+    VkMacOSSurfaceCreateInfoMVK createInfo;
+
+    createInfo.sType = VK_STRUCTURE_TYPE_MACOS_SURFACE_CREATE_INFO_MVK;
+    createInfo.pNext = NULL;
+    createInfo.flags = 0;
+    createInfo.pView = ((AppleWindow *)win)->view;
+    vkCreateMacOSSurfaceMVK(m_Test->instance, &createInfo, NULL, &surface);
+#endif
+#else
+#error UNKNOWN PLATFORM
 #endif
   }
 
@@ -1161,19 +1635,29 @@ VulkanWindow::~VulkanWindow()
   DestroySwapchain();
 
   {
-    vkDestroySemaphore(m_Test->device, renderStartSemaphore, NULL);
-    vkDestroySemaphore(m_Test->device, renderEndSemaphore, NULL);
+    TEST_ASSERT(renderStartSemaphore.size() == renderEndSemaphore.size(),
+                "size mismatch between start/end semaphore");
+    TEST_ASSERT(renderStartSemaphore.size() == imageFences.size(),
+                "size mismatch between render/image semaphore");
 
-    vkDestroyCommandPool(m_Test->device, cmdPool, NULL);
-
-    for(VkFence fence : fences)
-      vkDestroyFence(m_Test->device, fence, NULL);
+    for(size_t i = 0; i < renderStartSemaphore.size(); i++)
+    {
+      vkDestroySemaphore(m_Test->device, renderStartSemaphore[i], NULL);
+      vkDestroySemaphore(m_Test->device, renderEndSemaphore[i], NULL);
+      vkDestroyFence(m_Test->device, imageFences[i], NULL);
+    }
 
     if(surface)
       vkDestroySurfaceKHR(m_Test->instance, surface, NULL);
   }
 
   delete m_Win;
+}
+
+void VulkanWindow::setViewScissor(VkCommandBuffer cmd)
+{
+  vkCmdSetViewport(cmd, 0, 1, &viewport);
+  vkCmdSetScissor(cmd, 0, 1, &scissor);
 }
 
 bool VulkanWindow::CreateSwapchain()
@@ -1205,7 +1689,8 @@ bool VulkanWindow::CreateSwapchain()
 
   for(const VkSurfaceFormatKHR &f : formats)
   {
-    if(f.format == VK_FORMAT_B8G8R8A8_SRGB && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+    if((f.format == VK_FORMAT_B8G8R8A8_SRGB || f.format == VK_FORMAT_R8G8B8A8_SRGB) &&
+       f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
     {
       surfaceFormat = f;
       break;
@@ -1247,9 +1732,10 @@ bool VulkanWindow::CreateSwapchain()
   scissor = vkh::Rect2D({0, 0}, {width, height});
 
   CHECK_VKR(vkCreateSwapchainKHR(
-      m_Test->device, vkh::SwapchainCreateInfoKHR(
-                          surface, mode, surfaceFormat, {width, height},
-                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT),
+      m_Test->device,
+      vkh::SwapchainCreateInfoKHR(surface, mode, surfaceFormat, {width, height},
+                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                                  VK_NULL_HANDLE, capabilities.minImageCount),
       NULL, &swap));
 
   CHECK_VKR(vkh::getSwapchainImagesKHR(imgs, m_Test->device, swap));
@@ -1263,7 +1749,36 @@ bool VulkanWindow::CreateSwapchain()
 
     renderPassCreateInfo.addSubpass({VkAttachmentReference({0, VK_IMAGE_LAYOUT_GENERAL})});
 
+    // add deps to allow clear/copy on the main target before or after
+    renderPassCreateInfo.dependencies.push_back(vkh::SubpassDependency(
+        ~0U, 0, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT));
+    renderPassCreateInfo.dependencies.push_back(vkh::SubpassDependency(
+        0, ~0U, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT));
+
     rp = m_Test->createRenderPass(renderPassCreateInfo);
+  }
+
+  renderStartSemaphore.resize(imgs.size());
+  renderEndSemaphore.resize(imgs.size());
+  imageFences.resize(imgs.size());
+  for(size_t i = 0; i < renderStartSemaphore.size(); i++)
+  {
+    CHECK_VKR(vkCreateSemaphore(m_Test->device, vkh::SemaphoreCreateInfo(), NULL,
+                                &renderStartSemaphore[i]));
+    CHECK_VKR(vkCreateSemaphore(m_Test->device, vkh::SemaphoreCreateInfo(), NULL,
+                                &renderEndSemaphore[i]));
+
+    m_Test->setName(renderStartSemaphore[i], title + " renderStartSemaphore" + std::to_string(i));
+    m_Test->setName(renderEndSemaphore[i], title + " renderEndSemaphore" + std::to_string(i));
+
+    CHECK_VKR(vkCreateFence(m_Test->device, vkh::FenceCreateInfo(VK_FENCE_CREATE_SIGNALED_BIT),
+                            NULL, &imageFences[i]));
+
+    m_Test->setName(imageFences[i], title + " fence" + std::to_string(i));
   }
 
   imgviews.resize(imgs.size());
@@ -1285,89 +1800,77 @@ void VulkanWindow::Acquire()
   if(swap == VK_NULL_HANDLE)
     return;
 
-  VkResult vkr = vkAcquireNextImageKHR(m_Test->device, swap, UINT64_MAX, renderStartSemaphore,
-                                       VK_NULL_HANDLE, &imgIndex);
+  semIdx = (semIdx + 1) % renderStartSemaphore.size();
+
+  // acquire next image stupidly does not properly block, do a manual block
+  CHECK_VKR(vkWaitForFences(m_Test->device, 1, &imageFences[semIdx], VK_FALSE, UINT64_MAX));
+  CHECK_VKR(vkResetFences(m_Test->device, 1, &imageFences[semIdx]));
+
+  VkResult vkr = vkAcquireNextImageKHR(m_Test->device, swap, UINT64_MAX,
+                                       renderStartSemaphore[semIdx], imageFences[semIdx], &imgIndex);
 
   if(vkr == VK_SUBOPTIMAL_KHR || vkr == VK_ERROR_OUT_OF_DATE_KHR)
   {
     DestroySwapchain();
     CreateSwapchain();
 
-    vkr = vkAcquireNextImageKHR(m_Test->device, swap, UINT64_MAX, renderStartSemaphore,
+    vkr = vkAcquireNextImageKHR(m_Test->device, swap, UINT64_MAX, renderStartSemaphore[semIdx],
                                 VK_NULL_HANDLE, &imgIndex);
   }
 }
 
 void VulkanWindow::Submit(int index, int totalSubmits, const std::vector<VkCommandBuffer> &cmds,
-                          const std::vector<VkCommandBuffer> &seccmds, VkQueue q, bool sync2)
+                          const std::vector<VkCommandBuffer> &seccmds, VkQueue q)
 {
-  VkFence fence;
-  CHECK_VKR(vkCreateFence(m_Test->device, vkh::FenceCreateInfo(), NULL, &fence));
+  VkSemaphore signal = VK_NULL_HANDLE, wait = VK_NULL_HANDLE;
 
-  fences.insert(fence);
+  if(index == 0)
+    wait = renderStartSemaphore[semIdx];
+  if(index == totalSubmits - 1)
+    signal = renderEndSemaphore[semIdx];
 
-  if(sync2)
+  VulkanCommands::Submit(cmds, seccmds, q, wait, signal);
+}
+
+void VulkanWindow::MultiPresent(VkQueue queue, std::vector<VulkanWindow *> windows)
+{
+  std::vector<VkSwapchainKHR> swaps;
+  std::vector<uint32_t> idxs;
+  std::vector<VkSemaphore> waitSems;
+  std::vector<VkResult> vkrs;
+
+  for(auto it : windows)
   {
-    VkSubmitInfo2KHR submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO_2_KHR};
+    if(it->swap == VK_NULL_HANDLE)
+      continue;
 
-    std::vector<VkCommandBufferSubmitInfoKHR> cmdSubmits;
-    for(VkCommandBuffer cmd : cmds)
-      cmdSubmits.push_back({VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO_KHR, NULL, cmd, 0});
-
-    submit.commandBufferInfoCount = (uint32_t)cmdSubmits.size();
-    submit.pCommandBufferInfos = cmdSubmits.data();
-
-    VkSemaphoreSubmitInfoKHR renderStart = {}, renderEnd = {};
-
-    if(index == 0)
-    {
-      renderStart.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR;
-      renderStart.semaphore = renderStartSemaphore;
-      renderStart.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
-
-      submit.waitSemaphoreInfoCount = 1;
-      submit.pWaitSemaphoreInfos = &renderStart;
-    }
-
-    if(index == totalSubmits - 1)
-    {
-      renderEnd.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR;
-      renderEnd.semaphore = renderEndSemaphore;
-      renderEnd.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
-
-      submit.signalSemaphoreInfoCount = 1;
-      submit.pSignalSemaphoreInfos = &renderEnd;
-    }
-
-    CHECK_VKR(vkQueueSubmit2KHR(q, 1, &submit, fence));
-  }
-  else
-  {
-    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-
-    VkSubmitInfo submit = vkh::SubmitInfo(cmds);
-
-    if(index == 0)
-    {
-      submit.waitSemaphoreCount = 1;
-      submit.pWaitDstStageMask = &waitStage;
-      submit.pWaitSemaphores = &renderStartSemaphore;
-    }
-
-    if(index == totalSubmits - 1)
-    {
-      submit.signalSemaphoreCount = 1;
-      submit.pSignalSemaphores = &renderEndSemaphore;
-    }
-
-    CHECK_VKR(vkQueueSubmit(q, 1, &submit, fence));
+    swaps.push_back(it->swap);
+    idxs.push_back(it->imgIndex);
+    waitSems.push_back(it->renderEndSemaphore[it->semIdx]);
+    vkrs.push_back(VK_SUCCESS);
   }
 
-  for(const VkCommandBuffer &cmd : cmds)
-    pendingCommandBuffers[0].push_back(std::make_pair(cmd, fence));
+  if(swaps.empty())
+    return;
 
-  for(const VkCommandBuffer &cmd : seccmds)
-    pendingCommandBuffers[1].push_back(std::make_pair(cmd, fence));
+  VkPresentInfoKHR info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+  info.swapchainCount = (uint32_t)swaps.size();
+  info.waitSemaphoreCount = (uint32_t)waitSems.size();
+  info.pSwapchains = swaps.data();
+  info.pImageIndices = idxs.data();
+  info.pWaitSemaphores = waitSems.data();
+  info.pResults = vkrs.data();
+
+  vkQueuePresentKHR(queue, &info);
+
+  size_t i = 0;
+  for(auto it : windows)
+  {
+    if(it->swap == VK_NULL_HANDLE)
+      continue;
+
+    it->PostPresent(vkrs[i++]);
+  }
 }
 
 void VulkanWindow::Present(VkQueue queue)
@@ -1375,8 +1878,16 @@ void VulkanWindow::Present(VkQueue queue)
   if(swap == VK_NULL_HANDLE)
     return;
 
-  VkResult vkr = vkQueuePresentKHR(queue, vkh::PresentInfoKHR(swap, imgIndex, &renderEndSemaphore));
+  vkDeviceWaitIdle(m_Test->device);
 
+  VkResult vkr =
+      vkQueuePresentKHR(queue, vkh::PresentInfoKHR(swap, imgIndex, &renderEndSemaphore[semIdx]));
+
+  PostPresent(vkr);
+}
+
+void VulkanWindow::PostPresent(VkResult vkr)
+{
   if(vkr == VK_SUBOPTIMAL_KHR || vkr == VK_ERROR_OUT_OF_DATE_KHR)
   {
     DestroySwapchain();
@@ -1388,6 +1899,13 @@ void VulkanWindow::Present(VkQueue queue)
     CHECK_VKR(queuePresentError);
   }
 
+  VulkanCommands::ProcessCompletions();
+
+  Acquire();
+}
+
+void VulkanCommands::ProcessCompletions()
+{
   std::set<VkFence> doneFences;
   std::map<VkFence, VkResult> fenceStatus;
 
@@ -1419,8 +1937,6 @@ void VulkanWindow::Present(VkQueue queue)
     vkDestroyFence(m_Test->device, *it, NULL);
     fences.erase(*it);
   }
-
-  Acquire();
 }
 
 void VulkanWindow::DestroySwapchain()
@@ -1465,22 +1981,6 @@ bool VulkanGraphicsTest::hasExt(const char *ext)
                       [ext](const char *a) { return !strcmp(a, ext); }) != devExts.end();
 }
 
-template <>
-VkFormat vkh::_FormatFromObj<Vec4f>()
-{
-  return VK_FORMAT_R32G32B32A32_SFLOAT;
-}
-template <>
-VkFormat vkh::_FormatFromObj<Vec3f>()
-{
-  return VK_FORMAT_R32G32B32_SFLOAT;
-}
-template <>
-VkFormat vkh::_FormatFromObj<Vec2f>()
-{
-  return VK_FORMAT_R32G32_SFLOAT;
-}
-
 AllocatedImage::AllocatedImage(VulkanGraphicsTest *test, const VkImageCreateInfo &imgInfo,
                                const VmaAllocationCreateInfo &allocInfo)
 {
@@ -1499,13 +1999,23 @@ void AllocatedImage::free()
 }
 
 AllocatedBuffer::AllocatedBuffer(VulkanGraphicsTest *test, const VkBufferCreateInfo &bufInfo,
-                                 const VmaAllocationCreateInfo &allocInfo)
+                                 const VmaAllocationCreateInfo &allocInfo, uint32_t alignment)
 {
   this->test = test;
   allocator = test->allocator;
-  vmaCreateBuffer(allocator, &bufInfo, &allocInfo, &buffer, &alloc, NULL);
+  vmaCreateBufferWithAlignment(allocator, &bufInfo, &allocInfo, alignment, &buffer, &alloc, NULL);
 
   test->bufferAllocs[buffer] = alloc;
+
+  if(bufInfo.usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
+  {
+    VkBufferDeviceAddressInfoKHR info = {
+        VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR,
+        NULL,
+        buffer,
+    };
+    address = vkGetBufferDeviceAddressKHR(test->device, &info);
+  }
 }
 
 void AllocatedBuffer::free()

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -42,12 +42,12 @@ class rdcliteral
   size_t len;
 
   // make the literal operator a friend so it can construct fixed strings. No-one else can.
-  friend rdcliteral operator"" _lit(const char *str, size_t len);
+  friend constexpr rdcliteral operator"" _lit(const char *str, size_t len);
 
   // similarly friend inflexible strings to allow them to decompose to a literal
   friend class rdcinflexiblestr;
 
-  rdcliteral(const char *s, size_t l) : str(s), len(l) {}
+  constexpr rdcliteral(const char *s, size_t l) : str(s), len(l) {}
   rdcliteral() = delete;
 
 public:
@@ -57,7 +57,7 @@ public:
   const char *end() const { return str + len; }
 };
 
-inline rdcliteral operator"" _lit(const char *str, size_t len)
+inline constexpr rdcliteral operator"" _lit(const char *str, size_t len)
 {
   return rdcliteral(str, len);
 }
@@ -979,8 +979,8 @@ class rdcinflexiblestr
 #endif
   }
 
-// we use tagged pointers on x86-64 to minimise storage. On other architecture this isn't safe
-// so we have to keep it separate. This is still a storage win over rdcstr
+  // we use tagged pointers on x86-64 to minimise storage. On other architecture this isn't safe
+  // so we have to keep it separate. This is still a storage win over rdcstr
 
 #if defined(__x86_64__) || defined(_M_X64)
   // use a signed pointer to sign-extend for canonical form
@@ -1121,6 +1121,42 @@ public:
   bool empty() const { return c_str()[0] == 0; }
   const char *c_str() const { return (const char *)(uintptr_t)pointer; }
   size_t size() const { return strlen(c_str()); }
+  bool beginsWith(const char *beginning) const
+  {
+    if(!beginning)
+      return false;
+
+    const char *a = c_str();
+    const char *b = beginning;
+
+    // empty string we're checking against, degenerate case but true
+    if(*b == 0)
+      return true;
+
+    // if we are an empty string we don't match any non-empty prefix
+    if(*a == 0)
+      return false;
+
+    while(*a && *b)
+    {
+      if(*a != *b)
+        return false;
+
+      a++;
+      b++;
+
+      // if we reached the end of beginning before hitting a difference, we do begin with it
+      if(*b == 0)
+        return true;
+
+      // if we reached the end of our own string but beginning still has something left, we don't begin with it
+      if(*a == 0)
+        return false;
+    }
+
+    // should never reach here
+    return false;
+  }
   operator rdcstr() const
   {
     if(is_literal == 0)
@@ -1134,3 +1170,21 @@ public:
   operator QVariant() const { return QVariant(QString::fromUtf8(c_str(), (int32_t)size())); }
 #endif
 };
+
+// add a std::hash overload so rdcstr can be used in hashmaps
+#ifdef RENDERDOC_EXPORTS
+
+#include <functional>
+
+// from string_utils.h
+uint32_t strhash(const char *str);
+
+namespace std
+{
+template <>
+struct hash<rdcstr>
+{
+  std::size_t operator()(const rdcstr &s) const { return strhash(s.c_str()); }
+};
+}
+#endif

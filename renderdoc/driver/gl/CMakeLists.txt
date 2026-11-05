@@ -6,6 +6,7 @@ set(sources
     gl_postvs.cpp
     gl_overlay.cpp
     gl_outputwindow.cpp
+    gl_pixelhistory.cpp
     gl_rendermesh.cpp
     gl_rendertexture.cpp
     gl_rendertext.cpp
@@ -28,6 +29,8 @@ set(sources
     gl_program_iterate.cpp
     gl_shader_refl.cpp
     gl_shader_refl.h
+    gl_shaderdebug.cpp
+    gl_shaderdebug.h
     gl_stringise.cpp
     official/gl32.h
     official/gl3platform.h
@@ -51,9 +54,15 @@ set(sources
 # Common hooking code for any GL/GLES on any platform
 list(APPEND sources gl_hooks.cpp)
 
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set_property(SOURCE gl_shaderdebug.cpp
+        APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-shadow -Wno-shorten-64-to-32")
+endif()
+
 if(APPLE)
     list(APPEND sources
         apple_gl_hook_defs.h
+        apple_gl_hook_defs.cpp
         cgl_dispatch_table.h
         cgl_platform_helpers.mm
         cgl_platform.cpp

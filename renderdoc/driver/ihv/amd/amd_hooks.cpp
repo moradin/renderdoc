@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -81,6 +81,9 @@ void FilterDX12(AGSDX12ReturnedParams::ExtensionsSupported &extensionsSupported)
   ret.intrinsics16 = extensionsSupported.intrinsics16;
   ret.intrinsics17 = extensionsSupported.intrinsics17;
   ret.intrinsics19 = extensionsSupported.intrinsics19;
+
+  // allow custom UAV slots
+  ret.UAVBindSlot = extensionsSupported.UAVBindSlot;
 
   // allow trivial things
   ret.userMarkers = extensionsSupported.userMarkers;
@@ -322,7 +325,7 @@ private:
 
           return S_OK;
         },
-        creationParams->pAdapter, creationParams->FeatureLevel, __uuidof(ID3D12Device),
+        NULL, creationParams->pAdapter, creationParams->FeatureLevel, __uuidof(ID3D12Device),
         (void **)&dev);
     returnedParams->pDevice = dev;
 

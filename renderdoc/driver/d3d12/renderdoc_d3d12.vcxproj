@@ -30,7 +30,6 @@
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v140</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
     <WholeProgramOptimization>true</WholeProgramOptimization>
@@ -39,12 +38,9 @@
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
+  <Import Project="$(SolutionDir)\util\WindowsSDKFix.props" />
   <PropertyGroup>
     <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
-    <ExecutablePath>$(ExecutablePath)</ExecutablePath>
-    <IncludePath>$(SolutionDir)\breakpad;$(IncludePath)</IncludePath>
-    <LibraryPath>$(LibraryPath)</LibraryPath>
-    <ExcludePath>$(ExcludePath)</ExcludePath>
     <TargetName>driver_$(ProjectName)</TargetName>
   </PropertyGroup>
   <PropertyGroup>
@@ -102,20 +98,30 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="d3d12_commands.cpp" />
+    <ClCompile Include="d3d12_command_list10_wrap.cpp" />
     <ClCompile Include="d3d12_command_list1_wrap.cpp" />
     <ClCompile Include="d3d12_command_list2_wrap.cpp" />
     <ClCompile Include="d3d12_command_list3_wrap.cpp" />
     <ClCompile Include="d3d12_command_list4_wrap.cpp" />
     <ClCompile Include="d3d12_command_list5_wrap.cpp" />
     <ClCompile Include="d3d12_command_list6_wrap.cpp" />
+    <ClCompile Include="d3d12_command_list7_wrap.cpp" />
+    <ClCompile Include="d3d12_command_list8_wrap.cpp" />
+    <ClCompile Include="d3d12_command_list9_wrap.cpp" />
     <ClCompile Include="d3d12_command_list_wrap.cpp" />
     <ClCompile Include="d3d12_command_queue_wrap.cpp" />
     <ClCompile Include="d3d12_common.cpp" />
     <ClCompile Include="d3d12_counters.cpp" />
     <ClCompile Include="d3d12_debug.cpp" />
     <ClCompile Include="d3d12_device.cpp" />
+    <ClCompile Include="d3d12_device_rescreate_wrap.cpp" />
     <ClCompile Include="d3d12_device_wrap.cpp" />
     <ClCompile Include="d3d12_device_wrap1.cpp" />
+    <ClCompile Include="d3d12_device_wrap11.cpp" />
+    <ClCompile Include="d3d12_device_wrap12.cpp" />
+    <ClCompile Include="d3d12_device_wrap13.cpp" />
+    <ClCompile Include="d3d12_device_wrap14.cpp" />
+    <ClCompile Include="d3d12_device_wrap15.cpp" />
     <ClCompile Include="d3d12_device_wrap2.cpp" />
     <ClCompile Include="d3d12_device_wrap3.cpp" />
     <ClCompile Include="d3d12_device_wrap4.cpp" />
@@ -124,18 +130,21 @@
     <ClCompile Include="d3d12_device_wrap7.cpp" />
     <ClCompile Include="d3d12_device_wrap8.cpp" />
     <ClCompile Include="d3d12_device_wrap9.cpp" />
+    <ClCompile Include="d3d12_dxil_debug.cpp" />
     <ClCompile Include="d3d12_hooks.cpp" />
     <ClCompile Include="d3d12_initstate.cpp" />
     <ClCompile Include="d3d12_manager.cpp" />
     <ClCompile Include="d3d12_msaa_array_conv.cpp" />
     <ClCompile Include="d3d12_outputwindow.cpp" />
     <ClCompile Include="d3d12_overlay.cpp" />
+    <ClCompile Include="d3d12_pixelhistory.cpp" />
     <ClCompile Include="d3d12_postvs.cpp" />
     <ClCompile Include="d3d12_rendermesh.cpp" />
     <ClCompile Include="d3d12_rendertext.cpp" />
     <ClCompile Include="d3d12_rendertexture.cpp" />
     <ClCompile Include="d3d12_replay.cpp" />
     <ClCompile Include="d3d12_resources.cpp" />
+    <ClCompile Include="d3d12_rootsig.cpp" />
     <ClCompile Include="d3d12_sdk_select.cpp" />
     <ClCompile Include="d3d12_serialise.cpp" />
     <ClCompile Include="d3d12_shaderdebug.cpp" />
@@ -156,6 +165,7 @@
     <ClInclude Include="d3d12_common.h" />
     <ClInclude Include="d3d12_debug.h" />
     <ClInclude Include="d3d12_device.h" />
+    <ClInclude Include="d3d12_dxil_debug.h" />
     <ClInclude Include="d3d12_hooks.h" />
     <ClInclude Include="d3d12_manager.h" />
     <ClInclude Include="..\dx\official\d3d12.h" />
@@ -163,6 +173,8 @@
     <ClInclude Include="d3d12_rendertext.h" />
     <ClInclude Include="d3d12_replay.h" />
     <ClInclude Include="d3d12_resources.h" />
+    <ClInclude Include="d3d12_rootsig.h" />
+    <ClInclude Include="d3d12_shaderdebug.h" />
     <ClInclude Include="d3d12_shader_cache.h" />
     <ClInclude Include="d3d12_state.h" />
     <ClInclude Include="precompiled.h" />

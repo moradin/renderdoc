@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -103,7 +103,7 @@ void Init()
       char line[512] = {0};
       if(fgets(line, 511, f))
       {
-        if(strstr(line, "librenderdoc") && strstr(line, "r-xp"))
+        if(strstr(line, "lib" STRINGIZE(RDOC_BASE_NAME)) && strstr(line, "r-xp"))
         {
           sscanf(line, "%p-%p", &renderdocBase, &renderdocEnd);
           break;
@@ -232,7 +232,7 @@ private:
         char result[2048] = {0};
         fread(result, 1, 2047, f);
 
-        fclose(f);
+        ::pclose(f);
 
         char *line2 = strchr(result, '\n');
         if(line2)

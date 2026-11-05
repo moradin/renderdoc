@@ -1,26 +1,26 @@
 /******************************************************************************
-* The MIT License (MIT)
-*
-* Copyright (c) 2019-2021 Baldur Karlsson
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-* THE SOFTWARE.
-******************************************************************************/
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2018-2026 Baldur Karlsson
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ ******************************************************************************/
 
 #pragma once
 
@@ -29,17 +29,6 @@
 #include <set>
 #include "dx/official/dxgi.h"
 #include "d3d12_helpers.h"
-
-#include "dx/official/d3dcompiler.h"
-
-typedef HRESULT(WINAPI *pD3DStripShader)(_In_reads_bytes_(BytecodeLength) LPCVOID pShaderBytecode,
-                                         _In_ SIZE_T BytecodeLength, _In_ UINT uStripFlags,
-                                         _Out_ ID3DBlob **ppStrippedBlob);
-typedef HRESULT(WINAPI *pD3DSetBlobPart)(_In_reads_bytes_(SrcDataSize) LPCVOID pSrcData,
-                                         _In_ SIZE_T SrcDataSize, _In_ D3D_BLOB_PART Part,
-                                         _In_ UINT Flags, _In_reads_bytes_(PartSize) LPCVOID pPart,
-                                         _In_ SIZE_T PartSize, _Out_ ID3DBlob **ppNewShader);
-typedef HRESULT(WINAPI *pD3DCreateBlob)(SIZE_T Size, ID3DBlob **ppBlob);
 
 struct Win32Window;
 
@@ -77,9 +66,19 @@ struct D3D12GraphicsTest : public GraphicsTest
     BufUAVType = 0xf00,
   };
 
+  enum CompileOptionFlags
+  {
+    None = 0,
+    SkipOptimise = 1 << 0,
+    Enable16BitTypes = 1 << 1,
+    SeparateDebug = 1 << 2,
+    ManualDebugName = 1 << 3,
+  };
+
   ID3DBlobPtr Compile(std::string src, std::string entry, std::string profile,
-                      bool skipoptimise = true);
+                      uint32_t compileOptions = CompileOptionFlags::SkipOptimise);
   void WriteBlob(std::string name, ID3DBlobPtr blob, bool compress);
+  void WriteBlob(std::string name, void *data, size_t size, bool compress);
 
   void SetBlobPath(std::string name, ID3DBlobPtr &blob);
   void SetBlobPath(std::string name, ID3D12DeviceChild *shader);
@@ -120,6 +119,11 @@ struct D3D12GraphicsTest : public GraphicsTest
     return D3D12ViewCreator(dev, m_CBVUAVSRV, NULL, ViewType::SRV, res);
   }
   template <typename T>
+  D3D12ViewCreator MakeAS(T res)
+  {
+    return D3D12ViewCreator(dev, m_CBVUAVSRV, NULL, ViewType::AS, res);
+  }
+  template <typename T>
   D3D12ViewCreator MakeRTV(T res)
   {
     return D3D12ViewCreator(dev, m_RTV, NULL, ViewType::RTV, res);
@@ -151,12 +155,14 @@ struct D3D12GraphicsTest : public GraphicsTest
   void setMarker(ID3D12GraphicsCommandListPtr cmd, const std::string &name);
   void popMarker(ID3D12GraphicsCommandListPtr cmd);
 
-  void blitToSwap(ID3D12GraphicsCommandListPtr cmd, ID3D12ResourcePtr src, ID3D12ResourcePtr dst);
+  void blitToSwap(ID3D12GraphicsCommandListPtr cmd, ID3D12ResourcePtr src, ID3D12ResourcePtr dst,
+                  DXGI_FORMAT srvFormat = DXGI_FORMAT_UNKNOWN);
 
   void ResourceBarrier(ID3D12GraphicsCommandListPtr cmd, ID3D12ResourcePtr res,
                        D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after);
   void ResourceBarrier(ID3D12ResourcePtr res, D3D12_RESOURCE_STATES before,
                        D3D12_RESOURCE_STATES after);
+  void ResourceBarrier(ID3D12GraphicsCommandListPtr cmd);
 
   void IASetVertexBuffer(ID3D12GraphicsCommandListPtr cmd, ID3D12ResourcePtr vb, UINT stride,
                          UINT offset);
@@ -174,6 +180,8 @@ struct D3D12GraphicsTest : public GraphicsTest
   void RSSetViewport(ID3D12GraphicsCommandListPtr cmd, D3D12_VIEWPORT view);
   void RSSetScissorRect(ID3D12GraphicsCommandListPtr cmd, D3D12_RECT rect);
 
+  void SetMainWindowViewScissor(ID3D12GraphicsCommandListPtr cmd);
+
   void OMSetRenderTargets(ID3D12GraphicsCommandListPtr cmd,
                           const std::vector<ID3D12ResourcePtr> &rtvs, ID3D12ResourcePtr dsv);
   void OMSetRenderTargets(ID3D12GraphicsCommandListPtr cmd,
@@ -186,6 +194,7 @@ struct D3D12GraphicsTest : public GraphicsTest
   void FinishUsingBackbuffer(ID3D12GraphicsCommandListPtr cmd, D3D12_RESOURCE_STATES usedState);
   void Submit(const std::vector<ID3D12GraphicsCommandListPtr> &cmds);
   void GPUSync();
+  void SubmitAndPresent(const std::vector<ID3D12GraphicsCommandListPtr> &cmds);
   void Present();
 
   DXGI_FORMAT backbufferFmt = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -199,17 +208,29 @@ struct D3D12GraphicsTest : public GraphicsTest
 
   ID3D12ResourcePtr bbTex[2];
   uint32_t texIdx = 0;
+  D3D12_CPU_DESCRIPTOR_HANDLE BBRTV;
 
   ID3D12RootSignaturePtr swapBlitSig;
   ID3D12PipelineStatePtr swapBlitPso;
 
+  ID3D12ResourcePtr DefaultTriVB;
+  ID3D12RootSignaturePtr DefaultTriSig;
+  ID3D12PipelineStatePtr DefaultTriPSO;
+
   D3D_FEATURE_LEVEL minFeatureLevel = D3D_FEATURE_LEVEL_11_0;
+
+  std::string d3d12path;
 
   bool gpuva = false, m_12On7 = false, m_DXILSupport = false;
   IDXGIFactory1Ptr m_Factory;
 
+  bool m_SingletonDevice;
+
   ID3D12DebugPtr d3d12Debug;
   ID3D12InfoQueuePtr infoqueue;
+
+  ID3D12DeviceFactoryPtr devFactory;
+  ID3D12DeviceConfigurationPtr devConfig;
 
   ID3D12DevicePtr dev;
   ID3D12Device1Ptr dev1;
@@ -226,6 +247,7 @@ struct D3D12GraphicsTest : public GraphicsTest
   ID3D12CommandAllocatorPtr m_Alloc;
   ID3D12GraphicsCommandListPtr m_DebugList;
 
+  D3D12_COMMAND_LIST_TYPE queueType = D3D12_COMMAND_LIST_TYPE_DIRECT;
   ID3D12CommandQueuePtr queue;
 
   D3D12_FEATURE_DATA_D3D12_OPTIONS opts = {};
@@ -236,6 +258,8 @@ struct D3D12GraphicsTest : public GraphicsTest
   D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5 = {};
   D3D12_FEATURE_DATA_D3D12_OPTIONS6 opts6 = {};
   D3D12_FEATURE_DATA_D3D12_OPTIONS7 opts7 = {};
+  D3D12_FEATURE_DATA_D3D12_OPTIONS19 opts19 = {};
+  D3D_SHADER_MODEL m_HighestShaderModel = D3D_SHADER_MODEL_5_1;
 
   ID3D12FencePtr m_GPUSyncFence;
   HANDLE m_GPUSyncHandle = NULL;

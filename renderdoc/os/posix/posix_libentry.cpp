@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -31,13 +31,15 @@ void ResetHookingEnvVars();
 // DllMain equivalent
 void library_loaded()
 {
-  if(LibraryHooks::Detect("renderdoc__replay__marker"))
+  if(LibraryHooks::Detect(STRINGIZE(RDOC_BASE_NAME) "__replay__marker"))
   {
     RDCDEBUG("Not creating hooks - in replay app");
 
     RenderDoc::Inst().SetReplayApp(true);
 
     RenderDoc::Inst().Initialise();
+
+    LibraryHooks::ReplayInitialise();
 
     return;
   }

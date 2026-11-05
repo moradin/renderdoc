@@ -1,29 +1,30 @@
 /******************************************************************************
-* The MIT License (MIT)
-*
-* Copyright (c) 2019-2021 Baldur Karlsson
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-* THE SOFTWARE.
-******************************************************************************/
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2018-2026 Baldur Karlsson
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ ******************************************************************************/
 
 #include <assert.h>
 #include <algorithm>
+#include "../test_common.h"
 #include "vk_headers.h"
 
 #include "vk_helpers.h"
@@ -78,6 +79,22 @@ VkFormat _FormatFromObj<float>()
   return VK_FORMAT_R32_SFLOAT;
 }
 
+template <>
+VkFormat _FormatFromObj<Vec4f>()
+{
+  return VK_FORMAT_R32G32B32A32_SFLOAT;
+}
+template <>
+VkFormat _FormatFromObj<Vec3f>()
+{
+  return VK_FORMAT_R32G32B32_SFLOAT;
+}
+template <>
+VkFormat _FormatFromObj<Vec2f>()
+{
+  return VK_FORMAT_R32G32_SFLOAT;
+}
+
 void updateDescriptorSets(VkDevice device, const std::vector<VkWriteDescriptorSet> &writes,
                           const std::vector<VkCopyDescriptorSet> &copies)
 {
@@ -105,12 +122,30 @@ void cmdPipelineBarrier(VkCommandBuffer cmd, const std::vector<VkImageMemoryBarr
                        img.data());
 }
 
+void cmdClearImage(VkCommandBuffer cmd, VkImage img, const ClearColorValue &col, VkImageLayout layout)
+{
+  vkCmdClearColorImage(cmd, img, layout, col, 1, vkh::ImageSubresourceRange());
+}
+
+void cmdClearImage(VkCommandBuffer cmd, VkImage img, const ClearDepthStencilValue &ds,
+                   VkImageLayout layout)
+{
+  vkCmdClearDepthStencilImage(cmd, img, layout, ds, 1, vkh::ImageSubresourceRange());
+}
+
 void cmdBindVertexBuffers(VkCommandBuffer cmd, uint32_t firstBinding,
                           std::initializer_list<VkBuffer> bufs,
                           std::initializer_list<VkDeviceSize> offsets)
 {
   vkCmdBindVertexBuffers(cmd, firstBinding, (uint32_t)bufs.size(), &(*bufs.begin()),
                          &(*offsets.begin()));
+}
+
+void cmdBindVertexBuffers(VkCommandBuffer cmd, std::initializer_list<VkBuffer> bufs)
+{
+  VkDeviceSize offsets[32] = {};
+  TEST_ASSERT(bufs.size() < 32, "More than 32 VBs being bound");
+  vkCmdBindVertexBuffers(cmd, 0, (uint32_t)bufs.size(), &(*bufs.begin()), offsets);
 }
 
 void cmdBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint pipelineBindPoint,
@@ -127,6 +162,11 @@ void cmdPushDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint pipelineBind
 {
   vkCmdPushDescriptorSetKHR(cmd, pipelineBindPoint, layout, set, (uint32_t)writes.size(),
                             writes.data());
+}
+
+void cmdSetViewport(VkCommandBuffer cmd, VkViewport viewport)
+{
+  vkCmdSetViewport(cmd, 0, 1, &viewport);
 }
 
 GraphicsPipelineCreateInfo::GraphicsPipelineCreateInfo()
@@ -190,9 +230,13 @@ GraphicsPipelineCreateInfo::GraphicsPipelineCreateInfo()
       // blendEnable
       VK_FALSE,
       // color*
-      VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD,
+      VK_BLEND_FACTOR_SRC_ALPHA,
+      VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+      VK_BLEND_OP_ADD,
       // alpha*
-      VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD,
+      VK_BLEND_FACTOR_SRC_ALPHA,
+      VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+      VK_BLEND_OP_ADD,
       // colorWriteMask
       VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
           VK_COLOR_COMPONENT_A_BIT,
@@ -244,6 +288,16 @@ const GraphicsPipelineCreateInfo &GraphicsPipelineCreateInfo::operator=(
 
 void GraphicsPipelineCreateInfo::bake()
 {
+  pVertexInputState = &vertexInputState;
+  pInputAssemblyState = &inputAssemblyState;
+  pTessellationState = &tessellationState;
+  pViewportState = &viewportState;
+  pRasterizationState = &rasterizationState;
+  pMultisampleState = &multisampleState;
+  pDepthStencilState = &depthStencilState;
+  pColorBlendState = &colorBlendState;
+  pDynamicState = &dynamicState;
+
   stageCount = (uint32_t)stages.size();
   pStages = stages.data();
 

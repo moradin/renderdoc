@@ -1,0 +1,87 @@
+API Reference: D3D9 Pipeline State
+===================================
+
+This is the API reference for the functions, classes, and enums in the ``renderdoc`` module which represents the underlying interface that the UI is built on top of. For more high-level information and instructions on using the python API, see :doc:`../../index`.
+
+.. contents:: Sections
+   :local:
+
+.. currentmodule:: renderdoc
+
+.. autoclass:: D3D9State
+  :members:
+
+Vertex Input
+------------
+
+.. autoclass:: D3D9InputAssembly
+  :members:
+
+.. autoclass:: D3D9VertexElement
+  :members:
+
+.. autoclass:: D3D9StreamSource
+  :members:
+
+.. autoclass:: D3D9IndexBuffer
+  :members:
+
+Shaders and Bindings
+--------------------
+
+.. autoclass:: D3D9Shader
+  :members:
+
+.. autoclass:: D3D9Sampler
+  :members:
+
+Fixed Function
+--------------
+
+.. autoclass:: D3D9FixedFunction
+  :members:
+
+.. autoclass:: D3D9TextureStage
+  :members:
+
+.. autoclass:: D3D9Transform
+  :members:
+
+.. autoclass:: D3D9Light
+  :members:
+
+.. autoclass:: D3D9Material
+  :members:
+
+.. autoclass:: D3D9Fog
+  :members:
+
+.. autoclass:: D3D9ClipPlane
+  :members:
+
+Rasterizer
+----------
+
+.. autoclass:: D3D9Rasterizer
+  :members:
+
+Output Merger
+-------------
+
+.. autoclass:: D3D9OutputMerger
+  :members:
+
+.. autoclass:: D3D9DepthStencilState
+  :members:
+
+.. autoclass:: D3D9AlphaTest
+  :members:
+
+.. autoclass:: D3D9BlendState
+  :members:
+
+Render States
+-------------
+
+.. autoclass:: D3D9RenderState
+  :members:

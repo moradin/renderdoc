@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -35,6 +35,7 @@
 #include <algorithm>
 #include "common/formatting.h"
 #include "core/core.h"
+#include "core/settings.h"
 #include "dbghelp/dbghelp.h"
 #include "os/os_specific.h"
 #include "strings/string_utils.h"
@@ -42,6 +43,13 @@
 #include "dia2_stubs.h"
 
 #include <string>
+
+// magic value that the config vars default to. If we see this, we'll upgrade the old .ini
+#define UNINITIALISED_VAR ":uninit:var:"
+
+RDOC_CONFIG(rdcarray<rdcstr>, Win32_Callstacks_IgnoreList, {},
+            "Modules which are ignored when resolving callstacks on Windows.");
+RDOC_CONFIG(rdcstr, Win32_Callstacks_MSDIAPath, UNINITIALISED_VAR, "The path to the msdia dll.");
 
 struct AddrInfo
 {
@@ -83,18 +91,31 @@ rdcarray<Module> modules;
 
 rdcwstr GetSymSearchPath()
 {
-  PWSTR appDataPath;
-  SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_SIMPLE_IDLIST | KF_FLAG_DONT_UNEXPAND, NULL,
-                       &appDataPath);
-  rdcwstr appdata = appDataPath;
-  CoTaskMemFree(appDataPath);
+  std::wstring sympath;
 
-  std::wstring sympath = L".;";
-  sympath += appdata.c_str();
-  sympath += L"\\renderdoc\\symbols;SRV*";
-  sympath += appdata.c_str();
-  sympath += L"\\renderdoc\\symbols\\symsrv*http://msdl.microsoft.com/download/symbols";
+  DWORD len = GetEnvironmentVariableW(L"_NT_SYMBOL_PATH", NULL, 0);
 
+  if(len == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND)
+  {
+    // set up a default sympath to look up MS's symbol servers and cache them locally in
+    // RenderDoc's appdata folder.
+    PWSTR appDataPath;
+    SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_SIMPLE_IDLIST | KF_FLAG_DONT_UNEXPAND,
+                         NULL, &appDataPath);
+    rdcwstr appdata = appDataPath;
+    CoTaskMemFree(appDataPath);
+
+    sympath = L".;";
+    sympath += appdata.c_str();
+    sympath += L"\\renderdoc\\symbols;SRV*";
+    sympath += appdata.c_str();
+    sympath += L"\\renderdoc\\symbols\\symsrv*http://msdl.microsoft.com/download/symbols";
+
+    return sympath.c_str();
+  }
+
+  sympath.resize(len + 1);
+  GetEnvironmentVariableW(L"_NT_SYMBOL_PATH", &sympath[0], len);
   return sympath.c_str();
 }
 
@@ -153,8 +174,8 @@ HRESULT MakeDiaDataSource(IDiaDataSource **source)
 
   // if it loaded, we should be able to manually load up DIA
 
-  // thanks to https://stackoverflow.com/a/2466264/4070143 for details of how to 'manually' create a
-  // COM object from msdia
+  // thanks to https://stackoverflow.com/a/2466264/4070143 for details of how to 'manually' create
+  // a COM object from msdia
 
   typedef decltype(&DllGetClassObject) PFN_DllGetClassObject;
 
@@ -470,7 +491,7 @@ static bool InitDbgHelp()
   else
   {
     wchar_t path[MAX_PATH] = {0};
-    GetModuleFileNameW(GetModuleHandleA(STRINGIZE(RDOC_DLL_FILE) ".dll"), path, MAX_PATH - 1);
+    GetModuleFileNameW(GetModuleHandleA(STRINGIZE(RDOC_BASE_NAME) ".dll"), path, MAX_PATH - 1);
 
     wchar_t *slash = wcsrchr(path, '\\');
 
@@ -490,7 +511,6 @@ static bool InitDbgHelp()
 
       *slash = 0;
     }
-
 #if ENABLED(RDOC_X64)
     wcscat_s(path, L"/dbghelp.dll");
 #else
@@ -709,8 +729,7 @@ rdcstr Win32CallstackResolver::pdbBrowse(rdcstr startingPoint)
   ofn.lpstrFilter = L"PDB File\0*.pdb\0";
   ofn.lpstrFile = outBuf;
   ofn.nMaxFile = MAX_PATH * 2 - 1;
-  ofn.Flags =
-      OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;    // | OFN_ENABLEINCLUDENOTIFY | OFN_ENABLEHOOK
+  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;    // | OFN_ENABLEINCLUDENOTIFY | OFN_ENABLEHOOK
 
   BOOL ret = GetOpenFileNameW(&ofn);
 
@@ -723,44 +742,56 @@ rdcstr Win32CallstackResolver::pdbBrowse(rdcstr startingPoint)
 Win32CallstackResolver::Win32CallstackResolver(bool interactive, byte *moduleDB, size_t DBSize,
                                                RENDERDOC_ProgressCallback progress)
 {
-  rdcwstr configPath = StringFormat::UTF82Wide(FileIO::GetAppFolderFilename("config.ini"));
+  if(Win32_Callstacks_MSDIAPath() == UNINITIALISED_VAR)
   {
-    FILE *f = NULL;
-    _wfopen_s(&f, configPath.c_str(), L"a");
-    if(f)
-      fclose(f);
-  }
+    RDCLOG("Updating callstack resolve config from ini");
 
-  DWORD sz = 2048;
-  wchar_t *inputBuf = new wchar_t[sz];
-
-  for(;;)
-  {
-    DWORD read =
-        GetPrivateProfileStringW(L"renderdoc", L"ignores", NULL, inputBuf, sz, configPath.c_str());
-
-    if(read == sz - 1)
+    rdcwstr configPath = StringFormat::UTF82Wide(FileIO::GetAppFolderFilename("config.ini"));
     {
-      sz *= 2;
-      delete[] inputBuf;
-      inputBuf = new wchar_t[sz];
-      continue;
+      FILE *f = NULL;
+      _wfopen_s(&f, configPath.c_str(), L"a");
+      if(f)
+        fclose(f);
     }
 
-    break;
+    DWORD sz = 2048;
+    wchar_t *inputBuf = new wchar_t[sz];
+
+    for(;;)
+    {
+      DWORD read =
+          GetPrivateProfileStringW(L"renderdoc", L"ignores", NULL, inputBuf, sz, configPath.c_str());
+
+      if(read == sz - 1)
+      {
+        sz *= 2;
+        delete[] inputBuf;
+        inputBuf = new wchar_t[sz];
+        continue;
+      }
+
+      break;
+    }
+
+    rdcstr ignores = StringFormat::Wide2UTF8(inputBuf);
+
+    {
+      DWORD read = GetPrivateProfileStringW(L"renderdoc", L"msdiapath", NULL, inputBuf, sz,
+                                            configPath.c_str());
+
+      if(read > 0)
+        DIA2::msdiapath = inputBuf;
+    }
+
+    delete[] inputBuf;
+
+    split(ignores, pdbIgnores, ';');
   }
-
-  rdcstr ignores = StringFormat::Wide2UTF8(inputBuf);
-
+  else
   {
-    DWORD read =
-        GetPrivateProfileStringW(L"renderdoc", L"msdiapath", NULL, inputBuf, sz, configPath.c_str());
-
-    if(read > 0)
-      DIA2::msdiapath = inputBuf;
+    pdbIgnores = Win32_Callstacks_IgnoreList();
+    DIA2::msdiapath = StringFormat::UTF82Wide(Win32_Callstacks_MSDIAPath());
   }
-
-  delete[] inputBuf;
 
   // check we can create an IDiaDataSource
   {
@@ -779,17 +810,21 @@ Win32CallstackResolver::Win32CallstackResolver(bool interactive, byte *moduleDB,
 #else
 #define DIA140 L"bin\\msdia140.dll"
 #endif
-
       const wchar_t *DIApaths[] = {
           // try to see if it's just in the PATH somewhere
           L"msdia140.dll",
-          // otherwise try each VS2017/2019 SKU
+          // otherwise try each VS2017/2019/2022 SKU
+          L"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\DIA SDK\\" DIA140,
+          L"C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\DIA SDK\\" DIA140,
+          L"C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\DIA SDK\\" DIA140,
           L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\DIA SDK\\" DIA140,
           L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Enterprise\\DIA SDK\\" DIA140,
-          L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Professional\\DIA SDK\\" DIA140,
+          L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Professional\\DIA "
+          L"SDK\\" DIA140,
           L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Community\\DIA SDK\\" DIA140,
           L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Enterprise\\DIA SDK\\" DIA140,
-          L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Professional\\DIA SDK\\" DIA140,
+          L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Professional\\DIA "
+          L"SDK\\" DIA140,
       };
 
       for(size_t i = 0; i < ARRAY_COUNT(DIApaths); i++)
@@ -843,16 +878,10 @@ Win32CallstackResolver::Win32CallstackResolver(bool interactive, byte *moduleDB,
 
         hr = DIA2::MakeDiaDataSource(&source);
       }
-
-      // save whatever msdia path we found
-      WritePrivateProfileStringW(L"renderdoc", L"msdiapath", DIA2::msdiapath.c_str(),
-                                 configPath.c_str());
     }
 
     SAFE_RELEASE(source);
   }
-
-  split(ignores, pdbIgnores, ';');
 
   byte *chunks = moduleDB + 8;
   byte *end = chunks + DBSize - 8;
@@ -1005,11 +1034,15 @@ Win32CallstackResolver::Win32CallstackResolver(bool interactive, byte *moduleDB,
     modules.push_back(m);
   }
 
-  std::sort(pdbIgnores.begin(), pdbIgnores.end());
-  pdbIgnores.erase(std::unique(pdbIgnores.begin(), pdbIgnores.end()) - pdbIgnores.begin(), ~0U);
-  merge(pdbIgnores, ignores, ';');
-  WritePrivateProfileStringW(L"renderdoc", L"ignores", StringFormat::UTF82Wide(ignores).c_str(),
-                             configPath.c_str());
+  SDObject *ignoreList = RenderDoc::Inst().SetConfigSetting("Win32.Callstacks.IgnoreList");
+  ignoreList->DeleteChildren();
+  ignoreList->ReserveChildren(pdbIgnores.size());
+  for(rdcstr &i : pdbIgnores)
+    ignoreList->AddAndOwnChild(makeSDString("$el"_lit, i));
+  RenderDoc::Inst().SetConfigSetting("Win32.Callstacks.MSDIAPath")->data.str =
+      StringFormat::Wide2UTF8(DIA2::msdiapath);
+
+  RENDERDOC_SaveConfigSettings();
 }
 
 Win32CallstackResolver::~Win32CallstackResolver()

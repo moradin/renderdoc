@@ -51,6 +51,8 @@
     </property>
     <addaction name="action_Resolve_Symbols"/>
     <addaction name="action_Recompress_Capture"/>
+    <addaction name="action_EmbedExternalFiles"/>
+    <addaction name="action_RemoveExternalFiles"/>
     <addaction name="separator"/>
     <addaction name="action_Start_Replay_Loop"/>
     <addaction name="action_Create_RGP_Profile"/>
@@ -151,20 +153,20 @@
     <addaction name="menu_Save_Layout"/>
     <addaction name="menu_Load_Layout"/>
     <addaction name="separator"/>
-    <addaction name="action_Launch_Application_Window"/>
-    <addaction name="action_Python_Shell"/>
-    <addaction name="action_Event_Browser"/>
-    <addaction name="action_Texture_Viewer"/>
-    <addaction name="action_Pipeline_State"/>
+    <addaction name="action_Annotation_Viewer"/>
     <addaction name="action_API_Inspector"/>
-    <addaction name="action_Mesh_Output"/>
-    <addaction name="action_Errors_and_Warnings"/>
-    <addaction name="action_Timeline"/>
-    <addaction name="action_Statistics_Viewer"/>
-    <addaction name="action_Counter_Viewer"/>
-    <addaction name="action_Resource_Inspector"/>
     <addaction name="action_Comments"/>
-    <addaction name="action_Diagnostic_Log"/>
+    <addaction name="action_Counter_Viewer"/>
+    <addaction name="action_Errors_and_Warnings"/>
+    <addaction name="action_Event_Browser"/>
+    <addaction name="action_Launch_Application_Window"/>
+    <addaction name="action_Mesh_Output"/>
+    <addaction name="action_Pipeline_State"/>
+    <addaction name="action_Python_Shell"/>
+    <addaction name="action_Resource_Inspector"/>
+    <addaction name="action_Statistics_Viewer"/>
+    <addaction name="action_Texture_Viewer"/>
+    <addaction name="action_Timeline"/>
     <addaction name="separator"/>
     <addaction name="extension_dummy_Window"/>
    </widget>
@@ -180,7 +182,6 @@
      <addaction name="action_Clear_Reported_Bugs"/>
     </widget>
     <addaction name="action_View_Documentation"/>
-    <addaction name="action_View_Diagnostic_Log_File"/>
     <addaction name="action_Show_Tips"/>
     <addaction name="separator"/>
     <addaction name="action_Send_Error_Report"/>
@@ -249,7 +250,7 @@
   </action>
   <action name="action_Python_Shell">
    <property name="text">
-    <string>P&amp;ython Shell</string>
+    <string>P&amp;ython Scripting</string>
    </property>
   </action>
   <action name="action_Event_Browser">
@@ -270,6 +271,11 @@
   <action name="action_API_Inspector">
    <property name="text">
     <string>&amp;API Inspector</string>
+   </property>
+  </action>
+  <action name="action_Annotation_Viewer">
+   <property name="text">
+    <string>A&amp;nnotation Viewer</string>
    </property>
   </action>
   <action name="action_Mesh_Output">
@@ -377,11 +383,6 @@
     <string>View &amp;Documentation</string>
    </property>
   </action>
-  <action name="action_View_Diagnostic_Log_File">
-   <property name="text">
-    <string>View Diagnostic &amp;Log File</string>
-   </property>
-  </action>
   <action name="action_Send_Error_Report">
    <property name="text">
     <string>Send &amp;Error Report</string>
@@ -457,6 +458,16 @@
     <string>Re&amp;compress Capture</string>
    </property>
   </action>
+  <action name="action_EmbedExternalFiles">
+   <property name="text">
+    <string>Embed external files into Capture</string>
+   </property>
+  </action>
+  <action name="action_RemoveExternalFiles">
+   <property name="text">
+    <string>Remove external files from Capture</string>
+   </property>
+  </action>
   <action name="action_Clear_Reported_Bugs">
    <property name="text">
     <string>&amp;Clear Reported Bugs</string>
@@ -500,11 +511,6 @@
   <action name="action_Manage_Extensions">
    <property name="text">
     <string>Manage Extensions</string>
-   </property>
-  </action>
-  <action name="action_Diagnostic_Log">
-   <property name="text">
-    <string>Dia&amp;gnostic Log</string>
    </property>
   </action>
   <action name="action_Open_Capture_with_Options">

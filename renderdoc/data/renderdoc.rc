@@ -87,7 +87,7 @@ BEGIN
             VALUE "FileDescription", "Core DLL for RenderDoc"
             VALUE "FileVersion", MAJOR_MINOR_VERSION_STRING ".0.0"
             VALUE "InternalName", "renderdoc"
-            VALUE "LegalCopyright", "Copyright © 2021 Baldur Karlsson"
+            VALUE "LegalCopyright", "Copyright © 2026 Baldur Karlsson"
             VALUE "OriginalFilename", "renderdoc.dll"
             VALUE "ProductName", "RenderDoc"
             VALUE "ProductVersion", FULL_VERSION_STRING
@@ -114,6 +114,11 @@ RESOURCE_pixelhistory_hlsl TYPE_EMBED   "hlsl/pixelhistory.hlsl"
 RESOURCE_quadoverdraw_hlsl TYPE_EMBED   "hlsl/quadoverdraw.hlsl"
 RESOURCE_texremap_hlsl     TYPE_EMBED   "hlsl/texremap.hlsl"
 RESOURCE_fixedcol_hlsl     TYPE_EMBED   "hlsl/fixedcol.hlsl"
+RESOURCE_shaderdebug_hlsl  TYPE_EMBED   "hlsl/shaderdebug.hlsl"
+RESOURCE_d3d12_pixelhistory_hlsl TYPE_EMBED   "hlsl/d3d12_pixelhistory.hlsl"
+RESOURCE_depth_copy_hlsl   TYPE_EMBED   "hlsl/depth_copy.hlsl"
+RESOURCE_raytracing_hlsl   TYPE_EMBED   "hlsl/raytracing.hlsl"
+RESOURCE_hlsl_quadswizzle_hlsl  TYPE_EMBED   "hlsl/quadswizzle.hlsl"
 
 #ifdef RENDERDOC_BAKED_DXC_SHADERS
 
@@ -127,6 +132,15 @@ RESOURCE_fixedcol_1_dxbc   TYPE_EMBED  fixedcol_1.dxbc
 RESOURCE_fixedcol_2_dxbc   TYPE_EMBED  fixedcol_2.dxbc
 RESOURCE_fixedcol_3_dxbc   TYPE_EMBED  fixedcol_3.dxbc
 RESOURCE_quadwrite_dxbc    TYPE_EMBED  quadwrite.dxbc
+RESOURCE_pixelhistory_primitiveid_dxbc TYPE_EMBED  pixelhistory_primitiveid.dxbc
+RESOURCE_pixelhistory_fixedcol_0_dxbc  TYPE_EMBED  pixelhistory_fixedcol_0.dxbc
+RESOURCE_pixelhistory_fixedcol_1_dxbc  TYPE_EMBED  pixelhistory_fixedcol_1.dxbc
+RESOURCE_pixelhistory_fixedcol_2_dxbc  TYPE_EMBED  pixelhistory_fixedcol_2.dxbc
+RESOURCE_pixelhistory_fixedcol_3_dxbc  TYPE_EMBED  pixelhistory_fixedcol_3.dxbc
+RESOURCE_pixelhistory_fixedcol_4_dxbc  TYPE_EMBED  pixelhistory_fixedcol_4.dxbc
+RESOURCE_pixelhistory_fixedcol_5_dxbc  TYPE_EMBED  pixelhistory_fixedcol_5.dxbc
+RESOURCE_pixelhistory_fixedcol_6_dxbc  TYPE_EMBED  pixelhistory_fixedcol_6.dxbc
+RESOURCE_pixelhistory_fixedcol_7_dxbc  TYPE_EMBED  pixelhistory_fixedcol_7.dxbc
 
 #else
 
@@ -135,6 +149,15 @@ RESOURCE_fixedcol_1_dxbc   TYPE_EMBED   "hlsl/empty.dxbc"
 RESOURCE_fixedcol_2_dxbc   TYPE_EMBED   "hlsl/empty.dxbc"
 RESOURCE_fixedcol_3_dxbc   TYPE_EMBED   "hlsl/empty.dxbc"
 RESOURCE_quadwrite_dxbc    TYPE_EMBED   "hlsl/empty.dxbc"
+RESOURCE_pixelhistory_primitiveid_dxbc TYPE_EMBED  "hlsl/empty.dxbc"
+RESOURCE_pixelhistory_fixedcol_0_dxbc  TYPE_EMBED  "hlsl/empty.dxbc"
+RESOURCE_pixelhistory_fixedcol_1_dxbc  TYPE_EMBED  "hlsl/empty.dxbc"
+RESOURCE_pixelhistory_fixedcol_2_dxbc  TYPE_EMBED  "hlsl/empty.dxbc"
+RESOURCE_pixelhistory_fixedcol_3_dxbc  TYPE_EMBED  "hlsl/empty.dxbc"
+RESOURCE_pixelhistory_fixedcol_4_dxbc  TYPE_EMBED  "hlsl/empty.dxbc"
+RESOURCE_pixelhistory_fixedcol_5_dxbc  TYPE_EMBED  "hlsl/empty.dxbc"
+RESOURCE_pixelhistory_fixedcol_6_dxbc  TYPE_EMBED  "hlsl/empty.dxbc"
+RESOURCE_pixelhistory_fixedcol_7_dxbc  TYPE_EMBED  "hlsl/empty.dxbc"
 
 #endif
 
@@ -146,6 +169,8 @@ RESOURCE_glsl_texdisplay_frag          TYPE_EMBED   "glsl/texdisplay.frag"
 RESOURCE_glsl_vktext_vert              TYPE_EMBED   "glsl/vktext.vert"
 RESOURCE_glsl_vktext_frag              TYPE_EMBED   "glsl/vktext.frag"
 RESOURCE_glsl_fixedcol_frag            TYPE_EMBED   "glsl/fixedcol.frag"
+RESOURCE_glsl_depth_copy_frag          TYPE_EMBED   "glsl/depth_copy.frag"
+RESOURCE_glsl_depth_copyms_frag        TYPE_EMBED   "glsl/depth_copyms.frag"
 RESOURCE_glsl_mesh_vert                TYPE_EMBED   "glsl/mesh.vert"
 RESOURCE_glsl_mesh_geom                TYPE_EMBED   "glsl/mesh.geom"
 RESOURCE_glsl_mesh_frag                TYPE_EMBED   "glsl/mesh.frag"
@@ -174,6 +199,12 @@ RESOURCE_glsl_glsl_globals_h           TYPE_EMBED   "glsl/glsl_globals.h"
 RESOURCE_glsl_texremap_frag            TYPE_EMBED   "glsl/texremap.frag"
 RESOURCE_glsl_shaderdebug_sample_vert  TYPE_EMBED   "glsl/shaderdebug_sample.vert"
 RESOURCE_glsl_discard_frag             TYPE_EMBED   "glsl/discard.frag"
+RESOURCE_glsl_vk_ms2buffer_comp        TYPE_EMBED   "glsl/vk_ms2buffer.comp" 
+RESOURCE_glsl_vk_depthms2buffer_comp   TYPE_EMBED   "glsl/vk_depthms2buffer.comp"
+RESOURCE_glsl_vk_buffer2ms_comp        TYPE_EMBED   "glsl/vk_buffer2ms.comp" 
+RESOURCE_glsl_vk_depthbuf2ms_frag      TYPE_EMBED   "glsl/vk_depthbuf2ms.frag"
+RESOURCE_glsl_debug_math_comp          TYPE_EMBED   "glsl/debug_math.comp"
+RESOURCE_glsl_debug_sample_frag        TYPE_EMBED   "glsl/debug_sample.frag"
 
 #ifndef APSTUDIO_INVOKED
 /////////////////////////////////////////////////////////////////////////////

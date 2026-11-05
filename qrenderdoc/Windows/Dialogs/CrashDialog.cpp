@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -41,7 +41,7 @@
 
 const qint64 MaxUploadSize = 2250LL * 1024LL * 1024LL;
 
-CrashDialog::CrashDialog(PersistantConfig &cfg, QVariantMap crashReportJSON, QWidget *parent)
+CrashDialog::CrashDialog(PersistentConfig &cfg, QVariantMap crashReportJSON, QWidget *parent)
     : QDialog(parent), ui(new Ui::CrashDialog), m_Config(cfg)
 {
   ui->setupUi(this);
@@ -70,6 +70,7 @@ CrashDialog::CrashDialog(PersistantConfig &cfg, QVariantMap crashReportJSON, QWi
 
   QFileInfo capInfo(m_CaptureFilename);
 
+  bool hasEmbeddedFiles = false;
   if(replayCrash && capInfo.exists())
   {
     // if we have a previous capture, fill out the capture group
@@ -83,9 +84,9 @@ CrashDialog::CrashDialog(PersistantConfig &cfg, QVariantMap crashReportJSON, QWi
 
     ICaptureFile *cap = RENDERDOC_OpenCaptureFile();
 
-    ReplayStatus status = cap->OpenFile(capInfo.absoluteFilePath(), "", NULL);
+    ResultDetails result = cap->OpenFile(capInfo.absoluteFilePath(), "", NULL);
 
-    if(status == ReplayStatus::Succeeded)
+    if(result.OK())
     {
       Thumbnail thumb = cap->GetThumbnail(FileType::Raw, 320);
       QImage i = QImage(thumb.data.data(), (int)thumb.width, (int)thumb.height, QImage::Format_RGB888)
@@ -98,6 +99,7 @@ CrashDialog::CrashDialog(PersistantConfig &cfg, QVariantMap crashReportJSON, QWi
 
         m_Thumbnail = new Thumbnail(cap->GetThumbnail(FileType::JPG, 0));
       }
+      hasEmbeddedFiles = cap->HasEmbeddedDependencies();
     }
 
     cap->Shutdown();
@@ -158,6 +160,11 @@ CrashDialog::CrashDialog(PersistantConfig &cfg, QVariantMap crashReportJSON, QWi
            "can get better!</p>")
             .arg(QUrl::fromLocalFile(m_ReportPath).toString());
   }
+
+  if(!m_CaptureFilename.isEmpty() && hasEmbeddedFiles)
+    text +=
+        tr("<p>Warning: The capture file contains embedded dependency files i.e. shader debug "
+           "files.</p>");
 
   if(m_Config.CheckUpdate_UpdateAvailable)
   {
@@ -249,11 +256,18 @@ CrashDialog::~CrashDialog()
   delete ui;
 }
 
-bool CrashDialog::HasCaptureReady(PersistantConfig &cfg)
+bool CrashDialog::HasCaptureReady(PersistentConfig &cfg)
 {
   QFileInfo capInfo(cfg.CrashReport_LastOpenedCapture);
 
   return capInfo.exists() && capInfo.size() <= MaxUploadSize;
+}
+
+bool CrashDialog::CaptureTooLarge(PersistentConfig &cfg)
+{
+  QFileInfo capInfo(cfg.CrashReport_LastOpenedCapture);
+
+  return capInfo.exists() && capInfo.size() > MaxUploadSize;
 }
 
 void CrashDialog::showEvent(QShowEvent *)
@@ -307,18 +321,28 @@ void CrashDialog::on_send_clicked()
   // confirm if the user REALLY wants to upload their capture
   if(ui->captureUpload->isChecked())
   {
-    QMessageBox::StandardButton result = RDDialog::question(
-        this, tr("Are you sure?"), tr("Uploading your capture file will send it privately to the "
-                                      "RenderDoc server where I can "
-                                      "use it to reproduce your problem.\n\nAre you sure you are "
-                                      "OK with sending the capture "
-                                      "securely to RenderDoc's website?"));
+    QMessageBox::StandardButton result =
+        RDDialog::question(this, tr("Are you sure?"),
+                           tr("Uploading your capture file will send it privately to the "
+                              "RenderDoc server where I can "
+                              "use it to reproduce your problem.\n\nAre you sure you are "
+                              "OK with sending the capture "
+                              "securely to RenderDoc's website?"));
 
     if(result != QMessageBox::Yes)
     {
       // uncheck and return back so they can confirm
       if(ui->captureUpload->isEnabled())
         ui->captureUpload->setChecked(false);
+      else
+        RDDialog::information(
+            this, tr("Capture required"),
+            tr("<html>For unrecoverable errors like the one you encountered, without a "
+               "capture to reproduce the problem it's impossible to tell what "
+               "went wrong so a crash report is unfortunately required.\n\n"
+               "If you don't wish to share your capture that is OK. You can also email me at <a "
+               "href=\"mailto:baldurk@baldurk.org?subject=RenderDoc%20Unrecoverable%20error\">"
+               "baldurk@baldurk.org</a> with information and I can help investigate.</html>"));
       return;
     }
   }
@@ -464,8 +488,22 @@ void CrashDialog::sendReport()
       m_Request, OverloadedSlot<QNetworkReply::NetworkError>::of(&QNetworkReply::error),
       [this](QNetworkReply::NetworkError err) {
         ui->progressBar->setValue(0);
-        ui->progressText->setText(tr("Network error uploading:\n%1").arg(m_Request->errorString()));
-        ui->uploadRetry->setEnabled(true);
+        if(m_Request->error() == QNetworkReply::ProtocolInvalidOperationError)
+        {
+          ui->progressText->setText(
+              tr("Server reported that the crash report is corrupted.\n\n"
+                 "Check that your program is not passing garbage/corrupted strings to "
+                 "the API in e.g. names or messages.\n\n"
+                 "This could also be caused by disk I/O corruption leading to garbage bytes."));
+          ui->uploadRetry->setEnabled(false);
+          ui->uploadCancel->setText(tr("Close"));
+          m_Corrupted = true;
+        }
+        else
+        {
+          ui->progressText->setText(tr("Network error uploading:\n%1").arg(m_Request->errorString()));
+          ui->uploadRetry->setEnabled(true);
+        }
       });
 
   ui->progressBar->setValue(0);
@@ -482,9 +520,8 @@ void CrashDialog::sendReport()
   });
 
   QObject::connect(m_Request, &QNetworkReply::finished, [this]() {
-
     // don't do anything if we're finished after an error
-    if(ui->uploadRetry->isEnabled())
+    if(ui->uploadRetry->isEnabled() || m_Corrupted)
       return;
 
     QString text = tr("<p>Your report has been uploaded, thank you for your help!</p>");
@@ -515,6 +552,13 @@ void CrashDialog::on_cancel_clicked()
 
 void CrashDialog::on_uploadCancel_clicked()
 {
+  // if the report is corrupt don't bother checking with the user - there is nothing they can do
+  if(m_Corrupted)
+  {
+    reject();
+    return;
+  }
+
   // check that it wasn't an accident
   QMessageBox::StandardButton result = RDDialog::question(
       this, tr("Cancel upload?"), tr("Are you sure you want to cancel the bug report upload?"));

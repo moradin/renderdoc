@@ -22,19 +22,13 @@ Below are specific per-distribution instructions. If you know the required packa
 
 ### Ubuntu
 
-For Ubuntu 14.04 or above you'll need:
+For Ubuntu 18.04 or above you'll need:
 
 ```
-sudo apt-get install libx11-dev libx11-xcb-dev mesa-common-dev libgl1-mesa-dev libxcb-keysyms1-dev cmake python3-dev bison autoconf automake libpcre3-dev
+sudo apt-get install libx11-dev libx11-xcb-dev mesa-common-dev libgl1-mesa-dev libxcb-keysyms1-dev pkg-config cmake python3-dev bison autoconf automake libpcre3-dev qt5-qmake libqt5svg5-dev libqt5x11extras5-dev
 ```
 
-For the base dependencies. On Ubuntu 18.04 and above Qt is available in the default repositories:
-
-```
-sudo apt-get install qt5-qmake libqt5svg5-dev libqt5x11extras5-dev 
-```
-
-For older versions of Ubuntu they might not include a recent enough Qt version, so you can use [Stephan Binner's ppas](https://launchpad.net/~beineri) to install a more recent version of Qt. At least 5.6.2 is required. If you choose to instead install an [official Qt release](https://download.qt.io/official_releases/qt/) or build Qt from source, add `-DQMAKE_QT5_COMMAND=/path/to/qmake` to your cmake arguments.
+For the dependencies. On Ubuntu versions older than 18.04, the Qt in the default respositories will not be new enough or may be missing. You can use [Stephan Binner's ppas](https://launchpad.net/~beineri) to install a more recent version of Qt. At least 5.6.2 is required. If you choose to instead install an [official Qt release](https://download.qt.io/official_releases/qt/) or build Qt from source, add `-DQMAKE_QT5_COMMAND=/path/to/qmake` to your cmake arguments.
 
 ### Archlinux
 
@@ -95,14 +89,12 @@ sudo apt-get install libx11-dev libx11-xcb-dev mesa-common-dev libgl1-mesa-dev l
 
 ## Mac
 
-Mac requires a recent version of CMake, and the same Qt version as the other platforms (at least 5.6.2). If you're using [homebrew](http://brew.sh) then this will do the trick:
+Mac requires Xcode version 12.2 or newer, CMake version 3.20 or newer, `autoconf`, `automake`, `pcre` and Qt5 version 5.15.2 or newer. If you're using [homebrew](http://brew.sh) then this will do the trick:
 
 ```
-brew install cmake qt5
+brew install cmake autoconf automake pcre qt5
 brew link qt5 --force
 ```
-
-You will also need `autotools`. That is usually available by default but might need to be explicitly installed with `brew install autoconf automake`. 
 
 ## Android
 
@@ -117,6 +109,8 @@ export ANDROID_SDK=<path_to_sdk_root>
 export ANDROID_NDK=<path_to_ndk_root>
 export JAVA_HOME=<path_to_jdk_root>
 ```
+
+You must also make sure that you have the `java` from `JAVA_HOME` in your `PATH`, as some Android build commands run java directly without respecting `JAVA_HOME`.
 
 Otherwise, below are steps to acquire the tools for each platform. These steps download specifically the versions listed above, other versions may work but are not guaranteed.
 

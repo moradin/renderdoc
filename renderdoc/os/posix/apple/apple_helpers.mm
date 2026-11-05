@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2021-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -67,8 +67,8 @@ rdcstr apple_GetExecutablePathFromAppBundle(const char *appBundlePath)
   NSBundle *nsBundle = [NSBundle bundleWithPath:path];
   if(!nsBundle)
   {
-    RDCERR("Failed to open application '%s' as an NSBundle", appBundlePath);
-    return rdcstr();
+    RDCWARN("Failed to open application '%s' as an NSBundle", appBundlePath);
+    return rdcstr(appBundlePath);
   }
 
   NSString *executablePath = nsBundle.executablePath;

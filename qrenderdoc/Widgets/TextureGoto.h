@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -42,9 +42,11 @@ signals:
 
 public slots:
   void location_keyPress(QKeyEvent *);
+  void focusOut(QFocusEvent *event);
 
 private:
   void leaveEvent(QEvent *event) override;
+  void focusOutEvent(QFocusEvent *event) override;
 
   RDDoubleSpinBox *m_X, *m_Y;
   std::function<void(QPoint)> m_Callback;

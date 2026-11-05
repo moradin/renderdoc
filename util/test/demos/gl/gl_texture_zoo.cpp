@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -57,6 +57,26 @@ vec4 cubeFetch(samplerCube t, int i)
 }
 
 vec4 cubeFetch(samplerCubeArray t, int i)
+{
+  return textureLod(t, vec4(1,0,0,0), 0.0);
+}
+
+vec4 cubeFetch(usamplerCube t, int i)
+{
+  return textureLod(t, vec3(1,0,0), 0.0);
+}
+
+vec4 cubeFetch(usamplerCubeArray t, int i)
+{
+  return textureLod(t, vec4(1,0,0,0), 0.0);
+}
+
+vec4 cubeFetch(isamplerCube t, int i)
+{
+  return textureLod(t, vec3(1,0,0), 0.0);
+}
+
+vec4 cubeFetch(isamplerCubeArray t, int i)
 {
   return textureLod(t, vec4(1,0,0,0), 0.0);
 }
@@ -272,6 +292,13 @@ void main()
     GLuint tex;
   };
 
+  struct TexImageTestCase
+  {
+    TestCase base;
+    TexData data;
+    Vec4i dimensions;
+  };
+
   std::string MakeName(const TestCase &test)
   {
     std::string name = "Texture " + std::to_string(test.dim) + "D";
@@ -376,12 +403,13 @@ void main()
     glGetInternalformativ(test.target, test.fmt.internalFormat, GL_NUM_SAMPLE_COUNTS, 1, &numSamples);
 
     GLint samples[8];
-    glGetInternalformativ(test.target, test.fmt.internalFormat, GL_SAMPLES, 1, samples);
+    glGetInternalformativ(test.target, test.fmt.internalFormat, GL_SAMPLES, numSamples, samples);
 
     Vec4i dimensions(texWidth, texHeight, texDepth);
 
     bool isCompressed =
-        (test.fmt.cfg.type != TextureType::R9G9B9E5 && test.fmt.cfg.type != TextureType::Regular);
+        (test.fmt.cfg.type != TextureType::R9G9B9E5 && test.fmt.cfg.type != TextureType::Regular) ||
+        test.fmt.internalFormat == GL_STENCIL_INDEX8;
 
     // Some GL drivers report that block compressed textures are supported for MSAA and color
     // rendering. Save them from themselves. Similarly they report support for 1D and 3D but then it
@@ -570,6 +598,9 @@ void main()
     else if(test.fmt.cfg.componentCount == 1)
       format = isInt ? GL_RED_INTEGER : GL_RED;
 
+    if(test.fmt.internalFormat == GL_STENCIL_INDEX8)
+      format = GL_STENCIL_INDEX;
+
     if(test.fmt.cfg.type == TextureType::R9G9B9E5)
     {
       format = GL_RGB;
@@ -728,12 +759,15 @@ void main()
 
 #define TEST_CASE_NAME(texFmt) #texFmt
 
-#define TEST_CASE(texType, texFmt, compCount, byteWidth, dataType)    \
-  {                                                                   \
-    &(#texFmt)[3], texFmt, {texType, compCount, byteWidth, dataType}, \
+#define TEST_CASE(texType, texFmt, compCount, byteWidth, dataType) \
+  {                                                                \
+      &(#texFmt)[3],                                               \
+      texFmt,                                                      \
+      {texType, compCount, byteWidth, dataType},                   \
   }
 
     std::vector<TestCase> test_textures;
+    std::vector<TexImageTestCase> test_teximage_textures;
 
     const GLFormat color_tests[] = {
         TEST_CASE(TextureType::Regular, GL_RGBA32F, 4, 4, DataType::Float),
@@ -861,6 +895,8 @@ void main()
         TEST_CASE(TextureType::Unknown, GL_DEPTH_COMPONENT24, 0, 0, DataType::Float),
 
         TEST_CASE(TextureType::Unknown, GL_DEPTH_COMPONENT16, 0, 0, DataType::Float),
+
+        TEST_CASE(TextureType::Regular, GL_STENCIL_INDEX8, 1, 1, DataType::UInt),
     };
 
     for(GLFormat f : depth_tests)
@@ -875,6 +911,66 @@ void main()
          QueryFormatBool(t.target, t.fmt.internalFormat, GL_FRAGMENT_TEXTURE))
       {
         FinaliseTest(t);
+      }
+    }
+    const GLFormat teximage_test = TEST_CASE(TextureType::Regular, GL_RGBA8, 4, 1, DataType::UNorm);
+    TestCase tests[] = {
+        {teximage_test, GL_TEXTURE_1D, 1, false},
+        {teximage_test, GL_TEXTURE_2D, 2, false},
+        {teximage_test, GL_TEXTURE_3D, 3, false},
+    };
+    for(TestCase test : tests)
+    {
+      if(QueryFormatBool(test.target, test.fmt.internalFormat, GL_INTERNALFORMAT_SUPPORTED) &&
+         QueryFormatBool(test.target, test.fmt.internalFormat, GL_FRAGMENT_TEXTURE))
+      {
+        test.isMSAA = false;
+        test.isRect = false;
+        test.isCube = false;
+        test.canRender = false;
+        test.canDepth = false;
+        test.canStencil = false;
+
+        test.tex = MakeTexture();
+        glBindTexture(test.target, test.tex);
+        glTexParameteri(test.target, GL_TEXTURE_MAX_LEVEL, 0);
+        glTexParameteri(test.target, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+        glTexParameteri(test.target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+        Vec4i dimensions(texWidth, texHeight, texDepth);
+
+        if(test.dim == 1)
+          dimensions.y = dimensions.z = 1;
+        else if(test.dim == 2)
+          dimensions.z = 1;
+
+        glObjectLabel(GL_TEXTURE, test.tex, -1, (MakeName(test) + " " + test.fmt.name).c_str());
+
+        GLint m = 0;
+        GLint s = 0;
+        TexData packed_data;
+        MakeData(packed_data, test.fmt.cfg, dimensions, m, s);
+
+        uint32_t mipHeight = dimensions.y;
+        uint32_t mipDepth = dimensions.z;
+
+        const uint32_t rowLengthMultiplier = 2;
+
+        TexData data;
+        data.rowPitch = packed_data.rowPitch * rowLengthMultiplier;
+        data.slicePitch = packed_data.slicePitch * rowLengthMultiplier;
+        data.byteData.resize(packed_data.byteData.size() * rowLengthMultiplier);
+        for(uint32_t z = 0; z < mipDepth; ++z)
+        {
+          for(uint32_t y = 0; y < mipHeight; ++y)
+          {
+            memcpy(&data.byteData[z * data.slicePitch + y * data.rowPitch],
+                   &packed_data.byteData[z * packed_data.slicePitch + y * packed_data.rowPitch],
+                   packed_data.rowPitch);
+          }
+        }
+        test.hasData = !data.byteData.empty();
+        test_teximage_textures.push_back({test, data, dimensions});
       }
     }
 
@@ -1137,6 +1233,60 @@ void main()
       }
 
       // pop the last format region
+      popMarker();
+
+      pushMarker("TexImage tests");
+      for(TexImageTestCase &test : test_teximage_textures)
+      {
+        if(test.base.hasData && test.base.tex)
+        {
+          setMarker(MakeName(test.base));
+          glBindTexture(test.base.target, test.base.tex);
+          // ROW_LENGTH is in pixels not bytes
+          glPixelStorei(GL_UNPACK_ROW_LENGTH, test.data.rowPitch / test.base.fmt.cfg.componentCount);
+          glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+          glPixelStorei(GL_PACK_ALIGNMENT, 1);
+
+          uint32_t mipWidth = test.dimensions.x;
+          uint32_t mipHeight = test.dimensions.y;
+          uint32_t mipDepth = test.dimensions.z;
+          GLenum format = GL_RGBA;
+          GLenum type = GL_UNSIGNED_BYTE;
+          GLint border = 0;
+          GLint mip = 0;
+          if(test.base.dim == 1)
+          {
+            glTexImage1D(test.base.target, mip, test.base.fmt.internalFormat, mipWidth, border,
+                         format, type, test.data.byteData.data());
+          }
+          else if(test.base.dim == 2)
+          {
+            glTexImage2D(test.base.target, mip, test.base.fmt.internalFormat, mipWidth, mipHeight,
+                         border, format, type, test.data.byteData.data());
+          }
+          else if(test.base.dim == 3)
+          {
+            glTexImage3D(test.base.target, mip, test.base.fmt.internalFormat, mipWidth, mipHeight,
+                         mipDepth, border, format, type, test.data.byteData.data());
+          }
+          glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+
+          glViewport(viewX, viewY, 10, 10);
+          glScissor(viewX + 1, viewY + 1, 8, 8);
+
+          glUseProgram(GetProgram(test.base));
+
+          glBindTextureUnit(0, test.base.tex);
+          glDrawArrays(GL_TRIANGLES, 0, 3);
+
+          viewX += 10;
+          if(viewX + 10 > (float)screenWidth)
+          {
+            viewX = 0;
+            viewY -= 10;
+          }
+        }
+      }
       popMarker();
 
       glViewport(0, 0, GLsizei(screenWidth), GLsizei(screenHeight));

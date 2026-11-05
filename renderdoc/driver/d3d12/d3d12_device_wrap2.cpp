@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,8 +23,34 @@
  ******************************************************************************/
 
 #include "d3d12_device.h"
+#include "core/settings.h"
 #include "driver/dxgi/dxgi_common.h"
+#include "driver/ihv/nv/nv_aftermath.h"
 #include "d3d12_resources.h"
+
+RDOC_EXTERN_CONFIG(bool, Replay_Debug_SingleThreadedCompilation);
+
+static RDResult DeferredPipelineCompile(ID3D12Device2 *device2,
+                                        const D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC &Descriptor,
+                                        WrappedID3D12PipelineState *wrappedPipe)
+{
+  D3D12_PACKED_PIPELINE_STATE_STREAM_DESC unwrappedDesc(Descriptor);
+  unwrappedDesc.Unwrap();
+
+  ID3D12PipelineState *realPipe;
+  HRESULT hr = device2->CreatePipelineState(unwrappedDesc.AsDescStream(),
+                                            __uuidof(ID3D12PipelineState), (void **)&realPipe);
+
+  wrappedPipe->SetNewReal(realPipe);
+
+  if(FAILED(hr))
+  {
+    RETURN_ERROR_RESULT(ResultCode::APIReplayFailed, "Failed creating pipeline state, HRESULT: %s",
+                        ToStr(hr).c_str());
+  }
+
+  return ResultCode::Succeeded;
+}
 
 static bool UsesExtensionUAV(const D3D12_SHADER_BYTECODE &sh, uint32_t reg, uint32_t space)
 {
@@ -45,140 +71,211 @@ bool WrappedID3D12Device::Serialise_CreatePipelineState(SerialiserType &ser,
                           ((WrappedID3D12PipelineState *)*ppPipelineState)->GetResourceID())
       .TypedAs("ID3D12PipelineState *"_lit);
 
+  ResourceId InlineShaderIDs[8];
+
+  if(IsCaptureMode(m_State))
+  {
+    const D3D12_SHADER_BYTECODE *shaders[] = {
+        &Descriptor.VS, &Descriptor.HS, &Descriptor.DS, &Descriptor.GS,
+        &Descriptor.PS, &Descriptor.CS, &Descriptor.AS, &Descriptor.MS,
+    };
+    RDCCOMPILE_ASSERT(ARRAY_COUNT(InlineShaderIDs) == ARRAY_COUNT(shaders),
+                      "shaders array is incorrectly sized");
+
+    for(uint32_t s = 0; s < ARRAY_COUNT(shaders); s++)
+    {
+      if(shaders[s]->BytecodeLength == 0 || shaders[s]->pShaderBytecode == NULL)
+        continue;
+
+      InlineShaderIDs[s] = ResourceIDGen::GetNewUniqueID();
+    }
+  }
+
+  if(ser.VersionAtLeast(0x16))
+  {
+    SERIALISE_ELEMENT(InlineShaderIDs).Hidden();
+  }
+
   SERIALISE_CHECK_READ_ERRORS();
 
   if(IsReplayingAndReading())
   {
-    D3D12_PACKED_PIPELINE_STATE_STREAM_DESC unwrappedDesc(Descriptor);
-    unwrappedDesc.Unwrap();
+    // we steal the serialised descriptor here so we can pass it to jobs without its contents and
+    // all of the allocated structures and arrays being deserialised. We add a job which waits on
+    // the compiles then deserialises this manually.
+    D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC OrigDescriptor = Descriptor;
+    Descriptor = {};
 
-    ID3D12PipelineState *ret = NULL;
-    HRESULT hr = E_NOINTERFACE;
-
-    if(m_pDevice2)
-      hr = m_pDevice2->CreatePipelineState(unwrappedDesc.AsDescStream(), guid, (void **)&ret);
-    else
-      RDCERR("Replaying a without D3D12.2 available");
-
-    if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
-      return false;
-    }
-    else
-    {
-      ret = new WrappedID3D12PipelineState(ret, this);
-
-      WrappedID3D12PipelineState *wrapped = (WrappedID3D12PipelineState *)ret;
-
-      D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC *storedDesc =
-          new D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC(Descriptor);
-
       D3D12_SHADER_BYTECODE *shaders[] = {
-          &storedDesc->VS, &storedDesc->HS, &storedDesc->DS,
-          &storedDesc->GS, &storedDesc->PS, &storedDesc->CS,
+          &OrigDescriptor.VS, &OrigDescriptor.HS, &OrigDescriptor.DS, &OrigDescriptor.GS,
+          &OrigDescriptor.PS, &OrigDescriptor.CS, &OrigDescriptor.AS, &OrigDescriptor.MS,
       };
-
-      AddResource(pPipelineState, ResourceType::PipelineState, "Pipeline State");
-      DerivedResource(Descriptor.pRootSignature, pPipelineState);
 
       for(size_t i = 0; i < ARRAY_COUNT(shaders); i++)
       {
         if(shaders[i]->BytecodeLength == 0 || shaders[i]->pShaderBytecode == NULL)
-        {
-          shaders[i]->pShaderBytecode = NULL;
-          shaders[i]->BytecodeLength = 0;
-        }
-        else
-        {
-          WrappedID3D12Shader *entry = WrappedID3D12Shader::AddShader(*shaders[i], this);
-          entry->AddRef();
+          continue;
 
-          shaders[i]->pShaderBytecode = entry;
-
-          if(m_GlobalEXTUAV != ~0U)
-            entry->SetShaderExtSlot(m_GlobalEXTUAV, m_GlobalEXTUAVSpace);
-
-          AddResourceCurChunk(entry->GetResourceID());
-
-          DerivedResource(entry->GetResourceID(), pPipelineState);
-        }
+        // add any missing hashes ourselves. This probably comes from a capture with experimental
+        // enabled so it can load unhashed, but we want to be more proactive
+        if(!DXBC::DXBCContainer::IsHashedContainer(shaders[i]->pShaderBytecode,
+                                                   shaders[i]->BytecodeLength))
+          DXBC::DXBCContainer::HashContainer((void *)shaders[i]->pShaderBytecode,
+                                             shaders[i]->BytecodeLength);
+        if(DXBC::DXBCContainer::CheckForDXIL(shaders[i]->pShaderBytecode, shaders[i]->BytecodeLength))
+          m_UsedDXIL = true;
       }
+    }
 
-      if(storedDesc->CS.BytecodeLength > 0)
+    if(!m_pDevice2)
+    {
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Capture requires ID3D12Device2 which isn't available");
+      return false;
+    }
+
+    WrappedID3D12PipelineState *wrapped = new WrappedID3D12PipelineState(
+        pPipelineState, GetResourceManager()->CreateDeferredHandle<ID3D12PipelineState>(), this);
+
+    D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC *storedDesc =
+        new D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC(OrigDescriptor);
+
+    D3D12_SHADER_BYTECODE *shaders[] = {
+        &storedDesc->VS, &storedDesc->HS, &storedDesc->DS, &storedDesc->GS,
+        &storedDesc->PS, &storedDesc->CS, &storedDesc->AS, &storedDesc->MS,
+    };
+
+    AddResource(pPipelineState, ResourceType::PipelineState, "Pipeline State");
+    if(OrigDescriptor.GetRootSigIfPresent())
+      DerivedResource(OrigDescriptor.GetRootSigIfPresent(), pPipelineState);
+
+    RDCCOMPILE_ASSERT(ARRAY_COUNT(InlineShaderIDs) == ARRAY_COUNT(shaders),
+                      "shaders array is incorrectly sized");
+    for(size_t i = 0; i < ARRAY_COUNT(shaders); i++)
+    {
+      if(shaders[i]->BytecodeLength == 0 || shaders[i]->pShaderBytecode == NULL)
       {
-        wrapped->compute = storedDesc;
+        shaders[i]->pShaderBytecode = NULL;
+        shaders[i]->BytecodeLength = 0;
       }
       else
       {
-        wrapped->graphics = storedDesc;
+        WrappedID3D12Shader *entry =
+            WrappedID3D12Shader::AddShader(InlineShaderIDs[i], *shaders[i], this);
+        entry->AddRef();
 
-        if(wrapped->graphics->InputLayout.NumElements)
+        NVAftermath_Shader(ShaderEncoding::DXBC, shaders[i]->pShaderBytecode,
+                           shaders[i]->BytecodeLength);
+
+        shaders[i]->pShaderBytecode = entry;
+
+        if(m_GlobalEXTUAV != ~0U)
+          entry->SetShaderExtSlot(m_GlobalEXTUAV, m_GlobalEXTUAVSpace);
+
+        AddResourceCurChunk(entry->GetResourceID());
+
+        DerivedResource(entry->GetResourceID(), pPipelineState);
+      }
+    }
+
+    if(storedDesc->CS.BytecodeLength > 0)
+    {
+      wrapped->compute = storedDesc;
+    }
+    else
+    {
+      wrapped->graphics = storedDesc;
+
+      if(wrapped->graphics->InputLayout.NumElements)
+      {
+        wrapped->graphics->InputLayout.pInputElementDescs =
+            new D3D12_INPUT_ELEMENT_DESC[wrapped->graphics->InputLayout.NumElements];
+        memcpy((void *)wrapped->graphics->InputLayout.pInputElementDescs,
+               OrigDescriptor.InputLayout.pInputElementDescs,
+               sizeof(D3D12_INPUT_ELEMENT_DESC) * wrapped->graphics->InputLayout.NumElements);
+      }
+      else
+      {
+        wrapped->graphics->InputLayout.pInputElementDescs = NULL;
+      }
+
+      if(wrapped->graphics->StreamOutput.NumEntries)
+      {
+        wrapped->graphics->StreamOutput.pSODeclaration =
+            new D3D12_SO_DECLARATION_ENTRY[wrapped->graphics->StreamOutput.NumEntries];
+        memcpy((void *)wrapped->graphics->StreamOutput.pSODeclaration,
+               OrigDescriptor.StreamOutput.pSODeclaration,
+               sizeof(D3D12_SO_DECLARATION_ENTRY) * wrapped->graphics->StreamOutput.NumEntries);
+
+        if(wrapped->graphics->StreamOutput.NumStrides)
         {
-          wrapped->graphics->InputLayout.pInputElementDescs =
-              new D3D12_INPUT_ELEMENT_DESC[wrapped->graphics->InputLayout.NumElements];
-          memcpy((void *)wrapped->graphics->InputLayout.pInputElementDescs,
-                 Descriptor.InputLayout.pInputElementDescs,
-                 sizeof(D3D12_INPUT_ELEMENT_DESC) * wrapped->graphics->InputLayout.NumElements);
+          wrapped->graphics->StreamOutput.pBufferStrides =
+              new UINT[wrapped->graphics->StreamOutput.NumStrides];
+          memcpy((void *)wrapped->graphics->StreamOutput.pBufferStrides,
+                 OrigDescriptor.StreamOutput.pBufferStrides,
+                 sizeof(UINT) * wrapped->graphics->StreamOutput.NumStrides);
         }
         else
         {
-          wrapped->graphics->InputLayout.pInputElementDescs = NULL;
-        }
-
-        if(wrapped->graphics->StreamOutput.NumEntries)
-        {
-          wrapped->graphics->StreamOutput.pSODeclaration =
-              new D3D12_SO_DECLARATION_ENTRY[wrapped->graphics->StreamOutput.NumEntries];
-          memcpy((void *)wrapped->graphics->StreamOutput.pSODeclaration,
-                 Descriptor.StreamOutput.pSODeclaration,
-                 sizeof(D3D12_SO_DECLARATION_ENTRY) * wrapped->graphics->StreamOutput.NumEntries);
-
-          if(wrapped->graphics->StreamOutput.NumStrides)
-          {
-            wrapped->graphics->StreamOutput.pBufferStrides =
-                new UINT[wrapped->graphics->StreamOutput.NumStrides];
-            memcpy((void *)wrapped->graphics->StreamOutput.pBufferStrides,
-                   Descriptor.StreamOutput.pBufferStrides,
-                   sizeof(UINT) * wrapped->graphics->StreamOutput.NumStrides);
-          }
-          else
-          {
-            wrapped->graphics->StreamOutput.pBufferStrides = NULL;
-          }
-        }
-        else
-        {
-          wrapped->graphics->StreamOutput.NumEntries = 0;
-          wrapped->graphics->StreamOutput.NumStrides = 0;
-          wrapped->graphics->StreamOutput.pSODeclaration = NULL;
           wrapped->graphics->StreamOutput.pBufferStrides = NULL;
         }
-
-        if(wrapped->graphics->ViewInstancing.ViewInstanceCount)
-        {
-          wrapped->graphics->ViewInstancing.pViewInstanceLocations =
-              new D3D12_VIEW_INSTANCE_LOCATION[wrapped->graphics->ViewInstancing.ViewInstanceCount];
-          memcpy((void *)wrapped->graphics->ViewInstancing.pViewInstanceLocations,
-                 Descriptor.ViewInstancing.pViewInstanceLocations,
-                 sizeof(D3D12_VIEW_INSTANCE_LOCATION) *
-                     wrapped->graphics->ViewInstancing.ViewInstanceCount);
-        }
-        else
-        {
-          wrapped->graphics->ViewInstancing.pViewInstanceLocations = NULL;
-        }
       }
-
-      // if this shader was initialised with nvidia's dynamic UAV, pull in that chunk as one of ours
-      // and unset it (there will be one for each create that actually used vendor extensions)
-      if(m_VendorEXT == GPUVendor::nVidia && m_GlobalEXTUAV != ~0U)
+      else
       {
-        GetResourceDesc(pPipelineState)
-            .initialisationChunks.push_back((uint32_t)m_StructuredFile->chunks.size() - 2);
-        m_GlobalEXTUAV = ~0U;
+        wrapped->graphics->StreamOutput.NumEntries = 0;
+        wrapped->graphics->StreamOutput.NumStrides = 0;
+        wrapped->graphics->StreamOutput.pSODeclaration = NULL;
+        wrapped->graphics->StreamOutput.pBufferStrides = NULL;
       }
-      GetResourceManager()->AddLiveResource(pPipelineState, ret);
+
+      if(wrapped->graphics->ViewInstancing.ViewInstanceCount)
+      {
+        wrapped->graphics->ViewInstancing.pViewInstanceLocations =
+            new D3D12_VIEW_INSTANCE_LOCATION[wrapped->graphics->ViewInstancing.ViewInstanceCount];
+        memcpy((void *)wrapped->graphics->ViewInstancing.pViewInstanceLocations,
+               OrigDescriptor.ViewInstancing.pViewInstanceLocations,
+               sizeof(D3D12_VIEW_INSTANCE_LOCATION) *
+                   wrapped->graphics->ViewInstancing.ViewInstanceCount);
+      }
+      else
+      {
+        wrapped->graphics->ViewInstancing.pViewInstanceLocations = NULL;
+      }
+    }
+
+    wrapped->FetchRootSig(GetShaderCache());
+
+    if(Replay_Debug_SingleThreadedCompilation())
+    {
+      RDResult res = DeferredPipelineCompile(m_pDevice2, OrigDescriptor, wrapped);
+      Deserialise(OrigDescriptor);
+
+      if(res != ResultCode::Succeeded)
+      {
+        m_FailedReplayResult = res;
+        return false;
+      }
+    }
+    else
+    {
+      wrapped->deferredJob = Threading::JobSystem::AddJob([wrappedD3D12 = this, device2 = m_pDevice2,
+                                                           OrigDescriptor, wrapped]() {
+        PerformanceTimer timer;
+        wrappedD3D12->CheckDeferredResult(DeferredPipelineCompile(device2, OrigDescriptor, wrapped));
+        wrappedD3D12->AddDeferredTime(timer.GetMilliseconds());
+
+        Deserialise(OrigDescriptor);
+      });
+    }
+
+    // if this shader was initialised with nvidia's dynamic UAV, pull in that chunk as one of ours
+    // and unset it (there will be one for each create that actually used vendor extensions)
+    if(m_VendorEXT == GPUVendor::nVidia && m_GlobalEXTUAV != ~0U)
+    {
+      GetResourceDesc(pPipelineState)
+          .initialisationChunks.push_back((uint32_t)m_StructuredFile->chunks.size() - 2);
+      m_GlobalEXTUAV = ~0U;
     }
   }
 
@@ -211,7 +308,7 @@ HRESULT WrappedID3D12Device::CreatePipelineState(const D3D12_PIPELINE_STATE_STRE
 
   if(SUCCEEDED(ret))
   {
-    WrappedID3D12PipelineState *wrapped = new WrappedID3D12PipelineState(real, this);
+    WrappedID3D12PipelineState *wrapped = new WrappedID3D12PipelineState(ResourceId(), real, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -228,7 +325,9 @@ HRESULT WrappedID3D12Device::CreatePipelineState(const D3D12_PIPELINE_STATE_STRE
            UsesExtensionUAV(expandedDesc.DS, reg, space) ||
            UsesExtensionUAV(expandedDesc.GS, reg, space) ||
            UsesExtensionUAV(expandedDesc.PS, reg, space) ||
-           UsesExtensionUAV(expandedDesc.CS, reg, space))
+           UsesExtensionUAV(expandedDesc.CS, reg, space) ||
+           UsesExtensionUAV(expandedDesc.AS, reg, space) ||
+           UsesExtensionUAV(expandedDesc.MS, reg, space))
         {
           // don't set initparams until we've seen at least one shader actually created using the
           // extensions.
@@ -242,6 +341,17 @@ HRESULT WrappedID3D12Device::CreatePipelineState(const D3D12_PIPELINE_STATE_STRE
         }
       }
 
+      for(const D3D12_SHADER_BYTECODE &sh :
+          {expandedDesc.VS, expandedDesc.HS, expandedDesc.DS, expandedDesc.GS, expandedDesc.PS,
+           expandedDesc.CS, expandedDesc.AS, expandedDesc.MS})
+      {
+        if(sh.BytecodeLength == 0 || sh.pShaderBytecode == NULL)
+          continue;
+
+        if(DXBC::DXBCContainer::CheckForDXIL(sh.pShaderBytecode, sh.BytecodeLength))
+          m_UsedDXIL = true;
+      }
+
       SCOPED_SERIALISE_CHUNK(D3D12Chunk::Device_CreatePipelineState);
       Serialise_CreatePipelineState(ser, pDesc, riid, (void **)&wrapped);
 
@@ -250,8 +360,8 @@ HRESULT WrappedID3D12Device::CreatePipelineState(const D3D12_PIPELINE_STATE_STRE
       record->Length = 0;
       wrapped->SetResourceRecord(record);
 
-      if(expandedDesc.pRootSignature)
-        record->AddParent(GetRecord(expandedDesc.pRootSignature));
+      if(expandedDesc.GetRootSigIfPresent())
+        record->AddParent(GetRecord(expandedDesc.GetRootSigIfPresent()));
 
       if(vendorChunk)
         record->AddChunk(vendorChunk);
@@ -259,14 +369,12 @@ HRESULT WrappedID3D12Device::CreatePipelineState(const D3D12_PIPELINE_STATE_STRE
     }
     else
     {
-      GetResourceManager()->AddLiveResource(wrapped->GetResourceID(), wrapped);
-
       D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC *storedDesc =
           new D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC(expandedDesc);
 
       D3D12_SHADER_BYTECODE *shaders[] = {
-          &storedDesc->VS, &storedDesc->HS, &storedDesc->DS,
-          &storedDesc->GS, &storedDesc->PS, &storedDesc->CS,
+          &storedDesc->VS, &storedDesc->HS, &storedDesc->DS, &storedDesc->GS,
+          &storedDesc->PS, &storedDesc->CS, &storedDesc->AS, &storedDesc->MS,
       };
 
       for(size_t i = 0; i < ARRAY_COUNT(shaders); i++)
@@ -278,7 +386,7 @@ HRESULT WrappedID3D12Device::CreatePipelineState(const D3D12_PIPELINE_STATE_STRE
         }
         else
         {
-          WrappedID3D12Shader *sh = WrappedID3D12Shader::AddShader(*shaders[i], this);
+          WrappedID3D12Shader *sh = WrappedID3D12Shader::AddShader(ResourceId(), *shaders[i], this);
           sh->AddRef();
           shaders[i]->pShaderBytecode = sh;
         }
@@ -349,13 +457,15 @@ HRESULT WrappedID3D12Device::CreatePipelineState(const D3D12_PIPELINE_STATE_STRE
           wrapped->graphics->ViewInstancing.pViewInstanceLocations = NULL;
         }
       }
+
+      wrapped->FetchRootSig(GetShaderCache());
     }
 
     *ppPipelineState = (ID3D12PipelineState *)wrapped;
   }
   else
   {
-    CheckHRESULT(ret);
+    CHECK_HR(this, ret);
   }
 
   return ret;

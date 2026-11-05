@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -31,6 +31,8 @@ typedef EGLenum(EGLAPIENTRY *PFN_eglQueryAPI)();
 typedef EGLDisplay(EGLAPIENTRY *PFN_eglGetDisplay)(EGLNativeDisplayType display_id);
 typedef EGLDisplay(EGLAPIENTRY *PFN_eglGetPlatformDisplay)(EGLenum platform, void *native_display,
                                                            const EGLAttrib *attrib_list);
+typedef EGLDisplay(EGLAPIENTRY *PFN_eglGetPlatformDisplayEXT)(EGLenum platform, void *native_display,
+                                                              const EGLAttrib *attrib_list);
 typedef EGLContext(EGLAPIENTRY *PFN_eglCreateContext)(EGLDisplay dpy, EGLConfig config,
                                                       EGLContext share_context,
                                                       const EGLint *attrib_list);
@@ -49,6 +51,10 @@ typedef EGLSurface(EGLAPIENTRY *PFN_eglCreateWindowSurface)(EGLDisplay dpy, EGLC
 typedef EGLSurface(EGLAPIENTRY *PFN_eglCreatePlatformWindowSurface)(EGLDisplay dpy, EGLConfig config,
                                                                     void *native_window,
                                                                     const EGLAttrib *attrib_list);
+typedef EGLSurface(EGLAPIENTRY *PFN_eglCreatePlatformWindowSurfaceEXT)(EGLDisplay dpy,
+                                                                       EGLConfig config,
+                                                                       void *native_window,
+                                                                       const EGLAttrib *attrib_list);
 typedef EGLBoolean(EGLAPIENTRY *PFN_eglChooseConfig)(EGLDisplay dpy, const EGLint *attrib_list,
                                                      EGLConfig *configs, EGLint config_size,
                                                      EGLint *num_config);
@@ -68,19 +74,22 @@ typedef PFNEGLPOSTSUBBUFFERNVPROC PFN_eglPostSubBufferNV;
 typedef PFNEGLSWAPBUFFERSWITHDAMAGEEXTPROC PFN_eglSwapBuffersWithDamageEXT;
 typedef PFNEGLSWAPBUFFERSWITHDAMAGEKHRPROC PFN_eglSwapBuffersWithDamageKHR;
 
-#define EGL_HOOKED_SYMBOLS(FUNC)                   \
-  FUNC(BindAPI, false, true);                      \
-  FUNC(GetProcAddress, false, true);               \
-  FUNC(GetDisplay, false, true);                   \
-  FUNC(GetPlatformDisplay, false, false);          \
-  FUNC(CreateContext, false, true);                \
-  FUNC(DestroyContext, false, true);               \
-  FUNC(CreateWindowSurface, false, true);          \
-  FUNC(CreatePlatformWindowSurface, false, false); \
-  FUNC(MakeCurrent, false, true);                  \
-  FUNC(SwapBuffers, false, true);                  \
-  FUNC(PostSubBufferNV, true, false);              \
-  FUNC(SwapBuffersWithDamageEXT, true, false);     \
+#define EGL_HOOKED_SYMBOLS(FUNC)                     \
+  FUNC(BindAPI, false, true);                        \
+  FUNC(GetProcAddress, false, true);                 \
+  FUNC(GetDisplay, false, true);                     \
+  FUNC(GetPlatformDisplay, false, false);            \
+  FUNC(CreateContext, false, true);                  \
+  FUNC(DestroyContext, false, true);                 \
+  FUNC(CreateWindowSurface, false, true);            \
+  FUNC(CreatePlatformWindowSurface, false, false);   \
+  FUNC(MakeCurrent, false, true);                    \
+  FUNC(SwapBuffers, false, true);                    \
+  FUNC(QueryString, false, true);                    \
+  FUNC(PostSubBufferNV, true, false);                \
+  FUNC(GetPlatformDisplayEXT, true, false);          \
+  FUNC(CreatePlatformWindowSurfaceEXT, true, false); \
+  FUNC(SwapBuffersWithDamageEXT, true, false);       \
   FUNC(SwapBuffersWithDamageKHR, true, false);
 
 #define EGL_NONHOOKED_SYMBOLS(FUNC)        \
@@ -94,7 +103,6 @@ typedef PFNEGLSWAPBUFFERSWITHDAMAGEKHRPROC PFN_eglSwapBuffersWithDamageKHR;
   FUNC(GetError, false, true);             \
   FUNC(Initialize, false, true);           \
   FUNC(QueryAPI, false, true);             \
-  FUNC(QueryString, false, true);          \
   FUNC(QuerySurface, false, true);         \
   FUNC(QueryContext, false, true);
 

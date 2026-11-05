@@ -9,11 +9,11 @@ class GL_Vertex_Attr_Zoo(rdtest.TestCase):
     def check_capture(self):
         action = self.find_action("Draw")
 
-        self.check(action is not None)
+        assert action is not None
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        ref = {
+        ref: rdtest.MeshReference = {
             0: {
                 'SNorm': [1.0, -1.0, 1.0, -1.0],
                 'UNorm': [12345.0/65535.0, 6789.0/65535.0, 1234.0/65535.0, 567.0/65535.0],
@@ -50,14 +50,14 @@ class GL_Vertex_Attr_Zoo(rdtest.TestCase):
         }
 
         # Copy the ref values and prepend 'In'
-        in_ref = {}
+        in_ref: rdtest.MeshReference = {}
         for idx in ref:
             in_ref[idx] = {}
             for key in ref[idx]:
                 in_ref[idx]['In' + key] = ref[idx][key]
 
         # Copy the ref values and prepend 'Out'
-        out_ref = {}
+        out_ref: rdtest.MeshReference = {}
         for idx in ref:
             out_ref[idx] = {}
             for key in ref[idx]:
@@ -86,8 +86,8 @@ class GL_Vertex_Attr_Zoo(rdtest.TestCase):
 
         rdtest.log.success("Geometry output data is as expected")
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
-        self.check_pixel_value(pipe.GetOutputTargets()[0].resourceId, 0.5, 0.5, [0.0, 1.0, 0.0, 1.0])
+        self.check_pixel_value(pipe.GetOutputTargets()[0].resource, 0.5, 0.5, [0.0, 1.0, 0.0, 1.0])
 
         rdtest.log.success("Triangle picked value is as expected")

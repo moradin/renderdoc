@@ -10,10 +10,12 @@ IF YOU DO NOT FOLLOW THE GUIDELINES, OR DO NOT USE THE TEMPLATE BELOW, YOUR ISSU
 The template below shows what you need to include in a good feature request, and you MUST use it. More information in the docs:
 https://github.com/baldurk/renderdoc/blob/v1.x/docs/CONTRIBUTING/Filing-Issues.md
 
+Use of LLMs in any way other than machine translation of language is strictly prohibited, including generating any text.
+
 I'm happy to help, but you have to ensure I fully understand what you want and have the information I need. If you're unsure, please read the guide above for full information on what is expected for filing issues.
 -->
 
-## Description
+## Description of Feature
 
 <!-- Here you should not just describe what feature you want. Please describe the context of what you are trying to do or what workflow you would like, and why you can't do that with RenderDoc today. -->
 

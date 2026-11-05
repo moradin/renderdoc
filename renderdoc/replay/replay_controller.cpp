@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -26,6 +26,7 @@
 #include "replay_controller.h"
 #include <string.h>
 #include <time.h>
+#include <unordered_set>
 #include "common/dds_readwrite.h"
 #include "driver/ihv/amd/amd_isa.h"
 #include "driver/ihv/amd/amd_rgp.h"
@@ -53,12 +54,12 @@ ReplayController::ReplayController()
 
   m_EventID = 100000;
 
-  if(RenderDoc::Inst().GetCrashHandler())
-    RenderDoc::Inst().GetCrashHandler()->RegisterMemoryRegion(this, sizeof(ReplayController));
+  RenderDoc::Inst().RegisterMemoryRegion(this, sizeof(ReplayController));
 }
 
 ReplayController::~ReplayController()
 {
+  RenderDoc::Inst().UnregisterMemoryRegion(this);
   CHECK_REPLAY_THREAD();
 }
 
@@ -117,11 +118,49 @@ const VKPipe::State *ReplayController::GetVulkanPipelineState()
   return m_APIProps.pipelineType == GraphicsAPI::Vulkan ? &m_VulkanPipelineState : NULL;
 }
 
+const D3D9Pipe::State *ReplayController::GetD3D9PipelineState()
+{
+  CHECK_REPLAY_THREAD();
+
+  return m_APIProps.pipelineType == GraphicsAPI::D3D9 ? &m_D3D9PipelineState : NULL;
+}
+
 const PipeState &ReplayController::GetPipelineState()
 {
   CHECK_REPLAY_THREAD();
 
   return m_PipeState;
+}
+
+rdcarray<Descriptor> ReplayController::GetDescriptors(ResourceId descriptorStore,
+                                                      const rdcarray<DescriptorRange> &ranges)
+{
+  CHECK_REPLAY_THREAD();
+
+  return m_pDevice->GetDescriptors(descriptorStore, ranges);
+}
+
+const rdcarray<DescriptorAccess> &ReplayController::GetDescriptorAccess()
+{
+  CHECK_REPLAY_THREAD();
+
+  return m_PipeState.GetDescriptorAccess();
+}
+
+rdcarray<DescriptorLogicalLocation> ReplayController::GetDescriptorLocations(
+    ResourceId descriptorStore, const rdcarray<DescriptorRange> &ranges)
+{
+  CHECK_REPLAY_THREAD();
+
+  return m_pDevice->GetDescriptorLocations(descriptorStore, ranges);
+}
+
+rdcarray<SamplerDescriptor> ReplayController::GetSamplerDescriptors(
+    ResourceId descriptorStore, const rdcarray<DescriptorRange> &ranges)
+{
+  CHECK_REPLAY_THREAD();
+
+  return m_pDevice->GetSamplerDescriptors(descriptorStore, ranges);
 }
 
 rdcarray<rdcstr> ReplayController::GetDisassemblyTargets(bool withPipeline)
@@ -156,7 +195,7 @@ rdcstr ReplayController::DisassembleShader(ResourceId pipeline, const ShaderRefl
     if(t == target)
       return GCNISA::Disassemble(refl->encoding, refl->stage, refl->rawBytes, target);
 
-  rdcstr ret = m_pDevice->DisassembleShader(m_pDevice->GetLiveID(pipeline), refl, target);
+  rdcstr ret = m_pDevice->DisassembleShader(pipeline, refl, target);
   FatalErrorCheck();
   return ret;
 }
@@ -217,6 +256,10 @@ bool ReplayController::PassEquivalent(const ActionDescription &a, const ActionDe
 
   // don't group actions and compute executes
   if((a.flags & ActionFlags::Dispatch) != (b.flags & ActionFlags::Dispatch))
+    return false;
+
+  // don't group anything with raytracing either
+  if((a.flags & ActionFlags::DispatchRay) != (b.flags & ActionFlags::DispatchRay))
     return false;
 
   // don't group present with anything
@@ -370,6 +413,8 @@ void ReplayController::AddFakeMarkers()
       mark.customName = StringFormat::Fmt("Copy/Clear Pass #%d", copypassID++);
     else if(actions[refaction].flags & ActionFlags::Dispatch)
       mark.customName = StringFormat::Fmt("Compute Pass #%d", computepassID++);
+    else if(actions[refaction].flags & ActionFlags::DispatchRay)
+      mark.customName = StringFormat::Fmt("Raytracing Pass #%d", computepassID++);
     else if(maxOutCount == 0)
       mark.customName = StringFormat::Fmt("Depth-only Pass #%d", depthpassID++);
     else if(minOutCount == maxOutCount)
@@ -451,6 +496,13 @@ const rdcarray<BufferDescription> &ReplayController::GetBuffers()
   return m_Buffers;
 }
 
+const rdcarray<DescriptorStoreDescription> &ReplayController::GetDescriptorStores()
+{
+  CHECK_REPLAY_THREAD();
+
+  return m_DescriptorStores;
+}
+
 const rdcarray<TextureDescription> &ReplayController::GetTextures()
 {
   CHECK_REPLAY_THREAD();
@@ -469,7 +521,7 @@ rdcarray<ShaderEntryPoint> ReplayController::GetShaderEntryPoints(ResourceId sha
 {
   CHECK_REPLAY_THREAD();
 
-  return m_pDevice->GetShaderEntryPoints(m_pDevice->GetLiveID(shader));
+  return m_pDevice->GetShaderEntryPoints(shader);
 }
 
 const ShaderReflection *ReplayController::GetShader(ResourceId pipeline, ResourceId shader,
@@ -477,16 +529,15 @@ const ShaderReflection *ReplayController::GetShader(ResourceId pipeline, Resourc
 {
   CHECK_REPLAY_THREAD();
 
-  return m_pDevice->GetShader(m_pDevice->GetLiveID(pipeline), m_pDevice->GetLiveID(shader), entry);
+  return m_pDevice->GetShader(pipeline, shader, entry);
 }
 
 rdcarray<EventUsage> ReplayController::GetUsage(ResourceId id)
 {
   CHECK_REPLAY_THREAD();
 
-  id = m_pDevice->GetLiveID(id);
   if(id == ResourceId())
-    return rdcarray<EventUsage>();
+    return {EventUsage(0, ResourceUsage::Unused)};
   return m_pDevice->GetUsage(id);
 }
 
@@ -496,7 +547,7 @@ MeshFormat ReplayController::GetPostVSData(uint32_t instID, uint32_t viewID, Mes
 
   ActionDescription *action = GetActionByEID(m_EventID);
 
-  if(action == NULL || !(action->flags & ActionFlags::Drawcall))
+  if(action == NULL || !(action->flags & (ActionFlags::MeshDispatch | ActionFlags::Drawcall)))
     return MeshFormat();
 
   instID = RDCMIN(instID, action->numInstances - 1);
@@ -519,15 +570,7 @@ bytebuf ReplayController::GetBufferData(ResourceId buff, uint64_t offset, uint64
   if(buff == ResourceId())
     return retData;
 
-  ResourceId liveId = m_pDevice->GetLiveID(buff);
-
-  if(liveId == ResourceId())
-  {
-    RDCERR("Couldn't get Live ID for %s getting buffer data", ToStr(buff).c_str());
-    return retData;
-  }
-
-  m_pDevice->GetBufferData(liveId, offset, len, retData);
+  m_pDevice->GetBufferData(buff, offset, len, retData);
   FatalErrorCheck();
 
   return retData;
@@ -540,37 +583,29 @@ bytebuf ReplayController::GetTextureData(ResourceId tex, const Subresource &sub)
 
   bytebuf ret;
 
-  ResourceId liveId = m_pDevice->GetLiveID(tex);
-
-  if(liveId == ResourceId())
-  {
-    RDCERR("Couldn't get Live ID for %s getting texture data", ToStr(tex).c_str());
+  if(tex == ResourceId())
     return ret;
-  }
 
-  m_pDevice->GetTextureData(liveId, sub, GetTextureDataParams(), ret);
+  m_pDevice->GetTextureData(tex, sub, GetTextureDataParams(), ret);
   FatalErrorCheck();
 
   return ret;
 }
 
-bool ReplayController::SaveTexture(const TextureSave &saveData, const rdcstr &path)
+ResultDetails ReplayController::SaveTexture(const TextureSave &saveData, const rdcstr &path)
 {
   CHECK_REPLAY_THREAD();
   RENDERDOC_PROFILEFUNCTION();
 
   TextureSave sd = saveData;    // mutable copy
-  ResourceId liveid = m_pDevice->GetLiveID(sd.resourceId);
 
-  if(liveid == ResourceId())
+  if(sd.resourceId == ResourceId())
   {
-    RDCERR("Couldn't get Live ID for %s getting texture data", ToStr(sd.resourceId).c_str());
-    return false;
+    RETURN_ERROR_RESULT(ResultCode::InvalidParameter, "Invalid ID for %s getting texture data",
+                        ToStr(sd.resourceId).c_str());
   }
 
-  TextureDescription td = m_pDevice->GetTexture(liveid);
-
-  bool success = false;
+  TextureDescription td = m_pDevice->GetTexture(sd.resourceId);
 
   // clamp sample/mip/slice indices
   if(td.msSamp == 1)
@@ -744,7 +779,7 @@ bool ReplayController::SaveTexture(const TextureSave &saveData, const rdcstr &pa
   // for non-HDR always downcast if we're not already RGBA8 unorm
   if(sd.destType != FileType::DDS && sd.destType != FileType::HDR && sd.destType != FileType::EXR &&
      (td.format.compByteWidth != 1 || td.format.compCount != 4 ||
-      td.format.compType != CompType::UNorm || td.format.BGRAOrder()))
+      td.format.compType != CompType::UNorm || td.format.BGRAOrder() || td.format.Special()))
     downcast = true;
 
   // for HDR & EXR we can convert from most regular types as well as 10.10.10.2 and 11.11.10
@@ -834,8 +869,10 @@ bool ReplayController::SaveTexture(const TextureSave &saveData, const rdcstr &pa
       case ResourceFormatType::YUV12:
       case ResourceFormatType::YUV16:
       case ResourceFormatType::R4G4:
-        RDCERR("Unsupported file format %u", td.format.type);
-        return false;
+      {
+        RETURN_ERROR_RESULT(ResultCode::ImageUnsupported, "Unsupported file format %s",
+                            ToStr(td.format.type).c_str());
+      }
       default: bytesPerPixel = td.format.compCount * td.format.compByteWidth;
     }
 
@@ -864,17 +901,17 @@ bool ReplayController::SaveTexture(const TextureSave &saveData, const rdcstr &pa
       Subresource sub = {mip, slice / sampleCount, slice % sampleCount};
 
       bytebuf data;
-      m_pDevice->GetTextureData(liveid, sub, params, data);
+      m_pDevice->GetTextureData(sd.resourceId, sub, params, data);
       FatalErrorCheck();
 
       if(data.empty())
       {
-        RDCERR("Couldn't get bytes for mip %u, slice %u", mip, slice);
-
         for(size_t i = 0; i < subdata.size(); i++)
           delete[] subdata[i];
 
-        return false;
+        RETURN_ERROR_RESULT(ResultCode::DataNotAvailable,
+                            "Couldn't readback bytes for mip %u, slice %u, sample %u", sub.mip,
+                            sub.slice, sub.sample);
       }
 
       if(td.depth == 1)
@@ -908,7 +945,7 @@ bool ReplayController::SaveTexture(const TextureSave &saveData, const rdcstr &pa
       {
         byte *depthslice = new byte[mipSlicePitch];
         byte *b = data.data() + mipSlicePitch * sliceOffset;
-        memcpy(depthslice, b, slicePitch);
+        memcpy(depthslice, b, mipSlicePitch);
         subdata.push_back(depthslice);
 
         continue;
@@ -1100,7 +1137,7 @@ bool ReplayController::SaveTexture(const TextureSave &saveData, const rdcstr &pa
 
         if(sd.alpha != AlphaMapping::Discard)
         {
-          Vec4f col = Vec4f(sd.alphaCol.x, sd.alphaCol.y, sd.alphaCol.z);
+          Vec4f col = Vec4f(sd.alphaCol.x, sd.alphaCol.y, sd.alphaCol.z, 0.0f);
           if(sd.alpha == AlphaMapping::BlendToCheckerboard)
           {
             bool lightSquare = ((x / 64) % 2) == ((y / 64) % 2);
@@ -1171,16 +1208,18 @@ bool ReplayController::SaveTexture(const TextureSave &saveData, const rdcstr &pa
 
   FILE *f = FileIO::fopen(path, FileIO::WriteBinary);
 
+  RDResult res;
+
   if(!f)
   {
-    success = false;
-    RDCERR("Couldn't write to path %s, error: %s", path.c_str(), FileIO::ErrorString().c_str());
+    RETURN_ERROR_RESULT(ResultCode::FileIOFailed, "Couldn't write to path %s, error: %s",
+                        path.c_str(), FileIO::ErrorString().c_str());
   }
   else
   {
     if(sd.destType == FileType::DDS)
     {
-      write_dds_data ddsData;
+      write_tex_data ddsData;
 
       ResourceFormat saveFmt = td.format;
       // use typeCast to inform typeless saving, otherwise it will get lost
@@ -1199,34 +1238,31 @@ bool ReplayController::SaveTexture(const TextureSave &saveData, const rdcstr &pa
       if(singleSlice)
         ddsData.depth = ddsData.slices = 1;
 
-      success = write_dds_to_file(f, ddsData);
+      res = write_dds_to_file(f, ddsData);
     }
     else if(sd.destType == FileType::BMP)
     {
       int ret = stbi_write_bmp_to_func(fileWriteFunc, (void *)f, td.width, td.height, numComps,
                                        subdata[0]);
-      success = (ret != 0);
 
-      if(!success)
-        RDCERR("stbi_write_bmp_to_func failed: %d", ret);
+      if(ret == 0)
+        SET_ERROR_RESULT(res, ResultCode::InternalError, "Failed to write BMP image");
     }
     else if(sd.destType == FileType::PNG)
     {
       int ret = stbi_write_png_to_func(fileWriteFunc, (void *)f, td.width, td.height, numComps,
                                        subdata[0], rowPitch);
-      success = (ret != 0);
 
-      if(!success)
-        RDCERR("stbi_write_png_to_func failed: %d", ret);
+      if(ret == 0)
+        SET_ERROR_RESULT(res, ResultCode::InternalError, "Failed to write PNG image");
     }
     else if(sd.destType == FileType::TGA)
     {
       int ret = stbi_write_tga_to_func(fileWriteFunc, (void *)f, td.width, td.height, numComps,
                                        subdata[0]);
-      success = (ret != 0);
 
-      if(!success)
-        RDCERR("stbi_write_tga_to_func failed: %d", ret);
+      if(ret == 0)
+        SET_ERROR_RESULT(res, ResultCode::InternalError, "Failed to write TGA image");
     }
     else if(sd.destType == FileType::JPG)
     {
@@ -1240,14 +1276,13 @@ bool ReplayController::SaveTexture(const TextureSave &saveData, const rdcstr &pa
 
       char *jpgdst = new char[len];
 
-      success = jpge::compress_image_to_jpeg_file_in_memory(jpgdst, len, td.width, td.height,
-                                                            numComps, subdata[0], p);
-
-      if(!success)
-        RDCERR("jpge::compress_image_to_jpeg_file_in_memory failed");
+      bool success = jpge::compress_image_to_jpeg_file_in_memory(jpgdst, len, td.width, td.height,
+                                                                 numComps, subdata[0], p);
 
       if(success)
         fwrite(jpgdst, 1, len, f);
+      else
+        SET_ERROR_RESULT(res, ResultCode::InternalError, "Failed to write JPG image");
 
       delete[] jpgdst;
     }
@@ -1339,10 +1374,9 @@ bool ReplayController::SaveTexture(const TextureSave &saveData, const rdcstr &pa
       if(sd.destType == FileType::HDR)
       {
         int ret = stbi_write_hdr_to_func(fileWriteFunc, (void *)f, td.width, td.height, 4, fldata);
-        success = (ret != 0);
 
-        if(!success)
-          RDCERR("stbi_write_hdr_to_func failed: %d", ret);
+        if(ret == 0)
+          SET_ERROR_RESULT(res, ResultCode::InternalError, "Failed to write HDR image");
       }
       else if(sd.destType == FileType::EXR)
       {
@@ -1370,7 +1404,10 @@ bool ReplayController::SaveTexture(const TextureSave &saveData, const rdcstr &pa
         // must be in this order as many viewers don't pay attention to channels and just assume
         // they are in this order
         EXRChannelInfo bgraChannels[4] = {
-            {"A"}, {"B"}, {"G"}, {"R"},
+            {"A"},
+            {"B"},
+            {"G"},
+            {"R"},
         };
 
         exrHeader.num_channels = 4;
@@ -1385,11 +1422,10 @@ bool ReplayController::SaveTexture(const TextureSave &saveData, const rdcstr &pa
 
         size_t ret = SaveEXRImageToMemory(&exrImage, &exrHeader, &mem, &err);
 
-        success = (ret > 0);
-        if(success)
+        if(ret > 0)
           FileIO::fwrite(mem, 1, ret, f);
         else
-          RDCERR("Error saving EXR file %d: '%s'", ret, err);
+          SET_ERROR_RESULT(res, ResultCode::InternalError, "Failed to write EXR image: %s", err);
 
         free(mem);
       }
@@ -1413,7 +1449,7 @@ bool ReplayController::SaveTexture(const TextureSave &saveData, const rdcstr &pa
   for(size_t i = 0; i < subdata.size(); i++)
     delete[] subdata[i];
 
-  return success;
+  return res;
 }
 
 rdcarray<PixelModification> ReplayController::PixelHistory(ResourceId target, uint32_t x, uint32_t y,
@@ -1456,7 +1492,7 @@ rdcarray<PixelModification> ReplayController::PixelHistory(ResourceId target, ui
     }
   }
 
-  ResourceId id = m_pDevice->GetLiveID(target);
+  ResourceId id = target;
 
   if(id == ResourceId())
     return ret;
@@ -1480,6 +1516,8 @@ rdcarray<PixelModification> ReplayController::PixelHistory(ResourceId target, ui
       case ResourceUsage::GS_Constants:
       case ResourceUsage::PS_Constants:
       case ResourceUsage::CS_Constants:
+      case ResourceUsage::TS_Constants:
+      case ResourceUsage::MS_Constants:
       case ResourceUsage::All_Constants:
       case ResourceUsage::VS_Resource:
       case ResourceUsage::HS_Resource:
@@ -1487,6 +1525,8 @@ rdcarray<PixelModification> ReplayController::PixelHistory(ResourceId target, ui
       case ResourceUsage::GS_Resource:
       case ResourceUsage::PS_Resource:
       case ResourceUsage::CS_Resource:
+      case ResourceUsage::TS_Resource:
+      case ResourceUsage::MS_Resource:
       case ResourceUsage::All_Resource:
       case ResourceUsage::InputTarget:
       case ResourceUsage::CopySrc:
@@ -1512,6 +1552,8 @@ rdcarray<PixelModification> ReplayController::PixelHistory(ResourceId target, ui
       case ResourceUsage::GS_RWResource:
       case ResourceUsage::PS_RWResource:
       case ResourceUsage::CS_RWResource:
+      case ResourceUsage::TS_RWResource:
+      case ResourceUsage::MS_RWResource:
       case ResourceUsage::All_RWResource:
       case ResourceUsage::ColorTarget:
       case ResourceUsage::DepthStencilTarget:
@@ -1534,7 +1576,7 @@ rdcarray<PixelModification> ReplayController::PixelHistory(ResourceId target, ui
     return ret;
   }
 
-  id = m_pDevice->GetLiveID(target);
+  id = target;
 
   if(id == ResourceId())
     return ret;
@@ -1560,7 +1602,7 @@ PixelValue ReplayController::PickPixel(ResourceId tex, uint32_t x, uint32_t y,
   if(tex == ResourceId())
     return ret;
 
-  m_pDevice->PickPixel(m_pDevice->GetLiveID(tex), x, y, sub, typeCast, ret.floatValue.data());
+  m_pDevice->PickPixel(tex, x, y, sub, typeCast, ret.floatValue.data());
   FatalErrorCheck();
 
   return ret;
@@ -1574,8 +1616,7 @@ rdcpair<PixelValue, PixelValue> ReplayController::GetMinMax(ResourceId textureId
   PixelValue minval = {{0.0f, 0.0f, 0.0f, 0.0f}};
   PixelValue maxval = {{1.0f, 1.0f, 1.0f, 1.0f}};
 
-  m_pDevice->GetMinMax(m_pDevice->GetLiveID(textureId), sub, typeCast, &minval.floatValue[0],
-                       &maxval.floatValue[0]);
+  m_pDevice->GetMinMax(textureId, sub, typeCast, &minval.floatValue[0], &maxval.floatValue[0]);
   FatalErrorCheck();
 
   return make_rdcpair(minval, maxval);
@@ -1589,8 +1630,7 @@ rdcarray<uint32_t> ReplayController::GetHistogram(ResourceId textureId, const Su
 
   rdcarray<uint32_t> hist;
 
-  m_pDevice->GetHistogram(m_pDevice->GetLiveID(textureId), sub, typeCast, minval, maxval, channels,
-                          hist);
+  m_pDevice->GetHistogram(textureId, sub, typeCast, minval, maxval, channels, hist);
   FatalErrorCheck();
 
   return hist;
@@ -1614,14 +1654,13 @@ ShaderDebugTrace *ReplayController::DebugVertex(uint32_t vertid, uint32_t instid
   return ret;
 }
 
-ShaderDebugTrace *ReplayController::DebugPixel(uint32_t x, uint32_t y, uint32_t sample,
-                                               uint32_t primitive)
+ShaderDebugTrace *ReplayController::DebugPixel(uint32_t x, uint32_t y, const DebugPixelInputs &inputs)
 {
   CHECK_REPLAY_THREAD();
 
   RENDERDOC_PROFILEFUNCTION();
 
-  ShaderDebugTrace *ret = m_pDevice->DebugPixel(m_EventID, x, y, sample, primitive);
+  ShaderDebugTrace *ret = m_pDevice->DebugPixel(m_EventID, x, y, inputs);
   FatalErrorCheck();
 
   SetFrameEvent(m_EventID, true);
@@ -1640,6 +1679,24 @@ ShaderDebugTrace *ReplayController::DebugThread(const rdcfixedarray<uint32_t, 3>
   RENDERDOC_PROFILEFUNCTION();
 
   ShaderDebugTrace *ret = m_pDevice->DebugThread(m_EventID, groupid, threadid);
+  FatalErrorCheck();
+
+  SetFrameEvent(m_EventID, true);
+
+  if(ret->debugger)
+    m_Debuggers.push_back(ret->debugger);
+
+  return ret;
+}
+
+ShaderDebugTrace *ReplayController::DebugMeshThread(const rdcfixedarray<uint32_t, 3> &groupid,
+                                                    const rdcfixedarray<uint32_t, 3> &threadid)
+{
+  CHECK_REPLAY_THREAD();
+
+  RENDERDOC_PROFILEFUNCTION();
+
+  ShaderDebugTrace *ret = m_pDevice->DebugMeshThread(m_EventID, groupid, threadid);
   FatalErrorCheck();
 
   SetFrameEvent(m_EventID, true);
@@ -1675,8 +1732,8 @@ void ReplayController::FreeTrace(ShaderDebugTrace *trace)
 }
 
 rdcarray<ShaderVariable> ReplayController::GetCBufferVariableContents(
-    ResourceId pipeline, ResourceId shader, const rdcstr &entryPoint, uint32_t cbufslot,
-    ResourceId buffer, uint64_t offset, uint64_t length)
+    ResourceId pipeline, ResourceId shader, ShaderStage stage, const rdcstr &entryPoint,
+    uint32_t cbufslot, ResourceId buffer, uint64_t offset, uint64_t length)
 {
   CHECK_REPLAY_THREAD();
 
@@ -1685,22 +1742,19 @@ rdcarray<ShaderVariable> ReplayController::GetCBufferVariableContents(
   bytebuf data;
   if(buffer != ResourceId())
   {
-    buffer = m_pDevice->GetLiveID(buffer);
     if(buffer != ResourceId())
     {
-      m_pDevice->GetBufferData(buffer, offset, length, data);
+      if(length > 0)
+        m_pDevice->GetBufferData(buffer, offset, length, data);
       FatalErrorCheck();
     }
   }
 
   rdcarray<ShaderVariable> v;
 
-  pipeline = m_pDevice->GetLiveID(pipeline);
-  shader = m_pDevice->GetLiveID(shader);
-
   if(shader != ResourceId())
   {
-    m_pDevice->FillCBufferVariables(pipeline, shader, entryPoint, cbufslot, v, data);
+    m_pDevice->FillCBufferVariables(pipeline, shader, stage, entryPoint, cbufslot, v, data);
     FatalErrorCheck();
   }
 
@@ -1904,20 +1958,22 @@ void ReplayController::Shutdown()
     m_pDevice->Shutdown();
   m_pDevice = NULL;
 
+  RenderDoc::Inst().ClearTrackedFiles();
   delete this;
 }
 
 bool ReplayController::FatalErrorCheck()
 {
   // we've already processed the fatal error if we have a status
-  if(m_FatalError != ReplayStatus::Succeeded)
+  if(m_FatalError != ResultCode::Succeeded)
     return false;
 
   m_FatalError = m_pDevice->FatalErrorCheck();
 
-  if(m_FatalError != ReplayStatus::Succeeded)
+  if(m_FatalError != ResultCode::Succeeded)
   {
-    RDCLOG("Fatal error detected: %s", ToStr(m_FatalError).c_str());
+    RDCLOG("Fatal error detected: %s (%s) at event %u", ToStr(m_FatalError.code).c_str(),
+           m_FatalError.message.c_str(), m_EventID);
 
     IReplayDriver *old = m_pDevice;
 
@@ -1942,6 +1998,9 @@ bool ReplayController::FatalErrorCheck()
     m_D3D12PipelineState = D3D12Pipe::State();
     m_GLPipelineState = GLPipe::State();
     m_VulkanPipelineState = VKPipe::State();
+    m_D3D9PipelineState = D3D9Pipe::State();
+
+    m_PipeState.SetDescriptorAccess({}, {}, {});
 
     return true;
   }
@@ -1954,6 +2013,13 @@ rdcarray<ShaderEncoding> ReplayController::GetCustomShaderEncodings()
   CHECK_REPLAY_THREAD();
 
   return m_pDevice->GetCustomShaderEncodings();
+}
+
+rdcarray<ShaderSourcePrefix> ReplayController::GetCustomShaderSourcePrefixes()
+{
+  CHECK_REPLAY_THREAD();
+
+  return m_pDevice->GetCustomShaderSourcePrefixes();
 }
 
 rdcarray<ShaderEncoding> ReplayController::GetTargetShaderEncodings()
@@ -1991,7 +2057,9 @@ rdcpair<ResourceId, rdcstr> ReplayController::BuildTargetShader(
     case ShaderStage::Domain:
     case ShaderStage::Geometry:
     case ShaderStage::Pixel:
-    case ShaderStage::Compute: break;
+    case ShaderStage::Compute:
+    case ShaderStage::Task:
+    case ShaderStage::Mesh: break;
     default: RDCERR("Unexpected type in BuildShader!"); return rdcpair<ResourceId, rdcstr>();
   }
 
@@ -2030,7 +2098,9 @@ rdcpair<ResourceId, rdcstr> ReplayController::BuildCustomShader(
     case ShaderStage::Domain:
     case ShaderStage::Geometry:
     case ShaderStage::Pixel:
-    case ShaderStage::Compute: break;
+    case ShaderStage::Compute:
+    case ShaderStage::Task:
+    case ShaderStage::Mesh: break;
     default: RDCERR("Unexpected type in BuildShader!"); return rdcpair<ResourceId, rdcstr>();
   }
 
@@ -2096,26 +2166,40 @@ void ReplayController::RemoveReplacement(ResourceId id)
       m_Outputs[i]->Display();
 }
 
-ReplayStatus ReplayController::CreateDevice(RDCFile *rdc, const ReplayOptions &opts)
+void ReplayController::ClearReplayCache()
+{
+  CHECK_REPLAY_THREAD();
+
+  m_pDevice->ClearReplayCache();
+}
+
+void ReplayController::ReloadShaderDebugInformation()
+{
+  CHECK_REPLAY_THREAD();
+
+  m_pDevice->ReloadShaderDebugInformation();
+}
+
+RDResult ReplayController::CreateDevice(RDCFile *rdc, const ReplayOptions &opts)
 {
   CHECK_REPLAY_THREAD();
 
   RENDERDOC_PROFILEFUNCTION();
 
   IReplayDriver *driver = NULL;
-  ReplayStatus status = RenderDoc::Inst().CreateReplayDriver(rdc, opts, &driver);
+  RDResult result = RenderDoc::Inst().CreateReplayDriver(rdc, opts, &driver);
 
-  if(driver && status == ReplayStatus::Succeeded)
+  if(driver && result == ResultCode::Succeeded)
   {
     RDCLOG("Created replay driver.");
     return PostCreateInit(driver, rdc);
   }
 
   RDCERR("Couldn't create a replay device.");
-  return status;
+  return result;
 }
 
-ReplayStatus ReplayController::SetDevice(IReplayDriver *device)
+RDResult ReplayController::SetDevice(IReplayDriver *device)
 {
   CHECK_REPLAY_THREAD();
 
@@ -2126,10 +2210,10 @@ ReplayStatus ReplayController::SetDevice(IReplayDriver *device)
   }
 
   RDCERR("Given invalid replay driver.");
-  return ReplayStatus::InternalError;
+  return ResultCode::InternalError;
 }
 
-ReplayStatus ReplayController::PostCreateInit(IReplayDriver *device, RDCFile *rdc)
+RDResult ReplayController::PostCreateInit(IReplayDriver *device, RDCFile *rdc)
 {
   CHECK_REPLAY_THREAD();
 
@@ -2141,32 +2225,69 @@ ReplayStatus ReplayController::PostCreateInit(IReplayDriver *device, RDCFile *rd
 
   GCNISA::CacheSupport(m_APIProps.pipelineType);
 
-  ReplayStatus status = m_pDevice->ReadLogInitialisation(rdc, false);
+  RDResult result = m_pDevice->ReadLogInitialisation(rdc, false);
   FatalErrorCheck();
+  if(m_FatalError != ResultCode::Succeeded)
+    return m_FatalError;
 
   m_pDevice->SetPipelineStates(&m_D3D11PipelineState, &m_D3D12PipelineState, &m_GLPipelineState,
-                               &m_VulkanPipelineState);
+                               &m_VulkanPipelineState, &m_D3D9PipelineState);
 
-  GCNISA::GetTargets(m_APIProps.pipelineType, m_GCNTargets);
+  GCNISA::GetTargets(m_APIProps.pipelineType, m_pDevice->GetDriverInfo(), m_GCNTargets);
 
-  if(status != ReplayStatus::Succeeded)
-    return status;
+  if(result != ResultCode::Succeeded)
+    return result;
 
   m_Buffers = m_pDevice->GetBuffers();
+  FatalErrorCheck();
   m_Textures = m_pDevice->GetTextures();
+  FatalErrorCheck();
   m_Resources = m_pDevice->GetResources();
+  FatalErrorCheck();
+  m_DescriptorStores = m_pDevice->GetDescriptorStores();
+  FatalErrorCheck();
 
   m_FrameRecord = m_pDevice->GetFrameRecord();
+  FatalErrorCheck();
+
+  if(m_FatalError != ResultCode::Succeeded)
+    return m_FatalError;
 
   if(m_FrameRecord.actionList.empty())
-    return ReplayStatus::APIReplayFailed;
+    return ResultCode::APIReplayFailed;
+
+  std::unordered_set<uint32_t> knownEventIds;
+  uint32_t maxEventId = 0;
+
+  rdcarray<ActionDescription> actions(m_FrameRecord.actionList);
+  while(!actions.empty())
+  {
+    const ActionDescription action = actions.back();
+    actions.pop_back();
+    maxEventId = RDCMAX(maxEventId, action.eventId);
+    for(const APIEvent &event : action.events)
+    {
+      uint32_t eid = event.eventId;
+      maxEventId = RDCMAX(maxEventId, eid);
+      if(knownEventIds.count(eid) > 0)
+        RDCERR("Duplicated EventId: %d", eid);
+      knownEventIds.insert(eid);
+    }
+    actions.append(action.children);
+  }
+  for(uint32_t eid = 1; eid <= maxEventId; ++eid)
+  {
+    if(knownEventIds.count(eid) == 0)
+      RDCERR("Missing EventId: %d Max: %d", eid, maxEventId);
+  }
 
   m_Actions.clear();
   SetupActionPointers(m_Actions, m_FrameRecord.actionList);
 
   FetchPipelineState(m_Actions.back()->eventId);
+  FatalErrorCheck();
 
-  return ReplayStatus::Succeeded;
+  return m_FatalError;
 }
 
 void ReplayController::FileChanged()
@@ -2200,4 +2321,52 @@ void ReplayController::FetchPipelineState(uint32_t eventId)
     m_PipeState.SetState(&m_GLPipelineState);
   else if(m_APIProps.pipelineType == GraphicsAPI::Vulkan)
     m_PipeState.SetState(&m_VulkanPipelineState);
+  else if(m_APIProps.pipelineType == GraphicsAPI::D3D9)
+    m_PipeState.SetState(&m_D3D9PipelineState);
+
+  rdcarray<DescriptorAccess> access = m_pDevice->GetDescriptorAccess(eventId);
+  rdcarray<Descriptor> descs;
+  rdcarray<SamplerDescriptor> samps;
+  descs.reserve(access.size());
+  samps.reserve(access.size());
+
+  // we could collate ranges by descriptor store, but in practice we don't expect descriptors to be
+  // scattered across multiple stores. So to keep the code simple for now we do a linear sweep
+  ResourceId store;
+  rdcarray<DescriptorRange> ranges;
+
+  for(const DescriptorAccess &acc : access)
+  {
+    if(acc.descriptorStore != store)
+    {
+      if(store != ResourceId())
+      {
+        descs.append(m_pDevice->GetDescriptors(store, ranges));
+        samps.append(m_pDevice->GetSamplerDescriptors(store, ranges));
+      }
+
+      store = acc.descriptorStore;
+      ranges.clear();
+    }
+
+    // if the last range is contiguous with this access, append this access as a new range to query
+    if(!ranges.empty() && ranges.back().descriptorSize == acc.byteSize &&
+       ranges.back().offset + ranges.back().count * ranges.back().descriptorSize == acc.byteOffset &&
+       ranges.back().type == acc.type)
+    {
+      ranges.back().count++;
+      continue;
+    }
+
+    DescriptorRange range = acc;
+    ranges.push_back(range);
+  }
+
+  if(store != ResourceId())
+  {
+    descs.append(m_pDevice->GetDescriptors(store, ranges));
+    samps.append(m_pDevice->GetSamplerDescriptors(store, ranges));
+  }
+
+  m_PipeState.SetDescriptorAccess(std::move(access), std::move(descs), std::move(samps));
 }

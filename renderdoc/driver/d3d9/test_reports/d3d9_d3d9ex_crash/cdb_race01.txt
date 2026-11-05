@@ -1,0 +1,334 @@
+
+Microsoft (R) Windows Debugger Version 10.0.22621.1778 AMD64
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+
+Loading Dump File [C:\dumps\race01_qrenderdoc.exe.8164.dmp]
+User Mini Dump File: Only registers, stack and portions of memory are available
+
+
+************* Path validation summary **************
+Response                         Time (ms)     Location
+OK                                             E:\Projects\renderdoc\x64\Development
+Deferred                                       srv*C:\symbols*https://msdl.microsoft.com/download/symbols
+Symbol search path is: E:\Projects\renderdoc\x64\Development;srv*C:\symbols*https://msdl.microsoft.com/download/symbols
+Executable search path is: 
+Windows 10 Version 26300 MP (28 procs) Free x64
+Product: WinNt, suite: SingleUserTS
+Edition build lab: 26100.1.amd64fre.ge_release.240331-1435
+Machine Name:
+Debug session time: Thu Nov  5 08:08:29.000 2026 (UTC + 1:00)
+System Uptime: 0 days 21:21:17.582
+Process Uptime: 0 days 0:00:04.000
+................................................................
+.........................
+Loading unloaded module list
+.........................
+This dump file has an exception of interest stored in it.
+The stored exception information can be accessed via .ecxr.
+(1fe4.9b54): Access violation - code c0000005 (first/second chance not available)
+For analysis of this file, run !analyze -v
+ntdll!NtWaitForMultipleObjects+0x14:
+00007ffe`64a428a4 c3              ret
+0:012> cdb: Reading initial command '.ecxr; r; kn 60; dps @rsp L40; ub poi(@rsp); ~*kn 25; q'
+rax=00007ffd37ef2720 rbx=0000000000000000 rcx=0000025c7ed25090
+rdx=0000000000000000 rsi=0000000000000000 rdi=0000009409efe598
+rip=0000000000000000 rsp=0000009409efdf58 rbp=0000000000000000
+ r8=0000009409efdf80  r9=0000000000000000 r10=0000009409efe074
+r11=0000000000000008 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei pl zr na po nc
+cs=0033  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00010246
+00000000`00000000 ??              ???
+Last set context:
+rax=00007ffd37ef2720 rbx=0000000000000000 rcx=0000025c7ed25090
+rdx=0000000000000000 rsi=0000000000000000 rdi=0000009409efe598
+rip=0000000000000000 rsp=0000009409efdf58 rbp=0000000000000000
+ r8=0000009409efdf80  r9=0000000000000000 r10=0000009409efe074
+r11=0000000000000008 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei pl zr na po nc
+cs=0033  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00010246
+00000000`00000000 ??              ???
+*** WARNING: Unable to verify checksum for renderdoc.dll
+ # Child-SP          RetAddr               Call Site
+00 00000094`09efdf58 00007ffd`3654af38     0x0
+01 00000094`09efdf60 00007ffd`366a461c     renderdoc!GetPhysicalDeviceDriverProperties+0x48
+02 00000094`09efe310 00007ffd`366aa373     renderdoc!VulkanReplay::GetInitialDriverVersion+0x24c
+03 00000094`09efe8f0 00007ffd`33a40596     renderdoc!Vulkan_CreateReplayDevice+0xbe3
+04 00000094`09efed50 00007ffd`33b6004f     renderdoc!<lambda_62b9cfd8acc8756ac4fd38425d0e04c0>::operator()+0x1f6
+05 00000094`09eff710 00007ffd`33a451f7     renderdoc!std::invoke<<lambda_62b9cfd8acc8756ac4fd38425d0e04c0> &>+0x1f
+06 00000094`09eff740 00007ffd`3398cbbc     renderdoc!std::_Func_impl_no_alloc<<lambda_62b9cfd8acc8756ac4fd38425d0e04c0>,void>::_Do_call+0x27
+07 00000094`09eff770 00007ffd`33e696a0     renderdoc!std::_Func_class<void>::operator()+0x4c
+08 00000094`09eff7b0 00007ffe`62f4dda7     renderdoc!Threading::sThreadInit+0x70
+09 00000094`09eff840 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+0a 00000094`09eff870 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+00000094`09efdf58  00007ffd`3654af38 renderdoc!GetPhysicalDeviceDriverProperties+0x48
+00000094`09efdf60  00007ffd`3826d93e renderdoc!_NULL_IMPORT_DESCRIPTOR <PERF> (renderdoc+0x4c7d93e)
+00000094`09efdf68  0000025c`0800a270
+00000094`09efdf70  0000025c`7e6dc3e0
+00000094`09efdf78  00000000`00000001
+00000094`09efdf80  00000000`00000000
+00000094`09efdf88  00007ffc`f740b72c vulkan_1!vkResetEvent+0xda05c
+00000094`09efdf90  0000025c`79550000
+00000094`09efdf98  00000000`00000000
+00000094`09efdfa0  0000025c`08183b10
+00000094`09efdfa8  0000025c`7e6dc3e0
+00000094`09efdfb0  00000000`00000000
+00000094`09efdfb8  00007ffc`f737bd95 vulkan_1!vkResetEvent+0x4a6c5
+00000094`09efdfc0  00000000`00000000
+00000094`09efdfc8  00000094`09efe020
+00000094`09efdfd0  00000000`00000000
+00000094`09efdfd8  0000025c`00000000
+00000094`09efdfe0  0000025c`0800a270
+00000094`09efdfe8  00007ffc`f737bd05 vulkan_1!vkResetEvent+0x4a635
+00000094`09efdff0  0000025c`bff700d0
+00000094`09efdff8  00520045`00560049
+00000094`09efe000  00000000`00000001
+00000094`09efe008  00000094`09efdff0
+00000094`09efe010  0000025c`7eef24f0
+00000094`09efe018  00000000`00000000
+00000094`09efe020  00000002`00000001
+00000094`09efe028  00007ffc`f737cd70 vulkan_1!vkResetEvent+0x4b6a0
+00000094`09efe030  00000000`00000014
+00000094`09efe038  00007ffc`f737c9ed vulkan_1!vkResetEvent+0x4b31d
+00000094`09efe040  00000000`00000014
+00000094`09efe048  00007ffc`f737c9c4 vulkan_1!vkResetEvent+0x4b2f4
+00000094`09efe050  0000cf4b`8c83acf9
+00000094`09efe058  00000094`09efe354
+00000094`09efe060  00000000`00000000
+00000094`09efe068  00000094`09efe354
+00000094`09efe070  00000000`00000000
+00000094`09efe078  00000000`00000000
+00000094`09efe080  00000094`00000001
+00000094`09efe088  00007ffc`00000000
+00000094`09efe090  00000094`09efe070
+00000094`09efe098  0000cf4b`8c83ac59
+00000094`09efe0a0  00000000`00000000
+00000094`09efe0a8  00000094`09efe360
+00000094`09efe0b0  0000025c`7e6dc3e0
+00000094`09efe0b8  00000094`09efe354
+00000094`09efe0c0  00000094`09efe110
+00000094`09efe0c8  00007ffc`f738b4f2 vulkan_1!vkResetEvent+0x59e22
+00000094`09efe0d0  0000025c`7eef24f0
+00000094`09efe0d8  00000000`00000000
+00000094`09efe0e0  00000094`09efe354
+00000094`09efe0e8  00000000`00000000
+00000094`09efe0f0  00007ffe`62082e8c KERNELBASE!`string'
+00000094`09efe0f8  00000094`09731000
+00000094`09efe100  00000000`00000000
+00000094`09efe108  00000000`00000000
+00000094`09efe110  00000000`00000000
+00000094`09efe118  00000000`00000000
+00000094`09efe120  00000000`00000000
+00000094`09efe128  00000000`00000000
+00000094`09efe130  00000000`00000000
+00000094`09efe138  00000000`00000000
+00000094`09efe140  00000000`00000000
+00000094`09efe148  00000000`00000000
+00000094`09efe150  00000000`00000000
+renderdoc!GetPhysicalDeviceDriverProperties+0x1e:
+00007ffd`3654af0e e8e61c14fd      call    renderdoc!ILT+637940(__CheckForDebuggerJustMyCode) (00007ffd`3368cbf9)
+00007ffd`3654af13 c744242000000000 mov     dword ptr [rsp+20h],0
+00007ffd`3654af1b 4533c9          xor     r9d,r9d
+00007ffd`3654af1e 4c8d442420      lea     r8,[rsp+20h]
+00007ffd`3654af23 33d2            xor     edx,edx
+00007ffd`3654af25 488b8c24b8030000 mov     rcx,qword ptr [rsp+3B8h]
+00007ffd`3654af2d 488b8424b0030000 mov     rax,qword ptr [rsp+3B0h]
+00007ffd`3654af35 ff5060          call    qword ptr [rax+60h]
+
+   0  Id: 1fe4.868 Suspend: 0 Teb: 00000094`096a5000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 00000094`098fcff8 00007ffe`61dbbe9f     ntdll!NtWaitForSingleObject+0x14
+01 00000094`098fd000 00000000`5e5d3218     KERNELBASE!WaitForSingleObjectEx+0xaf
+02 00000094`098fd0a0 00000000`5e5d3812     python36!PyTraceMalloc_Untrack+0x1d94
+03 00000094`098fd0d0 00000000`5e50ace8     python36!PyTraceMalloc_Untrack+0x238e
+04 00000094`098fd100 00000000`5e50a4f3     python36!PyCFunction_FastCallDict+0x88
+05 00000094`098fd180 00000000`5e4e8979     python36!PyObject_CallFunctionObjArgs+0x383
+06 00000094`098fd260 00000000`5e50b35b     python36!PyEval_EvalFrameDefault+0x3c9
+07 00000094`098fd3f0 00000000`5e516143     python36!Py_CheckFunctionResult+0x30b
+08 00000094`098fd4a0 00000000`5e5160a1     python36!PyEval_EvalCodeEx+0x9b
+*** WARNING: Unable to verify checksum for qrenderdoc.exe
+"qrenderdoc": Error (0x80070057): Failed to register NatVis for type 'python38.dll!_object' (line 3 (@ 4))
+09 00000094`098fd530 00007ff7`959ccf6b     python36!PyEval_EvalCode+0x2d
+0a 00000094`098fd5a0 00007ff7`959cd70f     qrenderdoc!PythonContext::executeString+0x54b
+0b 00000094`098fd7f0 00007ff7`96a7cd71     qrenderdoc!PythonContext::executeFile+0x27f
+0c 00000094`098fd9e0 00007ff7`96b1b0d4     qrenderdoc!main+0x3b91
+0d 00000094`098ffaf0 00007ff7`96b198ca     qrenderdoc!WinMain+0x154
+0e (Inline Function) --------`--------     qrenderdoc!invoke_main+0x21
+0f 00000094`098ffb80 00007ffe`62f4dda7     qrenderdoc!__scrt_common_main_seh+0x106
+10 00000094`098ffbc0 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+11 00000094`098ffbf0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+   1  Id: 1fe4.f4d0 Suspend: 0 Teb: 00000094`096a7000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 00000094`099ff588 00007ffe`64904d0e     ntdll!NtWaitForWorkViaWorkerFactory+0x14
+01 00000094`099ff590 00007ffe`62f4dda7     ntdll!TppWorkerThread+0x37e
+02 00000094`099ff8f0 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+03 00000094`099ff920 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+   2  Id: 1fe4.d08 Suspend: 0 Teb: 00000094`096a9000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 00000094`09aff848 00007ffe`64904d0e     ntdll!NtWaitForWorkViaWorkerFactory+0x14
+01 00000094`09aff850 00007ffe`62f4dda7     ntdll!TppWorkerThread+0x37e
+02 00000094`09affbb0 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+03 00000094`09affbe0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+   3  Id: 1fe4.ef54 Suspend: 0 Teb: 00000094`096ab000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 00000094`09bffb68 00007ffe`64904d0e     ntdll!NtWaitForWorkViaWorkerFactory+0x14
+01 00000094`09bffb70 00007ffe`62f4dda7     ntdll!TppWorkerThread+0x37e
+02 00000094`09bffed0 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+03 00000094`09bfff00 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+   4  Id: 1fe4.3930 Suspend: 0 Teb: 00000094`096af000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 00000094`09dff658 00007ffe`61dc2773     ntdll!NtWaitForMultipleObjects+0x14
+01 00000094`09dff660 00007ffe`61bfb357     KERNELBASE!WaitForMultipleObjectsEx+0x123
+02 00000094`09dff950 00007ffe`62f4dda7     crypt32!ILS_WaitForThreadProc+0x37
+03 00000094`09dff990 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+04 00000094`09dff9c0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+   5  Id: 1fe4.ce1c Suspend: 0 Teb: 00000094`096db000 Unfrozen "Remote Probe"
+ # Child-SP          RetAddr               Call Site
+00 00000094`09fff7e8 00007ffe`649b0fd4     ntdll!NtDelayExecution+0x14
+01 00000094`09fff7f0 00007ffe`61e2b9c1     ntdll!RtlDelayExecution+0x34
+02 00000094`09fff820 00007ff7`9662136b     KERNELBASE!SleepEx+0x91
+03 00000094`09fff8b0 00007ff7`96641323     qrenderdoc!<lambda_2bb58a6442a1cae5aea8faebda94ad35>::operator()+0xeb
+04 00000094`09fff920 00007ff7`96628e0a     qrenderdoc!std::invoke<<lambda_2bb58a6442a1cae5aea8faebda94ad35> &>+0x13
+05 00000094`09fff950 00007ff7`959c285f     qrenderdoc!std::_Func_impl_no_alloc<<lambda_2bb58a6442a1cae5aea8faebda94ad35>,void>::_Do_call+0x1a
+06 00000094`09fff980 00007ff7`959c381e     qrenderdoc!std::_Func_class<void>::operator()+0x3f
+07 00000094`09fff9c0 00007ff7`959c327c     qrenderdoc!LambdaThread::process+0x3e
+08 00000094`09fff9f0 00007ff7`959c1b77     qrenderdoc!QtPrivate::FunctorCall<QtPrivate::IndexesList<>,QtPrivate::List<>,void,void (__cdecl LambdaThread::*)(void)>::call+0x1c
+09 00000094`09fffa30 00007ff7`959c3491     qrenderdoc!QtPrivate::FunctionPointer<void (__cdecl LambdaThread::*)(void)>::call<QtPrivate::List<>,void>+0x27
+*** WARNING: Unable to verify checksum for Qt5Core.dll
+0a 00000094`09fffa60 00000000`5dbd50e1     qrenderdoc!QtPrivate::QSlotObject<void (__cdecl LambdaThread::*)(void),QtPrivate::List<>,void>::impl+0x81
+0b 00000094`09fffab0 00000000`5da21f2f     Qt5Core!QMetaObject::activate+0x4a1
+0c 00000094`09fffbd0 00000000`5da26cd1     Qt5Core!QThread::started+0x2f
+0d 00000094`09fffc10 00007ffe`62f4dda7     Qt5Core!QThread::start+0x321
+0e 00000094`09fffc60 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+0f 00000094`09fffc90 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+   6  Id: 1fe4.f5e0 Suspend: 0 Teb: 00000094`096dd000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 00000094`0a0fc208 00000000`5dbfe2f7     win32u!NtUserMsgWaitForMultipleObjectsEx+0x14
+01 00000094`0a0fc210 00000000`5dbb2423     Qt5Core!QEventDispatcherWin32::processEvents+0x697
+02 00000094`0a0ff5e0 00007ff7`9662148a     Qt5Core!QEventLoop::exec+0x1b3
+03 00000094`0a0ff660 00007ff7`96641473     qrenderdoc!<lambda_59bd90a2a577bfd2310047962afa1a1d>::operator()+0x3a
+04 00000094`0a0ff6c0 00007ff7`96628f6a     qrenderdoc!std::invoke<<lambda_59bd90a2a577bfd2310047962afa1a1d> &>+0x13
+05 00000094`0a0ff6f0 00007ff7`959c285f     qrenderdoc!std::_Func_impl_no_alloc<<lambda_59bd90a2a577bfd2310047962afa1a1d>,void>::_Do_call+0x1a
+06 00000094`0a0ff720 00007ff7`959c381e     qrenderdoc!std::_Func_class<void>::operator()+0x3f
+07 00000094`0a0ff760 00007ff7`959c327c     qrenderdoc!LambdaThread::process+0x3e
+08 00000094`0a0ff790 00007ff7`959c1b77     qrenderdoc!QtPrivate::FunctorCall<QtPrivate::IndexesList<>,QtPrivate::List<>,void,void (__cdecl LambdaThread::*)(void)>::call+0x1c
+09 00000094`0a0ff7d0 00007ff7`959c3491     qrenderdoc!QtPrivate::FunctionPointer<void (__cdecl LambdaThread::*)(void)>::call<QtPrivate::List<>,void>+0x27
+0a 00000094`0a0ff800 00000000`5dbd50e1     qrenderdoc!QtPrivate::QSlotObject<void (__cdecl LambdaThread::*)(void),QtPrivate::List<>,void>::impl+0x81
+0b 00000094`0a0ff850 00000000`5da21f2f     Qt5Core!QMetaObject::activate+0x4a1
+0c 00000094`0a0ff970 00000000`5da26cd1     Qt5Core!QThread::started+0x2f
+0d 00000094`0a0ff9b0 00007ffe`62f4dda7     Qt5Core!QThread::start+0x321
+0e 00000094`0a0ffa00 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+0f 00000094`0a0ffa30 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+   7  Id: 1fe4.c1f0 Suspend: 0 Teb: 00000094`096e1000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 00000094`0a1ff658 00007ffe`61dc2773     ntdll!NtWaitForMultipleObjects+0x14
+01 00000094`0a1ff660 00007ffe`64499abe     KERNELBASE!WaitForMultipleObjectsEx+0x123
+02 (Inline Function) --------`--------     combase!WaitCoalesced+0x79
+03 00000094`0a1ff950 00007ffe`6449231f     combase!CROIDTable::WorkerThreadLoop+0xae
+04 00000094`0a1ffbc0 00007ffe`6449222f     combase!CRpcThread::WorkerLoop+0x5b
+05 00000094`0a1ffc30 00007ffe`62f4dda7     combase!CRpcThreadCache::RpcWorkerThreadEntry+0x4f
+06 00000094`0a1ffc60 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+07 00000094`0a1ffc90 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+   8  Id: 1fe4.4a54 Suspend: 0 Teb: 00000094`096e3000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 00000094`0a2ff748 00007ffe`64904d0e     ntdll!NtWaitForWorkViaWorkerFactory+0x14
+01 00000094`0a2ff750 00007ffe`62f4dda7     ntdll!TppWorkerThread+0x37e
+02 00000094`0a2ffab0 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+03 00000094`0a2ffae0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+   9  Id: 1fe4.9f9c Suspend: 0 Teb: 00000094`096e5000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 00000094`0a3ff978 00007ffe`64904d0e     ntdll!NtWaitForWorkViaWorkerFactory+0x14
+01 00000094`0a3ff980 00007ffe`62f4dda7     ntdll!TppWorkerThread+0x37e
+02 00000094`0a3ffce0 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+03 00000094`0a3ffd10 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+  10  Id: 1fe4.6ac8 Suspend: 0 Teb: 00000094`096e7000 Unfrozen "AndroidController"
+ # Child-SP          RetAddr               Call Site
+00 00000094`0a4ff8c8 00007ffe`649b0fd4     ntdll!NtDelayExecution+0x14
+01 00000094`0a4ff8d0 00007ffe`61e2b9c1     ntdll!RtlDelayExecution+0x34
+02 00000094`0a4ff900 00007ffd`33e6912e     KERNELBASE!SleepEx+0x91
+03 00000094`0a4ff990 00007ffd`3398f8dd     renderdoc!Threading::Sleep+0x1e
+04 00000094`0a4ff9c0 00007ffd`3398cb61     renderdoc!AndroidController::ThreadEntry+0x6d
+05 00000094`0a4ffa30 00007ffd`339875af     renderdoc!<lambda_fa71ade89dddd17a140ce1bcbba91481>::operator()+0x21
+06 00000094`0a4ffa60 00007ffd`3398ff77     renderdoc!std::invoke<<lambda_fa71ade89dddd17a140ce1bcbba91481> &>+0x1f
+07 00000094`0a4ffa90 00007ffd`3398cbbc     renderdoc!std::_Func_impl_no_alloc<<lambda_fa71ade89dddd17a140ce1bcbba91481>,void>::_Do_call+0x27
+08 00000094`0a4ffac0 00007ffd`33e696a0     renderdoc!std::_Func_class<void>::operator()+0x4c
+09 00000094`0a4ffb00 00007ffe`62f4dda7     renderdoc!Threading::sThreadInit+0x70
+0a 00000094`0a4ffb90 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+0b 00000094`0a4ffbc0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+  11  Id: 1fe4.602c Suspend: 0 Teb: 00000094`09711000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 00000094`0a8ff8c8 00007ffe`527f0006     ntdll!NtWaitForMultipleObjects+0x14
+01 00000094`0a8ff8d0 00007ffe`62f4dda7     winmm!timeThread+0x76
+02 00000094`0a8ffa10 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+03 00000094`0a8ffa40 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+# 12  Id: 1fe4.9b54 Suspend: 0 Teb: 00000094`09731000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 00000094`09efca18 00007ffe`61dc2773     ntdll!NtWaitForMultipleObjects+0x14
+01 00000094`09efca20 00007ffe`61dc2641     KERNELBASE!WaitForMultipleObjectsEx+0x123
+02 00000094`09efcd10 00007ffe`62f71250     KERNELBASE!WaitForMultipleObjects+0x11
+03 00000094`09efcd50 00007ffe`62f98df5     kernel32!WerpReportFaultInternal+0x62c
+04 00000094`09efced0 00007ffe`61eaf63c     kernel32!WerpReportFault+0xc5
+05 00000094`09efcf20 00007ffe`64a4a030     KERNELBASE!UnhandledExceptionFilter+0x34c
+06 00000094`09efd010 00007ffe`64a04b93     ntdll!RtlUserThreadStart$filt$0+0x3f
+07 00000094`09efd040 00007ffe`64a464af     ntdll!_C_specific_handler+0x93
+08 00000094`09efd0b0 00007ffe`649a4065     ntdll!RtlpExecuteHandlerForException+0xf
+09 00000094`09efd0e0 00007ffe`64a45dee     ntdll!RtlDispatchException+0x5f5
+0a 00000094`09efd840 00000000`00000000     ntdll!KiUserExceptionDispatch+0x2e
+
+  13  Id: 1fe4.c6e4 Suspend: 0 Teb: 00000094`0973d000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 00000094`0abfd398 00007ffe`64960d66     ntdll!NtWaitForMultipleObjects+0x14
+01 00000094`0abfd3a0 00007ffe`649609cf     ntdll!WerpWaitForCrashReporting+0x82
+02 00000094`0abfd420 00007ffe`64961a48     ntdll!RtlReportExceptionHelper+0x4d3
+03 00000094`0abfd5a0 00007ffe`64a4bccb     ntdll!RtlReportException+0x78
+04 00000094`0abfd5d0 00007ffe`64a04b93     ntdll!RtlReportFatalFailure$filt$0+0x33
+05 00000094`0abfd600 00007ffe`64a464af     ntdll!_C_specific_handler+0x93
+06 00000094`0abfd670 00007ffe`649a4065     ntdll!RtlpExecuteHandlerForException+0xf
+07 00000094`0abfd6a0 00007ffe`648f9f3d     ntdll!RtlDispatchException+0x5f5
+08 00000094`0abfde00 00007ffe`649f8095     ntdll!RtlRaiseException+0x18d
+09 00000094`0abfe5e0 00007ffe`64959265     ntdll!RtlReportFatalFailure+0x9
+0a 00000094`0abfe630 00007ffe`648eae02     ntdll!RtlReportCriticalFailure+0xa9
+0b 00000094`0abfe720 00007ffe`64a00a1a     ntdll!RtlpHeapHandleError+0x12
+0c 00000094`0abfe750 00007ffe`6490796a     ntdll!RtlpHpHeapHandleError+0x7a
+0d 00000094`0abfe780 00007ffe`624a2d7b     ntdll!RtlFreeHeap+0x6da
+0e 00000094`0abfe870 00007ffd`33746835     ucrtbase!free_base+0x1b
+0f 00000094`0abfe8a0 00007ffd`342cd3e3     renderdoc!std::_Deallocate<16>+0x45
+10 00000094`0abfe8d0 00007ffd`342aad9e     renderdoc!std::_Default_allocator_traits<std::allocator<std::_Tree_node<std::pair<ResourceId const ,WrappedID3D11Buffer::BufferEntry>,void *> > >::deallocate+0x33
+11 00000094`0abfe900 00007ffd`342ab4a7     renderdoc!std::_Tree_node<std::pair<ResourceId const ,WrappedID3D11Buffer::BufferEntry>,void *>::_Freenode0<std::allocator<std::_Tree_node<std::pair<ResourceId const ,WrappedID3D11Buffer::BufferEntry>,void *> > >+0x5e
+12 00000094`0abfe930 00007ffd`342a9d54     renderdoc!std::_Tree_node<std::pair<ResourceId const ,WrappedID3D11Buffer::BufferEntry>,void *>::_Freenode<std::allocator<std::_Tree_node<std::pair<ResourceId const ,WrappedID3D11Buffer::BufferEntry>,void *> > >+0x47
+13 00000094`0abfe960 00007ffd`342ccabd     renderdoc!std::_Tree_val<std::_Tree_simple_types<std::pair<ResourceId const ,WrappedID3D11Buffer::BufferEntry> > >::_Erase_tree<std::allocator<std::_Tree_node<std::pair<ResourceId const ,WrappedID3D11Buffer::BufferEntry>,void *> > >+0x64
+14 00000094`0abfe990 00007ffd`3428e44d     renderdoc!std::_Tree<std::_Tmap_traits<ResourceId,WrappedID3D11Buffer::BufferEntry,std::less<ResourceId>,std::allocator<std::pair<ResourceId const ,WrappedID3D11Buffer::BufferEntry> >,0> >::clear+0x5d
+15 00000094`0abfe9d0 00007ffd`342b82f7     renderdoc!WrappedID3D11Device::~WrappedID3D11Device+0x15ed
+16 00000094`0abfee20 00007ffd`343d58af     renderdoc!WrappedID3D11Device::`scalar deleting destructor'+0x17
+17 00000094`0abfee50 00007ffd`33a40bfa     renderdoc!D3D11Replay::Shutdown+0xcf
+18 00000094`0abfeea0 00007ffd`33b6004f     renderdoc!<lambda_62b9cfd8acc8756ac4fd38425d0e04c0>::operator()+0x85a
+19 00000094`0abff860 00007ffd`33a451f7     renderdoc!std::invoke<<lambda_62b9cfd8acc8756ac4fd38425d0e04c0> &>+0x1f
+1a 00000094`0abff890 00007ffd`3398cbbc     renderdoc!std::_Func_impl_no_alloc<<lambda_62b9cfd8acc8756ac4fd38425d0e04c0>,void>::_Do_call+0x27
+1b 00000094`0abff8c0 00007ffd`33e696a0     renderdoc!std::_Func_class<void>::operator()+0x4c
+1c 00000094`0abff900 00007ffe`62f4dda7     renderdoc!Threading::sThreadInit+0x70
+1d 00000094`0abff990 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+1e 00000094`0abff9c0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+  14  Id: 1fe4.69f0 Suspend: 0 Teb: 00000094`0966a000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 00000094`0a5ffae8 00007ffe`61dc2773     ntdll!NtWaitForMultipleObjects+0x14
+01 00000094`0a5ffaf0 00007ffe`61dc2641     KERNELBASE!WaitForMultipleObjectsEx+0x123
+02 00000094`0a5ffde0 00007ffc`f25cffe7     KERNELBASE!WaitForMultipleObjects+0x11
+03 00000094`0a5ffe20 00007ffc`f25cf548     nvoglv64!DrvPresentBuffers+0xf2b7
+04 00000094`0a5ffe50 00007ffe`62f4dda7     nvoglv64!DrvPresentBuffers+0xe818
+05 00000094`0a5ffe80 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+06 00000094`0a5ffeb0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c

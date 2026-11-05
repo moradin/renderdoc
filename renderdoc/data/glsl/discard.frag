@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -93,7 +93,9 @@ uniform uint flags;
 
 #endif
 
+// on vulkan we're always rendering to just one attachment
 FRAG_OUT(0) out patternType col0;
+#if !defined(VULKAN)
 FRAG_OUT(1) out patternType col1;
 FRAG_OUT(2) out patternType col2;
 FRAG_OUT(3) out patternType col3;
@@ -101,6 +103,7 @@ FRAG_OUT(4) out patternType col4;
 FRAG_OUT(5) out patternType col5;
 FRAG_OUT(6) out patternType col6;
 FRAG_OUT(7) out patternType col7;
+#endif
 
 void main()
 {
@@ -126,5 +129,10 @@ void main()
 
   patternType vecval = patternType(val, val, val, val);
 
+// on vulkan we're always rendering to just one attachment
+#ifdef VULKAN
+  col0 = vecval;
+#else
   col0 = col1 = col2 = col3 = col4 = col5 = col6 = col7 = vecval;
+#endif
 }

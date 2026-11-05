@@ -29,7 +29,7 @@ Shader processing tools
 
 .. _shader-processing-tools:
 
-Each graphics API has a native shader format - for D3D11 and D3D12 this is DXBC bytecode, for Vulkan this is SPIR-V bytecode, and for OpenGL this is GLSL shader text. Additionally it's possible for the bytecode shaders to contain embedded debug information with the original source code and compilation settings.
+Each graphics API has a native shader format - for D3D11 and D3D12 this is DXBC bytecode as well as DXIL on D3D12, for Vulkan this is SPIR-V bytecode, and for OpenGL this is GLSL shader text. Additionally it's possible for the bytecode shaders to contain embedded debug information with the original source code and compilation settings.
 
 When editing a shader RenderDoc will display the original source if available, but otherwise it will attempt to invoke a shader processing tool to decompile the bytecode into a usable form. Multiple tools can be configured :ref:`in the settings window <shader-processing-tools-config>` and several for SPIR-V processing come with RenderDoc by default. If no tool is available RenderDoc displays a generated stub or default disassembly as a starting point.
 
@@ -42,7 +42,7 @@ Using the built-in shader editor
 
 When you have launched the shader editor, the main window will be filled with the source of your shader. In here you can make edits and changes with the basic controls and syntax highlighting available with the Scintilla editor.
 
-To compile the shader and apply your changes, either click the refresh button in the toolbar or press :kbd:`F5`. This will compile the shader and apply it, any warnings and errors will be added to the errors panel below the main source.
+To compile the shader and apply your changes, either click the Apply changes button in the toolbar or press :kbd:`F5`. This will compile the shader and apply it, any warnings and errors will be added to the errors panel below the main source.
 
 You can choose the tool used to compile in the lower section, as well as configure any parameters to it. See above for more information about shader processing tools.
 

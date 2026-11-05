@@ -26,7 +26,7 @@ f.write('''
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -114,7 +114,7 @@ for cmd in registry.findall('commands/command'):
 
     if first_param_type == 'VkInstance' or first_param_type == 'VkPhysicalDevice':
         commands[name] = INSTANCE_CMD
-    elif first_param_type == 'VkDevice' or first_param_type == 'VkQueue' or first_param_type == 'VkCommandBuffer':
+    elif first_param_type == 'VkDevice' or first_param_type == 'VkQueue' or first_param_type == 'VkCommandBuffer' or first_param_type == 'VkExternalComputeQueueNV':
         commands[name] = DEVICE_CMD
     else:
         raise ValueError('type {} of first parameter to {} is unexpected'.format(first_param_type, name))
@@ -164,7 +164,7 @@ def process_feature(root, name):
 # Look at all features
 for feat in registry.findall('feature'):
     # Only process vulkan features
-    if 'api' in feat.attrib and feat.attrib['api'] == 'vulkan':
+    if 'api' in feat.attrib and 'vulkan' in feat.attrib['api'].split(','):
         process_feature(feat, feat.attrib['comment'])
 
 # And all extensions (with KHR extensions sorted to the front)
@@ -176,8 +176,7 @@ def ext_sort(ext):
 
 for ext in sorted(registry.findall('extensions/extension'), key=ext_sort):
     # Only process vulkan extensions
-    if 'supported' in ext.attrib and ext.attrib['supported'] == 'vulkan':
-
+    if 'supported' in ext.attrib and 'vulkan' in ext.attrib['supported'].split(',') and '_video_' not in ext.attrib['name']:
         process_feature(ext, ext.attrib['name'])
 
 inst_commands = inst_commands.strip()

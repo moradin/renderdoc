@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,6 +22,7 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+#include <limits.h>
 #include "../vk_core.h"
 #include "../vk_debug.h"
 
@@ -46,9 +47,8 @@
  * careful the GPU never waits on an event that will never become set, or the GPU
  * will lock up.
  *
- * For now the implementation is simple, conservative and inefficient. We keep
- * events Set always, never replaying any Reset (CPU or GPU). This means any
- * wait will always succeed on the GPU.
+ * For now the implementation is simple, conservative and inefficient. We ignore
+ * the real events and don't set/reset them.
  *
  * On the CPU-side with GetEventStatus we do another hard sync with
  * DeviceWaitIdle.
@@ -123,13 +123,13 @@ bool WrappedVulkan::Serialise_vkCreateFence(SerialiserType &ser, VkDevice device
 
     if(ret != VK_SUCCESS)
     {
-      RDCERR("Failed on resource serialise-creation, VkResult: %s", ToStr(ret).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating fence, VkResult: %s", ToStr(ret).c_str());
       return false;
     }
     else
     {
-      ResourceId live = GetResourceManager()->WrapResource(Unwrap(device), fence);
-      GetResourceManager()->AddLiveResource(Fence, fence);
+      GetResourceManager()->WrapResource(Fence, Unwrap(device), fence);
     }
 
     AddResource(Fence, ResourceType::Sync, "Fence");
@@ -140,7 +140,7 @@ bool WrappedVulkan::Serialise_vkCreateFence(SerialiserType &ser, VkDevice device
 }
 
 VkResult WrappedVulkan::vkCreateFence(VkDevice device, const VkFenceCreateInfo *pCreateInfo,
-                                      const VkAllocationCallbacks *pAllocator, VkFence *pFence)
+                                      const VkAllocationCallbacks *, VkFence *pFence)
 {
   VkFenceCreateInfo info = *pCreateInfo;
 
@@ -149,11 +149,11 @@ VkResult WrappedVulkan::vkCreateFence(VkDevice device, const VkFenceCreateInfo *
   UnwrapNextChain(m_State, "VkFenceCreateInfo", tempMem, (VkBaseInStructure *)&info);
 
   VkResult ret;
-  SERIALISE_TIME_CALL(ret = ObjDisp(device)->CreateFence(Unwrap(device), &info, pAllocator, pFence));
+  SERIALISE_TIME_CALL(ret = ObjDisp(device)->CreateFence(Unwrap(device), &info, NULL, pFence));
 
   if(ret == VK_SUCCESS)
   {
-    ResourceId id = GetResourceManager()->WrapResource(Unwrap(device), *pFence);
+    ResourceId id = GetResourceManager()->WrapResource(ResourceId(), Unwrap(device), *pFence);
 
     if(IsCaptureMode(m_State))
     {
@@ -170,10 +170,6 @@ VkResult WrappedVulkan::vkCreateFence(VkDevice device, const VkFenceCreateInfo *
 
       VkResourceRecord *record = GetResourceManager()->AddResourceRecord(*pFence);
       record->AddChunk(chunk);
-    }
-    else
-    {
-      GetResourceManager()->AddLiveResource(id, *pFence);
     }
   }
 
@@ -347,17 +343,16 @@ bool WrappedVulkan::Serialise_vkCreateEvent(SerialiserType &ser, VkDevice device
     VkResult ret = ObjDisp(device)->CreateEvent(Unwrap(device), &CreateInfo, NULL, &ev);
 
     // see top of this file for current event/fence handling
-    ObjDisp(device)->SetEvent(Unwrap(device), ev);
 
     if(ret != VK_SUCCESS)
     {
-      RDCERR("Failed on resource serialise-creation, VkResult: %s", ToStr(ret).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating event, VkResult: %s", ToStr(ret).c_str());
       return false;
     }
     else
     {
-      ResourceId live = GetResourceManager()->WrapResource(Unwrap(device), ev);
-      GetResourceManager()->AddLiveResource(Event, ev);
+      GetResourceManager()->WrapResource(Event, Unwrap(device), ev);
     }
 
     AddResource(Event, ResourceType::Sync, "Event");
@@ -368,15 +363,14 @@ bool WrappedVulkan::Serialise_vkCreateEvent(SerialiserType &ser, VkDevice device
 }
 
 VkResult WrappedVulkan::vkCreateEvent(VkDevice device, const VkEventCreateInfo *pCreateInfo,
-                                      const VkAllocationCallbacks *pAllocator, VkEvent *pEvent)
+                                      const VkAllocationCallbacks *, VkEvent *pEvent)
 {
   VkResult ret;
-  SERIALISE_TIME_CALL(
-      ret = ObjDisp(device)->CreateEvent(Unwrap(device), pCreateInfo, pAllocator, pEvent));
+  SERIALISE_TIME_CALL(ret = ObjDisp(device)->CreateEvent(Unwrap(device), pCreateInfo, NULL, pEvent));
 
   if(ret == VK_SUCCESS)
   {
-    ResourceId id = GetResourceManager()->WrapResource(Unwrap(device), *pEvent);
+    ResourceId id = GetResourceManager()->WrapResource(ResourceId(), Unwrap(device), *pEvent);
 
     if(IsCaptureMode(m_State))
     {
@@ -393,10 +387,6 @@ VkResult WrappedVulkan::vkCreateEvent(VkDevice device, const VkEventCreateInfo *
 
       VkResourceRecord *record = GetResourceManager()->AddResourceRecord(*pEvent);
       record->AddChunk(chunk);
-    }
-    else
-    {
-      GetResourceManager()->AddLiveResource(id, *pEvent);
     }
   }
 
@@ -557,32 +547,18 @@ bool WrappedVulkan::Serialise_vkCreateSemaphore(SerialiserType &ser, VkDevice de
 
     if(ret != VK_SUCCESS)
     {
-      RDCERR("Failed on resource serialise-creation, VkResult: %s", ToStr(ret).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating semaphore, VkResult: %s", ToStr(ret).c_str());
       return false;
     }
     else
     {
       ResourceId live;
 
-      if(GetResourceManager()->HasWrapper(ToTypedHandle(sem)))
+      GetResourceManager()->OverrideWrapper(ToTypedHandle(sem));
+
       {
-        live = GetResourceManager()->GetNonDispWrapper(sem)->id;
-
-        RDCWARN(
-            "On replay, semaphore got a duplicate handle - maybe a bug, or it could be an "
-            "indication of an implementation that doesn't use semaphores");
-
-        // destroy this instance of the duplicate, as we must have matching create/destroy
-        // calls and there won't be a wrapped resource hanging around to destroy this one.
-        ObjDisp(device)->DestroySemaphore(Unwrap(device), sem, NULL);
-
-        // whenever the new ID is requested, return the old ID, via replacements.
-        GetResourceManager()->ReplaceResource(Semaphore, GetResourceManager()->GetOriginalID(live));
-      }
-      else
-      {
-        live = GetResourceManager()->WrapResource(Unwrap(device), sem);
-        GetResourceManager()->AddLiveResource(Semaphore, sem);
+        live = GetResourceManager()->WrapResource(Semaphore, Unwrap(device), sem);
       }
     }
 
@@ -594,8 +570,7 @@ bool WrappedVulkan::Serialise_vkCreateSemaphore(SerialiserType &ser, VkDevice de
 }
 
 VkResult WrappedVulkan::vkCreateSemaphore(VkDevice device, const VkSemaphoreCreateInfo *pCreateInfo,
-                                          const VkAllocationCallbacks *pAllocator,
-                                          VkSemaphore *pSemaphore)
+                                          const VkAllocationCallbacks *, VkSemaphore *pSemaphore)
 {
   VkSemaphoreCreateInfo info = *pCreateInfo;
 
@@ -604,12 +579,11 @@ VkResult WrappedVulkan::vkCreateSemaphore(VkDevice device, const VkSemaphoreCrea
   UnwrapNextChain(m_State, "VkSemaphoreCreateInfo", tempMem, (VkBaseInStructure *)&info);
 
   VkResult ret;
-  SERIALISE_TIME_CALL(
-      ret = ObjDisp(device)->CreateSemaphore(Unwrap(device), &info, pAllocator, pSemaphore));
+  SERIALISE_TIME_CALL(ret = ObjDisp(device)->CreateSemaphore(Unwrap(device), &info, NULL, pSemaphore));
 
   if(ret == VK_SUCCESS)
   {
-    ResourceId id = GetResourceManager()->WrapResource(Unwrap(device), *pSemaphore);
+    ResourceId id = GetResourceManager()->WrapResource(ResourceId(), Unwrap(device), *pSemaphore);
 
     if(IsCaptureMode(m_State))
     {
@@ -626,10 +600,6 @@ VkResult WrappedVulkan::vkCreateSemaphore(VkDevice device, const VkSemaphoreCrea
 
       VkResourceRecord *record = GetResourceManager()->AddResourceRecord(*pSemaphore);
       record->AddChunk(chunk);
-    }
-    else
-    {
-      GetResourceManager()->AddLiveResource(id, *pSemaphore);
     }
   }
 
@@ -650,7 +620,7 @@ bool WrappedVulkan::Serialise_vkCmdSetEvent(SerialiserType &ser, VkCommandBuffer
 
   if(IsReplayingAndReading())
   {
-    m_LastCmdBufferID = GetResourceManager()->GetOriginalID(GetResID(commandBuffer));
+    m_LastCmdBufferID = GetResID(commandBuffer);
 
     // see top of this file for current event/fence handling
 
@@ -662,8 +632,8 @@ bool WrappedVulkan::Serialise_vkCmdSetEvent(SerialiserType &ser, VkCommandBuffer
         commandBuffer = VK_NULL_HANDLE;
     }
 
-    if(commandBuffer != VK_NULL_HANDLE)
-      ObjDisp(commandBuffer)->CmdSetEvent(Unwrap(commandBuffer), Unwrap(event), stageMask);
+    // if(commandBuffer != VK_NULL_HANDLE)
+    //   ObjDisp(commandBuffer)->CmdSetEvent(Unwrap(commandBuffer), Unwrap(event), stageMask);
   }
 
   return true;
@@ -705,7 +675,7 @@ bool WrappedVulkan::Serialise_vkCmdResetEvent(SerialiserType &ser, VkCommandBuff
 
   if(IsReplayingAndReading())
   {
-    m_LastCmdBufferID = GetResourceManager()->GetOriginalID(GetResID(commandBuffer));
+    m_LastCmdBufferID = GetResID(commandBuffer);
 
     // see top of this file for current event/fence handling
 
@@ -792,7 +762,7 @@ bool WrappedVulkan::Serialise_vkCmdWaitEvents(
   // Since it's a convenient place, we unwrap at the same time.
   if(IsReplayingAndReading())
   {
-    m_LastCmdBufferID = GetResourceManager()->GetOriginalID(GetResID(commandBuffer));
+    m_LastCmdBufferID = GetResID(commandBuffer);
 
     for(uint32_t i = 0; i < bufferMemoryBarrierCount; i++)
     {
@@ -821,14 +791,10 @@ bool WrappedVulkan::Serialise_vkCmdWaitEvents(
     // see top of this file for current event/fence handling
 
     VkEventCreateInfo evInfo = {
-        VK_STRUCTURE_TYPE_EVENT_CREATE_INFO, NULL, 0,
+        VK_STRUCTURE_TYPE_EVENT_CREATE_INFO,
+        NULL,
+        0,
     };
-
-    VkEvent ev = VK_NULL_HANDLE;
-    ObjDisp(commandBuffer)->CreateEvent(Unwrap(GetDev()), &evInfo, NULL, &ev);
-    // don't wrap this event
-
-    ObjDisp(commandBuffer)->ResetEvent(Unwrap(GetDev()), ev);
 
     if(IsActiveReplaying(m_State))
     {
@@ -836,34 +802,34 @@ bool WrappedVulkan::Serialise_vkCmdWaitEvents(
         commandBuffer = RerecordCmdBuf(m_LastCmdBufferID);
       else
         commandBuffer = VK_NULL_HANDLE;
-
-      // register to clean this event up once we're done replaying this section of the log
-      m_CleanupEvents.push_back(ev);
     }
     else
     {
-      // since we cache and replay this command buffer we can't clean up this event just when we're
-      // done replaying this section. We have to keep this event until shutdown
-      m_PersistentEvents.push_back(ev);
-
       for(uint32_t i = 0; i < imageMemoryBarrierCount; i++)
       {
         const VkImageMemoryBarrier &b = pImageMemoryBarriers[i];
         if(b.image != VK_NULL_HANDLE && b.oldLayout == VK_IMAGE_LAYOUT_UNDEFINED)
         {
-          m_BakedCmdBufferInfo[m_LastCmdBufferID].resourceUsage.push_back(make_rdcpair(
-              GetResID(b.image), EventUsage(m_BakedCmdBufferInfo[m_LastCmdBufferID].curEventID,
-                                            ResourceUsage::Discard)));
+          m_LoadingEventNode.resourceUsage.push_back(
+              make_rdcpair(GetResID(b.image), ResourceUsage::Discard));
         }
       }
     }
 
-    GetResourceManager()->RecordBarriers(m_BakedCmdBufferInfo[m_LastCmdBufferID].imageStates,
-                                         m_commandQueueFamilies[m_LastCmdBufferID],
-                                         (uint32_t)imgBarriers.size(), &imgBarriers[0]);
-
     if(commandBuffer != VK_NULL_HANDLE)
     {
+      // don't wrap this event
+      VkEvent ev = VK_NULL_HANDLE;
+      ObjDisp(commandBuffer)->CreateEvent(Unwrap(GetDev()), &evInfo, NULL, &ev);
+      // register to clean this event up once we're done replaying this section of the log
+      m_CleanupEvents.push_back(ev);
+
+      ObjDisp(commandBuffer)->ResetEvent(Unwrap(GetDev()), ev);
+
+      GetResourceManager()->RecordBarriers(m_BakedCmdBufferInfo[m_LastCmdBufferID].imageStates,
+                                           m_commandQueueFamilies[m_LastCmdBufferID],
+                                           (uint32_t)imgBarriers.size(), &imgBarriers[0]);
+
       // now sanitise layouts before passing to vulkan
       for(VkImageMemoryBarrier &barrier : imgBarriers)
       {
@@ -886,7 +852,7 @@ bool WrappedVulkan::Serialise_vkCmdWaitEvents(
           {
             GetDebugManager()->FillWithDiscardPattern(
                 commandBuffer, DiscardType::UndefinedTransition, b.image, b.newLayout,
-                b.subresourceRange, {{0, 0}, {~0U, ~0U}});
+                b.subresourceRange, {{0, 0}, {INT_MAX, INT_MAX}});
           }
         }
       }
@@ -927,6 +893,14 @@ void WrappedVulkan::vkCmdWaitEvents(VkCommandBuffer commandBuffer, uint32_t even
     {
       im[i] = pImageMemoryBarriers[i];
       im[i].image = Unwrap(im[i].image);
+
+      // descriptor buffers intercepts all swapchain images during capture so we change any
+      // reference to PRESENT layout into GENERAL since that's what is valid for our image
+      if(DescriptorBuffers())
+      {
+        SanitiseDescriptorBufferImageLayout(im[i].newLayout);
+        SanitiseDescriptorBufferImageLayout(im[i].newLayout);
+      }
     }
 
     SERIALISE_TIME_CALL(ObjDisp(commandBuffer)
@@ -1146,9 +1120,8 @@ VkResult WrappedVulkan::vkSignalSemaphore(VkDevice device, const VkSemaphoreSign
 }
 
 template <typename SerialiserType>
-bool WrappedVulkan::Serialise_vkCmdSetEvent2KHR(SerialiserType &ser, VkCommandBuffer commandBuffer,
-                                                VkEvent event,
-                                                const VkDependencyInfoKHR *pDependencyInfo)
+bool WrappedVulkan::Serialise_vkCmdSetEvent2(SerialiserType &ser, VkCommandBuffer commandBuffer,
+                                             VkEvent event, const VkDependencyInfo *pDependencyInfo)
 {
   SERIALISE_ELEMENT(commandBuffer);
   SERIALISE_ELEMENT(event).Important();
@@ -1160,7 +1133,7 @@ bool WrappedVulkan::Serialise_vkCmdSetEvent2KHR(SerialiserType &ser, VkCommandBu
 
   if(IsReplayingAndReading())
   {
-    m_LastCmdBufferID = GetResourceManager()->GetOriginalID(GetResID(commandBuffer));
+    m_LastCmdBufferID = GetResID(commandBuffer);
 
     // see top of this file for current event/fence handling
 
@@ -1172,30 +1145,30 @@ bool WrappedVulkan::Serialise_vkCmdSetEvent2KHR(SerialiserType &ser, VkCommandBu
         commandBuffer = VK_NULL_HANDLE;
     }
 
-    if(commandBuffer != VK_NULL_HANDLE)
-      ObjDisp(commandBuffer)->CmdSetEvent2KHR(Unwrap(commandBuffer), Unwrap(event), &DependencyInfo);
+    // if(commandBuffer != VK_NULL_HANDLE)
+    //  ObjDisp(commandBuffer)->CmdSetEvent2(Unwrap(commandBuffer), Unwrap(event), &DependencyInfo);
   }
 
   return true;
 }
 
-void WrappedVulkan::vkCmdSetEvent2KHR(VkCommandBuffer commandBuffer, VkEvent event,
-                                      const VkDependencyInfoKHR *pDependencyInfo)
+void WrappedVulkan::vkCmdSetEvent2(VkCommandBuffer commandBuffer, VkEvent event,
+                                   const VkDependencyInfo *pDependencyInfo)
 {
   SCOPED_DBG_SINK();
 
-  VkDependencyInfoKHR unwrappedInfo = *pDependencyInfo;
+  byte *tempMem = GetTempMemory(GetNextPatchSize(pDependencyInfo));
+  VkDependencyInfo *unwrappedInfo = UnwrapStructAndChain(m_State, tempMem, pDependencyInfo);
 
-  byte *tempMem = GetTempMemory(GetNextPatchSize(&unwrappedInfo));
-
+  for(uint32_t im = 0; im < unwrappedInfo->imageMemoryBarrierCount; im++)
   {
-    VkBaseInStructure dummy = {};
-    dummy.pNext = (const VkBaseInStructure *)&unwrappedInfo;
-    UnwrapNextChain(m_State, "VkDependencyInfoKHR", tempMem, &dummy);
+    VkImageMemoryBarrier2 &b = (VkImageMemoryBarrier2 &)unwrappedInfo->pImageMemoryBarriers[im];
+    SanitiseDescriptorBufferImageLayout(b.newLayout);
+    SanitiseDescriptorBufferImageLayout(b.newLayout);
   }
 
   SERIALISE_TIME_CALL(
-      ObjDisp(commandBuffer)->CmdSetEvent2KHR(Unwrap(commandBuffer), Unwrap(event), &unwrappedInfo));
+      ObjDisp(commandBuffer)->CmdSetEvent2(Unwrap(commandBuffer), Unwrap(event), unwrappedInfo));
 
   if(IsCaptureMode(m_State))
   {
@@ -1203,8 +1176,8 @@ void WrappedVulkan::vkCmdSetEvent2KHR(VkCommandBuffer commandBuffer, VkEvent eve
 
     CACHE_THREAD_SERIALISER();
 
-    SCOPED_SERIALISE_CHUNK(VulkanChunk::vkCmdSetEvent2KHR);
-    Serialise_vkCmdSetEvent2KHR(ser, commandBuffer, event, pDependencyInfo);
+    SCOPED_SERIALISE_CHUNK(VulkanChunk::vkCmdSetEvent2);
+    Serialise_vkCmdSetEvent2(ser, commandBuffer, event, pDependencyInfo);
 
     record->AddChunk(scope.Get(&record->cmdInfo->alloc));
     record->MarkResourceFrameReferenced(GetResID(event), eFrameRef_Read);
@@ -1212,13 +1185,12 @@ void WrappedVulkan::vkCmdSetEvent2KHR(VkCommandBuffer commandBuffer, VkEvent eve
 }
 
 template <typename SerialiserType>
-bool WrappedVulkan::Serialise_vkCmdResetEvent2KHR(SerialiserType &ser, VkCommandBuffer commandBuffer,
-                                                  VkEvent event, VkPipelineStageFlags2KHR stageMask)
+bool WrappedVulkan::Serialise_vkCmdResetEvent2(SerialiserType &ser, VkCommandBuffer commandBuffer,
+                                               VkEvent event, VkPipelineStageFlags2 stageMask)
 {
   SERIALISE_ELEMENT(commandBuffer);
   SERIALISE_ELEMENT(event).Important();
-  SERIALISE_ELEMENT_TYPED(VkPipelineStageFlagBits2KHR, stageMask)
-      .TypedAs("VkPipelineStageFlags2KHR"_lit);
+  SERIALISE_ELEMENT_TYPED(VkPipelineStageFlagBits2, stageMask).TypedAs("VkPipelineStageFlags2"_lit);
 
   Serialise_DebugMessages(ser);
 
@@ -1226,7 +1198,7 @@ bool WrappedVulkan::Serialise_vkCmdResetEvent2KHR(SerialiserType &ser, VkCommand
 
   if(IsReplayingAndReading())
   {
-    m_LastCmdBufferID = GetResourceManager()->GetOriginalID(GetResID(commandBuffer));
+    m_LastCmdBufferID = GetResID(commandBuffer);
 
     // see top of this file for current event/fence handling
 
@@ -1240,20 +1212,20 @@ bool WrappedVulkan::Serialise_vkCmdResetEvent2KHR(SerialiserType &ser, VkCommand
 
     if(commandBuffer != VK_NULL_HANDLE)
     {
-      // ObjDisp(commandBuffer)->CmdResetEvent2KHR(Unwrap(commandBuffer), Unwrap(event), stageMask);
+      // ObjDisp(commandBuffer)->CmdResetEvent2(Unwrap(commandBuffer), Unwrap(event), stageMask);
     }
   }
 
   return true;
 }
 
-void WrappedVulkan::vkCmdResetEvent2KHR(VkCommandBuffer commandBuffer, VkEvent event,
-                                        VkPipelineStageFlags2KHR stageMask)
+void WrappedVulkan::vkCmdResetEvent2(VkCommandBuffer commandBuffer, VkEvent event,
+                                     VkPipelineStageFlags2 stageMask)
 {
   SCOPED_DBG_SINK();
 
   SERIALISE_TIME_CALL(
-      ObjDisp(commandBuffer)->CmdResetEvent2KHR(Unwrap(commandBuffer), Unwrap(event), stageMask));
+      ObjDisp(commandBuffer)->CmdResetEvent2(Unwrap(commandBuffer), Unwrap(event), stageMask));
 
   if(IsCaptureMode(m_State))
   {
@@ -1261,8 +1233,8 @@ void WrappedVulkan::vkCmdResetEvent2KHR(VkCommandBuffer commandBuffer, VkEvent e
 
     CACHE_THREAD_SERIALISER();
 
-    SCOPED_SERIALISE_CHUNK(VulkanChunk::vkCmdResetEvent2KHR);
-    Serialise_vkCmdResetEvent2KHR(ser, commandBuffer, event, stageMask);
+    SCOPED_SERIALISE_CHUNK(VulkanChunk::vkCmdResetEvent2);
+    Serialise_vkCmdResetEvent2(ser, commandBuffer, event, stageMask);
 
     record->AddChunk(scope.Get(&record->cmdInfo->alloc));
     record->MarkResourceFrameReferenced(GetResID(event), eFrameRef_Read);
@@ -1270,9 +1242,9 @@ void WrappedVulkan::vkCmdResetEvent2KHR(VkCommandBuffer commandBuffer, VkEvent e
 }
 
 template <typename SerialiserType>
-bool WrappedVulkan::Serialise_vkCmdWaitEvents2KHR(SerialiserType &ser, VkCommandBuffer commandBuffer,
-                                                  uint32_t eventCount, const VkEvent *pEvents,
-                                                  const VkDependencyInfoKHR *pDependencyInfos)
+bool WrappedVulkan::Serialise_vkCmdWaitEvents2(SerialiserType &ser, VkCommandBuffer commandBuffer,
+                                               uint32_t eventCount, const VkEvent *pEvents,
+                                               const VkDependencyInfo *pDependencyInfos)
 {
   SERIALISE_ELEMENT(commandBuffer);
 
@@ -1290,17 +1262,17 @@ bool WrappedVulkan::Serialise_vkCmdWaitEvents2KHR(SerialiserType &ser, VkCommand
   // Since it's a convenient place, we unwrap at the same time.
   if(IsReplayingAndReading())
   {
-    m_LastCmdBufferID = GetResourceManager()->GetOriginalID(GetResID(commandBuffer));
+    m_LastCmdBufferID = GetResID(commandBuffer);
 
-    rdcarray<VkImageMemoryBarrier2KHR> imgBarriers;
-    rdcarray<VkBufferMemoryBarrier2KHR> bufBarriers;
+    rdcarray<VkImageMemoryBarrier2> imgBarriers;
+    rdcarray<VkBufferMemoryBarrier2> bufBarriers;
 
     for(uint32_t evIdx = 0; evIdx < eventCount; evIdx++)
     {
       imgBarriers.clear();
       bufBarriers.clear();
 
-      const VkDependencyInfoKHR &depInfo = pDependencyInfos[evIdx];
+      const VkDependencyInfo &depInfo = pDependencyInfos[evIdx];
 
       for(uint32_t i = 0; i < depInfo.bufferMemoryBarrierCount; i++)
       {
@@ -1328,17 +1300,7 @@ bool WrappedVulkan::Serialise_vkCmdWaitEvents2KHR(SerialiserType &ser, VkCommand
 
       // see top of this file for current event/fence handling
 
-      VkEventCreateInfo evInfo = {
-          VK_STRUCTURE_TYPE_EVENT_CREATE_INFO, NULL, 0,
-      };
-
-      VkEvent ev = VK_NULL_HANDLE;
-      ObjDisp(commandBuffer)->CreateEvent(Unwrap(GetDev()), &evInfo, NULL, &ev);
-      // don't wrap this event
-
-      ObjDisp(commandBuffer)->ResetEvent(Unwrap(GetDev()), ev);
-
-      VkDependencyInfoKHR UnwrappedDependencyInfo = depInfo;
+      VkDependencyInfo UnwrappedDependencyInfo = depInfo;
 
       UnwrappedDependencyInfo.pBufferMemoryBarriers = bufBarriers.data();
       UnwrappedDependencyInfo.bufferMemoryBarrierCount = (uint32_t)bufBarriers.size();
@@ -1351,37 +1313,64 @@ bool WrappedVulkan::Serialise_vkCmdWaitEvents2KHR(SerialiserType &ser, VkCommand
           commandBuffer = RerecordCmdBuf(m_LastCmdBufferID);
         else
           commandBuffer = VK_NULL_HANDLE;
-
-        // register to clean this event up once we're done replaying this section of the log
-        m_CleanupEvents.push_back(ev);
       }
       else
       {
-        // since we cache and replay this command buffer we can't clean up this event just when
-        // we're done replaying this section. We have to keep this event until shutdown
-        m_PersistentEvents.push_back(ev);
-
         for(uint32_t i = 0; i < depInfo.imageMemoryBarrierCount; i++)
         {
-          const VkImageMemoryBarrier2KHR &b = depInfo.pImageMemoryBarriers[i];
+          const VkImageMemoryBarrier2 &b = depInfo.pImageMemoryBarriers[i];
           if(b.image != VK_NULL_HANDLE && b.oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
              b.newLayout != VK_IMAGE_LAYOUT_UNDEFINED)
           {
-            m_BakedCmdBufferInfo[m_LastCmdBufferID].resourceUsage.push_back(make_rdcpair(
-                GetResID(b.image), EventUsage(m_BakedCmdBufferInfo[m_LastCmdBufferID].curEventID,
-                                              ResourceUsage::Discard)));
+            m_LoadingEventNode.resourceUsage.push_back(
+                make_rdcpair(GetResID(b.image), ResourceUsage::Discard));
           }
         }
       }
 
-      GetResourceManager()->RecordBarriers(m_BakedCmdBufferInfo[m_LastCmdBufferID].imageStates,
-                                           m_commandQueueFamilies[m_LastCmdBufferID],
-                                           (uint32_t)imgBarriers.size(), &imgBarriers[0]);
-
       if(commandBuffer != VK_NULL_HANDLE)
       {
+        if(IsLoading(m_State) && evIdx == 0)
+        {
+          bool descBarrier = false;
+
+          for(uint32_t ev = 0; ev < eventCount; ev++)
+          {
+            for(uint32_t i = 0; i < pDependencyInfos[ev].bufferMemoryBarrierCount; i++)
+              if(pDependencyInfos[ev].pBufferMemoryBarriers[i].dstAccessMask &
+                 VK_ACCESS_2_DESCRIPTOR_BUFFER_READ_BIT_EXT)
+                descBarrier = true;
+
+            for(uint32_t i = 0; i < pDependencyInfos[ev].memoryBarrierCount; i++)
+              if(pDependencyInfos[ev].pMemoryBarriers[i].dstAccessMask &
+                 VK_ACCESS_2_DESCRIPTOR_BUFFER_READ_BIT_EXT)
+                descBarrier = true;
+          }
+
+          if(descBarrier)
+            VersionDescriptorBuffers(commandBuffer);
+        }
+
+        VkEventCreateInfo evInfo = {
+            VK_STRUCTURE_TYPE_EVENT_CREATE_INFO,
+            NULL,
+            0,
+        };
+
+        // don't wrap this event
+        VkEvent ev = VK_NULL_HANDLE;
+        ObjDisp(commandBuffer)->CreateEvent(Unwrap(GetDev()), &evInfo, NULL, &ev);
+        // register to clean this event up once we're done replaying this section of the log
+        m_CleanupEvents.push_back(ev);
+
+        ObjDisp(commandBuffer)->ResetEvent(Unwrap(GetDev()), ev);
+
+        GetResourceManager()->RecordBarriers(m_BakedCmdBufferInfo[m_LastCmdBufferID].imageStates,
+                                             m_commandQueueFamilies[m_LastCmdBufferID],
+                                             (uint32_t)imgBarriers.size(), &imgBarriers[0]);
+
         // now sanitise layouts before passing to vulkan
-        for(VkImageMemoryBarrier2KHR &barrier : imgBarriers)
+        for(VkImageMemoryBarrier2 &barrier : imgBarriers)
         {
           if(barrier.oldLayout == barrier.newLayout)
           {
@@ -1389,7 +1378,8 @@ bool WrappedVulkan::Serialise_vkCmdWaitEvents2KHR(SerialiserType &ser, VkCommand
             continue;
           }
 
-          if(!IsLoading(m_State) && barrier.oldLayout == VK_IMAGE_LAYOUT_PREINITIALIZED)
+          if(!IsLoading(m_State) && (barrier.oldLayout == VK_IMAGE_LAYOUT_PREINITIALIZED ||
+                                     barrier.oldLayout == VK_IMAGE_LAYOUT_ZERO_INITIALIZED_EXT))
           {
             // This is a transition from PRENITIALIZED, but we've already done this barrier once
             // (when loading); Since we couldn't transition back to PREINITIALIZED, we instead left
@@ -1403,20 +1393,20 @@ bool WrappedVulkan::Serialise_vkCmdWaitEvents2KHR(SerialiserType &ser, VkCommand
           SanitiseReplayImageLayout(barrier.newLayout);
         }
 
-        ObjDisp(commandBuffer)->CmdSetEvent2KHR(Unwrap(commandBuffer), ev, &UnwrappedDependencyInfo);
-        ObjDisp(commandBuffer)->CmdWaitEvents2KHR(Unwrap(commandBuffer), 1, &ev, &UnwrappedDependencyInfo);
+        ObjDisp(commandBuffer)->CmdSetEvent2(Unwrap(commandBuffer), ev, &UnwrappedDependencyInfo);
+        ObjDisp(commandBuffer)->CmdWaitEvents2(Unwrap(commandBuffer), 1, &ev, &UnwrappedDependencyInfo);
 
         if(m_ReplayOptions.optimisation != ReplayOptimisationLevel::Fastest)
         {
           for(uint32_t i = 0; i < depInfo.imageMemoryBarrierCount; i++)
           {
-            const VkImageMemoryBarrier2KHR &b = depInfo.pImageMemoryBarriers[i];
+            const VkImageMemoryBarrier2 &b = depInfo.pImageMemoryBarriers[i];
             if(b.image != VK_NULL_HANDLE && b.oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
                b.newLayout != VK_IMAGE_LAYOUT_UNDEFINED)
             {
               GetDebugManager()->FillWithDiscardPattern(
                   commandBuffer, DiscardType::UndefinedTransition, b.image, b.newLayout,
-                  b.subresourceRange, {{0, 0}, {~0U, ~0U}});
+                  b.subresourceRange, {{0, 0}, {INT_MAX, INT_MAX}});
             }
           }
         }
@@ -1427,31 +1417,37 @@ bool WrappedVulkan::Serialise_vkCmdWaitEvents2KHR(SerialiserType &ser, VkCommand
   return true;
 }
 
-void WrappedVulkan::vkCmdWaitEvents2KHR(VkCommandBuffer commandBuffer, uint32_t eventCount,
-                                        const VkEvent *pEvents,
-                                        const VkDependencyInfoKHR *pDependencyInfos)
+void WrappedVulkan::vkCmdWaitEvents2(VkCommandBuffer commandBuffer, uint32_t eventCount,
+                                     const VkEvent *pEvents, const VkDependencyInfo *pDependencyInfos)
 {
   {
-    size_t memSize = sizeof(VkEvent) * eventCount + sizeof(VkDependencyInfoKHR) * eventCount;
+    size_t memSize = sizeof(VkEvent) * eventCount + sizeof(VkDependencyInfo) * eventCount;
 
-    // because we pass in the base struct, this includes the size for the VkDependencyInfoKHR itself
+    // because we pass in the base struct, this includes the size for the VkDependencyInfo itself
     for(uint32_t i = 0; i < eventCount; i++)
       memSize += GetNextPatchSize((const void *)&pDependencyInfos[i]);
 
     byte *tempMem = GetTempMemory(memSize);
 
     VkEvent *ev = (VkEvent *)tempMem;
-    VkDependencyInfoKHR *depInfo = (VkDependencyInfoKHR *)(ev + eventCount);
+    VkDependencyInfo *depInfo = (VkDependencyInfo *)(ev + eventCount);
     tempMem = (byte *)(depInfo + eventCount);
 
     for(uint32_t i = 0; i < eventCount; i++)
     {
       ev[i] = Unwrap(pEvents[i]);
       depInfo[i] = *UnwrapStructAndChain(m_State, tempMem, &pDependencyInfos[i]);
+
+      for(uint32_t im = 0; im < depInfo[i].imageMemoryBarrierCount; im++)
+      {
+        VkImageMemoryBarrier2 &b = (VkImageMemoryBarrier2 &)depInfo[i].pImageMemoryBarriers[im];
+        SanitiseDescriptorBufferImageLayout(b.newLayout);
+        SanitiseDescriptorBufferImageLayout(b.newLayout);
+      }
     }
 
     SERIALISE_TIME_CALL(
-        ObjDisp(commandBuffer)->CmdWaitEvents2KHR(Unwrap(commandBuffer), eventCount, ev, depInfo));
+        ObjDisp(commandBuffer)->CmdWaitEvents2(Unwrap(commandBuffer), eventCount, ev, depInfo));
   }
 
   if(IsCaptureMode(m_State))
@@ -1460,8 +1456,8 @@ void WrappedVulkan::vkCmdWaitEvents2KHR(VkCommandBuffer commandBuffer, uint32_t 
 
     CACHE_THREAD_SERIALISER();
 
-    SCOPED_SERIALISE_CHUNK(VulkanChunk::vkCmdWaitEvents2KHR);
-    Serialise_vkCmdWaitEvents2KHR(ser, commandBuffer, eventCount, pEvents, pDependencyInfos);
+    SCOPED_SERIALISE_CHUNK(VulkanChunk::vkCmdWaitEvents2);
+    Serialise_vkCmdWaitEvents2(ser, commandBuffer, eventCount, pEvents, pDependencyInfos);
 
     for(uint32_t i = 0; i < eventCount; i++)
     {
@@ -1477,6 +1473,121 @@ void WrappedVulkan::vkCmdWaitEvents2KHR(VkCommandBuffer commandBuffer, uint32_t 
     for(uint32_t i = 0; i < eventCount; i++)
       record->MarkResourceFrameReferenced(GetResID(pEvents[i]), eFrameRef_Read);
   }
+}
+
+template <typename SerialiserType>
+bool WrappedVulkan::Serialise_vkTransitionImageLayout(SerialiserType &ser, VkDevice device,
+                                                      uint32_t transitionCount,
+                                                      const VkHostImageLayoutTransitionInfo *pTransitions)
+{
+  SERIALISE_ELEMENT(device);
+  SERIALISE_ELEMENT(transitionCount);
+  SERIALISE_ELEMENT_ARRAY(pTransitions, transitionCount);
+  if(transitionCount > 0)
+    ser.Important();
+
+  Serialise_DebugMessages(ser);
+
+  SERIALISE_CHECK_READ_ERRORS();
+
+  rdcarray<VkHostImageLayoutTransitionInfo> imgBarriers;
+
+  if(IsReplayingAndReading())
+  {
+    for(uint32_t i = 0; i < transitionCount; i++)
+    {
+      if(pTransitions[i].image != VK_NULL_HANDLE)
+      {
+        VkImage image = pTransitions[i].image;
+
+        imgBarriers.push_back(pTransitions[i]);
+        imgBarriers.back().image = Unwrap(image);
+
+        SanitiseOldImageLayout(imgBarriers.back().oldLayout);
+        SanitiseReplayImageLayout(imgBarriers.back().newLayout);
+
+        if(IsActiveReplaying(m_State) &&
+           m_ReplayOptions.optimisation != ReplayOptimisationLevel::Fastest)
+        {
+          if(pTransitions[i].oldLayout == VK_IMAGE_LAYOUT_UNDEFINED)
+          {
+            VkImageLayout newLayout = pTransitions[i].newLayout;
+            SanitiseNewImageLayout(newLayout);
+
+            GetDebugManager()->FillWithDiscardPatternOnHost(
+                device, DiscardType::UndefinedTransition, image, newLayout,
+                pTransitions[i].subresourceRange, {{0, 0}, {65536, 65536}});
+          }
+        }
+      }
+    }
+
+    ObjDisp(device)->TransitionImageLayout(Unwrap(device), (uint32_t)imgBarriers.size(),
+                                           imgBarriers.data());
+  }
+
+  return true;
+}
+
+VkResult WrappedVulkan::vkTransitionImageLayout(VkDevice device, uint32_t transitionCount,
+                                                const VkHostImageLayoutTransitionInfo *pTransitions)
+{
+  SCOPED_DBG_SINK();
+
+  VkResult ret;
+  {
+    byte *memory = GetTempMemory(sizeof(VkHostImageLayoutTransitionInfo) * transitionCount);
+    VkHostImageLayoutTransitionInfo *im = (VkHostImageLayoutTransitionInfo *)memory;
+
+    for(uint32_t i = 0; i < transitionCount; i++)
+    {
+      im[i] = pTransitions[i];
+      im[i].image = Unwrap(im[i].image);
+    }
+
+    SERIALISE_TIME_CALL(
+        ret = ObjDisp(device)->TransitionImageLayout(Unwrap(device), transitionCount, im));
+  }
+
+  if(IsActiveCapturing(m_State))
+  {
+    CACHE_THREAD_SERIALISER();
+
+    SCOPED_SERIALISE_CHUNK(VulkanChunk::vkTransitionImageLayout);
+    Serialise_vkTransitionImageLayout(ser, device, transitionCount, pTransitions);
+
+    m_FrameCaptureRecord->AddChunk(scope.Get());
+  }
+
+  if(IsCaptureMode(m_State))
+  {
+    for(uint32_t i = 0; i < transitionCount; ++i)
+    {
+      const VkHostImageLayoutTransitionInfo &transition = pTransitions[i];
+
+      // Since this transition is done on the host, record a barrier for this image and immediately
+      // apply it.
+
+      // Convert the transition information to VkImageMemoryBarrier to use the existing helpers.
+      VkImageMemoryBarrier barrier;
+      barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+      // Access masks are unused by RecordBarriers() and UpdateImageStates().
+      barrier.srcAccessMask = 0;
+      barrier.dstAccessMask = 0;
+      barrier.oldLayout = transition.oldLayout;
+      barrier.newLayout = transition.newLayout;
+      barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.image = transition.image;
+      barrier.subresourceRange = transition.subresourceRange;
+
+      rdcflatmap<ResourceId, ImageState> imageStates;
+      GetResourceManager()->RecordBarriers(imageStates, VK_QUEUE_FAMILY_IGNORED, 1, &barrier);
+      UpdateImageStates(imageStates);
+    }
+  }
+
+  return ret;
 }
 
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
@@ -1518,8 +1629,8 @@ VkResult WrappedVulkan::vkGetFenceWin32HandleKHR(
 #endif
 
 INSTANTIATE_FUNCTION_SERIALISED(VkResult, vkCreateFence, VkDevice device,
-                                const VkFenceCreateInfo *pCreateInfo,
-                                const VkAllocationCallbacks *pAllocator, VkFence *pFence);
+                                const VkFenceCreateInfo *pCreateInfo, const VkAllocationCallbacks *,
+                                VkFence *pFence);
 
 INSTANTIATE_FUNCTION_SERIALISED(VkResult, vkGetFenceStatus, VkDevice device, VkFence fence);
 
@@ -1530,8 +1641,8 @@ INSTANTIATE_FUNCTION_SERIALISED(VkResult, vkWaitForFences, VkDevice device, uint
                                 const VkFence *pFences, VkBool32 waitAll, uint64_t timeout);
 
 INSTANTIATE_FUNCTION_SERIALISED(VkResult, vkCreateEvent, VkDevice device,
-                                const VkEventCreateInfo *pCreateInfo,
-                                const VkAllocationCallbacks *pAllocator, VkEvent *pEvent);
+                                const VkEventCreateInfo *pCreateInfo, const VkAllocationCallbacks *,
+                                VkEvent *pEvent);
 
 INSTANTIATE_FUNCTION_SERIALISED(VkResult, vkSetEvent, VkDevice device, VkEvent event);
 
@@ -1541,7 +1652,7 @@ INSTANTIATE_FUNCTION_SERIALISED(VkResult, vkGetEventStatus, VkDevice device, VkE
 
 INSTANTIATE_FUNCTION_SERIALISED(VkResult, vkCreateSemaphore, VkDevice device,
                                 const VkSemaphoreCreateInfo *pCreateInfo,
-                                const VkAllocationCallbacks *pAllocator, VkSemaphore *pSemaphore);
+                                const VkAllocationCallbacks *, VkSemaphore *pSemaphore);
 
 INSTANTIATE_FUNCTION_SERIALISED(void, vkCmdSetEvent, VkCommandBuffer commandBuffer, VkEvent event,
                                 VkPipelineStageFlags stageMask);
@@ -1567,12 +1678,16 @@ INSTANTIATE_FUNCTION_SERIALISED(void, vkWaitSemaphores, VkDevice device,
 INSTANTIATE_FUNCTION_SERIALISED(void, vkSignalSemaphore, VkDevice device,
                                 const VkSemaphoreSignalInfo *pSignalInfo);
 
-INSTANTIATE_FUNCTION_SERIALISED(void, vkCmdSetEvent2KHR, VkCommandBuffer commandBuffer,
-                                VkEvent event, const VkDependencyInfoKHR *pDependencyInfo);
+INSTANTIATE_FUNCTION_SERIALISED(void, vkCmdSetEvent2, VkCommandBuffer commandBuffer, VkEvent event,
+                                const VkDependencyInfo *pDependencyInfo);
 
-INSTANTIATE_FUNCTION_SERIALISED(void, vkCmdResetEvent2KHR, VkCommandBuffer commandBuffer,
-                                VkEvent event, VkPipelineStageFlags2KHR stageMask);
+INSTANTIATE_FUNCTION_SERIALISED(void, vkCmdResetEvent2, VkCommandBuffer commandBuffer,
+                                VkEvent event, VkPipelineStageFlags2 stageMask);
 
-INSTANTIATE_FUNCTION_SERIALISED(void, vkCmdWaitEvents2KHR, VkCommandBuffer commandBuffer,
+INSTANTIATE_FUNCTION_SERIALISED(void, vkCmdWaitEvents2, VkCommandBuffer commandBuffer,
                                 uint32_t eventCount, const VkEvent *pEvents,
-                                const VkDependencyInfoKHR *pDependencyInfos);
+                                const VkDependencyInfo *pDependencyInfos);
+
+INSTANTIATE_FUNCTION_SERIALISED(VkResult, vkTransitionImageLayout, VkDevice device,
+                                uint32_t transitionCount,
+                                const VkHostImageLayoutTransitionInfo *pTransitions);

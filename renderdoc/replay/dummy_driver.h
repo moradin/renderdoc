@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2021 Baldur Karlsson
+ * Copyright (c) 2021-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,13 +33,16 @@
 class DummyDriver : public IReplayDriver
 {
 public:
-  DummyDriver(IReplayDriver *original, const rdcarray<ShaderReflection *> &shaders);
+  DummyDriver(IReplayDriver *original, const rdcarray<const ShaderReflection *> &shaders,
+              SDFile *sdfile, const rdcarray<SDObject *> &annotations);
 
   void Shutdown();
 
   APIProperties GetAPIProperties();
 
   rdcarray<ResourceDescription> GetResources();
+
+  rdcarray<DescriptorStoreDescription> GetDescriptorStores();
 
   rdcarray<BufferDescription> GetBuffers();
   BufferDescription GetBuffer(ResourceId id);
@@ -58,12 +61,19 @@ public:
   rdcarray<EventUsage> GetUsage(ResourceId id);
 
   void SetPipelineStates(D3D11Pipe::State *d3d11, D3D12Pipe::State *d3d12, GLPipe::State *gl,
-                         VKPipe::State *vk);
+                         VKPipe::State *vk, D3D9Pipe::State *d3d9);
   void SavePipelineState(uint32_t eventId);
+  rdcarray<Descriptor> GetDescriptors(ResourceId descriptorStore,
+                                      const rdcarray<DescriptorRange> &ranges);
+  rdcarray<SamplerDescriptor> GetSamplerDescriptors(ResourceId descriptorStore,
+                                                    const rdcarray<DescriptorRange> &ranges);
+  rdcarray<DescriptorAccess> GetDescriptorAccess(uint32_t eventId);
+  rdcarray<DescriptorLogicalLocation> GetDescriptorLocations(ResourceId descriptorStore,
+                                                             const rdcarray<DescriptorRange> &ranges);
 
   FrameRecord GetFrameRecord();
 
-  ReplayStatus ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers);
+  RDResult ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers);
   void ReplayLog(uint32_t endEventID, ReplayLogType replayType);
   SDFile *GetStructuredFile();
 
@@ -71,8 +81,6 @@ public:
 
   void InitPostVSBuffers(uint32_t eventId);
   void InitPostVSBuffers(const rdcarray<uint32_t> &passEvents);
-
-  ResourceId GetLiveID(ResourceId id);
 
   MeshFormat GetPostVSBuffers(uint32_t eventId, uint32_t instID, uint32_t viewID,
                               MeshDataStage stage);
@@ -88,23 +96,27 @@ public:
   void ReplaceResource(ResourceId from, ResourceId to);
   void RemoveReplacement(ResourceId id);
   void FreeTargetResource(ResourceId id);
+  void ClearReplayCache();
+  void ReloadShaderDebugInformation();
 
   rdcarray<GPUCounter> EnumerateCounters();
   CounterDescription DescribeCounter(GPUCounter counterID);
   rdcarray<CounterResult> FetchCounters(const rdcarray<GPUCounter> &counterID);
 
-  void FillCBufferVariables(ResourceId pipeline, ResourceId shader, rdcstr entryPoint,
-                            uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
+  void FillCBufferVariables(ResourceId pipeline, ResourceId shader, ShaderStage stage,
+                            rdcstr entryPoint, uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
                             const bytebuf &data);
 
   rdcarray<PixelModification> PixelHistory(rdcarray<EventUsage> events, ResourceId target, uint32_t x,
                                            uint32_t y, const Subresource &sub, CompType typeCast);
   ShaderDebugTrace *DebugVertex(uint32_t eventId, uint32_t vertid, uint32_t instid, uint32_t idx,
                                 uint32_t view);
-  ShaderDebugTrace *DebugPixel(uint32_t eventId, uint32_t x, uint32_t y, uint32_t sample,
-                               uint32_t primitive);
+  ShaderDebugTrace *DebugPixel(uint32_t eventId, uint32_t x, uint32_t y,
+                               const DebugPixelInputs &inputs);
   ShaderDebugTrace *DebugThread(uint32_t eventId, const rdcfixedarray<uint32_t, 3> &groupid,
                                 const rdcfixedarray<uint32_t, 3> &threadid);
+  ShaderDebugTrace *DebugMeshThread(uint32_t eventId, const rdcfixedarray<uint32_t, 3> &groupid,
+                                    const rdcfixedarray<uint32_t, 3> &threadid);
   rdcarray<ShaderDebugState> ContinueDebug(ShaderDebugger *debugger);
   void FreeDebugger(ShaderDebugger *debugger);
 
@@ -124,7 +136,7 @@ public:
   // IReplayDriver
   bool IsRemoteProxy();
 
-  ReplayStatus FatalErrorCheck();
+  RDResult FatalErrorCheck();
   IReplayDriver *MakeDummyDriver();
 
   rdcarray<WindowingSystem> GetSupportedWindowSystems();
@@ -134,7 +146,6 @@ public:
   uint64_t MakeOutputWindow(WindowingData window, bool depth);
   void DestroyOutputWindow(uint64_t id);
   bool CheckResizeOutputWindow(uint64_t id);
-  void SetOutputWindowDimensions(uint64_t id, int32_t w, int32_t h);
   void GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h);
   void GetOutputWindowData(uint64_t id, bytebuf &retData);
   void ClearOutputWindowColor(uint64_t id, FloatVector col);
@@ -167,8 +178,8 @@ public:
                          const ShaderCompileFlags &compileFlags, ShaderStage type, ResourceId &id,
                          rdcstr &errors);
   rdcarray<ShaderEncoding> GetCustomShaderEncodings();
-  ResourceId ApplyCustomShader(ResourceId shader, ResourceId texid, const Subresource &sub,
-                               CompType typeCast);
+  rdcarray<ShaderSourcePrefix> GetCustomShaderSourcePrefixes();
+  ResourceId ApplyCustomShader(TextureDisplay &display);
   void FreeCustomShader(ResourceId id);
 
   void RenderCheckerboard(FloatVector dark, FloatVector light);
@@ -181,11 +192,13 @@ public:
 private:
   virtual ~DummyDriver();
 
-  rdcarray<ShaderReflection *> m_Shaders;
+  rdcarray<const ShaderReflection *> m_Shaders;
+  rdcarray<SDObject *> m_Annotations;
   SDFile *m_SDFile;
 
   APIProperties m_Props;
   rdcarray<ResourceDescription> m_Resources;
+  rdcarray<DescriptorStoreDescription> m_DescriptorStores;
   rdcarray<BufferDescription> m_Buffers;
   rdcarray<TextureDescription> m_Textures;
   FrameRecord m_FrameRecord;
@@ -196,4 +209,5 @@ private:
   rdcarray<GPUDevice> m_GPUs;
   rdcarray<WindowingSystem> m_WindowSystems;
   rdcarray<ShaderEncoding> m_CustomEncodings;
+  rdcarray<ShaderSourcePrefix> m_CustomPrefixes;
 };

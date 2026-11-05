@@ -12,6 +12,14 @@ I want to ensure that anyone can contribute to RenderDoc with only the next bug 
 
 If you have any queries or concerns in this regard you can get in touch with me [directly over email](mailto:baldurk@baldurk.org).
 
+## Use of LLMs / "AI"
+
+Strictly no use whatsoever of LLMs or any similar technology is allowed for any code contributed to RenderDoc.
+
+Use of any LLMs in issue or PR description text for anything other than translation between languages is also strictly not allowed.
+
+There are no exceptions to these rules.
+
 ## Acceptable use of RenderDoc
 
 RenderDoc is a tool intended for debugging your own projects and programs, those to which you have true ownership of. Use and abuse of RenderDoc for illegal or unethical uses including but not limited to capturing copyrighted programs that you do not own the rights to will not be tolerated. Any questions or issues related to any such use will not be answered and no support will be provided.
@@ -41,7 +49,8 @@ Commit messages should have a first line with a **maximum of 72 characters**, th
 
 For more information, check the section about [commit messages](CONTRIBUTING/Preparing-Commits.md#commit-messages).
 
-Code should be formatted using **clang-format 3.8**. The reason we fix a specific version of clang-format is that unfortunately different versions can format code in different ways using the same config file, so this would cause problems with automatic verification of code formatting.
+Code should be formatted using **clang-format 15.0**. The reason we fix a specific version of clang-format is that unfortunately different versions can format code in different ways using the same config file, so this would cause problems with automatic verification of code formatting.
 
 For more information, check the section about [code formatting](CONTRIBUTING/Preparing-Commits.md#code-formatting).
 
+**DO NOT** create "draft" pull requests ever. These are a pointless anti-feature from github and provide zero value and have zero purpose. If your code is not ready to merge, do not create a pull request at all.

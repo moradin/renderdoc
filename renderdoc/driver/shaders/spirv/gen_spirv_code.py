@@ -23,13 +23,16 @@ with open(pathname + 'spirv.core.grammar.json', mode='r') as f:
 with open(pathname + 'extinst.glsl.std.450.grammar.json', mode='r') as f:
     glsl450 = json.load(f)
 
+with open(pathname + 'extinst.nonsemantic.shader.debuginfo.100.grammar.json', mode='r') as f:
+    debugInfo = json.load(f)
+
 # open XML registry
 registry = ET.parse(pathname + 'spir-v.xml').getroot()
 
 # open the file for write
-header = open(pathname + 'spirv_gen.h', mode='w', newline = nl)
-ops_header = open(pathname + 'spirv_op_helpers.h', mode='w', newline = nl)
-cpp = open(pathname + 'spirv_gen.cpp', mode='w', newline = nl)
+header = open(pathname + 'spirv_gen.h', mode='w', newline = nl, encoding = "utf-8")
+ops_header = open(pathname + 'spirv_op_helpers.h', mode='w', newline = nl, encoding = "utf-8")
+cpp = open(pathname + 'spirv_gen.cpp', mode='w', newline = nl, encoding = "utf-8")
 
 ###############################################################################
 ##
@@ -54,6 +57,8 @@ def operand_name(name, lowercase_first = True):
         return 'arguments'
     if re.search(r'variable, parent.*\.\.\.', name, re.RegexFlag.I):
         return 'parents'
+    if re.search(r'condition 0, operand.*\.\.\.', name, re.RegexFlag.I):
+        return 'conditional_arguments'
 
     name = re.sub(r'<<(.*),(.*)>>', r'\2', name)
     name = re.sub(r'[ \'~<>./-]', '', name)
@@ -64,6 +69,9 @@ def operand_name(name, lowercase_first = True):
     if name.lower() == 'default':
         return 'def'
 
+    if name.lower() == 'asm':
+        return 'assembly'
+
     if lowercase_first:
         return name[0].lower() + name[1:]
     else:
@@ -73,7 +81,7 @@ copyright = '''
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -207,6 +215,16 @@ inline uint32_t DecodeParam(const ConstIter &it, uint32_t &word)
 }}
 
 template<>
+inline Capability DecodeParam(const ConstIter &it, uint32_t &word)
+{{
+  if(word >= it.size()) return Capability::Invalid;
+  
+  Capability ret = Capability(word);
+  word += 1;
+  return ret;
+}}
+
+template<>
 inline Id DecodeParam<Id>(const ConstIter &it, uint32_t &word)
 {{
   if(word >= it.size()) return Id();
@@ -308,6 +326,9 @@ for operand_kind in spirv['operand_kinds']:
 
         used = []
 
+        official_suffixes = ['KHR', 'EXT']
+        vendor_suffixes = ['AMD', 'NV', 'INTEL', 'ARM', 'QCOM', 'GOOGLE']
+
         for value in operand_kind['enumerants']:
             value_name = value['enumerant']
             if value_name[0].isdigit():
@@ -315,6 +336,19 @@ for operand_kind in spirv['operand_kinds']:
             decl += '  {} = {},\n'.format(value_name, value['value'])
 
             if value['value'] in used:
+                continue
+
+            wait_for_official = False
+            for off in official_suffixes:
+                for vend in vendor_suffixes:
+                    if value_name[-len(vend):] == vend:
+                        off_name = value_name[:-len(vend)] + off
+
+                        for search in operand_kind['enumerants']:
+                            if search['enumerant'] == off_name and search['value']:
+                                wait_for_official = True
+
+            if wait_for_official:
                 continue
 
             used.append(value['value'])
@@ -333,7 +367,10 @@ for operand_kind in spirv['operand_kinds']:
 
 '''.format(name = name, values = decl.rstrip()))
 
-        cpp.write('''template <>
+        if stringise.strip() == '':
+            cpp.write(f"template <>\nrdcstr DoStringise(const rdcspv::{name} &el) {{ return \"?\"; }}\n\n")
+        else:
+            cpp.write('''template <>
 rdcstr DoStringise(const rdcspv::{name} &el)
 {{
   BEGIN_ENUM_STRINGISE(rdcspv::{name});
@@ -347,25 +384,36 @@ rdcstr DoStringise(const rdcspv::{name} &el)
     elif operand_kind['category'] == 'BitEnum':
         operand_kind['size'] = 1
         operand_kind['def_name'] = name[0].lower() + name[1:]
-        operand_kind['def_value'] = name + '::None'
         operand_kind['type'] = name
 
         used = []
+            
+        none = [v['enumerant'] for v in operand_kind['enumerants'] if 'None' in v['enumerant']]
+
+        if len(none) > 0:
+            none = none[0]
+        else:
+            none = 'NoDefValueAvailable'
+
+        operand_kind['def_value'] = name + '::' + none
 
         decl = ''
         stringise = ''
         for value in operand_kind['enumerants']:
-            decl += '  {} = {},\n'.format(value['enumerant'], value['value'])
+            value_name = value['enumerant']
+            if value_name[0].isdigit():
+                value_name = '_' + value_name
+            decl += '  {} = {},\n'.format(value_name, value['value'])
 
             if value['value'] in used:
                 continue
 
             used.append(value['value'])
 
-            if value['enumerant'] == 'None':
-                stringise += '    STRINGISE_BITFIELD_CLASS_VALUE(None);\n\n'
+            if value['enumerant'] == none:
+                stringise += '    STRINGISE_BITFIELD_CLASS_VALUE({});\n\n'.format(none)
             else:
-                stringise += '    STRINGISE_BITFIELD_CLASS_BIT({});\n'.format(value['enumerant'])
+                stringise += '    STRINGISE_BITFIELD_CLASS_BIT({});\n'.format(value_name)
 
         header.write('''enum class {name} : uint32_t
 {{
@@ -378,7 +426,10 @@ BITMASK_OPERATORS({name});
 
 '''.format(name = name, values = decl.rstrip()))
 
-        cpp.write('''template <>
+        if stringise.strip() == '':
+            cpp.write(f"template <>\nrdcstr DoStringise(const rdcspv::{name} &el) {{ return \"?\"; }}\n\n")
+        else:
+            cpp.write('''template <>
 rdcstr DoStringise(const rdcspv::{name} &el)
 {{
   BEGIN_BITFIELD_STRINGISE(rdcspv::{name});
@@ -416,6 +467,11 @@ rdcstr DoStringise(const rdcspv::{name} &el)
         operand_kind['def_name'] = 'num'
         operand_kind['def_value'] = '0'
         operand_kind['type'] = 'uint32_t'
+    elif (operand_kind['kind'] == 'LiteralFloat'):
+        operand_kind['size'] = 1
+        operand_kind['def_name'] = 'flt'
+        operand_kind['def_value'] = '0.0f'
+        operand_kind['type'] = 'float'
     elif (operand_kind['kind'] == 'LiteralString'):
         operand_kind['size'] = -1000000
         operand_kind['type'] = 'rdcstr'
@@ -428,12 +484,7 @@ rdcstr DoStringise(const rdcspv::{name} &el)
           operand_kind['kind'] == 'LiteralSpecConstantOpInteger'):
         operand_kind['size'] = None
     elif (operand_kind['kind'] == 'PairLiteralIntegerIdRef'):
-        operand_kind['size'] = 2
-        operand_kind['def_name'] = name[0].lower() + name[1:]
-        operand_kind['def_value'] = '{0, Id()}'
-        operand_kind['type'] = name
-        operand_kind['push_words'] = lambda name: 'words.push_back((uint32_t){0}.first); words.push_back({0}.second.value());'.format(name)
-        ops_header.write('struct {} {{ uint32_t first; Id second; }};\n\n'.format(name))
+        operand_kind['size'] = None
     elif (operand_kind['kind'] == 'PairIdRefLiteralInteger'):
         operand_kind['size'] = 2
         operand_kind['def_name'] = name[0].lower() + name[1:]
@@ -467,16 +518,6 @@ inline PairIdRefIdRef DecodeParam(const ConstIter &it, uint32_t &word)
 }
 
 template<>
-inline PairLiteralIntegerIdRef DecodeParam(const ConstIter &it, uint32_t &word)
-{
-  if(word >= it.size()) return {};
-  
-  PairLiteralIntegerIdRef ret = { it.word(word), Id::fromWord(it.word(word+1)) };
-  word += 2;
-  return ret;
-}
-
-template<>
 inline PairIdRefLiteralInteger DecodeParam(const ConstIter &it, uint32_t &word)
 {
   if(word >= it.size()) return {};
@@ -493,10 +534,20 @@ tostr_decls = ''
 # Second pass to declare operand parameter structs in ops helper header
 for operand_kind in spirv['operand_kinds']:
     name = operand_kind['kind']
+    none = []
+    if operand_kind['category'] == 'BitEnum':
+        none = [v['enumerant'] for v in operand_kind['enumerants'] if 'None' in v['enumerant']]
+    if len(none) > 0:
+        none = none[0]
+    else:
+        none = ''
 
     if not operand_kind['has_params']:
         if operand_kind['category'] == 'ValueEnum':
             ops_header.write('inline uint16_t OptionalWordCount(const {0} val) {{ return val != {0}::Invalid ? 1 : 0; }}\n\n'.format(name))
+        elif operand_kind['category'] == 'BitEnum':
+            if none != '':
+                ops_header.write('inline uint16_t OptionalWordCount(const {0} val) {{ return val != {0}::{1} ? 1 : 0; }}\n\n'.format(name, none))
         continue
 
     values = ''
@@ -548,7 +599,10 @@ for operand_kind in spirv['operand_kinds']:
                 param = value['parameters'][0]
                 size += kinds[param['kind']]['size']
                 param_type = kinds[param['kind']]['type']
-                member = "{} {};\n".format(param_type, param_name)
+                if bit_enum:
+                    member = "{} {} = {{}};\n".format(param_type, param_name)
+                else:
+                    member = "{} {};\n".format(param_type, param_name)
 
                 if value_enum:
                     values += '  '
@@ -676,14 +730,15 @@ rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const rdcspv:
 '''.format(name=name, tostr_cases=tostr_cases.rstrip())
 
         tostr_decls += '''template<>
-rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const rdcspv::{name}AndParamData &el);'''.format(name=name)
+rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const rdcspv::{name}AndParamData &el);\n'''.format(name=name)
 
         header.write('''struct {name}AndParamData
 {{
-  {name}AndParamData({name} v = {name}::Invalid) : value(v) {{}}
+  {name}AndParamData({name} v = {name}::Invalid) : value(v), _init(0) {{}}
   {name} value;
   union
   {{
+    uint64_t _init;
 {values}
   }};
   
@@ -742,11 +797,11 @@ rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const rdcspv:
 '''.format(name=name, tostr_cases=tostr_cases.rstrip())
 
         tostr_decls += '''template<>
-rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const rdcspv::{name}AndParamDatas &el);'''.format(name=name)
+rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const rdcspv::{name}AndParamDatas &el);\n'''.format(name=name)
 
         header.write('''struct {name}AndParamDatas
 {{
-  {name}AndParamDatas({name} f = {name}::None) : flags(f) {{}}
+  {name}AndParamDatas({name} f = {name}::{none}) : flags(f) {{}}
   {name} flags;
 {values}
   
@@ -755,7 +810,7 @@ rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const rdcspv:
 {set_unset}
 }};
 
-'''.format(name=name, values=values.rstrip(), set_unset=set_unset.rstrip()))
+'''.format(name=name, none=none, values=values.rstrip(), set_unset=set_unset.rstrip()))
 
         ops_header.write('''template<>
 inline {name}AndParamDatas DecodeParam(const ConstIter &it, uint32_t &word)
@@ -811,11 +866,6 @@ inline uint16_t OptionalWordCount(const Id &val)
 inline uint16_t OptionalWordCount(const PairIdRefLiteralInteger &val)
 {
   return val.first != Id() ? 2 : 0;
-}
-
-inline uint16_t OptionalWordCount(const PairLiteralIntegerIdRef &val)
-{
-  return val.second != Id() ? 2 : 0;
 }
 
 inline uint16_t OptionalWordCount(const PairIdRefIdRef &val)
@@ -874,6 +924,22 @@ used_ids = ''
 disassemble = ''
 
 for inst in spirv['instructions']:
+    if inst['class'] == '@exclude':
+        continue
+    
+    wait_for_official = False
+    for off in official_suffixes:
+        for vend in vendor_suffixes:
+            if inst['opname'][-len(vend):] == vend:
+                off_name = inst['opname'][:-len(vend)] + off
+
+                for search in spirv['instructions']:
+                    if search['opname'] == off_name and inst['opcode'] == search['opcode']:
+                        wait_for_official = True
+
+    if wait_for_official:
+        continue
+
     decl += '  {} = {},\n'.format(inst['opname'][2:], inst['opcode'])
 
     if inst['opcode'] in used:
@@ -932,10 +998,12 @@ for inst in spirv['instructions']:
         all_size = 1 # size, but with all optionals included
         iter_init = '    memcpy(this, it.words(), sizeof(*this));'
         complex_type = False
-        manual_init = '    this->op = OpCode;\n'
+        manual_init  = '    uint32_t word = 0;(void)word;\n'
+        manual_init += '    this->op = OpCode;\n'
         manual_init += '    this->wordCount = (uint16_t)it.size();\n'
         oper_cast = '  operator Operation() const\n  {\n    rdcarray<uint32_t> words;\n'
         has_funcs = ''
+        used_ids_str = ''
 
         disassemble += '      Op{} decoded(it);\n'.format(inst['opname'][2:])
         
@@ -948,7 +1016,7 @@ for inst in spirv['instructions']:
         elif resultType == -1 and result > 0:
             disassemble += '      ret += idName(decoded.result) + " = ";\n'
 
-        disassemble += '      ret += "{}("'.format(inst['opname'][2:])
+        disassemble += '      ret += rdcstr("{}("_lit)\n'.format(inst['opname'][2:])
 
         disassemble_params = False
 
@@ -960,7 +1028,7 @@ for inst in spirv['instructions']:
                     size_name = 'MinWordSize'
                     construct_size = 'MinWordSize'
                     complex_type = True
-                    manual_init += '    uint32_t word = {};\n'.format(all_size)
+                    manual_init += '    word = {};\n'.format(all_size)
 
                 quantifier = ''
 
@@ -971,35 +1039,53 @@ for inst in spirv['instructions']:
                         construct_size = 'MinWordSize'
                         complex_type = True
                         if quantifier == '*':
-                            manual_init += '    uint32_t word = {};\n'.format(all_size)
+                            manual_init += '    word = {};\n'.format(all_size)
 
                 if kind['is_id']:
-                    if quantifier == '*':
-                        used_ids += '      for(size_t i=0; i < size-{0}; i++) callback(Id::fromWord(it.word({0}+i)), {1});\n'.format(all_size, 'true' if i+1==result else 'false')
+                    if used_ids_str is None or used_ids_str != '':
+                        if used_ids_str is not None:
+                            used_ids += used_ids_str
+                        if quantifier == '*':
+                            used_ids += '      for(; word < size; word++) callback(Id::fromWord(it.word(word)), {0});\n'.format('true' if i+1==result else 'false')
+                        elif quantifier == '?':
+                            used_ids += '      if(word < size) callback(Id::fromWord(it.word(word)), {0});\n'.format('true' if i+1==result else 'false')
+                        else:
+                            used_ids += '      callback(Id::fromWord(it.word(word)), {});\n'.format('true' if i+1==result else 'false')
                     else:
-                        used_ids += '      callback(Id::fromWord(it.word({})), {});\n'.format(all_size, 'true' if i+1==result else 'false')
+                        if quantifier == '*':
+                            used_ids += '      for(size_t i=0; i < size-{0}; i++) callback(Id::fromWord(it.word({0}+i)), {1});\n'.format(all_size, 'true' if i+1==result else 'false')
+                        elif quantifier == '?':
+                            used_ids += '      if({0} < size) callback(Id::fromWord(it.word({0})), {1});\n'.format(all_size, 'true' if i+1==result else 'false')
+                        else:
+                            used_ids += '      callback(Id::fromWord(it.word({})), {});\n'.format(all_size, 'true' if i+1==result else 'false')
 
                 if kind['size'] < 0:
                     size_name = 'MinWordSize'
                     construct_size = 'MinWordSize'
                     complex_type = True
-                    manual_init += '    uint32_t word = {};\n'.format(all_size)
+                    manual_init += '    word = {};\n'.format(all_size)
+                    # use DecodeParam<rdcstr> to advance by the number of words when grabbing IDs
+                    # Only used in OpEntryPoint which has a * qualifier after a string (itself already variable length)
+                    used_ids_str += '      word = {};\n'.format(all_size)
+                    used_ids_str += '      (void)DecodeParam<rdcstr>(it, word);\n'
 
                 opType,opName = (kind['type'], operand_name(operand['name'] if 'name' in operand else kind['def_name']))
 
                 if i+1 != resultType and i+1 != result:
                     if quantifier == '*':
-                        disassemble += ' + ParamsToStr(idName, decoded.{})'.format(opName)
+                        disassemble += '           + ParamsToStr(idName, decoded.{})\n'.format(opName)
+                    elif quantifier == '?':
+                        disassemble += '           + ({} < size ? ", " + ParamToStr(idName, decoded.{}) : "")\n'.format(all_size, opName)
                     else:
                         if opType == 'IdScope':
-                            disassemble += ' + ToStr(Scope(constIntVal(decoded.{})))'.format(opName)
+                            disassemble += '           + ToStr(Scope(constIntVal(decoded.{})))\n'.format(opName)
                         elif opType == 'IdMemorySemantics':
-                            disassemble += ' + ToStr(MemorySemantics(constIntVal(decoded.{})))'.format(opName)
+                            disassemble += '           + ToStr(MemorySemantics(constIntVal(decoded.{})))\n'.format(opName)
                         else:
-                            disassemble += ' + ParamToStr(idName, decoded.{})'.format(opName)
+                            disassemble += '           + ParamToStr(idName, decoded.{})\n'.format(opName)
 
-                    if i+1 < len(operands):
-                        disassemble += ' + ", "'
+                    if i+1 < len(operands) and ('quantifier' not in operands[i+1] or operands[i+1]['quantifier'] != '?'):
+                        disassemble += '           + ", "\n'
 
                     disassemble_params = True
 
@@ -1049,13 +1135,14 @@ for inst in spirv['instructions']:
                     manual_init += '    this->{name} = {value};\n'.format(name = opName, type = opType, value = kind['from_words']('it.word({})'.format(all_size)))
                     oper_cast += '    {push_words}\n'.format(push_words = kind['push_words'](opName))
 
-                if kind['size'] >= 0:
+                if kind['size'] >= 0 and type(all_size) is int:
                     all_size += kind['size']
+                    if quantifier == '':
+                        size = all_size
                 else:
-                    all_size += 1
-
-                if quantifier == '':
-                    size = all_size
+                    if quantifier == '':
+                        size += 1
+                    all_size = 'error: must not use all_size after variable length entry'
         else:
             assign = '    // no operands'
             member_decl = '  // no operands'
@@ -1069,10 +1156,7 @@ for inst in spirv['instructions']:
         if params != '':
             params = params[0:-2]
 
-        if disassemble_params:
-            disassemble += ' + ")";\n'
-        else:
-            disassemble += ' ")";\n'
+        disassemble += '           + ")";\n'
         disassemble += '      break;\n'
         disassemble += '    }\n'
 
@@ -1153,8 +1237,6 @@ rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const Id &el)
 template<>
 rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const rdcstr &el);
 template<>
-rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const PairLiteralIntegerIdRef &el);
-template<>
 rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const PairIdRefLiteralInteger &el);
 template<>
 rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const PairIdRefIdRef &el);
@@ -1174,6 +1256,8 @@ inline rdcstr ParamsToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const
   ret += "}}";
   return ret;
 }}
+
+extern bool ManualForEachID(const ConstIter &it, const std::function<void(Id,bool)> &callback);
 
 struct OpDecoder
 {{
@@ -1215,12 +1299,6 @@ rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const rdcstr 
 }}
 
 template<>
-rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const PairLiteralIntegerIdRef &el)
-{{
-  return StringFormat::Fmt("[%u, %s]", el.first, idName(el.second).c_str());
-}}
-
-template<>
 rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const PairIdRefLiteralInteger &el)
 {{
   return StringFormat::Fmt("[%s, %u]", idName(el.first).c_str(), el.second);
@@ -1236,7 +1314,11 @@ rdcstr ParamToStr(const std::function<rdcstr(rdcspv::Id)> &idName, const PairIdR
 
 void OpDecoder::ForEachID(const ConstIter &it, const std::function<void(Id,bool)> &callback)
 {{
+  if (rdcspv::ManualForEachID(it, callback))
+    return;
   size_t size = it.size();
+  uint32_t word = 0;
+  (void)word;
   switch(it.opcode())
   {{
 {used_ids}
@@ -1246,6 +1328,7 @@ void OpDecoder::ForEachID(const ConstIter &it, const std::function<void(Id,bool)
 
 rdcstr OpDecoder::Disassemble(const ConstIter &it, const std::function<rdcstr(Id,Id)> &declName, const std::function<rdcstr(rdcspv::Id)> &idName, const std::function<uint32_t(Id)> &constIntVal)
 {{
+  size_t size = it.size();
   rdcstr ret;
   switch(it.opcode())
   {{
@@ -1276,28 +1359,52 @@ OpDecoder::OpDecoder(const ConstIter &it)
 ##
 ###############################################################################
 
-decl = ''
-stringise = ''
+glsl_decl = ''
+glsl_stringise = ''
 
 for inst in glsl450['instructions']:
-    decl += '  {} = {},\n'.format(inst['opname'], inst['opcode'])
-    stringise += '    STRINGISE_ENUM_CLASS({});\n'.format(inst['opname'])
+    glsl_decl += '  {} = {},\n'.format(inst['opname'], inst['opcode'])
+    glsl_stringise += '    STRINGISE_ENUM_CLASS({});\n'.format(inst['opname'])
+
+debug_decl = ''
+debug_stringise = ''
+
+for inst in debugInfo['instructions']:
+    debug_decl += '  {} = {},\n'.format(inst['opname'][5:], inst['opcode'])
+    debug_stringise += '    STRINGISE_ENUM_CLASS({});\n'.format(inst['opname'][5:])
 
 header.write('''enum class GLSLstd450 : uint32_t
 {{
-{decl}
+{glsl_decl}
   Max,
   Invalid = ~0U,
 }};
 
-'''.format(decl = decl))
+enum class ShaderDbg : uint32_t
+{{
+{debug_decl}
+  Max,
+  Invalid = ~0U,
+}};
+
+'''.format(glsl_decl = glsl_decl, debug_decl = debug_decl))
 
 cpp.write('''template <>
 rdcstr DoStringise(const rdcspv::GLSLstd450 &el)
 {{
   BEGIN_ENUM_STRINGISE(rdcspv::GLSLstd450);
   {{
-{stringise}
+{glsl_stringise}
+  }}
+  END_ENUM_STRINGISE();
+}}
+
+template <>
+rdcstr DoStringise(const rdcspv::ShaderDbg &el)
+{{
+  BEGIN_ENUM_STRINGISE(rdcspv::ShaderDbg);
+  {{
+{debug_stringise}
   }}
   END_ENUM_STRINGISE();
 }}
@@ -1311,7 +1418,7 @@ rdcstr DoStringise(const rdcspv::Generator &el)
   }}
   END_ENUM_STRINGISE();
 }}
-'''.format(stringise = stringise.rstrip(), generator_tostr = generator_tostr.rstrip()))
+'''.format(glsl_stringise = glsl_stringise.rstrip(), debug_stringise = debug_stringise.rstrip(), generator_tostr = generator_tostr.rstrip()))
 
 header.write('''
 }; // namespace rdcspv

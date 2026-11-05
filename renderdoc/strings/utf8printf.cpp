@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -157,9 +157,12 @@ struct FormatterParams
   int Precision;
   LengthModifier Length;
 
-  static const int NoWidth = -1;    // can't set negative width, so -1 indicates no width specified
-  static const int NoPrecision =
-      -1;    // can't set negative precision, so -1 indicates no precision specified
+  // can't set negative width, so -1 indicates no width specified
+  static const int NoWidth = -1;
+  // can't set negative precision, so -1 indicates no precision specified
+  static const int NoPrecision = -1;
+  // VarArgs precision - for %.*s strings
+  static const int VarPrecision = -2;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1447,6 +1450,11 @@ inline void *custom_arg_getter::get_next<void *>()
   return formatter.get_ptr();
 }
 template <>
+inline const char *custom_arg_getter::get_next<const char *>()
+{
+  return formatter.get_str();
+}
+template <>
 inline uint64_t custom_arg_getter::get_next<uint64_t>()
 {
   return formatter.get_uint64();
@@ -1589,10 +1597,10 @@ int utf8print_template(char *buf, size_t bufsize, const char *fmt, arg_getter ar
       {
         iter++;
 
-        // note standard printf supports * here to read precision from a vararg
         if(*iter == '*')
         {
-          RDCDUMPMSG("Unexpected character * expecting precision");
+          formatter.Precision = FormatterParams::VarPrecision;
+          iter++;
         }
         // if there's no value for the precision, it is 0
         else if(*iter < '0' || *iter > '9')
@@ -1676,10 +1684,18 @@ int utf8print_template(char *buf, size_t bufsize, const char *fmt, arg_getter ar
       int *i = (int *)arg;
       *i = args.template get_next<int>();
     }
-    else if(type == 's' || type == 'p')
+    else if(type == 'p')
     {
       void **p = (void **)arg;
       *p = args.template get_next<void *>();
+    }
+    else if(type == 's')
+    {
+      if(formatter.Precision == FormatterParams::VarPrecision)
+        formatter.Precision = (int)args.template get_next<unsigned int>();
+
+      const char **p = (const char **)arg;
+      *p = args.template get_next<const char *>();
     }
     else if(type == 'e' || type == 'E' || type == 'f' || type == 'F' || type == 'g' ||
             type == 'G' || type == 'a' || type == 'A')
@@ -2006,6 +2022,12 @@ TEST_CASE("utf8printf standard string formatters", "[utf8printf]")
     // these string constants take 2 bytes for each code point in UTF-8, so it's 8 bytes for 4 chars
     CHECK(StringFormat::Fmt("%.4s", s.c_str()) == s.substr(0, 8));
     CHECK(StringFormat::Fmt("%.4ls", ws.c_str()) == s.substr(0, 8));
+
+    CHECK(StringFormat::Fmt("%.*s", 4, "foobar") == "foob");
+    CHECK(StringFormat::Fmt("%.*ls", 4, L"foobar") == "foob");
+
+    CHECK(StringFormat::Fmt("%10.*s", 4, "foobar") == "      foob");
+    CHECK(StringFormat::Fmt("%-10.*s", 4, "foobar") == "foob      ");
   };
 };
 

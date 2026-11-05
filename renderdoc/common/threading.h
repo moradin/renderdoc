@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -110,6 +110,17 @@ public:
 private:
   SpinLock *m_Spin = NULL;
 };
+
+namespace JobSystem
+{
+struct Job;
+void Init(uint32_t numThreads = 0);
+void Shutdown();
+Job *AddJob(std::function<void()> &&cb, const rdcarray<Job *> &parents = {});
+void SyncAllJobs();
+uint32_t GetCountWorkers();
+};
+
 };
 
 #define SCOPED_LOCK(cs) Threading::ScopedLock CONCAT(scopedlock, __LINE__)(&cs);

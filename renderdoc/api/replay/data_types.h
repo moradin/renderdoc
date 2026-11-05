@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -27,12 +27,19 @@
 
 #include "apidefs.h"
 #include "rdcarray.h"
+#include "rdcpair.h"
 #include "replay_enums.h"
 #include "resourceid.h"
 #include "stringise.h"
 #include "structured_data.h"
 
-DOCUMENT("A floating point four-component vector");
+DOCUMENT(R"(
+FloatVector()
+FloatVector(other: FloatVector)
+FloatVector(x: float, y: float, z: float, w: float)
+
+A floating point four-component vector
+)");
 struct FloatVector
 {
   DOCUMENT("");
@@ -62,19 +69,77 @@ struct FloatVector
       return w < o.w;
     return false;
   }
-  DOCUMENT("The x component.");
+  DOCUMENT(R"(The x component.
+
+:type: float
+)")
   float x;
-  DOCUMENT("The y component.");
+  DOCUMENT(R"(The y component.
+
+:type: float
+)")
   float y;
-  DOCUMENT("The z component.");
+  DOCUMENT(R"(The z component.
+
+:type: float
+)")
   float z;
-  DOCUMENT("The w component.");
+  DOCUMENT(R"(The w component.
+
+:type: float
+)")
   float w;
 };
 
 DECLARE_REFLECTION_STRUCT(FloatVector);
 
-DOCUMENT("Properties of a path on a remote filesystem.");
+DOCUMENT(R"(
+AxisMapping()
+AxisMapping(other: AxisMapping)
+AxisMapping(xAxis: FloatVector, yAxis: FloatVector, zAxis: FloatVector)
+
+A transform to map the x, y, and z axes to new directions.
+)");
+struct AxisMapping
+{
+  AxisMapping()
+      : xAxis(1.0f, 0.0f, 0.0f, 0.0f), yAxis(0.0f, 1.0f, 0.0f, 0.0f), zAxis(0.0f, 0.0f, 1.0f, 0.0f)
+  {
+  }
+  AxisMapping(const FloatVector &XAxis, const FloatVector &YAxis, const FloatVector &ZAxis)
+      : xAxis(XAxis), yAxis(YAxis), zAxis(ZAxis)
+  {
+  }
+  AxisMapping(const AxisMapping &) = default;
+  AxisMapping &operator=(const AxisMapping &) = default;
+  DOCUMENT(R"(The mapping of the x axis.
+
+:type: FloatVector
+)");
+  FloatVector xAxis;
+
+  DOCUMENT(R"(The mapping of the y axis.
+
+:type: FloatVector
+)");
+  FloatVector yAxis;
+
+  DOCUMENT(R"(The mapping of the z axis.
+
+:type: FloatVector
+)");
+  FloatVector zAxis;
+};
+
+DECLARE_REFLECTION_STRUCT(AxisMapping);
+
+DOCUMENT(R"(
+PathEntry()
+PathEntry(other: PathEntry)
+PathEntry(filename: str, flags: PathProperty)
+
+Properties of a path on a remote filesystem.
+)");
 struct PathEntry
 {
   DOCUMENT("");
@@ -98,22 +163,39 @@ struct PathEntry
       return size < o.size;
     return false;
   }
-  DOCUMENT("The filename of this path. This contains only the filename, not the full path.");
+  DOCUMENT(R"(The filename of this path. This contains only the filename, not the full path.
+
+:type: str
+)");
   rdcstr filename;
 
-  DOCUMENT("The :class:`PathProperty` flags for this path.");
+  DOCUMENT(R"(The :class:`PathProperty` flags for this path.
+
+:type: PathProperty
+)");
   PathProperty flags;
 
-  DOCUMENT("The last modified date of this path, as a unix timestamp in UTC.");
+  DOCUMENT(R"(The last modified date of this path, as a unix timestamp in UTC.
+
+:type: int
+)");
   uint32_t lastmod;
 
-  DOCUMENT("The size of the path in bytes.");
+  DOCUMENT(R"(The size of the path in bytes.
+
+:type: int
+)");
   uint64_t size;
 };
 
 DECLARE_REFLECTION_STRUCT(PathEntry);
 
-DOCUMENT("Properties of a section in a renderdoc capture file.");
+DOCUMENT(R"(
+SectionProperties()
+SectionProperties(other: SectionProperties)
+
+Properties of a section in a renderdoc capture file.
+)");
 struct SectionProperties
 {
   DOCUMENT("");
@@ -121,22 +203,40 @@ struct SectionProperties
   SectionProperties(const SectionProperties &) = default;
   SectionProperties &operator=(const SectionProperties &) = default;
 
-  DOCUMENT("The name of this section.");
+  DOCUMENT(R"(The name of this section.
+
+:type: str
+)");
   rdcstr name;
 
-  DOCUMENT("The type of this section, if it is a known pre-defined section.");
+  DOCUMENT(R"(The type of this section, if it is a known pre-defined section.
+
+:type: SectionType
+)");
   SectionType type = SectionType::Unknown;
 
-  DOCUMENT("The flags describing how this section is stored.");
+  DOCUMENT(R"(The flags describing how this section is stored.
+
+:type: SectionFlags
+)");
   SectionFlags flags = SectionFlags::NoFlags;
 
-  DOCUMENT("The version of this section - the meaning of which is up to the type.");
+  DOCUMENT(R"(The version of this section - the meaning of which is up to the type.
+
+:type: int
+)");
   uint64_t version = 0;
 
-  DOCUMENT("The number of bytes of data contained in this section, once uncompressed.");
+  DOCUMENT(R"(The number of bytes of data contained in this section, once uncompressed.
+
+:type: int
+)");
   uint64_t uncompressedSize = 0;
 
-  DOCUMENT("The number of bytes of data in this section when compressed on disk.");
+  DOCUMENT(R"(The number of bytes of data in this section when compressed on disk.
+
+:type: int
+)");
   uint64_t compressedSize = 0;
 };
 
@@ -149,7 +249,12 @@ extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_ResourceFormatName(const Re
                                                                         rdcstr &name);
 #endif
 
-DOCUMENT("Description of the format of a resource or element.");
+DOCUMENT(R"(
+ResourceFormat()
+ResourceFormat(other: ResourceFormat)
+
+Description of the format of a resource or element.
+)");
 struct ResourceFormat
 {
   DOCUMENT("");
@@ -187,6 +292,7 @@ struct ResourceFormat
 
   bool operator!=(const ResourceFormat &r) const { return !(*this == r); }
   DOCUMENT(R"(:return: The name of the format.
+
 :rtype: str
 )");
   rdcstr Name() const
@@ -197,6 +303,7 @@ struct ResourceFormat
   }
 
   DOCUMENT(R"(:return: ``True`` if the ``ResourceFormat`` is a 'special' non-regular type.
+
 :rtype: bool
 )");
   bool Special() const { return type != ResourceFormatType::Regular; }
@@ -322,6 +429,161 @@ Invalid values will result in 1 being set.
     return false;
   }
 
+  DOCUMENT(R"(Set PVRTC properties. See :meth:`PVRTCVersion` and :meth:`PVRTCBpp`.
+
+Invalid values will result in undefined format properties. Has no effect if the format is
+not already set to be PVRTC.
+
+:param int version: The PVRTC version.
+:param int bpp: The bits per pixel of the PVRTC blocks.
+)");
+  void SetPVRTC(uint32_t version, uint32_t bpp)
+  {
+    if(type != ResourceFormatType::PVRTC)
+      return;
+
+    flags &= ~ResourceFormat_PVRTC_Mask;
+    flags |= (version == 1) ? ResourceFormat_PVRTC_v1 : ResourceFormat_PVRTC_v2;
+    flags |= (bpp == 2) ? ResourceFormat_PVRTC_8x4_2bpp : ResourceFormat_PVRTC_4x4_4bpp;
+  }
+
+  DOCUMENT(R"(For PVRTC formats, return the version of PVRTC used either 1 or 2.
+
+Will return 0 if the format is not PVRTC.
+
+:return: The version of the current PVRTC format
+:rtype: int
+)");
+  uint32_t PVRTCVersion() const
+  {
+    if(type != ResourceFormatType::PVRTC)
+      return 0;
+
+    return (flags & ResourceFormat_PVRTC_v1) ? 1 : 2;
+  }
+
+  DOCUMENT(R"(For PVRTC formats, return the bits per pixel rate either 2 or 4. This can also be
+thought of as the block shape since each block is 64-bit. 2bpp is 8x4 and 4bpp is 4x4.
+
+Will return 0 if the format is not PVRTC.
+
+:return: The bpp of the current PVRTC format
+:rtype: int
+)");
+  uint32_t PVRTCBpp() const
+  {
+    if(type != ResourceFormatType::PVRTC)
+      return 0;
+
+    return (flags & ResourceFormat_PVRTC_8x4_2bpp) ? 2 : 4;
+  }
+
+  DOCUMENT(R"(Set 2D ASTC block properties. See :meth:`ASTCDimension` and :meth:`ASTC2DBlock`.
+
+Invalid values will result in undefined format properties. Has no effect if the format is
+not already set to be ASTC.
+
+:param Tuple[int,int] block2D: The 2D block shape.
+)");
+  void SetASTC2D(const rdcpair<uint32_t, uint32_t> &block2D)
+  {
+    if(type != ResourceFormatType::ASTC)
+      return;
+
+    flags &= ~ResourceFormat_ASTC_Mask;
+
+    flags |= uint16_t(block2D.first << ResourceFormat_ASTC_2DWidth_Shift);
+    flags |= uint16_t(block2D.second << ResourceFormat_ASTC_2DHeight_Shift);
+  }
+
+  DOCUMENT(R"(Set 3D ASTC block properties. See :meth:`ASTCDimension` and :meth:`ASTC3DBlock`.
+
+Invalid values will result in undefined format properties. Has no effect if the format is
+not already set to be ASTC.
+
+:param Tuple[int,int,int] block3D: The 3D block shape.
+)");
+  void SetASTC3D(const rdcfixedarray<uint32_t, 3> &block3D)
+  {
+    if(type != ResourceFormatType::ASTC)
+      return;
+
+    flags &= ~ResourceFormat_ASTC_Mask;
+    flags |= ResourceFormat_ASTC_3D;
+
+    uint32_t w = block3D[0] - ResourceFormat_ASTC_3D_Base;
+    uint32_t h = block3D[1] - ResourceFormat_ASTC_3D_Base;
+    uint32_t d = block3D[2] - ResourceFormat_ASTC_3D_Base;
+
+    w <<= ResourceFormat_ASTC_3DWidth_Shift;
+    h <<= ResourceFormat_ASTC_3DHeight_Shift;
+    d <<= ResourceFormat_ASTC_3DDepth_Shift;
+
+    w &= ResourceFormat_ASTC_3DWidth_Mask;
+    h &= ResourceFormat_ASTC_3DHeight_Mask;
+    d &= ResourceFormat_ASTC_3DDepth_Mask;
+
+    flags |= uint16_t(w);
+    flags |= uint16_t(h);
+    flags |= uint16_t(d);
+  }
+
+  DOCUMENT(R"(For ASTC formats, return the dimension of the block either 2 or 3.
+
+Will return 0 if the format is not ASTC.
+
+:return: The dimension of the blocks in the current ASTC format
+:rtype: int
+)");
+  uint32_t ASTCDimension() const
+  {
+    if(type != ResourceFormatType::ASTC)
+      return 0;
+
+    return (flags & ResourceFormat_ASTC_3D) ? 3 : 2;
+  }
+
+  DOCUMENT(R"(For 2D ASTC formats, return the block shape.
+
+Will return all 0s if the format is not ASTC or is not 2D. See :meth:`ASTCDimension`.
+
+:return: The block shape if the format is 2D ASTC
+:rtype: Tuple[int, int]
+)");
+  rdcpair<uint32_t, uint32_t> ASTC2DBlock() const
+  {
+    if(type != ResourceFormatType::ASTC)
+      return {0, 0};
+
+    return {
+        uint32_t((flags & ResourceFormat_ASTC_2DWidth_Mask) >> ResourceFormat_ASTC_2DWidth_Shift),
+        uint32_t((flags & ResourceFormat_ASTC_2DHeight_Mask) >> ResourceFormat_ASTC_2DHeight_Shift),
+    };
+  }
+
+  DOCUMENT(R"(For 3D ASTC formats, return the block shape.
+
+Will return all 0s if the format is not ASTC or is not 3D. See :meth:`ASTCDimension`.
+
+:return: The block shape if the format is 3D ASTC
+:rtype: Tuple[int, int, int]
+)");
+  rdcfixedarray<uint32_t, 3> ASTC3DBlock() const
+  {
+    if(type != ResourceFormatType::ASTC)
+      return {0, 0};
+
+    uint32_t w = (flags & ResourceFormat_ASTC_3DWidth_Mask) >> ResourceFormat_ASTC_3DWidth_Shift;
+    uint32_t h = (flags & ResourceFormat_ASTC_3DHeight_Mask) >> ResourceFormat_ASTC_3DHeight_Shift;
+    uint32_t d = (flags & ResourceFormat_ASTC_3DDepth_Mask) >> ResourceFormat_ASTC_3DDepth_Shift;
+
+    return {
+        ResourceFormat_ASTC_3D_Base + w,
+        ResourceFormat_ASTC_3D_Base + h,
+        ResourceFormat_ASTC_3D_Base + d,
+    };
+  }
+
   DOCUMENT(R"(Return the size of a single element in this format, usually a pixel. For regular sized
 formats this is just :data:`compByteWidth` times :data:`compCount`, for special packed formats it's
 the tightly packed size of a single element, with no padding.
@@ -341,14 +603,12 @@ texel.
       case ResourceFormatType::Undefined: break;
       case ResourceFormatType::Regular: return compByteWidth * compCount;
       case ResourceFormatType::BC1:
-      case ResourceFormatType::BC4:
-        return 8;    // 8 bytes for 4x4 block
+      case ResourceFormatType::BC4: return 8;    // 8 bytes for 4x4 block
       case ResourceFormatType::BC2:
       case ResourceFormatType::BC3:
       case ResourceFormatType::BC5:
       case ResourceFormatType::BC6:
-      case ResourceFormatType::BC7:
-        return 16;    // 16 bytes for 4x4 block
+      case ResourceFormatType::BC7: return 16;    // 16 bytes for 4x4 block
       case ResourceFormatType::ETC2: return 8;
       case ResourceFormatType::EAC:
         if(compCount == 1)
@@ -356,9 +616,8 @@ texel.
         else if(compCount == 2)
           return 16;    // two channel RG11 EAC
         else
-          return 16;    // RGBA8 EAC
-      case ResourceFormatType::ASTC:
-        return 16;    // ASTC is always 128 bits per block
+          return 16;                               // RGBA8 EAC
+      case ResourceFormatType::ASTC: return 16;    // ASTC is always 128 bits per block
       case ResourceFormatType::R10G10B10A2:
       case ResourceFormatType::R11G11B10:
       case ResourceFormatType::R9G9B9E5: return 4;
@@ -372,15 +631,14 @@ texel.
       case ResourceFormatType::D32S8:
         return 5;    // we define the size as tightly packed, so 5 bytes.
       case ResourceFormatType::S8:
-      case ResourceFormatType::A8:
-        return 1;
+      case ResourceFormatType::A8: return 1;
       // can't give a sensible answer for YUV formats as the texel varies.
       case ResourceFormatType::YUV8: return compCount;
       case ResourceFormatType::YUV10:
       case ResourceFormatType::YUV12:
       case ResourceFormatType::YUV16: return compCount * 2;
       case ResourceFormatType::PVRTC:
-        return 8;    // our representation can't differentiate 2bpp from 4bpp, so guess
+        return 8;    // PVRTC is always 64 bits per block, either 4x4 on 4bpp or 8x4 on 2bpp
     }
 
     return 0;
@@ -398,15 +656,22 @@ texel.
 :type: CompType
 )");
   CompType compType;
-  DOCUMENT("The number of components in each element.");
+  DOCUMENT(R"(The number of components in each element.
+
+:type: int
+)");
   uint8_t compCount;
-  DOCUMENT("The width in bytes of each component.");
+  DOCUMENT(R"(The width in bytes of each component.
+
+:type: int
+)");
   uint8_t compByteWidth;
 
 private:
   enum
   {
     ResourceFormat_BGRA = 0x001,
+    ResourceFormat_ASTC_3D = 0x0002,
 
     ResourceFormat_444 = 0x004,
     ResourceFormat_422 = 0x008,
@@ -416,6 +681,27 @@ private:
     ResourceFormat_2Planes = 0x020,
     ResourceFormat_3Planes = 0x040,
     ResourceFormat_Planes_Mask = 0x060,
+
+    ResourceFormat_PVRTC_v1 = 0x0100,
+    ResourceFormat_PVRTC_v2 = 0x0200,
+    ResourceFormat_PVRTC_4x4_4bpp = 0x0400,
+    ResourceFormat_PVRTC_8x4_2bpp = 0x0800,
+    ResourceFormat_PVRTC_Mask = 0x0f00,
+
+    ResourceFormat_ASTC_2DWidth_Shift = 8,
+    ResourceFormat_ASTC_2DWidth_Mask = (0xf << ResourceFormat_ASTC_2DWidth_Shift),
+    ResourceFormat_ASTC_2DHeight_Shift = 12,
+    ResourceFormat_ASTC_2DHeight_Mask = (0xf << ResourceFormat_ASTC_2DHeight_Shift),
+
+    ResourceFormat_ASTC_3D_Base = 3,
+    ResourceFormat_ASTC_3DWidth_Shift = 10,
+    ResourceFormat_ASTC_3DWidth_Mask = (0x3 << ResourceFormat_ASTC_3DWidth_Shift),
+    ResourceFormat_ASTC_3DHeight_Shift = 12,
+    ResourceFormat_ASTC_3DHeight_Mask = (0x3 << ResourceFormat_ASTC_3DHeight_Shift),
+    ResourceFormat_ASTC_3DDepth_Shift = 14,
+    ResourceFormat_ASTC_3DDepth_Mask = (0x3 << ResourceFormat_ASTC_3DDepth_Shift),
+
+    ResourceFormat_ASTC_Mask = 0xff00,
   };
   uint16_t flags;
 
@@ -426,7 +712,12 @@ private:
 
 DECLARE_REFLECTION_STRUCT(ResourceFormat);
 
-DOCUMENT("The details of a texture filter in a sampler.");
+DOCUMENT(R"(
+TextureFilter()
+TextureFilter(other: TextureFilter)
+
+The details of a texture filter in a sampler.
+)");
 struct TextureFilter
 {
   DOCUMENT("");
@@ -450,19 +741,36 @@ struct TextureFilter
       return filter < o.filter;
     return false;
   }
-  DOCUMENT("The :class:`FilterMode` to use when minifying the texture.");
+  DOCUMENT(R"(The :class:`FilterMode` to use when minifying the texture.
+
+:type: FilterMode
+)");
   FilterMode minify = FilterMode::NoFilter;
-  DOCUMENT("The :class:`FilterMode` to use when magnifying the texture.");
+  DOCUMENT(R"(The :class:`FilterMode` to use when magnifying the texture.
+
+:type: FilterMode
+)");
   FilterMode magnify = FilterMode::NoFilter;
-  DOCUMENT("The :class:`FilterMode` to use when interpolating between mips.");
+  DOCUMENT(R"(The :class:`FilterMode` to use when interpolating between mips.
+
+:type: FilterMode
+)");
   FilterMode mip = FilterMode::NoFilter;
-  DOCUMENT("The :class:`FilterFunction` to apply after interpolating values.");
+  DOCUMENT(R"(The :class:`FilterFunction` to apply after interpolating values.
+
+:type: FilterFunction
+)");
   FilterFunction filter = FilterFunction::Normal;
 };
 
 DECLARE_REFLECTION_STRUCT(TextureFilter);
 
-DOCUMENT("The four components of a texture swizzle.");
+DOCUMENT(R"(
+TextureSwizzle4()
+TextureSwizzle4(other: TextureSwizzle4)
+
+The four components of a texture swizzle.
+)");
 struct TextureSwizzle4
 {
   DOCUMENT("");
@@ -487,19 +795,36 @@ struct TextureSwizzle4
     return false;
   }
 
-  DOCUMENT("The red channel's :class:`TextureSwizzle`.");
+  DOCUMENT(R"(The red channel's :class:`TextureSwizzle`.
+
+:type: TextureSwizzle
+)");
   TextureSwizzle red = TextureSwizzle::Red;
-  DOCUMENT("The green channel's :class:`TextureSwizzle`.");
+  DOCUMENT(R"(The green channel's :class:`TextureSwizzle`.
+
+:type: TextureSwizzle
+)");
   TextureSwizzle green = TextureSwizzle::Green;
-  DOCUMENT("The blue channel's :class:`TextureSwizzle`.");
+  DOCUMENT(R"(The blue channel's :class:`TextureSwizzle`.
+
+:type: TextureSwizzle
+)");
   TextureSwizzle blue = TextureSwizzle::Blue;
-  DOCUMENT("The alpha channel's :class:`TextureSwizzle`.");
+  DOCUMENT(R"(The alpha channel's :class:`TextureSwizzle`.
+
+:type: TextureSwizzle
+)");
   TextureSwizzle alpha = TextureSwizzle::Alpha;
 };
 
 DECLARE_REFLECTION_STRUCT(TextureSwizzle4);
 
-DOCUMENT("A description of any type of resource.");
+DOCUMENT(R"(
+ResourceDescription()
+ResourceDescription(other: ResourceDescription)
+
+A description of any type of resource.
+)");
 struct ResourceDescription
 {
   DOCUMENT("");
@@ -509,23 +834,35 @@ struct ResourceDescription
 
   bool operator==(const ResourceDescription &o) const { return resourceId == o.resourceId; }
   bool operator<(const ResourceDescription &o) const { return resourceId < o.resourceId; }
-  DOCUMENT("The unique :class:`ResourceId` that identifies this resource.");
+
+  DOCUMENT(R"(The unique :class:`ResourceId` that identifies this resource.
+
+:type: ResourceId
+)");
   ResourceId resourceId;
 
-  DOCUMENT("The :class:`ResourceType` of the resource.");
+  DOCUMENT(R"(The :class:`ResourceType` of the resource.
+
+:type: ResourceType
+)");
   ResourceType type = ResourceType::Unknown;
 
   DOCUMENT(R"(``True`` if :data:`name` was just autogenerated based on the ID, not assigned a
 human-readable name by the application.
+
+:type: bool
 )");
   bool autogeneratedName = true;
 
-  DOCUMENT("The name given to this resource.");
+  DOCUMENT(R"(The name given to this resource.
+
+:type: str
+)");
   rdcstr name;
 
   DOCUMENT(R"(The chunk indices in the structured file that initialised this resource.
 
-This will at least contain the first call that created it, but may contain other auxilliary calls.
+This will at least contain the first call that created it, but may contain other auxiliary calls.
 
 :type: List[int]
 )");
@@ -553,6 +890,13 @@ typically it is one parent to many derived.
 )");
   rdcarray<ResourceId> parentResources;
 
+  DOCUMENT(R"(An optional set of annotations associated with this resource, may be ``None`` if
+annotations are not used.
+
+:type: Optional[SDObject]
+)");
+  SDObject *annotations = NULL;
+
   DOCUMENT(R"(Utility function for setting up a custom name to overwrite the auto-generated one.
 
 :param str givenName: The custom name to use.
@@ -566,7 +910,61 @@ typically it is one parent to many derived.
 
 DECLARE_REFLECTION_STRUCT(ResourceDescription);
 
-DOCUMENT("A description of a buffer resource.");
+DOCUMENT(R"(
+DescriptorStoreDescription()
+DescriptorStoreDescription(other: DescriptorStoreDescription)
+
+A description of a descriptor store.
+)");
+struct DescriptorStoreDescription
+{
+  DOCUMENT("");
+  DescriptorStoreDescription() = default;
+  DescriptorStoreDescription(const DescriptorStoreDescription &) = default;
+  DescriptorStoreDescription &operator=(const DescriptorStoreDescription &) = default;
+
+  bool operator==(const DescriptorStoreDescription &o) const { return resourceId == o.resourceId; }
+  bool operator<(const DescriptorStoreDescription &o) const
+  {
+    if(!(resourceId == o.resourceId))
+      return resourceId < o.resourceId;
+    return false;
+  }
+
+  DOCUMENT(R"(The unique :class:`ResourceId` that identifies this descriptor store.
+
+:type: ResourceId
+)");
+  ResourceId resourceId;
+
+  DOCUMENT(R"(For descriptor stores which contain descriptors all of identical size, the size of each
+descriptor. Descriptors are assumed to be tightly packed so stride is equal to size.
+
+:type: int
+)");
+  uint32_t descriptorByteSize = 1;
+
+  DOCUMENT(R"(The byte offset within the store to the first descriptor.
+
+:type: int
+)");
+  uint32_t firstDescriptorOffset = 0;
+
+  DOCUMENT(R"(The number of descriptors within this storage object.
+
+:type: int
+)");
+  uint32_t descriptorCount = 0;
+};
+
+DECLARE_REFLECTION_STRUCT(DescriptorStoreDescription);
+
+DOCUMENT(R"(
+BufferDescription()
+BufferDescription(other: BufferDescription)
+
+A description of a buffer resource.
+)");
 struct BufferDescription
 {
   DOCUMENT("");
@@ -577,7 +975,8 @@ struct BufferDescription
   bool operator==(const BufferDescription &o) const
   {
     return resourceId == o.resourceId && creationFlags == o.creationFlags &&
-           gpuAddress == o.gpuAddress && length == o.length;
+           gpuAddress == o.gpuAddress && length == o.length && memory == o.memory &&
+           memoryOffset == o.memoryOffset;
   }
   bool operator<(const BufferDescription &o) const
   {
@@ -589,24 +988,60 @@ struct BufferDescription
       return gpuAddress < o.gpuAddress;
     if(!(length == o.length))
       return length < o.length;
+    if(!(memory == o.memory))
+      return memory < o.memory;
+    if(!(memoryOffset == o.memoryOffset))
+      return memoryOffset < o.memoryOffset;
     return false;
   }
-  DOCUMENT("The unique :class:`ResourceId` that identifies this buffer.");
+  DOCUMENT(R"(The unique :class:`ResourceId` that identifies this buffer.
+
+:type: ResourceId
+)");
   ResourceId resourceId;
 
-  DOCUMENT("The way this buffer will be used in the pipeline.");
+  DOCUMENT(R"(The way this buffer will be used in the pipeline.
+
+:type: BufferCategory
+)");
   BufferCategory creationFlags = BufferCategory::NoFlags;
 
-  DOCUMENT("The known base GPU Address of this buffer. 0 if not applicable or available.");
+  DOCUMENT(R"(The known base GPU Address of this buffer. 0 if not applicable or available.
+
+:type: int
+)");
   uint64_t gpuAddress = 0;
 
-  DOCUMENT("The byte length of the buffer.");
+  DOCUMENT(R"(The byte length of the buffer.
+
+:type: int
+)");
   uint64_t length = 0;
+
+  DOCUMENT(R"(The unique :class:`ResourceId` that identifies the memory object this
+buffer has a fixed binding to. For objects that do not have an explicit memory binding
+or for sparse buffers, this will not be set.
+
+:type: ResourceId
+)");
+  ResourceId memory;
+
+  DOCUMENT(R"(The byte offset in :data:`memory` where the buffer is bound. If
+:data:`memory` is unset, this will be 0.
+
+:type: int
+)");
+  uint64_t memoryOffset = 0;
 };
 
 DECLARE_REFLECTION_STRUCT(BufferDescription);
 
-DOCUMENT("A description of a texture resource.");
+DOCUMENT(R"(
+TextureDescription()
+TextureDescription(other: TextureDescription)
+
+A description of a texture resource.
+)");
 struct TextureDescription
 {
   DOCUMENT("");
@@ -620,7 +1055,7 @@ struct TextureDescription
            height == o.height && depth == o.depth && resourceId == o.resourceId &&
            cubemap == o.cubemap && mips == o.mips && arraysize == o.arraysize &&
            creationFlags == o.creationFlags && msQual == o.msQual && msSamp == o.msSamp &&
-           byteSize == o.byteSize;
+           byteSize == o.byteSize && memory == o.memory && memoryOffset == o.memoryOffset;
   }
   bool operator<(const TextureDescription &o) const
   {
@@ -652,6 +1087,10 @@ struct TextureDescription
       return msSamp < o.msSamp;
     if(!(byteSize == o.byteSize))
       return byteSize < o.byteSize;
+    if(!(memory == o.memory))
+      return memory < o.memory;
+    if(!(memoryOffset == o.memoryOffset))
+      return memoryOffset < o.memoryOffset;
     return false;
   }
   DOCUMENT(R"(The format of each pixel in the texture.
@@ -660,49 +1099,107 @@ struct TextureDescription
 )");
   ResourceFormat format;
 
-  DOCUMENT("The base dimension of the texture - either 1, 2, or 3.");
+  DOCUMENT(R"(The base dimension of the texture - either 1, 2, or 3.
+
+:type: int
+)");
   uint32_t dimension;
 
-  DOCUMENT("The :class:`TextureType` of the texture.");
+  DOCUMENT(R"(The :class:`TextureType` of the texture.
+
+:type: TextureType
+)");
   TextureType type;
 
-  DOCUMENT("The width of the texture, or length for buffer textures.");
+  DOCUMENT(R"(The width of the texture, or length for buffer textures.
+
+:type: int
+)");
   uint32_t width;
 
-  DOCUMENT("The height of the texture, or 1 if not applicable.");
+  DOCUMENT(R"(The height of the texture, or 1 if not applicable.
+
+:type: int
+)");
   uint32_t height;
 
-  DOCUMENT("The depth of the texture, or 1 if not applicable.");
+  DOCUMENT(R"(The depth of the texture, or 1 if not applicable.
+
+:type: int
+)");
   uint32_t depth;
 
-  DOCUMENT("The unique :class:`ResourceId` that identifies this texture.");
+  DOCUMENT(R"(The unique :class:`ResourceId` that identifies this texture.
+
+:type: ResourceId
+)");
   ResourceId resourceId;
 
-  DOCUMENT("``True`` if this texture is used as a cubemap or cubemap array.");
+  DOCUMENT(R"(``True`` if this texture is used as a cubemap or cubemap array.
+
+:type: bool
+)");
   bool cubemap;
 
-  DOCUMENT("How many mips this texture has, will be at least 1.");
+  DOCUMENT(R"(How many mips this texture has, will be at least 1.
+
+:type: int
+)");
   uint32_t mips;
 
-  DOCUMENT("How many array elements this texture has, will be at least 1.");
+  DOCUMENT(R"(How many array elements this texture has, will be at least 1.
+
+:type: int
+)");
   uint32_t arraysize;
 
-  DOCUMENT("The way this texture will be used in the pipeline.");
+  DOCUMENT(R"(The way this texture will be used in the pipeline.
+
+:type: TextureCategory
+)");
   TextureCategory creationFlags;
 
-  DOCUMENT("The quality setting of this texture, or 0 if not applicable.");
+  DOCUMENT(R"(The quality setting of this texture, or 0 if not applicable.
+
+:type: int
+)");
   uint32_t msQual;
 
-  DOCUMENT("How many multisampled samples this texture has, will be at least 1.");
+  DOCUMENT(R"(How many multisampled samples this texture has, will be at least 1.
+
+:type: int
+)");
   uint32_t msSamp;
 
-  DOCUMENT("How many bytes would be used to store this texture and all its mips/slices.");
+  DOCUMENT(R"(How many bytes would be used to store this texture and all its mips/slices.
+
+:type: int
+)");
   uint64_t byteSize;
+
+  DOCUMENT(R"(The unique :class:`ResourceId` that identifies the memory object this
+texture has a fixed binding to. For objects that do not have an explicit memory binding
+or for sparse textures, this will not be set.
+
+:type: ResourceId
+)");
+  ResourceId memory;
+
+  DOCUMENT(R"(The byte offset in :data:`memory` where the texture is bound. If
+:data:`memory` is unset, this will be 0.
+
+:type: int
+)");
+  uint64_t memoryOffset = 0;
 };
 
 DECLARE_REFLECTION_STRUCT(TextureDescription);
 
-DOCUMENT(R"(An individual API-level event, generally corresponds one-to-one with an API call.
+DOCUMENT(R"(
+APIEvent()
+APIEvent(other: APIEvent)
+
+An individual API-level event, generally corresponds one-to-one with an API call.
 
 .. data:: NoChunk
 
@@ -730,6 +1227,8 @@ eventId guarantees are desired, this function should be avoided.
 Also eventIds may not correspond directly to an actual function call - sometimes a function such as
 a multi action indirect will be one function call that expands to multiple events to allow inspection
 of results part way through the multi action.
+
+:type: int
 )");
   uint32_t eventId = 0;
 
@@ -737,6 +1236,8 @@ of results part way through the multi action.
 
 If no chunk index is available this will be set to :data:`NoChunk`. This will only happen for fake
 markers added to the capture after load.
+
+:type: int
 )");
   uint32_t chunkIndex = 0;
 
@@ -744,15 +1245,29 @@ markers added to the capture after load.
 
 .. note:: This should only be used as a relative measure, it is not a literal number of bytes from
   the start of the file on disk.
+
+:type: int
 )");
   uint64_t fileOffset = 0;
+
+  DOCUMENT(R"(An optional set of annotations associated with this event, may be ``None`` if
+annotations are not used.
+
+:type: Optional[SDObject]
+)");
+  SDObject *annotations = NULL;
 
   static const uint32_t NoChunk = ~0U;
 };
 
 DECLARE_REFLECTION_STRUCT(APIEvent);
 
-DOCUMENT("A debugging message from the API validation or internal analysis and error detection.");
+DOCUMENT(R"(
+DebugMessage()
+DebugMessage(other: DebugMessage)
+
+A debugging message from the API validation or internal analysis and error detection.
+)");
 struct DebugMessage
 {
   DOCUMENT("");
@@ -781,22 +1296,40 @@ struct DebugMessage
       return description < o.description;
     return false;
   }
-  DOCUMENT("The :data:`eventId <APIEvent.eventId>` where this debug message was found.");
+  DOCUMENT(R"(The :data:`eventId <APIEvent.eventId>` where this debug message was found.
+
+:type: int
+)");
   uint32_t eventId;
 
-  DOCUMENT("The :class:`category <MessageCategory>` of this debug message.");
+  DOCUMENT(R"(The :class:`category <MessageCategory>` of this debug message.
+
+:type: MessageCategory
+)");
   MessageCategory category;
 
-  DOCUMENT("The :class:`severity <MessageSeverity>` of this debug message.");
+  DOCUMENT(R"(The :class:`severity <MessageSeverity>` of this debug message.
+
+:type: MessageSeverity
+)");
   MessageSeverity severity;
 
-  DOCUMENT("The :class:`source <MessageSource>` of this debug message.");
+  DOCUMENT(R"(The :class:`source <MessageSource>` of this debug message.
+
+:type: MessageSource
+)");
   MessageSource source;
 
-  DOCUMENT("An ID that identifies this particular debug message uniquely.");
+  DOCUMENT(R"(An ID that identifies this particular debug message uniquely.
+
+:type: int
+)");
   uint32_t messageID;
 
-  DOCUMENT("The string contents of the message.");
+  DOCUMENT(R"(The string contents of the message.
+
+:type: str
+)");
   rdcstr description;
 };
 
@@ -821,7 +1354,11 @@ enum class BucketRecordType : int
 };
 DECLARE_REFLECTION_ENUM(BucketRecordType);
 
-DOCUMENT(R"(Contains the statistics for constant binds in a frame.
+DOCUMENT(R"(
+ConstantBindStats()
+ConstantBindStats(other: ConstantBindStats)
+
+Contains the statistics for constant binds in a frame.
 
 .. data:: BucketType
 
@@ -859,14 +1396,23 @@ struct ConstantBindStats
   static const BucketRecordType BucketType = BucketRecordType::Pow2;
   static const size_t BucketCount = 31;
 
-  DOCUMENT("How many function calls were made.");
-  uint32_t calls;
+  DOCUMENT(R"(How many function calls were made.
 
-  DOCUMENT("How many objects were bound.");
-  uint32_t sets;
+:type: int
+)");
+  uint32_t calls = 0;
 
-  DOCUMENT("How many objects were unbound.");
-  uint32_t nulls;
+  DOCUMENT(R"(How many objects were bound.
+
+:type: int
+)");
+  uint32_t sets = 0;
+
+  DOCUMENT(R"(How many objects were unbound.
+
+:type: int
+)");
+  uint32_t nulls = 0;
 
   DOCUMENT(R"(A list where the Nth element contains the number of calls that bound N buffers.
 
@@ -883,7 +1429,12 @@ struct ConstantBindStats
 
 DECLARE_REFLECTION_STRUCT(ConstantBindStats);
 
-DOCUMENT("Contains the statistics for sampler binds in a frame.");
+DOCUMENT(R"(
+SamplerBindStats()
+SamplerBindStats(other: SamplerBindStats)
+
+Contains the statistics for sampler binds in a frame.
+)");
 struct SamplerBindStats
 {
   DOCUMENT("");
@@ -906,14 +1457,23 @@ struct SamplerBindStats
     return calls == o.calls && sets == o.sets && nulls == o.nulls && bindslots == o.bindslots;
   }
 
-  DOCUMENT("How many function calls were made.");
-  uint32_t calls;
+  DOCUMENT(R"(How many function calls were made.
 
-  DOCUMENT("How many objects were bound.");
-  uint32_t sets;
+:type: int
+)");
+  uint32_t calls = 0;
 
-  DOCUMENT("How many objects were unbound.");
-  uint32_t nulls;
+  DOCUMENT(R"(How many objects were bound.
+
+:type: int
+)");
+  uint32_t sets = 0;
+
+  DOCUMENT(R"(How many objects were unbound.
+
+:type: int
+)");
+  uint32_t nulls = 0;
 
   DOCUMENT(R"(A list where the Nth element contains the number of calls that bound N samplers.
 
@@ -924,7 +1484,12 @@ struct SamplerBindStats
 
 DECLARE_REFLECTION_STRUCT(SamplerBindStats);
 
-DOCUMENT("Contains the statistics for resource binds in a frame.");
+DOCUMENT(R"(
+ResourceBindStats()
+ResourceBindStats(other: ResourceBindStats)
+
+Contains the statistics for resource binds in a frame.
+)");
 struct ResourceBindStats
 {
   DOCUMENT("");
@@ -950,14 +1515,23 @@ struct ResourceBindStats
            bindslots == o.bindslots;
   }
 
-  DOCUMENT("How many function calls were made.");
-  uint32_t calls;
+  DOCUMENT(R"(How many function calls were made.
 
-  DOCUMENT("How many objects were bound.");
-  uint32_t sets;
+:type: int
+)");
+  uint32_t calls = 0;
 
-  DOCUMENT("How many objects were unbound.");
-  uint32_t nulls;
+  DOCUMENT(R"(How many objects were bound.
+
+:type: int
+)");
+  uint32_t sets = 0;
+
+  DOCUMENT(R"(How many objects were unbound.
+
+:type: int
+)");
+  uint32_t nulls = 0;
 
   DOCUMENT(R"(A list with one element for each type in :class:`TextureType`.
 
@@ -976,7 +1550,11 @@ The Nth element contains the number of times a resource of that type was bound.
 
 DECLARE_REFLECTION_STRUCT(ResourceBindStats);
 
-DOCUMENT(R"(Contains the statistics for resource updates in a frame.
+DOCUMENT(R"(
+ResourceUpdateStats()
+ResourceUpdateStats(other: ResourceUpdateStats)
+
+Contains the statistics for resource updates in a frame.
 
 .. data:: BucketType
 
@@ -996,14 +1574,23 @@ struct ResourceUpdateStats
   static const BucketRecordType BucketType = BucketRecordType::Pow2;
   static const size_t BucketCount = 31;
 
-  DOCUMENT("How many function calls were made.");
-  uint32_t calls;
+  DOCUMENT(R"(How many function calls were made.
 
-  DOCUMENT("How many of :data:`calls` were mapped pointers written by the CPU.");
-  uint32_t clients;
+:type: int
+)");
+  uint32_t calls = 0;
 
-  DOCUMENT("How many of :data:`calls` were batched updates written in the command queue.");
-  uint32_t servers;
+  DOCUMENT(R"(How many of :data:`calls` were mapped pointers written by the CPU.
+
+:type: int
+)");
+  uint32_t clients = 0;
+
+  DOCUMENT(R"(How many of :data:`calls` were batched updates written in the command queue.
+
+:type: int
+)");
+  uint32_t servers = 0;
 
   DOCUMENT(R"(A list with one element for each type in :class:`TextureType`.
 
@@ -1022,7 +1609,11 @@ The Nth element contains the number of times a resource of that type was updated
 
 DECLARE_REFLECTION_STRUCT(ResourceUpdateStats);
 
-DOCUMENT(R"(Contains the statistics for draws in a frame.
+DOCUMENT(R"(
+DrawcallStats()
+DrawcallStats(other: DrawcallStats)
+
+Contains the statistics for draws in a frame.
 
 .. data:: BucketType
 
@@ -1047,12 +1638,21 @@ struct DrawcallStats
   static const size_t BucketSize = 1;
   static const size_t BucketCount = 16;
 
-  DOCUMENT("How many draw calls were made.");
-  uint32_t calls;
-  DOCUMENT("How many of :data:`calls` were instanced.");
-  uint32_t instanced;
-  DOCUMENT("How many of :data:`calls` were indirect.");
-  uint32_t indirect;
+  DOCUMENT(R"(How many draw calls were made.
+
+:type: int
+)");
+  uint32_t calls = 0;
+  DOCUMENT(R"(How many of :data:`calls` were instanced.
+
+:type: int
+)");
+  uint32_t instanced = 0;
+  DOCUMENT(R"(How many of :data:`calls` were indirect.
+
+:type: int
+)");
+  uint32_t indirect = 0;
 
   DOCUMENT(R"(A :class:`bucketed <BucketType>` list over the number of instances in the draw.
       
@@ -1063,7 +1663,12 @@ struct DrawcallStats
 
 DECLARE_REFLECTION_STRUCT(DrawcallStats);
 
-DOCUMENT("Contains the statistics for compute dispatches in a frame.");
+DOCUMENT(R"(
+DispatchStats()
+DispatchStats(other: DispatchStats)
+
+Contains the statistics for compute dispatches in a frame.
+)");
 struct DispatchStats
 {
   DOCUMENT("");
@@ -1071,16 +1676,27 @@ struct DispatchStats
   DispatchStats(const DispatchStats &) = default;
   DispatchStats &operator=(const DispatchStats &) = default;
 
-  DOCUMENT("How many dispatch calls were made.");
+  DOCUMENT(R"(How many dispatch calls were made.
+
+:type: int
+)");
   uint32_t calls;
 
-  DOCUMENT("How many of :data:`calls` were indirect.");
+  DOCUMENT(R"(How many of :data:`calls` were indirect.
+
+:type: int
+)");
   uint32_t indirect;
 };
 
 DECLARE_REFLECTION_STRUCT(DispatchStats);
 
-DOCUMENT("Contains the statistics for index buffer binds in a frame.");
+DOCUMENT(R"(
+IndexBindStats()
+IndexBindStats(other: IndexBindStats)
+
+Contains the statistics for index buffer binds in a frame.
+)");
 struct IndexBindStats
 {
   DOCUMENT("");
@@ -1088,19 +1704,33 @@ struct IndexBindStats
   IndexBindStats(const IndexBindStats &) = default;
   IndexBindStats &operator=(const IndexBindStats &) = default;
 
-  DOCUMENT("How many function calls were made.");
+  DOCUMENT(R"(How many function calls were made.
+
+:type: int
+)");
   uint32_t calls;
 
-  DOCUMENT("How many objects were bound.");
+  DOCUMENT(R"(How many objects were bound.
+
+:type: int
+)");
   uint32_t sets;
 
-  DOCUMENT("How many objects were unbound.");
+  DOCUMENT(R"(How many objects were unbound.
+
+:type: int
+)");
   uint32_t nulls;
 };
 
 DECLARE_REFLECTION_STRUCT(IndexBindStats);
 
-DOCUMENT("Contains the statistics for vertex buffer binds in a frame.");
+DOCUMENT(R"(
+VertexBindStats()
+VertexBindStats(other: VertexBindStats)
+
+Contains the statistics for vertex buffer binds in a frame.
+)");
 struct VertexBindStats
 {
   DOCUMENT("");
@@ -1108,13 +1738,22 @@ struct VertexBindStats
   VertexBindStats(const VertexBindStats &) = default;
   VertexBindStats &operator=(const VertexBindStats &) = default;
 
-  DOCUMENT("How many function calls were made.");
+  DOCUMENT(R"(How many function calls were made.
+
+:type: int
+)");
   uint32_t calls;
 
-  DOCUMENT("How many objects were bound.");
+  DOCUMENT(R"(How many objects were bound.
+
+:type: int
+)");
   uint32_t sets;
 
-  DOCUMENT("How many objects were unbound.");
+  DOCUMENT(R"(How many objects were unbound.
+
+:type: int
+)");
   uint32_t nulls;
 
   DOCUMENT(R"(A list where the Nth element contains the number of calls that bound N vertex buffers.
@@ -1126,7 +1765,12 @@ struct VertexBindStats
 
 DECLARE_REFLECTION_STRUCT(VertexBindStats);
 
-DOCUMENT("Contains the statistics for vertex layout binds in a frame.");
+DOCUMENT(R"(
+LayoutBindStats()
+LayoutBindStats(other: LayoutBindStats)
+
+Contains the statistics for vertex layout binds in a frame.
+)");
 struct LayoutBindStats
 {
   DOCUMENT("");
@@ -1134,19 +1778,33 @@ struct LayoutBindStats
   LayoutBindStats(const LayoutBindStats &) = default;
   LayoutBindStats &operator=(const LayoutBindStats &) = default;
 
-  DOCUMENT("How many function calls were made.");
+  DOCUMENT(R"(How many function calls were made.
+
+:type: int
+)");
   uint32_t calls;
 
-  DOCUMENT("How many objects were bound.");
+  DOCUMENT(R"(How many objects were bound.
+
+:type: int
+)");
   uint32_t sets;
 
-  DOCUMENT("How many objects were unbound.");
+  DOCUMENT(R"(How many objects were unbound.
+
+:type: int
+)");
   uint32_t nulls;
 };
 
 DECLARE_REFLECTION_STRUCT(LayoutBindStats);
 
-DOCUMENT("Contains the statistics for shader binds in a frame.");
+DOCUMENT(R"(
+ShaderChangeStats()
+ShaderChangeStats(other: ShaderChangeStats)
+
+Contains the statistics for shader binds in a frame.
+)");
 struct ShaderChangeStats
 {
   DOCUMENT("");
@@ -1169,22 +1827,39 @@ struct ShaderChangeStats
     return calls == o.calls && sets == o.sets && nulls == o.nulls && redundants == o.redundants;
   }
 
-  DOCUMENT("How many function calls were made.");
-  uint32_t calls;
+  DOCUMENT(R"(How many function calls were made.
 
-  DOCUMENT("How many objects were bound.");
-  uint32_t sets;
+:type: int
+)");
+  uint32_t calls = 0;
 
-  DOCUMENT("How many objects were unbound.");
-  uint32_t nulls;
+  DOCUMENT(R"(How many objects were bound.
 
-  DOCUMENT("How many calls made no change due to the existing bind being identical.");
-  uint32_t redundants;
+:type: int
+)");
+  uint32_t sets = 0;
+
+  DOCUMENT(R"(How many objects were unbound.
+
+:type: int
+)");
+  uint32_t nulls = 0;
+
+  DOCUMENT(R"(How many calls made no change due to the existing bind being identical.
+
+:type: int
+)");
+  uint32_t redundants = 0;
 };
 
 DECLARE_REFLECTION_STRUCT(ShaderChangeStats);
 
-DOCUMENT("Contains the statistics for blend state binds in a frame.");
+DOCUMENT(R"(
+BlendStats()
+BlendStats(other: BlendStats)
+
+Contains the statistics for blend state binds in a frame.
+)");
 struct BlendStats
 {
   DOCUMENT("");
@@ -1192,22 +1867,39 @@ struct BlendStats
   BlendStats(const BlendStats &) = default;
   BlendStats &operator=(const BlendStats &) = default;
 
-  DOCUMENT("How many function calls were made.");
-  uint32_t calls;
+  DOCUMENT(R"(How many function calls were made.
 
-  DOCUMENT("How many objects were bound.");
-  uint32_t sets;
+:type: int
+)");
+  uint32_t calls = 0;
 
-  DOCUMENT("How many objects were unbound.");
-  uint32_t nulls;
+  DOCUMENT(R"(How many objects were bound.
 
-  DOCUMENT("How many calls made no change due to the existing bind being identical.");
-  uint32_t redundants;
+:type: int
+)");
+  uint32_t sets = 0;
+
+  DOCUMENT(R"(How many objects were unbound.
+
+:type: int
+)");
+  uint32_t nulls = 0;
+
+  DOCUMENT(R"(How many calls made no change due to the existing bind being identical.
+
+:type: int
+)");
+  uint32_t redundants = 0;
 };
 
 DECLARE_REFLECTION_STRUCT(BlendStats);
 
-DOCUMENT("Contains the statistics for depth stencil state binds in a frame.");
+DOCUMENT(R"(
+DepthStencilStats()
+DepthStencilStats(other: DepthStencilStats)
+
+Contains the statistics for depth stencil state binds in a frame.
+)");
 struct DepthStencilStats
 {
   DOCUMENT("");
@@ -1215,22 +1907,39 @@ struct DepthStencilStats
   DepthStencilStats(const DepthStencilStats &) = default;
   DepthStencilStats &operator=(const DepthStencilStats &) = default;
 
-  DOCUMENT("How many function calls were made.");
-  uint32_t calls;
+  DOCUMENT(R"(How many function calls were made.
 
-  DOCUMENT("How many objects were bound.");
-  uint32_t sets;
+:type: int
+)");
+  uint32_t calls = 0;
 
-  DOCUMENT("How many objects were unbound.");
-  uint32_t nulls;
+  DOCUMENT(R"(How many objects were bound.
 
-  DOCUMENT("How many calls made no change due to the existing bind being identical.");
-  uint32_t redundants;
+:type: int
+)");
+  uint32_t sets = 0;
+
+  DOCUMENT(R"(How many objects were unbound.
+
+:type: int
+)");
+  uint32_t nulls = 0;
+
+  DOCUMENT(R"(How many calls made no change due to the existing bind being identical.
+
+:type: int
+)");
+  uint32_t redundants = 0;
 };
 
 DECLARE_REFLECTION_STRUCT(DepthStencilStats);
 
-DOCUMENT("Contains the statistics for rasterizer state binds in a frame.");
+DOCUMENT(R"(
+RasterizationStats()
+RasterizationStats(other: RasterizationStats)
+
+Contains the statistics for rasterizer state binds in a frame.
+)");
 struct RasterizationStats
 {
   DOCUMENT("");
@@ -1238,17 +1947,29 @@ struct RasterizationStats
   RasterizationStats(const RasterizationStats &) = default;
   RasterizationStats &operator=(const RasterizationStats &) = default;
 
-  DOCUMENT("How many function calls were made.");
-  uint32_t calls;
+  DOCUMENT(R"(How many function calls were made.
 
-  DOCUMENT("How many objects were bound.");
-  uint32_t sets;
+:type: int
+)");
+  uint32_t calls = 0;
 
-  DOCUMENT("How many objects were unbound.");
-  uint32_t nulls;
+  DOCUMENT(R"(How many objects were bound.
 
-  DOCUMENT("How many calls made no change due to the existing bind being identical.");
-  uint32_t redundants;
+:type: int
+)");
+  uint32_t sets = 0;
+
+  DOCUMENT(R"(How many objects were unbound.
+
+:type: int
+)");
+  uint32_t nulls = 0;
+
+  DOCUMENT(R"(How many calls made no change due to the existing bind being identical.
+
+:type: int
+)");
+  uint32_t redundants = 0;
 
   DOCUMENT(R"(A list where the Nth element contains the number of calls that bound N viewports.
     
@@ -1265,7 +1986,12 @@ struct RasterizationStats
 
 DECLARE_REFLECTION_STRUCT(RasterizationStats);
 
-DOCUMENT("Contains the statistics for output merger or UAV binds in a frame.");
+DOCUMENT(R"(
+OutputTargetStats()
+OutputTargetStats(other: OutputTargetStats)
+
+Contains the statistics for output merger or UAV binds in a frame.
+)");
 struct OutputTargetStats
 {
   DOCUMENT("");
@@ -1273,14 +1999,23 @@ struct OutputTargetStats
   OutputTargetStats(const OutputTargetStats &) = default;
   OutputTargetStats &operator=(const OutputTargetStats &) = default;
 
-  DOCUMENT("How many function calls were made.");
-  uint32_t calls;
+  DOCUMENT(R"(How many function calls were made.
 
-  DOCUMENT("How many objects were bound.");
-  uint32_t sets;
+:type: int
+)");
+  uint32_t calls = 0;
 
-  DOCUMENT("How many objects were unbound.");
-  uint32_t nulls;
+  DOCUMENT(R"(How many objects were bound.
+
+:type: int
+)");
+  uint32_t sets = 0;
+
+  DOCUMENT(R"(How many objects were unbound.
+
+:type: int
+)");
+  uint32_t nulls = 0;
 
   DOCUMENT(R"(A list where the Nth element contains the number of calls that bound N targets.
 
@@ -1291,7 +2026,11 @@ struct OutputTargetStats
 
 DECLARE_REFLECTION_STRUCT(OutputTargetStats);
 
-DOCUMENT(R"(Contains all the available statistics about the captured frame.
+DOCUMENT(R"(
+FrameStatistics()
+FrameStatistics(other: FrameStatistics)
+
+Contains all the available statistics about the captured frame.
 
 Currently this information is only available on D3D11 and is fairly API-centric.
 )");
@@ -1308,7 +2047,10 @@ struct FrameStatistics
   FrameStatistics(const FrameStatistics &) = default;
   FrameStatistics &operator=(const FrameStatistics &) = default;
 
-  DOCUMENT("``True`` if the statistics in this structure are valid.");
+  DOCUMENT(R"(``True`` if the statistics in this structure are valid.
+
+:type: bool
+)");
   bool recorded = false;
 
   DOCUMENT(R"(A list of constant buffer bind statistics, one per each :class:`stage <ShaderStage>`.
@@ -1398,7 +2140,11 @@ struct FrameStatistics
 
 DECLARE_REFLECTION_STRUCT(FrameStatistics);
 
-DOCUMENT(R"(Contains frame-level global information
+DOCUMENT(R"(
+FrameDescription()
+FrameDescription(other: FrameDescription)
+
+Contains frame-level global information
 
 .. data:: NoFrameNumber
 
@@ -1426,6 +2172,8 @@ this counts the frame number when the capture was made.
 .. note:: This value is only accurate if the capture was triggered through the default mechanism, if
   it was triggered from the application API it doesn't correspond to anything and will be set to
   :data:`NoFrameNumber`.
+
+:type: int
 )");
   uint32_t frameNumber;
 
@@ -1433,22 +2181,39 @@ this counts the frame number when the capture was made.
 
 .. note:: Similarly to :data:`APIEvent.fileOffset` this should only be used as a relative measure,
   as it is not a literal number of bytes from the start of the file on disk.
+
+:type: int
 )");
   uint64_t fileOffset;
 
-  DOCUMENT("The total file size of the whole capture in bytes, after decompression.");
+  DOCUMENT(R"(The total file size of the whole capture in bytes, after decompression.
+
+:type: int
+)");
   uint64_t uncompressedFileSize;
 
-  DOCUMENT("The total file size of the whole capture in bytes, before decompression.");
+  DOCUMENT(R"(The total file size of the whole capture in bytes, before decompression.
+
+:type: int
+)");
   uint64_t compressedFileSize;
 
-  DOCUMENT("The byte size of the section of the file that must be kept in memory persistently.");
+  DOCUMENT(R"(The byte size of the section of the file that must be kept in memory persistently.
+
+:type: int
+)");
   uint64_t persistentSize;
 
-  DOCUMENT("The byte size of the section of the file that contains frame-initial contents.");
+  DOCUMENT(R"(The byte size of the section of the file that contains frame-initial contents.
+
+:type: int
+)");
   uint64_t initDataSize;
 
-  DOCUMENT("The time when the capture was created, as a unix timestamp in UTC.");
+  DOCUMENT(R"(The time when the capture was created, as a unix timestamp in UTC.
+
+:type: int
+)");
   uint64_t captureTime;
 
   DOCUMENT(R"(The frame statistics.
@@ -1463,20 +2228,30 @@ this counts the frame number when the capture was made.
 )");
   rdcarray<DebugMessage> debugMessages;
 
+  DOCUMENT(R"(Whether or not the capture contains any annotations.
+
+:type: bool
+)");
+  bool containsAnnotations = false;
+
   static const uint32_t NoFrameNumber = ~0U;
 };
 
 DECLARE_REFLECTION_STRUCT(FrameDescription);
 
-DOCUMENT(
-    "Describes a particular use of a resource at a specific :data:`eventId <APIEvent.eventId>`.");
+DOCUMENT(R"(
+EventUsage()
+EventUsage(other: EventUsage)
+EventUsage(eventId: int, usage: ResourceUsage)
+
+Describes a particular use of a resource at a specific :data:`eventId <APIEvent.eventId>`.
+)");
 struct EventUsage
 {
   DOCUMENT("");
   EventUsage() : eventId(0), usage(ResourceUsage::Unused) {}
   EventUsage(const EventUsage &) = default;
   EventUsage(uint32_t e, ResourceUsage u) : eventId(e), usage(u) {}
-  EventUsage(uint32_t e, ResourceUsage u, ResourceId v) : eventId(e), usage(u), view(v) {}
   EventUsage &operator=(const EventUsage &) = default;
   bool operator<(const EventUsage &o) const
   {
@@ -1486,19 +2261,29 @@ struct EventUsage
   }
 
   bool operator==(const EventUsage &o) const { return eventId == o.eventId && usage == o.usage; }
-  DOCUMENT("The :data:`eventId <APIEvent.eventId>` where this usage happened.");
+
+  DOCUMENT(R"(The :data:`eventId <APIEvent.eventId>` where this usage happened.
+
+:type: int
+)");
   uint32_t eventId;
 
-  DOCUMENT("The :class:`ResourceUsage` in question.");
-  ResourceUsage usage;
+  DOCUMENT(R"(The :class:`ResourceUsage` in question.
 
-  DOCUMENT("An optional :class:`ResourceId` identifying the view through which the use happened.");
-  ResourceId view;
+:type: ResourceUsage
+)");
+  ResourceUsage usage;
 };
 
 DECLARE_REFLECTION_STRUCT(EventUsage);
 
-DOCUMENT("Specifies a subresource within a texture.");
+DOCUMENT(R"(
+Subresource()
+Subresource(other: Subresource)
+Subresource(mip: int = 0, slice: int = 0, sample: int = 0)
+
+Specifies a subresource within a texture.
+)");
 struct Subresource
 {
   DOCUMENT("");
@@ -1525,24 +2310,37 @@ struct Subresource
     return false;
   }
 
-  DOCUMENT("The mip level in the texture.");
+  DOCUMENT(R"(The mip level in the texture.
+
+:type: int
+)");
   uint32_t mip;
-  DOCUMENT(R"(The slice within the texture. For 3D textures this is a depth slice, for arrays it is
-an array slice.
+  DOCUMENT(R"(The slice within the texture. For array textures this is an array slice. For 3D textures
+when a single depth slice can be referred to this refers to that depth slice. In some cases a 3D
+texture may not allow referring to a single depth slice - see where the Subresource is used.
 
 .. note::
   Cubemaps are simply 2D array textures with a special meaning, so the faces of a cubemap are the 2D
   array slices in the standard order: X+, X-, Y+, Y-, Z+, Z-. Cubemap arrays are 2D arrays with
   ``6 * N`` faces, where each cubemap within the array takes up 6 slices in the above order.
+
+:type: int
 )");
   uint32_t slice;
-  DOCUMENT("The sample in a multisampled texture.");
+  DOCUMENT(R"(The sample in a multisampled texture.
+
+:type: int
+)");
   uint32_t sample;
 };
 
 DECLARE_REFLECTION_STRUCT(Subresource);
 
-DOCUMENT(R"(Describes the properties of an action.
+DOCUMENT(R"(
+ActionDescription()
+ActionDescription(other: ActionDescription)
+
+Describes the properties of an action.
 
 An action is a call such as a draw, a compute dispatch, clears, copies, resolves, etc. Any GPU event
 which may have deliberate visible side-effects to application-visible memory, typically resources
@@ -1602,9 +2400,15 @@ or from the matching chunk in the structured data passed in.
   DOCUMENT("");
   bool operator==(const ActionDescription &o) const { return eventId == o.eventId; }
   bool operator<(const ActionDescription &o) const { return eventId < o.eventId; }
-  DOCUMENT("The :data:`eventId <APIEvent.eventId>` that actually produced the action.");
+  DOCUMENT(R"(The :data:`eventId <APIEvent.eventId>` that actually produced the action.
+
+:type: int
+)");
   uint32_t eventId = 0;
-  DOCUMENT("A 1-based index of this action relative to other actions.");
+  DOCUMENT(R"(A 1-based index of this action relative to other actions.
+
+:type: int
+)");
   uint32_t actionId = 0;
 
   DOCUMENT(R"(The custom name of this action.
@@ -1615,10 +2419,15 @@ to the event for the overall action, and its chunk will contain a name and any p
 
 Some actions will have a custom name generated for e.g. reading back and directly displaying
 indirect parameters or render pass parameters.
+
+:type: str
 )");
   rdcstr customName;
 
-  DOCUMENT("A set of :class:`ActionFlags` properties describing what kind of action this is.");
+  DOCUMENT(R"(A set of :class:`ActionFlags` properties describing what kind of action this is.
+
+:type: ActionFlags
+)");
   ActionFlags flags = ActionFlags::NoFlags;
 
   DOCUMENT(R"(A RGBA color specified by a debug marker call.
@@ -1627,28 +2436,47 @@ indirect parameters or render pass parameters.
 )");
   FloatVector markerColor;
 
-  DOCUMENT("The number of indices or vertices as appropriate for a draw action. 0 if not used.");
+  DOCUMENT(R"(The number of indices or vertices as appropriate for a draw action. 0 if not used.
+
+:type: int
+)");
   uint32_t numIndices = 0;
 
-  DOCUMENT("The number of instances for a draw action. 0 if not used.");
+  DOCUMENT(R"(The number of instances for a draw action. 0 if not used.
+
+:type: int
+)");
   uint32_t numInstances = 0;
 
-  DOCUMENT("For indexed drawcalls, the offset added to each index after fetching.");
+  DOCUMENT(R"(For indexed drawcalls, the offset added to each index after fetching.
+
+:type: int
+)");
   int32_t baseVertex = 0;
 
-  DOCUMENT("For indexed drawcalls, the first index to fetch from the index buffer.");
+  DOCUMENT(R"(For indexed drawcalls, the first index to fetch from the index buffer.
+
+:type: int
+)");
   uint32_t indexOffset = 0;
 
-  DOCUMENT("For non-indexed drawcalls, the offset applied before looking up each vertex input.");
+  DOCUMENT(R"(For non-indexed drawcalls, the offset applied before looking up each vertex input.
+
+:type: int
+)");
   uint32_t vertexOffset = 0;
 
-  DOCUMENT(
-      "For instanced drawcalls, the offset applied before looking up instanced vertex inputs.");
+  DOCUMENT(R"(For instanced drawcalls, the offset applied before looking up instanced vertex inputs.
+
+:type: int
+)");
   uint32_t instanceOffset = 0;
 
   DOCUMENT(R"(The index of this action in an call with multiple draws, e.g. an indirect action.
 
 0 if not part of a multi-action.
+
+:type: int
 )");
   uint32_t drawIndex = 0;
 
@@ -1672,6 +2500,8 @@ indirect parameters or render pass parameters.
 
   DOCUMENT(R"(The :class:`ResourceId` identifying the source object in a copy, resolve or blit
 operation.
+
+:type: ResourceId
 )");
   ResourceId copySource;
 
@@ -1683,6 +2513,8 @@ operation.
 
   DOCUMENT(R"(The :class:`ResourceId` identifying the destination object in a copy, resolve or blit
 operation.
+
+:type: ResourceId
 )");
   ResourceId copyDestination;
 
@@ -1694,21 +2526,21 @@ operation.
 
   DOCUMENT(R"(The parent of this action, or ``None`` if there is no parent for this action.
 
-:type: ActionDescription
+:type: Optional[ActionDescription]
 )");
   const ActionDescription *parent = NULL;
 
   DOCUMENT(R"(The previous action in the frame, or ``None`` if this is the first action in the
 frame.
 
-:type: ActionDescription
+:type: Optional[ActionDescription]
 )");
-  const ActionDescription *previous = NULL;
+  const ActionDescription *previousAction = NULL;
   DOCUMENT(R"(The next action in the frame, or ``None`` if this is the last action in the frame.
 
-:type: ActionDescription
+:type: Optional[ActionDescription]
 )");
-  const ActionDescription *next = NULL;
+  const ActionDescription *nextAction = NULL;
 
   DOCUMENT(R"(An 8-tuple of the :class:`ResourceId` ids for the color outputs, which can be used
 for very coarse bucketing of actions into similar passes by their outputs.
@@ -1716,7 +2548,10 @@ for very coarse bucketing of actions into similar passes by their outputs.
 :type: Tuple[ResourceId,...]
 )");
   rdcfixedarray<ResourceId, 8> outputs;
-  DOCUMENT("The resource used for depth output - see :data:`outputs`.");
+  DOCUMENT(R"(The resource used for depth output - see :data:`outputs`.
+
+:type: ResourceId
+)");
   ResourceId depthOut;
 
   DOCUMENT(R"(The events that happened since the previous action.
@@ -1734,7 +2569,12 @@ for very coarse bucketing of actions into similar passes by their outputs.
 
 DECLARE_REFLECTION_STRUCT(ActionDescription);
 
-DOCUMENT("Gives some API-specific information about the capture.");
+DOCUMENT(R"(
+APIProperties()
+APIProperties(other: APIProperties)
+
+Gives some API-specific information about the capture.
+)");
 struct APIProperties
 {
   DOCUMENT("");
@@ -1742,39 +2582,54 @@ struct APIProperties
   APIProperties(const APIProperties &) = default;
   APIProperties &operator=(const APIProperties &) = default;
 
-  DOCUMENT("The :class:`GraphicsAPI` of the actual log/capture.");
+  DOCUMENT(R"(The :class:`GraphicsAPI` of the actual log/capture.
+
+:type: GraphicsAPI
+)");
   GraphicsAPI pipelineType = GraphicsAPI::D3D11;
 
   DOCUMENT(R"(The :class:`GraphicsAPI` used to render the log. For remote replay this could be
 different to the above, and lets the UI make decisions e.g. to flip rendering of images.
+
+:type: GraphicsAPI
 )");
   GraphicsAPI localRenderer = GraphicsAPI::D3D11;
 
-  DOCUMENT("The :class:`GPUVendor` of the active GPU being used.");
+  DOCUMENT(R"(The :class:`GPUVendor` of the active GPU being used.
+
+:type: GPUVendor
+)");
   GPUVendor vendor = GPUVendor::Unknown;
 
   DOCUMENT(R"(``True`` if the capture is being replayed over a remote connection.
+
+:type: bool
 )");
   bool remoteReplay = false;
 
   DOCUMENT(R"(``True`` if the capture was loaded successfully but running in a degraded mode - e.g.
 with software rendering, or with some functionality disabled due to lack of support.
+
+:type: bool
 )");
   bool degraded = false;
 
-  DOCUMENT(R"(``True`` if the driver mutates shader reflection structures from event to event.
-Currently this is only true for OpenGL where the superfluous indirect in the binding model must be
-worked around by re-sorting bindings.
-)");
-  bool shadersMutable = false;
+  DOCUMENT(R"(``True`` if the API supports shader debugging.
 
-  DOCUMENT("(``True`` if the API supports shader debugging.");
+:type: bool
+)");
   bool shaderDebugging = false;
 
-  DOCUMENT("(``True`` if the API supports viewing pixel history.");
+  DOCUMENT(R"(``True`` if the API supports viewing pixel history.
+
+:type: bool
+)");
   bool pixelHistory = false;
 
-  DOCUMENT("``True`` if the driver and system are configured to allow creating RGP captures.");
+  DOCUMENT(R"(``True`` if the driver and system are configured to allow creating RGP captures.
+
+:type: bool
+)");
   bool rgpCapture = false;
 
 #if !defined(SWIG)
@@ -1790,7 +2645,12 @@ worked around by re-sorting bindings.
 
 DECLARE_REFLECTION_STRUCT(APIProperties);
 
-DOCUMENT("Gives information about the driver for this API.");
+DOCUMENT(R"(
+DriverInformation()
+DriverInformation(other: DriverInformation)
+
+Gives information about the driver for this API.
+)");
 struct DriverInformation
 {
   DOCUMENT("");
@@ -1798,16 +2658,28 @@ struct DriverInformation
   DriverInformation(const DriverInformation &) = default;
   DriverInformation &operator=(const DriverInformation &) = default;
 
-  DOCUMENT("The :class:`GPUVendor` that provides this driver");
+  DOCUMENT(R"(The :class:`GPUVendor` that provides this driver
+
+:type: GPUVendor
+)");
   GPUVendor vendor;
 
-  DOCUMENT("The version string for the driver");
+  DOCUMENT(R"(The version string for the driver
+
+:type: str
+)");
   char version[128];
 };
 
 DECLARE_REFLECTION_STRUCT(DriverInformation);
 
-DOCUMENT("A 128-bit Uuid.");
+DOCUMENT(R"(
+Uuid()
+Uuid(other: Uuid)
+Uuid(word1: int, word2: int, word3: int, word4: int)
+
+A 128-bit UUID.
+)");
 struct Uuid
 {
   DOCUMENT("");
@@ -1827,7 +2699,7 @@ struct Uuid
   bool operator<(const Uuid &rhs) const { return words < rhs.words; }
   DOCUMENT("Compares two ``Uuid`` objects for equality.");
   bool operator==(const Uuid &rhs) const { return words == rhs.words; }
-  DOCUMENT(R"(The Uuid bytes as a tuple of four 32-bit integers.
+  DOCUMENT(R"(The UUID bytes as a tuple of four 32-bit integers.
 
 :type: Tuple[int,int,int,int]
 )")
@@ -1836,7 +2708,12 @@ struct Uuid
 
 DECLARE_REFLECTION_STRUCT(Uuid);
 
-DOCUMENT("Describes a GPU counter's purpose and result value.");
+DOCUMENT(R"(
+CounterDescription()
+CounterDescription(other: CounterDescription)
+
+Describes a GPU counter's purpose and result value.
+)");
 struct CounterDescription
 {
   DOCUMENT("");
@@ -1848,6 +2725,8 @@ struct CounterDescription
 
 .. note:: This is stored as an ``int`` not a :class:`GPUCounter` to allow for values that may not
   correspond to any of the predefined values if it's a hardware-specific counter value.
+
+:type: int
 )");
 // for SWIG we pretend this is just an int, because Python can't handle enums with a value other
 // than one of the pre-defined values
@@ -1857,22 +2736,40 @@ struct CounterDescription
   GPUCounter counter;
 #endif
 
-  DOCUMENT("A short human-readable name for the counter.");
+  DOCUMENT(R"(A short human-readable name for the counter.
+
+:type: str
+)");
   rdcstr name;
 
-  DOCUMENT("The counter category. Can be empty for uncategorized counters.");
+  DOCUMENT(R"(The counter category. Can be empty for uncategorized counters.
+
+:type: str
+)");
   rdcstr category;
 
-  DOCUMENT("If available, a longer human-readable description of the value this counter measures.");
+  DOCUMENT(R"(If available, a longer human-readable description of the value this counter measures.
+
+:type: str
+)");
   rdcstr description;
 
-  DOCUMENT("The :class:`type of value <CompType>` returned by this counter.");
+  DOCUMENT(R"(The :class:`type of value <CompType>` returned by this counter.
+
+:type: CompType
+)");
   CompType resultType;
 
-  DOCUMENT("The number of bytes in the resulting value.");
+  DOCUMENT(R"(The number of bytes in the resulting value.
+
+:type: int
+)");
   uint32_t resultByteWidth;
 
-  DOCUMENT("The :class:`CounterUnit` for the result value.");
+  DOCUMENT(R"(The :class:`CounterUnit` for the result value.
+
+:type: CounterUnit
+)");
   CounterUnit unit;
 
   DOCUMENT(R"(The unique identifier for this counter that will not change across drivers or replays.
@@ -1884,24 +2781,47 @@ struct CounterDescription
 
 DECLARE_REFLECTION_STRUCT(CounterDescription);
 
-DOCUMENT(R"(A resulting value from a GPU counter. Only one member is valid, see
+DOCUMENT(R"(
+CounterValue()
+CounterValue(other: CounterValue)
+
+A resulting value from a GPU counter. Only one member is valid, see
 :class:`CounterDescription`.
 )");
 union CounterValue
 {
-  DOCUMENT("A ``float`` value.");
+  DOCUMENT(R"(A ``float`` value.
+
+:type: float
+)");
   float f;
-  DOCUMENT("A ``double`` value.");
+  DOCUMENT(R"(A ``double`` value.
+
+:type: float
+)");
   double d;
-  DOCUMENT("A 32-bit unsigned integer.");
+  DOCUMENT(R"(A 32-bit unsigned integer.
+
+:type: int
+)");
   uint32_t u32;
-  DOCUMENT("A 64-bit unsigned integer.");
+  DOCUMENT(R"(A 64-bit unsigned integer.
+
+:type: int
+)");
   uint64_t u64;
 };
 
 DECLARE_REFLECTION_STRUCT(CounterValue);
 
-DOCUMENT("The resulting value from a counter at an event.");
+DOCUMENT(R"(
+CounterResult()
+CounterResult(other: CounterResult)
+CounterResult(eventId: int, counter: GPUCounter, data: float)
+CounterResult(eventId: int, counter: GPUCounter, data: int)
+
+The resulting value from a counter at an event.
+)");
 struct CounterResult
 {
 #if defined(SWIG) || defined(SWIGPYTHON)
@@ -1958,13 +2878,18 @@ struct CounterResult
     return eventId == o.eventId && counter == o.counter;
   }
 
-  DOCUMENT("The :data:`eventId <APIEvent.eventId>` that produced this value.");
+  DOCUMENT(R"(The :data:`eventId <APIEvent.eventId>` that produced this value.
+
+:type: int
+)");
   uint32_t eventId;
 
   DOCUMENT(R"(The :data:`counter <GPUCounter>` that produced this value, stored as an int.
 
 .. note:: This is stored as an ``int`` not a :class:`GPUCounter` to allow for values that may not
   correspond to any of the predefined values if it's a hardware-specific counter value.
+
+:type: int
 )");
 // for SWIG we pretend this is just an int, because Python can't handle enums with a value other
 // than one of the pre-defined values
@@ -1983,7 +2908,12 @@ struct CounterResult
 
 DECLARE_REFLECTION_STRUCT(CounterResult);
 
-DOCUMENT("The contents of an RGBA pixel.");
+DOCUMENT(R"(
+PixelValue()
+PixelValue(other: CounterValue)
+
+The contents of an RGBA pixel.
+)");
 union PixelValue
 {
   DOCUMENT(R"(The RGBA value interpreted as ``float``.
@@ -2005,7 +2935,12 @@ union PixelValue
 
 DECLARE_REFLECTION_STRUCT(PixelValue);
 
-DOCUMENT("The value of pixel output at a particular event.");
+DOCUMENT(R"(
+ModificationValue()
+ModificationValue(other: ModificationValue)
+
+The value of pixel output at a particular event.
+)");
 struct ModificationValue
 {
   DOCUMENT("");
@@ -2029,14 +2964,29 @@ struct ModificationValue
   }
   DOCUMENT(R"(The color value.
 
+If the modifications are for a color target, the contents will all be ``0``.
+
 :type: PixelValue
 )");
   PixelValue col;
 
-  DOCUMENT("The depth output, as a ``float``.");
+  DOCUMENT(R"(The depth value.
+
+If depth is not available/in-use for this modification, it will be ``-1.0``.
+
+:type: float
+)");
   float depth;
 
-  DOCUMENT("The stencil output, or ``-1`` if not available.");
+  DOCUMENT(R"(The stencil value.
+
+If stencil is not available for this modification, it will be negative. If stencil is not available
+at all and not in use then the stencil value will be ``-1``. If stencil was in use but can't be
+determined due to the pixel history implementation using stencil for its own purposes, the value
+will be ``-2``. This will only happen when looking at multiple modifications from the same event.
+
+:type: int
+)");
   int32_t stencil;
 
   DOCUMENT(R"(
@@ -2054,7 +3004,12 @@ struct ModificationValue
 
 DECLARE_REFLECTION_STRUCT(ModificationValue);
 
-DOCUMENT("An attempt to modify a pixel by a particular event.");
+DOCUMENT(R"(
+PixelModification()
+PixelModification(other: PixelModification)
+
+An attempt to modify a pixel by a particular event.
+)");
 struct PixelModification
 {
   DOCUMENT("");
@@ -2111,21 +3066,40 @@ struct PixelModification
       return stencilTestFailed < o.stencilTestFailed;
     return false;
   }
-  DOCUMENT("The :data:`eventId <APIEvent.eventId>` where the modification happened.");
+
+  DOCUMENT(R"(The :data:`eventId <APIEvent.eventId>` where the modification happened.
+
+:type: int
+)");
   uint32_t eventId;
 
-  DOCUMENT("``True`` if this event came as part of an arbitrary shader write.");
+  DOCUMENT(R"(``True`` if this event came as part of an arbitrary shader write.
+
+:type: bool
+)");
   bool directShaderWrite;
 
-  DOCUMENT("``True`` if no pixel shader was bound at this event.");
+  DOCUMENT(R"(``True`` if no pixel shader was bound at this event. On D3D APIs this may also mean
+a pixel shader exists but declares no output for the corresponding target and so is skipped.
+
+On other APIs this is only reported if the pixel shader is entirely unbound but this means the
+output may have undefined values.
+
+:type: bool
+)");
   bool unboundPS;
 
   DOCUMENT(R"(A 0-based index of which fragment this modification corresponds to, in the case that
 multiple fragments from a single action wrote to a pixel.
+
+:type: int
 )");
   uint32_t fragIndex;
 
-  DOCUMENT("The primitive that generated this fragment.");
+  DOCUMENT(R"(The primitive that generated this fragment.
+
+:type: int
+)");
   uint32_t primitiveID;
 
   DOCUMENT(R"(The value of the texture before this fragment ran.
@@ -2147,25 +3121,55 @@ pixel.
 )");
   ModificationValue postMod;
 
-  DOCUMENT("``True`` if the sample mask eliminated this fragment.");
+  DOCUMENT(R"(``True`` if the sample mask eliminated this fragment.
+
+:type: bool
+)");
   bool sampleMasked;
-  DOCUMENT("``True`` if the backface culling test eliminated this fragment.");
+  DOCUMENT(R"(``True`` if the backface culling test eliminated this fragment.
+
+:type: bool
+)");
   bool backfaceCulled;
-  DOCUMENT("``True`` if depth near/far clipping eliminated this fragment.");
+  DOCUMENT(R"(``True`` if depth near/far clipping eliminated this fragment.
+
+:type: bool
+)");
   bool depthClipped;
-  DOCUMENT("``True`` if depth bounds clipping eliminated this fragment.");
+  DOCUMENT(R"(``True`` if depth bounds clipping eliminated this fragment.
+
+:type: bool
+)");
   bool depthBoundsFailed;
-  DOCUMENT("``True`` if viewport clipping eliminated this fragment.");
+  DOCUMENT(R"(``True`` if viewport clipping eliminated this fragment.
+
+:type: bool
+)");
   bool viewClipped;
-  DOCUMENT("``True`` if scissor clipping eliminated this fragment.");
+  DOCUMENT(R"(``True`` if scissor clipping eliminated this fragment.
+
+:type: bool
+)");
   bool scissorClipped;
-  DOCUMENT("``True`` if the pixel shader executed a discard on this fragment.");
+  DOCUMENT(R"(``True`` if the pixel shader executed a discard on this fragment.
+
+:type: bool
+)");
   bool shaderDiscarded;
-  DOCUMENT("``True`` if depth testing eliminated this fragment.");
+  DOCUMENT(R"(``True`` if depth testing eliminated this fragment.
+
+:type: bool
+)");
   bool depthTestFailed;
-  DOCUMENT("``True`` if stencil testing eliminated this fragment.");
+  DOCUMENT(R"(``True`` if stencil testing eliminated this fragment.
+
+:type: bool
+)");
   bool stencilTestFailed;
-  DOCUMENT("``True`` if predicated rendering skipped this call.");
+  DOCUMENT(R"(``True`` if predicated rendering skipped this call.
+
+:type: bool
+)");
   bool predicationSkipped;
 
   DOCUMENT(R"(Determine if this fragment passed all tests and wrote to the texture.
@@ -2179,11 +3183,61 @@ pixel.
            !viewClipped && !scissorClipped && !shaderDiscarded && !depthTestFailed &&
            !stencilTestFailed && !predicationSkipped;
   }
+
+  DOCUMENT(R"(Update the depth-test failure state based on known shader output depth value and
+:data:`preMod` reference value, quantised to a certain number of depth bits with epsilon.
+
+This is primarily used internally and should not be needed to be called externally.
+
+:param int depthBits: How many bits are in the depth buffer: 16, 24 or 32.
+:param CompareFunction depthFunc: The comparison function active for the depth test
+)");
+  void CheckDepthTestQuantised(uint32_t depthBits, CompareFunction depthFunc)
+  {
+    float shadDepth = shaderOut.depth;
+    const float compareDepth = preMod.depth;
+
+    float eps = 1.2e-7f;
+    if(depthBits == 24)
+    {
+      shadDepth = float(uint32_t(float(shadDepth * 0xffffff))) / float(0xffffff);
+      eps = float(1.5f) / float(0xffffff);
+    }
+    else if(depthBits == 16)
+    {
+      shadDepth = float(uint32_t(float(shadDepth * 0xffff))) / float(0xffff);
+      eps = float(1.5f) / float(0xffff);
+    }
+
+    bool passed = true;
+    if(depthFunc == CompareFunction::Equal)
+      passed = shadDepth > compareDepth ? ((shadDepth - compareDepth) <= eps)
+                                        : ((compareDepth - shadDepth) <= eps);
+    else if(depthFunc == CompareFunction::NotEqual)
+      passed = shadDepth > compareDepth ? ((shadDepth - compareDepth) > eps)
+                                        : ((compareDepth - shadDepth) > eps);
+    else if(depthFunc == CompareFunction::Less)
+      passed = (shadDepth - eps < compareDepth);
+    else if(depthFunc == CompareFunction::LessEqual)
+      passed = (shadDepth - eps <= compareDepth);
+    else if(depthFunc == CompareFunction::Greater)
+      passed = (shadDepth + eps > compareDepth);
+    else if(depthFunc == CompareFunction::GreaterEqual)
+      passed = (shadDepth + eps >= compareDepth);
+
+    if(!passed)
+      depthTestFailed = true;
+  }
 };
 
 DECLARE_REFLECTION_STRUCT(PixelModification);
 
-DOCUMENT("Contains the bytes and metadata describing a thumbnail.");
+DOCUMENT(R"(
+Thumbnail()
+Thumbnail(other: Thumbnail)
+
+Contains the bytes and metadata describing a thumbnail.
+)");
 struct Thumbnail
 {
   DOCUMENT("");
@@ -2191,17 +3245,62 @@ struct Thumbnail
   Thumbnail(const Thumbnail &) = default;
   Thumbnail &operator=(const Thumbnail &) = default;
 
-  DOCUMENT("The :class:`FileType` of the data in the thumbnail.");
+  DOCUMENT(R"(The :class:`FileType` of the data in the thumbnail.
+
+:type: FileType
+)");
   FileType type = FileType::Raw;
 
-  DOCUMENT("The ``bytes`` byte array containing the raw data.");
+  DOCUMENT(R"(The ``bytes`` byte array containing the raw data.
+
+:type: bytes
+)");
   bytebuf data;
 
-  DOCUMENT("The width of the thumbnail image.");
+  DOCUMENT(R"(The width of the thumbnail image.
+
+:type: int
+)");
   uint32_t width = 0;
 
-  DOCUMENT("The height of the thumbnail image.");
+  DOCUMENT(R"(The height of the thumbnail image.
+
+:type: int
+)");
   uint32_t height = 0;
 };
 
 DECLARE_REFLECTION_STRUCT(Thumbnail);
+
+DOCUMENT(R"(
+DebugPixelInputs()
+DebugPixelInputs(other: DebugPixelInputs)
+
+Contains the properties used to select which fragment to debug, used as an input
+to :meth:`ReplayController.DebugPixel`.
+)");
+struct DebugPixelInputs
+{
+  DOCUMENT("");
+  DebugPixelInputs() : sample(~0U), primitive(~0U), view(~0U) {}
+  DebugPixelInputs(const DebugPixelInputs &) = default;
+  DebugPixelInputs &operator=(const DebugPixelInputs &) = default;
+
+  DOCUMENT(R"(The multi-sampled sample.
+
+:type: int
+)");
+  uint32_t sample;
+  DOCUMENT(R"(The primitive index.
+
+:type: int
+)");
+  uint32_t primitive;
+  DOCUMENT(R"(The layered or multiview rendering view index.
+
+:type: int
+)");
+  uint32_t view;
+};
+
+DECLARE_REFLECTION_STRUCT(DebugPixelInputs);

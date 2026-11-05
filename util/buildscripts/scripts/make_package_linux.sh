@@ -31,6 +31,14 @@ if [ -d "${REPO_ROOT}"/Documentation/html ]; then
 	cp -R "${REPO_ROOT}"/Documentation/html "./${FILENAME}/share/doc/renderdoc/html"
 else
 	echo "WARNING: Documentation not built! run 'make html' in docs folder";
+
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Failed to locate documentation.";
+
+		popd
+		rm -rf "${REPO_ROOT}"/package
+		exit 1;
+	fi
 fi
 
 # copy in plugins
@@ -39,6 +47,14 @@ if [ -d "${REPO_ROOT}"/plugins-linux64 ]; then
 	chmod +x -R "./${FILENAME}/share/renderdoc/plugins"/*
 else
 	echo "WARNING: Plugins not present. Download and extract https://renderdoc.org/plugins.tgz in root folder";
+
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Failed to locate plugins.";
+
+		popd
+		rm -rf "${REPO_ROOT}"/package
+		exit 1;
+	fi
 fi
 
 # copy in all of the android files.
@@ -48,11 +64,27 @@ if ls "${REPO_ROOT}"/build-android*/bin/*.apk; then
 	cp "${REPO_ROOT}"/build-android*/bin/*.apk "./${FILENAME}/share/renderdoc/plugins/android/"
 else
 	echo "WARNING: Android build not present. Build arm32 and arm64 apks in build-android-arm{32,64} folders";
+
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Failed to locate Android.";
+
+		popd
+		rm -rf "${REPO_ROOT}"/package
+		exit 1;
+	fi
 fi
 
 # compress the folder and GPG sign it
 tar -zcf ${FILENAME}.tar.gz "./${FILENAME}/"* --xform 's#^./##g'
 gpg -o ${FILENAME}.tar.gz.sig --detach-sign --armor ${FILENAME}.tar.gz
+
+if [[ "$STRICT" == "yes" ]] && [ ! -f ${FILENAME}.tar.gz.sig ]; then
+	echo "Strict mode: Failed to sign tarball.";
+
+	popd
+	rm -rf "${REPO_ROOT}"/package
+	exit 1;
+fi
 
 rm -rf "./${FILENAME}"
 

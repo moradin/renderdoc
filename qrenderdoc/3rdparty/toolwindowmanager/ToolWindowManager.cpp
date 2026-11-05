@@ -162,7 +162,7 @@ void ToolWindowManager::addToolWindows(QList<QWidget *> toolWindows,
     }
     if(m_toolWindows.contains(toolWindow))
     {
-      qWarning("this tool window has already been added");
+      qWarning() << "this tool window has already been added" << toolWindow->objectName();
       continue;
     }
     toolWindow->hide();
@@ -198,7 +198,7 @@ void ToolWindowManager::moveToolWindows(QList<QWidget *> toolWindows,
   {
     if(!m_toolWindows.contains(toolWindow))
     {
-      qWarning("unknown tool window");
+      qWarning() << "unknown tool window:" << (toolWindow ? toolWindow->objectName() : QString());
       return;
     }
     ToolWindowManagerWrapper *oldWrapper = wrapperOf(toolWindow);
@@ -474,7 +474,7 @@ void ToolWindowManager::removeToolWindow(QWidget *toolWindow, bool allowCloseAlr
 {
   if(!m_toolWindows.contains(toolWindow))
   {
-    qWarning("unknown tool window");
+    qWarning() << "unknown tool window:" << (toolWindow ? toolWindow->objectName() : QString());
     return;
   }
 
@@ -483,7 +483,8 @@ void ToolWindowManager::removeToolWindow(QWidget *toolWindow, bool allowCloseAlr
 
   if(!manager)
   {
-    qWarning("unknown tool window");
+    qWarning() << "window not child of any tool window"
+               << (toolWindow ? toolWindow->objectName() : QString());
     return;
   }
 
@@ -493,6 +494,11 @@ void ToolWindowManager::removeToolWindow(QWidget *toolWindow, bool allowCloseAlr
       return;
   }
 
+  forceCloseToolWindow(toolWindow);
+}
+
+void ToolWindowManager::forceCloseToolWindow(QWidget *toolWindow)
+{
   moveToolWindow(toolWindow, NoArea);
   m_toolWindows.removeOne(toolWindow);
   m_toolWindowProperties.remove(toolWindow);
@@ -537,7 +543,7 @@ void ToolWindowManager::closeToolWindow(QWidget *toolWindow)
     return;
   }
 
-  qWarning("window not child of any tool window");
+  qWarning() << "window not child of any tool window" << toolWindow->objectName();
 }
 
 void ToolWindowManager::raiseToolWindow(QWidget *toolWindow)
@@ -559,7 +565,7 @@ void ToolWindowManager::raiseToolWindow(QWidget *toolWindow)
   if(area)
     area->setCurrentWidget(toolWindow);
   else
-    qWarning("parent is not a tool window area");
+    qWarning() << "parent is not a tool window area" << toolWindow->objectName();
 }
 
 QWidget *ToolWindowManager::createToolWindow(const QString &objectName)
@@ -648,8 +654,12 @@ void ToolWindowManager::restoreState(const QVariantMap &dataMap)
   QVariantList floatWins = dataMap[QStringLiteral("floatingWindows")].toList();
   foreach(QVariant windowData, floatWins)
   {
+    QVariantMap floatData = windowData.toMap();
+    if(floatData.empty())
+      continue;
+
     ToolWindowManagerWrapper *wrapper = new ToolWindowManagerWrapper(this, true);
-    wrapper->restoreState(windowData.toMap());
+    wrapper->restoreState(floatData);
     wrapper->updateTitle();
     wrapper->show();
     if(wrapper->windowState() & Qt::WindowMaximized)
@@ -677,7 +687,8 @@ void ToolWindowManager::releaseToolWindow(QWidget *toolWindow)
   ToolWindowManagerArea *previousTabWidget = findClosestParent<ToolWindowManagerArea *>(toolWindow);
   if(!previousTabWidget)
   {
-    qWarning("cannot find tab widget for tool window");
+    qWarning() << "cannot find tab widget for tool window:"
+               << (toolWindow ? toolWindow->objectName() : QString());
     return;
   }
   previousTabWidget->removeTab(previousTabWidget->indexOf(toolWindow));
@@ -1059,8 +1070,15 @@ void ToolWindowManager::updateDragPosition()
 
       QPoint c = areaClientRect.center();
 
-      m_dropHotspots[AddTo]->move(c + QPoint(-hsize, -hsize));
-      m_dropHotspots[AddTo]->show();
+      if(m_hoverArea->allowUserDrop())
+      {
+        m_dropHotspots[AddTo]->move(c + QPoint(-hsize, -hsize));
+        m_dropHotspots[AddTo]->show();
+      }
+      else
+      {
+        m_dropHotspots[AddTo]->hide();
+      }
 
       m_dropHotspots[TopOf]->move(c + QPoint(-hsize, -hsize - margin - size));
       m_dropHotspots[TopOf]->show();
@@ -1105,10 +1123,6 @@ void ToolWindowManager::updateDragPosition()
       m_dropHotspots[RightWindowSide]->hide();
       m_dropHotspots[BottomWindowSide]->hide();
     }
-
-    for(QWidget *hotspot : m_dropHotspots)
-      if(hotspot)
-        hotspot->show();
   }
   else
   {
@@ -1311,9 +1325,12 @@ void ToolWindowManager::finishDrag()
   {
     if(m_hoverArea)
     {
-      AreaReference ref(hotspot, m_hoverArea);
-      ref.dragResult = true;
-      moveToolWindows(draggedToolWindows, ref);
+      if(m_hoverArea->allowUserDrop() || hotspot != AreaReferenceType::AddTo)
+      {
+        AreaReference ref(hotspot, m_hoverArea);
+        ref.dragResult = true;
+        moveToolWindows(draggedToolWindows, ref);
+      }
     }
     else
     {
@@ -1376,7 +1393,9 @@ void ToolWindowManager::drawHotspotPixmaps()
         QPointF tip = fullRect.center() + QPointF(4, 0);
 
         path.addPolygon(QPolygonF({
-            tip, tip + QPoint(3, 3), tip + QPoint(3, -3),
+            tip,
+            tip + QPoint(3, 3),
+            tip + QPoint(3, -3),
         }));
       }
       else if(ref == TopOf)
@@ -1384,7 +1403,9 @@ void ToolWindowManager::drawHotspotPixmaps()
         QPointF tip = fullRect.center() + QPointF(0, 4);
 
         path.addPolygon(QPolygonF({
-            tip, tip + QPointF(-3, 3), tip + QPointF(3, 3),
+            tip,
+            tip + QPointF(-3, 3),
+            tip + QPointF(3, 3),
         }));
       }
       else if(ref == RightOf)
@@ -1392,7 +1413,9 @@ void ToolWindowManager::drawHotspotPixmaps()
         QPointF tip = fullRect.center() + QPointF(-4, 0);
 
         path.addPolygon(QPolygonF({
-            tip, tip + QPointF(-3, 3), tip + QPointF(-3, -3),
+            tip,
+            tip + QPointF(-3, 3),
+            tip + QPointF(-3, -3),
         }));
       }
       else if(ref == BottomOf)
@@ -1400,7 +1423,9 @@ void ToolWindowManager::drawHotspotPixmaps()
         QPointF tip = fullRect.center() + QPointF(0, -4);
 
         path.addPolygon(QPolygonF({
-            tip, tip + QPointF(-3, -3), tip + QPointF(3, -3),
+            tip,
+            tip + QPointF(-3, -3),
+            tip + QPointF(3, -3),
         }));
       }
 
@@ -1462,7 +1487,7 @@ bool ToolWindowManager::allowClose(QWidget *toolWindow)
 {
   if(!m_toolWindows.contains(toolWindow))
   {
-    qWarning("unknown tool window");
+    qWarning() << "unknown tool window:" << (toolWindow ? toolWindow->objectName() : QString());
     return true;
   }
   int methodIndex = toolWindow->metaObject()->indexOfMethod(
@@ -1498,6 +1523,8 @@ void ToolWindowManager::tabCloseRequested(int index)
 
   if(!allowClose(toolWindow))
     return;
+
+  tabWidget->tabClosing(index);
 
   if(toolWindowProperties(toolWindow) & ToolWindowManager::HideOnClose)
     hideToolWindow(toolWindow);

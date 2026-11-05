@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,6 +33,8 @@ class D3D11PipelineStateViewer;
 }
 
 class QXmlStreamWriter;
+
+class ComputeDebugSelector;
 class RDLabel;
 class RDTreeWidget;
 class RDTreeWidgetItem;
@@ -77,25 +79,33 @@ private slots:
   void cbuffer_itemActivated(RDTreeWidgetItem *item, int column);
   void vertex_leave(QEvent *e);
 
-  void on_debugThread_clicked();
+  void on_computeDebugSelector_clicked();
+  void computeDebugSelector_beginDebug(const rdcfixedarray<uint32_t, 3> &group,
+                                       const rdcfixedarray<uint32_t, 3> &thread);
 
 private:
   Ui::D3D11PipelineStateViewer *ui;
   ICaptureContext &m_Ctx;
   PipelineStateViewer &m_Common;
+  ComputeDebugSelector *m_ComputeDebugSelector;
 
-  void setShaderState(const D3D11Pipe::Shader &stage, RDLabel *shader, RDTreeWidget *tex,
-                      RDTreeWidget *samp, RDTreeWidget *cbuffer, RDTreeWidget *classes);
+  void setShaderState(const D3D11Pipe::Shader &stage, RDLabel *shader, RDLabel *shaderDebug,
+                      RDTreeWidget *tex, RDTreeWidget *samp, RDTreeWidget *cbuffer,
+                      RDTreeWidget *classes);
 
-  void addResourceRow(const D3D11ViewTag &view, const ShaderResource *shaderInput,
-                      const Bindpoint *map, RDTreeWidget *resources);
+  void addResourceRow(const D3D11ViewTag &view, const ShaderResource *shaderBind, bool usedSlot,
+                      RDTreeWidget *resources);
+  void addSamplerRow(const SamplerDescriptor &s, uint32_t reg, const ShaderSampler *shaderBind,
+                     bool usedSlot, RDTreeWidget *samplers);
+  void addCBufferRow(const Descriptor &b, uint32_t reg, const ConstantBlock *shaderBind,
+                     bool usedSlot, RDTreeWidget *cbuffers);
 
-  void clearShaderState(RDLabel *shader, RDTreeWidget *tex, RDTreeWidget *samp,
-                        RDTreeWidget *cbuffer, RDTreeWidget *classes);
+  void clearShaderState(RDLabel *shader, RDLabel *shaderDebug, RDTreeWidget *tex,
+                        RDTreeWidget *samp, RDTreeWidget *cbuffer, RDTreeWidget *classes);
   void setState();
   void clearState();
 
-  QVariantList exportViewHTML(const D3D11Pipe::View &view, int i, ShaderReflection *refl,
+  QVariantList exportViewHTML(const Descriptor &view, uint32_t reg, const ShaderReflection *refl,
                               const QString &extraParams);
   void exportHTML(QXmlStreamWriter &xml, const D3D11Pipe::InputAssembly &ia);
   void exportHTML(QXmlStreamWriter &xml, const D3D11Pipe::Shader &sh);
@@ -109,13 +119,20 @@ private:
 
   const D3D11Pipe::Shader *stageForSender(QWidget *widget);
 
-  bool HasImportantViewParams(const D3D11Pipe::View &view, TextureDescription *tex);
-  bool HasImportantViewParams(const D3D11Pipe::View &view, BufferDescription *buf);
+  const Descriptor &FindDescriptor(ShaderStage stage, DescriptorCategory category, uint32_t reg);
+  bool HasAccess(ShaderStage stage, DescriptorCategory category, uint32_t index);
+
+  bool HasImportantViewParams(const Descriptor &view, TextureDescription *tex);
+  bool HasImportantViewParams(const Descriptor &view, BufferDescription *buf);
 
   void setViewDetails(RDTreeWidgetItem *node, const D3D11ViewTag &view, TextureDescription *tex);
   void setViewDetails(RDTreeWidgetItem *node, const D3D11ViewTag &view, BufferDescription *buf);
 
   bool showNode(bool usedSlot, bool filledSlot);
+
+  rdcarray<DescriptorLogicalLocation> m_Locations;
+  rdcarray<Descriptor> m_Descriptors;
+  rdcarray<SamplerDescriptor> m_SamplerDescriptors;
 
   // keep track of the VB nodes (we want to be able to highlight them easily on hover)
   QList<RDTreeWidgetItem *> m_VBNodes;

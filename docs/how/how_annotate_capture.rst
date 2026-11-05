@@ -1,16 +1,28 @@
 How do I annotate a capture?
 ============================
 
-RenderDoc allows annotation of captures in two ways - annotations that you provide from your application along with the other graphics API calls that you make, and annotations that are made in the UI while analysing a capture and can be saved with it.
-
-The annotations provided with the graphics API calls from your application vary by the particular API and are documented below.
-
-Annotations made in the UI are also described below. These can be useful for example when investigating a bug or repro case and passing on your findings natively to someone else, instead of having to include additional text like 'texture 148 is the buggy texture' you can directly mark up the capture.
+RenderDoc allows annotation of captures in multiple ways. Your application can call built-in debug functions in graphics APIs as well as custom RenderDoc APIs. You can also add extra annotations after opening the capture.
 
 All of the UI modifications can be saved with a capture. Pressing :kbd:`Ctrl-S` or :guilabel:`File` → :guilabel:`Save` will save the capture with any changes that have been made to it in the UI. If you haven't already saved a temporary capture, or the capture is on a remote context, this will need to you save it to a local path.
 
+Application-provided data
+-------------------------
+
+Rich custom annotations
+^^^^^^^^^^^^^^^^^^^^^^^
+
+RenderDoc's :doc:`../in_application_api` provides mechanisms for annotating both objects and commands with rich structured annotations, which can be used by the application for including complex custom data for additional context and debug information beyond what is provided via baseline graphics APIs.
+
+The specific implementation details of how to pass this information along can be found in the documentation for the :doc:`../in_application_api`, via the :cpp:func:`SetObjectAnnotation` and :cpp:func:`SetCommandAnnotation` functions. The exact details may vary slightly by graphics API.
+
+For a high-level explanation of how the feature works and how to inspect and use it in the UI, see the :doc:`../window/annotation_viewer` documentation.
+
+.. figure:: ../imgs/Screenshots/CommandAnnotations.png
+
+	Annotation Viewer: Showing the custom annotations on a selected event.
+
 Application provided marker regions
------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 When calling graphics API functions from your code you can provide annotations to group regions of the frame under names, with a nested hierarchy.
 
@@ -96,7 +108,7 @@ Example code for Vulkan using the ``VK_EXT_debug_utils`` extension:
   // queue-level markers can be provided similarly.
 
 Application provided object names
----------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Similar to the marker regions above, it is possible to give objects names via the graphics APIs and they will be displayed with those human-readable names instead of auto-generated names.
 
@@ -168,8 +180,26 @@ In Vulkan you can enable the ``VK_EXT_debug_utils`` extension, which is provided
   nameInfo.pObjectName = "Off-screen color framebuffer";
   vkSetDebugUtilsObjectNameEXT(device, &nameInfo);
 
+On D3D12 there is a RenderDoc extension provided with this interface, queried from an ``ID3D12DescriptorHeap``:
+
+.. highlight:: c++
+.. code:: c++
+
+  MIDL_INTERFACE("52528c37-bfd9-4bbb-99ff-fdb7188619ce")
+  IRenderDocDescriptorNamer : public IUnknown
+  {
+  public:
+    virtual HRESULT STDMETHODCALLTYPE SetName(UINT DescriptorIndex, LPCSTR Name) = 0;
+  };
+
+
+This interface allows you to set a custom name for descriptors, if using SM6.6 style ``ResourceDescriptorHeap[]`` access for better debugging.
+
+UI-side markup
+--------------
+
 Bookmarks
----------
+^^^^^^^^^
 
 .. |asterisk_orange| image:: ../imgs/icons/asterisk_orange.png
 
@@ -184,7 +214,7 @@ The |asterisk_orange| bookmark button will allow you to bookmark an event, the s
 When loading any capture with saved bookmarks they will be automatically populated into the UI. This will allow you to highlight particular problematic events and anyone opening the capture will be able to use the shortcuts above to jump immediately to where the problem is.
 
 Resource Renaming
------------------
+^^^^^^^^^^^^^^^^^
 
 From within the :doc:`../window/resource_inspector` window, you can rename any resource in the capture. Whether the resource already had a custom-specified name, or if it had a default-generated name, you can provide overrides at any time.
 
@@ -197,7 +227,7 @@ To do so, simply select the resource in question in the resource inspector - eit
 As with bookmarks, these renames can be saved with a capture and are automatically used when loading the capture subsequently. This can be useful to point the way to which resources are causing problems, or specifically how a given resource with a more general name is being used in this particular capture.
 
 Capture Comments
-----------------
+^^^^^^^^^^^^^^^^
 
 In the :doc:`../window/capture_comments` window there is a simple text field allowing you to store any arbitrary text you want within the capture. This could be notes on the environment or build version that was stored.
 

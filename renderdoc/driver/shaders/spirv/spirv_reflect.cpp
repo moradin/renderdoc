@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -30,7 +30,26 @@
 #include "spirv_editor.h"
 #include "spirv_op_helpers.h"
 
-void FillSpecConstantVariables(ResourceId shader, const rdcarray<ShaderConstant> &invars,
+void StripCommonGLPrefixes(rdcstr &name)
+{
+  // remove certain common prefixes that generate only useless noise from GLSL. This is mostly
+  // irrelevant for the majority of cases but is primarily relevant for single-component outputs
+  // like gl_PointSize or gl_CullPrimitiveEXT
+  const rdcstr prefixesToRemove[] = {
+      "gl_PerVertex.",           "gl_PerVertex_var.",     "gl_MeshVerticesEXT.",
+      "gl_MeshVerticesEXT_var.", "gl_MeshPrimitivesEXT.", "gl_MeshPrimitivesEXT_var.",
+  };
+
+  for(const rdcstr &prefix : prefixesToRemove)
+  {
+    int offs = name.find(prefix);
+    if(offs == 0)
+      name.erase(0, prefix.length());
+  }
+}
+
+void FillSpecConstantVariables(ResourceId shader, const SPIRVPatchData &patchData,
+                               const rdcarray<ShaderConstant> &invars,
                                rdcarray<ShaderVariable> &outvars,
                                const rdcarray<SpecConstant> &specInfo)
 {
@@ -39,14 +58,21 @@ void FillSpecConstantVariables(ResourceId shader, const rdcarray<ShaderConstant>
   RDCASSERTEQUAL(invars.size(), outvars.size());
 
   for(size_t v = 0; v < invars.size() && v < outvars.size(); v++)
+  {
+    outvars[v].flags &= ~ShaderVariableFlags::Truncated;
     outvars[v].value.u64v[0] = invars[v].defaultValue;
+  }
 
   // find any actual values specified
   for(size_t i = 0; i < specInfo.size(); i++)
   {
     for(size_t v = 0; v < invars.size() && v < outvars.size(); v++)
     {
-      if(specInfo[i].specID * sizeof(uint64_t) == invars[v].byteOffset)
+      int32_t idx = patchData.specIDs.indexOf(specInfo[i].specID);
+      if(idx == -1)
+        continue;
+
+      if(idx * sizeof(uint64_t) == invars[v].byteOffset)
       {
         outvars[v].value.u64v[0] = specInfo[i].value;
       }
@@ -55,7 +81,8 @@ void FillSpecConstantVariables(ResourceId shader, const rdcarray<ShaderConstant>
 }
 
 void AddXFBAnnotations(const ShaderReflection &refl, const SPIRVPatchData &patchData,
-                       const char *entryName, rdcarray<uint32_t> &modSpirv, uint32_t &xfbStride)
+                       uint32_t rastStream, const char *entryName, rdcarray<uint32_t> &modSpirv,
+                       uint32_t &xfbStride)
 {
   rdcspv::Editor editor(modSpirv);
 
@@ -99,7 +126,8 @@ void AddXFBAnnotations(const ShaderReflection &refl, const SPIRVPatchData &patch
         rdcspv::OpDecorate decorate(it);
 
         if(decorate.decoration == rdcspv::Decoration::XfbBuffer ||
-           decorate.decoration == rdcspv::Decoration::XfbStride)
+           decorate.decoration == rdcspv::Decoration::XfbStride ||
+           decorate.decoration == rdcspv::Decoration::Stream)
         {
           editor.Remove(it);
         }
@@ -153,26 +181,107 @@ void AddXFBAnnotations(const ShaderReflection &refl, const SPIRVPatchData &patch
 
       outpatch.insert(0, outpatch[i]);
       outpatch.erase(i + 1);
+
+      // extra unused gl_PerVertex members not in the signature can bite us now, delete them
+      rdcspv::Id structID = outpatch[i].structID;
+      if(structID)
+      {
+        rdcarray<uint32_t> usedMembers = {outpatch[i].structMemberIndex};
+        uint32_t maxMember = outpatch[i].structMemberIndex;
+        for(size_t j = 0; j < outsig.size(); j++)
+        {
+          if(i != j && structID == outpatch[j].structID)
+          {
+            usedMembers.push_back(outpatch[i].structMemberIndex);
+            maxMember = RDCMAX(maxMember, outpatch[i].structMemberIndex);
+          }
+        }
+
+        if(maxMember + 1 != usedMembers.size())
+        {
+          RDCERR("Not a clean subset of builtin block used");
+          break;
+        }
+
+        rdcspv::Iter strIt = editor.GetID(structID);
+        rdcspv::OpTypeStruct str(strIt);
+
+        if(str.members.size() > usedMembers.size())
+        {
+          RDCDEBUG("Truncating builtin block from %zu members to %zu", str.members.size(),
+                   usedMembers.size());
+          str.members.resize(usedMembers.size());
+
+          strIt = str;
+        }
+
+        // remove any MemberDecoration or MemberName
+        for(rdcspv::Iter it = editor.Begin(rdcspv::Section::DebugNames);
+            it < editor.End(rdcspv::Section::Annotations); ++it)
+        {
+          if(it.opcode() == rdcspv::Op::MemberDecorate)
+          {
+            rdcspv::OpMemberDecorate mem(it);
+
+            if(mem.structureType == structID && mem.member > maxMember)
+              it.nopRemove();
+          }
+          else if(it.opcode() == rdcspv::Op::MemberDecorateIdEXT)
+          {
+            rdcspv::OpMemberDecorateIdEXT mem(it);
+
+            if(mem.structureType == structID && mem.member > maxMember)
+              it.nopRemove();
+          }
+          else if(it.opcode() == rdcspv::Op::MemberDecorateString)
+          {
+            rdcspv::OpMemberDecorateString mem(it);
+
+            if(mem.structType == structID && mem.member > maxMember)
+              it.nopRemove();
+          }
+          else if(it.opcode() == rdcspv::Op::MemberName)
+          {
+            rdcspv::OpMemberName mem(it);
+
+            if(mem.type == structID && mem.member > maxMember)
+              it.nopRemove();
+          }
+        }
+      }
+
       break;
     }
   }
 
+  rdcarray<rdcspv::Id> structVars;
+
   for(size_t i = 0; i < outsig.size(); i++)
   {
+    // ignore anything from the non-rasterized stream
+    if(outsig[i].stream != rastStream)
+      continue;
+
     if(outpatch[i].isArraySubsequentElement)
     {
       // do not patch anything as we only patch the base array, but reserve space in the stride
     }
-    else if(outpatch[i].structID && !outpatch[i].accessChain.empty())
-    {
-      editor.AddDecoration(
-          rdcspv::OpMemberDecorate(outpatch[i].structID, outpatch[i].structMemberIndex,
-                                   rdcspv::DecorationParam<rdcspv::Decoration::Offset>(xfbStride)));
-    }
     else if(outpatch[i].ID)
     {
-      editor.AddDecoration(rdcspv::OpDecorate(
-          outpatch[i].ID, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(xfbStride)));
+      if(!outpatch[i].accessChain.empty())
+      {
+        if(!structVars.contains(outpatch[i].ID))
+        {
+          editor.AddDecoration(rdcspv::OpDecorate(
+              outpatch[i].ID, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(xfbStride)));
+          structVars.push_back(outpatch[i].ID);
+        }
+      }
+      else
+      {
+        editor.AddDecoration(rdcspv::OpDecorate(
+            outpatch[i].ID, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(xfbStride)));
+      }
     }
 
     // components always get promoted to at least 32-bit
@@ -181,51 +290,81 @@ void AddXFBAnnotations(const ShaderReflection &refl, const SPIRVPatchData &patch
     xfbStride += outsig[i].compCount * compByteSize;
   }
 
-  std::set<rdcspv::Id> vars;
+  rdcarray<rdcspv::Id> vars;
 
   for(size_t i = 0; i < outpatch.size(); i++)
   {
-    if(outpatch[i].ID && !outpatch[i].isArraySubsequentElement &&
-       vars.find(outpatch[i].ID) == vars.end())
+    // ignore anything from the non-rasterized stream
+    if(outsig[i].stream != rastStream)
+      continue;
+
+    if(outpatch[i].ID && !outpatch[i].isArraySubsequentElement && !vars.contains(outpatch[i].ID))
     {
       editor.AddDecoration(rdcspv::OpDecorate(
           outpatch[i].ID, rdcspv::DecorationParam<rdcspv::Decoration::XfbBuffer>(0)));
       editor.AddDecoration(rdcspv::OpDecorate(
           outpatch[i].ID, rdcspv::DecorationParam<rdcspv::Decoration::XfbStride>(xfbStride)));
-      vars.insert(outpatch[i].ID);
+      vars.push_back(outpatch[i].ID);
+    }
+  }
+
+  // if the rasterized stream isn't 0 we need to patch any stream emits to emit 0 instead of
+  // rastStream, and drop any that used to go to other streams
+  if(hasXFB && rastStream != 0)
+  {
+    rdcspv::Id newStream = editor.AddConstantImmediate<uint32_t>(0U);
+
+    for(rdcspv::Iter it = editor.Begin(rdcspv::Section::Functions);
+        it < editor.End(rdcspv::Section::Functions); ++it)
+    {
+      if(it.opcode() == rdcspv::Op::EmitStreamVertex || it.opcode() == rdcspv::Op::EndStreamPrimitive)
+      {
+        // same format for both
+        rdcspv::OpEmitStreamVertex emit(it);
+
+        ShaderVariable stream = editor.EvaluateConstant(emit.stream, {});
+
+        // if this was emitting to our stream, still emit but to the new stream index. If it wasn't,
+        // drop it entirely
+        if(stream.value.u32v[0] == rastStream)
+          it.word(1) = newStream.value();
+        else
+          editor.Remove(it);
+      }
     }
   }
 }
 
-const int32_t INVALID_BIND = -INT_MAX;
+const uint32_t INVALID_BIND = ~0U;
 
 template <typename T>
-struct bindpair
+struct sortedbind
 {
-  Bindpoint map;
   T bindres;
+  rdcspv::Id id;
 
-  bindpair() = default;
-  bindpair(const Bindpoint &m, const T &res) : map(m), bindres(res) {}
-  bool operator<(const bindpair &o) const
+  sortedbind() = default;
+  sortedbind(rdcspv::Id id, const T &res) : bindres(res), id(id) {}
+  bool operator<(const sortedbind &o) const
   {
-    if(map.bindset != o.map.bindset)
-      return map.bindset < o.map.bindset;
+    if(bindres.fixedBindSetOrSpace != o.bindres.fixedBindSetOrSpace)
+      return bindres.fixedBindSetOrSpace < o.bindres.fixedBindSetOrSpace;
 
     // sort invalid/not set binds to the end
-    if(map.bind == INVALID_BIND && o.map.bind == INVALID_BIND)    // equal
+    if(bindres.fixedBindNumber == INVALID_BIND && o.bindres.fixedBindNumber == INVALID_BIND)    // equal
       return false;
-    if(map.bind == INVALID_BIND)    // invalid bind not less than anything
+    if(bindres.fixedBindNumber == INVALID_BIND)    // invalid bind not less than anything
       return false;
-    if(o.map.bind == INVALID_BIND)    // anything is less than invalid bind
+    if(o.bindres.fixedBindNumber == INVALID_BIND)    // anything is less than invalid bind
       return true;
 
-    return map.bind < o.map.bind;
+    return bindres.fixedBindNumber < o.bindres.fixedBindNumber;
   }
 };
 
-typedef bindpair<ConstantBlock> cblockpair;
-typedef bindpair<ShaderResource> shaderrespair;
+typedef sortedbind<ConstantBlock> sortedcblock;
+typedef sortedbind<ShaderResource> sortedres;
+typedef sortedbind<ShaderSampler> sortedsamp;
 
 static uint32_t GetDescSet(uint32_t set)
 {
@@ -237,8 +376,14 @@ static int32_t GetBinding(uint32_t binding)
   return binding == ~0U ? INVALID_BIND : (uint32_t)binding;
 }
 
-static bool IsStrippableBuiltin(rdcspv::BuiltIn builtin)
+static bool IsStrippableBuiltin(rdcspv::BuiltIn builtin, bool perPrimitive)
 {
+  if(perPrimitive &&
+     (builtin == rdcspv::BuiltIn::PrimitiveId || builtin == rdcspv::BuiltIn::Layer ||
+      builtin == rdcspv::BuiltIn::ViewportIndex || builtin == rdcspv::BuiltIn::CullPrimitiveEXT ||
+      builtin == rdcspv::BuiltIn::ShadingRateKHR))
+    return true;
+
   return builtin == rdcspv::BuiltIn::PointSize || builtin == rdcspv::BuiltIn::ClipDistance ||
          builtin == rdcspv::BuiltIn::CullDistance;
 }
@@ -257,22 +402,20 @@ static uint32_t CalculateMinimumByteSize(const rdcarray<ShaderConstant> &variabl
   uint32_t byteOffset = last.byteOffset;
 
   // arrays are easy
-  if(last.type.descriptor.arrayByteStride > 0)
-    return byteOffset + last.type.descriptor.arrayByteStride * last.type.descriptor.elements;
+  if(last.type.arrayByteStride > 0)
+    return byteOffset + last.type.arrayByteStride * last.type.elements;
 
   if(last.type.members.empty())
   {
     // this is the last basic member
     // now calculate its size and return offset + size
 
-    RDCASSERT(last.type.descriptor.elements <= 1);
+    RDCASSERT(last.type.elements <= 1);
 
-    uint32_t basicTypeSize = 4;
-    if(last.type.descriptor.type == VarType::Double)
-      basicTypeSize = 8;
+    uint32_t basicTypeSize = VarTypeByteSize(last.type.baseType);
 
-    uint32_t rows = last.type.descriptor.rows;
-    uint32_t cols = last.type.descriptor.columns;
+    uint32_t rows = last.type.rows;
+    uint32_t cols = last.type.columns;
 
     // vectors are also easy
     if(rows == 1)
@@ -281,11 +424,11 @@ static uint32_t CalculateMinimumByteSize(const rdcarray<ShaderConstant> &variabl
       return byteOffset + rows * basicTypeSize;
 
     // for matrices we need to pad 3-column or 3-row up to 4
-    if(cols == 3 && last.type.descriptor.rowMajorStorage)
+    if(cols == 3 && last.type.RowMajor())
     {
       return byteOffset + rows * 4 * basicTypeSize;
     }
-    else if(rows == 3 && !last.type.descriptor.rowMajorStorage)
+    else if(rows == 3 && last.type.ColMajor())
     {
       return byteOffset + cols * 4 * basicTypeSize;
     }
@@ -309,15 +452,148 @@ static bool HasCommandLineInModuleProcessed(rdcspv::Generator gen)
           gen == rdcspv::Generator::ShadercoverGlslang);
 }
 
+struct StructSizes
+{
+  uint32_t scalarAlign = 1;
+  uint32_t baseAlign = 1;
+  uint32_t extendedAlign = 1;
+
+  uint32_t scalarSize = 0;
+  uint32_t baseSize = 0;
+  uint32_t extendedSize = 0;
+};
+
+StructSizes CalculateStructProps(uint32_t emptyStructSize, const ShaderConstant &c)
+{
+  StructSizes ret;
+
+  if(c.type.baseType != VarType::Struct)
+  {
+    // A scalar of size N has a scalar alignment of N.
+    // A vector or matrix type has a scalar alignment equal to that of its component type.
+    // An array type has a scalar alignment equal to that of its element type.
+    ret.scalarAlign = VarTypeByteSize(c.type.baseType);
+
+    // A scalar has a base alignment equal to its scalar alignment.
+    ret.baseAlign = ret.scalarAlign;
+
+    // A row-major matrix of C columns has a base alignment equal to the base alignment of a vector
+    // of C matrix components.
+    uint8_t vecSize = c.type.columns;
+    uint8_t matSize = c.type.rows;
+
+    // A column-major matrix has a base alignment equal to the base alignment of the matrix column
+    // type.
+    if(c.type.rows > 1 && c.type.ColMajor())
+    {
+      vecSize = c.type.rows;
+      matSize = c.type.columns;
+    }
+
+    // A two-component vector has a base alignment equal to twice its scalar alignment.
+    if(vecSize == 2)
+      ret.baseAlign *= 2;
+    // A three- or four-component vector has a base alignment equal to four times its scalar
+    // alignment.
+    else if(vecSize == 3 || vecSize == 4)
+      ret.baseAlign *= 4;
+
+    // An array has a base alignment equal to the base alignment of its element type.
+    // N/A
+
+    // A scalar, vector or matrix type has an extended alignment equal to its base alignment.
+    ret.extendedAlign = ret.baseAlign;
+
+    // An array or structure type has an extended alignment equal to the largest extended alignment
+    // of any of its members, rounded up to a multiple of 16.
+    if(c.type.elements > 1)
+      ret.extendedAlign = AlignUp16(ret.extendedAlign);
+
+    if(matSize > 1)
+      ret.extendedAlign = ret.baseAlign = c.type.matrixByteStride;
+
+    ret.scalarSize =
+        ret.scalarAlign * RDCMAX(c.type.rows, (uint8_t)1) * RDCMAX(c.type.columns, (uint8_t)1);
+    ret.baseSize = ret.baseAlign * matSize;
+    ret.extendedSize = ret.extendedAlign * matSize;
+  }
+  else
+  {
+    for(size_t i = 0; i < c.type.members.size(); i++)
+    {
+      const ShaderConstant &m = c.type.members[i];
+
+      StructSizes member = CalculateStructProps(emptyStructSize, m);
+      // A structure has a scalar alignment equal to the largest scalar alignment of any of its
+      // members.
+      ret.scalarAlign = RDCMAX(ret.scalarAlign, member.scalarAlign);
+      // A structure has a base alignment equal to the largest base alignment of any of its members.
+      ret.baseAlign = RDCMAX(ret.baseAlign, member.baseAlign);
+      // An array or structure type has an extended alignment equal to the largest extended
+      // alignment of any of its members, rounded up to a multiple of 16.
+      ret.extendedAlign = RDCMAX(ret.baseAlign, member.extendedAlign);
+
+      if(i + 1 == c.type.members.size())
+      {
+        // scalar struct sizes are NOT padded up to the multiple of their alignment. It is allowed
+        // in scalar packing for an outside variable to 'sit in' the padding at the end of a struct
+        // due to alignment. This rule is more tight than even C packing, which normally has
+        // sizeof(struct) be a multiple of its alignment
+        ret.scalarSize = m.byteOffset + member.scalarSize;
+        ret.baseSize = AlignUp(m.byteOffset + member.baseSize, ret.baseAlign);
+        ret.extendedSize = AlignUp16(m.byteOffset + member.extendedSize);
+      }
+    }
+
+    ret.extendedAlign = AlignUp16(ret.extendedAlign);
+
+    // A structure has a base alignment equal to the largest base alignment of any of its members.
+    // An empty structure has a base alignment equal to the size of the smallest scalar type
+    // permitted by the capabilities declared in the SPIR-V module. (e.g., for a 1 byte aligned
+    // empty struct in the StorageBuffer storage class, StorageBuffer8BitAccess or
+    // UniformAndStorageBuffer8BitAccess must be declared in the SPIR-V module.)
+    if(c.type.members.empty())
+    {
+      ret.scalarSize = 0;
+      ret.scalarAlign = emptyStructSize;
+      ret.baseSize = emptyStructSize;
+      ret.baseAlign = emptyStructSize;
+      ret.extendedSize = AlignUp16(emptyStructSize);
+      ret.extendedAlign = AlignUp16(emptyStructSize);
+    }
+  }
+
+  if(c.type.elements > 1)
+  {
+    const uint32_t nonFinalArraySize = (c.type.elements - 1) * c.type.arrayByteStride;
+    ret.scalarSize += nonFinalArraySize;
+    ret.baseSize += nonFinalArraySize;
+    ret.extendedSize += nonFinalArraySize;
+  }
+
+  return ret;
+}
+
+void CalculateScalarLayout(rdcarray<ShaderConstant> &consts)
+{
+  uint32_t offset = 0;
+  for(size_t i = 0; i < consts.size(); i++)
+  {
+    consts[i].byteOffset = offset;
+
+    CalculateScalarLayout(consts[i].type.members);
+
+    StructSizes sizes = CalculateStructProps(1, consts[i]);
+    if(consts[i].type.elements > 1)
+      consts[i].type.arrayByteStride = sizes.scalarSize / consts[i].type.elements;
+    offset += sizes.scalarSize;
+  }
+}
+
 namespace rdcspv
 {
 Reflector::Reflector()
 {
-}
-
-void Reflector::Parse(const rdcarray<uint32_t> &spirvWords)
-{
-  Processor::Parse(spirvWords);
 }
 
 void Reflector::PreParse(uint32_t maxId)
@@ -344,8 +620,21 @@ void Reflector::RegisterOp(Iter it)
     OpName name(it);
 
     // technically you could name a string - in that case we ignore the name
-    if(strings[name.target].empty())
-      strings[name.target] = name.name;
+    if(strings[name.target].empty() && !name.name.empty())
+    {
+      rdcstr nameStr = name.name;
+
+      int alias = 2;
+      while(usedNames.find(nameStr) != usedNames.end())
+      {
+        nameStr = name.name + "@" + ToStr(alias);
+        alias++;
+      }
+
+      usedNames.insert(nameStr);
+
+      strings[name.target] = nameStr;
+    }
   }
   else if(opdata.op == Op::MemberName)
   {
@@ -383,55 +672,28 @@ void Reflector::RegisterOp(Iter it)
   {
     OpSource source(it);
 
-    // glslang based tools output fake OpModuleProcessed comments at the start of pre-1.3
-    // shaders source before OpModuleProcessed existed (in SPIR-V 1.1)
-    if(m_MajorVersion == 1 && m_MinorVersion < 1 && HasCommandLineInModuleProcessed(m_Generator))
+    ProcessFakeModuleProcessed(source.source);
+
+    sourceLanguage = source.sourceLanguage;
+
+    rdcstr name = strings[source.file];
+    // don't add empty source statements as actual files
+    if(!name.empty() || !source.source.empty())
     {
-      rdcstr &src = source.source;
+      if(name.empty())
+        name = "unnamed_shader";
 
-      const char compileFlagPrefix[] = "// OpModuleProcessed ";
-      const char endMarker[] = "#line 1\n";
-      if(src.find(compileFlagPrefix) == 0)
-      {
-        // process compile flags
-        int32_t nextLine = src.indexOf('\n');
-        while(nextLine > 0)
-        {
-          bool finished = false;
-          if(src.find(compileFlagPrefix) == 0)
-          {
-            size_t offs = sizeof(compileFlagPrefix) - 1;
-            cmdline += " --" + src.substr(offs, nextLine - offs);
-          }
-          else if(src.find(endMarker) == 0)
-          {
-            finished = true;
-          }
-          else
-          {
-            RDCERR("Unexpected preamble line with OpModuleProcessed: %s",
-                   src.substr(0, nextLine).c_str());
-            break;
-          }
-
-          // erase this line
-          src.erase(0, nextLine + 1);
-
-          nextLine = src.indexOf('\n');
-
-          if(finished)
-            break;
-        }
-      }
+      sources.push_back({name, source.source});
     }
-
-    sources.push_back({source.sourceLanguage, strings[source.file], source.source});
   }
   else if(opdata.op == Op::SourceContinued)
   {
     OpSourceContinued continued(it);
 
-    sources.back().contents += continued.continuedSource;
+    // in theory someone could do OpSource with no source then OpSourceContinued. We treat this mostly
+    // as garbage-in, garbage-out, but just in case we have no files don't crash here and instead ignore it.
+    if(!sources.empty())
+      sources.back().contents += continued.continuedSource;
   }
   else if(opdata.op == Op::Label)
   {
@@ -441,11 +703,162 @@ void Reflector::RegisterOp(Iter it)
   {
     loopBlocks.insert(curBlock);
   }
+  else if(opdata.op == Op::ExtInst || opdata.op == Op::ExtInstWithForwardRefsKHR)
+  {
+    OpShaderDbg dbg(it);
+
+    // we don't care about much debug info for just reflection. Only pay attention to source files,
+    // and potential names of global variables that might be missing.
+    if(dbg.set == knownExtSet[ExtSet_ShaderDbg])
+    {
+      if(dbg.inst == ShaderDbg::Source)
+      {
+        rdcstr name = strings[dbg.arg<Id>(0)];
+        rdcstr source = dbg.params.size() > 1 ? strings[dbg.arg<Id>(1)] : rdcstr();
+
+        ProcessFakeModuleProcessed(source);
+
+        // don't add empty source statements as actual files
+        if(!name.empty() || !source.empty())
+        {
+          if(name.empty())
+            name = "unnamed_shader";
+
+          debugSources[dbg.result] = sources.size();
+          sources.push_back({name, source});
+        }
+      }
+      else if(dbg.inst == ShaderDbg::SourceContinued)
+      {
+        // in theory someone could do OpSource with no source then OpSourceContinued. We treat this
+        // mostly as garbage-in, garbage-out, but just in case we have no files don't crash here and
+        // instead ignore it.
+        if(!sources.empty())
+          sources.back().contents += strings[dbg.arg<Id>(0)];
+      }
+      else if(dbg.inst == ShaderDbg::Function)
+      {
+        LineColumnInfo &info = debugFuncToLocation[dbg.result];
+
+        debugFuncName[dbg.result] = strings[dbg.arg<Id>(0)];
+
+        // check this source file exists - we won't have registered it if there was no source code
+        auto srcit = debugSources.find(dbg.arg<Id>(2));
+        if(srcit != debugSources.end())
+        {
+          info.fileIndex = (int32_t)srcit->second;
+          info.lineStart = info.lineEnd = EvaluateConstant(dbg.arg<Id>(3), {}).value.u32v[0];
+        }
+      }
+      else if(dbg.inst == ShaderDbg::FunctionDefinition)
+      {
+        funcToDebugFunc[dbg.arg<Id>(1)] = dbg.arg<Id>(0);
+      }
+      else if(dbg.inst == ShaderDbg::CompilationUnit)
+      {
+        sourceLanguage = (SourceLanguage)EvaluateConstant(dbg.arg<Id>(3), {}).value.u32v[0];
+
+        auto srcit = debugSources.find(dbg.arg<Id>(2));
+        if(srcit != debugSources.end())
+          compUnitToFileIndex[dbg.result] = srcit->second;
+      }
+      else if(dbg.inst == ShaderDbg::EntryPoint)
+      {
+        debugFuncToBaseFile[dbg.arg<Id>(0)] = compUnitToFileIndex[dbg.arg<Id>(1)];
+        debugFuncToCmdLine[dbg.arg<Id>(0)] = strings[dbg.arg<Id>(3)];
+      }
+      else if(dbg.inst == ShaderDbg::GlobalVariable)
+      {
+        // copy the name string to the variable string only if it's empty. If it has a name already,
+        // we prefer that. If the variable is DebugInfoNone then we don't care about it's name.
+        if(strings[dbg.arg<Id>(7)].empty())
+          strings[dbg.arg<Id>(7)] = strings[dbg.arg<Id>(0)];
+      }
+    }
+  }
 }
 
 void Reflector::UnregisterOp(Iter it)
 {
   RDCFATAL("Reflector should not be used for editing! UnregisterOp() call invalid");
+}
+
+void Reflector::ProcessFakeModuleProcessed(rdcstr &src)
+{
+  // glslang based tools output fake OpModuleProcessed comments at the start of pre-1.3
+  // shaders source before OpModuleProcessed existed (in SPIR-V 1.1)
+  if(m_MajorVersion == 1 && m_MinorVersion < 1 && HasCommandLineInModuleProcessed(m_Generator))
+  {
+    const char compileFlagPrefix[] = "// OpModuleProcessed ";
+    const char endMarker[] = "#line 1\n";
+    if(src.find(compileFlagPrefix) == 0)
+    {
+      // process compile flags
+      int32_t nextLine = src.indexOf('\n');
+      while(nextLine > 0)
+      {
+        bool finished = false;
+        if(src.find(compileFlagPrefix) == 0)
+        {
+          size_t offs = sizeof(compileFlagPrefix) - 1;
+          cmdline += " --" + src.substr(offs, nextLine - offs);
+        }
+        else if(src.find(endMarker) == 0)
+        {
+          finished = true;
+        }
+        else
+        {
+          RDCERR("Unexpected preamble line with OpModuleProcessed: %s",
+                 src.substr(0, nextLine).c_str());
+          break;
+        }
+
+        // erase this line
+        src.erase(0, nextLine + 1);
+
+        nextLine = src.indexOf('\n');
+
+        if(finished)
+          break;
+      }
+    }
+  }
+}
+
+void Reflector::CalculateArrayTypeName(DataType &type)
+{
+  // prefer the name
+  rdcstr lengthName;
+
+  if(type.length != Id())
+  {
+    lengthName = strings[type.length];
+
+    // if not, use the constant value
+    if(lengthName.empty())
+      lengthName = StringiseConstant(type.length, {});
+
+    // if not, it might be a spec constant, use the fallback
+    if(lengthName.empty())
+      lengthName = StringFormat::Fmt("_%u", type.length.value());
+  }
+
+  rdcstr basename = dataTypes[type.InnerType()].name;
+
+  // arrays are inside-out, so we need to insert our new array length before the first array
+  // length
+  int arrayCharIdx = basename.indexOf('[');
+  if(arrayCharIdx > 0)
+  {
+    type.name = StringFormat::Fmt("%s[%s]%s", basename.substr(0, arrayCharIdx).c_str(),
+                                  lengthName.c_str(), basename.substr(arrayCharIdx).c_str());
+  }
+  else
+  {
+    type.name =
+        StringFormat::Fmt("%s[%s]", dataTypes[type.InnerType()].name.c_str(), lengthName.c_str());
+  }
 }
 
 void Reflector::PostParse()
@@ -480,37 +893,7 @@ void Reflector::PostParse()
       }
       else if(type.type == DataType::ArrayType)
       {
-        // prefer the name
-        rdcstr lengthName;
-
-        if(type.length != Id())
-        {
-          lengthName = strings[type.length];
-
-          // if not, use the constant value
-          if(lengthName.empty())
-            lengthName = StringiseConstant(type.length);
-
-          // if not, it might be a spec constant, use the fallback
-          if(lengthName.empty())
-            lengthName = StringFormat::Fmt("_%u", type.length.value());
-        }
-
-        rdcstr basename = dataTypes[type.InnerType()].name;
-
-        // arrays are inside-out, so we need to insert our new array length before the first array
-        // length
-        int arrayCharIdx = basename.indexOf('[');
-        if(arrayCharIdx > 0)
-        {
-          type.name = StringFormat::Fmt("%s[%s]%s", basename.substr(0, arrayCharIdx).c_str(),
-                                        lengthName.c_str(), basename.substr(arrayCharIdx).c_str());
-        }
-        else
-        {
-          type.name = StringFormat::Fmt("%s[%s]", dataTypes[type.InnerType()].name.c_str(),
-                                        lengthName.c_str());
-        }
+        CalculateArrayTypeName(type);
       }
       else if(type.type < DataType::StructType)
       {
@@ -540,14 +923,12 @@ void Reflector::PostParse()
           case Dim::Rect: name = "Rect"; break;
           case Dim::SubpassData: name = "Subpass"; break;
           case Dim::Buffer: name = "Buffer"; break;
+          case Dim::TileImageDataEXT: name = "TileImageData"; break;
           case Dim::Invalid:
           case Dim::Max: name = "Invalid"; break;
         }
 
-        name = ToStr(img.retType.Type()) + name;
-
-        if(img.sampled == 2 && img.dim != Dim::SubpassData)
-          name = "Storage" + name;
+        name = ToStr(img.retType.Type()) + ", " + name;
 
         if(img.ms)
           name += "MS";
@@ -555,6 +936,8 @@ void Reflector::PostParse()
           name += "Array";
 
         type.name = StringFormat::Fmt("Image<%s>", name.c_str());
+        if(img.sampled == 2 && img.dim != Dim::SubpassData)
+          type.name = "Storage" + type.name;
       }
       else if(type.type == DataType::SamplerType)
       {
@@ -565,6 +948,14 @@ void Reflector::PostParse()
         type.name = StringFormat::Fmt("Sampled%s",
                                       dataTypes[sampledImageTypes[type.id].baseId].name.c_str());
       }
+      else if(type.type == DataType::RayQueryType)
+      {
+        type.name = StringFormat::Fmt("rayQuery%u", type.id.value());
+      }
+      else if(type.type == DataType::AccelerationStructureType)
+      {
+        type.name = StringFormat::Fmt("accelerationStructure%u", type.id.value());
+      }
     }
   }
 
@@ -574,6 +965,20 @@ void Reflector::PostParse()
   {
     if(it->second.type == DataType::PointerType && it->second.name.empty())
       it->second.name = StringFormat::Fmt("%s*", dataTypes[it->second.InnerType()].name.c_str());
+  }
+
+  // finally do a last pass for arrays of pointers, now that we have pointer types
+  for(auto it = dataTypes.begin(); it != dataTypes.end(); ++it)
+  {
+    if(it->second.type == DataType::ArrayType)
+    {
+      DataType *iter = &it->second;
+      while(iter->type == DataType::ArrayType)
+        iter = &dataTypes[iter->InnerType()];
+
+      if(iter->type == DataType::PointerType)
+        CalculateArrayTypeName(it->second);
+    }
   }
 
   for(const MemberName &mem : memberNames)
@@ -593,16 +998,18 @@ rdcarray<ShaderEntryPoint> Reflector::EntryPoints() const
 
 void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage stage,
                                const rdcstr &entryPoint, const rdcarray<SpecConstant> &specInfo,
-                               ShaderReflection &reflection, ShaderBindpointMapping &mapping,
-                               SPIRVPatchData &patchData) const
+                               ShaderReflection &reflection, SPIRVPatchData &patchData) const
 {
   // set global properties
   reflection.entryPoint = entryPoint;
   reflection.stage = stage;
-  reflection.encoding = ShaderEncoding::SPIRV;
+  reflection.encoding =
+      sourceAPI == GraphicsAPI::OpenGL ? ShaderEncoding::OpenGLSPIRV : ShaderEncoding::SPIRV;
   reflection.rawBytes.assign((byte *)m_SPIRV.data(), m_SPIRV.size() * sizeof(uint32_t));
 
   CheckDebuggable(reflection.debugInfo.debuggable, reflection.debugInfo.debugStatus);
+
+  patchData.derivativeMode = ComputeDerivativeMode::None;
 
   const EntryPoint *entry = NULL;
   for(const EntryPoint &e : entries)
@@ -614,8 +1021,6 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
     }
   }
 
-  bool multiEntryModule = entries.size() > 1;
-
   if(!entry)
   {
     RDCERR("Entry point %s for stage %s not found in module", entryPoint.c_str(),
@@ -624,7 +1029,7 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
   }
 
   // pick up execution mode size
-  if(stage == ShaderStage::Compute)
+  if(stage == ShaderStage::Compute || stage == ShaderStage::Task || stage == ShaderStage::Mesh)
   {
     const EntryPoint &e = *entry;
 
@@ -643,6 +1048,24 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
       reflection.dispatchThreadsDimension[1] = e.executionModes.localSize.y;
       reflection.dispatchThreadsDimension[2] = e.executionModes.localSize.z;
     }
+
+    {
+      int idx = e.executionModes.others.indexOf(rdcspv::ExecutionMode::OutputVertices);
+      if(idx >= 0)
+        patchData.maxVertices = e.executionModes.others[idx].outputVertices;
+    }
+
+    {
+      int idx = e.executionModes.others.indexOf(rdcspv::ExecutionMode::OutputPrimitivesEXT);
+      if(idx >= 0)
+        patchData.maxPrimitives = e.executionModes.others[idx].outputPrimitivesEXT;
+    }
+
+    if(e.executionModes.others.contains(rdcspv::ExecutionMode::DerivativeGroupQuadsKHR))
+      patchData.derivativeMode = ComputeDerivativeMode::Quad;
+
+    if(e.executionModes.others.contains(rdcspv::ExecutionMode::DerivativeGroupLinearKHR))
+      patchData.derivativeMode = ComputeDerivativeMode::Linear;
 
     // vulkan spec says "If an object is decorated with the WorkgroupSize decoration, this must take
     // precedence over any execution mode set for LocalSize."
@@ -665,29 +1088,99 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
         reflection.dispatchThreadsDimension[2] = 0;
   }
 
-  if(!cmdline.empty())
-    reflection.debugInfo.compileFlags.flags = {{"@cmdline", cmdline}};
+  switch(sourceLanguage)
+  {
+    case SourceLanguage::ESSL:
+    case SourceLanguage::GLSL: reflection.debugInfo.encoding = ShaderEncoding::GLSL; break;
+    case SourceLanguage::HLSL: reflection.debugInfo.encoding = ShaderEncoding::HLSL; break;
+    case SourceLanguage::Slang: reflection.debugInfo.encoding = ShaderEncoding::Slang; break;
+    case SourceLanguage::OpenCL_C:
+    case SourceLanguage::OpenCL_CPP:
+    case SourceLanguage::CPP_for_OpenCL:
+    case SourceLanguage::Unknown:
+    case SourceLanguage::Invalid:
+    case SourceLanguage::SYCL:
+    case SourceLanguage::HERO_C:
+    case SourceLanguage::NZSL:
+    case SourceLanguage::WGSL:
+    case SourceLanguage::Zig:
+    case SourceLanguage::Rust:
+    case SourceLanguage::Pred:
+    case SourceLanguage::ApilaJai:
+    case SourceLanguage::Max: break;
+  }
 
   for(size_t i = 0; i < sources.size(); i++)
   {
-    switch(sources[i].lang)
-    {
-      case SourceLanguage::ESSL:
-      case SourceLanguage::GLSL: reflection.debugInfo.encoding = ShaderEncoding::GLSL; break;
-      case SourceLanguage::HLSL: reflection.debugInfo.encoding = ShaderEncoding::HLSL; break;
-      case SourceLanguage::OpenCL_C:
-      case SourceLanguage::OpenCL_CPP:
-      case SourceLanguage::Unknown:
-      case SourceLanguage::Invalid:
-      case SourceLanguage::Max: break;
-    }
+    reflection.debugInfo.files.push_back({sources[i].name, sources[i].contents});
+  }
 
-    if(!sources[i].contents.empty())
-      reflection.debugInfo.files.push_back({sources[i].name, sources[i].contents});
+  switch(m_Generator)
+  {
+    case Generator::GlslangReferenceFrontEnd:
+    case Generator::ShadercoverGlslang:
+      reflection.debugInfo.compiler = reflection.debugInfo.encoding == ShaderEncoding::HLSL
+                                          ? KnownShaderTool::glslangValidatorHLSL
+                                          : KnownShaderTool::glslangValidatorGLSL;
+
+      if(sourceAPI == GraphicsAPI::OpenGL &&
+         reflection.debugInfo.compiler == KnownShaderTool::glslangValidatorGLSL)
+        reflection.debugInfo.compiler = KnownShaderTool::glslangValidatorGLSL_OpenGL;
+      break;
+    case Generator::SPIRVToolsAssembler:
+      reflection.debugInfo.compiler = sourceAPI == GraphicsAPI::OpenGL
+                                          ? KnownShaderTool::spirv_as_OpenGL
+                                          : KnownShaderTool::spirv_as;
+      break;
+    case Generator::spiregg: reflection.debugInfo.compiler = KnownShaderTool::dxcSPIRV; break;
+    case Generator::SlangCompiler:
+      reflection.debugInfo.compiler = KnownShaderTool::slangSPIRV;
+      break;
+    default: reflection.debugInfo.compiler = KnownShaderTool::Unknown; break;
+  }
+
+  if(!cmdline.empty())
+    reflection.debugInfo.compileFlags.flags = {{"@cmdline", cmdline}};
+
+  reflection.debugInfo.entrySourceName = entryPoint;
+
+  {
+    auto it = funcToDebugFunc.find(entry->id);
+    if(it != funcToDebugFunc.end())
+    {
+      rdcstr debugEntryName = debugFuncName[it->second];
+      if(!debugEntryName.empty())
+        reflection.debugInfo.entrySourceName = debugEntryName;
+      reflection.debugInfo.entryLocation = debugFuncToLocation[it->second];
+      if(debugFuncToCmdLine.find(it->second) != debugFuncToCmdLine.end())
+        reflection.debugInfo.compileFlags.flags = {{"@cmdline", debugFuncToCmdLine[it->second]}};
+      if(debugFuncToBaseFile.find(it->second) != debugFuncToBaseFile.end())
+        reflection.debugInfo.editBaseFile = (int32_t)debugFuncToBaseFile[it->second];
+    }
+  }
+
+  reflection.debugInfo.compileFlags.flags.push_back(
+      {"@spirver", StringFormat::Fmt("spirv%d.%d", m_MajorVersion, m_MinorVersion)});
+
+  PreprocessLineDirectives(reflection.debugInfo.files);
+
+  // we do a mini-preprocess of the files from the debug info to handle #line directives.
+  // This means that any lines that our source file declares to be in another filename via a #line
+  // get put in the right place for what the debug information hopefully matches.
+  // We also concatenate duplicate lines and display them all, to handle edge cases where #lines
+  // declare duplicates.
+
+  if(knownExtSet[ExtSet_ShaderDbg] != Id() && !reflection.debugInfo.files.empty())
+  {
+    reflection.debugInfo.sourceDebugInformation = true;
   }
 
   std::set<Id> usedIds;
   std::map<Id, std::set<uint32_t>> usedStructChildren;
+  // for arrayed top level builtins like gl_MeshPrimitivesEXT[] there could be an access chain
+  // first with just the array index, then later the access to the builtin. This map tracks those
+  // first access chains so the second one can reference the original global
+  std::map<Id, Id> topLevelChildChain;
 
   // build the static call tree from the entry point, and build a list of all IDs referenced
   {
@@ -713,10 +1206,39 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
         {
           OpAccessChain access(it);
 
+          const DataType &pointeeType = dataTypes[dataTypes[idTypes[access.base]].InnerType()];
+
+          if(pointeeType.type == DataType::ArrayType)
+          {
+            const DataType &innerType = dataTypes[pointeeType.InnerType()];
+
+            if(innerType.type == DataType::StructType &&
+               (innerType.children[0].decorations.flags & rdcspv::Decorations::HasBuiltIn))
+            {
+              if(access.indexes.size() == 1)
+              {
+                topLevelChildChain[access.result] = access.base;
+              }
+              else if(access.indexes.size() == 2)
+              {
+                usedStructChildren[access.base].insert(
+                    EvaluateConstant(access.indexes[1], specInfo).value.u32v[0]);
+              }
+            }
+          }
           // save top-level children referenced in structs
-          if(dataTypes[dataTypes[idTypes[access.base]].InnerType()].type == DataType::StructType)
-            usedStructChildren[access.base].insert(
-                EvaluateConstant(access.indexes[0], specInfo).value.u32v[0]);
+          else if(pointeeType.type == DataType::StructType)
+          {
+            rdcspv::Id globalId = access.base;
+
+            if(topLevelChildChain.find(access.base) != topLevelChildChain.end())
+              globalId = topLevelChildChain[access.base];
+
+            // It is legal to have zero indexes
+            if(!access.indexes.empty())
+              usedStructChildren[globalId].insert(
+                  EvaluateConstant(access.indexes[0], specInfo).value.u32v[0]);
+          }
         }
 
         if(it.opcode() == Op::FunctionCall)
@@ -740,21 +1262,49 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
     usedIds.clear();
     usedIds.insert(entry->usedIds.begin(), entry->usedIds.end());
   }
+  else
+  {
+    // before that, still consider all entry interface used just not exclusively
+    usedIds.insert(entry->usedIds.begin(), entry->usedIds.end());
+  }
+
+  patchData.usedIds.reserve(usedIds.size());
+  for(Id id : usedIds)
+    patchData.usedIds.push_back(id);
+
+  patchData.threadScope = m_ThreadScope;
+  if(entry->executionModel == ExecutionModel::Fragment)
+    patchData.threadScope |= ThreadScope::Quad;
 
   // arrays of elements, which can be appended to in any order and then sorted
   rdcarray<SigParameter> inputs;
   rdcarray<SigParameter> outputs;
-  rdcarray<cblockpair> cblocks;
-  rdcarray<shaderrespair> samplers, roresources, rwresources;
+  rdcarray<sortedcblock> cblocks;
+  rdcarray<sortedsamp> samplers;
+  rdcarray<sortedres> roresources, rwresources;
 
-  // for pointer types, mapping of inner type ID to index in list (assigned sequentially)
+  // for pointer types, mapping of pointer type ID to index in list (assigned sequentially)
   SparseIdMap<uint16_t> pointerTypes;
 
   // $Globals gathering - for GL global values
   ConstantBlock globalsblock;
 
+  // for mesh shaders, the task-mesh communication payload
+  ConstantBlock taskPayloadBlock;
+
   // specialisation constant gathering
   ConstantBlock specblock;
+
+  // declare pointerTypes for all declared physical pointer types first. This allows the debugger
+  // to easily match pointer types itself
+  for(auto it = dataTypes.begin(); it != dataTypes.end(); ++it)
+  {
+    if(it->second.type == DataType::PointerType &&
+       it->second.pointerType.storage == rdcspv::StorageClass::PhysicalStorageBuffer)
+    {
+      pointerTypes.insert(std::make_pair(it->first, (uint16_t)pointerTypes.size()));
+    }
+  }
 
   for(const Variable &global : globals)
   {
@@ -762,6 +1312,7 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
     {
       // variable type must be a pointer of the same storage class
       RDCASSERT(dataTypes[global.type].type == DataType::PointerType);
+      RDCASSERT(dataTypes[global.type].pointerType.storage == global.storage);
       const DataType &baseType = dataTypes[dataTypes[global.type].InnerType()];
 
       const bool isInput = (global.storage == StorageClass::Input);
@@ -775,19 +1326,38 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
       if(name.empty())
       {
         if(decorations[global.id].flags & Decorations::HasBuiltIn)
+        {
           name = StringFormat::Fmt("_%s", ToStr(decorations[global.id].builtIn).c_str());
+        }
         else if(decorations[global.id].flags & Decorations::HasLocation)
+        {
           name = StringFormat::Fmt("_%s%u", isInput ? "input" : "output",
                                    decorations[global.id].location);
+        }
         else
+        {
           name = StringFormat::Fmt("_sig%u", global.id.value());
+
+          // on GL, detect and name gl_PerVertex as the builtin struct
+          if(sourceAPI == GraphicsAPI::OpenGL)
+          {
+            if(!baseType.children.empty() &&
+               baseType.children[0].decorations.flags & Decorations::HasBuiltIn)
+              name = "gl_PerVertex";
+          }
+        }
+
+        for(const DecorationAndParamData &d : decorations[global.id].others)
+        {
+          if(d.value == Decoration::Component)
+            name += StringFormat::Fmt("_%u", d.component);
+        }
       }
 
       const bool used = usedIds.find(global.id) != usedIds.end();
 
-      // if there are multiple entry points in this module only include signature parameters that
-      // are explicitly used.
-      if(multiEntryModule && !used)
+      // only include signature parameters that are explicitly used.
+      if(!used)
         continue;
 
       // we want to skip any members of the builtin interface block that are completely unused and
@@ -798,8 +1368,21 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
       //
       // Some compilers generate global variables instead of members of a global struct. If this is
       // a directly decorated builtin variable which is never used, skip it
-      if(IsStrippableBuiltin(decorations[global.id].builtIn) && !used)
+      if(IsStrippableBuiltin(
+             decorations[global.id].builtIn,
+             decorations[global.id].others.contains(rdcspv::Decoration::PerPrimitiveEXT)) &&
+         !used)
         continue;
+
+      // move to the inner struct if this is an array of structs - e.g. for arrayed shader outputs
+      const DataType *structType = &baseType;
+      bool arrayOfStructsBase = false;
+      if(structType->type == DataType::ArrayType &&
+         dataTypes[structType->InnerType()].type == DataType::StructType)
+      {
+        structType = &dataTypes[structType->InnerType()];
+        arrayOfStructsBase = true;
+      }
 
       // if this is a struct variable then either all members must be builtins, or none of them, as
       // per the SPIR-V Decoration rules:
@@ -811,13 +1394,13 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
       // Some old compilers might generate gl_PerVertex with unused variables having no decoration,
       // so to handle this case we treat a struct with any builtin members as if all are builtin -
       // which is still legal.
-      if(baseType.type == DataType::StructType)
+      if(structType->type == DataType::StructType)
       {
         // look to see if this struct contains a builtin member
         bool hasBuiltins = false;
-        for(size_t i = 0; i < baseType.children.size(); i++)
+        for(size_t i = 0; i < structType->children.size(); i++)
         {
-          hasBuiltins = (baseType.children[i].decorations.builtIn != BuiltIn::Invalid);
+          hasBuiltins = (structType->children[i].decorations.builtIn != BuiltIn::Invalid);
           if(hasBuiltins)
             break;
         }
@@ -828,31 +1411,49 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
         {
           const std::set<uint32_t> &usedchildren = usedStructChildren[global.id];
 
-          for(uint32_t i = 0; i < (uint32_t)baseType.children.size(); i++)
+          size_t oldSigSize = sigarray.size();
+
+          for(uint32_t i = 0; i < (uint32_t)structType->children.size(); i++)
           {
             // skip this member if it's in a builtin struct but has no builtin decoration
-            if(baseType.children[i].decorations.builtIn == BuiltIn::Invalid)
+            if(structType->children[i].decorations.builtIn == BuiltIn::Invalid)
               continue;
 
             // skip this member if it's unused and of a type that is commonly included 'by accident'
-            if(IsStrippableBuiltin(baseType.children[i].decorations.builtIn) &&
+            if(IsStrippableBuiltin(structType->children[i].decorations.builtIn,
+                                   structType->children[i].decorations.others.contains(
+                                       rdcspv::Decoration::PerPrimitiveEXT)) &&
                usedchildren.find(i) == usedchildren.end())
               continue;
 
             rdcstr childname = name;
 
-            if(!baseType.children[i].name.empty())
-              childname += "." + baseType.children[i].name;
+            if(!structType->children[i].name.empty())
+              childname += "." + structType->children[i].name;
             else
               childname += StringFormat::Fmt("._child%zu", i);
 
             SPIRVInterfaceAccess patch;
             patch.accessChain = {i};
+            if(arrayOfStructsBase)
+              patch.accessChain.insert(0, 0);
 
             uint32_t dummy = 0;
-            AddSignatureParameter(isInput, stage, global.id, baseType.id, dummy, patch, childname,
-                                  dataTypes[baseType.children[i].type],
-                                  baseType.children[i].decorations, sigarray, patchData, specInfo);
+            AddSignatureParameter(isInput, stage, global.id, structType->id, dummy, patch,
+                                  childname, dataTypes[structType->children[i].type],
+                                  structType->children[i].decorations, sigarray, patchData, specInfo);
+          }
+
+          // apply stream decoration from a parent struct into newly-added members
+          for(const DecorationAndParamData &d : decorations[global.id].others)
+          {
+            if(d.value == Decoration::Stream)
+            {
+              for(size_t idx = oldSigSize; idx < sigarray.size(); idx++)
+              {
+                sigarray[idx].stream = d.stream;
+              }
+            }
           }
 
           // move on now, we've processed this global struct
@@ -868,7 +1469,8 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
             global.storage == StorageClass::UniformConstant ||
             global.storage == StorageClass::AtomicCounter ||
             global.storage == StorageClass::StorageBuffer ||
-            global.storage == StorageClass::PushConstant)
+            global.storage == StorageClass::PushConstant ||
+            global.storage == StorageClass::TaskPayloadWorkgroupEXT)
     {
       // variable type must be a pointer of the same storage class
       RDCASSERT(dataTypes[global.type].type == DataType::PointerType);
@@ -877,49 +1479,60 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
       const DataType *varType = &dataTypes[dataTypes[global.type].InnerType()];
 
       // if the outer type is an array, get the length and peel it off.
-      bool isArray = false;
       uint32_t arraySize = 1;
+      bool singleArray = false;
       if(varType->type == DataType::ArrayType)
       {
-        isArray = true;
         // runtime arrays have no length
         if(varType->length != Id())
           arraySize = EvaluateConstant(varType->length, specInfo).value.u32v[0];
         else
           arraySize = ~0U;
+        singleArray = (arraySize == 1);
         varType = &dataTypes[varType->InnerType()];
       }
 
       // new SSBOs are in the storage buffer class, previously they were in uniform with BufferBlock
       // decoration
+      const bool block = (decorations[varType->id].flags & Decorations::Block);
       const bool ssbo = (global.storage == StorageClass::StorageBuffer) ||
                         (decorations[varType->id].flags & Decorations::BufferBlock);
       const bool pushConst = (global.storage == StorageClass::PushConstant);
       const bool atomicCounter = (global.storage == StorageClass::AtomicCounter);
+      const bool taskPayload = (global.storage == StorageClass::TaskPayloadWorkgroupEXT);
 
-      Bindpoint bindmap;
-      // set something crazy so this doesn't overlap with a real buffer binding
-      if(pushConst)
-        bindmap.bindset = PushConstantBindSet;
-      else
-        bindmap.bindset = GetDescSet(decorations[global.id].set);
+      rdcspv::StorageClass effectiveStorage = global.storage;
+      if(ssbo)
+        effectiveStorage = StorageClass::StorageBuffer;
 
-      bindmap.bind = GetBinding(decorations[global.id].binding);
+      uint32_t bindset = 0;
+      if(!pushConst)
+        bindset = GetDescSet(decorations[global.id].set);
 
-      // On GL if we have a location and no binding, put that in as the bind. It will be overwritten
-      // dynamically with the actual value read from glGetUniform. This should only happen for
+      uint32_t bind = GetBinding(decorations[global.id].binding);
+
+      // On GL if we have a location and no binding, put that in as the bind. It is not used
+      // otherwise on GL as the bindings are dynamic. This should only happen for
       // bare uniforms and not for texture/buffer type uniforms which should have a binding
-      if(sourceAPI == GraphicsAPI::OpenGL &&
-         (decorations[global.id].flags & (Decorations::HasLocation | Decorations::HasBinding)) ==
-             Decorations::HasLocation)
+      if(sourceAPI == GraphicsAPI::OpenGL)
       {
-        bindmap.bind = -int32_t(decorations[global.id].location);
+        Decorations::Flags flags = Decorations::Flags(
+            decorations[global.id].flags & (Decorations::HasLocation | Decorations::HasBinding));
+
+        bindset = 0;
+
+        if(flags == Decorations::HasLocation)
+        {
+          bind = decorations[global.id].location;
+          bindset = 1;
+        }
+        else if(flags == Decorations::NoFlags)
+        {
+          bind = ~0U;
+        }
       }
 
-      bindmap.arraySize = isArray ? arraySize : 1;
-      bindmap.used = usedIds.find(global.id) != usedIds.end();
-
-      if(multiEntryModule && !bindmap.used)
+      if(usedIds.find(global.id) == usedIds.end())
       {
         // ignore this variable that's not in the entry point's used interface
       }
@@ -937,18 +1550,19 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
           res.name = varType->name;
         if(res.name.empty())
           res.name = StringFormat::Fmt("atomic%u", global.id.value());
-        res.resType = TextureType::Buffer;
+        res.textureType = TextureType::Buffer;
+        res.descriptorType = DescriptorType::ReadWriteBuffer;
 
-        res.variableType.descriptor.columns = 1;
-        res.variableType.descriptor.rows = 1;
-        res.variableType.descriptor.rowMajorStorage = false;
-        res.variableType.descriptor.type = VarType::UInt;
-        res.variableType.descriptor.name = varType->name;
+        res.variableType.columns = 1;
+        res.variableType.rows = 1;
+        res.variableType.baseType = VarType::UInt;
+        res.variableType.name = varType->name;
 
-        bindmap.bindset = 0;
-        bindmap.bind = GetBinding(decorations[global.id].binding);
+        res.fixedBindSetOrSpace = bindset;
+        res.fixedBindNumber = GetBinding(decorations[global.id].binding);
+        res.bindArraySize = arraySize;
 
-        rwresources.push_back(shaderrespair(bindmap, res));
+        rwresources.push_back(sortedres(global.id, res));
       }
       else if(varType->IsOpaqueType())
       {
@@ -956,7 +1570,7 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
         // should have gotten a location
         // above, which will be rewritten later when looking up the pipeline state since it's
         // mutable from action to action in theory.
-        RDCASSERT(!bindmap.used || bindmap.bind != INVALID_BIND);
+        RDCASSERT(bind != INVALID_BIND);
 
         // opaque type - buffers, images, etc
         ShaderResource res;
@@ -965,75 +1579,141 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
         if(res.name.empty())
           res.name = StringFormat::Fmt("res%u", global.id.value());
 
+        res.fixedBindSetOrSpace = bindset;
+        res.fixedBindNumber = bind;
+        res.bindArraySize = arraySize;
+
         if(varType->type == DataType::SamplerType)
         {
-          res.resType = TextureType::Unknown;
+          ShaderSampler samp;
+          samp.name = res.name;
+          samp.fixedBindSetOrSpace = bindset;
+          samp.fixedBindNumber = bind;
+          samp.bindArraySize = arraySize;
+
+          samplers.push_back(sortedsamp(global.id, samp));
+        }
+        else if(varType->type == DataType::AccelerationStructureType)
+        {
+          res.descriptorType = DescriptorType::AccelerationStructure;
+          res.variableType.baseType = VarType::ReadOnlyResource;
           res.isTexture = false;
           res.isReadOnly = true;
 
-          samplers.push_back(shaderrespair(bindmap, res));
+          roresources.push_back(sortedres(global.id, res));
         }
         else
         {
           Id imageTypeId = varType->id;
 
           if(varType->type == DataType::SampledImageType)
+          {
             imageTypeId = sampledImageTypes[varType->id].baseId;
+            res.hasSampler = true;
+          }
 
           const Image &imageType = imageTypes[imageTypeId];
 
           if(imageType.ms)
-            res.resType =
+            res.textureType =
                 imageType.arrayed ? TextureType::Texture2DMSArray : TextureType::Texture2DMS;
           else if(imageType.dim == rdcspv::Dim::_1D)
-            res.resType = imageType.arrayed ? TextureType::Texture1DArray : TextureType::Texture1D;
+            res.textureType =
+                imageType.arrayed ? TextureType::Texture1DArray : TextureType::Texture1D;
           else if(imageType.dim == rdcspv::Dim::_2D)
-            res.resType = imageType.arrayed ? TextureType::Texture2DArray : TextureType::Texture2D;
+            res.textureType =
+                imageType.arrayed ? TextureType::Texture2DArray : TextureType::Texture2D;
           else if(imageType.dim == rdcspv::Dim::Cube)
-            res.resType =
+            res.textureType =
                 imageType.arrayed ? TextureType::TextureCubeArray : TextureType::TextureCube;
           else if(imageType.dim == rdcspv::Dim::_3D)
-            res.resType = TextureType::Texture3D;
+            res.textureType = TextureType::Texture3D;
           else if(imageType.dim == rdcspv::Dim::Rect)
-            res.resType = TextureType::TextureRect;
+            res.textureType = TextureType::TextureRect;
           else if(imageType.dim == rdcspv::Dim::Buffer)
-            res.resType = TextureType::Buffer;
+            res.textureType = TextureType::Buffer;
           else if(imageType.dim == rdcspv::Dim::SubpassData)
-            res.resType = TextureType::Texture2D;
+            res.textureType = TextureType::Texture2D;
 
-          res.isTexture = res.resType != TextureType::Buffer;
+          res.isTexture = res.textureType != TextureType::Buffer;
           res.isReadOnly = imageType.sampled != 2 || imageType.dim == rdcspv::Dim::SubpassData;
+          res.isInputAttachment = imageType.dim == rdcspv::Dim::SubpassData;
 
-          res.variableType.descriptor.type = imageType.retType.Type();
+          res.variableType.baseType = imageType.retType.Type();
 
           if(res.isReadOnly)
-            roresources.push_back(shaderrespair(bindmap, res));
+          {
+            res.descriptorType =
+                res.hasSampler ? DescriptorType::ImageSampler : DescriptorType::Image;
+            if(!res.isTexture)
+              res.descriptorType = DescriptorType::TypedBuffer;
+
+            roresources.push_back(sortedres(global.id, res));
+          }
           else
-            rwresources.push_back(shaderrespair(bindmap, res));
+          {
+            res.descriptorType = DescriptorType::ReadWriteImage;
+            if(!res.isTexture)
+              res.descriptorType = DescriptorType::ReadWriteTypedBuffer;
+
+            rwresources.push_back(sortedres(global.id, res));
+          }
         }
       }
       else
       {
-        if(varType->type != DataType::StructType)
+        if(varType->type != DataType::StructType ||
+           (sourceAPI == GraphicsAPI::OpenGL && !block && !ssbo))
         {
-          // global loose variable - add to $Globals block
-          RDCASSERT(varType->type == DataType::ScalarType || varType->type == DataType::VectorType ||
-                    varType->type == DataType::MatrixType || varType->type == DataType::ArrayType);
-          RDCASSERT(sourceAPI == GraphicsAPI::OpenGL);
-
-          ShaderConstant constant;
-
-          MakeConstantBlockVariable(constant, pointerTypes, *varType, strings[global.id],
-                                    decorations[global.id], specInfo);
-
-          if(isArray)
-            constant.type.descriptor.elements = arraySize;
+          if(taskPayload)
+          {
+            if(!patchData.invalidTaskPayload)
+            {
+              RDCWARN(
+                  "Unhandled case - non-struct task payload. Most likely DXC bug as only one task "
+                  "payload variable allowed per entry point.");
+              taskPayloadBlock.name = "invalid";
+              taskPayloadBlock.bufferBacked = false;
+              patchData.invalidTaskPayload = true;
+            }
+          }
           else
-            constant.type.descriptor.elements = 0;
+          {
+            // global loose variable - add to $Globals block
+            RDCASSERT(varType->type == DataType::ScalarType ||
+                      varType->type == DataType::VectorType || varType->type == DataType::MatrixType ||
+                      varType->type == DataType::ArrayType || varType->type == DataType::StructType);
+            RDCASSERT(sourceAPI == GraphicsAPI::OpenGL);
 
-          constant.byteOffset = decorations[global.id].location;
+            ShaderConstant constant;
 
-          globalsblock.variables.push_back(constant);
+            MakeConstantBlockVariable(constant, pointerTypes, effectiveStorage, *varType,
+                                      strings[global.id], decorations[global.id], true, specInfo);
+
+            if(arraySize > 1)
+              constant.type.elements = arraySize;
+            else
+              constant.type.elements = 1;
+
+            if(singleArray)
+              constant.type.flags |= ShaderVariableFlags::SingleElementArray;
+
+            constant.byteOffset = decorations[global.id].location;
+
+            globalsblock.variables.push_back(constant);
+          }
+        }
+        else if(taskPayload)
+        {
+          taskPayloadBlock.name = strings[global.id];
+          if(taskPayloadBlock.name.empty())
+            taskPayloadBlock.name = StringFormat::Fmt("payload%u", global.id.value());
+          taskPayloadBlock.bufferBacked = false;
+
+          MakeConstantBlockVariables(effectiveStorage, *varType, 0, 0, taskPayloadBlock.variables,
+                                     pointerTypes, false, specInfo);
+
+          CalculateScalarLayout(taskPayloadBlock.variables);
         }
         else
         {
@@ -1041,7 +1721,7 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
           // it's push constants (which is handled elsewhere). On GL we should have gotten a
           // location above, which will be rewritten later when looking up the pipeline state since
           // it's mutable from action to action in theory.
-          RDCASSERT(!bindmap.used || pushConst || bindmap.bind != INVALID_BIND);
+          RDCASSERT(pushConst || bind != INVALID_BIND);
 
           if(ssbo)
           {
@@ -1052,37 +1732,50 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
             res.name = strings[global.id];
             if(res.name.empty())
               res.name = StringFormat::Fmt("ssbo%u", global.id.value());
-            res.resType = TextureType::Buffer;
+            res.textureType = TextureType::Buffer;
+            res.descriptorType = DescriptorType::ReadWriteBuffer;
 
-            res.variableType.descriptor.columns = 0;
-            res.variableType.descriptor.rows = 0;
-            res.variableType.descriptor.rowMajorStorage = false;
-            res.variableType.descriptor.rows = 0;
-            res.variableType.descriptor.type = VarType::Float;
-            res.variableType.descriptor.name = varType->name;
+            res.fixedBindNumber = bind;
+            res.fixedBindSetOrSpace = bindset;
+            res.bindArraySize = arraySize;
 
-            MakeConstantBlockVariables(*varType, 0, 0, res.variableType.members, pointerTypes,
-                                       specInfo);
+            res.variableType.columns = 0;
+            res.variableType.rows = 0;
+            res.variableType.baseType = VarType::Float;
+            res.variableType.name = varType->name;
 
-            rwresources.push_back(shaderrespair(bindmap, res));
+            MakeConstantBlockVariables(effectiveStorage, *varType, 0, 0, res.variableType.members,
+                                       pointerTypes, false, specInfo);
+
+            rwresources.push_back(sortedres(global.id, res));
           }
           else
           {
+            // except on OpenGL, a struct type should be either Storage/BufferBlock or Block
+            // decorated. The GL case is handled above
+            RDCASSERTMSG("Should be block-decorated", block);
+
             ConstantBlock cblock;
 
             cblock.name = strings[global.id];
             if(cblock.name.empty())
               cblock.name = StringFormat::Fmt("uniforms%u", global.id.value());
             cblock.bufferBacked = !pushConst;
+            cblock.inlineDataBytes = pushConst;
 
-            MakeConstantBlockVariables(*varType, 0, 0, cblock.variables, pointerTypes, specInfo);
+            cblock.fixedBindNumber = bind;
+            cblock.fixedBindSetOrSpace = bindset;
+            cblock.bindArraySize = arraySize;
+
+            MakeConstantBlockVariables(effectiveStorage, *varType, 0, 0, cblock.variables,
+                                       pointerTypes, false, specInfo);
 
             if(!varType->children.empty())
               cblock.byteSize = CalculateMinimumByteSize(cblock.variables);
             else
               cblock.byteSize = 0;
 
-            cblocks.push_back(cblockpair(bindmap, cblock));
+            cblocks.push_back(sortedcblock(global.id, cblock));
           }
         }
       }
@@ -1102,18 +1795,20 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
   for(auto it : constants)
   {
     const Constant &c = it.second;
-    if(decorations[c.id].specID != ~0U)
+    if(decorations[c.id].flags & Decorations::HasSpecId)
     {
       rdcstr name = strings[c.id];
       if(name.empty())
         name = StringFormat::Fmt("specID%u", decorations[c.id].specID);
 
       ShaderConstant spec;
-      MakeConstantBlockVariable(spec, pointerTypes, dataTypes[c.type], name, decorations[c.id],
-                                specInfo);
-      spec.byteOffset = decorations[c.id].specID * sizeof(uint64_t);
+      MakeConstantBlockVariable(spec, pointerTypes, rdcspv::StorageClass::PushConstant,
+                                dataTypes[c.type], name, decorations[c.id], false, specInfo);
+      spec.byteOffset = uint32_t(specblock.variables.size() * sizeof(uint64_t));
       spec.defaultValue = c.value.value.u64v[0];
       specblock.variables.push_back(spec);
+
+      patchData.specIDs.push_back(decorations[c.id].specID);
     }
   }
 
@@ -1121,42 +1816,31 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
   {
     specblock.name = "Specialization Constants";
     specblock.bufferBacked = false;
+    specblock.inlineDataBytes = true;
     specblock.compileConstants = true;
     specblock.byteSize = 0;
+    // set the binding number to some huge value to try to sort it to the end
+    specblock.fixedBindNumber = 0x8000000;
+    specblock.bindArraySize = 1;
 
-    Bindpoint bindmap;
-
-    // set something crazy so this doesn't overlap with a real buffer binding
-    // also identify this as specialization constant data
-    bindmap.bindset = SpecializationConstantBindSet;
-    bindmap.bind = INVALID_BIND;
-    bindmap.arraySize = 1;
-    bindmap.used = true;
-
-    // sort by spec IDs
-    std::sort(specblock.variables.begin(), specblock.variables.end(),
-              [](const ShaderConstant &a, const ShaderConstant &b) {
-                return a.byteOffset < b.byteOffset;
-              });
-
-    cblocks.push_back(cblockpair(bindmap, specblock));
+    cblocks.push_back(sortedcblock(Id(), specblock));
   }
 
   if(!globalsblock.variables.empty())
   {
     globalsblock.name = "$Globals";
     globalsblock.bufferBacked = false;
+    globalsblock.inlineDataBytes = false;
     globalsblock.byteSize = (uint32_t)globalsblock.variables.size();
-    globalsblock.bindPoint = (int)cblocks.size();
+    globalsblock.fixedBindSetOrSpace = 0;
+    // set the binding number to some huge value to try to sort it to the end
+    globalsblock.fixedBindNumber = 0x8000001;
+    globalsblock.bindArraySize = 1;
 
-    Bindpoint bindmap;
-    bindmap.bindset = 0;
-    bindmap.bind = INVALID_BIND;
-    bindmap.arraySize = 1;
-    bindmap.used = true;
-
-    cblocks.push_back(cblockpair(bindmap, globalsblock));
+    cblocks.push_back(sortedcblock(Id(), globalsblock));
   }
+
+  reflection.taskPayload = taskPayloadBlock;
 
   // look for execution modes that affect the reflection and apply them
   {
@@ -1179,7 +1863,14 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
       }
     }
 
-    patchData.outTopo = e.executionModes.outTopo;
+    reflection.outputTopology = e.executionModes.outTopo;
+
+    if(e.executionModes.others.contains(rdcspv::ExecutionMode::OutputPoints))
+      reflection.outputTopology = Topology::PointList;
+    else if(e.executionModes.others.contains(rdcspv::ExecutionMode::OutputLinesEXT))
+      reflection.outputTopology = Topology::LineList;
+    else if(e.executionModes.others.contains(rdcspv::ExecutionMode::OutputTrianglesEXT))
+      reflection.outputTopology = Topology::TriangleList;
   }
 
   for(auto it = extSets.begin(); it != extSets.end(); it++)
@@ -1255,15 +1946,7 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
     if(reflection.inputSignature[i].systemValue == ShaderBuiltin::Undefined)
       numInputs = RDCMAX(numInputs, (size_t)reflection.inputSignature[i].regIndex + 1);
 
-  mapping.inputAttributes.resize(numInputs);
-  for(size_t i = 0; i < numInputs; i++)
-    mapping.inputAttributes[i] = -1;
-
-  for(size_t i = 0; i < reflection.inputSignature.size(); i++)
-    if(reflection.inputSignature[i].systemValue == ShaderBuiltin::Undefined)
-      mapping.inputAttributes[reflection.inputSignature[i].regIndex] = (int32_t)i;
-
-  for(cblockpair &cb : cblocks)
+  for(sortedcblock &cb : cblocks)
   {
     // sort the variables within each block because we want them in offset order but they don't have
     // to be declared in offset order in the SPIR-V.
@@ -1275,64 +1958,85 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
   std::sort(roresources.begin(), roresources.end());
   std::sort(rwresources.begin(), rwresources.end());
 
-  mapping.constantBlocks.resize(cblocks.size());
   reflection.constantBlocks.resize(cblocks.size());
-
-  mapping.samplers.resize(samplers.size());
   reflection.samplers.resize(samplers.size());
-
-  mapping.readOnlyResources.resize(roresources.size());
   reflection.readOnlyResources.resize(roresources.size());
-
-  mapping.readWriteResources.resize(rwresources.size());
   reflection.readWriteResources.resize(rwresources.size());
 
   for(size_t i = 0; i < cblocks.size(); i++)
   {
-    mapping.constantBlocks[i] = cblocks[i].map;
+    patchData.cblockInterface.push_back(cblocks[i].id);
+    reflection.constantBlocks[i] = cblocks[i].bindres;
     // fix up any bind points marked with INVALID_BIND. They were sorted to the end
     // but from here on we want to just be able to index with the bind point
     // without any special casing.
-    if(mapping.constantBlocks[i].bind == INVALID_BIND)
-      mapping.constantBlocks[i].bind = 0;
-    reflection.constantBlocks[i] = cblocks[i].bindres;
-    reflection.constantBlocks[i].bindPoint = (int32_t)i;
+    if(reflection.constantBlocks[i].fixedBindNumber == INVALID_BIND)
+      reflection.constantBlocks[i].fixedBindNumber = 0;
   }
 
   for(size_t i = 0; i < samplers.size(); i++)
   {
-    mapping.samplers[i] = samplers[i].map;
+    patchData.samplerInterface.push_back(samplers[i].id);
+    reflection.samplers[i] = samplers[i].bindres;
     // fix up any bind points marked with INVALID_BIND. They were sorted to the end
     // but from here on we want to just be able to index with the bind point
     // without any special casing.
-    if(mapping.samplers[i].bind == INVALID_BIND)
-      mapping.samplers[i].bind = 0;
-    reflection.samplers[i].name = samplers[i].bindres.name;
-    reflection.samplers[i].bindPoint = (int32_t)i;
+    if(reflection.samplers[i].fixedBindNumber == INVALID_BIND)
+      reflection.samplers[i].fixedBindNumber = 0;
   }
 
   for(size_t i = 0; i < roresources.size(); i++)
   {
-    mapping.readOnlyResources[i] = roresources[i].map;
+    patchData.roInterface.push_back(roresources[i].id);
+    reflection.readOnlyResources[i] = roresources[i].bindres;
     // fix up any bind points marked with INVALID_BIND. They were sorted to the end
     // but from here on we want to just be able to index with the bind point
     // without any special casing.
-    if(mapping.readOnlyResources[i].bind == INVALID_BIND)
-      mapping.readOnlyResources[i].bind = 0;
-    reflection.readOnlyResources[i] = roresources[i].bindres;
-    reflection.readOnlyResources[i].bindPoint = (int32_t)i;
+    if(reflection.readOnlyResources[i].fixedBindNumber == INVALID_BIND)
+      reflection.readOnlyResources[i].fixedBindNumber = 0;
   }
 
   for(size_t i = 0; i < rwresources.size(); i++)
   {
-    mapping.readWriteResources[i] = rwresources[i].map;
+    patchData.rwInterface.push_back(rwresources[i].id);
+    reflection.readWriteResources[i] = rwresources[i].bindres;
     // fix up any bind points marked with INVALID_BIND. They were sorted to the end
     // but from here on we want to just be able to index with the bind point
     // without any special casing.
-    if(mapping.readWriteResources[i].bind == INVALID_BIND)
-      mapping.readWriteResources[i].bind = 0;
-    reflection.readWriteResources[i] = rwresources[i].bindres;
-    reflection.readWriteResources[i].bindPoint = (int32_t)i;
+    if(reflection.readWriteResources[i].fixedBindNumber == INVALID_BIND)
+      reflection.readWriteResources[i].fixedBindNumber = 0;
+  }
+
+  // go through each pointer type and populate it. This may generate more pointer types so we repeat
+  // this until it converges. This is a bit redundant but not the end of the world
+  size_t numPointerTypes = 0;
+  do
+  {
+    numPointerTypes = pointerTypes.size();
+
+    rdcarray<Id> ids;
+    for(auto it = pointerTypes.begin(); it != pointerTypes.end(); ++it)
+      ids.push_back(it->first);
+
+    // generate a variable for each of the types. This will add to pointerTypes if it finds
+    // something new
+    for(Id id : ids)
+    {
+      ShaderConstant dummy;
+      MakeConstantBlockVariable(dummy, pointerTypes, dataTypes[id].pointerType.storage,
+                                dataTypes[dataTypes[id].InnerType()], rdcstr(), Decorations(),
+                                false, specInfo);
+    }
+
+    // continue if we generated some more
+  } while(pointerTypes.size() != numPointerTypes);
+
+  // see if we have different pointer types to the same struct, to give them unique names
+  SparseIdMap<int> dupeInners;
+
+  for(auto it = pointerTypes.begin(); it != pointerTypes.end(); ++it)
+  {
+    dupeInners[dataTypes[it->first].InnerType()]++;
   }
 
   // populate the pointer types
@@ -1341,19 +2045,29 @@ void Reflector::MakeReflection(const GraphicsAPI sourceAPI, const ShaderStage st
   {
     ShaderConstant dummy;
 
-    MakeConstantBlockVariable(dummy, pointerTypes, dataTypes[it->first], rdcstr(), Decorations(),
-                              specInfo);
+    const DataType &innerType = dataTypes[dataTypes[it->first].InnerType()];
+    MakeConstantBlockVariable(dummy, pointerTypes, dataTypes[it->first].pointerType.storage,
+                              innerType, rdcstr(), decorations[it->first], false, specInfo);
 
     if(it->second >= reflection.pointerTypes.size())
       reflection.pointerTypes.resize(it->second + 1);
 
+    // use the pointer type to disambiguate if there's multiple pointers to the same struct - since
+    // it could e.g. have different strides
+    if(innerType.type == DataType::StructType && dupeInners[innerType.id] > 1)
+      dummy.type.name += StringFormat::Fmt("_%u", it->first.value());
+
     reflection.pointerTypes[it->second] = dummy.type;
   }
+
+  // shouldn't have changed in the above loop!
+  RDCASSERT(pointerTypes.size() == numPointerTypes);
 }
 
-void Reflector::MakeConstantBlockVariables(const DataType &structType, uint32_t arraySize,
-                                           uint32_t arrayByteStride, rdcarray<ShaderConstant> &cblock,
-                                           SparseIdMap<uint16_t> &pointerTypes,
+void Reflector::MakeConstantBlockVariables(rdcspv::StorageClass storage, const DataType &structType,
+                                           uint32_t arraySize, uint32_t arrayByteStride,
+                                           rdcarray<ShaderConstant> &cblock,
+                                           SparseIdMap<uint16_t> &pointerTypes, bool bareUniforms,
                                            const rdcarray<SpecConstant> &specInfo) const
 {
   // we get here for multi-dimensional arrays
@@ -1367,8 +2081,9 @@ void Reflector::MakeConstantBlockVariables(const DataType &structType, uint32_t 
     cblock.resize(arraySize);
     for(uint32_t i = 0; i < arraySize; i++)
     {
-      MakeConstantBlockVariable(cblock[i], pointerTypes, structType, StringFormat::Fmt("[%u]", i),
-                                decorations[structType.id], specInfo);
+      MakeConstantBlockVariable(cblock[i], pointerTypes, storage, structType,
+                                StringFormat::Fmt("[%u]", i), decorations[structType.id],
+                                bareUniforms, specInfo);
 
       cblock[i].byteOffset = relativeOffset;
 
@@ -1383,14 +2098,128 @@ void Reflector::MakeConstantBlockVariables(const DataType &structType, uint32_t 
 
   cblock.resize(structType.children.size());
   for(size_t i = 0; i < structType.children.size(); i++)
-    MakeConstantBlockVariable(cblock[i], pointerTypes, dataTypes[structType.children[i].type],
-                              structType.children[i].name, structType.children[i].decorations,
-                              specInfo);
+  {
+    rdcstr name = structType.children[i].name;
+    if(name.empty())
+      name = StringFormat::Fmt("_child%zu", i);
+    MakeConstantBlockVariable(cblock[i], pointerTypes, storage,
+                              dataTypes[structType.children[i].type], name,
+                              structType.children[i].decorations, bareUniforms, specInfo);
+  }
+
+  uint32_t emptyStructSize = 4;
+
+  if(storage == rdcspv::StorageClass::StorageBuffer)
+  {
+    if(capabilities.find(rdcspv::Capability::StorageBuffer8BitAccess) != capabilities.end() ||
+       capabilities.find(rdcspv::Capability::UniformAndStorageBuffer8BitAccess) != capabilities.end())
+      emptyStructSize = 1;
+    else if(capabilities.find(rdcspv::Capability::StorageBuffer16BitAccess) != capabilities.end() ||
+            capabilities.find(rdcspv::Capability::UniformAndStorageBuffer16BitAccess) !=
+                capabilities.end())
+      emptyStructSize = 2;
+  }
+  else if(storage == rdcspv::StorageClass::Uniform)
+  {
+    if(capabilities.find(rdcspv::Capability::UniformAndStorageBuffer8BitAccess) != capabilities.end())
+      emptyStructSize = 1;
+    else if(capabilities.find(rdcspv::Capability::UniformAndStorageBuffer16BitAccess) !=
+            capabilities.end())
+      emptyStructSize = 2;
+  }
+  else if(storage == rdcspv::StorageClass::PushConstant)
+  {
+    if(capabilities.find(rdcspv::Capability::StoragePushConstant8) != capabilities.end())
+      emptyStructSize = 1;
+    else if(capabilities.find(rdcspv::Capability::StoragePushConstant16) != capabilities.end())
+      emptyStructSize = 2;
+  }
+  else if(storage == rdcspv::StorageClass::TaskPayloadWorkgroupEXT)
+  {
+    return;
+  }
+
+  // don't enforce sizes on GL opaque uniforms
+  if(bareUniforms)
+    return;
+
+  for(size_t i = 0; i < cblock.size(); i++)
+  {
+    // for structs that aren't in arrays, we need to define their byte size (stride). Without
+    // knowing the packing rules this shader is complying with, this is not fully possible.
+    //
+    // what we do is choose the most conservative size - so that this struct's size alone doesn't
+    // invalidate compliance with a particular ruleset (e.g. std140).
+    //
+    // we calculate the scalar, base, and extended sizes of the struct sizes of the struct. The
+    // largest one that fits between this struct and the next member is the one we use. If there is
+    // no next member, we always use the base size as it's impossible to tell how much trailing
+    // padding the shader expected.
+    //
+    // If we guess wrongly small, members after this struct will need an [[offset]] decoration,
+    // If we guess wrongly large the struct itself will need a [[size]] decoration
+    // Since we're choosing the largest valid size, it will always be just a [[size]] which might be
+    // unnecessary (if e.g. somewhere else the shader demonstrates scalar packing so the padded size
+    // is larger than the scalar calculated size) but that's only present in one place.
+
+    if(cblock[i].type.baseType == VarType::Struct && cblock[i].type.arrayByteStride == 0)
+    {
+      // this should not be an array - if it is SPIR-V requires an array byte stride, and this
+      // calculation below is also invalid.
+      RDCASSERTEQUAL(cblock[i].type.elements, 1);
+
+      StructSizes sizes = CalculateStructProps(emptyStructSize, cblock[i]);
+
+      uint32_t availSize = ~0U;
+      if(i + 1 < cblock.size())
+        availSize = cblock[i + 1].byteOffset - cblock[i].byteOffset;
+      else if(arrayByteStride != 0)
+        availSize = arrayByteStride - cblock[i].byteOffset;
+
+      // expect at least the scalar size to be available otherwise this struct seems to overlap
+      RDCASSERT(sizes.scalarSize <= availSize, sizes.scalarSize, availSize);
+
+      // If there is no next member, use the base size as do not know how much trailing padding the shader expected.
+      if(i + 1 == cblock.size())
+      {
+        if(sizes.baseSize <= availSize)
+          cblock[i].type.arrayByteStride = sizes.baseSize;
+        else
+          cblock[i].type.arrayByteStride = sizes.scalarSize;
+      }
+      else
+      {
+        if(sizes.extendedSize <= availSize)
+          cblock[i].type.arrayByteStride = sizes.extendedSize;
+        else if(sizes.baseSize <= availSize)
+          cblock[i].type.arrayByteStride = sizes.baseSize;
+        else
+          cblock[i].type.arrayByteStride = sizes.scalarSize;
+      }
+    }
+  }
+}
+
+void Reflector::ApplyMatrixByteStride(const DataType &type, uint8_t matrixByteStride,
+                                      rdcarray<ShaderConstant> &members) const
+{
+  const DataType &inner = dataTypes[type.InnerType()];
+
+  for(ShaderConstant &m : members)
+  {
+    if(m.type.matrixByteStride == 0)
+      m.type.matrixByteStride = matrixByteStride;
+
+    if(inner.type == DataType::ArrayType)
+      ApplyMatrixByteStride(inner, matrixByteStride, m.type.members);
+  }
 }
 
 void Reflector::MakeConstantBlockVariable(ShaderConstant &outConst,
-                                          SparseIdMap<uint16_t> &pointerTypes, const DataType &type,
+                                          SparseIdMap<uint16_t> &pointerTypes,
+                                          rdcspv::StorageClass storage, const DataType &type,
                                           const rdcstr &name, const Decorations &varDecorations,
+                                          bool bareUniforms,
                                           const rdcarray<SpecConstant> &specInfo) const
 {
   outConst.name = name;
@@ -1401,99 +2230,104 @@ void Reflector::MakeConstantBlockVariable(ShaderConstant &outConst,
 
   const DataType *curType = &type;
 
+  // for pointers to structs, the pointer itself has an array stride which we should pay attention to
+  if(curType->type == DataType::StructType && varDecorations.arrayStride != ~0U)
+    outConst.type.arrayByteStride = varDecorations.arrayStride;
+
   // if the type is an array, set array size and strides then unpeel the array
   if(curType->type == DataType::ArrayType)
   {
-    outConst.type.descriptor.elements =
+    outConst.type.elements =
         curType->length != Id() ? EvaluateConstant(curType->length, specInfo).value.u32v[0] : ~0U;
 
     if(varDecorations.arrayStride != ~0U)
     {
-      RDCASSERTMSG("Stride is too large for uint16_t", varDecorations.arrayStride <= 0xffff);
-      outConst.type.descriptor.arrayByteStride = RDCMIN(varDecorations.arrayStride, 0xffffu) & 0xffff;
+      outConst.type.arrayByteStride = varDecorations.arrayStride;
     }
     else if(decorations[curType->id].arrayStride != ~0U)
     {
-      RDCASSERTMSG("Stride is too large for uint16_t",
-                   decorations[curType->id].arrayStride <= 0xffff);
-      outConst.type.descriptor.arrayByteStride =
-          RDCMIN(decorations[curType->id].arrayStride, 0xffffu) & 0xffff;
+      outConst.type.arrayByteStride = decorations[curType->id].arrayStride;
     }
 
     if(varDecorations.matrixStride != ~0U)
-      outConst.type.descriptor.matrixByteStride = varDecorations.matrixStride & 0xff;
+      outConst.type.matrixByteStride = varDecorations.matrixStride & 0xff;
     else if(decorations[curType->id].matrixStride != ~0U)
-      outConst.type.descriptor.matrixByteStride = decorations[curType->id].matrixStride & 0xff;
+      outConst.type.matrixByteStride = decorations[curType->id].matrixStride & 0xff;
 
     curType = &dataTypes[curType->InnerType()];
   }
 
   if(curType->type == DataType::VectorType || curType->type == DataType::MatrixType)
   {
-    outConst.type.descriptor.type = curType->scalar().Type();
+    outConst.type.baseType = curType->scalar().Type();
 
-    outConst.type.descriptor.rowMajorStorage =
-        (curType->type == DataType::VectorType || varDecorations.flags & Decorations::RowMajor);
+    if(curType->type == DataType::VectorType || (varDecorations.flags & Decorations::RowMajor))
+      outConst.type.flags |= ShaderVariableFlags::RowMajorMatrix;
 
     if(varDecorations.matrixStride != ~0U)
-      outConst.type.descriptor.matrixByteStride = varDecorations.matrixStride & 0xff;
+      outConst.type.matrixByteStride = varDecorations.matrixStride & 0xff;
 
     if(curType->type == DataType::MatrixType)
     {
-      outConst.type.descriptor.rows = (uint8_t)curType->vector().count;
-      outConst.type.descriptor.columns = (uint8_t)curType->matrix().count;
+      outConst.type.rows = (uint8_t)curType->vector().count;
+      outConst.type.columns = (uint8_t)curType->matrix().count;
     }
     else
     {
-      outConst.type.descriptor.columns = (uint8_t)curType->vector().count;
+      outConst.type.columns = (uint8_t)curType->vector().count;
     }
 
-    outConst.type.descriptor.name = curType->name;
+    outConst.type.name = curType->name;
   }
   else if(curType->type == DataType::ScalarType)
   {
-    outConst.type.descriptor.type = curType->scalar().Type();
-    outConst.type.descriptor.rowMajorStorage = true;
+    outConst.type.baseType = curType->scalar().Type();
+    outConst.type.flags |= ShaderVariableFlags::RowMajorMatrix;
 
-    outConst.type.descriptor.name = curType->name;
+    outConst.type.name = curType->name;
   }
   else
   {
     if(curType->type == DataType::PointerType)
     {
-      outConst.type.descriptor.type = VarType::ULong;
-      outConst.type.descriptor.rowMajorStorage = false;
-      outConst.type.descriptor.rows = 1;
-      outConst.type.descriptor.columns = 1;
-      outConst.type.descriptor.name = curType->name;
+      outConst.type.baseType = VarType::ULong;
+      outConst.type.rows = 1;
+      outConst.type.columns = 1;
+      outConst.type.name = curType->name;
 
       // try to insert the inner type ID into the map. If it succeeds, it gets the next available
       // pointer type index (size of the map), if not then we just get the previously added index
-      auto it =
-          pointerTypes.insert(std::make_pair(curType->InnerType(), (uint16_t)pointerTypes.size()));
+      auto it = pointerTypes.insert(std::make_pair(curType->id, (uint16_t)pointerTypes.size()));
 
-      outConst.type.descriptor.pointerTypeID = it.first->second;
+      outConst.type.pointerTypeID = it.first->second;
       return;
     }
 
     RDCASSERT(curType->type == DataType::StructType || curType->type == DataType::ArrayType);
 
-    outConst.type.descriptor.type = VarType::Float;
-    outConst.type.descriptor.rowMajorStorage = false;
-    outConst.type.descriptor.rows = 0;
-    outConst.type.descriptor.columns = 0;
+    outConst.type.baseType = VarType::Struct;
+    outConst.type.rows = 0;
+    outConst.type.columns = 0;
 
-    outConst.type.descriptor.name = curType->name;
+    outConst.type.name = curType->name;
 
-    MakeConstantBlockVariables(*curType, outConst.type.descriptor.elements,
-                               outConst.type.descriptor.arrayByteStride, outConst.type.members,
-                               pointerTypes, specInfo);
+    MakeConstantBlockVariables(storage, *curType, outConst.type.elements,
+                               outConst.type.arrayByteStride, outConst.type.members, pointerTypes,
+                               bareUniforms, specInfo);
 
     if(curType->type == DataType::ArrayType)
     {
+      // matrix byte stride is only applied on the root variable, so as we recurse down the type
+      // tree for multi-dimensional arrays of matrices we need to propagate down the stride
+      if(outConst.type.matrixByteStride != 0)
+        ApplyMatrixByteStride(*curType, outConst.type.matrixByteStride, outConst.type.members);
+
+      outConst.type.name = type.name;
+
       // if the inner type is an array, it will be expanded in our members list. So don't also
       // redundantly keep the element count
-      outConst.type.descriptor.elements = 1;
+      outConst.type.arrayByteStride *= outConst.type.elements;
+      outConst.type.elements = 1;
     }
   }
 }
@@ -1527,6 +2361,14 @@ void Reflector::AddSignatureParameter(const bool isInput, const ShaderStage stag
   if(varDecorations.builtIn != BuiltIn::Invalid)
     sig.systemValue = MakeShaderBuiltin(stage, varDecorations.builtIn);
 
+  if(varDecorations.others.contains(rdcspv::Decoration::PerPrimitiveEXT))
+    sig.perPrimitiveRate = true;
+
+  if(varDecorations.others.contains(rdcspv::Decoration::Flat))
+    patch.interpMode = SPIRVInterpolationMode::Flat;
+  if(varDecorations.others.contains(rdcspv::Decoration::NoPerspective))
+    patch.interpMode = SPIRVInterpolationMode::NoPerspective;
+
   // fragment shader outputs are implicitly colour outputs. All other builtin outputs do not have a
   // register index
   if(stage == ShaderStage::Fragment && !isInput && sig.systemValue == ShaderBuiltin::Undefined)
@@ -1557,6 +2399,13 @@ void Reflector::AddSignatureParameter(const bool isInput, const ShaderStage stag
       if(stage == ShaderStage::Tess_Control)
         arraySize = 1;
 
+      // for mesh shaders too, ignore the root level of array-ness for outputs
+      if(stage == ShaderStage::Mesh && !isInput)
+      {
+        arraySize = 1;
+        isArray = false;
+      }
+
       // if this is a root array in the geometry shader, don't reflect it as an array either
       if(stage == ShaderStage::Geometry && isInput)
         isArray = false;
@@ -1573,6 +2422,8 @@ void Reflector::AddSignatureParameter(const bool isInput, const ShaderStage stag
     {
       // push the member-index access chain value
       patch.accessChain.push_back(0U);
+
+      size_t oldSigSize = sigarray.size();
 
       for(size_t c = 0; c < varType->children.size(); c++)
       {
@@ -1592,6 +2443,18 @@ void Reflector::AddSignatureParameter(const bool isInput, const ShaderStage stag
 
         // increment the member-index access chain value
         patch.accessChain.back()++;
+      }
+
+      // apply stream decoration from a parent struct into newly-added members
+      for(const DecorationAndParamData &d : varDecorations.others)
+      {
+        if(d.value == Decoration::Stream)
+        {
+          for(size_t idx = oldSigSize; idx < sigarray.size(); idx++)
+          {
+            sigarray[idx].stream = d.stream;
+          }
+        }
       }
 
       // pop the member-index access chain value
@@ -1633,10 +2496,18 @@ void Reflector::AddSignatureParameter(const bool isInput, const ShaderStage stag
   sig.regChannelMask = sig.channelUsedMask = (1 << sig.compCount) - 1;
 
   for(const DecorationAndParamData &d : varDecorations.others)
+  {
     if(d.value == Decoration::Component)
       sig.regChannelMask <<= d.component;
+    if(d.value == Decoration::Stream)
+      sig.stream = d.stream;
+  }
 
   sig.channelUsedMask = sig.regChannelMask;
+
+  uint32_t regStep = 1;
+  if(sig.varType == VarType::Double || sig.varType == VarType::ULong || sig.varType == VarType::SLong)
+    regStep = 2;
 
   for(uint32_t a = 0; a < arraySize; a++)
   {
@@ -1644,6 +2515,7 @@ void Reflector::AddSignatureParameter(const bool isInput, const ShaderStage stag
 
     if(isArray)
       n += StringFormat::Fmt("[%u]", a);
+    StripCommonGLPrefixes(n);
 
     sig.varName = n;
 
@@ -1651,7 +2523,7 @@ void Reflector::AddSignatureParameter(const bool isInput, const ShaderStage stag
     {
       sigarray.push_back(sig);
 
-      regIndex++;
+      regIndex += regStep;
 
       if(isInput)
         patchData.inputs.push_back(patch);
@@ -1667,7 +2539,7 @@ void Reflector::AddSignatureParameter(const bool isInput, const ShaderStage stag
       {
         SigParameter s = sig;
         s.varName = StringFormat::Fmt("%s:%s%u", n.c_str(), rowmajor ? "row" : "col", m);
-        s.regIndex += m;
+        s.regIndex += m * regStep;
 
         sigarray.push_back(s);
 
@@ -1676,7 +2548,7 @@ void Reflector::AddSignatureParameter(const bool isInput, const ShaderStage stag
         else
           patchData.outputs.push_back(patch);
 
-        regIndex++;
+        regIndex += regStep;
 
         // increment the matrix column access chain
         patch.accessChain.back()++;
@@ -1687,7 +2559,7 @@ void Reflector::AddSignatureParameter(const bool isInput, const ShaderStage stag
       patch.accessChain.pop_back();
     }
 
-    sig.regIndex += RDCMAX(1U, varType->matrix().count);
+    sig.regIndex += RDCMAX(1U, varType->matrix().count) * regStep;
     // increment the array index access chain (if it exists)
     if(isArray)
     {
@@ -1704,12 +2576,41 @@ void Reflector::AddSignatureParameter(const bool isInput, const ShaderStage stag
 #include "data/glsl_shaders.h"
 #include "glslang_compile.h"
 
+#if 0
+
+TEST_CASE("DO NOT COMMIT - convenience test", "[spirv]")
+{
+  // this test loads a file from disk and passes it through Reflector. Useful for when you
+  // are iterating on a shader and don't want to have to load a whole capture.
+  rdcarray<uint32_t> buf;
+  FileIO::ReadAll("/path/to/file.spv", buf);
+
+  rdcspv::Reflector reflector;
+
+  reflector.Parse(buf);
+
+  ShaderReflection reflection;
+  SPIRVPatchData patchData;
+
+  rdcstr entryPoint = reflector.EntryPoints()[0].name;
+  ShaderStage stage = reflector.EntryPoints()[0].stage;
+
+  reflector.MakeReflection(GraphicsAPI::Vulkan, stage, entryPoint, {}, reflection, patchData);
+
+  // the only thing fetched lazily is the disassembly, so grab that here
+  std::map<size_t, uint32_t> instructionLines;
+  rdcstr disasm = reflector.Disassemble(entryPoint, {}, instructionLines);
+
+  RDCLOG("%s", disasm.c_str());
+}
+
+#endif
+
 TEST_CASE("Validate SPIR-V reflection", "[spirv][reflection]")
 {
   ShaderType type = ShaderType::Vulkan;
   auto compiler = [&type](ShaderStage stage, const rdcstr &source, const rdcstr &entryPoint,
-                          ShaderReflection &refl, ShaderBindpointMapping &mapping) {
-
+                          ShaderReflection &refl) {
     rdcspv::Init();
     RenderDoc::Inst().RegisterShutdownFunction(&rdcspv::Shutdown);
 
@@ -1726,11 +2627,11 @@ TEST_CASE("Validate SPIR-V reflection", "[spirv][reflection]")
     REQUIRE(!spirv.empty());
 
     rdcspv::Reflector spv;
-    spv.Parse(spirv);
+    spv.Parse(std::move(spirv));
 
     SPIRVPatchData patchData;
     spv.MakeReflection(type == ShaderType::Vulkan ? GraphicsAPI::Vulkan : GraphicsAPI::OpenGL,
-                       stage, entryPoint, {}, refl, mapping, patchData);
+                       stage, entryPoint, {}, refl, patchData);
   };
 
   // test both Vulkan and GL SPIR-V reflection

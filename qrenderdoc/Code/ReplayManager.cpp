@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,6 +26,7 @@
 #include <QApplication>
 #include <QMutexLocker>
 #include <QProgressDialog>
+#include "Code/pyrenderdoc/PythonContext.h"
 #include "CaptureContext.h"
 #include "QRDUtils.h"
 
@@ -48,13 +49,18 @@ void ReplayManager::OpenCapture(const QString &capturefile, const ReplayOptions 
   if(m_Running)
     return;
 
-  m_FatalError = ReplayStatus::Succeeded;
+  m_FatalError = {};
+  m_FatalError.code = ResultCode::Succeeded;
 
   // TODO maybe we could expose this choice to the user?
   int proxyRenderer = -1;
 
   m_Thread = new LambdaThread([this, proxyRenderer, capturefile, opts, progress]() {
+    PythonContext::AddDebuggableThread();
+
     run(proxyRenderer, capturefile, opts, progress);
+
+    PythonContext::RemoveDebuggableThread();
   });
   m_Thread->setName(lit("ReplayManager"));
   m_Thread->start(QThread::HighestPriority);
@@ -189,8 +195,9 @@ rdcstr ReplayManager::CopyCaptureToRemote(const rdcstr &localpath, QWidget *wind
     thread->start();
   }
 
-  ShowProgressDialog(window, tr("Transferring..."), [&copied]() { return copied == 1; },
-                     [&progress]() { return progress; });
+  ShowProgressDialog(
+      window, tr("Transferring..."), [&copied]() { return copied == 1; },
+      [&progress]() { return progress; });
 
   return remotepath;
 }
@@ -223,8 +230,9 @@ void ReplayManager::CopyCaptureFromRemote(const rdcstr &remotepath, const rdcstr
     thread->start();
   }
 
-  ShowProgressDialog(window, tr("Transferring..."), [&copied]() { return copied == 1; },
-                     [&progress]() { return progress; });
+  ShowProgressDialog(
+      window, tr("Transferring..."), [&copied]() { return copied == 1; },
+      [&progress]() { return progress; });
 }
 
 bool ReplayManager::IsRunning()
@@ -244,11 +252,14 @@ QString ReplayManager::GetCurrentProcessingTag()
   return m_CommandTag;
 }
 
-void ReplayManager::AsyncInvoke(const rdcstr &tag, ReplayManager::InvokeCallback m)
+void ReplayManager::AsyncInvoke(ReplayManager::ReplayInvokeCallback m, rdcstr tag)
 {
-  QString qtag(tag);
+  QString qtag;
 
+  if(!tag.empty())
   {
+    qtag = tag;
+
     QMutexLocker autolock(&m_RenderLock);
     for(int i = 0; i < m_RenderQueue.count();)
     {
@@ -271,23 +282,56 @@ void ReplayManager::AsyncInvoke(const rdcstr &tag, ReplayManager::InvokeCallback
   PushInvoke(cmd);
 }
 
-void ReplayManager::AsyncInvoke(ReplayManager::InvokeCallback m)
+void ReplayManager::BlockInvoke(ReplayManager::ReplayInvokeCallback m)
 {
-  InvokeHandle *cmd = new InvokeHandle(m);
-  cmd->selfdelete = true;
+  if(IsRunning() && m_Thread->isCurrentThread())
+  {
+    m(m_Renderer);
+    return;
+  }
 
-  PushInvoke(cmd);
-}
-
-void ReplayManager::BlockInvoke(ReplayManager::InvokeCallback m)
-{
   InvokeHandle *cmd = new InvokeHandle(m);
 
   PushInvoke(cmd);
+
+  void *ctx = PythonContext::PausePythonThreading();
 
   cmd->processed.acquire();
 
+  PythonContext::ResumePythonThreading(ctx);
+
   delete cmd;
+}
+
+bool ReplayManager::AccessInvoke(std::function<void(ICaptureAccess *)> callback, bool blocking,
+                                 bool forceReplay, rdcstr tag)
+{
+  if(!GetCaptureAccess())
+    return false;
+
+  // some long running processes may be better to put on the replay thread even when local, so
+  // that we can keep the UI thread unblocked
+  if(CurrentRemote().IsConnected() || forceReplay)
+  {
+    if(!IsRunning())
+    {
+      // if the replay thread isn't running, we won't be able to invoke so just treat this as-if
+      // it's a local capture and block
+      callback(GetCaptureAccess());
+      return true;
+    }
+
+    if(blocking)
+      BlockInvoke([this, callback](IReplayController *) { callback(GetCaptureAccess()); });
+    else
+      AsyncInvoke([this, callback](IReplayController *) { callback(GetCaptureAccess()); }, tag);
+  }
+  else
+  {
+    callback(GetCaptureAccess());
+  }
+
+  return true;
 }
 
 void ReplayManager::CancelReplayLoop()
@@ -298,12 +342,15 @@ void ReplayManager::CancelReplayLoop()
 void ReplayManager::CloseThread()
 {
   m_Running = false;
-  m_FatalError = ReplayStatus::Succeeded;
+  m_FatalError = {};
+  m_FatalError.code = ResultCode::Succeeded;
 
   m_RenderCondition.wakeAll();
 
   if(m_Thread == NULL)
     return;
+
+  void *ctx = PythonContext::PausePythonThreading();
 
   // wait for the thread to close and clean up
   while(m_Thread->isRunning())
@@ -312,11 +359,13 @@ void ReplayManager::CloseThread()
 
   m_Thread->deleteLater();
   m_Thread = NULL;
+
+  PythonContext::ResumePythonThreading(ctx);
 }
 
-ReplayStatus ReplayManager::ConnectToRemoteServer(RemoteHost host)
+ResultDetails ReplayManager::ConnectToRemoteServer(RemoteHost host)
 {
-  ReplayStatus status = host.Connect(&m_Remote);
+  ResultDetails result = host.Connect(&m_Remote);
 
   if(host.Protocol() && host.Protocol()->GetProtocolName() == "adb")
   {
@@ -329,13 +378,10 @@ ReplayStatus ReplayManager::ConnectToRemoteServer(RemoteHost host)
 
   m_RemoteHost = host;
 
-  if(status == ReplayStatus::Succeeded)
-  {
+  if(result.OK())
     m_RemoteHost.SetConnected(true);
-    return status;
-  }
 
-  return status;
+  return result;
 }
 
 void ReplayManager::DisconnectFromRemoteServer()
@@ -383,7 +429,7 @@ void ReplayManager::PingRemote()
   {
     if(!IsRunning() || m_Thread->isCurrentThread())
     {
-      if(!m_Remote->Ping())
+      if(!m_Remote->Ping().OK())
         m_RemoteHost.SetShutdown();
     }
     m_RemoteLock.unlock();
@@ -440,17 +486,17 @@ void ReplayManager::run(int proxyRenderer, const QString &capturefile, const Rep
 
   if(m_Remote)
   {
-    rdctie(m_CreateStatus, m_Renderer) =
+    rdctie(m_CreateResult, m_Renderer) =
         m_Remote->OpenCapture(proxyRenderer, capturefile, opts, progress);
   }
   else
   {
     m_CaptureFile = RENDERDOC_OpenCaptureFile();
 
-    m_CreateStatus = m_CaptureFile->OpenFile(capturefile, "rdc", NULL);
+    m_CreateResult = m_CaptureFile->OpenFile(capturefile, "rdc", NULL);
 
-    if(m_CreateStatus == ReplayStatus::Succeeded)
-      rdctie(m_CreateStatus, m_Renderer) = m_CaptureFile->OpenCapture(opts, progress);
+    if(m_CreateResult.OK())
+      rdctie(m_CreateResult, m_Renderer) = m_CaptureFile->OpenCapture(opts, progress);
   }
 
   if(m_Renderer == NULL)
@@ -495,8 +541,8 @@ void ReplayManager::run(int proxyRenderer, const QString &capturefile, const Rep
 
       cmd->method(m_Renderer);
 
-      ReplayStatus err = m_Renderer->GetFatalErrorStatus();
-      if(m_FatalError == ReplayStatus::Succeeded && err != ReplayStatus::Succeeded)
+      ResultDetails err = m_Renderer->GetFatalErrorStatus();
+      if(m_FatalError.OK() && !err.OK())
       {
         m_FatalError = err;
         m_FatalErrorCallback();

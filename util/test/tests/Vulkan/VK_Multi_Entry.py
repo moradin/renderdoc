@@ -1,0 +1,101 @@
+import renderdoc as rd
+import rdtest
+
+
+class VK_Multi_Entry(rdtest.TestCase):
+    demos_test_name = 'VK_Multi_Entry'
+
+    def check_capture(self):
+        last_action = self.get_last_action()
+
+        self.set_event(last_action.eventId, True)
+
+        self.check_triangle(out=last_action.copyDestination)
+
+        rdtest.log.success("Triangle output looks correct")
+
+        action = self.find_action('CmdDraw')
+
+        assert action is not None
+
+        self.set_event(action.eventId, True)
+
+        pipe = self.controller.GetPipelineState()
+
+        access = pipe.GetDescriptorAccess()
+
+        # only expect two accesses, the texture we actually read and the push constants
+        if len(access) != 2:
+            raise rdtest.TestFailureException(f"Only expected two descriptor accesses, but saw {len(access)}")
+
+        if not (rd.DescriptorType.ImageSampler, 0, 15) in [(a.type, a.index, a.arrayElement) for a in access]:
+            raise rdtest.TestFailureException(
+                f"Graphics bind 0[15] isn't the accessed descriptor {rd.DumpObject(access)!s}")
+
+        refl = pipe.GetShaderReflection(rd.ShaderStage.Vertex)
+
+        assert len(refl.readOnlyResources) == 0
+
+        postvs = self.get_postvs(action, rd.MeshDataStage.VSOut, first_index=0, num_indices=1, instance=0)
+
+        self.check_vertex_debug(0, 0, 0, postvs, single_postvs=True)
+
+        with self.pixel_history(
+            pipe.GetOutputTargets()[0].resource,
+            200,
+            150,
+            rd.Subresource(0, 0, 0),
+            rd.CompType.Typeless,
+        ) as history:
+            modifs = history.modifs
+            # should be a clear then a draw
+            assert len(modifs) == 2
+
+            assert self.find_action('', modifs[0].eventId).flags & rd.ActionFlags.Clear
+
+            assert self.find_action('', modifs[1].eventId).eventId == action.eventId
+            assert modifs[1].Passed()
+
+            if not rdtest.value_compare(modifs[1].shaderOut.col.floatValue, (0.0, 1.0, 0.0, 1.0)):
+                raise rdtest.TestFailureException(f"History for drawcall output is wrong: {modifs[1].shaderOut.col.floatValue}")
+
+            refl = pipe.GetShaderReflection(rd.ShaderStage.Pixel)
+
+            assert len(refl.readOnlyResources) == 1
+
+            inputs = rd.DebugPixelInputs()
+            inputs.sample = 0
+            inputs.primitive = 0
+            with self.debug_pixel(200, 150, inputs) as debug:
+                cycles, variables = self.process_trace(debug.trace)
+
+                output_sourcevar = self.find_output_source_var(debug.trace, rd.ShaderBuiltin.ColorOutput, 0)
+
+                debugged = self.evaluate_source_var(output_sourcevar, variables)
+
+                debuggedValue = list(debugged.value.f32v[0:4])
+
+                is_eq, diff_amt = rdtest.value_compare_diff(modifs[1].shaderOut.col.floatValue, debuggedValue, eps=5.0E-06)
+                if not is_eq:
+                    rdtest.log.error(
+                        f"Debugged pixel value {debugged.name}: {diff_amt} difference. {debuggedValue} doesn't exactly match history shader output {modifs[1].shaderOut.col.floatValue}")
+
+                rdtest.log.success(f'Successfully debugged pixel in {cycles} cycles, result matches')
+
+        out = self.controller.CreateOutput(rd.CreateHeadlessWindowingData(100, 100), rd.ReplayOutputType.Texture)
+
+        tex = rd.TextureDisplay()
+        tex.resourceId = pipe.GetOutputTargets()[0].resource
+
+        tex.overlay = rd.DebugOverlay.TriangleSizeDraw
+        out.SetTextureDisplay(tex)
+
+        out.Display()
+
+        overlay_id = out.GetDebugOverlayTexID()
+
+        self.check_pixel_value(overlay_id, 200, 150, [14992.0, 14992.0, 14992.0, 1.0])
+
+        rdtest.log.success("Triangle size overlay gave correct output")
+
+        out.Shutdown()

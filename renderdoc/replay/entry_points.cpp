@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -28,6 +28,7 @@
 #include "api/replay/version.h"
 #include "common/common.h"
 #include "common/formatting.h"
+#include "common/threading.h"
 #include "core/core.h"
 #include "maths/camera.h"
 #include "maths/formatpacking.h"
@@ -35,6 +36,31 @@
 #include "replay/replay_driver.h"
 #include "strings/string_utils.h"
 #include "superluminal/superluminal.h"
+
+Threading::CriticalSection detailStringLock;
+rdcarray<const rdcstr *> detailStrings;
+
+#if ENABLED(ENABLE_UNIT_TESTS)
+bool RDResult::testErrorExpected = false;
+#endif
+
+RDResult::operator ResultDetails() const
+{
+  RDCCOMPILE_ASSERT(ResultCode(0) == ResultCode::Succeeded,
+                    "ResultCode 0 value should be succeeded");
+
+  ResultDetails ret;
+  ret.code = code;
+  ret.internal_msg = NULL;
+  if(!message.empty())
+  {
+    SCOPED_LOCK(detailStringLock);
+    ret.internal_msg = new rdcstr(ToStr(code) + ": " + message);
+    detailStrings.push_back(ret.internal_msg);
+  }
+
+  return ret;
+}
 
 // these entry points are for the replay/analysis side - not for the application.
 
@@ -233,8 +259,7 @@ extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_SetDebugLogFile(const rdcst
     RDCLOGFILE(log.c_str());
 
     // need to recreate the crash handler to propagate the new log filename.
-    if(RenderDoc::Inst().GetCrashHandler() != NULL)
-      RenderDoc::Inst().RecreateCrashHandler();
+    RenderDoc::Inst().RecreateCrashHandler();
   }
 }
 
@@ -284,24 +309,17 @@ extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_InitialiseReplay(GlobalEnvi
                                                                       const rdcarray<rdcstr> &args)
 {
   RenderDoc::Inst().InitialiseReplay(env, args);
-
-  if(RenderDoc::Inst().GetCrashHandler() == NULL)
-    return;
-
-  for(const rdcstr &s : args)
-  {
-    if(s == "--crash")
-    {
-      RenderDoc::Inst().UnloadCrashHandler();
-      return;
-    }
-  }
-
-  RenderDoc::Inst().RecreateCrashHandler();
 }
 
 extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_ShutdownReplay()
 {
+  {
+    SCOPED_LOCK(detailStringLock);
+    for(const rdcstr *msg : detailStrings)
+      delete msg;
+    detailStrings.clear();
+  }
+
   RenderDoc::Inst().ShutdownReplay();
 }
 
@@ -337,18 +355,12 @@ extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_CreateBugReport(const rdcst
 
 extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_RegisterMemoryRegion(void *base, size_t size)
 {
-  ICrashHandler *handler = RenderDoc::Inst().GetCrashHandler();
-
-  if(handler)
-    handler->RegisterMemoryRegion(base, size);
+  RenderDoc::Inst().RegisterMemoryRegion(base, size);
 }
 
 extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_UnregisterMemoryRegion(void *base)
 {
-  ICrashHandler *handler = RenderDoc::Inst().GetCrashHandler();
-
-  if(handler)
-    handler->UnregisterMemoryRegion(base);
+  RenderDoc::Inst().UnregisterMemoryRegion(base);
 }
 
 extern "C" RENDERDOC_API ExecuteResult RENDERDOC_CC
@@ -356,23 +368,17 @@ RENDERDOC_ExecuteAndInject(const rdcstr &app, const rdcstr &workingDir, const rd
                            const rdcarray<EnvironmentModification> &env, const rdcstr &capturefile,
                            const CaptureOptions &opts, bool waitForExit)
 {
-  rdcpair<ReplayStatus, uint32_t> status = Process::LaunchAndInjectIntoProcess(
+  rdcpair<RDResult, uint32_t> status = Process::LaunchAndInjectIntoProcess(
       app, workingDir, cmdLine, env, capturefile, opts, waitForExit != 0);
 
   ExecuteResult ret;
-  ret.status = status.first;
+  ret.result = status.first;
   ret.ident = status.second;
   return ret;
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_GetDefaultCaptureOptions(CaptureOptions *opts)
-{
-  *opts = CaptureOptions();
-}
-
-extern "C" RENDERDOC_API bool RENDERDOC_CC RENDERDOC_StartGlobalHook(const rdcstr &pathmatch,
-                                                                     const rdcstr &capturefile,
-                                                                     const CaptureOptions &opts)
+extern "C" RENDERDOC_API ResultDetails RENDERDOC_CC RENDERDOC_StartGlobalHook(
+    const rdcstr &pathmatch, const rdcstr &capturefile, const CaptureOptions &opts)
 {
   return Process::StartGlobalHook(pathmatch, capturefile, opts);
 }
@@ -396,11 +402,11 @@ extern "C" RENDERDOC_API ExecuteResult RENDERDOC_CC
 RENDERDOC_InjectIntoProcess(uint32_t pid, const rdcarray<EnvironmentModification> &env,
                             const rdcstr &capturefile, const CaptureOptions &opts, bool waitForExit)
 {
-  rdcpair<ReplayStatus, uint32_t> status =
+  rdcpair<RDResult, uint32_t> status =
       Process::InjectIntoProcess(pid, env, capturefile, opts, waitForExit != 0);
 
   ExecuteResult ret;
-  ret.status = status.first;
+  ret.result = status.first;
   ret.ident = status.second;
   return ret;
 }
@@ -450,6 +456,13 @@ extern "C" RENDERDOC_API uint32_t RENDERDOC_CC RENDERDOC_EnumerateRemoteTargets(
     if(host.empty())
       return 0;
   }
+  else
+  {
+    // hosts specified with a port are supported only for replay, do not enumerate targets on those
+    // hosts
+    if(URL.contains(':'))
+      return 0;
+  }
 
   for(; nextIdent <= RenderDoc_LastTargetControlPort; nextIdent++)
   {
@@ -496,9 +509,9 @@ RENDERDOC_GetDeviceProtocolController(const rdcstr &protocol)
   return RenderDoc::Inst().GetDeviceProtocol(protocol);
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC
-RENDERDOC_BecomeRemoteServer(const rdcstr &listenhost, RENDERDOC_KillCallback killReplay,
-                             RENDERDOC_PreviewWindowCallback previewWindow)
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_BecomeRemoteServer(
+    const rdcstr &listenhost, uint16_t port, RENDERDOC_KillCallback killReplay,
+    RENDERDOC_PreviewWindowCallback previewWindow)
 {
   // ensure a sensible default if no callback is provided, that just never kills
   if(!killReplay)
@@ -511,8 +524,16 @@ RENDERDOC_BecomeRemoteServer(const rdcstr &listenhost, RENDERDOC_KillCallback ki
       return ret;
     };
 
-  RenderDoc::Inst().BecomeRemoteServer(listenhost.empty() ? "0.0.0.0" : listenhost,
-                                       RenderDoc_RemoteServerPort, killReplay, previewWindow);
+  if(port == 0)
+    port = RenderDoc_RemoteServerPort;
+
+  RenderDoc::Inst().BecomeRemoteServer(listenhost.empty() ? "0.0.0.0" : listenhost, port,
+                                       killReplay, previewWindow);
+}
+
+extern "C" RENDERDOC_API bool RENDERDOC_CC RENDERDOC_CanSelfHostedCapture(const rdcstr &dllname)
+{
+  return Process::IsModuleLoaded(dllname);
 }
 
 extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_StartSelfHostCapture(const rdcstr &dllname)
@@ -737,8 +758,7 @@ static rdcstr ResourceFormatName(const ResourceFormat &fmt)
         else
           return fmt.SRGBCorrected() ? "ETC2_EAC_RGBA8_SRGB" : "ETC2_EAC_RGBA8_UNORM";
       }
-      case ResourceFormatType::ASTC:
-        return fmt.SRGBCorrected() ? "ASTC_SRGB" : "ASTC_UNORM";
+      case ResourceFormatType::ASTC: return fmt.SRGBCorrected() ? "ASTC_SRGB" : "ASTC_UNORM";
       // 10:10:10 A2 is the only format that can have all the usual format types (unorm, snorm,
       // etc). So we break and handle it like any other format below.
       case ResourceFormatType::R10G10B10A2:
@@ -866,8 +886,7 @@ static void TestPrintMsg(const rdcstr &msg)
   OSUtility::WriteOutput(OSUtility::Output_StdErr, msg.c_str());
 }
 
-extern "C" RENDERDOC_API int RENDERDOC_CC RENDERDOC_RunFunctionalTests(int pythonMinorVersion,
-                                                                       const rdcarray<rdcstr> &args)
+extern "C" RENDERDOC_API int RENDERDOC_CC RENDERDOC_RunFunctionalTests(const rdcarray<rdcstr> &args)
 {
 #if ENABLED(RDOC_WIN32)
   const char *moduledir = "/pymodules";
@@ -907,6 +926,26 @@ extern "C" RENDERDOC_API int RENDERDOC_CC RENDERDOC_RunFunctionalTests(int pytho
     return 1;
   }
 
+  void *moduleHandle = Process::LoadModule(moduleFilename);
+
+  int pythonMinorVersion = 0;
+
+  if(moduleHandle)
+  {
+    typedef int (*PFN_rd_python_minor_version)();
+
+    PFN_rd_python_minor_version py_ver_minor =
+        (PFN_rd_python_minor_version)Process::GetFunctionAddress(moduleHandle,
+                                                                 "_rd_python_minor_version");
+
+    pythonMinorVersion = py_ver_minor();
+  }
+  else
+  {
+    TestPrintMsg(StringFormat::Fmt("Couldn't load python module at %s\n", moduleFilename.c_str()));
+    return 1;
+  }
+
   // if we've been built either on windows or on linux from within the project root, going up two
   // directories from the library will put us at the project root. This is the most common scenario
   // and we don't add handling for locating the script elsewhere as in that case the user can run it
@@ -924,8 +963,13 @@ extern "C" RENDERDOC_API int RENDERDOC_CC RENDERDOC_RunFunctionalTests(int pytho
   for(rdcstr py : pythonlibs)
   {
     // patch up the python minor version
-    char *ver = strchr(&py[0], '?');
-    *ver = char('0' + pythonMinorVersion);
+    const int32_t idx = py.find('?');
+    if(idx == -1)
+    {
+      TestPrintMsg(StringFormat::Fmt("Python library pattern missing placeholder: %s\n", py.c_str()));
+      return 1;
+    }
+    py.replace(idx, 1, StringFormat::Fmt("%d", pythonMinorVersion));
 
     handle = Process::LoadModule(py);
     if(handle)
@@ -951,7 +995,8 @@ extern "C" RENDERDOC_API int RENDERDOC_CC RENDERDOC_RunFunctionalTests(int pytho
     return 1;
   }
 
-  rdcarray<rdcwstr> wideArgs(args.size());
+  rdcarray<rdcwstr> wideArgs;
+  wideArgs.resize(args.size());
 
   for(size_t i = 0; i < args.size(); i++)
     wideArgs[i] = StringFormat::UTF82Wide(args[i]);
@@ -962,14 +1007,15 @@ extern "C" RENDERDOC_API int RENDERDOC_CC RENDERDOC_RunFunctionalTests(int pytho
                          // specify script path
                          StringFormat::UTF82Wide(scriptPath),
                          // specify native library path
-                         L"--renderdoc", StringFormat::UTF82Wide(libPath),
+                         L"--renderdoc",
+                         StringFormat::UTF82Wide(libPath),
                          // specify python module path
-                         L"--pyrenderdoc", StringFormat::UTF82Wide(modulePath),
-                         // force in-process as we can't fork out to python to pass args
-                         L"--in-process",
+                         L"--pyrenderdoc",
+                         StringFormat::UTF82Wide(modulePath),
                      });
 
-  rdcarray<wchar_t *> wideArgStrings(wideArgs.size());
+  rdcarray<wchar_t *> wideArgStrings;
+  wideArgStrings.resize(wideArgs.size());
 
   for(size_t i = 0; i < wideArgs.size(); i++)
     wideArgStrings[i] = wideArgs[i].data();

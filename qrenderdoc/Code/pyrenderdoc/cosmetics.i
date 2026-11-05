@@ -1,3 +1,5 @@
+%feature("python:tp_str") ResultDetails "result_str";
+%feature("python:tp_repr") ResultDetails "result_str";
 
 // add some useful builtin functions for ResourceId
 %feature("python:tp_str") ResourceId "resid_str";
@@ -15,11 +17,11 @@ PyObject *__lt__(PyObject *other)
   void *resptr = NULL;
   ResourceId *id = NULL;
 
-  if(other && other != Py_None)
+  if(other && !Py_IsNone(other))
   {
     int res = SWIG_ConvertPtr(other, &resptr, SWIGTYPE_p_ResourceId, 0);
     if (!SWIG_IsOK(res)) {
-      SWIG_exception_fail(SWIG_ArgError(res), "incorrect comparison type");
+      goto fail;
     }
 
     id = (ResourceId *)resptr;
@@ -35,6 +37,22 @@ fail:
 } // %extend ResourceId
 
 %wrapper %{
+static PyObject *result_str(PyObject *resid)
+{
+  void *resptr = NULL;
+  ResultDetails *result = NULL;
+  int res = SWIG_ConvertPtr(resid, &resptr, SWIGTYPE_p_ResultDetails, 0);
+  if (!SWIG_IsOK(res)) {
+    SWIG_exception_fail(SWIG_ArgError(res), "in method 'ResultDetails.str', ResultDetails is not correct type");
+  }
+
+  result = (ResultDetails *)resptr;
+
+  return PyUnicode_FromFormat("<Result: '%s'>", result->Message().c_str());
+fail:
+  return NULL;
+}
+
 static PyObject *resid_str(PyObject *resid)
 {
   void *resptr = NULL;
@@ -106,11 +124,11 @@ PyObject *__eq__(PyObject *other)
   void *resptr = NULL;
   Class *id = NULL;
 
-  if(other && other != Py_None)
+  if(other && !Py_IsNone(other))
   {
     int res = SWIG_ConvertPtr(other, &resptr, SWIGTYPE_p_##Class, 0);
     if (!SWIG_IsOK(res)) {
-      SWIG_exception_fail(SWIG_ArgError(res), "incorrect comparison type");
+      goto fail;
     }
 
     id = (Class *)resptr;
@@ -129,11 +147,11 @@ PyObject *__ne__(PyObject *other)
   void *resptr = NULL;
   Class *id = NULL;
 
-  if(other && other != Py_None)
+  if(other && !Py_IsNone(other))
   {
     int res = SWIG_ConvertPtr(other, &resptr, SWIGTYPE_p_##Class, 0);
     if (!SWIG_IsOK(res)) {
-      SWIG_exception_fail(SWIG_ArgError(res), "incorrect comparison type");
+      goto fail;
     }
 
     id = (Class *)resptr;
@@ -153,7 +171,6 @@ fail:
 DEFINE_SAFE_EQUALITY(ActionDescription)
 DEFINE_SAFE_EQUALITY(CounterResult)
 DEFINE_SAFE_EQUALITY(APIEvent)
-DEFINE_SAFE_EQUALITY(Bindpoint)
 DEFINE_SAFE_EQUALITY(BufferDescription)
 DEFINE_SAFE_EQUALITY(CaptureFileFormat)
 DEFINE_SAFE_EQUALITY(ConstantBlock)
@@ -182,5 +199,3 @@ DEFINE_SAFE_EQUALITY(Scissor)
 DEFINE_SAFE_EQUALITY(ColorBlend)
 DEFINE_SAFE_EQUALITY(BoundVBuffer)
 DEFINE_SAFE_EQUALITY(VertexInputAttribute)
-DEFINE_SAFE_EQUALITY(BoundResource)
-DEFINE_SAFE_EQUALITY(BoundResourceArray)

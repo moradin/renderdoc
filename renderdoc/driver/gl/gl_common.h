@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -210,13 +210,14 @@ struct GLWindowingData
   CGLPixelFormatObj pix;
 };
 
-#define DECL_HOOK_EXPORT(function)                                                                    \
-  __attribute__((used)) static struct                                                                 \
-  {                                                                                                   \
-    const void *replacment;                                                                           \
-    const void *replacee;                                                                             \
-  } _interpose_def_##function __attribute__((section("__DATA,__interpose"))) = {                      \
-      (const void *)(unsigned long)&GL_EXPORT_NAME(function), (const void *)(unsigned long)&function, \
+#define DECL_HOOK_EXPORT(function)                                               \
+  __attribute__((used)) static struct                                            \
+  {                                                                              \
+    const void *replacment;                                                      \
+    const void *replacee;                                                        \
+  } _interpose_def_##function __attribute__((section("__DATA,__interpose"))) = { \
+      (const void *)(unsigned long)&GL_EXPORT_NAME(function),                    \
+      (const void *)(unsigned long)&function,                                    \
   };
 
 #elif ENABLED(RDOC_ANDROID)
@@ -303,6 +304,8 @@ struct GLPlatform
   virtual GLWindowingData MakeOutputWindow(WindowingData window, bool depth,
                                            GLWindowingData share_context) = 0;
 
+  virtual bool CanFreshBindOnDeletion() { return true; }
+
   // for pushing and popping a child context. The default implementation just does
   // MakeContextCurrent but platforms can override this if they need more complex state handling
   virtual bool PushChildContext(GLWindowingData existing, GLWindowingData newChild,
@@ -324,7 +327,8 @@ struct GLPlatform
   virtual bool CanCreateGLContext() = 0;
   virtual bool CanCreateGLESContext() = 0;
   virtual bool PopulateForReplay() = 0;
-  virtual ReplayStatus InitialiseAPI(GLWindowingData &replayContext, RDCDriver api, bool debug) = 0;
+  virtual void SetDriverType(RDCDriver api) = 0;
+  virtual RDResult InitialiseAPI(GLWindowingData &replayContext, RDCDriver api, bool debug) = 0;
   virtual void *GetReplayFunction(const char *funcname) = 0;
 };
 
@@ -349,9 +353,10 @@ class GLDummyPlatform : public GLPlatform
   virtual bool CanCreateGLContext() { return true; }
   virtual bool CanCreateGLESContext() { return true; }
   virtual bool PopulateForReplay() { return true; }
-  virtual ReplayStatus InitialiseAPI(GLWindowingData &replayContext, RDCDriver api, bool debug)
+  virtual void SetDriverType(RDCDriver api) {}
+  virtual RDResult InitialiseAPI(GLWindowingData &replayContext, RDCDriver api, bool debug)
   {
-    return ReplayStatus::Succeeded;
+    return ResultCode::Succeeded;
   }
 };
 
@@ -464,12 +469,12 @@ T CheckConstParam(T t);
 // on GL we don't have an easy way of checking which functions/extensions were used or which
 // functions/extensions on replay could suffice. So we check at the last minute on replay and bail
 // out if it's not present
-#define CheckReplayFunctionPresent(func)                         \
-  if(GL.func == NULL)                                            \
-  {                                                              \
-    RDCERR("Function " #func " not available on replay.");       \
-    m_FailedReplayStatus = ReplayStatus::APIHardwareUnsupported; \
-    return false;                                                \
+#define CheckReplayFunctionPresent(func)                       \
+  if(GL.func == NULL)                                          \
+  {                                                            \
+    RDCERR("Function " #func " not available on replay.");     \
+    m_FailedReplayResult = ResultCode::APIHardwareUnsupported; \
+    return false;                                              \
   }
 
 // no longer in glcorearb.h or glext.h
@@ -501,12 +506,13 @@ struct GLMarkerRegion
 // - i.e. change state through here, and track dirty bits.
 struct GLPushPopState
 {
-  bool enableBits[8];
+  bool enableBits[9];
   GLenum ClipOrigin, ClipDepth;
   GLenum EquationRGB, EquationAlpha;
   GLenum SourceRGB, SourceAlpha;
   GLenum DestinationRGB, DestinationAlpha;
   GLenum PolygonMode;
+  GLdouble bounds[2];
   GLfloat Viewportf[4];
   GLint Viewport[4];
   GLenum ActiveTexture;
@@ -614,18 +620,19 @@ GLint GetNumVertexBuffers();
 struct ShaderReflection;
 struct ShaderBindpointMapping;
 
-void EvaluateSPIRVBindpointMapping(GLuint curProg, int shadIdx, const ShaderReflection *refl,
-                                   ShaderBindpointMapping &mapping);
+void EvaluateVertexAttributeBinds(GLuint curProg, const ShaderReflection *refl, bool spirv,
+                                  rdcarray<int32_t> &vertexAttrBindings);
 
-void GetBindpointMapping(GLuint curProg, int shadIdx, const ShaderReflection *refl,
-                         ShaderBindpointMapping &mapping);
-
-void ResortBindings(ShaderReflection *refl, ShaderBindpointMapping *mapping);
+void GetCurrentBinding(GLuint curProg, const ShaderReflection *refl, const ShaderResource &resource,
+                       uint32_t &slot, bool &used);
+void GetCurrentBinding(GLuint curProg, const ShaderReflection *refl, const ConstantBlock &cblock,
+                       uint32_t &slot, bool &used);
 
 // calls glBlitFramebuffer but ensures no state can interfere like scissor or color mask
 // pops state for only a single drawbuffer!
 void SafeBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0,
                          GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter);
+void SafeClearFramebuffer(GLbitfield clearMask, GLfloat rgba[4], GLfloat depth, GLint stencil);
 
 enum UniformType
 {
@@ -724,6 +731,7 @@ extern bool IsGLES;
   /* super-set.                                              */  \
   EXT_TO_CHECK(32, 31, ARB_texture_multisample_no_array)         \
   EXT_TO_CHECK(32, 32, ARB_texture_multisample)                  \
+  EXT_TO_CHECK(32, 99, ARB_depth_clamp)                          \
   EXT_TO_CHECK(33, 30, ARB_explicit_attrib_location)             \
   EXT_TO_CHECK(33, 30, ARB_sampler_objects)                      \
   EXT_TO_CHECK(33, 30, ARB_texture_swizzle)                      \
@@ -732,6 +740,7 @@ extern bool IsGLES;
   EXT_TO_CHECK(33, 30, ARB_shader_bit_encoding)                  \
   EXT_TO_CHECK(40, 32, ARB_draw_buffers_blend)                   \
   EXT_TO_CHECK(40, 31, ARB_draw_indirect)                        \
+  EXT_TO_CHECK(40, 32, ARB_texture_gather)                       \
   EXT_TO_CHECK(40, 32, ARB_gpu_shader5)                          \
   EXT_TO_CHECK(40, 32, ARB_sample_shading)                       \
   EXT_TO_CHECK(40, 99, ARB_shader_subroutine)                    \
@@ -754,6 +763,7 @@ extern bool IsGLES;
   EXT_TO_CHECK(43, 31, ARB_compute_shader)                       \
   EXT_TO_CHECK(43, 32, ARB_copy_image)                           \
   EXT_TO_CHECK(43, 30, ARB_ES3_compatibility)                    \
+  EXT_TO_CHECK(45, 31, ARB_ES3_1_compatibility)                  \
   EXT_TO_CHECK(43, 30, ARB_invalidate_subdata)                   \
   EXT_TO_CHECK(43, 99, ARB_internalformat_query2)                \
   EXT_TO_CHECK(43, 31, ARB_program_interface_query)              \
@@ -784,8 +794,11 @@ extern bool IsGLES;
   EXT_TO_CHECK(99, 99, EXT_texture_sRGB_decode)                  \
   EXT_TO_CHECK(99, 99, INTEL_performance_query)                  \
   EXT_TO_CHECK(99, 99, EXT_texture_buffer)                       \
+  EXT_TO_CHECK(99, 99, KHR_shader_subgroup)                      \
   /* OpenGL ES extensions */                                     \
   EXT_TO_CHECK(99, 32, EXT_color_buffer_float)                   \
+  EXT_TO_CHECK(99, 99, EXT_color_buffer_half_float)              \
+  EXT_TO_CHECK(99, 99, EXT_render_snorm)                         \
   EXT_TO_CHECK(99, 32, EXT_primitive_bounding_box)               \
   EXT_TO_CHECK(99, 32, OES_primitive_bounding_box)               \
   EXT_TO_CHECK(99, 32, OES_texture_border_color)                 \
@@ -816,6 +829,7 @@ extern bool IsGLES;
   EXT_COMP_CHECK(ARB_base_instance, EXT_base_instance)                                      \
   EXT_COMP_CHECK(ARB_copy_image, EXT_copy_image)                                            \
   EXT_COMP_CHECK(ARB_copy_image, OES_copy_image)                                            \
+  EXT_COMP_CHECK(ARB_depth_clamp, EXT_depth_clamp)                                          \
   EXT_COMP_CHECK(ARB_draw_buffers_blend, EXT_draw_buffers_indexed)                          \
   EXT_COMP_CHECK(ARB_draw_buffers_blend, OES_draw_buffers_indexed)                          \
   EXT_COMP_CHECK(ARB_geometry_shader4, EXT_geometry_shader)                                 \
@@ -840,6 +854,7 @@ extern bool IsGLES;
   EXT_COMP_CHECK(ARB_texture_buffer_object, OES_texture_buffer)                             \
   EXT_COMP_CHECK(ARB_texture_buffer_range, EXT_texture_buffer)                              \
   EXT_COMP_CHECK(ARB_texture_buffer_range, OES_texture_buffer)                              \
+  EXT_COMP_CHECK(ARB_clip_control, EXT_clip_control)                                        \
   EXT_COMP_CHECK(EXT_framebuffer_sRGB, EXT_sRGB_write_control)
 
 // extensions we know we want to check for are precached, indexd by this enum
@@ -868,6 +883,7 @@ enum VendorCheckEnum
   VendorCheck_AMD_copy_compressed_cubemaps,
   VendorCheck_AMD_vertex_array_elem_buffer_query,
   VendorCheck_Qualcomm_avoid_glCopyImageSubData,
+  VendorCheck_Qualcomm_emulate_cube_reads,
   VendorCheck_Count,
 };
 extern bool VendorCheck[VendorCheck_Count];
@@ -877,7 +893,7 @@ enum class ShaderType;
 // fills out the extension supported array and the version-specific checks above
 void DoVendorChecks(GLPlatform &platform, GLWindowingData context);
 void GetContextVersion(bool &ctxGLES, int &ctxVersion);
-void FetchEnabledExtensions();
+bool FetchEnabledExtensions();
 void GetGLSLVersions(ShaderType &shaderType, int &glslVersion, int &glslBaseVer, int &glslCSVer);
 
 GLuint CreateShader(GLenum shaderType, const rdcstr &src);
@@ -887,8 +903,8 @@ GLuint CreateShaderProgram(GLuint vs, GLuint fs, GLuint gs = 0);
 GLuint CreateCShaderProgram(const rdcstr &cs);
 
 // verify that we got a replay context that we can work with
-bool CheckReplayContext();
-bool ValidateFunctionPointers();
+RDResult CheckReplayContext();
+RDResult ValidateFunctionPointers();
 
 #include "core/core.h"
 #include "serialise/serialiser.h"
@@ -897,8 +913,8 @@ struct ShaderReflection;
 
 struct PerStageReflections
 {
-  const ShaderReflection *refls[6] = {};
-  const ShaderBindpointMapping *mappings[6] = {};
+  const ShaderReflection *refls[NumShaderStages] = {};
+  const ShaderBindpointMapping *mappings[NumShaderStages] = {};
 };
 
 void CopyProgramUniforms(const PerStageReflections &srcStages, GLuint progSrc,
@@ -908,8 +924,8 @@ template <typename SerialiserType>
 void SerialiseProgramUniforms(SerialiserType &ser, CaptureState state,
                               const PerStageReflections &stages, GLuint prog,
                               std::map<GLint, GLint> *locTranslate);
-bool CopyProgramAttribBindings(GLuint progsrc, GLuint progdst, ShaderReflection *refl);
-bool CopyProgramFragDataBindings(GLuint progsrc, GLuint progdst, ShaderReflection *refl);
+bool CopyProgramAttribBindings(GLuint progsrc, GLuint progdst, const ShaderReflection *refl);
+bool CopyProgramFragDataBindings(GLuint progsrc, GLuint progdst, const ShaderReflection *refl);
 template <typename SerialiserType>
 bool SerialiseProgramBindings(SerialiserType &ser, CaptureState state,
                               const PerStageReflections &stages, GLuint prog);
@@ -2230,6 +2246,12 @@ enum class GLChunk : uint32_t
   eglSwapBuffersWithDamageKHR,
 
   ImplicitThreadSwitch,
+
+  glMapBufferRangeEXT,
+  glFlushMappedBufferRangeEXT,
+  glClipControlEXT,
+
+  SetCommandAnnotation,
 
   Max,
 };

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -272,8 +272,9 @@ void main(uint3 threadID : SV_DispatchThreadID)
 
     ID3DBlobPtr vsblob = Compile(D3DDefaultVertex, "main", "vs_4_0");
     // can't skip optimising and still have the extensions work, sadly
-    ID3DBlobPtr psblob = Compile(ags_header + BaryCentricPixel, "main", "ps_5_0", false);
-    ID3DBlobPtr csblob = Compile(ags_header + MaxCompute, "main", "cs_5_0", false);
+    ID3DBlobPtr psblob =
+        Compile(ags_header + BaryCentricPixel, "main", "ps_5_0", CompileOptionFlags::None);
+    ID3DBlobPtr csblob = Compile(ags_header + MaxCompute, "main", "cs_5_0", CompileOptionFlags::None);
 
     CreateDefaultInputLayout(vsblob);
 

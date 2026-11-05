@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -94,7 +94,7 @@ void main(void)
 
   scr /= texdisplay.Scale;
 
-  scr /= vec2(texdisplay.MipShift, texdisplay.MipShift);
+  scr /= texdisplay.MipShift;
   vec2 scr2 = scr;
 
 #ifdef VULKAN
@@ -235,14 +235,37 @@ void main(void)
       col = vec4(col.rgb * col.a * texdisplay.HDRMul, 1.0);
   }
 
-  if(uintTex)
-    col = vec4(ucol);
-  else if(sintTex)
-    col = vec4(scol);
-
   vec4 pre_range_col = col;
 
-  col = ((col - texdisplay.RangeMinimum) * texdisplay.InverseRangeSize);
+  if(uintTex)
+  {
+    uint range_min = uint(texdisplay.RangeMinimum);
+
+    if(ucol.x > range_min)
+      col.x = (float(ucol.x - range_min) * texdisplay.InverseRangeSize);
+    else
+      col.x = 0.0;
+    if(ucol.y > range_min)
+      col.y = (float(ucol.y - range_min) * texdisplay.InverseRangeSize);
+    else
+      col.y = 0.0;
+    if(ucol.z > range_min)
+      col.z = (float(ucol.z - range_min) * texdisplay.InverseRangeSize);
+    else
+      col.z = 0.0;
+    if(ucol.w > range_min)
+      col.w = (float(ucol.w - range_min) * texdisplay.InverseRangeSize);
+    else
+      col.w = 0.0;
+  }
+  else if(sintTex)
+  {
+    col = (vec4(scol - int(texdisplay.RangeMinimum)) * texdisplay.InverseRangeSize);
+  }
+  else
+  {
+    col = ((col - texdisplay.RangeMinimum) * texdisplay.InverseRangeSize);
+  }
 
   if(texdisplay.Channels.x < 0.5f)
     col.x = pre_range_col.x = 0.0f;

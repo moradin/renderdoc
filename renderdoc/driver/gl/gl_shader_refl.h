@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -56,6 +56,6 @@ struct FixedFunctionVertexOutputs
 int ParseVersionStatement(const char *version);
 void MakeShaderReflection(GLenum shadType, GLuint sepProg, ShaderReflection &refl,
                           const FixedFunctionVertexOutputs &outputUsage);
-GLuint MakeSeparableShaderProgram(WrappedOpenGL &drv, GLenum type, rdcarray<rdcstr> sources,
-                                  rdcarray<rdcstr> *includepaths);
+GLuint MakeSeparableShaderProgram(WrappedOpenGL &drv, GLenum type, const rdcarray<rdcstr> &sources,
+                                  const rdcarray<rdcstr> &includepaths);
 void CheckVertexOutputUses(const rdcarray<rdcstr> &sources, FixedFunctionVertexOutputs &outputUsage);

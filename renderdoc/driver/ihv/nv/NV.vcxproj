@@ -28,7 +28,6 @@
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v140</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
     <WholeProgramOptimization>true</WholeProgramOptimization>
@@ -37,12 +36,9 @@
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
+  <Import Project="$(SolutionDir)\util\WindowsSDKFix.props" />
   <PropertyGroup>
     <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
-    <ExecutablePath>$(ExecutablePath)</ExecutablePath>
-    <IncludePath>$(SolutionDir)\breakpad;$(IncludePath)</IncludePath>
-    <LibraryPath>$(LibraryPath)</LibraryPath>
-    <ExcludePath>$(ExcludePath)</ExcludePath>
     <TargetName>driver_$(ProjectName)</TargetName>
   </PropertyGroup>
   <PropertyGroup>
@@ -60,7 +56,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(SolutionDir)renderdoc\;$(SolutionDir)renderdoc\3rdparty\</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)renderdoc\;$(SolutionDir)renderdoc\3rdparty\;$(SolutionDir)renderdoc\driver\dx\official;$(SolutionDir)renderdoc\driver\ihv\nv\official\PerfSDK\redist\include;$(SolutionDir)renderdoc\driver\ihv\nv\official\PerfSDK\redist\NvPerfUtility\include</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>RENDERDOC_EXPORTS;RENDERDOC_PLATFORM_WIN32;WIN32;NDEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level4</WarningLevel>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
@@ -99,13 +95,60 @@
     <ClCompile Include="nvapi_hooks.cpp" />
     <ClCompile Include="nvapi_wrapper.cpp" />
     <ClCompile Include="nv_counters.cpp" />
+    <ClCompile Include="nv_counter_enumerator.cpp" />
+    <ClCompile Include="nv_d3d11_counters.cpp" />
+    <ClCompile Include="nv_d3d12_counters.cpp" />
+    <ClCompile Include="nv_gl_counters.cpp" />
+    <ClCompile Include="nv_vk_counters.cpp" />
+    <ClCompile Include="nv_aftermath.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="nvapi_wrapper.h" />
+    <ClInclude Include="nv_aftermath.h" />
     <ClInclude Include="nv_counters.h" />
+    <ClInclude Include="nv_counter_enumerator.h" />
+    <ClInclude Include="nv_d3d11_counters.h" />
+    <ClInclude Include="nv_d3d12_counters.h" />
+    <ClInclude Include="nv_gl_counters.h" />
+    <ClInclude Include="nv_vk_counters.h" />
     <ClInclude Include="official\nvapi\nvapi.h" />
     <ClInclude Include="official\nvapi\nvapi_interface.h" />
     <ClInclude Include="official\PerfKit\include\NvPmApi.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\linux-desktop-x64\nvperf_host_impl.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\nvperf_common.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\nvperf_d3d11_host.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\nvperf_d3d11_target.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\nvperf_d3d12_host.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\nvperf_d3d12_target.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\nvperf_device_host.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\nvperf_device_target.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\nvperf_host.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\nvperf_opengl_host.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\nvperf_opengl_target.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\nvperf_target.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\nvperf_versions_target.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\nvperf_vulkan_host.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\nvperf_vulkan_target.h" />
+    <ClInclude Include="official\PerfSDK\redist\include\windows-desktop-x64\nvperf_host_impl.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfCounterConfiguration.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfCounterData.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfD3D.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfD3D11.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfD3D12.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfDeviceProperties.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfInit.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfMetricsConfigBuilder.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfMetricsEvaluator.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfOpenGL.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfPeriodicSamplerCommon.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfPeriodicSamplerGpu.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfRangeProfiler.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfRangeProfilerD3D11.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfRangeProfilerD3D12.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfRangeProfilerOpenGL.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfRangeProfilerVulkan.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfScopeExitGuard.h" />
+    <ClInclude Include="official\PerfSDK\redist\NvPerfUtility\include\NvPerfVulkan.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\shaders\spirv\renderdoc_spirv.vcxproj">

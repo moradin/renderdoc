@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,7 +25,9 @@
 #include "glsl_shaders.h"
 #include "common/common.h"
 #include "common/formatting.h"
+#include "common/threading.h"
 #include "driver/shaders/spirv/glslang_compile.h"
+#include "glslang/glslang/Public/ResourceLimits.h"
 #include "glslang/glslang/Public/ShaderLang.h"
 #include "os/os_specific.h"
 
@@ -36,11 +38,15 @@
   HEADER(gl_texsample)       \
   HEADER(gles_texsample)
 
+#define HLSL_HEADERS(HEADER) HEADER(quadswizzle)
+
 class EmbeddedIncluder : public glslang::TShader::Includer
 {
 #define DECL(header) rdcstr header = GetEmbeddedResource(CONCAT(glsl_, CONCAT(header, _h)));
   GLSL_HEADERS(DECL)
 #undef DECL
+
+  rdcstr quadswizzle = GetEmbeddedResource(hlsl_quadswizzle_hlsl);
 
 public:
   // For the "system" or <>-style includes; search the "system" paths.
@@ -52,6 +58,11 @@ public:
     return new IncludeResult(headerName, header.data(), header.length(), NULL);
     GLSL_HEADERS(GET)
 #undef GET
+
+    if(!strcmp(headerName, "quadswizzle.hlsl"))
+    {
+      return new IncludeResult("quadswizzle.hlsl", quadswizzle.data(), quadswizzle.length(), NULL);
+    }
 
     return NULL;
   }
@@ -110,13 +121,15 @@ rdcstr GenerateGLSLShader(const rdcstr &shader, ShaderType type, int version, co
   combined += shader;
 
   const char *c_src = combined.c_str();
-  glslang::EShClient client =
-      type == ShaderType::Vulkan ? glslang::EShClientVulkan : glslang::EShClientOpenGL;
+  glslang::EShClient client = type == ShaderType::Vulkan    ? glslang::EShClientVulkan
+                              : type == ShaderType::GLSPIRV ? glslang::EShClientOpenGL
+                                                            : glslang::EShClientNone;
   glslang::EShTargetClientVersion targetversion =
       type == ShaderType::Vulkan ? glslang::EShTargetVulkan_1_0 : glslang::EShTargetOpenGL_450;
+  int inputVersion = client != glslang::EShClientNone ? 100 : 0;
 
   sh.setStrings(&c_src, 1);
-  sh.setEnvInput(glslang::EShSourceGlsl, EShLangFragment, client, 100);
+  sh.setEnvInput(glslang::EShSourceGlsl, EShLangFragment, client, inputVersion);
   sh.setEnvClient(client, targetversion);
   sh.setEnvTarget(glslang::EShTargetNone, glslang::EShTargetSpv_1_0);
 
@@ -133,6 +146,9 @@ rdcstr GenerateGLSLShader(const rdcstr &shader, ShaderType type, int version, co
   bool success;
 
   {
+    static Threading::CriticalSection *lock = new Threading::CriticalSection();
+    SCOPED_LOCK(*lock);
+
     std::string outstr;
     success =
         sh.preprocess(GetDefaultResources(), 100, ENoProfile, false, false, flags, &outstr, incl);
@@ -168,6 +184,91 @@ rdcstr GenerateGLSLShader(const rdcstr &shader, ShaderType type, int version, co
   return ret;
 }
 
+static bool isspacetab(char c)
+{
+  return c == '\t' || c == ' ';
+}
+
+static bool isnewline(char c)
+{
+  return c == '\r' || c == '\n';
+}
+
+rdcstr InsertSnippetAfterVersion(ShaderType type, const char *source, int len, const char *snippet)
+{
+  // we require these enums to be compatible elsewhere
+  glslang::TShader sh(EShLangFragment);
+
+  glslang::EShClient client =
+      type == ShaderType::Vulkan ? glslang::EShClientVulkan : glslang::EShClientNone;
+  glslang::EShTargetClientVersion targetversion =
+      type == ShaderType::Vulkan ? glslang::EShTargetVulkan_1_0 : glslang::EShTargetOpenGL_450;
+  int inputVersion = client != glslang::EShClientNone ? 100 : 0;
+
+  sh.setStringsWithLengths(&source, &len, 1);
+  sh.setEnvInput(glslang::EShSourceGlsl, EShLangFragment, client, inputVersion);
+  sh.setEnvClient(client, targetversion);
+  sh.setEnvTarget(glslang::EShTargetNone, glslang::EShTargetSpv_1_0);
+
+  glslang::TShader::ForbidIncluder incl;
+
+  bool success;
+
+  EShMessages flags = EShMsgOnlyPreprocessor;
+  if(type == ShaderType::Vulkan)
+    flags = EShMessages(flags | EShMsgSpvRules | EShMsgVulkanRules);
+  else if(type == ShaderType::GLSPIRV)
+    flags = EShMessages(flags | EShMsgSpvRules);
+
+  rdcstr src;
+  std::string outstr;
+  {
+    success =
+        sh.preprocess(GetDefaultResources(), 100, ENoProfile, false, false, flags, &outstr, incl);
+    src.assign(outstr.c_str(), outstr.size());
+  }
+
+  // find if this source contains a #version, accounting for whitespace. It must be the first thing
+  // (except for whitespace and comments, and comments have been removed)
+  int32_t it = src.find("#");
+  len = src.count();
+
+  if(it >= 0)
+  {
+    // advance past the #
+    ++it;
+
+    // skip whitespace
+    while(it < len && isspacetab(src[it]))
+      ++it;
+
+    if(it + 7 < len && !strncmp(&src[it], "version", 7))
+    {
+      it = src.find_first_of("\r\n", it);
+      while(it < len && isnewline(src[it]))
+        it++;
+
+      // it points after the #version statement
+    }
+    else
+    {
+      it = -1;
+    }
+  }
+
+  // no #version statement found - insert our own
+  if(it < 0)
+  {
+    rdcstr version = "#version 430 core\n\n";
+    src.insert(0, version);
+    it = version.count();
+  }
+
+  src.insert(it, snippet);
+
+  return src;
+}
+
 #if ENABLED(ENABLE_UNIT_TESTS)
 
 #include "catch/catch.hpp"
@@ -199,11 +300,10 @@ void main() {
 )";
 
       ShaderReflection refl;
-      ShaderBindpointMapping mapping;
-      compile(ShaderStage::Fragment, source, "main", refl, mapping);
+      compile(ShaderStage::Fragment, source, "main", refl);
 
       if(testType == ShaderType::GLSPIRV)
-        CHECK(refl.encoding == ShaderEncoding::SPIRV);
+        CHECK(refl.encoding == ShaderEncoding::OpenGLSPIRV);
       else
         CHECK(refl.encoding == ShaderEncoding::GLSL);
 
@@ -218,8 +318,8 @@ void main() {
           const ConstantBlock &cblock = refl.constantBlocks[0];
           INFO("UBO: " << cblock.name.c_str());
 
-          CHECK(cblock.bindPoint == 0);
           CHECK(!cblock.bufferBacked);
+          CHECK(!cblock.compileConstants);
 
           REQUIRE_ARRAY_SIZE(cblock.variables.size(), 2);
           {
@@ -229,10 +329,10 @@ void main() {
               INFO("UBO member: " << member.name.c_str());
 
               CHECK(member.type.members.empty());
-              CHECK(member.type.descriptor.type == VarType::Float);
-              CHECK(member.type.descriptor.rows == 1);
-              CHECK(member.type.descriptor.columns == 3);
-              CHECK(member.type.descriptor.elements == 5);
+              CHECK(member.type.baseType == VarType::Float);
+              CHECK(member.type.rows == 1);
+              CHECK(member.type.columns == 3);
+              CHECK(member.type.elements == 5);
             }
 
             CHECK(cblock.variables[1].name == "global_var2");
@@ -241,20 +341,14 @@ void main() {
               INFO("UBO member: " << member.name.c_str());
 
               CHECK(member.type.members.empty());
-              CHECK(member.type.descriptor.type == VarType::Float);
-              CHECK(member.type.descriptor.rows == 2);
-              CHECK(member.type.descriptor.columns == 3);
-              CHECK(member.type.descriptor.elements == 3);
-              CHECK(member.type.descriptor.rowMajorStorage == false);
+              CHECK(member.type.baseType == VarType::Float);
+              CHECK(member.type.rows == 2);
+              CHECK(member.type.columns == 3);
+              CHECK(member.type.elements == 3);
+              CHECK(member.type.ColMajor());
             }
           }
         }
-      }
-
-      REQUIRE_ARRAY_SIZE(mapping.constantBlocks.size(), 1);
-      {
-        // $Globals
-        CHECK(mapping.constantBlocks[0].used);
       }
     };
 
@@ -272,8 +366,7 @@ void main() {
 )";
 
       ShaderReflection refl;
-      ShaderBindpointMapping mapping;
-      compile(ShaderStage::Fragment, source, "main", refl, mapping);
+      compile(ShaderStage::Fragment, source, "main", refl);
 
       REQUIRE_ARRAY_SIZE(refl.readOnlyResources.size(), 0);
       REQUIRE_ARRAY_SIZE(refl.constantBlocks.size(), 0);
@@ -286,22 +379,19 @@ void main() {
           const ShaderResource &res = refl.readWriteResources[0];
           INFO("read-write resource: " << res.name.c_str());
 
-          CHECK(res.bindPoint == 0);
-          CHECK(res.resType == TextureType::Buffer);
+          // GLSL does not have register bindings as they're dynamic
+          if(testType != ShaderType::GLSL)
+          {
+            CHECK(res.fixedBindSetOrSpace == 0);
+            CHECK(res.fixedBindNumber == 0);
+          }
+          CHECK(res.bindArraySize == 1);
+          CHECK(res.textureType == TextureType::Buffer);
           CHECK(res.variableType.members.empty());
-          CHECK(res.variableType.descriptor.type == VarType::UInt);
-          CHECK(res.variableType.descriptor.rows == 1);
-          CHECK(res.variableType.descriptor.columns == 1);
+          CHECK(res.variableType.baseType == VarType::UInt);
+          CHECK(res.variableType.rows == 1);
+          CHECK(res.variableType.columns == 1);
         }
-      }
-
-      REQUIRE_ARRAY_SIZE(mapping.readWriteResources.size(), 1);
-      {
-        // atom
-        CHECK(mapping.readWriteResources[0].bindset == 0);
-        CHECK(mapping.readWriteResources[0].bind == 0);
-        CHECK(mapping.readWriteResources[0].arraySize == 1);
-        CHECK(mapping.readWriteResources[0].used);
       }
     };
   }
@@ -324,8 +414,7 @@ void main() {
 }
 )";
       ShaderReflection refl;
-      ShaderBindpointMapping mapping;
-      compile(ShaderStage::Fragment, source, "main", refl, mapping);
+      compile(ShaderStage::Fragment, source, "main", refl);
 
       CHECK(refl.encoding == ShaderEncoding::SPIRV);
 
@@ -339,17 +428,14 @@ void main() {
           const ShaderSampler &samp = refl.samplers[0];
           INFO("read-only resource: " << samp.name.c_str());
 
-          CHECK(samp.bindPoint == 0);
+          // GLSL does not have register bindings as they're dynamic
+          if(testType != ShaderType::GLSL)
+          {
+            CHECK(samp.fixedBindSetOrSpace == 1);
+            CHECK(samp.fixedBindNumber == 2);
+          }
+          CHECK(samp.bindArraySize == 1);
         }
-      }
-
-      REQUIRE_ARRAY_SIZE(mapping.samplers.size(), 1);
-      {
-        // S
-        CHECK(mapping.samplers[0].bindset == 1);
-        CHECK(mapping.samplers[0].bind == 2);
-        CHECK(mapping.samplers[0].arraySize == 1);
-        CHECK(mapping.samplers[0].used);
       }
 
       REQUIRE_ARRAY_SIZE(refl.readOnlyResources.size(), 2);
@@ -359,10 +445,16 @@ void main() {
           const ShaderResource &res = refl.readOnlyResources[0];
           INFO("read-only resource: " << res.name.c_str());
 
-          CHECK(res.bindPoint == 0);
-          CHECK(res.resType == TextureType::Texture2D);
+          // GLSL does not have register bindings as they're dynamic
+          if(testType != ShaderType::GLSL)
+          {
+            CHECK(res.fixedBindSetOrSpace == 2);
+            CHECK(res.fixedBindNumber == 4);
+          }
+          CHECK(res.bindArraySize == 1);
+          CHECK(res.textureType == TextureType::Texture2D);
           CHECK(res.variableType.members.empty());
-          CHECK(res.variableType.descriptor.type == VarType::Float);
+          CHECK(res.variableType.baseType == VarType::Float);
         }
 
         CHECK(refl.readOnlyResources[1].name == "ST");
@@ -370,26 +462,17 @@ void main() {
           const ShaderResource &res = refl.readOnlyResources[1];
           INFO("read-only resource: " << res.name.c_str());
 
-          CHECK(res.bindPoint == 1);
-          CHECK(res.resType == TextureType::Texture2D);
+          // GLSL does not have register bindings as they're dynamic
+          if(testType != ShaderType::GLSL)
+          {
+            CHECK(res.fixedBindSetOrSpace == 2);
+            CHECK(res.fixedBindNumber == 5);
+          }
+          CHECK(res.bindArraySize == 1);
+          CHECK(res.textureType == TextureType::Texture2D);
           CHECK(res.variableType.members.empty());
-          CHECK(res.variableType.descriptor.type == VarType::Float);
+          CHECK(res.variableType.baseType == VarType::Float);
         }
-      }
-
-      REQUIRE_ARRAY_SIZE(mapping.readOnlyResources.size(), 2);
-      {
-        // T
-        CHECK(mapping.readOnlyResources[0].bindset == 2);
-        CHECK(mapping.readOnlyResources[0].bind == 4);
-        CHECK(mapping.readOnlyResources[0].arraySize == 1);
-        CHECK(mapping.readOnlyResources[0].used);
-
-        // ST
-        CHECK(mapping.readOnlyResources[1].bindset == 2);
-        CHECK(mapping.readOnlyResources[1].bind == 5);
-        CHECK(mapping.readOnlyResources[1].arraySize == 1);
-        CHECK(mapping.readOnlyResources[1].used);
       }
     };
 
@@ -407,8 +490,7 @@ void main() {
 )";
 
       ShaderReflection refl;
-      ShaderBindpointMapping mapping;
-      compile(ShaderStage::Fragment, source, "main", refl, mapping);
+      compile(ShaderStage::Fragment, source, "main", refl);
 
       REQUIRE_ARRAY_SIZE(refl.readOnlyResources.size(), 0);
       REQUIRE_ARRAY_SIZE(refl.readWriteResources.size(), 0);
@@ -421,8 +503,9 @@ void main() {
           const ConstantBlock &cblock = refl.constantBlocks[0];
           INFO("UBO: " << cblock.name.c_str());
 
-          CHECK(cblock.bindPoint == 0);
+          CHECK(cblock.bindArraySize == 1);
           CHECK(!cblock.bufferBacked);
+          CHECK(cblock.compileConstants);
           CHECK(cblock.byteSize == 0);
 
           REQUIRE_ARRAY_SIZE(cblock.variables.size(), 2);
@@ -433,11 +516,11 @@ void main() {
               INFO("UBO member: " << member.name.c_str());
 
               CHECK(member.type.members.empty());
-              CHECK(member.type.descriptor.type == VarType::SInt);
-              CHECK(member.type.descriptor.rows == 1);
-              CHECK(member.type.descriptor.columns == 1);
-              CHECK(member.type.descriptor.name == "int");
-              CHECK(member.byteOffset == 17 * sizeof(uint64_t));
+              CHECK(member.type.baseType == VarType::SInt);
+              CHECK(member.type.rows == 1);
+              CHECK(member.type.columns == 1);
+              CHECK(member.type.name == "int");
+              CHECK(member.byteOffset == 0);
 
               CHECK(member.defaultValue == 12);
             }
@@ -448,11 +531,11 @@ void main() {
               INFO("UBO member: " << member.name.c_str());
 
               CHECK(member.type.members.empty());
-              CHECK(member.type.descriptor.type == VarType::Float);
-              CHECK(member.type.descriptor.rows == 1);
-              CHECK(member.type.descriptor.columns == 1);
-              CHECK(member.type.descriptor.name == "float");
-              CHECK(member.byteOffset == 19 * sizeof(uint64_t));
+              CHECK(member.type.baseType == VarType::Float);
+              CHECK(member.type.rows == 1);
+              CHECK(member.type.columns == 1);
+              CHECK(member.type.name == "float");
+              CHECK(member.byteOffset == 8);
 
               float defaultValueFloat;
               memcpy(&defaultValueFloat, &member.defaultValue, sizeof(float));
@@ -460,15 +543,6 @@ void main() {
             }
           }
         }
-      }
-
-      REQUIRE_ARRAY_SIZE(mapping.constantBlocks.size(), 1);
-      {
-        // spec constants
-        CHECK(mapping.constantBlocks[0].bindset == SpecializationConstantBindSet);
-        CHECK(mapping.constantBlocks[0].bind == 0);
-        CHECK(mapping.constantBlocks[0].arraySize == 1);
-        CHECK(mapping.constantBlocks[0].used);
       }
     };
 
@@ -490,8 +564,7 @@ void main() {
 )";
 
       ShaderReflection refl;
-      ShaderBindpointMapping mapping;
-      compile(ShaderStage::Fragment, source, "main", refl, mapping);
+      compile(ShaderStage::Fragment, source, "main", refl);
 
       REQUIRE_ARRAY_SIZE(refl.readOnlyResources.size(), 0);
       REQUIRE_ARRAY_SIZE(refl.readWriteResources.size(), 0);
@@ -504,8 +577,9 @@ void main() {
           const ConstantBlock &cblock = refl.constantBlocks[0];
           INFO("UBO: " << cblock.name.c_str());
 
-          CHECK(cblock.bindPoint == 0);
+          CHECK(cblock.bindArraySize == 1);
           CHECK(!cblock.bufferBacked);
+          CHECK(!cblock.compileConstants);
           CHECK(cblock.byteSize == 16);
 
           REQUIRE_ARRAY_SIZE(cblock.variables.size(), 3);
@@ -517,10 +591,10 @@ void main() {
 
               CHECK(member.byteOffset == 0);
               CHECK(member.type.members.empty());
-              CHECK(member.type.descriptor.type == VarType::SInt);
-              CHECK(member.type.descriptor.rows == 1);
-              CHECK(member.type.descriptor.columns == 1);
-              CHECK(member.type.descriptor.name == "int");
+              CHECK(member.type.baseType == VarType::SInt);
+              CHECK(member.type.rows == 1);
+              CHECK(member.type.columns == 1);
+              CHECK(member.type.name == "int");
             }
 
             CHECK(cblock.variables[1].name == "b");
@@ -530,9 +604,9 @@ void main() {
 
               CHECK(member.byteOffset == 4);
               CHECK(member.type.members.empty());
-              CHECK(member.type.descriptor.type == VarType::Float);
-              CHECK(member.type.descriptor.rows == 1);
-              CHECK(member.type.descriptor.columns == 1);
+              CHECK(member.type.baseType == VarType::Float);
+              CHECK(member.type.rows == 1);
+              CHECK(member.type.columns == 1);
             }
 
             CHECK(cblock.variables[2].name == "c");
@@ -542,21 +616,12 @@ void main() {
 
               CHECK(member.byteOffset == 8);
               CHECK(member.type.members.empty());
-              CHECK(member.type.descriptor.type == VarType::UInt);
-              CHECK(member.type.descriptor.rows == 1);
-              CHECK(member.type.descriptor.columns == 2);
+              CHECK(member.type.baseType == VarType::UInt);
+              CHECK(member.type.rows == 1);
+              CHECK(member.type.columns == 2);
             }
           }
         }
-      }
-
-      REQUIRE_ARRAY_SIZE(mapping.constantBlocks.size(), 1);
-      {
-        // push_data
-        CHECK(mapping.constantBlocks[0].bindset == PushConstantBindSet);
-        CHECK(mapping.constantBlocks[0].bind == 0);
-        CHECK(mapping.constantBlocks[0].arraySize == 1);
-        CHECK(mapping.constantBlocks[0].used);
       }
     };
   }
@@ -587,8 +652,7 @@ void main() {
 )";
 
     ShaderReflection refl;
-    ShaderBindpointMapping mapping;
-    compile(ShaderStage::Fragment, source, "main", refl, mapping);
+    compile(ShaderStage::Fragment, source, "main", refl);
 
     REQUIRE_ARRAY_SIZE(refl.constantBlocks.size(), 0);
     REQUIRE_ARRAY_SIZE(refl.readOnlyResources.size(), 0);
@@ -612,7 +676,7 @@ void main() {
     {
       CHECK(refl.debugInfo.files[0].filename == "source0.glsl");
 
-      REQUIRE(refl.debugInfo.compileFlags.flags.size() == 1);
+      REQUIRE(refl.debugInfo.compileFlags.flags.size() == 2);
 
       CHECK(refl.debugInfo.compileFlags.flags[0].name == "@cmdline");
 
@@ -622,6 +686,11 @@ void main() {
       else
         CHECK(refl.debugInfo.compileFlags.flags[0].value ==
               " --client vulkan100 --target-env vulkan1.0 --entry-point main");
+
+      CHECK(refl.debugInfo.compileFlags.flags[1].name == "@spirver");
+      CHECK(refl.debugInfo.compileFlags.flags[1].value == "spirv1.0");
+
+      CHECK(refl.debugInfo.sourceDebugInformation);
     }
   };
 
@@ -647,8 +716,7 @@ void main() {
 )";
 
     ShaderReflection refl;
-    ShaderBindpointMapping mapping;
-    compile(ShaderStage::Fragment, source, "main", refl, mapping);
+    compile(ShaderStage::Fragment, source, "main", refl);
 
     REQUIRE_ARRAY_SIZE(refl.constantBlocks.size(), 0);
     REQUIRE_ARRAY_SIZE(refl.readOnlyResources.size(), 0);
@@ -753,17 +821,6 @@ void main() {
         CHECK(sig.channelUsedMask == 0x1);
       }
     }
-
-    REQUIRE_ARRAY_SIZE(mapping.inputAttributes.size(), 16);
-    for(size_t i = 0; i < mapping.inputAttributes.size(); i++)
-    {
-      if(i == 3)
-        CHECK((mapping.inputAttributes[i] == -1 || mapping.inputAttributes[i] == 1));
-      else if(i == 6)
-        CHECK((mapping.inputAttributes[i] == -1 || mapping.inputAttributes[i] == 2));
-      else
-        CHECK(mapping.inputAttributes[i] == -1);
-    }
   };
 
   SECTION("constant buffers")
@@ -794,8 +851,7 @@ void main() {
 )";
 
     ShaderReflection refl;
-    ShaderBindpointMapping mapping;
-    compile(ShaderStage::Fragment, source, "main", refl, mapping);
+    compile(ShaderStage::Fragment, source, "main", refl);
 
     REQUIRE_ARRAY_SIZE(refl.readOnlyResources.size(), 0);
     REQUIRE_ARRAY_SIZE(refl.readWriteResources.size(), 0);
@@ -811,7 +867,13 @@ void main() {
         const ConstantBlock &cblock = refl.constantBlocks[0];
         INFO("UBO: " << cblock.name.c_str());
 
-        CHECK(cblock.bindPoint == 0);
+        // GLSL does not have register bindings as they're dynamic
+        if(testType != ShaderType::GLSL)
+        {
+          CHECK(cblock.fixedBindSetOrSpace == 0);
+          CHECK(cblock.fixedBindNumber == 8);
+        }
+        CHECK(cblock.bindArraySize == 1);
         CHECK(cblock.bufferBacked);
         CHECK(cblock.byteSize == 272);
 
@@ -835,10 +897,10 @@ void main() {
 
             CHECK(member.byteOffset == 0);
             CHECK(member.type.members.empty());
-            CHECK(member.type.descriptor.type == VarType::Float);
-            CHECK(member.type.descriptor.rows == 1);
-            CHECK(member.type.descriptor.columns == 1);
-            CHECK(member.type.descriptor.name == "float");
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.rows == 1);
+            CHECK(member.type.columns == 1);
+            CHECK(member.type.name == "float");
           }
 
           CHECK(ubo_root[1].name == "ubo_b");
@@ -848,10 +910,10 @@ void main() {
 
             CHECK(member.byteOffset == 16);
             CHECK(member.type.members.empty());
-            CHECK(member.type.descriptor.type == VarType::Float);
-            CHECK(member.type.descriptor.rows == 3);
-            CHECK(member.type.descriptor.columns == 4);
-            CHECK(member.type.descriptor.rowMajorStorage == false);
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.rows == 3);
+            CHECK(member.type.columns == 4);
+            CHECK(member.type.ColMajor());
           }
 
           CHECK(ubo_root[2].name == "ubo_c");
@@ -861,10 +923,10 @@ void main() {
 
             CHECK(member.byteOffset == 80);
             CHECK(member.type.members.empty());
-            CHECK(member.type.descriptor.type == VarType::Float);
-            CHECK(member.type.descriptor.rows == 3);
-            CHECK(member.type.descriptor.columns == 4);
-            CHECK(member.type.descriptor.rowMajorStorage == true);
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.rows == 3);
+            CHECK(member.type.columns == 4);
+            CHECK(member.type.RowMajor());
           }
 
           CHECK(ubo_root[3].name == "ubo_d");
@@ -874,9 +936,9 @@ void main() {
 
             CHECK(member.byteOffset == 128);
             CHECK(member.type.members.empty());
-            CHECK(member.type.descriptor.type == VarType::SInt);
-            CHECK(member.type.descriptor.rows == 1);
-            CHECK(member.type.descriptor.columns == 2);
+            CHECK(member.type.baseType == VarType::SInt);
+            CHECK(member.type.rows == 1);
+            CHECK(member.type.columns == 2);
           }
 
           CHECK(ubo_root[4].name == "ubo_e");
@@ -886,11 +948,11 @@ void main() {
 
             CHECK(member.byteOffset == 144);
             CHECK(member.type.members.empty());
-            CHECK(member.type.descriptor.type == VarType::Float);
-            CHECK(member.type.descriptor.rows == 1);
-            CHECK(member.type.descriptor.columns == 2);
-            CHECK(member.type.descriptor.elements == 3);
-            CHECK(member.type.descriptor.arrayByteStride == 16);
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.rows == 1);
+            CHECK(member.type.columns == 2);
+            CHECK(member.type.elements == 3);
+            CHECK(member.type.arrayByteStride == 16);
           }
 
           CHECK(ubo_root[5].name == "ubo_f");
@@ -899,8 +961,8 @@ void main() {
             INFO("UBO member: " << member.name.c_str());
 
             CHECK(member.byteOffset == 192);
-            // this doesn't reflect in native introspection, so we skip it
-            // CHECK(member.type.descriptor.elements == 3);
+            CHECK(member.type.baseType == VarType::Struct);
+            CHECK(member.type.arrayByteStride == 48);
 
             REQUIRE_ARRAY_SIZE(member.type.members.size(), 3);
             {
@@ -911,10 +973,10 @@ void main() {
 
                 CHECK(submember.byteOffset == 0);
                 CHECK(submember.type.members.empty());
-                CHECK(submember.type.descriptor.type == VarType::Float);
-                CHECK(submember.type.descriptor.rows == 1);
-                CHECK(submember.type.descriptor.columns == 1);
-                CHECK(submember.type.descriptor.name == "float");
+                CHECK(submember.type.baseType == VarType::Float);
+                CHECK(submember.type.rows == 1);
+                CHECK(submember.type.columns == 1);
+                CHECK(submember.type.name == "float");
               }
 
               CHECK(member.type.members[1].name == "b");
@@ -924,10 +986,10 @@ void main() {
 
                 CHECK(submember.byteOffset == 4);
                 CHECK(submember.type.members.empty());
-                CHECK(submember.type.descriptor.type == VarType::SInt);
-                CHECK(submember.type.descriptor.rows == 1);
-                CHECK(submember.type.descriptor.columns == 1);
-                CHECK(submember.type.descriptor.name == "int");
+                CHECK(submember.type.baseType == VarType::SInt);
+                CHECK(submember.type.rows == 1);
+                CHECK(submember.type.columns == 1);
+                CHECK(submember.type.name == "int");
               }
 
               CHECK(member.type.members[2].name == "c");
@@ -937,10 +999,10 @@ void main() {
 
                 CHECK(submember.byteOffset == 16);
                 CHECK(submember.type.members.empty());
-                CHECK(submember.type.descriptor.type == VarType::Float);
-                CHECK(submember.type.descriptor.rows == 2);
-                CHECK(submember.type.descriptor.columns == 2);
-                CHECK(submember.type.descriptor.rowMajorStorage == false);
+                CHECK(submember.type.baseType == VarType::Float);
+                CHECK(submember.type.rows == 2);
+                CHECK(submember.type.columns == 2);
+                CHECK(submember.type.ColMajor());
               }
             }
           }
@@ -952,21 +1014,12 @@ void main() {
 
             CHECK(member.byteOffset == 256);
             CHECK(member.type.members.empty());
-            CHECK(member.type.descriptor.type == VarType::Float);
-            CHECK(member.type.descriptor.rows == 1);
-            CHECK(member.type.descriptor.columns == 4);
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.rows == 1);
+            CHECK(member.type.columns == 4);
           }
         }
       }
-    }
-
-    REQUIRE_ARRAY_SIZE(mapping.constantBlocks.size(), 1);
-    {
-      // ubo
-      CHECK(mapping.constantBlocks[0].bindset == 0);
-      CHECK(mapping.constantBlocks[0].bind == 8);
-      CHECK(mapping.constantBlocks[0].arraySize == 1);
-      CHECK(mapping.constantBlocks[0].used);
     }
   };
 
@@ -988,8 +1041,7 @@ void main() {
 )";
 
     ShaderReflection refl;
-    ShaderBindpointMapping mapping;
-    compile(ShaderStage::Fragment, source, "main", refl, mapping);
+    compile(ShaderStage::Fragment, source, "main", refl);
 
     REQUIRE_ARRAY_SIZE(refl.constantBlocks.size(), 0);
     REQUIRE_ARRAY_SIZE(refl.readWriteResources.size(), 0);
@@ -1001,10 +1053,16 @@ void main() {
         const ShaderResource &res = refl.readOnlyResources[0];
         INFO("read-only resource: " << res.name.c_str());
 
-        CHECK(res.bindPoint == 0);
-        CHECK(res.resType == TextureType::Texture2D);
+        // GLSL does not have register bindings as they're dynamic
+        if(testType != ShaderType::GLSL)
+        {
+          CHECK(res.fixedBindSetOrSpace == 0);
+          CHECK(res.fixedBindNumber == 3);
+        }
+        CHECK(res.bindArraySize == 1);
+        CHECK(res.textureType == TextureType::Texture2D);
         CHECK(res.variableType.members.empty());
-        CHECK(res.variableType.descriptor.type == VarType::Float);
+        CHECK(res.variableType.baseType == VarType::Float);
       }
 
       CHECK(refl.readOnlyResources[1].name == "tex3D");
@@ -1012,10 +1070,16 @@ void main() {
         const ShaderResource &res = refl.readOnlyResources[1];
         INFO("read-only resource: " << res.name.c_str());
 
-        CHECK(res.bindPoint == 1);
-        CHECK(res.resType == TextureType::Texture3D);
+        // GLSL does not have register bindings as they're dynamic
+        if(testType != ShaderType::GLSL)
+        {
+          CHECK(res.fixedBindSetOrSpace == 0);
+          CHECK(res.fixedBindNumber == 5);
+        }
+        CHECK(res.bindArraySize == 1);
+        CHECK(res.textureType == TextureType::Texture3D);
         CHECK(res.variableType.members.empty());
-        CHECK(res.variableType.descriptor.type == VarType::SInt);
+        CHECK(res.variableType.baseType == VarType::SInt);
       }
 
       CHECK(refl.readOnlyResources[2].name == "texBuf");
@@ -1023,34 +1087,545 @@ void main() {
         const ShaderResource &res = refl.readOnlyResources[2];
         INFO("read-only resource: " << res.name.c_str());
 
-        CHECK(res.bindPoint == 2);
-        CHECK(res.resType == TextureType::Buffer);
+        // GLSL does not have register bindings as they're dynamic
+        if(testType != ShaderType::GLSL)
+        {
+          CHECK(res.fixedBindSetOrSpace == 0);
+          CHECK(res.fixedBindNumber == 7);
+        }
+        CHECK(res.bindArraySize == 1);
+        CHECK(res.textureType == TextureType::Buffer);
         CHECK(res.variableType.members.empty());
-        CHECK(res.variableType.descriptor.type == VarType::Float);
+        CHECK(res.variableType.baseType == VarType::Float);
+      }
+    }
+  };
+
+#define REQUIRE_ARRAY_SIZE(size, min) \
+  REQUIRE(size >= min);               \
+  CHECK(size == min);
+
+  SECTION("Infinite arrays")
+  {
+    rdcstr source = R"(
+#version 450 core
+
+layout(binding = 0, std430) buffer ssbo0
+{
+  float blah;
+  vec4 normal_array[3];
+  vec4 non_array;
+} ssbo_root0;
+
+layout(binding = 0, std430) buffer ssbo1
+{
+  float blah;
+  vec4 normal_array[3];
+  vec4 bounded_array[5];
+} ssbo_root1;
+
+layout(binding = 2, std430) buffer ssbo2
+{
+  float blah;
+  vec4 normal_array[3];
+  vec4 infinite_array[];
+} ssbo_root2;
+
+struct glstruct
+{
+  float a;
+  int b;
+};
+
+struct struct_with_arrays
+{
+  float a[2];
+  int b;
+};
+
+layout(binding = 3, std430) buffer ssbo3
+{
+  float blah;
+  struct_with_arrays test;
+  glstruct s[2];
+} ssbo_root3;
+
+layout(binding = 4, std430) buffer ssbo4
+{
+  float blah;
+  struct_with_arrays test;
+  glstruct s[];
+} ssbo_root4;
+
+layout(binding = 4, std430) buffer ssbo5
+{
+  float ssbo5_blah;
+  struct_with_arrays ssbo5_test;
+  glstruct ssbo5_s[2];
+};
+
+layout(binding = 5, std430) buffer ssbo6
+{
+  float ssbo6_blah;
+  struct_with_arrays ssbo6_test;
+  glstruct ssbo6_s[];
+};
+
+layout(binding = 0, std140) uniform ubo_block
+{
+  float blah;
+  vec4 normal_array[3];
+  vec4 infinite_array[];
+} ubo_root;
+
+void main() {
+  ssbo_root0.blah = 0.0f;
+  ssbo_root1.blah = 0.0f;
+  ssbo_root2.blah = 0.0f;
+  ssbo_root3.s[0].a = 0.0f;
+  ssbo_root4.s[0].a = 0.0f;
+  ssbo5_blah = 0.0f;
+  ssbo6_blah = 0.0f;
+  gl_FragDepth = ubo_root.blah + ubo_root.normal_array[0].x + ubo_root.infinite_array[4].x;
+}
+
+)";
+
+    ShaderReflection refl;
+    compile(ShaderStage::Fragment, source, "main", refl);
+
+    REQUIRE_ARRAY_SIZE(refl.constantBlocks.size(), 1);
+    {
+      // blocks get different reflected names in SPIR-V
+      const rdcstr ubo_name = testType == ShaderType::GLSL ? "ubo_block" : "ubo_root";
+
+      CHECK(refl.constantBlocks[0].name == ubo_name);
+      {
+        const ConstantBlock &cblock = refl.constantBlocks[0];
+        INFO("UBO: " << cblock.name.c_str());
+
+        // GLSL reflects out a root structure
+        if(testType == ShaderType::GLSL)
+        {
+          REQUIRE_ARRAY_SIZE(cblock.variables.size(), 1);
+
+          CHECK(cblock.variables[0].name == ubo_name);
+        }
+
+        const rdcarray<ShaderConstant> &ubo_root =
+            testType == ShaderType::GLSL ? cblock.variables[0].type.members : cblock.variables;
+
+        REQUIRE_ARRAY_SIZE(ubo_root.size(), 3);
+        {
+          CHECK(ubo_root[0].name == "blah");
+          {
+            const ShaderConstant &member = ubo_root[0];
+            INFO("UBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.elements == 1);
+          }
+
+          CHECK(ubo_root[1].name == "normal_array");
+          {
+            const ShaderConstant &member = ubo_root[1];
+            INFO("UBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.columns == 4);
+            CHECK(member.type.elements == 3);
+          }
+
+          CHECK(ubo_root[2].name == "infinite_array");
+          {
+            const ShaderConstant &member = ubo_root[2];
+            INFO("UBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.columns == 4);
+            // UBOs don't really support infinite arrays - it will just be declared big enough for
+            // the amount used statically
+            CHECK(member.type.elements == 5);
+          }
+        }
       }
     }
 
-    REQUIRE_ARRAY_SIZE(mapping.readOnlyResources.size(), 3);
+    REQUIRE_ARRAY_SIZE(refl.readWriteResources.size(), 7);
     {
-      // tex2d
-      CHECK(mapping.readOnlyResources[0].bindset == 0);
-      CHECK(mapping.readOnlyResources[0].bind == 3);
-      CHECK(mapping.readOnlyResources[0].arraySize == 1);
-      CHECK(mapping.readOnlyResources[0].used);
+      // blocks get different reflected names in SPIR-V
+      const rdcstr ssbo_name = testType == ShaderType::GLSL ? "ssbo" : "ssbo_root";
+      const rdcstr ssbo_suffix = testType == ShaderType::GLSL ? "" : "_var";
 
-      // tex3d
-      CHECK(mapping.readOnlyResources[1].bindset == 0);
-      CHECK(mapping.readOnlyResources[1].bind == 5);
-      CHECK(mapping.readOnlyResources[1].arraySize == 1);
-      CHECK(mapping.readOnlyResources[1].used);
+      CHECK(refl.readWriteResources[0].name == ssbo_name + "0");
+      {
+        const ShaderResource &res = refl.readWriteResources[0];
+        INFO("read-write resource: " << res.name.c_str());
 
-      // texBuf
-      CHECK(mapping.readOnlyResources[2].bindset == 0);
-      CHECK(mapping.readOnlyResources[2].bind == 7);
-      CHECK(mapping.readOnlyResources[2].arraySize == 1);
-      CHECK(mapping.readOnlyResources[2].used);
+        REQUIRE_ARRAY_SIZE(res.variableType.members.size(), 3);
+        {
+          CHECK(res.variableType.members[0].name == "blah");
+          {
+            const ShaderConstant &member = res.variableType.members[0];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.elements == 1);
+          }
+
+          CHECK(res.variableType.members[1].name == "normal_array");
+          {
+            const ShaderConstant &member = res.variableType.members[1];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.columns == 4);
+            CHECK(member.type.elements == 3);
+          }
+
+          CHECK(res.variableType.members[2].name == "non_array");
+          {
+            const ShaderConstant &member = res.variableType.members[2];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.columns == 4);
+            CHECK(member.type.elements == 1);
+          }
+        }
+      }
+
+      CHECK(refl.readWriteResources[1].name == ssbo_name + "1");
+      {
+        const ShaderResource &res = refl.readWriteResources[1];
+        INFO("read-write resource: " << res.name.c_str());
+
+        REQUIRE_ARRAY_SIZE(res.variableType.members.size(), 3);
+        {
+          CHECK(res.variableType.members[0].name == "blah");
+          {
+            const ShaderConstant &member = res.variableType.members[0];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.elements == 1);
+          }
+
+          CHECK(res.variableType.members[1].name == "normal_array");
+          {
+            const ShaderConstant &member = res.variableType.members[1];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.columns == 4);
+            CHECK(member.type.elements == 3);
+          }
+
+          CHECK(res.variableType.members[2].name == "bounded_array");
+          {
+            const ShaderConstant &member = res.variableType.members[2];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.columns == 4);
+            CHECK(member.type.elements == 5);
+          }
+        }
+      }
+
+      CHECK(refl.readWriteResources[2].name == ssbo_name + "2");
+      {
+        const ShaderResource &res = refl.readWriteResources[2];
+        INFO("read-write resource: " << res.name.c_str());
+
+        REQUIRE_ARRAY_SIZE(res.variableType.members.size(), 3);
+        {
+          CHECK(res.variableType.members[0].name == "blah");
+          {
+            const ShaderConstant &member = res.variableType.members[0];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.elements == 1);
+          }
+
+          CHECK(res.variableType.members[1].name == "normal_array");
+          {
+            const ShaderConstant &member = res.variableType.members[1];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.columns == 4);
+            CHECK(member.type.elements == 3);
+          }
+
+          CHECK(res.variableType.members[2].name == "infinite_array");
+          {
+            const ShaderConstant &member = res.variableType.members[2];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.columns == 4);
+            CHECK(member.type.elements == ~0U);
+          }
+        }
+      }
+
+      CHECK(refl.readWriteResources[3].name == ssbo_name + "3");
+      {
+        const ShaderResource &res = refl.readWriteResources[3];
+        INFO("read-write resource: " << res.name.c_str());
+
+        REQUIRE_ARRAY_SIZE(res.variableType.members.size(), 3);
+        {
+          CHECK(res.variableType.members[0].name == "blah");
+          {
+            const ShaderConstant &member = res.variableType.members[0];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.elements == 1);
+          }
+
+          CHECK(res.variableType.members[1].name == "test");
+          {
+            const ShaderConstant &member = res.variableType.members[1];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Struct);
+            CHECK(member.type.elements == 1);
+
+            REQUIRE_ARRAY_SIZE(member.type.members.size(), 2);
+            {
+              CHECK(member.type.members[0].name == "a");
+              {
+                const ShaderConstant &submember = member.type.members[0];
+                INFO("SSBO submember: " << submember.name.c_str());
+
+                CHECK(submember.type.baseType == VarType::Float);
+                CHECK(submember.type.columns == 1);
+                CHECK(submember.type.elements == 2);
+              }
+
+              CHECK(member.type.members[1].name == "b");
+              {
+                const ShaderConstant &submember = member.type.members[1];
+                INFO("SSBO submember: " << submember.name.c_str());
+
+                CHECK(submember.type.baseType == VarType::SInt);
+                CHECK(submember.type.columns == 1);
+                CHECK(submember.type.elements == 1);
+              }
+            }
+          }
+
+          CHECK(res.variableType.members[2].name == "s");
+          {
+            const ShaderConstant &member = res.variableType.members[2];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Struct);
+            if(testType == ShaderType::GLSL)
+            {
+              // GL has no way of telling us the fixed size of a trailing array of structs, so we
+              // report that it's infinite
+              CHECK(member.type.elements == ~0U);
+            }
+            else
+            {
+              CHECK(member.type.elements == 2);
+            }
+          }
+        }
+      }
+
+      CHECK(refl.readWriteResources[4].name == ssbo_name + "4");
+      {
+        const ShaderResource &res = refl.readWriteResources[4];
+        INFO("read-write resource: " << res.name.c_str());
+
+        REQUIRE_ARRAY_SIZE(res.variableType.members.size(), 3);
+        {
+          CHECK(res.variableType.members[0].name == "blah");
+          {
+            const ShaderConstant &member = res.variableType.members[0];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.elements == 1);
+          }
+
+          CHECK(res.variableType.members[1].name == "test");
+          {
+            const ShaderConstant &member = res.variableType.members[1];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Struct);
+            CHECK(member.type.elements == 1);
+
+            REQUIRE_ARRAY_SIZE(member.type.members.size(), 2);
+            {
+              CHECK(member.type.members[0].name == "a");
+              {
+                const ShaderConstant &submember = member.type.members[0];
+                INFO("SSBO submember: " << submember.name.c_str());
+
+                CHECK(submember.type.baseType == VarType::Float);
+                CHECK(submember.type.columns == 1);
+                CHECK(submember.type.elements == 2);
+              }
+
+              CHECK(member.type.members[1].name == "b");
+              {
+                const ShaderConstant &submember = member.type.members[1];
+                INFO("SSBO submember: " << submember.name.c_str());
+
+                CHECK(submember.type.baseType == VarType::SInt);
+                CHECK(submember.type.columns == 1);
+                CHECK(submember.type.elements == 1);
+              }
+            }
+          }
+
+          CHECK(res.variableType.members[2].name == "s");
+          {
+            const ShaderConstant &member = res.variableType.members[2];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Struct);
+            CHECK(member.type.elements == ~0U);
+          }
+        }
+      }
+
+      CHECK(refl.readWriteResources[5].name == "ssbo5" + ssbo_suffix);
+      {
+        const ShaderResource &res = refl.readWriteResources[5];
+        INFO("read-write resource: " << res.name.c_str());
+
+        REQUIRE_ARRAY_SIZE(res.variableType.members.size(), 3);
+        {
+          CHECK(res.variableType.members[0].name == "ssbo5_blah");
+          {
+            const ShaderConstant &member = res.variableType.members[0];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.elements == 1);
+          }
+
+          CHECK(res.variableType.members[1].name == "ssbo5_test");
+          {
+            const ShaderConstant &member = res.variableType.members[1];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Struct);
+            CHECK(member.type.elements == 1);
+
+            REQUIRE_ARRAY_SIZE(member.type.members.size(), 2);
+            {
+              CHECK(member.type.members[0].name == "a");
+              {
+                const ShaderConstant &submember = member.type.members[0];
+                INFO("SSBO submember: " << submember.name.c_str());
+
+                CHECK(submember.type.baseType == VarType::Float);
+                CHECK(submember.type.columns == 1);
+                CHECK(submember.type.elements == 2);
+              }
+
+              CHECK(member.type.members[1].name == "b");
+              {
+                const ShaderConstant &submember = member.type.members[1];
+                INFO("SSBO submember: " << submember.name.c_str());
+
+                CHECK(submember.type.baseType == VarType::SInt);
+                CHECK(submember.type.columns == 1);
+                CHECK(submember.type.elements == 1);
+              }
+            }
+          }
+
+          CHECK(res.variableType.members[2].name == "ssbo5_s");
+          {
+            const ShaderConstant &member = res.variableType.members[2];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Struct);
+            if(testType == ShaderType::GLSL)
+            {
+              // GL has no way of telling us the fixed size of a trailing array of structs, so we
+              // report that it's infinite
+              CHECK(member.type.elements == ~0U);
+            }
+            else
+            {
+              CHECK(member.type.elements == 2);
+            }
+          }
+        }
+      }
+
+      CHECK(refl.readWriteResources[6].name == "ssbo6" + ssbo_suffix);
+      {
+        const ShaderResource &res = refl.readWriteResources[6];
+        INFO("read-write resource: " << res.name.c_str());
+
+        REQUIRE_ARRAY_SIZE(res.variableType.members.size(), 3);
+        {
+          CHECK(res.variableType.members[0].name == "ssbo6_blah");
+          {
+            const ShaderConstant &member = res.variableType.members[0];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.elements == 1);
+          }
+
+          CHECK(res.variableType.members[1].name == "ssbo6_test");
+          {
+            const ShaderConstant &member = res.variableType.members[1];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Struct);
+            CHECK(member.type.elements == 1);
+
+            REQUIRE_ARRAY_SIZE(member.type.members.size(), 2);
+            {
+              CHECK(member.type.members[0].name == "a");
+              {
+                const ShaderConstant &submember = member.type.members[0];
+                INFO("SSBO submember: " << submember.name.c_str());
+
+                CHECK(submember.type.baseType == VarType::Float);
+                CHECK(submember.type.columns == 1);
+                CHECK(submember.type.elements == 2);
+              }
+
+              CHECK(member.type.members[1].name == "b");
+              {
+                const ShaderConstant &submember = member.type.members[1];
+                INFO("SSBO submember: " << submember.name.c_str());
+
+                CHECK(submember.type.baseType == VarType::SInt);
+                CHECK(submember.type.columns == 1);
+                CHECK(submember.type.elements == 1);
+              }
+            }
+          }
+
+          CHECK(res.variableType.members[2].name == "ssbo6_s");
+          {
+            const ShaderConstant &member = res.variableType.members[2];
+            INFO("SSBO member: " << member.name.c_str());
+
+            CHECK(member.type.baseType == VarType::Struct);
+            CHECK(member.type.elements == ~0U);
+          }
+        }
+      }
     }
-  };
+  }
 
   SECTION("SSBOs")
   {
@@ -1091,13 +1666,8 @@ void main() {
 
 )";
 
-#define REQUIRE_ARRAY_SIZE(size, min) \
-  REQUIRE(size >= min);               \
-  CHECK(size == min);
-
     ShaderReflection refl;
-    ShaderBindpointMapping mapping;
-    compile(ShaderStage::Fragment, source, "main", refl, mapping);
+    compile(ShaderStage::Fragment, source, "main", refl);
 
     REQUIRE_ARRAY_SIZE(refl.samplers.size(), 0);
     REQUIRE_ARRAY_SIZE(refl.constantBlocks.size(), 0);
@@ -1113,8 +1683,14 @@ void main() {
         const ShaderResource &res = refl.readWriteResources[0];
         INFO("read-write resource: " << res.name.c_str());
 
-        CHECK(res.bindPoint == 0);
-        CHECK(res.resType == TextureType::Buffer);
+        // GLSL does not have register bindings as they're dynamic
+        if(testType != ShaderType::GLSL)
+        {
+          CHECK(res.fixedBindSetOrSpace == 0);
+          CHECK(res.fixedBindNumber == 2);
+        }
+        CHECK(res.bindArraySize == 1);
+        CHECK(res.textureType == TextureType::Buffer);
 
         REQUIRE_ARRAY_SIZE(res.variableType.members.size(), 3);
         {
@@ -1125,12 +1701,12 @@ void main() {
 
             CHECK(member.byteOffset == 0);
             CHECK(member.type.members.empty());
-            CHECK(member.type.descriptor.type == VarType::UInt);
-            CHECK(member.type.descriptor.rows == 1);
-            CHECK(member.type.descriptor.columns == 1);
-            CHECK(member.type.descriptor.elements == 10);
-            CHECK(member.type.descriptor.arrayByteStride == 4);
-            CHECK(member.type.descriptor.name == "uint");
+            CHECK(member.type.baseType == VarType::UInt);
+            CHECK(member.type.rows == 1);
+            CHECK(member.type.columns == 1);
+            CHECK(member.type.elements == 10);
+            CHECK(member.type.arrayByteStride == 4);
+            CHECK(member.type.name == "uint");
           }
 
           CHECK(res.variableType.members[1].name == "ssbo_b");
@@ -1139,9 +1715,9 @@ void main() {
             INFO("SSBO member: " << member.name.c_str());
 
             CHECK(member.byteOffset == 40);
-            // this doesn't reflect in native introspection, so we skip it
-            // CHECK(member.type.descriptor.elements == 3);
-            CHECK(member.type.descriptor.arrayByteStride == 24);
+            CHECK(member.type.baseType == VarType::Struct);
+            CHECK(member.type.arrayByteStride == 24);
+            CHECK(member.type.elements == 3);
 
             REQUIRE_ARRAY_SIZE(member.type.members.size(), 3);
             {
@@ -1152,10 +1728,10 @@ void main() {
 
                 CHECK(submember.byteOffset == 0);
                 CHECK(submember.type.members.empty());
-                CHECK(submember.type.descriptor.type == VarType::Float);
-                CHECK(submember.type.descriptor.rows == 1);
-                CHECK(submember.type.descriptor.columns == 1);
-                CHECK(submember.type.descriptor.name == "float");
+                CHECK(submember.type.baseType == VarType::Float);
+                CHECK(submember.type.rows == 1);
+                CHECK(submember.type.columns == 1);
+                CHECK(submember.type.name == "float");
               }
 
               CHECK(member.type.members[1].name == "b");
@@ -1165,10 +1741,10 @@ void main() {
 
                 CHECK(submember.byteOffset == 4);
                 CHECK(submember.type.members.empty());
-                CHECK(submember.type.descriptor.type == VarType::SInt);
-                CHECK(submember.type.descriptor.rows == 1);
-                CHECK(submember.type.descriptor.columns == 1);
-                CHECK(submember.type.descriptor.name == "int");
+                CHECK(submember.type.baseType == VarType::SInt);
+                CHECK(submember.type.rows == 1);
+                CHECK(submember.type.columns == 1);
+                CHECK(submember.type.name == "int");
               }
 
               CHECK(member.type.members[2].name == "c");
@@ -1178,10 +1754,10 @@ void main() {
 
                 CHECK(submember.byteOffset == 8);
                 CHECK(submember.type.members.empty());
-                CHECK(submember.type.descriptor.type == VarType::Float);
-                CHECK(submember.type.descriptor.rows == 2);
-                CHECK(submember.type.descriptor.columns == 2);
-                CHECK(submember.type.descriptor.rowMajorStorage == false);
+                CHECK(submember.type.baseType == VarType::Float);
+                CHECK(submember.type.rows == 2);
+                CHECK(submember.type.columns == 2);
+                CHECK(submember.type.ColMajor());
               }
             }
           }
@@ -1193,10 +1769,10 @@ void main() {
 
             CHECK(member.byteOffset == 112);
             CHECK(member.type.members.empty());
-            CHECK(member.type.descriptor.type == VarType::Float);
-            CHECK(member.type.descriptor.rows == 1);
-            CHECK(member.type.descriptor.columns == 1);
-            CHECK(member.type.descriptor.name == "float");
+            CHECK(member.type.baseType == VarType::Float);
+            CHECK(member.type.rows == 1);
+            CHECK(member.type.columns == 1);
+            CHECK(member.type.name == "float");
           }
         }
       }
@@ -1206,8 +1782,14 @@ void main() {
         const ShaderResource &res = refl.readWriteResources[1];
         INFO("read-write resource: " << res.name.c_str());
 
-        CHECK(res.bindPoint == 1);
-        CHECK(res.resType == TextureType::Buffer);
+        // GLSL does not have register bindings as they're dynamic
+        if(testType != ShaderType::GLSL)
+        {
+          CHECK(res.fixedBindSetOrSpace == 0);
+          CHECK(res.fixedBindNumber == 5);
+        }
+        CHECK(res.bindArraySize == 1);
+        CHECK(res.textureType == TextureType::Buffer);
 
         REQUIRE_ARRAY_SIZE(res.variableType.members.size(), 1);
         {
@@ -1217,8 +1799,9 @@ void main() {
             INFO("SSBO member: " << member.name.c_str());
 
             CHECK(member.byteOffset == 0);
-            CHECK(member.type.descriptor.arrayByteStride == 48);
-            CHECK(member.type.descriptor.elements == ~0U);
+            CHECK(member.type.baseType == VarType::Struct);
+            CHECK(member.type.arrayByteStride == 48);
+            CHECK(member.type.elements == ~0U);
 
             REQUIRE_ARRAY_SIZE(member.type.members.size(), 2);
             {
@@ -1228,6 +1811,8 @@ void main() {
                 INFO("SSBO submember: " << submember.name.c_str());
 
                 CHECK(submember.byteOffset == 0);
+                CHECK(submember.type.baseType == VarType::Struct);
+                CHECK(submember.type.arrayByteStride == 24);
 
                 REQUIRE_ARRAY_SIZE(submember.type.members.size(), 3);
                 {
@@ -1238,10 +1823,10 @@ void main() {
 
                     CHECK(subsubmember.byteOffset == 0);
                     CHECK(subsubmember.type.members.empty());
-                    CHECK(subsubmember.type.descriptor.type == VarType::Float);
-                    CHECK(subsubmember.type.descriptor.rows == 1);
-                    CHECK(subsubmember.type.descriptor.columns == 1);
-                    CHECK(subsubmember.type.descriptor.name == "float");
+                    CHECK(subsubmember.type.baseType == VarType::Float);
+                    CHECK(subsubmember.type.rows == 1);
+                    CHECK(subsubmember.type.columns == 1);
+                    CHECK(subsubmember.type.name == "float");
                   }
 
                   CHECK(submember.type.members[1].name == "b");
@@ -1251,10 +1836,10 @@ void main() {
 
                     CHECK(subsubmember.byteOffset == 4);
                     CHECK(subsubmember.type.members.empty());
-                    CHECK(subsubmember.type.descriptor.type == VarType::SInt);
-                    CHECK(subsubmember.type.descriptor.rows == 1);
-                    CHECK(subsubmember.type.descriptor.columns == 1);
-                    CHECK(subsubmember.type.descriptor.name == "int");
+                    CHECK(subsubmember.type.baseType == VarType::SInt);
+                    CHECK(subsubmember.type.rows == 1);
+                    CHECK(subsubmember.type.columns == 1);
+                    CHECK(subsubmember.type.name == "int");
                   }
 
                   CHECK(submember.type.members[2].name == "c");
@@ -1264,10 +1849,10 @@ void main() {
 
                     CHECK(subsubmember.byteOffset == 8);
                     CHECK(subsubmember.type.members.empty());
-                    CHECK(subsubmember.type.descriptor.type == VarType::Float);
-                    CHECK(subsubmember.type.descriptor.rows == 2);
-                    CHECK(subsubmember.type.descriptor.columns == 2);
-                    CHECK(subsubmember.type.descriptor.rowMajorStorage == false);
+                    CHECK(subsubmember.type.baseType == VarType::Float);
+                    CHECK(subsubmember.type.rows == 2);
+                    CHECK(subsubmember.type.columns == 2);
+                    CHECK(subsubmember.type.ColMajor());
                   }
                 }
               }
@@ -1278,6 +1863,8 @@ void main() {
                 INFO("SSBO submember: " << submember.name.c_str());
 
                 CHECK(submember.byteOffset == 24);
+                CHECK(submember.type.baseType == VarType::Struct);
+                CHECK(submember.type.arrayByteStride == 24);
 
                 REQUIRE_ARRAY_SIZE(submember.type.members.size(), 3);
                 {
@@ -1288,10 +1875,10 @@ void main() {
 
                     CHECK(subsubmember.byteOffset == 0);
                     CHECK(subsubmember.type.members.empty());
-                    CHECK(subsubmember.type.descriptor.type == VarType::Float);
-                    CHECK(subsubmember.type.descriptor.rows == 1);
-                    CHECK(subsubmember.type.descriptor.columns == 1);
-                    CHECK(subsubmember.type.descriptor.name == "float");
+                    CHECK(subsubmember.type.baseType == VarType::Float);
+                    CHECK(subsubmember.type.rows == 1);
+                    CHECK(subsubmember.type.columns == 1);
+                    CHECK(subsubmember.type.name == "float");
                   }
 
                   CHECK(submember.type.members[1].name == "b");
@@ -1301,10 +1888,10 @@ void main() {
 
                     CHECK(subsubmember.byteOffset == 4);
                     CHECK(subsubmember.type.members.empty());
-                    CHECK(subsubmember.type.descriptor.type == VarType::SInt);
-                    CHECK(subsubmember.type.descriptor.rows == 1);
-                    CHECK(subsubmember.type.descriptor.columns == 1);
-                    CHECK(subsubmember.type.descriptor.name == "int");
+                    CHECK(subsubmember.type.baseType == VarType::SInt);
+                    CHECK(subsubmember.type.rows == 1);
+                    CHECK(subsubmember.type.columns == 1);
+                    CHECK(subsubmember.type.name == "int");
                   }
 
                   CHECK(submember.type.members[2].name == "c");
@@ -1314,10 +1901,10 @@ void main() {
 
                     CHECK(subsubmember.byteOffset == 8);
                     CHECK(subsubmember.type.members.empty());
-                    CHECK(subsubmember.type.descriptor.type == VarType::Float);
-                    CHECK(subsubmember.type.descriptor.rows == 2);
-                    CHECK(subsubmember.type.descriptor.columns == 2);
-                    CHECK(subsubmember.type.descriptor.rowMajorStorage == false);
+                    CHECK(subsubmember.type.baseType == VarType::Float);
+                    CHECK(subsubmember.type.rows == 2);
+                    CHECK(subsubmember.type.columns == 2);
+                    CHECK(subsubmember.type.ColMajor());
                   }
                 }
               }
@@ -1325,21 +1912,6 @@ void main() {
           }
         }
       }
-    }
-
-    REQUIRE_ARRAY_SIZE(mapping.readWriteResources.size(), 2);
-    {
-      // ssbo
-      CHECK(mapping.readWriteResources[0].bindset == 0);
-      CHECK(mapping.readWriteResources[0].bind == 2);
-      CHECK(mapping.readWriteResources[0].arraySize == 1);
-      CHECK(mapping.readWriteResources[0].used);
-
-      // ssbo2
-      CHECK(mapping.readWriteResources[1].bindset == 0);
-      CHECK(mapping.readWriteResources[1].bind == 5);
-      CHECK(mapping.readWriteResources[1].arraySize == 1);
-      CHECK(mapping.readWriteResources[1].used);
     }
   };
 
@@ -1355,8 +1927,7 @@ void main() {
 )";
 
     ShaderReflection refl;
-    ShaderBindpointMapping mapping;
-    compile(ShaderStage::Vertex, source, "main", refl, mapping);
+    compile(ShaderStage::Vertex, source, "main", refl);
 
     REQUIRE_ARRAY_SIZE(refl.samplers.size(), 0);
     REQUIRE_ARRAY_SIZE(refl.constantBlocks.size(), 0);
@@ -1390,8 +1961,7 @@ void main() {
 )";
 
     refl = ShaderReflection();
-    mapping = ShaderBindpointMapping();
-    compile(ShaderStage::Vertex, source2, "main", refl, mapping);
+    compile(ShaderStage::Vertex, source2, "main", refl);
 
     REQUIRE_ARRAY_SIZE(refl.samplers.size(), 0);
     REQUIRE_ARRAY_SIZE(refl.constantBlocks.size(), 0);
@@ -1451,8 +2021,7 @@ void main()
 )";
 
     ShaderReflection refl;
-    ShaderBindpointMapping mapping;
-    compile(ShaderStage::Vertex, source, "main", refl, mapping);
+    compile(ShaderStage::Vertex, source, "main", refl);
 
     REQUIRE_ARRAY_SIZE(refl.samplers.size(), 0);
     REQUIRE_ARRAY_SIZE(refl.constantBlocks.size(), 0);
@@ -1641,8 +2210,7 @@ void main()
 )";
 
     ShaderReflection refl;
-    ShaderBindpointMapping mapping;
-    compile(ShaderStage::Vertex, source, "main", refl, mapping);
+    compile(ShaderStage::Vertex, source, "main", refl);
 
     REQUIRE_ARRAY_SIZE(refl.outputSignature.size(), 11);
     {
@@ -1812,8 +2380,7 @@ void main()
 )";
 
     ShaderReflection refl;
-    ShaderBindpointMapping mapping;
-    compile(ShaderStage::Vertex, source, "main", refl, mapping);
+    compile(ShaderStage::Vertex, source, "main", refl);
 
     REQUIRE_ARRAY_SIZE(refl.samplers.size(), 0);
     REQUIRE_ARRAY_SIZE(refl.constantBlocks.size(), 0);
@@ -1927,8 +2494,7 @@ void main()
 )";
 
     ShaderReflection refl;
-    ShaderBindpointMapping mapping;
-    compile(ShaderStage::Geometry, source, "main", refl, mapping);
+    compile(ShaderStage::Geometry, source, "main", refl);
 
     REQUIRE_ARRAY_SIZE(refl.samplers.size(), 0);
     REQUIRE_ARRAY_SIZE(refl.constantBlocks.size(), 0);
@@ -2025,8 +2591,7 @@ void main() {
   CHECK(size == min);
 
     ShaderReflection refl;
-    ShaderBindpointMapping mapping;
-    compile(ShaderStage::Fragment, source, "main", refl, mapping);
+    compile(ShaderStage::Fragment, source, "main", refl);
 
     // GLSL 'expands' these arrays
     size_t countRO = (testType == ShaderType::GLSL ? 7 : 1);
@@ -2046,22 +2611,17 @@ void main() {
           const ShaderResource &res = refl.readOnlyResources[i];
           INFO("read-only resource: " << res.name.c_str());
 
-          CHECK(res.bindPoint == (int32_t)i);
-          CHECK(res.resType == TextureType::Texture2D);
+          // GLSL does not have register bindings as they're dynamic
+          if(testType != ShaderType::GLSL)
+          {
+            CHECK(res.fixedBindSetOrSpace == 0);
+            CHECK(res.fixedBindNumber == 3 + i);
+          }
+          CHECK(res.bindArraySize == arraySizeRO);
+          CHECK(res.textureType == TextureType::Texture2D);
           CHECK(res.variableType.members.empty());
-          CHECK(res.variableType.descriptor.type == VarType::Float);
+          CHECK(res.variableType.baseType == VarType::Float);
         }
-      }
-    }
-
-    REQUIRE_ARRAY_SIZE(mapping.readOnlyResources.size(), countRO);
-    {
-      for(size_t i = 0; i < countRO; i++)
-      {
-        CHECK(mapping.readOnlyResources[i].bindset == 0);
-        CHECK(mapping.readOnlyResources[i].bind == 3 + (int32_t)i);
-        CHECK(mapping.readOnlyResources[i].arraySize == arraySizeRO);
-        CHECK(mapping.readOnlyResources[i].used);
       }
     }
 
@@ -2081,8 +2641,14 @@ void main() {
           const ShaderResource &res = refl.readWriteResources[i];
           INFO("read-write resource: " << res.name.c_str());
 
-          CHECK(res.bindPoint == (int32_t)i);
-          CHECK(res.resType == TextureType::Buffer);
+          // GLSL does not have register bindings as they're dynamic
+          if(testType != ShaderType::GLSL)
+          {
+            CHECK(res.fixedBindSetOrSpace == 0);
+            CHECK(res.fixedBindNumber == 2 + i);
+          }
+          CHECK(res.bindArraySize == arraySizeRW);
+          CHECK(res.textureType == TextureType::Buffer);
 
           // due to a bug in glslang the reflection is broken for these SSBOs. So we can still run
           // this test on GLSL we do a little hack here, which can get removed when we update
@@ -2098,10 +2664,10 @@ void main() {
 
               CHECK(member.byteOffset == 0);
               CHECK(member.type.members.empty());
-              CHECK(member.type.descriptor.type == VarType::Float);
-              CHECK(member.type.descriptor.rows == 1);
-              CHECK(member.type.descriptor.columns == 1);
-              CHECK(member.type.descriptor.name == "float");
+              CHECK(member.type.baseType == VarType::Float);
+              CHECK(member.type.rows == 1);
+              CHECK(member.type.columns == 1);
+              CHECK(member.type.name == "float");
             }
 
             CHECK(varType->members[1].name == "b");
@@ -2111,24 +2677,13 @@ void main() {
 
               CHECK(member.byteOffset == 4);
               CHECK(member.type.members.empty());
-              CHECK(member.type.descriptor.type == VarType::SInt);
-              CHECK(member.type.descriptor.rows == 1);
-              CHECK(member.type.descriptor.columns == 1);
-              CHECK(member.type.descriptor.name == "int");
+              CHECK(member.type.baseType == VarType::SInt);
+              CHECK(member.type.rows == 1);
+              CHECK(member.type.columns == 1);
+              CHECK(member.type.name == "int");
             }
           }
         }
-      }
-    }
-
-    REQUIRE_ARRAY_SIZE(mapping.readWriteResources.size(), countRW);
-    {
-      for(size_t i = 0; i < countRW; i++)
-      {
-        CHECK(mapping.readWriteResources[i].bindset == 0);
-        CHECK(mapping.readWriteResources[i].bind == 2 + (int32_t)i);
-        CHECK(mapping.readWriteResources[i].arraySize == arraySizeRW);
-        CHECK(mapping.readWriteResources[i].used);
       }
     }
   };

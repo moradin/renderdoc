@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -40,11 +40,10 @@ struct ConfigVarRegistration;
   {                                                                               \
     ConfigVarRegistration(rdcliteral name, const T &defaultValue, bool debugOnly, \
                           rdcliteral description);                                \
-    const T &value();                                                             \
+    T value() const;                                                              \
                                                                                   \
   private:                                                                        \
     SDObject *obj;                                                                \
-    T tmp;                                                                        \
   };
 
 CONFIG_SUPPORT_TYPE(rdcstr);
@@ -58,8 +57,11 @@ CONFIG_SUPPORT_TYPE(rdcarray<rdcstr>);
 #define RDOC_CONFIG(type, name, defaultValue, description)                                \
   static ConfigVarRegistration<type> CONCAT(config, __LINE__)(                            \
       STRING_LITERAL(STRINGIZE(name)), defaultValue, false, STRING_LITERAL(description)); \
-  const type &name() { return CONCAT(config, __LINE__).value(); }
-#define RDOC_EXTERN_CONFIG(type, name) extern const type &name();
+  type name()                                                                             \
+  {                                                                                       \
+    return CONCAT(config, __LINE__).value();                                              \
+  }
+#define RDOC_EXTERN_CONFIG(type, name) extern type name();
 
 // debug configs get set to constants in official stable builds, they will remain configurable
 // in nightly builds and of course in development builds
@@ -68,7 +70,7 @@ CONFIG_SUPPORT_TYPE(rdcarray<rdcstr>);
 #define RDOC_DEBUG_CONFIG(type, name, defaultValue, description)                         \
   static ConfigVarRegistration<type> CONCAT(config, __LINE__)(                           \
       STRING_LITERAL(STRINGIZE(name)), defaultValue, true, STRING_LITERAL(description)); \
-  const type &name()                                                                     \
+  type name()                                                                            \
   {                                                                                      \
     static const type ret = defaultValue;                                                \
     return ret;                                                                          \
@@ -78,5 +80,8 @@ CONFIG_SUPPORT_TYPE(rdcarray<rdcstr>);
 #define RDOC_DEBUG_CONFIG(type, name, defaultValue, description)                         \
   static ConfigVarRegistration<type> CONCAT(config, __LINE__)(                           \
       STRING_LITERAL(STRINGIZE(name)), defaultValue, true, STRING_LITERAL(description)); \
-  const type &name() { return CONCAT(config, __LINE__).value(); }
+  type name()                                                                            \
+  {                                                                                      \
+    return CONCAT(config, __LINE__).value();                                             \
+  }
 #endif

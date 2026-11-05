@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -251,7 +251,7 @@ void SetTLSValue(uint64_t slot, void *value)
     }
 
     if(slot - 1 >= slots->data.size())
-    slots->data.resize((size_t)slot);
+      slots->data.resize((size_t)slot);
   }
 
   slots->data[(size_t)slot - 1] = value;

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -48,14 +48,14 @@ public:
 
 private slots:
   // automatic slots
-  void on_reload_clicked();
-  void on_openLocation_clicked();
-  void on_alwaysLoad_toggled(bool checked);
   void on_extensions_currentItemChanged(RDTreeWidgetItem *item, RDTreeWidgetItem *);
   void on_extensions_itemChanged(RDTreeWidgetItem *item, int col);
 
 private:
   void update_currentItem(RDTreeWidgetItem *item);
+
+  void loadExtension(RDTreeWidgetItem *item);
+  void PopulateExtensionList();
 
   Ui::ExtensionManager *ui;
   ICaptureContext &m_Ctx;

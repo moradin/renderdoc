@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -55,6 +55,7 @@ public:
 
   void RegisterHooks();
 
+  void UseUnusedSupportedFunction(const char *name);
   void *GetUnsupportedFunction(const char *name);
 
   void *handle = NULL;
@@ -123,7 +124,6 @@ void DisableGLHooks()
   glhook.enabled = false;
 }
 
-#if ENABLED(RDOC_WIN32) || ENABLED(RDOC_APPLE) || ENABLED(RDOC_SWITCH)
 template <typename ret_type>
 ret_type default_ret()
 {
@@ -135,24 +135,34 @@ void default_ret()
 {
 }
 
-// if we were injected and aren't ready to capture, skip out and call the real function
-#define UNINIT_CALL(function, ...)                                                      \
-  if(!glhook.enabled)                                                                   \
-  {                                                                                     \
-    if(GL.function == NULL)                                                             \
-    {                                                                                   \
-      RDCERR("No function pointer for '%s' while uninitialised!", STRINGIZE(function)); \
-      return default_ret<decltype(GL.function(__VA_ARGS__))>();                         \
-    }                                                                                   \
-    return GL.function(__VA_ARGS__);                                                    \
+template <>
+const char *default_ret()
+{
+  return "";
+}
+
+template <>
+const GLubyte *default_ret()
+{
+  return (const GLubyte *)"";
+}
+
+// on windows we can be injected and not ready to capture when we intercept a GL call. If that
+// happens we need to skip and call the real function
+
+// on linux some systems inject external code into Qt which initialises GL behind our back. If this
+// calls glXGetProcAddress it will get the real function pointers, but if it links against GL it
+// will get routed here via our public exported symbols so we try to call the real function
+#define UNINIT_CALL(function, ...)                                                              \
+  if(!glhook.enabled)                                                                           \
+  {                                                                                             \
+    if(GL.function == NULL)                                                                     \
+    {                                                                                           \
+      RDCERR("No function pointer for '%s' while doing replay fallback!", STRINGIZE(function)); \
+      return default_ret<decltype(GL.function(__VA_ARGS__))>();                                 \
+    }                                                                                           \
+    return GL.function(__VA_ARGS__);                                                            \
   }
-
-#else
-
-// nothing to do - we always assume we are ready to capture
-#define UNINIT_CALL(function, ...)
-
-#endif
 
 DefineSupportedHooks();
 DefineUnsupportedHooks();
@@ -215,6 +225,13 @@ void *HookedGetProcAddress(const char *func, void *realFunc)
   return realFunc;
 }
 
+void GLHook::UseUnusedSupportedFunction(const char *name)
+{
+  SCOPED_LOCK(glLock);
+  if(glhook.driver)
+    glhook.driver->UseUnusedSupportedFunction(name);
+}
+
 void *GLHook::GetUnsupportedFunction(const char *name)
 {
 #if ENABLED(RDOC_APPLE)
@@ -242,11 +259,16 @@ void GLDispatchTable::PopulateWithCallback(PlatformGetProcAddr lookupFunc)
   ForEachSupported(HookFunc);
 }
 
-static void GLHooked(void *handle)
+static void GLHooked(void *handle, const char *libName)
 {
   // store the handle for any unimplemented functions that need to look up their onward
   // pointers
   glhook.handle = handle;
+
+#if ENABLED(RDOC_WIN32)
+  // force library to stay loaded so that function pointers don't move
+  LoadLibraryA(libName);
+#endif
 }
 
 void GLHook::RegisterHooks()
@@ -277,12 +299,29 @@ void GLHook::RegisterHooks()
 
   LibraryHooks::RegisterLibraryHook(libraryName, &GLHooked);
 
-#define RegisterFunc(func, name)      \
-  LibraryHooks::RegisterFunctionHook( \
-      libraryName,                    \
-      FunctionHook(STRINGIZE(name), (void **)&GL.func, (void *)&CONCAT(func, _renderdoc_hooked)));
+  // MSVC compiles this function to use a huge amount of stack by initialising all the FunctionHook
+  // locals all at once. So we instead explicitly re-use the same hook (since it's going to be
+  // copied anyway, these are temporaries).
+  FunctionHook tmphook;
+
+#define RegisterFunc(func, name)                              \
+  {                                                           \
+    tmphook.function = STRINGIZE(name);                       \
+    tmphook.orig = (void **)&GL.func;                         \
+    tmphook.hook = (void *)&CONCAT(func, _renderdoc_hooked);  \
+    LibraryHooks::RegisterFunctionHook(libraryName, tmphook); \
+  }
+
+#define RegisterUnsupportedFunc(name)                         \
+  {                                                           \
+    tmphook.function = STRINGIZE(name);                       \
+    tmphook.orig = NULL;                                      \
+    tmphook.hook = (void *)&CONCAT(name, _renderdoc_hooked);  \
+    LibraryHooks::RegisterFunctionHook(libraryName, tmphook); \
+  }
 
   ForEachSupported(RegisterFunc);
+  ForEachUnsupported(RegisterUnsupportedFunc);
 
 #if ENABLED(RDOC_WIN32)
   if(ShouldHookEGL())
@@ -297,7 +336,7 @@ void GLHook::RegisterHooks()
 
 #if ENABLED(RDOC_APPLE)
 
-// dlsym is unreliable with interposing, we must fetch the functions directly here at compile-time.
+  // dlsym is unreliable with interposing, we must fetch the functions directly here at compile-time.
 
 #undef APPLE_FUNC
 #define APPLE_FUNC(function) CONCAT(unsupported_real_, function) = &function;

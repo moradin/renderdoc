@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -37,6 +37,8 @@ void D3D11Replay::OutputWindow::MakeRTV()
   {
     hr = swap->GetBuffer(0, __uuidof(ID3D11Texture2D), (void **)&texture);
 
+    SetDebugName(texture, "Output window backbuffer 0");
+
     dev->CheckHRESULT(hr);
 
     if(FAILED(hr))
@@ -63,6 +65,8 @@ void D3D11Replay::OutputWindow::MakeRTV()
     texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 
     hr = dev->CreateTexture2D(&texDesc, NULL, &texture);
+
+    SetDebugName(texture, "Output window fake backbuffer 0");
   }
 
   hr = dev->CreateRenderTargetView(texture, NULL, &rtv);
@@ -106,6 +110,8 @@ void D3D11Replay::OutputWindow::MakeDSV()
   texDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
 
   HRESULT hr = dev->CreateTexture2D(&texDesc, NULL, &texture);
+
+  SetDebugName(texture, "Output window depth");
 
   dev->CheckHRESULT(hr);
 
@@ -270,27 +276,6 @@ void D3D11Replay::GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h)
   h = m_OutputWindows[id].height;
 }
 
-void D3D11Replay::SetOutputWindowDimensions(uint64_t id, int32_t w, int32_t h)
-{
-  if(id == 0 || m_OutputWindows.find(id) == m_OutputWindows.end())
-    return;
-
-  OutputWindow &outw = m_OutputWindows[id];
-
-  // can't resize an output with an actual window backing
-  if(outw.wnd)
-    return;
-
-  SAFE_RELEASE(outw.rtv);
-  SAFE_RELEASE(outw.dsv);
-
-  outw.width = w;
-  outw.height = h;
-
-  outw.MakeRTV();
-  outw.MakeDSV();
-}
-
 void D3D11Replay::GetOutputWindowData(uint64_t id, bytebuf &retData)
 {
   if(id == 0 || m_OutputWindows.find(id) == m_OutputWindows.end())
@@ -300,6 +285,8 @@ void D3D11Replay::GetOutputWindowData(uint64_t id, bytebuf &retData)
 
   if(!outw.rtv)
     return;
+
+  D3D11MarkerRegion renderoverlay("GetOutputWindowData");
 
   ID3D11Texture2D *texture = NULL;
   {
@@ -328,6 +315,8 @@ void D3D11Replay::GetOutputWindowData(uint64_t id, bytebuf &retData)
 
   HRESULT hr = m_pDevice->CreateTexture2D(&texDesc, NULL, &readback);
 
+  SetDebugName(readback, "Output window readback");
+
   m_pDevice->CheckHRESULT(hr);
 
   if(FAILED(hr))
@@ -345,6 +334,8 @@ void D3D11Replay::GetOutputWindowData(uint64_t id, bytebuf &retData)
     texDesc.Usage = D3D11_USAGE_DEFAULT;
 
     hr = m_pDevice->CreateTexture2D(&texDesc, NULL, &resolve);
+
+    SetDebugName(resolve, "Output window resolve");
 
     m_pDevice->CheckHRESULT(hr);
 
@@ -371,9 +362,16 @@ void D3D11Replay::GetOutputWindowData(uint64_t id, bytebuf &retData)
   }
 
   D3D11_MAPPED_SUBRESOURCE mapped = {};
-  ctx->Map(readback, 0, D3D11_MAP_READ, 0, &mapped);
+  hr = ctx->Map(readback, 0, D3D11_MAP_READ, 0, &mapped);
+  m_pDevice->CheckHRESULT(hr);
 
   retData.resize(outw.width * outw.height * 3);
+
+  if(FAILED(hr) || m_pDevice->HasFatalError())
+  {
+    RDCERR("Failed to Map HRESULT: %s", ToStr(hr).c_str());
+    return;
+  }
 
   byte *src = (byte *)mapped.pData;
   byte *dst = retData.data();

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -37,9 +37,6 @@ class TProgram;
 glslang::TShader *CompileShaderForReflection(rdcspv::ShaderStage stage,
                                              const rdcarray<rdcstr> &sources);
 glslang::TProgram *LinkProgramForReflection(const rdcarray<glslang::TShader *> &shaders);
-
-struct TBuiltInResource;
-extern TBuiltInResource *GetDefaultResources();
 
 enum class ReflectionInterface
 {

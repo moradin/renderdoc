@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,8 +24,9 @@
 
 #pragma once
 
-#include <frameobject.h>
 #include <atomic>
+
+#include "3rdparty/pythoncapi_compat.h"
 
 // this is defined elsewhere for managing the opaque global_handle object
 extern "C" PyThreadState *GetExecutingThreadState(PyObject *global_handle);
@@ -35,6 +36,7 @@ extern "C" bool IsThreadBlocking(PyObject *global_handle);
 extern "C" void SetThreadBlocking(PyObject *global_handle, bool block);
 extern "C" void QueueDecRef(PyObject *obj);
 extern "C" void ProcessDecRefQueue();
+extern "C" PyObject *DoFunctionCall(PyObject *object, PyObject *args);
 
 struct ExceptionData
 {
@@ -179,13 +181,13 @@ inline void get_return(const char *funcname, PyObject *result, PyObject *global_
 struct PyObjectRefCounter
 {
   PyObjectRefCounter(PyObject *o) : obj(o) { Py_INCREF(obj); }
-  PyObjectRefCounter(const PyObjectRefCounter &o)
-  {
-    obj = o.obj;
-    Py_INCREF(obj);
-  }
+  PyObjectRefCounter(const PyObjectRefCounter &o) { obj = Py_NewRef(o.obj); }
   ~PyObjectRefCounter()
   {
+    // Qt can release pending callbacks after Python has shut down.
+    if(!Py_IsInitialized())
+      return;
+
     // it may not be safe at the point this is destroyed to decref the object. For example if a
     // python lambda is passed into a C++ invoke function, we will be holding the only reference to
     // that lambda here when the async invoke completes and destroyed the std::function wrapping it.
@@ -249,9 +251,7 @@ struct varfunc
 
     ProcessDecRefQueue();
 
-    PyObject *result = PyObject_Call(func, args, 0);
-
-    Py_DECREF(args);
+    PyObject *result = DoFunctionCall(func, args);
 
     if(result == NULL)
     {
@@ -270,8 +270,7 @@ struct ScopedFuncCall
 {
   ScopedFuncCall(PyObject *h)
   {
-    handle = h;
-    Py_XINCREF(handle);
+    handle = Py_XNewRef(h);
     gil = PyGILState_Ensure();
   }
 
@@ -289,30 +288,12 @@ template <typename funcType>
 funcType ConvertFunc(const char *funcname, PyObject *func, ExceptionHandler exHandle)
 {
   // allow None to indicate no callback
-  if(func == Py_None)
+  if(Py_IsNone(func))
     return funcType();
 
   // add a reference to the global object so it stays alive while we execute, in case this is an
   // async call
-  PyObject *global_internal_handle = NULL;
-
-  // walk the frames until we find one with _renderdoc_internal. If we call a function in another
-  // module the globals may not have the entry, but the root level is expected to.
-  {
-    _frame *frame = PyEval_GetFrame();
-
-    while(frame)
-    {
-      global_internal_handle = PyDict_GetItemString(frame->f_globals, "_renderdoc_internal");
-
-      if(global_internal_handle)
-        break;
-      frame = frame->f_back;
-    }
-  }
-
-  if(!global_internal_handle)
-    global_internal_handle = GetCurrentGlobalHandle();
+  PyObject *global_internal_handle = GetCurrentGlobalHandle();
 
   // process any dangling functions that may need to be cleared up
   ProcessDecRefQueue();

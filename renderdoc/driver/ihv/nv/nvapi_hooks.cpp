@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include "common/formatting.h"
 #include "core/core.h"
+#include "core/settings.h"
 #include "driver/d3d11/d3d11_hooks.h"
 #include "hooks/hooks.h"
 #include "nvapi_wrapper.h"
@@ -33,6 +34,9 @@
 #include "driver/dx/official/d3d12.h"
 
 #include "official/nvapi/nvapi.h"
+
+RDOC_CONFIG(bool, NV_BlockNVAPI, false,
+            "Completely block nvapi from activating, pretend no NV GPU is present");
 
 namespace
 {
@@ -503,6 +507,9 @@ private:
 
   static NvAPI_Status __cdecl NvAPI_Initialize_hook()
   {
+    if(NV_BlockNVAPI())
+      return NVAPI_NVIDIA_DEVICE_NOT_FOUND;
+
     NvAPI_Status ret = nvhooks.NvAPI_Initialize()();
 
     if(ret == NVAPI_OK)

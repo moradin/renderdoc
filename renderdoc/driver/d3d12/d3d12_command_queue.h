@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -70,12 +70,13 @@ struct WrappedID3D12CompatibilityQueue : public ID3D12CompatibilityQueue
                                                       _In_range_(0, 0) UINT Reserved);
 };
 
-struct WrappedID3D12DebugCommandQueue : public ID3D12DebugCommandQueue
+struct WrappedID3D12DebugCommandQueue : public ID3D12DebugCommandQueue1
 {
-  WrappedID3D12CommandQueue *m_pQueue;
-  ID3D12DebugCommandQueue *m_pReal;
+  WrappedID3D12CommandQueue *m_pQueue = NULL;
+  ID3D12DebugCommandQueue *m_pReal = NULL;
+  ID3D12DebugCommandQueue1 *m_pReal1 = NULL;
 
-  WrappedID3D12DebugCommandQueue() : m_pQueue(NULL), m_pReal(NULL) {}
+  WrappedID3D12DebugCommandQueue() {}
   //////////////////////////////
   // implement IUnknown
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject)
@@ -83,6 +84,12 @@ struct WrappedID3D12DebugCommandQueue : public ID3D12DebugCommandQueue
     if(riid == __uuidof(ID3D12DebugCommandQueue))
     {
       *ppvObject = (ID3D12DebugCommandQueue *)this;
+      AddRef();
+      return S_OK;
+    }
+    else if(riid == __uuidof(ID3D12DebugCommandQueue1))
+    {
+      *ppvObject = (ID3D12DebugCommandQueue1 *)this;
       AddRef();
       return S_OK;
     }
@@ -102,6 +109,23 @@ struct WrappedID3D12DebugCommandQueue : public ID3D12DebugCommandQueue
     if(m_pReal)
       return m_pReal->AssertResourceState(Unwrap(pResource), Subresource, State);
     return TRUE;
+  }
+
+  //////////////////////////////
+  // implement ID3D12DebugCommandQueue1
+
+  virtual void STDMETHODCALLTYPE AssertResourceAccess(ID3D12Resource *pResource, UINT Subresource,
+                                                      D3D12_BARRIER_ACCESS Access)
+  {
+    if(m_pReal1)
+      m_pReal1->AssertResourceAccess(Unwrap(pResource), Subresource, Access);
+  }
+
+  virtual void STDMETHODCALLTYPE AssertTextureLayout(ID3D12Resource *pResource, UINT Subresource,
+                                                     D3D12_BARRIER_LAYOUT Layout)
+  {
+    if(m_pReal1)
+      m_pReal1->AssertTextureLayout(Unwrap(pResource), Subresource, Layout);
   }
 };
 
@@ -124,7 +148,7 @@ struct WrappedDownlevelQueue : public ID3D12CommandQueueDownlevel
 
 class WrappedID3D12GraphicsCommandList;
 
-class WrappedID3D12CommandQueue : public ID3D12CommandQueue,
+class WrappedID3D12CommandQueue : public ID3D12CommandQueue1,
                                   public RefCounter12<ID3D12CommandQueue>,
                                   public ID3DDevice,
                                   public IDXGISwapper
@@ -132,6 +156,7 @@ class WrappedID3D12CommandQueue : public ID3D12CommandQueue,
   friend class WrappedID3D12GraphicsCommandList;
 
   ID3D12CommandQueueDownlevel *m_pDownlevel;
+  ID3D12CommandQueue1 *m_pReal1;
 
   WrappedDownlevelQueue m_WrappedDownlevel;
 
@@ -147,12 +172,18 @@ class WrappedID3D12CommandQueue : public ID3D12CommandQueue,
 
   CaptureState &m_State;
 
-  bool m_MarkedActive = false;
+  // tracking ray dispatches that are pending during capture, to free them once the execution is finished
+  ID3D12Fence *m_CallbackFence = NULL;
+  UINT64 m_RayFenceValue = 1;
+  rdcarray<PatchedRayDispatch::Resources> m_RayDispatchesPending;
 
-  ReplayStatus m_FailedReplayStatus = ReplayStatus::APIReplayFailed;
+  ID3D12Fence *GetCallbackFence();
+
+  bool m_MarkedActive = false;
 
   WrappedID3D12DebugCommandQueue m_WrappedDebug;
   WrappedID3D12CompatibilityQueue m_WrappedCompat;
+  WrappedID3D12SharingContract m_SharingContract;
 
   rdcarray<D3D12ResourceRecord *> m_CmdListRecords;
   rdcarray<D3D12ResourceRecord *> m_CmdListAllocators;
@@ -184,7 +215,7 @@ class WrappedID3D12CommandQueue : public ID3D12CommandQueue,
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D12CommandQueue);
 
-  WrappedID3D12CommandQueue(ID3D12CommandQueue *real, WrappedID3D12Device *device,
+  WrappedID3D12CommandQueue(ResourceId id, ID3D12CommandQueue *real, WrappedID3D12Device *device,
                             CaptureState &state);
   virtual ~WrappedID3D12CommandQueue();
 
@@ -194,7 +225,7 @@ public:
   D3D12ResourceRecord *GetCreationRecord() { return m_CreationRecord; }
   WrappedID3D12Device *GetWrappedDevice() { return m_pDevice; }
   const rdcarray<D3D12ResourceRecord *> &GetCmdLists() { return m_CmdListRecords; }
-  D3D12ActionTreeNode &GetParentAction() { return m_Cmd.m_ParentAction; }
+  void BakeEventNodes(ActionDescription &rootAction) { return m_Cmd.BakeEventNodes(rootAction); }
   const APIEvent &GetEvent(uint32_t eventId);
   uint32_t GetMaxEID() { return m_Cmd.m_Events.back().eventId; }
   void ClearAfterCapture();
@@ -204,8 +235,14 @@ public:
     return m_SparseBindResources.find(id) != m_SparseBindResources.end();
   }
 
-  ReplayStatus ReplayLog(CaptureState readType, uint32_t startEventID, uint32_t endEventID,
-                         bool partial);
+  void CheckAndFreeRayDispatches();
+
+  template <typename SerialiserType>
+  bool Serialise_SetQueueAnnotation(SerialiserType &ser, rdcstr key,
+                                    RENDERDOC_AnnotationType valueType, uint32_t valueVectorWidth,
+                                    RENDERDOC_AnnotationValue value);
+
+  RDResult ReplayLog(CaptureState readType, uint32_t startEventID, uint32_t endEventID, bool partial);
   void SetFrameReader(StreamReader *reader) { m_FrameReader = reader; }
   D3D12CommandData *GetCommandData() { return &m_Cmd; }
   const rdcarray<EventUsage> &GetUsage(ResourceId id) { return m_Cmd.m_ResourceUses[id]; }
@@ -214,16 +251,19 @@ public:
   virtual IID GetBackbufferUUID() { return __uuidof(ID3D12Resource); }
   virtual bool IsDeviceUUID(REFIID iid)
   {
-    return iid == __uuidof(ID3D12CommandQueue) ? true : false;
+    if(iid == __uuidof(ID3D12CommandQueue) || iid == __uuidof(ID3D12CommandQueue1))
+      return true;
+
+    return m_pDevice->IsDeviceUUID(iid);
   }
   virtual IUnknown *GetDeviceInterface(REFIID iid)
   {
     if(iid == __uuidof(ID3D12CommandQueue))
       return (ID3D12CommandQueue *)this;
+    if(iid == __uuidof(ID3D12CommandQueue1))
+      return (ID3D12CommandQueue1 *)this;
 
-    RDCERR("Requested unknown device interface %s", ToStr(iid).c_str());
-
-    return NULL;
+    return m_pDevice->GetDeviceInterface(iid);
   }
   // the rest forward to the device
   virtual void *GetFrameCapturerDevice() { return m_pDevice->GetFrameCapturerDevice(); }
@@ -378,6 +418,35 @@ public:
   virtual HRESULT STDMETHODCALLTYPE Present(ID3D12GraphicsCommandList *pOpenCommandList,
                                             ID3D12Resource *pSourceTex2D, HWND hWindow,
                                             D3D12_DOWNLEVEL_PRESENT_FLAGS Flags);
+
+  // implement ID3D12CommandQueue1
+  virtual HRESULT STDMETHODCALLTYPE SetProcessPriority(D3D12_COMMAND_QUEUE_PROCESS_PRIORITY Priority)
+  {
+    if(!m_pReal1)
+      return E_NOINTERFACE;
+    return m_pReal1->SetProcessPriority(Priority);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE GetProcessPriority(D3D12_COMMAND_QUEUE_PROCESS_PRIORITY *pOutValue)
+  {
+    if(!m_pReal1)
+      return E_NOINTERFACE;
+    return m_pReal1->GetProcessPriority(pOutValue);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE SetGlobalPriority(D3D12_COMMAND_QUEUE_GLOBAL_PRIORITY Priority)
+  {
+    if(!m_pReal1)
+      return E_NOINTERFACE;
+    return m_pReal1->SetGlobalPriority(Priority);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE GetGlobalPriority(D3D12_COMMAND_QUEUE_GLOBAL_PRIORITY *pOutValue)
+  {
+    if(!m_pReal1)
+      return E_NOINTERFACE;
+    return m_pReal1->GetGlobalPriority(pOutValue);
+  }
 };
 
 template <>

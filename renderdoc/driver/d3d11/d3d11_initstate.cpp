@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -505,9 +505,9 @@ bool WrappedID3D11Device::Serialise_InitialState(SerialiserType &ser, ResourceId
       tex = prepared;
       tex->GetDesc(&desc);
     }
-    else if(IsReplayingAndReading() && m_ResourceManager->HasLiveResource(id))
+    else if(IsReplayingAndReading() && m_ResourceManager->HasResource(id))
     {
-      tex = (WrappedID3D11Texture1D *)m_ResourceManager->GetLiveResource(id);
+      tex = (WrappedID3D11Texture1D *)m_ResourceManager->GetResource(id);
       tex->GetDesc(&desc);
     }
 
@@ -616,9 +616,9 @@ bool WrappedID3D11Device::Serialise_InitialState(SerialiserType &ser, ResourceId
       tex = prepared;
       tex->GetDesc(&desc);
     }
-    else if(IsReplayingAndReading() && m_ResourceManager->HasLiveResource(id))
+    else if(IsReplayingAndReading() && m_ResourceManager->HasResource(id))
     {
-      tex = (WrappedID3D11Texture2D1 *)m_ResourceManager->GetLiveResource(id);
+      tex = (WrappedID3D11Texture2D1 *)m_ResourceManager->GetResource(id);
       tex->GetDesc(&desc);
     }
 
@@ -696,7 +696,13 @@ bool WrappedID3D11Device::Serialise_InitialState(SerialiserType &ser, ResourceId
           {
             SubresourceContents = mapped.pData;
             RowPitch = mapped.RowPitch;
-            ContentsLength = RowPitch * numRows;
+
+            const uint32_t rowLength = GetByteSize(desc.Width, 1, 1, desc.Format, mip);
+
+            RDCASSERT(RowPitch >= rowLength);
+
+            ContentsLength = RowPitch * (RDCMAX(1U, numRows) - 1);
+            ContentsLength += rowLength;
           }
         }
 
@@ -827,9 +833,9 @@ bool WrappedID3D11Device::Serialise_InitialState(SerialiserType &ser, ResourceId
       tex = prepared;
       tex->GetDesc(&desc);
     }
-    else if(IsReplayingAndReading() && m_ResourceManager->HasLiveResource(id))
+    else if(IsReplayingAndReading() && m_ResourceManager->HasResource(id))
     {
-      tex = (WrappedID3D11Texture3D1 *)m_ResourceManager->GetLiveResource(id);
+      tex = (WrappedID3D11Texture3D1 *)m_ResourceManager->GetResource(id);
       tex->GetDesc(&desc);
     }
 
@@ -878,8 +884,16 @@ bool WrappedID3D11Device::Serialise_InitialState(SerialiserType &ser, ResourceId
           SubresourceContents = mapped.pData;
           RowPitch = mapped.RowPitch;
           DepthPitch = mapped.DepthPitch;
+
+          const uint32_t numSlices = RDCMAX(1U, desc.Depth >> mip);
+          const uint32_t rowLength = GetByteSize(desc.Width, 1, 1, desc.Format, mip);
+
+          RDCASSERT(RowPitch >= rowLength);
           RDCASSERT(DepthPitch >= RowPitch * numRows);
-          ContentsLength = DepthPitch * RDCMAX(1U, desc.Depth >> mip);
+
+          ContentsLength = DepthPitch * (RDCMAX(1U, numSlices) - 1);
+          ContentsLength += RowPitch * (RDCMAX(1U, numRows) - 1);
+          ContentsLength += rowLength;
         }
       }
 
@@ -954,12 +968,12 @@ bool WrappedID3D11Device::Serialise_InitialState(SerialiserType &ser, ResourceId
   return ret;
 }
 
-void WrappedID3D11Device::Create_InitialState(ResourceId id, ID3D11DeviceChild *live, bool hasData)
+void WrappedID3D11Device::Create_InitialState(ResourceId id, ID3D11DeviceChild *res, bool hasData)
 {
   if(IsStructuredExporting(m_State))
     return;
 
-  D3D11ResourceType type = IdentifyTypeByPtr(live);
+  D3D11ResourceType type = IdentifyTypeByPtr(res);
 
   {
     RDCDEBUG("Create_InitialState(%s)", ToStr(id).c_str());
@@ -983,7 +997,7 @@ void WrappedID3D11Device::Create_InitialState(ResourceId id, ID3D11DeviceChild *
 
   if(type == Resource_UnorderedAccessView)
   {
-    WrappedID3D11UnorderedAccessView1 *uav = (WrappedID3D11UnorderedAccessView1 *)live;
+    WrappedID3D11UnorderedAccessView1 *uav = (WrappedID3D11UnorderedAccessView1 *)res;
 
     D3D11_UNORDERED_ACCESS_VIEW_DESC desc;
     uav->GetDesc(&desc);
@@ -1036,7 +1050,7 @@ void WrappedID3D11Device::Create_InitialState(ResourceId id, ID3D11DeviceChild *
   }
   else if(type == Resource_Texture1D)
   {
-    WrappedID3D11Texture1D *tex1D = (WrappedID3D11Texture1D *)live;
+    WrappedID3D11Texture1D *tex1D = (WrappedID3D11Texture1D *)res;
 
     D3D11_TEXTURE1D_DESC desc;
     tex1D->GetDesc(&desc);
@@ -1113,7 +1127,7 @@ void WrappedID3D11Device::Create_InitialState(ResourceId id, ID3D11DeviceChild *
   }
   else if(type == Resource_Texture2D)
   {
-    WrappedID3D11Texture2D1 *tex2D = (WrappedID3D11Texture2D1 *)live;
+    WrappedID3D11Texture2D1 *tex2D = (WrappedID3D11Texture2D1 *)res;
 
     D3D11_TEXTURE2D_DESC desc;
     tex2D->GetDesc(&desc);
@@ -1229,7 +1243,7 @@ void WrappedID3D11Device::Create_InitialState(ResourceId id, ID3D11DeviceChild *
   }
   else if(type == Resource_Texture3D)
   {
-    WrappedID3D11Texture3D1 *tex3D = (WrappedID3D11Texture3D1 *)live;
+    WrappedID3D11Texture3D1 *tex3D = (WrappedID3D11Texture3D1 *)res;
 
     D3D11_TEXTURE3D_DESC desc;
     tex3D->GetDesc(&desc);
@@ -1283,15 +1297,14 @@ void WrappedID3D11Device::Create_InitialState(ResourceId id, ID3D11DeviceChild *
   }
 }
 
-void WrappedID3D11Device::Apply_InitialState(ID3D11DeviceChild *live,
-                                             const D3D11InitialContents &initial)
+void WrappedID3D11Device::Apply_InitialState(ID3D11DeviceChild *res, D3D11InitialContents &initial)
 {
   if(HasFatalError())
     return;
 
   if(initial.resourceType == Resource_UnorderedAccessView)
   {
-    ID3D11UnorderedAccessView *uav = (ID3D11UnorderedAccessView *)live;
+    ID3D11UnorderedAccessView *uav = (ID3D11UnorderedAccessView *)res;
 
     m_pImmediateContext->CSSetUnorderedAccessViews(0, 1, &uav, &initial.uavCount);
   }
@@ -1315,10 +1328,10 @@ void WrappedID3D11Device::Apply_InitialState(ID3D11DeviceChild *live,
     }
     else if(initial.tag == D3D11InitialContents::Copy)
     {
-      ID3D11Resource *liveResource = (ID3D11Resource *)UnwrapResource(live);
+      ID3D11Resource *dstResource = (ID3D11Resource *)UnwrapResource(res);
       ID3D11Resource *initialResource = (ID3D11Resource *)initial.resource;
 
-      m_pImmediateContext->GetReal()->CopyResource(liveResource, initialResource);
+      m_pImmediateContext->GetReal()->CopyResource(dstResource, initialResource);
     }
     else
     {

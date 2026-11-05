@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -31,6 +31,18 @@
 #include "d3d11_renderstate.h"
 #include "d3d11_replay.h"
 #include "d3d11_resources.h"
+
+struct ScopedOOMHandle11
+{
+  ScopedOOMHandle11(WrappedID3D11Device *dev)
+  {
+    m_pDevice = dev;
+    m_pDevice->HandleOOM(true);
+  }
+
+  ~ScopedOOMHandle11() { m_pDevice->HandleOOM(false); }
+  WrappedID3D11Device *m_pDevice;
+};
 
 void D3D11Replay::InitStreamOut()
 {
@@ -63,10 +75,16 @@ void D3D11Replay::CreateSOBuffers()
   SAFE_RELEASE(m_SOBuffer);
   SAFE_RELEASE(m_SOStagingBuffer);
 
-  if(m_SOBufferSize > 0xFFFFFFFFULL)
+  if(m_SOBufferSize > 0xFFFF0000ULL ||
+     // workaround nv driver bug, it crashes copying with an offset over 2GB (which we need for
+     // readback). Treat this as an OOM scenario
+     (m_DriverInfo.vendor == GPUVendor::nVidia && m_SOBufferSize > 0x80000000ULL))
   {
     RDCERR("Can't resize stream-out buffer to larger than 4GB, needed %llu bytes.", m_SOBufferSize);
-    m_SOBufferSize = 0xFFFFFFFFULL;
+    SAFE_RELEASE(m_SOBuffer);
+    SAFE_RELEASE(m_SOStagingBuffer);
+    m_SOBufferSize = 0;
+    return;
   }
 
   D3D11_BUFFER_DESC bufferDesc = {
@@ -171,6 +189,8 @@ MeshFormat D3D11Replay::GetPostVSBuffers(uint32_t eventId, uint32_t instID, uint
     ret.numIndices = inst.numVerts;
   }
 
+  ret.status = s.status;
+
   return ret;
 }
 
@@ -178,6 +198,11 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
 {
   if(m_PostVSData.find(eventId) != m_PostVSData.end())
     return;
+
+  D3D11PostVSData &ret = m_PostVSData[eventId];
+
+  // we handle out-of-memory errors while processing postvs, don't treat it as a fatal error
+  ScopedOOMHandle11 oom(m_pDevice);
 
   D3D11MarkerRegion postvs(StringFormat::Fmt("PostVS for %u", eventId));
 
@@ -205,7 +230,10 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
     ds->Release();
 
   if(!vs)
+  {
+    ret.gsout.status = ret.vsout.status = "No vertex shader bound";
     return;
+  }
 
   D3D11_PRIMITIVE_TOPOLOGY topo;
   m_pImmediateContext->IAGetPrimitiveTopology(&topo);
@@ -214,15 +242,23 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
 
   const ActionDescription *action = m_pDevice->GetAction(eventId);
 
-  if(action->numIndices == 0 ||
-     ((action->flags & ActionFlags::Instanced) && action->numInstances == 0))
+  if(action->numIndices == 0)
+  {
+    ret.gsout.status = ret.vsout.status = "Empty drawcall (0 indices/vertices)";
     return;
+  }
 
-  DXBC::DXBCContainer *dxbcVS = wrappedVS->GetDXBC();
+  if((action->flags & ActionFlags::Instanced) && action->numInstances == 0)
+  {
+    ret.gsout.status = ret.vsout.status = "Empty drawcall (0 instances)";
+    return;
+  }
+
+  const DXBC::DXBCContainer *dxbcVS = wrappedVS->GetDXBC();
 
   RDCASSERT(dxbcVS);
 
-  DXBC::DXBCContainer *dxbcGS = NULL;
+  const DXBC::DXBCContainer *dxbcGS = NULL;
 
   if(gs)
   {
@@ -230,11 +266,12 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
         (WrappedID3D11Shader<ID3D11GeometryShader> *)gs;
 
     dxbcGS = wrappedGS->GetDXBC();
+    wrappedGS->GetWriteableDXBC()->CacheOutputTopology();
 
     RDCASSERT(dxbcGS);
   }
 
-  DXBC::DXBCContainer *dxbcDS = NULL;
+  const DXBC::DXBCContainer *dxbcDS = NULL;
 
   if(ds)
   {
@@ -242,8 +279,28 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
         (WrappedID3D11Shader<ID3D11DomainShader> *)ds;
 
     dxbcDS = wrappedDS->GetDXBC();
+    wrappedDS->GetWriteableDXBC()->CacheOutputTopology();
 
     RDCASSERT(dxbcDS);
+  }
+
+  ResourceId lastShaderId = GetIDForDeviceChild(ds);
+  const DXBC::DXBCContainer *lastShader = dxbcDS;
+  if(dxbcGS)
+  {
+    lastShaderId = GetIDForDeviceChild(gs);
+    lastShader = dxbcGS;
+  }
+
+  if(lastShader)
+  {
+    // put a general error in here in case anything goes wrong fetching VS outputs
+    ret.gsout.status =
+        "No geometry/tessellation output fetched due to error processing vertex stage.";
+  }
+  else
+  {
+    ret.gsout.status = "No geometry and no tessellation shader bound.";
   }
 
   rdcarray<D3D11_SO_DECLARATION_ENTRY> sodecls;
@@ -295,7 +352,9 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
 
     if(FAILED(hr))
     {
-      RDCERR("Failed to create Geometry Shader + SO HRESULT: %s", ToStr(hr).c_str());
+      ret.vsout.status =
+          StringFormat::Fmt("Failed to fetch output via streamout, HRESULT: %s", ToStr(hr).c_str());
+      RDCERR("%s", ret.vsout.status.c_str());
       return;
     }
 
@@ -326,13 +385,18 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
 
       if(m_SOBufferSize < outputSize)
       {
-        uint64_t oldSize = m_SOBufferSize;
-        m_SOBufferSize = CalcMeshOutputSize(m_SOBufferSize, outputSize);
-        RDCWARN("Resizing stream-out buffer from %llu to %llu", oldSize, m_SOBufferSize);
+        const uint64_t oldSize = m_SOBufferSize;
+        const uint64_t newSize = CalcMeshOutputSize(m_SOBufferSize, outputSize);
+        m_SOBufferSize = newSize;
+        RDCWARN("Resizing stream-out buffer from %llu to %llu", oldSize, newSize);
         CreateSOBuffers();
 
         if(!m_SOStagingBuffer)
+        {
+          ret.vsout.status = StringFormat::Fmt(
+              "Vertex output generated %llu bytes of data which ran out of memory", newSize);
           return;
+        }
       }
 
       m_pImmediateContext->SOSetTargets(1, &m_SOBuffer, &offset);
@@ -428,12 +492,18 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
 
       if(m_SOBufferSize < outputSize)
       {
-        uint64_t oldSize = m_SOBufferSize;
-        m_SOBufferSize = CalcMeshOutputSize(m_SOBufferSize, outputSize);
-        RDCWARN("Resizing stream-out buffer from %llu to %llu", oldSize, m_SOBufferSize);
+        const uint64_t oldSize = m_SOBufferSize;
+        const uint64_t newSize = CalcMeshOutputSize(m_SOBufferSize, outputSize);
+        m_SOBufferSize = newSize;
+        RDCWARN("Resizing stream-out buffer from %llu to %llu", oldSize, newSize);
         CreateSOBuffers();
+
         if(!m_SOStagingBuffer)
+        {
+          ret.vsout.status = StringFormat::Fmt(
+              "Vertex output generated %llu bytes of data which ran out of memory", newSize);
           return;
+        }
       }
 
       m_pImmediateContext->SOSetTargets(1, &m_SOBuffer, &offset);
@@ -492,7 +562,7 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
 
     if(numPrims.NumPrimitivesWritten == 0)
     {
-      m_PostVSData[eventId] = D3D11PostVSData();
+      ret.vsout.status = "Failed to generate vertex output data on GPU";
       SAFE_RELEASE(idxBuf);
       return;
     }
@@ -503,6 +573,7 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
     if(FAILED(hr))
     {
       RDCERR("Failed to map sobuffer HRESULT: %s", ToStr(hr).c_str());
+      ret.vsout.status = "Couldn't read back vertex output data from GPU";
       SAFE_RELEASE(idxBuf);
       return;
     }
@@ -528,6 +599,7 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
     if(FAILED(hr))
     {
       RDCERR("Failed to create postvs pos buffer HRESULT: %s", ToStr(hr).c_str());
+      ret.vsout.status = "Failed to create vertex output cache on GPU";
 
       m_pImmediateContext->Unmap(m_SOStagingBuffer, 0);
       SAFE_RELEASE(idxBuf);
@@ -573,7 +645,10 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
         float m = (B.y - A.y) / (B.x - A.x);
         float c = B.y - B.x * m;
 
-        if(m == 1.0f)
+        if(m == 1.0f || c == 0.0f)
+          continue;
+
+        if(-c / m <= 0.000001f)
           continue;
 
         nearp = -c / m;
@@ -596,56 +671,55 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
 
     m_pImmediateContext->Unmap(m_SOStagingBuffer, 0);
 
-    m_PostVSData[eventId].vsin.topo = topo;
-    m_PostVSData[eventId].vsout.buf = vsoutBuffer;
-    m_PostVSData[eventId].vsout.vertStride = stride;
-    m_PostVSData[eventId].vsout.nearPlane = nearp;
-    m_PostVSData[eventId].vsout.farPlane = farp;
+    ret.vsin.topo = topo;
+    ret.vsout.buf = vsoutBuffer;
+    ret.vsout.vertStride = stride;
+    ret.vsout.nearPlane = nearp;
+    ret.vsout.farPlane = farp;
 
-    m_PostVSData[eventId].vsout.useIndices = bool(action->flags & ActionFlags::Indexed);
-    m_PostVSData[eventId].vsout.numVerts = action->numIndices;
+    ret.vsout.useIndices = bool(action->flags & ActionFlags::Indexed);
+    ret.vsout.numVerts = action->numIndices;
 
-    m_PostVSData[eventId].vsout.instStride = 0;
+    ret.vsout.instStride = 0;
     if(action->flags & ActionFlags::Instanced)
-      m_PostVSData[eventId].vsout.instStride =
-          bufferDesc.ByteWidth / RDCMAX(1U, action->numInstances);
+      ret.vsout.instStride = bufferDesc.ByteWidth / RDCMAX(1U, action->numInstances);
 
-    m_PostVSData[eventId].vsout.idxBuf = NULL;
-    if(m_PostVSData[eventId].vsout.useIndices && idxBuf)
+    ret.vsout.idxBuf = NULL;
+    if(ret.vsout.useIndices && idxBuf)
     {
-      m_PostVSData[eventId].vsout.idxBuf = idxBuf;
-      m_PostVSData[eventId].vsout.idxFmt = idxFmt;
+      ret.vsout.idxBuf = idxBuf;
+      ret.vsout.idxFmt = idxFmt;
     }
 
-    m_PostVSData[eventId].vsout.hasPosOut = posidx >= 0;
+    ret.vsout.hasPosOut = posidx >= 0;
 
-    m_PostVSData[eventId].vsout.topo = topo;
+    ret.vsout.topo = topo;
   }
   else
   {
     // empty vertex output signature
-    m_PostVSData[eventId].vsin.topo = topo;
-    m_PostVSData[eventId].vsout.buf = NULL;
-    m_PostVSData[eventId].vsout.instStride = 0;
-    m_PostVSData[eventId].vsout.vertStride = 0;
-    m_PostVSData[eventId].vsout.nearPlane = 0.0f;
-    m_PostVSData[eventId].vsout.farPlane = 0.0f;
-    m_PostVSData[eventId].vsout.useIndices = false;
-    m_PostVSData[eventId].vsout.hasPosOut = false;
-    m_PostVSData[eventId].vsout.idxBuf = NULL;
+    ret.vsin.topo = topo;
+    ret.vsout.buf = NULL;
+    ret.vsout.instStride = 0;
+    ret.vsout.vertStride = 0;
+    ret.vsout.nearPlane = 0.0f;
+    ret.vsout.farPlane = 0.0f;
+    ret.vsout.useIndices = false;
+    ret.vsout.hasPosOut = false;
+    ret.vsout.idxBuf = NULL;
 
-    m_PostVSData[eventId].vsout.topo = topo;
+    ret.vsout.topo = topo;
   }
 
-  if(dxbcGS || dxbcDS)
+  if(lastShader)
   {
+    ret.gsout.status.clear();
+
+    const SOShaderData &soshader = m_pDevice->GetSOShaderData(lastShaderId);
+
     stride = 0;
     posidx = -1;
     numPosComponents = 0;
-
-    DXBC::DXBCContainer *lastShader = dxbcGS;
-    if(dxbcDS)
-      lastShader = dxbcDS;
 
     sodecls.clear();
     for(size_t i = 0; i < lastShader->GetReflection()->OutputSig.size(); i++)
@@ -654,9 +728,17 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
 
       D3D11_SO_DECLARATION_ENTRY decl;
 
-      // for now, skip streams that aren't stream 0
-      if(sign.stream != 0)
-        continue;
+      // skip streams that aren't rasterized, or if none are rasterized skip non-zero
+      if(soshader.rastStream == ~0U)
+      {
+        if(sign.stream != 0)
+          continue;
+      }
+      else
+      {
+        if(sign.stream != soshader.rastStream)
+          continue;
+      }
 
       decl.Stream = 0;
       decl.OutputSlot = 0;
@@ -693,7 +775,9 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
 
     if(FAILED(hr))
     {
-      RDCERR("Failed to create Geometry Shader + SO HRESULT: %s", ToStr(hr).c_str());
+      ret.gsout.status =
+          StringFormat::Fmt("Failed to fetch output via streamout, HRESULT: %s", ToStr(hr).c_str());
+      RDCERR("%s", ret.gsout.status.c_str());
       return;
     }
 
@@ -762,12 +846,20 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
 
       if(m_SOBufferSize < outputSize)
       {
-        uint64_t oldSize = m_SOBufferSize;
-        m_SOBufferSize = CalcMeshOutputSize(m_SOBufferSize, outputSize);
-        RDCWARN("Resizing stream-out buffer from %llu to %llu", oldSize, m_SOBufferSize);
+        const uint64_t oldSize = m_SOBufferSize;
+        const uint64_t newSize = CalcMeshOutputSize(m_SOBufferSize, outputSize);
+        m_SOBufferSize = newSize;
+        RDCWARN("Resizing stream-out buffer from %llu to %llu", oldSize, newSize);
         CreateSOBuffers();
+
         if(!m_SOStagingBuffer)
+        {
+          ret.gsout.status = StringFormat::Fmt(
+              "Geometry/tessellation output generated %llu bytes of data which ran out of memory",
+              newSize);
           return;
+        }
+
         continue;
       }
 
@@ -861,6 +953,7 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
 
     if(numPrims.NumPrimitivesWritten == 0)
     {
+      ret.gsout.status = "No detectable output generated by geometry/tessellation shaders";
       return;
     }
 
@@ -870,6 +963,7 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
     if(FAILED(hr))
     {
       RDCERR("Failed to map sobuffer HRESULT: %s", ToStr(hr).c_str());
+      ret.gsout.status = "Couldn't read back geometry/tessellation output data from GPU";
       return;
     }
 
@@ -878,7 +972,10 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
     if(bytesWritten > 0xFFFFFFFFULL)
     {
       RDCERR("More than 4GB of data generated, cannot create output buffer large enough.");
-      bytesWritten = 0xFFFFFFFFULL;
+      ret.gsout.status =
+          "More than 4GB of data generated by geometry/tessellation shaders, which caused an out "
+          "of memory error.";
+      return;
     }
 
     D3D11_BUFFER_DESC bufferDesc = {
@@ -887,7 +984,11 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
 
     if(bytesWritten > m_SOBufferSize)
     {
-      RDCERR("Generated output data too large: %08x", bufferDesc.ByteWidth);
+      RDCERR("Generated output data too large: %08x %08x", bufferDesc.ByteWidth, m_SOBufferSize);
+
+      ret.gsout.status =
+          "More data generated during readback than initial sizing, output is potentially "
+          "non-deterministic";
 
       m_pImmediateContext->Unmap(m_SOStagingBuffer, 0);
       return;
@@ -907,6 +1008,7 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
     if(FAILED(hr))
     {
       RDCERR("Failed to create postvs pos buffer HRESULT: %s", ToStr(hr).c_str());
+      ret.gsout.status = "Failed to create geometry/tessellation output cache on GPU";
 
       m_pImmediateContext->Unmap(m_SOStagingBuffer, 0);
       return;
@@ -951,7 +1053,10 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
         float m = (B.y - A.y) / (B.x - A.x);
         float c = B.y - B.x * m;
 
-        if(m == 1.0f)
+        if(m == 1.0f || c == 0.0f)
+          continue;
+
+        if(-c / m <= 0.000001f)
           continue;
 
         nearp = -c / m;
@@ -974,52 +1079,51 @@ void D3D11Replay::InitPostVSBuffers(uint32_t eventId)
 
     m_pImmediateContext->Unmap(m_SOStagingBuffer, 0);
 
-    m_PostVSData[eventId].gsout.buf = gsoutBuffer;
-    m_PostVSData[eventId].gsout.instStride = 0;
+    ret.gsout.buf = gsoutBuffer;
+    ret.gsout.instStride = 0;
     if(action->flags & ActionFlags::Instanced)
-      m_PostVSData[eventId].gsout.instStride =
-          bufferDesc.ByteWidth / RDCMAX(1U, action->numInstances);
-    m_PostVSData[eventId].gsout.vertStride = stride;
-    m_PostVSData[eventId].gsout.nearPlane = nearp;
-    m_PostVSData[eventId].gsout.farPlane = farp;
-    m_PostVSData[eventId].gsout.useIndices = false;
-    m_PostVSData[eventId].gsout.hasPosOut = posidx >= 0;
-    m_PostVSData[eventId].gsout.idxBuf = NULL;
+      ret.gsout.instStride = bufferDesc.ByteWidth / RDCMAX(1U, action->numInstances);
+    ret.gsout.vertStride = stride;
+    ret.gsout.nearPlane = nearp;
+    ret.gsout.farPlane = farp;
+    ret.gsout.useIndices = false;
+    ret.gsout.hasPosOut = posidx >= 0;
+    ret.gsout.idxBuf = NULL;
 
     topo = lastShader->GetOutputTopology();
 
-    m_PostVSData[eventId].gsout.topo = topo;
+    ret.gsout.topo = topo;
 
     // streamout expands strips unfortunately
     if(topo == D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP)
-      m_PostVSData[eventId].gsout.topo = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+      ret.gsout.topo = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     else if(topo == D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP)
-      m_PostVSData[eventId].gsout.topo = D3D11_PRIMITIVE_TOPOLOGY_LINELIST;
+      ret.gsout.topo = D3D11_PRIMITIVE_TOPOLOGY_LINELIST;
     else if(topo == D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP_ADJ)
-      m_PostVSData[eventId].gsout.topo = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ;
+      ret.gsout.topo = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ;
     else if(topo == D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ)
-      m_PostVSData[eventId].gsout.topo = D3D11_PRIMITIVE_TOPOLOGY_LINELIST_ADJ;
+      ret.gsout.topo = D3D11_PRIMITIVE_TOPOLOGY_LINELIST_ADJ;
 
-    switch(m_PostVSData[eventId].gsout.topo)
+    switch(ret.gsout.topo)
     {
       case D3D11_PRIMITIVE_TOPOLOGY_POINTLIST:
-        m_PostVSData[eventId].gsout.numVerts = (uint32_t)numPrims.NumPrimitivesWritten;
+        ret.gsout.numVerts = (uint32_t)numPrims.NumPrimitivesWritten;
         break;
       case D3D11_PRIMITIVE_TOPOLOGY_LINELIST:
       case D3D11_PRIMITIVE_TOPOLOGY_LINELIST_ADJ:
-        m_PostVSData[eventId].gsout.numVerts = (uint32_t)numPrims.NumPrimitivesWritten * 2;
+        ret.gsout.numVerts = (uint32_t)numPrims.NumPrimitivesWritten * 2;
         break;
       default:
       case D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST:
       case D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ:
-        m_PostVSData[eventId].gsout.numVerts = (uint32_t)numPrims.NumPrimitivesWritten * 3;
+        ret.gsout.numVerts = (uint32_t)numPrims.NumPrimitivesWritten * 3;
         break;
     }
 
     if(action->flags & ActionFlags::Instanced)
-      m_PostVSData[eventId].gsout.numVerts /= RDCMAX(1U, action->numInstances);
+      ret.gsout.numVerts /= RDCMAX(1U, action->numInstances);
 
-    m_PostVSData[eventId].gsout.instData = instData;
+    ret.gsout.instData = instData;
   }
 }
 

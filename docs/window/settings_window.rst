@@ -102,6 +102,14 @@ Examples:
 
 ---------------
 
+  | :guilabel:`Offset or size fields format mode` Default: ``Auto``
+
+Any fields which are displayed in the UI that represent byte offsets or sizes can be configured to display as either decimal, hexadecimal, or automatic.
+
+In the default automatic mode the fields will be shown as decimal for small values up to a given threshold, and as hexadecimal for larger values. With this option they can be instead forced to always display as one or the other.
+
+---------------
+
   | :guilabel:`Directory for temporary capture files` Default: ``%TEMP%``
 
 This allows you to choose where on disk temporary capture files are stored between when the capture is made, and when it is either discarded or saved to a permanent location on disk.
@@ -167,11 +175,17 @@ The complete details of the analytics can be found in the page about :doc:`../be
 Core options
 ------------
 
+  | :guilabel:`Ignored DLLs for callstack symbol resolution` Default: ``Empty``
+
+Here you can see a list of DLLs (on windows only) which have been permanently ignored for callstack symbol resolution. You can remove any or all of the items on the list and you will be prompted to locate them again the next time symbols are resolved which needs them.
+
+For more information you can consult :doc:`../how/how_capture_callstack`.
+
   | :guilabel:`Shader debug search paths` Default: ``Empty``
 
 Here you can choose which locations to search in, and in which order, when looking up a relative path for unstripped debug info.
 
-For more information you can consult :ref:`the FAQ entry about providing unstripped shader debug information <unstripped-shader-info>`.
+For more information you can consult :doc:`../how/how_shader_debug_info`.
 
   | :guilabel:`Enable Radeon GPU Profiler integration` Default: ``Off``
 
@@ -239,8 +253,10 @@ Other custom tools can be configured, but for those the command line arguments m
 * ``{input_file}`` will be replaced by the input filename.
 * ``{output_file}`` will be replaced by the output filename.
 * ``{entry_point}`` will be replaced by the entry point name, only when compiling a shader.
-* ``{glsl_stage4}`` will be replaced by the glsl stage short-hand, one of: vert, tesc, tese, geom, frag, or comp.
-* ``{hlsl_stage2}`` will be replaced by the hlsl stage short-hand, one of: vs, hs, ds, gs, ps, or cs.
+* ``{glsl_stage4}`` will be replaced by the glsl stage short-hand, one of: ``vert``, ``tesc``, ``tese``, ``geom``, ``frag``, or ``comp``.
+* ``{hlsl_stage2}`` will be replaced by the hlsl stage short-hand, one of: ``vs``, ``hs``, ``ds``, ``gs``, ``ps``, or ``cs``.
+* ``{spirv_ver}`` will be replaced by the SPIR-V version in use, e.g. spirv1.2 or spirv1.6.
+* ``{vulkan_ver}`` will be replaced by the Vulkan-identified SPIR-V version in use, e.g. vulkan1.0 or vulkan1.3. This value may be lossy, and will pick the next *lowest* version that compiles with a given SPIR-V version. E.g. SPIR-V 1.2 was not used by a vulkan version, so will be rounded down to vulkan1.0.
 
 You must also select the input and output format of the tool, such as HLSL input and SPIR-V output. This will be used to match the tool against a given need at runtime with different types of shaders.
 

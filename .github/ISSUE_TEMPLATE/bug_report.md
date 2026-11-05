@@ -4,16 +4,22 @@ about: Report a bug or problem encountered while using RenderDoc
 ---
 <!--
 ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️ 
-IF YOU DO NOT FOLLOW THE GUIDELINES, OR DO NOT USE THE TEMPLATE BELOW, YOUR ISSUE WILL BE CLOSED! NO EXCEPTIONS!
+If you do not follow the guidelines, or do not use the template below, your issue will be closed with no exceptions!
 ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️ 
 
 The template below shows what you need to include in a good bug report, and you MUST use it. More information in the docs:
 https://github.com/baldurk/renderdoc/blob/v1.x/docs/CONTRIBUTING/Filing-Issues.md
 
+It is *expressly* forbidden to ask for help with capturing copyrighted programs that you did not create and do not have the source code for.
+
+For example this includes capturing commercial games that you did not create, or capturing Google Maps or Google Earth.
+
+Use of LLMs in any way other than machine translation of language is strictly prohibited, including generating any text.
+
 I'm happy to help, but you have to ensure I fully understand what you want and have the information I need. If you're unsure, please read the guide above for full information on what is expected for filing issues.
 -->
 
-## Description
+## Description of Bug
 
 <!-- Here you can enter a description of what you are doing and what bug you are running into. -->
 <!-- This is a good time to describe what you want to do, what is actually happening, and what you'd expect to happen instead. -->

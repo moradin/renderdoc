@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -41,11 +41,82 @@ float4 main() : SV_Target0
 
 )EOSHADER";
 
+  std::string pixel_root = R"EOSHADER(
+
+#define MyRS1 "RootFlags( ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT), " \
+              "DescriptorTable(SRV(t50, numDescriptors = 999, offset = 0, flags = DESCRIPTORS_VOLATILE|DATA_VOLATILE), visibility = SHADER_VISIBILITY_PIXEL) "
+
+Texture2D<float> empty : register(t50);
+
+[RootSignature(MyRS1)]
+float4 main() : SV_Target0
+{
+	return float4(0, 1, 0, 1) + empty.Load(int3(0,0,0));
+}
+
+)EOSHADER";
+
+  std::string compute_root = R"EOSHADER(
+
+#define MyRS1 "RootFlags( ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT), " \
+              "UAV(u0, visibility = SHADER_VISIBILITY_ALL)"
+
+RWStructuredBuffer<uint4> bufout : register(u0);
+
+[RootSignature(MyRS1)]
+[numthreads(1,1,1)]
+void main()
+{
+  bufout[0] = uint4(1,2,3,4);
+}
+
+)EOSHADER";
+
+  // Generate LLVM CST_CODE_CE_GEP
+  std::string compute_dxil_gep = R"EOSHADER(
+
+RWStructuredBuffer<uint4> bufout : register(u0);
+
+#define MyRS1 "RootFlags( ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT), " \
+              "UAV(u0, visibility = SHADER_VISIBILITY_ALL)"
+
+groupshared uint4 g_temp[1];
+
+[RootSignature(MyRS1)]
+[numthreads(1,1,1)]
+void main()
+{
+  [unroll]
+  for (uint i = 0; i < 1; i++)
+    bufout[0] += g_temp[i+2];
+}
+
+)EOSHADER";
+
   int main()
   {
     // initialise, create window, create device, etc
     if(!Init())
       return 3;
+
+    if(m_SingletonDevice)
+    {
+      LUID luid = dev->GetAdapterLuid();
+      IDXGIAdapterPtr pDXGIAdapter;
+      ID3D12DevicePtr devB;
+      {
+        HRESULT hr = EnumAdapterByLuid(dev->GetAdapterLuid(), pDXGIAdapter);
+        if(FAILED(hr))
+          return 2;
+
+        devB = CreateDevice({pDXGIAdapter}, D3D_FEATURE_LEVEL_11_0);
+        if(!devB)
+          return 2;
+      }
+
+      // create a buffer on another unrelated device
+      ID3D12ResourcePtr bufferB = D3D12BufferCreator(devB, this).Data(DefaultTri);
+    }
 
     ID3DBlobPtr vsblob = Compile(D3DDefaultVertex, "main", "vs_4_0");
     ID3DBlobPtr psblob = Compile(pixel, "main", "ps_4_0");
@@ -55,7 +126,61 @@ float4 main() : SV_Target0
     dev->CreateConstantBufferView(NULL, m_CBVUAVSRV->GetCPUDescriptorHandleForHeapStart());
 
     ID3D12ResourcePtr vb = MakeBuffer().Data(DefaultTri);
-    ID3D12ResourcePtr ib = MakeBuffer().Data(indices);
+
+    D3D12_HEAP_DESC heapDesc;
+    heapDesc.SizeInBytes = 4096;
+    heapDesc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
+    heapDesc.Alignment = 0;
+    heapDesc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heapDesc.Properties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heapDesc.Properties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heapDesc.Properties.CreationNodeMask = 1;
+    heapDesc.Properties.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC resDesc;
+    resDesc.Alignment = 0;
+    resDesc.DepthOrArraySize = 1;
+    resDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    resDesc.Format = DXGI_FORMAT_UNKNOWN;
+    resDesc.Height = 1;
+    resDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    resDesc.Width = sizeof(indices);
+    resDesc.MipLevels = 1;
+    resDesc.SampleDesc.Count = 1;
+    resDesc.SampleDesc.Quality = 0;
+
+    ID3D12HeapPtr ibHeap;
+    CHECK_HR(dev->CreateHeap(&heapDesc, __uuidof(ID3D12Heap), (void **)&ibHeap));
+
+    ID3D12Pageable *ibHeapPageable = (ID3D12Pageable *)ibHeap.GetInterfacePtr();
+
+    ID3D12ResourcePtr ib;
+    CHECK_HR(dev->CreatePlacedResource(ibHeap, 0, &resDesc, D3D12_RESOURCE_STATE_COMMON, NULL,
+                                       __uuidof(ID3D12Resource), (void **)&ib));
+
+    SetBufferData(ib, D3D12_RESOURCE_STATE_COMMON, (const byte *)indices, sizeof(indices));
+
+    ID3D12ResourcePtr vb2;
+
+    {
+      ID3D12HeapPtr vbReleasedHeap;
+      CHECK_HR(dev->CreateHeap(&heapDesc, __uuidof(ID3D12Heap), (void **)&vbReleasedHeap));
+
+      CHECK_HR(dev->CreatePlacedResource(vbReleasedHeap, 0, &resDesc, D3D12_RESOURCE_STATE_COMMON,
+                                         NULL, __uuidof(ID3D12Resource), (void **)&vb2));
+    }
+
+    SetBufferData(vb2, D3D12_RESOURCE_STATE_COMMON, (const byte *)DefaultTri, sizeof(DefaultTri));
+
+    // test residency refcounting
+    ID3D12Pageable *vbPageable = (ID3D12Pageable *)vb.GetInterfacePtr();
+    dev->MakeResident(1, &vbPageable);
+    dev->MakeResident(1, &vbPageable);
+    dev->MakeResident(1, &vbPageable);
+    dev->Evict(1, &vbPageable);
+    dev->Evict(1, &vbPageable);
+    dev->Evict(1, &vbPageable);
 
     ID3D12RootSignaturePtr sig = MakeSig({
         // table that's larger than the descriptor heap we'll bind
@@ -72,8 +197,8 @@ float4 main() : SV_Target0
 
     ID3D12RootSignaturePtr duplicateSig = MakeSig(
         {
-            cbvParam(D3D12_SHADER_VISIBILITY_PIXEL, 0, 0),
-            constParam(D3D12_SHADER_VISIBILITY_PIXEL, 0, 1, 1),
+            cbvParam(D3D12_SHADER_VISIBILITY_ALL, 0, 0),
+            constParam(D3D12_SHADER_VISIBILITY_ALL, 0, 1, 1),
         },
         D3D12_ROOT_SIGNATURE_FLAG_NONE);
 
@@ -88,7 +213,35 @@ float4 main() : SV_Target0
       CHECK_HR(dev->CreateDescriptorHeap(&desc, __uuidof(ID3D12DescriptorHeap), (void **)&descHeap));
     }
 
+    ID3D12DescriptorHeapPtr sampHeap;
+
+    {
+      D3D12_DESCRIPTOR_HEAP_DESC desc;
+      desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+      desc.NodeMask = 1;
+      desc.NumDescriptors = 2000;
+      desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+      CHECK_HR(dev->CreateDescriptorHeap(&desc, __uuidof(ID3D12DescriptorHeap), (void **)&sampHeap));
+    }
+
+    sampHeap->SetName(L"Sampler Heap");
+
+    D3D12_SAMPLER_DESC samplerDesc = {};
+    samplerDesc.Filter = D3D12_FILTER_ANISOTROPIC;
+    samplerDesc.AddressU = samplerDesc.AddressV = samplerDesc.AddressW =
+        D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    samplerDesc.MaxAnisotropy = 4;
+    samplerDesc.MinLOD = 1.5f;
+    UINT increment = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+    D3D12_CPU_DESCRIPTOR_HANDLE samplerStart = sampHeap->GetCPUDescriptorHandleForHeapStart();
+    dev->CreateSampler(&samplerDesc, {samplerStart.ptr + increment * 1234});
+
     D3D12_GPU_DESCRIPTOR_HANDLE descGPUHandle = descHeap->GetGPUDescriptorHandleForHeapStart();
+
+    ID3D12DescriptorHeap *heaps[] = {
+        descHeap.GetInterfacePtr(),
+        sampHeap.GetInterfacePtr(),
+    };
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -99,6 +252,23 @@ float4 main() : SV_Target0
     dev->CreateShaderResourceView(NULL, &srvDesc, descHeap->GetCPUDescriptorHandleForHeapStart());
 
     ID3D12PipelineStatePtr pso = psoCreator;
+
+    psoCreator.DSV(DXGI_FORMAT_D32_FLOAT);
+
+    ID3D12PipelineStatePtr psoDepth = psoCreator;
+
+    psoCreator.DSV(DXGI_FORMAT_UNKNOWN);
+    psoCreator.RTVs({DXGI_FORMAT_R16G16B16A16_FLOAT});
+    psoCreator.SampleCount(4);
+
+    ID3D12PipelineStatePtr psoMSAA = psoCreator;
+
+    psoCreator.RTVs({DXGI_FORMAT_R8G8B8A8_UNORM_SRGB});
+
+    ID3D12ResourcePtr dsvtex = MakeTexture(DXGI_FORMAT_D32_FLOAT, screenWidth, screenHeight)
+                                   .DSV()
+                                   .InitialState(D3D12_RESOURCE_STATE_DEPTH_WRITE);
+
     ID3D12PipelineStatePtr pso2;
 
     if(dev2)
@@ -201,16 +371,6 @@ float4 main() : SV_Target0
       desc.SampleDesc.Count = 1;
       desc.SampleDesc.Quality = 0;
 
-      D3D12_HEAP_DESC heapDesc;
-      heapDesc.SizeInBytes = 4096;
-      heapDesc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
-      heapDesc.Alignment = 0;
-      heapDesc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
-      heapDesc.Properties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-      heapDesc.Properties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-      heapDesc.Properties.CreationNodeMask = 1;
-      heapDesc.Properties.VisibleNodeMask = 1;
-
       CHECK_HR(dev4->CreateCommittedResource1(&heapDesc.Properties, D3D12_HEAP_FLAG_NONE, &desc,
                                               D3D12_RESOURCE_STATE_COMMON, NULL, NULL,
                                               __uuidof(ID3D12Resource), (void **)&vb));
@@ -228,12 +388,49 @@ float4 main() : SV_Target0
       SetBufferData(ib, D3D12_RESOURCE_STATE_COMMON, (const byte *)indices, sizeof(indices));
     }
 
+    ID3DBlobPtr psblob_sig = Compile(pixel_root, "main", "ps_5_1");
+
+    // create a PSO with no root signature specified, only an implied embedded one
+    D3D12PSOCreator psoNoSigCreator = MakePSO().RootSig(NULL).InputLayout().VS(vsblob).PS(psblob_sig);
+
+    ID3D12PipelineStatePtr psoNoSig = psoNoSigCreator;
+
+    ID3D12RootSignaturePtr compsig = MakeSig({
+        uavParam(D3D12_SHADER_VISIBILITY_ALL, 0, 0),
+    });
+    ID3DBlobPtr csblob = Compile(compute_root, "main", "cs_5_1");
+    ID3D12PipelineStatePtr psoCompNoSig = MakePSO().CS(csblob);
+
+    ID3DBlobPtr cs_dxil_gep_blob = Compile(compute_dxil_gep, "main", "cs_6_0");
+    ID3D12PipelineStatePtr psoCompDxilGep = MakePSO().CS(cs_dxil_gep_blob);
+
     ID3D12ResourcePtr rtvtex = MakeTexture(DXGI_FORMAT_R32G32B32A32_FLOAT, 4, 4)
                                    .RTV()
                                    .InitialState(D3D12_RESOURCE_STATE_RENDER_TARGET);
 
     ID3D12CommandSignaturePtr cmdsig = MakeCommandSig(NULL, {vbArg(0), drawArg()});
     ID3D12ResourcePtr argBuf = MakeBuffer().Upload().Size(1024);
+
+    ID3D12ResourcePtr bufout = MakeBuffer().Size(1024).UAV();
+
+    ID3D12ResourcePtr sparseMSAA;
+    {
+      D3D12_RESOURCE_DESC desc;
+      desc.Alignment = 0;
+      desc.DepthOrArraySize = 1;
+      desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+      desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+      desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+      desc.Height = 256;
+      desc.Layout = D3D12_TEXTURE_LAYOUT_64KB_UNDEFINED_SWIZZLE;
+      desc.Width = 256;
+      desc.MipLevels = 1;
+      desc.SampleDesc.Count = 4;
+      desc.SampleDesc.Quality = 0;
+
+      dev->CreateReservedResource(&desc, D3D12_RESOURCE_STATE_RENDER_TARGET, NULL,
+                                  __uuidof(ID3D12Resource), (void **)&sparseMSAA);
+    }
 
     while(Running())
     {
@@ -258,8 +455,13 @@ float4 main() : SV_Target0
 
       cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-      cmd->SetDescriptorHeaps(1, &descHeap.GetInterfacePtr());
+      cmd->SetDescriptorHeaps(2, heaps);
 
+      cmd->SetComputeRootSignature(duplicateSig);
+      cmd->SetComputeRoot32BitConstants(1, 0, &debug, 0);
+      cmd->SetGraphicsRoot32BitConstants(1, 0, &debug, 0);
+
+      IASetVertexBuffer(cmd, vb2, sizeof(DefaultA2V), 0);
       IASetVertexBuffer(cmd, vb, sizeof(DefaultA2V), 0);
       D3D12_INDEX_BUFFER_VIEW view;
       view.BufferLocation = ib->GetGPUVirtualAddress();
@@ -300,8 +502,6 @@ float4 main() : SV_Target0
 
       cmd->ExecuteIndirect(cmdsig, 0, argBuf, 0, NULL, 0);
 
-      FinishUsingBackbuffer(cmd, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
       if(debug)
       {
         BOOL wrong = debug->AssertResourceState(bb, D3D12_RESOURCE_STATE_COPY_DEST, 0);
@@ -312,6 +512,64 @@ float4 main() : SV_Target0
         if(right == FALSE)
           TEST_WARN("Didn't get the expected return value from AssertResourceState(PRESENT)");
       }
+
+      cmd->SetPipelineState(psoNoSig);
+      IASetVertexBuffer(cmd, vb, sizeof(DefaultA2V), 0);
+
+      setMarker(cmd, "No Sig Draw");
+
+      cmd->DrawIndexedInstanced(3, 1, 0, 0, 0);
+
+      uint32_t b[4] = {111, 111, 111, 111};
+
+      setMarker(cmd, "No Sig Dispatch");
+
+      cmd->SetPipelineState(psoCompNoSig);
+      cmd->SetComputeRootSignature(compsig);
+      cmd->SetComputeRootUnorderedAccessView(0, bufout->GetGPUVirtualAddress());
+      cmd->Dispatch(1, 1, 1);
+
+      setMarker(cmd, "DXIL GEP Dispatch");
+
+      cmd->SetPipelineState(psoCompDxilGep);
+      cmd->SetComputeRootSignature(compsig);
+      cmd->SetComputeRootUnorderedAccessView(0, bufout->GetGPUVirtualAddress());
+      cmd->Dispatch(1, 1, 1);
+
+      // use a temporary RTV/DSV heap to bind
+      {
+        D3D12_DESCRIPTOR_HEAP_DESC desc;
+        desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        desc.NodeMask = 1;
+        desc.NumDescriptors = 1;
+        desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+
+        ID3D12DescriptorHeapPtr rtvTemp;
+        CHECK_HR(dev->CreateDescriptorHeap(&desc, __uuidof(ID3D12DescriptorHeap), (void **)&rtvTemp));
+
+        desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+
+        ID3D12DescriptorHeapPtr dsvTemp;
+        CHECK_HR(dev->CreateDescriptorHeap(&desc, __uuidof(ID3D12DescriptorHeap), (void **)&dsvTemp));
+
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvTempHandle =
+            MakeRTV(bb).Format(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB).CreateCPU(rtvTemp, 0);
+        D3D12_CPU_DESCRIPTOR_HANDLE dsvTempHandle = MakeDSV(dsvtex).CreateCPU(dsvTemp, 0);
+
+        cmd->OMSetRenderTargets(1, &rtvTempHandle, FALSE, &dsvTempHandle);
+      }
+
+      setMarker(cmd, "Temp heap Draw");
+
+      cmd->SetPipelineState(psoDepth);
+      cmd->DrawIndexedInstanced(3, 1, 0, 0, 0);
+
+      D3D12_CPU_DESCRIPTOR_HANDLE msrtv = MakeRTV(sparseMSAA).CreateCPU(1);
+      cmd->SetPipelineState(psoMSAA);
+      cmd->OMSetRenderTargets(1, &msrtv, FALSE, NULL);
+      cmd->DrawIndexedInstanced(3, 1, 0, 0, 0);
+
+      FinishUsingBackbuffer(cmd, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
       cmd->Close();
 
@@ -345,7 +603,14 @@ float4 main() : SV_Target0
         GPUSync();
       }
 
+      // keep vertex/index buffer evicted across presents
+      dev->Evict(1, &vbPageable);
+      dev->Evict(1, &ibHeapPageable);
+
       Present();
+
+      dev->MakeResident(1, &vbPageable);
+      dev->MakeResident(1, &ibHeapPageable);
     }
 
     return 0;

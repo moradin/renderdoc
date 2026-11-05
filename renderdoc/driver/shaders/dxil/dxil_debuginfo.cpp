@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,71 +24,34 @@
 
 #include "dxil_debuginfo.h"
 #include "common/formatting.h"
+#include "llvm_common.h"
 #include "llvm_decoder.h"
 
 namespace DXIL
 {
-enum class MetaDataRecord : uint32_t
+// DXIL is SO AWFUL. There is an svbr encoding used for the bitcode which negates and shifts. This
+// encoding bitwise-nots and shifts, for no reason?
+static int64_t debug_only_svbr(uint64_t val)
 {
-  STRING_OLD = 1,
-  VALUE = 2,
-  NODE = 3,
-  NAME = 4,
-  DISTINCT_NODE = 5,
-  KIND = 6,
-  LOCATION = 7,
-  OLD_NODE = 8,
-  OLD_FN_NODE = 9,
-  NAMED_NODE = 10,
-  ATTACHMENT = 11,
-  GENERIC_DEBUG = 12,
-  SUBRANGE = 13,
-  ENUMERATOR = 14,
-  BASIC_TYPE = 15,
-  FILE = 16,
-  DERIVED_TYPE = 17,
-  COMPOSITE_TYPE = 18,
-  SUBROUTINE_TYPE = 19,
-  COMPILE_UNIT = 20,
-  SUBPROGRAM = 21,
-  LEXICAL_BLOCK = 22,
-  LEXICAL_BLOCK_FILE = 23,
-  NAMESPACE = 24,
-  TEMPLATE_TYPE = 25,
-  TEMPLATE_VALUE = 26,
-  GLOBAL_VAR = 27,
-  LOCAL_VAR = 28,
-  EXPRESSION = 29,
-  OBJC_PROPERTY = 30,
-  IMPORTED_ENTITY = 31,
-  MODULE = 32,
-  MACRO = 33,
-  MACRO_FILE = 34,
-  STRINGS = 35,
-  GLOBAL_DECL_ATTACHMENT = 36,
-  GLOBAL_VAR_EXPR = 37,
-  INDEX_OFFSET = 38,
-  INDEX = 39,
-  LABEL = 40,
-  COMMON_BLOCK = 44,
-};
+  if(val & 0x1)
+    return int64_t(~(val >> 1));
+  return val >> 1;
+}
 
-bool Program::ParseDebugMetaRecord(const LLVMBC::BlockOrRecord &metaRecord, Metadata &meta)
+bool Program::ParseDebugMetaRecord(MetadataList &metadata, const LLVMBC::BlockOrRecord &metaRecord,
+                                   Metadata &meta)
 {
-  MetaDataRecord id = (MetaDataRecord)metaRecord.id;
+  LLVMBC::MetaDataRecord id = (LLVMBC::MetaDataRecord)metaRecord.id;
 
-  auto getNonNullMeta = [this](uint64_t id) { return &m_Metadata[size_t(id)]; };
-  auto getMeta = [this](uint64_t id) { return id ? &m_Metadata[size_t(id - 1)] : NULL; };
-  auto getMetaString = [this](uint64_t id) { return id ? &m_Metadata[size_t(id - 1)].str : NULL; };
-
-  if(id == MetaDataRecord::FILE)
+  if(id == LLVMBC::MetaDataRecord::FILE)
   {
     meta.isDistinct = (metaRecord.ops[0] & 0x1);
 
-    meta.dwarf = new DIFile(getMeta(metaRecord.ops[1]), getMeta(metaRecord.ops[2]));
-    meta.children = {getMeta(metaRecord.ops[1]), getMeta(metaRecord.ops[2])};
+    meta.dwarf =
+        new DIFile(metadata.getOrNULL(metaRecord.ops[1]), metadata.getOrNULL(metaRecord.ops[2]));
+    meta.children = {metadata.getOrNULL(metaRecord.ops[1]), metadata.getOrNULL(metaRecord.ops[2])};
   }
-  else if(id == MetaDataRecord::COMPILE_UNIT)
+  else if(id == LLVMBC::MetaDataRecord::COMPILE_UNIT)
   {
     // should be at least 14 parameters
     RDCASSERT(metaRecord.ops.size() >= 14);
@@ -98,96 +61,111 @@ bool Program::ParseDebugMetaRecord(const LLVMBC::BlockOrRecord &metaRecord, Meta
     meta.isDistinct = true;
 
     meta.dwarf = new DICompileUnit(
-        DW_LANG(metaRecord.ops[1]), getMeta(metaRecord.ops[2]), getMetaString(metaRecord.ops[3]),
-        metaRecord.ops[4] != 0, getMetaString(metaRecord.ops[5]), metaRecord.ops[6],
-        getMetaString(metaRecord.ops[7]), metaRecord.ops[8], getMeta(metaRecord.ops[9]),
-        getMeta(metaRecord.ops[10]), getMeta(metaRecord.ops[11]), getMeta(metaRecord.ops[12]),
-        getMeta(metaRecord.ops[13]));
-    meta.children = {getMeta(metaRecord.ops[2]),  getMeta(metaRecord.ops[9]),
-                     getMeta(metaRecord.ops[10]), getMeta(metaRecord.ops[11]),
-                     getMeta(metaRecord.ops[12]), getMeta(metaRecord.ops[13])};
+        DW_LANG(metaRecord.ops[1]), metadata.getOrNULL(metaRecord.ops[2]),
+        metadata.getStringOrNULL(metaRecord.ops[3]), metaRecord.ops[4] != 0,
+        metadata.getStringOrNULL(metaRecord.ops[5]), metaRecord.ops[6],
+        metadata.getStringOrNULL(metaRecord.ops[7]), metaRecord.ops[8],
+        metadata.getOrNULL(metaRecord.ops[9]), metadata.getOrNULL(metaRecord.ops[10]),
+        metadata.getOrNULL(metaRecord.ops[11]), metadata.getOrNULL(metaRecord.ops[12]),
+        metadata.getOrNULL(metaRecord.ops[13]));
+    meta.children = {
+        metadata.getOrNULL(metaRecord.ops[2]),  metadata.getOrNULL(metaRecord.ops[9]),
+        metadata.getOrNULL(metaRecord.ops[10]), metadata.getOrNULL(metaRecord.ops[11]),
+        metadata.getOrNULL(metaRecord.ops[12]), metadata.getOrNULL(metaRecord.ops[13])};
   }
-  else if(id == MetaDataRecord::BASIC_TYPE)
+  else if(id == LLVMBC::MetaDataRecord::BASIC_TYPE)
   {
     meta.isDistinct = (metaRecord.ops[0] & 0x1);
 
     meta.dwarf =
-        new DIBasicType(DW_TAG(metaRecord.ops[1]), getMetaString(metaRecord.ops[2]),
+        new DIBasicType(DW_TAG(metaRecord.ops[1]), metadata.getStringOrNULL(metaRecord.ops[2]),
                         metaRecord.ops[3], metaRecord.ops[4], DW_ENCODING(metaRecord.ops[5]));
   }
-  else if(id == MetaDataRecord::DERIVED_TYPE)
+  else if(id == LLVMBC::MetaDataRecord::DERIVED_TYPE)
   {
     meta.isDistinct = (metaRecord.ops[0] & 0x1);
 
-    meta.dwarf = new DIDerivedType(DW_TAG(metaRecord.ops[1]), getMetaString(metaRecord.ops[2]),
-                                   getMeta(metaRecord.ops[3]), metaRecord.ops[4],
-                                   getMeta(metaRecord.ops[5]), getMeta(metaRecord.ops[6]),
-                                   metaRecord.ops[7], metaRecord.ops[8], metaRecord.ops[9],
-                                   DIFlags(metaRecord.ops[10]), getMeta(metaRecord.ops[11]));
+    meta.dwarf = new DIDerivedType(
+        DW_TAG(metaRecord.ops[1]), metadata.getStringOrNULL(metaRecord.ops[2]),
+        metadata.getOrNULL(metaRecord.ops[3]), metaRecord.ops[4],
+        metadata.getOrNULL(metaRecord.ops[5]), metadata.getOrNULL(metaRecord.ops[6]),
+        metaRecord.ops[7], metaRecord.ops[8], metaRecord.ops[9], DIFlags(metaRecord.ops[10]),
+        metadata.getOrNULL(metaRecord.ops[11]));
 
-    meta.children = {getMeta(metaRecord.ops[3]), getMeta(metaRecord.ops[5]),
-                     getMeta(metaRecord.ops[6]), getMeta(metaRecord.ops[11])};
+    meta.children = {metadata.getOrNULL(metaRecord.ops[3]), metadata.getOrNULL(metaRecord.ops[5]),
+                     metadata.getOrNULL(metaRecord.ops[6]), metadata.getOrNULL(metaRecord.ops[11])};
   }
-  else if(id == MetaDataRecord::COMPOSITE_TYPE)
+  else if(id == LLVMBC::MetaDataRecord::COMPOSITE_TYPE)
   {
     meta.isDistinct = (metaRecord.ops[0] & 0x1);
 
     // TODO handle forward declarations?
     meta.dwarf = new DICompositeType(
-        DW_TAG(metaRecord.ops[1]), getMetaString(metaRecord.ops[2]), getMeta(metaRecord.ops[3]),
-        metaRecord.ops[4], getMeta(metaRecord.ops[5]), getMeta(metaRecord.ops[6]),
+        DW_TAG(metaRecord.ops[1]), metadata.getStringOrNULL(metaRecord.ops[2]),
+        metadata.getOrNULL(metaRecord.ops[3]), metaRecord.ops[4],
+        metadata.getOrNULL(metaRecord.ops[5]), metadata.getOrNULL(metaRecord.ops[6]),
         metaRecord.ops[7], metaRecord.ops[8], metaRecord.ops[9], DIFlags(metaRecord.ops[10]),
-        getMeta(metaRecord.ops[11]), getMeta(metaRecord.ops[14]));
+        metadata.getOrNULL(metaRecord.ops[11]), metadata.getOrNULL(metaRecord.ops[14]));
 
-    meta.children = {getMeta(metaRecord.ops[3]), getMeta(metaRecord.ops[5]),
-                     getMeta(metaRecord.ops[6]), getMeta(metaRecord.ops[11]),
-                     getMeta(metaRecord.ops[14])};
+    meta.children = {metadata.getOrNULL(metaRecord.ops[3]), metadata.getOrNULL(metaRecord.ops[5]),
+                     metadata.getOrNULL(metaRecord.ops[6]), metadata.getOrNULL(metaRecord.ops[11]),
+                     metadata.getOrNULL(metaRecord.ops[14])};
   }
-  else if(id == MetaDataRecord::TEMPLATE_TYPE)
+  else if(id == LLVMBC::MetaDataRecord::ENUMERATOR)
   {
     meta.isDistinct = (metaRecord.ops[0] & 0x1);
 
     meta.dwarf =
-        new DITemplateTypeParameter(getMetaString(metaRecord.ops[1]), getMeta(metaRecord.ops[2]));
-
-    meta.children = {getMeta(metaRecord.ops[2])};
+        new DIEnum(debug_only_svbr(metaRecord.ops[1]), metadata.getStringOrNULL(metaRecord.ops[2]));
   }
-  else if(id == MetaDataRecord::TEMPLATE_VALUE)
+  else if(id == LLVMBC::MetaDataRecord::TEMPLATE_TYPE)
   {
     meta.isDistinct = (metaRecord.ops[0] & 0x1);
 
-    meta.dwarf =
-        new DITemplateValueParameter(DW_TAG(metaRecord.ops[1]), getMetaString(metaRecord.ops[2]),
-                                     getMeta(metaRecord.ops[3]), getMeta(metaRecord.ops[4]));
+    meta.dwarf = new DITemplateTypeParameter(metadata.getStringOrNULL(metaRecord.ops[1]),
+                                             metadata.getOrNULL(metaRecord.ops[2]));
 
-    meta.children = {getMeta(metaRecord.ops[3]), getMeta(metaRecord.ops[4])};
+    meta.children = {metadata.getOrNULL(metaRecord.ops[2])};
   }
-  else if(id == MetaDataRecord::SUBPROGRAM)
+  else if(id == LLVMBC::MetaDataRecord::TEMPLATE_VALUE)
+  {
+    meta.isDistinct = (metaRecord.ops[0] & 0x1);
+
+    meta.dwarf = new DITemplateValueParameter(
+        DW_TAG(metaRecord.ops[1]), metadata.getStringOrNULL(metaRecord.ops[2]),
+        metadata.getOrNULL(metaRecord.ops[3]), metadata.getOrNULL(metaRecord.ops[4]));
+
+    meta.children = {metadata.getOrNULL(metaRecord.ops[3]), metadata.getOrNULL(metaRecord.ops[4])};
+  }
+  else if(id == LLVMBC::MetaDataRecord::SUBPROGRAM)
   {
     meta.isDistinct = (metaRecord.ops[0] & 0x1);
 
     meta.dwarf = new DISubprogram(
-        getMeta(metaRecord.ops[1]), getMetaString(metaRecord.ops[2]),
-        getMetaString(metaRecord.ops[3]), getMeta(metaRecord.ops[4]), metaRecord.ops[5],
-        getMeta(metaRecord.ops[6]), metaRecord.ops[7] != 0, metaRecord.ops[8] != 0, metaRecord.ops[9],
-        getMeta(metaRecord.ops[10]), DW_VIRTUALITY(metaRecord.ops[11]), metaRecord.ops[12],
-        DIFlags(metaRecord.ops[13]), metaRecord.ops[14] != 0, getMeta(metaRecord.ops[15]),
-        getMeta(metaRecord.ops[16]), getMeta(metaRecord.ops[17]), getMeta(metaRecord.ops[18]));
+        metadata.getOrNULL(metaRecord.ops[1]), metadata.getStringOrNULL(metaRecord.ops[2]),
+        metadata.getStringOrNULL(metaRecord.ops[3]), metadata.getOrNULL(metaRecord.ops[4]),
+        metaRecord.ops[5], metadata.getOrNULL(metaRecord.ops[6]), metaRecord.ops[7] != 0,
+        metaRecord.ops[8] != 0, metaRecord.ops[9], metadata.getOrNULL(metaRecord.ops[10]),
+        DW_VIRTUALITY(metaRecord.ops[11]), metaRecord.ops[12], DIFlags(metaRecord.ops[13]),
+        metaRecord.ops[14] != 0, metadata.getOrNULL(metaRecord.ops[15]),
+        metadata.getOrNULL(metaRecord.ops[16]), metadata.getOrNULL(metaRecord.ops[17]),
+        metadata.getOrNULL(metaRecord.ops[18]));
 
-    meta.children = {getMeta(metaRecord.ops[1]),  getMeta(metaRecord.ops[4]),
-                     getMeta(metaRecord.ops[6]),  getMeta(metaRecord.ops[10]),
-                     getMeta(metaRecord.ops[14]), getMeta(metaRecord.ops[15]),
-                     getMeta(metaRecord.ops[16]), getMeta(metaRecord.ops[17])};
+    meta.children = {
+        metadata.getOrNULL(metaRecord.ops[1]),  metadata.getOrNULL(metaRecord.ops[4]),
+        metadata.getOrNULL(metaRecord.ops[6]),  metadata.getOrNULL(metaRecord.ops[10]),
+        metadata.getOrNULL(metaRecord.ops[14]), metadata.getOrNULL(metaRecord.ops[15]),
+        metadata.getOrNULL(metaRecord.ops[16]), metadata.getOrNULL(metaRecord.ops[17])};
   }
-  else if(id == MetaDataRecord::SUBROUTINE_TYPE)
+  else if(id == LLVMBC::MetaDataRecord::SUBROUTINE_TYPE)
   {
     meta.isDistinct = (metaRecord.ops[0] & 0x1);
 
-    meta.dwarf = new DISubroutineType(getMeta(metaRecord.ops[2]));
+    meta.dwarf = new DISubroutineType(metadata.getOrNULL(metaRecord.ops[2]));
 
-    meta.children = {getMeta(metaRecord.ops[2])};
+    meta.children = {metadata.getOrNULL(metaRecord.ops[2])};
   }
-  else if(id == MetaDataRecord::GLOBAL_VAR)
+  else if(id == LLVMBC::MetaDataRecord::GLOBAL_VAR)
   {
     meta.isDistinct = (metaRecord.ops[0] & 0x1);
 
@@ -196,60 +174,84 @@ bool Program::ParseDebugMetaRecord(const LLVMBC::BlockOrRecord &metaRecord, Meta
     if(version == 0)
     {
       meta.dwarf = new DIGlobalVariable(
-          getMeta(metaRecord.ops[1]), getMetaString(metaRecord.ops[2]),
-          getMetaString(metaRecord.ops[3]), getMeta(metaRecord.ops[4]), metaRecord.ops[5],
-          getMeta(metaRecord.ops[6]), metaRecord.ops[7] != 0, metaRecord.ops[8] != 0,
-          getMeta(metaRecord.ops[9]), getMeta(metaRecord.ops[10]));
+          metadata.getOrNULL(metaRecord.ops[1]), metadata.getStringOrNULL(metaRecord.ops[2]),
+          metadata.getStringOrNULL(metaRecord.ops[3]), metadata.getOrNULL(metaRecord.ops[4]),
+          metaRecord.ops[5], metadata.getOrNULL(metaRecord.ops[6]), metaRecord.ops[7] != 0,
+          metaRecord.ops[8] != 0, metadata.getOrNULL(metaRecord.ops[9]),
+          metadata.getOrNULL(metaRecord.ops[10]));
 
-      meta.children = {getMeta(metaRecord.ops[1]), getMeta(metaRecord.ops[4]),
-                       getMeta(metaRecord.ops[6]), getMeta(metaRecord.ops[9]),
-                       getMeta(metaRecord.ops[10])};
+      meta.children = {metadata.getOrNULL(metaRecord.ops[1]), metadata.getOrNULL(metaRecord.ops[4]),
+                       metadata.getOrNULL(metaRecord.ops[6]), metadata.getOrNULL(metaRecord.ops[9]),
+                       metadata.getOrNULL(metaRecord.ops[10])};
     }
     else
     {
       RDCERR("Unsupported version of global variable metadata");
     }
   }
-  else if(id == MetaDataRecord::LOCATION)
+  else if(id == LLVMBC::MetaDataRecord::LOCATION)
   {
     meta.isDistinct = (metaRecord.ops[0] & 0x1);
 
     meta.debugLoc = new DebugLocation;
     meta.debugLoc->line = metaRecord.ops[1];
     meta.debugLoc->col = metaRecord.ops[2];
-    meta.debugLoc->scope = getNonNullMeta(metaRecord.ops[3]);
-    meta.debugLoc->inlinedAt = getMeta(metaRecord.ops[4]);
+    meta.debugLoc->scope = metadata.getDirect(metaRecord.ops[3]);
+    meta.debugLoc->inlinedAt = metadata.getOrNULL(metaRecord.ops[4]);
 
-    meta.children = {getNonNullMeta(metaRecord.ops[3]), getMeta(metaRecord.ops[4])};
+    meta.children = {metadata.getDirect(metaRecord.ops[3]), metadata.getOrNULL(metaRecord.ops[4])};
   }
-  else if(id == MetaDataRecord::LOCAL_VAR)
+  else if(id == LLVMBC::MetaDataRecord::LOCAL_VAR)
   {
     meta.isDistinct = (metaRecord.ops[0] & 0x1);
 
     meta.dwarf = new DILocalVariable(
-        DW_TAG(metaRecord.ops[1]), getMeta(metaRecord.ops[2]), getMetaString(metaRecord.ops[3]),
-        getMeta(metaRecord.ops[4]), metaRecord.ops[5], getMeta(metaRecord.ops[6]),
-        metaRecord.ops[7], DIFlags(metaRecord.ops[8]), metaRecord.ops[8]);
+        DW_TAG(metaRecord.ops[1]), metadata.getOrNULL(metaRecord.ops[2]),
+        metadata.getStringOrNULL(metaRecord.ops[3]), metadata.getOrNULL(metaRecord.ops[4]),
+        metaRecord.ops[5], metadata.getOrNULL(metaRecord.ops[6]), metaRecord.ops[7],
+        DIFlags(metaRecord.ops[8]));
 
-    meta.children = {getMeta(metaRecord.ops[2]), getMeta(metaRecord.ops[4]),
-                     getMeta(metaRecord.ops[6])};
+    meta.children = {metadata.getOrNULL(metaRecord.ops[2]), metadata.getOrNULL(metaRecord.ops[4]),
+                     metadata.getOrNULL(metaRecord.ops[6])};
   }
-  else if(id == MetaDataRecord::LEXICAL_BLOCK)
+  else if(id == LLVMBC::MetaDataRecord::LEXICAL_BLOCK)
   {
     meta.isDistinct = (metaRecord.ops[0] & 0x1);
 
-    meta.dwarf = new DILexicalBlock(getMeta(metaRecord.ops[1]), getMeta(metaRecord.ops[2]),
-                                    metaRecord.ops[3], metaRecord.ops[4]);
+    meta.dwarf = new DILexicalBlock(metadata.getOrNULL(metaRecord.ops[1]),
+                                    metadata.getOrNULL(metaRecord.ops[2]), metaRecord.ops[3],
+                                    metaRecord.ops[4]);
 
-    meta.children = {getMeta(metaRecord.ops[1]), getMeta(metaRecord.ops[2])};
+    meta.children = {metadata.getOrNULL(metaRecord.ops[1]), metadata.getOrNULL(metaRecord.ops[2])};
   }
-  else if(id == MetaDataRecord::SUBRANGE)
+  else if(id == LLVMBC::MetaDataRecord::SUBRANGE)
   {
     meta.isDistinct = (metaRecord.ops[0] & 0x1);
 
-    meta.dwarf = new DISubrange(metaRecord.ops[1], LLVMBC::BitReader::svbr(metaRecord.ops[2]));
+    meta.dwarf = new DISubrange(int64_t(metaRecord.ops[1]), debug_only_svbr(metaRecord.ops[2]));
   }
-  else if(id == MetaDataRecord::EXPRESSION)
+  else if(id == LLVMBC::MetaDataRecord::NAMESPACE)
+  {
+    meta.isDistinct = (metaRecord.ops[0] & 0x1);
+
+    meta.dwarf = new DINamespace(metadata.getOrNULL(metaRecord.ops[1]),
+                                 metadata.getOrNULL(metaRecord.ops[2]),
+                                 metadata.getStringOrNULL(metaRecord.ops[3]), metaRecord.ops[4]);
+
+    meta.children = {metadata.getOrNULL(metaRecord.ops[1]), metadata.getOrNULL(metaRecord.ops[2])};
+  }
+  else if(id == LLVMBC::MetaDataRecord::IMPORTED_ENTITY)
+  {
+    meta.isDistinct = (metaRecord.ops[0] & 0x1);
+
+    meta.dwarf =
+        new DIImportedEntity(DW_TAG(metaRecord.ops[1]), metadata.getOrNULL(metaRecord.ops[2]),
+                             metadata.getOrNULL(metaRecord.ops[3]), metaRecord.ops[4],
+                             metadata.getStringOrNULL(metaRecord.ops[5]));
+
+    meta.children = {metadata.getOrNULL(metaRecord.ops[2]), metadata.getOrNULL(metaRecord.ops[3])};
+  }
+  else if(id == LLVMBC::MetaDataRecord::EXPRESSION)
   {
     DIExpression *expr = new DIExpression;
 
@@ -272,6 +274,15 @@ bool Program::ParseDebugMetaRecord(const LLVMBC::BlockOrRecord &metaRecord, Meta
 
     meta.dwarf = expr;
   }
+  else if(id == LLVMBC::MetaDataRecord::LEXICAL_BLOCK_FILE)
+  {
+    meta.isDistinct = (metaRecord.ops[0] & 0x1);
+
+    meta.dwarf = new DILexicalBlockFile(metadata.getOrNULL(metaRecord.ops[1]),
+                                        metadata.getOrNULL(metaRecord.ops[2]), metaRecord.ops[3]);
+
+    meta.children = {metadata.getOrNULL(metaRecord.ops[1]), metadata.getOrNULL(metaRecord.ops[2])};
+  }
   else
   {
     return false;
@@ -280,7 +291,139 @@ bool Program::ParseDebugMetaRecord(const LLVMBC::BlockOrRecord &metaRecord, Meta
   return true;
 };
 
-rdcstr Program::GetDebugVarName(const DIBase *d)
+const Metadata *Program::GetDebugScopeParent(const DIBase *d) const
+{
+  if(d->type == DIBase::Subprogram)
+    return d->As<DISubprogram>()->scope;
+  else if(d->type == DIBase::LexicalBlock)
+    return d->As<DILexicalBlock>()->scope;
+  else if(d->type == DIBase::LexicalBlockFile)
+    return d->As<DILexicalBlockFile>()->scope;
+  else if(d->type == DIBase::CompositeType)
+    return d->As<DICompositeType>()->file;
+  else if(d->type == DIBase::Namespace)
+    return d->As<DINamespace>()->file;
+
+  return NULL;
+}
+
+uint64_t Program::GetDebugScopeLine(const DIBase *d) const
+{
+  if(d->type == DIBase::Subprogram)
+    return d->As<DISubprogram>()->line;
+  else if(d->type == DIBase::LexicalBlock)
+    return d->As<DILexicalBlock>()->line;
+  else if(d->type == DIBase::LexicalBlockFile)
+    return 0;
+  else if(d->type == DIBase::File)
+    return 0;
+
+  RDCERR("Unexpected type %s in GetDebugScopeLine", ToStr(d->type).c_str());
+  return UINT64_MAX;
+}
+
+rdcstr Program::GetDebugScopeFilePath(const DIBase *d) const
+{
+  const DIBase *dwarf = d;
+  const Metadata *fileMD = NULL;
+  while(dwarf)
+  {
+    const Metadata *scope = NULL;
+    const Metadata *newFileMD = NULL;
+    switch(dwarf->type)
+    {
+      case DIBase::CompileUnit: fileMD = dwarf->As<DICompileUnit>()->file; break;
+      case DIBase::DerivedType:
+        scope = dwarf->As<DIDerivedType>()->scope;
+        newFileMD = dwarf->As<DIDerivedType>()->file;
+        break;
+      case DIBase::CompositeType:
+        scope = dwarf->As<DICompositeType>()->scope;
+        newFileMD = dwarf->As<DICompositeType>()->file;
+        break;
+      case DIBase::Subprogram:
+        scope = dwarf->As<DISubprogram>()->scope;
+        newFileMD = dwarf->As<DISubprogram>()->file;
+        break;
+      case DIBase::GlobalVariable:
+        scope = dwarf->As<DIGlobalVariable>()->scope;
+        newFileMD = dwarf->As<DIGlobalVariable>()->file;
+        break;
+      case DIBase::LocalVariable:
+        scope = dwarf->As<DILocalVariable>()->scope;
+        newFileMD = dwarf->As<DILocalVariable>()->file;
+        break;
+      case DIBase::LexicalBlock:
+        scope = dwarf->As<DILexicalBlock>()->scope;
+        newFileMD = dwarf->As<DILexicalBlock>()->file;
+        break;
+      case DIBase::LexicalBlockFile:
+        scope = dwarf->As<DILexicalBlockFile>()->scope;
+        newFileMD = dwarf->As<DILexicalBlockFile>()->file;
+        break;
+      case DIBase::Namespace:
+        scope = dwarf->As<DINamespace>()->scope;
+        newFileMD = dwarf->As<DINamespace>()->file;
+        break;
+      case DIBase::ImportedEntity: scope = dwarf->As<DIImportedEntity>()->scope; break;
+      case DIBase::BasicType: break;
+      case DIBase::TemplateTypeParameter: break;
+      case DIBase::TemplateValueParameter: break;
+      case DIBase::SubroutineType: break;
+      case DIBase::Expression: break;
+      case DIBase::Subrange: break;
+      case DIBase::Enum: break;
+      case DIBase::File: break;
+    }
+    if(newFileMD)
+      fileMD = newFileMD;
+
+    if(!scope)
+      break;
+    dwarf = scope->dwarf;
+  };
+  if(!dwarf)
+    return "???";
+
+  rdcstr file;
+  rdcstr dir;
+  if(dwarf->type == DIBase::File)
+  {
+    const DIFile *f = dwarf->As<DIFile>();
+    if(f->dir)
+      dir = f->dir->str;
+    file = f->file->str;
+  }
+  else if(fileMD)
+  {
+    if(fileMD->children.size() > 0)
+    {
+      if(fileMD->children[0])
+        file = fileMD->children[0]->str;
+      else
+        file = "???";
+
+      if((fileMD->children.size() > 1) && fileMD->children[1])
+        dir = fileMD->children[1]->str;
+    }
+    else
+    {
+      file = "???";
+    }
+  }
+  else
+  {
+    file = "???";
+  }
+
+  rdcstr filePath;
+  if(!dir.empty())
+    filePath = dir + "/";
+  filePath += file;
+  return filePath;
+}
+
+rdcstr Program::GetDebugVarName(const DIBase *d) const
 {
   if(d->type == DIBase::LocalVariable)
     return *d->As<DILocalVariable>()->name;
@@ -289,21 +432,63 @@ rdcstr Program::GetDebugVarName(const DIBase *d)
   return "???";
 }
 
+rdcstr Program::GetFunctionScopeName(const DIBase *d) const
+{
+  if(d->type == DIBase::Subprogram)
+  {
+    const rdcstr *name = d->As<DISubprogram>()->name;
+    return name ? *name : "";
+  }
+
+  const Metadata *scope = NULL;
+  if(d->type == DIBase::LocalVariable)
+    scope = d->As<DILocalVariable>()->scope;
+  else if(d->type == DIBase::GlobalVariable)
+    scope = d->As<DIGlobalVariable>()->scope;
+  else if(d->type == DIBase::LexicalBlock)
+    scope = d->As<DILexicalBlock>()->scope;
+  else if(d->type == DIBase::LexicalBlockFile)
+    scope = d->As<DILexicalBlockFile>()->scope;
+
+  while(scope && scope->dwarf)
+  {
+    if(scope->dwarf->type == DIBase::Subprogram)
+    {
+      const rdcstr *name = scope->dwarf->As<DISubprogram>()->name;
+      return name ? *name : "";
+    }
+    else if(scope->dwarf->type == DIBase::LexicalBlock)
+    {
+      scope = scope->dwarf->As<DILexicalBlock>()->scope;
+      continue;
+    }
+    else if(scope->dwarf->type == DIBase::LexicalBlockFile)
+    {
+      scope = scope->dwarf->As<DILexicalBlockFile>()->scope;
+      continue;
+    }
+
+    break;
+  }
+
+  return "";
+}
+
 rdcstr getOptMetaString(const Metadata *meta)
 {
   return meta ? escapeString(meta->str).c_str() : "\"\"";
 }
 
-rdcstr DIFile::toString() const
+rdcstr DIFile::toString(bool dxcStyleFormatting) const
 {
   return StringFormat::Fmt("!DIFile(filename: %s, directory: %s)", getOptMetaString(file).c_str(),
                            getOptMetaString(dir).c_str());
 }
 
-rdcstr DICompileUnit::toString() const
+rdcstr DICompileUnit::toString(bool dxcStyleFormatting) const
 {
   rdcstr ret = StringFormat::Fmt("!DICompileUnit(language: %s, file: %s", ToStr(lang).c_str(),
-                                 file ? file->refString().c_str() : "null");
+                                 file ? file->refString(dxcStyleFormatting).c_str() : "null");
 
   if(producer)
     ret += ", producer: " + escapeString(*producer);
@@ -315,22 +500,22 @@ rdcstr DICompileUnit::toString() const
     ret += ", splitDebugFilename: " + escapeString(*splitDebugFilename);
   ret += StringFormat::Fmt(", emissionKind: %llu", emissionKind);
   if(enums)
-    ret += ", enums: " + enums->refString();
+    ret += ", enums: " + enums->refString(dxcStyleFormatting);
   if(retainedTypes)
-    ret += ", retainedTypes: " + retainedTypes->refString();
+    ret += ", retainedTypes: " + retainedTypes->refString(dxcStyleFormatting);
   if(subprograms)
-    ret += ", subprograms: " + subprograms->refString();
+    ret += ", subprograms: " + subprograms->refString(dxcStyleFormatting);
   if(globals)
-    ret += ", globals: " + globals->refString();
+    ret += ", globals: " + globals->refString(dxcStyleFormatting);
   if(imports)
-    ret += ", imports: " + imports->refString();
+    ret += ", imports: " + imports->refString(dxcStyleFormatting);
 
   ret += ")";
 
   return ret;
 }
 
-rdcstr DIBasicType::toString() const
+rdcstr DIBasicType::toString(bool dxcStyleFormatting) const
 {
   rdcstr ret = "!DIBasicType(";
   if(tag != DW_TAG_base_type)
@@ -343,19 +528,19 @@ rdcstr DIBasicType::toString() const
   return ret;
 }
 
-rdcstr DIDerivedType::toString() const
+rdcstr DIDerivedType::toString(bool dxcStyleFormatting) const
 {
   rdcstr ret = StringFormat::Fmt("!DIDerivedType(tag: %s", ToStr(tag).c_str());
   if(name)
     ret += StringFormat::Fmt(", name: %s", escapeString(*name).c_str());
   if(scope)
-    ret += StringFormat::Fmt(", scope: %s", scope->refString().c_str());
+    ret += StringFormat::Fmt(", scope: %s", scope->refString(dxcStyleFormatting).c_str());
   if(file)
-    ret += StringFormat::Fmt(", file: %s", file->refString().c_str());
+    ret += StringFormat::Fmt(", file: %s", file->refString(dxcStyleFormatting).c_str());
   if(line)
     ret += StringFormat::Fmt(", line: %llu", line);
   if(base)
-    ret += StringFormat::Fmt(", baseType: %s", base->refString().c_str());
+    ret += StringFormat::Fmt(", baseType: %s", base->refString(dxcStyleFormatting).c_str());
   else
     ret += ", baseType: null";
   if(sizeInBits)
@@ -367,24 +552,24 @@ rdcstr DIDerivedType::toString() const
   if(flags != DIFlagNone)
     ret += StringFormat::Fmt(", flags: %s", ToStr(flags).c_str());
   if(extra)
-    ret += StringFormat::Fmt(", extraData: %s", extra->refString().c_str());
+    ret += StringFormat::Fmt(", extraData: %s", extra->refString(dxcStyleFormatting).c_str());
   ret += ")";
   return ret;
 }
 
-rdcstr DICompositeType::toString() const
+rdcstr DICompositeType::toString(bool dxcStyleFormatting) const
 {
   rdcstr ret = StringFormat::Fmt("!DICompositeType(tag: %s", ToStr(tag).c_str());
   if(name)
     ret += StringFormat::Fmt(", name: %s", escapeString(*name).c_str());
   if(scope)
-    ret += StringFormat::Fmt(", scope: %s", scope->refString().c_str());
+    ret += StringFormat::Fmt(", scope: %s", scope->refString(dxcStyleFormatting).c_str());
   if(file)
-    ret += StringFormat::Fmt(", file: %s", file->refString().c_str());
+    ret += StringFormat::Fmt(", file: %s", file->refString(dxcStyleFormatting).c_str());
   if(line)
     ret += StringFormat::Fmt(", line: %llu", line);
   if(base)
-    ret += StringFormat::Fmt(", baseType: %s", base->refString().c_str());
+    ret += StringFormat::Fmt(", baseType: %s", base->refString(dxcStyleFormatting).c_str());
   if(sizeInBits)
     ret += StringFormat::Fmt(", size: %llu", sizeInBits);
   if(alignInBits)
@@ -394,50 +579,62 @@ rdcstr DICompositeType::toString() const
   if(flags != DIFlagNone)
     ret += StringFormat::Fmt(", flags: %s", ToStr(flags).c_str());
   if(elements)
-    ret += StringFormat::Fmt(", elements: %s", elements->refString().c_str());
+    ret += StringFormat::Fmt(", elements: %s", elements->refString(dxcStyleFormatting).c_str());
   if(templateParams)
-    ret += StringFormat::Fmt(", templateParams: %s", templateParams->refString().c_str());
+    ret += StringFormat::Fmt(", templateParams: %s",
+                             templateParams->refString(dxcStyleFormatting).c_str());
   ret += ")";
   return ret;
 }
 
-rdcstr DITemplateTypeParameter::toString() const
+rdcstr DIEnum::toString(bool dxcStyleFormatting) const
+{
+  rdcstr ret = "!DIEnumerator(";
+  ret += StringFormat::Fmt("name: %s", escapeString(*name).c_str());
+  ret += StringFormat::Fmt(", value: %lld", value);
+  ret += ")";
+  return ret;
+}
+
+rdcstr DITemplateTypeParameter::toString(bool dxcStyleFormatting) const
 {
   return StringFormat::Fmt("!DITemplateTypeParameter(name: %s, type: %s)",
                            escapeString(name ? *name : rdcstr()).c_str(),
-                           type ? type->refString().c_str() : "null");
+                           type ? type->refString(dxcStyleFormatting).c_str() : "null");
 }
 
-rdcstr DITemplateValueParameter::toString() const
+rdcstr DITemplateValueParameter::toString(bool dxcStyleFormatting) const
 {
   return StringFormat::Fmt("!DITemplateValueParameter(name: %s, type: %s, value: %s)",
                            escapeString(name ? *name : rdcstr()).c_str(),
-                           type ? type->refString().c_str() : "null",
-                           value ? value->refString().c_str() : "null");
+                           type ? type->refString(dxcStyleFormatting).c_str() : "null",
+                           value ? value->refString(dxcStyleFormatting).c_str() : "null");
 }
 
-rdcstr DISubprogram::toString() const
+rdcstr DISubprogram::toString(bool dxcStyleFormatting) const
 {
-  rdcstr ret =
-      StringFormat::Fmt("!DISubprogram(name: %s", escapeString(name ? *name : rdcstr()).c_str());
+  rdcstr ret = "!DISubprogram(";
+  if(name)
+    ret += StringFormat::Fmt("name: %s, ", escapeString(*name).c_str());
   if(linkageName)
-    ret += StringFormat::Fmt(", linkageName: %s", escapeString(*linkageName).c_str());
+    ret += StringFormat::Fmt("linkageName: %s, ", escapeString(*linkageName).c_str());
   if(scope)
-    ret += StringFormat::Fmt(", scope: %s", scope->refString().c_str());
+    ret += StringFormat::Fmt("scope: %s, ", scope->refString(dxcStyleFormatting).c_str());
   if(file)
-    ret += StringFormat::Fmt(", file: %s", file->refString().c_str());
+    ret += StringFormat::Fmt("file: %s", file->refString(dxcStyleFormatting).c_str());
   else
-    ret += ", file: null";
+    ret += "file: null";
   if(line)
     ret += StringFormat::Fmt(", line: %llu", line);
   if(type)
-    ret += StringFormat::Fmt(", type: %s", type->refString().c_str());
+    ret += StringFormat::Fmt(", type: %s", type->refString(dxcStyleFormatting).c_str());
   ret += StringFormat::Fmt(", isLocal: %s", isLocal ? "true" : "false");
   ret += StringFormat::Fmt(", isDefinition: %s", isDefinition ? "true" : "false");
   if(scopeLine)
     ret += StringFormat::Fmt(", scopeLine: %llu", scopeLine);
   if(containingType)
-    ret += StringFormat::Fmt(", containingType: %s", containingType->refString().c_str());
+    ret += StringFormat::Fmt(", containingType: %s",
+                             containingType->refString(dxcStyleFormatting).c_str());
 
   if(virtuality)
   {
@@ -452,73 +649,74 @@ rdcstr DISubprogram::toString() const
   ret += StringFormat::Fmt(", isOptimized: %s", isOptimized ? "true" : "false");
 
   if(function)
-    ret += StringFormat::Fmt(", function: %s", function->refString().c_str());
+    ret += StringFormat::Fmt(", function: %s", function->refString(dxcStyleFormatting).c_str());
   if(templateParams)
-    ret += StringFormat::Fmt(", templateParams: %s", templateParams->refString().c_str());
+    ret += StringFormat::Fmt(", templateParams: %s",
+                             templateParams->refString(dxcStyleFormatting).c_str());
   if(declaration)
-    ret += StringFormat::Fmt(", declaration: %s", declaration->refString().c_str());
+    ret += StringFormat::Fmt(", declaration: %s", declaration->refString(dxcStyleFormatting).c_str());
   if(variables)
-    ret += StringFormat::Fmt(", variables: %s", variables->refString().c_str());
+    ret += StringFormat::Fmt(", variables: %s", variables->refString(dxcStyleFormatting).c_str());
 
   ret += ")";
   return ret;
 }
 
-rdcstr DISubroutineType::toString() const
+rdcstr DISubroutineType::toString(bool dxcStyleFormatting) const
 {
   return StringFormat::Fmt("!DISubroutineType(types: %s)",
-                           types ? types->refString().c_str() : "null");
+                           types ? types->refString(dxcStyleFormatting).c_str() : "null");
 }
 
-rdcstr DIGlobalVariable::toString() const
+rdcstr DIGlobalVariable::toString(bool dxcStyleFormatting) const
 {
   rdcstr ret =
       StringFormat::Fmt("!DIGlobalVariable(name: %s", escapeString(name ? *name : rdcstr()).c_str());
   if(linkageName)
     ret += StringFormat::Fmt(", linkageName: %s", escapeString(*linkageName).c_str());
   if(scope)
-    ret += StringFormat::Fmt(", scope: %s", scope->refString().c_str());
+    ret += StringFormat::Fmt(", scope: %s", scope->refString(dxcStyleFormatting).c_str());
   if(file)
-    ret += StringFormat::Fmt(", file: %s", file->refString().c_str());
+    ret += StringFormat::Fmt(", file: %s", file->refString(dxcStyleFormatting).c_str());
   else
     ret += ", file: null";
   if(line)
     ret += StringFormat::Fmt(", line: %llu", line);
   if(type)
-    ret += StringFormat::Fmt(", type: %s", type->refString().c_str());
+    ret += StringFormat::Fmt(", type: %s", type->refString(dxcStyleFormatting).c_str());
   ret += StringFormat::Fmt(", isLocal: %s", isLocal ? "true" : "false");
   ret += StringFormat::Fmt(", isDefinition: %s", isDefinition ? "true" : "false");
+  if(declaration)
+    ret += StringFormat::Fmt(", declaration: %s", declaration->refString(dxcStyleFormatting).c_str());
   if(variable)
-    ret += StringFormat::Fmt(", variable: %s", variable->refString().c_str());
+    ret += StringFormat::Fmt(", variable: %s", variable->refString(dxcStyleFormatting).c_str());
   ret += ")";
   return ret;
 }
 
-rdcstr DILocalVariable::toString() const
+rdcstr DILocalVariable::toString(bool dxcStyleFormatting) const
 {
   rdcstr ret = StringFormat::Fmt("!DILocalVariable(tag: %s, name: %s", ToStr(tag).c_str(),
                                  escapeString(name ? *name : rdcstr()).c_str());
-  if(arg)
+  if(arg || tag != DW_TAG_auto_variable)
     ret += StringFormat::Fmt(", arg: %llu", arg);
   if(scope)
-    ret += StringFormat::Fmt(", scope: %s", scope->refString().c_str());
-  if(file)
-    ret += StringFormat::Fmt(", file: %s", file->refString().c_str());
+    ret += StringFormat::Fmt(", scope: %s", scope->refString(dxcStyleFormatting).c_str());
   else
-    ret += ", file: null";
+    ret += ", scope: null";
+  if(file)
+    ret += StringFormat::Fmt(", file: %s", file->refString(dxcStyleFormatting).c_str());
   if(line)
     ret += StringFormat::Fmt(", line: %llu", line);
   if(type)
-    ret += StringFormat::Fmt(", type: %s", type->refString().c_str());
+    ret += StringFormat::Fmt(", type: %s", type->refString(dxcStyleFormatting).c_str());
   if(flags != DIFlagNone)
     ret += StringFormat::Fmt(", flags: %s", ToStr(flags).c_str());
-  if(alignInBits)
-    ret += StringFormat::Fmt(", align: %llu", alignInBits);
   ret += ")";
   return ret;
 }
 
-rdcstr DIExpression::toString() const
+rdcstr DIExpression::toString(bool dxcStyleFormatting) const
 {
   if(op == DW_OP_bit_piece)
     return StringFormat::Fmt("!DIExpression(DW_OP_bit_piece, %llu, %llu)",
@@ -541,15 +739,15 @@ rdcstr DIExpression::toString() const
   return ret;
 }
 
-rdcstr DILexicalBlock::toString() const
+rdcstr DILexicalBlock::toString(bool dxcStyleFormatting) const
 {
   rdcstr ret = "!DILexicalBlock(";
   if(scope)
-    ret += StringFormat::Fmt("scope: %s", scope->refString().c_str());
+    ret += StringFormat::Fmt("scope: %s", scope->refString(dxcStyleFormatting).c_str());
   else
     ret += "scope: null";
   if(file)
-    ret += StringFormat::Fmt(", file: %s", file->refString().c_str());
+    ret += StringFormat::Fmt(", file: %s", file->refString(dxcStyleFormatting).c_str());
   if(line)
     ret += StringFormat::Fmt(", line: %llu", line);
   if(column)
@@ -558,12 +756,59 @@ rdcstr DILexicalBlock::toString() const
   return ret;
 }
 
-rdcstr DISubrange::toString() const
+rdcstr DILexicalBlockFile::toString(bool dxcStyleFormatting) const
+{
+  rdcstr ret = "!DILexicalBlockFile(";
+  if(scope)
+    ret += StringFormat::Fmt("scope: %s", scope->refString(dxcStyleFormatting).c_str());
+  else
+    ret += "scope: null";
+  if(file)
+    ret += StringFormat::Fmt(", file: %s", file->refString(dxcStyleFormatting).c_str());
+  ret += StringFormat::Fmt(", discriminator: %llu", discriminator);
+  ret += ")";
+  return ret;
+}
+
+rdcstr DISubrange::toString(bool dxcStyleFormatting) const
 {
   rdcstr ret = "!DISubrange(";
-  ret += StringFormat::Fmt("count: %llu", count);
+  ret += StringFormat::Fmt("count: %lld", count);
   if(lowerBound)
     ret += StringFormat::Fmt(", lowerBound: %lld", lowerBound);
+  ret += ")";
+  return ret;
+}
+
+rdcstr DINamespace::toString(bool dxcStyleFormatting) const
+{
+  rdcstr ret = "!DINamespace(";
+  if(name)
+    ret += StringFormat::Fmt("name: %s, ", escapeString(*name).c_str());
+  if(scope)
+    ret += StringFormat::Fmt("scope: %s", scope->refString(dxcStyleFormatting).c_str());
+  else
+    ret += "scope: null";
+  if(file)
+    ret += StringFormat::Fmt(", file: %s", file->refString(dxcStyleFormatting).c_str());
+  ret += StringFormat::Fmt(", line: %llu", line);
+  ret += ")";
+  return ret;
+}
+
+rdcstr DIImportedEntity::toString(bool dxcStyleFormatting) const
+{
+  rdcstr ret = StringFormat::Fmt("!DIImportedEntity(tag: %s", ToStr(tag).c_str());
+  if(name)
+    ret += StringFormat::Fmt(", name: %s, ", escapeString(*name).c_str());
+  if(scope)
+    ret += StringFormat::Fmt(", scope: %s", scope->refString(dxcStyleFormatting).c_str());
+  else
+    ret += ", scope: null";
+  if(entity)
+    ret += StringFormat::Fmt(", entity: %s", entity->refString(dxcStyleFormatting).c_str());
+  if(line)
+    ret += StringFormat::Fmt(", line: %llu", line);
   ret += ")";
   return ret;
 }

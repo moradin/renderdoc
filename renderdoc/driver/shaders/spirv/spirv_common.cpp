@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -100,15 +100,17 @@ ShaderStage MakeShaderStage(rdcspv::ExecutionModel model)
     case rdcspv::ExecutionModel::Geometry: return ShaderStage::Geometry;
     case rdcspv::ExecutionModel::Fragment: return ShaderStage::Fragment;
     case rdcspv::ExecutionModel::GLCompute: return ShaderStage::Compute;
+    case rdcspv::ExecutionModel::TaskEXT: return ShaderStage::Task;
+    case rdcspv::ExecutionModel::MeshEXT: return ShaderStage::Mesh;
+    case rdcspv::ExecutionModel::RayGenerationKHR: return ShaderStage::RayGen;
+    case rdcspv::ExecutionModel::IntersectionKHR: return ShaderStage::Intersection;
+    case rdcspv::ExecutionModel::AnyHitKHR: return ShaderStage::AnyHit;
+    case rdcspv::ExecutionModel::ClosestHitKHR: return ShaderStage::ClosestHit;
+    case rdcspv::ExecutionModel::MissKHR: return ShaderStage::Miss;
+    case rdcspv::ExecutionModel::CallableKHR: return ShaderStage::Callable;
     case rdcspv::ExecutionModel::Kernel:
     case rdcspv::ExecutionModel::TaskNV:
     case rdcspv::ExecutionModel::MeshNV:
-    case rdcspv::ExecutionModel::RayGenerationNV:
-    case rdcspv::ExecutionModel::IntersectionNV:
-    case rdcspv::ExecutionModel::AnyHitNV:
-    case rdcspv::ExecutionModel::ClosestHitNV:
-    case rdcspv::ExecutionModel::MissNV:
-    case rdcspv::ExecutionModel::CallableNV:
       // all of these are currently unsupported
       break;
     case rdcspv::ExecutionModel::Invalid:
@@ -154,7 +156,7 @@ ShaderBuiltin MakeShaderBuiltin(ShaderStage stage, const rdcspv::BuiltIn el)
     case rdcspv::BuiltIn::BaseVertex: return ShaderBuiltin::BaseVertex;
     case rdcspv::BuiltIn::BaseInstance: return ShaderBuiltin::BaseInstance;
     case rdcspv::BuiltIn::DrawIndex: return ShaderBuiltin::DrawIndex;
-    case rdcspv::BuiltIn::ViewIndex: return ShaderBuiltin::ViewportIndex;
+    case rdcspv::BuiltIn::ViewIndex: return ShaderBuiltin::MultiViewIndex;
     case rdcspv::BuiltIn::FragStencilRefEXT: return ShaderBuiltin::StencilReference;
     case rdcspv::BuiltIn::NumWorkgroups: return ShaderBuiltin::DispatchSize;
     case rdcspv::BuiltIn::GlobalInvocationId: return ShaderBuiltin::DispatchThreadIndex;
@@ -176,8 +178,15 @@ ShaderBuiltin MakeShaderBuiltin(ShaderStage stage, const rdcspv::BuiltIn el)
     case rdcspv::BuiltIn::SubgroupLtMask: return ShaderBuiltin::SubgroupLessMask;
     case rdcspv::BuiltIn::DeviceIndex: return ShaderBuiltin::DeviceIndex;
     case rdcspv::BuiltIn::FullyCoveredEXT: return ShaderBuiltin::IsFullyCovered;
+    case rdcspv::BuiltIn::BaryCoordKHR: return ShaderBuiltin::Barycentrics;
     case rdcspv::BuiltIn::FragSizeEXT: return ShaderBuiltin::FragAreaSize;
     case rdcspv::BuiltIn::FragInvocationCountEXT: return ShaderBuiltin::FragInvocationCount;
+    case rdcspv::BuiltIn::PrimitivePointIndicesEXT: return ShaderBuiltin::OutputIndices;
+    case rdcspv::BuiltIn::PrimitiveLineIndicesEXT: return ShaderBuiltin::OutputIndices;
+    case rdcspv::BuiltIn::PrimitiveTriangleIndicesEXT: return ShaderBuiltin::OutputIndices;
+    case rdcspv::BuiltIn::CullPrimitiveEXT: return ShaderBuiltin::CullPrimitive;
+    case rdcspv::BuiltIn::PrimitiveShadingRateKHR:
+    case rdcspv::BuiltIn::ShadingRateKHR: return ShaderBuiltin::PackedFragRate;
     default: break;
   }
 
@@ -185,3 +194,22 @@ ShaderBuiltin MakeShaderBuiltin(ShaderStage stage, const rdcspv::BuiltIn el)
 
   return ShaderBuiltin::Undefined;
 }
+
+namespace rdcspv
+{
+
+bool ManualForEachID(const ConstIter &it, const std::function<void(Id, bool)> &callback)
+{
+  switch(it.opcode())
+  {
+    case rdcspv::Op::Switch:
+      // Include just the selector
+      callback(Id::fromWord(it.word(1)), false);
+      return true;
+    default:
+      // unhandled
+      return false;
+  }
+}
+
+};    // namespace rdcspv

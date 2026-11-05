@@ -55,7 +55,7 @@ During running or after the application has closed, all captures will appear as 
 
 	Connection Window: Viewing multiple captures taken in a program.
 
-In this example we have a connection window open to the debugmarker sample from Sascha Willms' Vulkan examples. Three captures have been made and we can see their thumbnails to help distinguish between them. This is visible at any point, regardless of whether you have close the program or not - you can simply switch back to RenderDoc while it's running.
+In this example we have a connection window open to the ``debugmarker`` sample from `Sascha Willems' Vulkan examples <https://github.com/SaschaWillems/Vulkan>`_. Three captures have been made and we can see their thumbnails to help distinguish between them. This is visible at any point, regardless of whether you have close the program or not - you can simply switch back to RenderDoc while it's running.
 
 .. note::
 
@@ -63,7 +63,7 @@ In this example we have a connection window open to the debugmarker sample from 
 
 From here you can save these captures out - as currently they are only temporary copies that will be cleaned up on close. You can also manually delete any capture you wish to discard.
 
-Double clicking on any capture will close any current open capture in the RenderDoc UI, and open up that capture for inspection. You may also right click or use the drop-down menu on the open button to launch a new instance of RenderDoc for viewing the log. This is mostly useful if you want to compare two captures side-by-side easily.
+Double clicking on any capture will close any current open capture in the RenderDoc UI, and open up that capture for inspection. You may also right click or use the drop-down menu on the open button to launch a new instance of RenderDoc for viewing the capture. This is mostly useful if you want to compare two captures side-by-side easily.
 
 You can press F2 or single click on a selected capture (not double click) to rename the default label given to each capture. This can be useful if you're changing something as you go or toggling an option and you want to remember which capture is which.
 

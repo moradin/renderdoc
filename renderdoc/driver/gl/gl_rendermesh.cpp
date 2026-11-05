@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,12 +33,24 @@
 #define OPENGL 1
 #include "data/glsl/glsl_ubos_cpp.h"
 
+static int VisModeToMeshDisplayFormat(const MeshDisplay &cfg)
+{
+  switch(cfg.visualisationMode)
+  {
+    default: return (int)cfg.visualisationMode;
+    case Visualisation::Secondary:
+      return cfg.second.showAlpha ? MESHDISPLAY_SECONDARY_ALPHA : MESHDISPLAY_SECONDARY;
+  }
+}
+
 void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondaryDraws,
                           const MeshDisplay &cfg)
 {
   WrappedOpenGL &drv = *m_pDriver;
 
-  if(cfg.position.vertexResourceId == ResourceId())
+  if(cfg.position.vertexResourceId == ResourceId() ||
+     !m_pDriver->GetResourceManager()->HasResource(cfg.position.vertexResourceId) ||
+     cfg.position.numIndices == 0)
     return;
 
   MakeCurrentReplayContext(m_DebugCtx);
@@ -46,12 +58,17 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
   GLMarkerRegion renderMesh(
       StringFormat::Fmt("RenderMesh with %zu secondary draws", secondaryDraws.size()));
 
+  float nearPlane = cfg.cam ? ((Camera *)cfg.cam)->GetNear() : 0.1f;
+  float farPlane = cfg.cam ? ((Camera *)cfg.cam)->GetFar() : 100000.0f;
+
   Matrix4f projMat =
-      Matrix4f::Perspective(90.0f, 0.1f, 100000.0f, DebugData.outWidth / DebugData.outHeight);
+      Matrix4f::Perspective(90.0f, nearPlane, farPlane, DebugData.outWidth / DebugData.outHeight);
 
   Matrix4f camMat = cfg.cam ? ((Camera *)cfg.cam)->GetMatrix() : Matrix4f::Identity();
 
-  Matrix4f ModelViewProj = projMat.Mul(camMat);
+  Matrix4f axisMapMat = Matrix4f(cfg.axisMapping);
+
+  Matrix4f ModelViewProj = projMat.Mul(camMat.Mul(axisMapMat));
   Matrix4f guessProjInv;
 
   drv.glBindVertexArray(DebugData.meshVAO);
@@ -83,6 +100,8 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
   }
 
   drv.glDisable(eGL_CULL_FACE);
+  if(HasExt[ARB_depth_clamp])
+    drv.glEnable(eGL_DEPTH_CLAMP);
 
   if(cfg.position.unproject)
   {
@@ -111,6 +130,12 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
   uboParams.mvp = ModelViewProj;
   uboParams.homogenousInput = cfg.position.unproject;
   uboParams.pointSpriteSize = Vec2f(0.0f, 0.0f);
+  uboParams.vtxExploderSNorm = cfg.vtxExploderSliderSNorm;
+  uboParams.exploderScale =
+      (cfg.visualisationMode == Visualisation::Explode) ? cfg.exploderScale : 0.0f;
+  uboParams.exploderCentre =
+      Vec3f((cfg.minBounds.x + cfg.maxBounds.x) * 0.5f, (cfg.minBounds.y + cfg.maxBounds.y) * 0.5f,
+            (cfg.minBounds.z + cfg.maxBounds.z) * 0.5f);
 
   if(!secondaryDraws.empty())
   {
@@ -131,16 +156,23 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
       const MeshFormat &fmt = secondaryDraws[i];
 
       if(fmt.vertexResourceId != ResourceId() &&
-         m_pDriver->GetResourceManager()->HasCurrentResource(fmt.vertexResourceId))
+         m_pDriver->GetResourceManager()->HasResource(fmt.vertexResourceId))
       {
         uboParams.color = Vec4f(fmt.meshColor.x, fmt.meshColor.y, fmt.meshColor.z, fmt.meshColor.w);
 
         uboptr = (MeshUBOData *)drv.glMapBufferRange(eGL_UNIFORM_BUFFER, 0, sizeof(MeshUBOData),
                                                      GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+        if(!uboptr)
+        {
+          RDCERR("Map buffer failed %d", drv.glGetError());
+          return;
+        }
+
         *uboptr = uboParams;
         drv.glUnmapBuffer(eGL_UNIFORM_BUFFER);
 
-        GLuint vb = m_pDriver->GetResourceManager()->GetCurrentResource(fmt.vertexResourceId).name;
+        GLuint vb = m_pDriver->GetResourceManager()->GetResource(fmt.vertexResourceId).name;
         drv.glBindVertexBuffer(0, vb, (GLintptr)fmt.vertexByteOffset, fmt.vertexByteStride);
 
         {
@@ -156,7 +188,7 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
 
         if(fmt.indexByteStride)
         {
-          GLuint ib = m_pDriver->GetResourceManager()->GetCurrentResource(fmt.indexResourceId).name;
+          GLuint ib = m_pDriver->GetResourceManager()->GetResource(fmt.indexResourceId).name;
           drv.glBindBuffer(eGL_ELEMENT_ARRAY_BUFFER, ib);
 
           GLenum idxtype = eGL_UNSIGNED_BYTE;
@@ -182,7 +214,7 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
   for(uint32_t i = 0; i < 2; i++)
   {
     if(meshData[i]->vertexResourceId == ResourceId() ||
-       !m_pDriver->GetResourceManager()->HasCurrentResource(meshData[i]->vertexResourceId))
+       !m_pDriver->GetResourceManager()->HasResource(meshData[i]->vertexResourceId))
       continue;
 
     if(meshData[i]->format.Special())
@@ -282,8 +314,7 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
     if(meshData[i]->instanced)
       offs += meshData[i]->vertexByteStride * (cfg.curInstance / meshData[i]->instStepRate);
 
-    GLuint vb =
-        m_pDriver->GetResourceManager()->GetCurrentResource(meshData[i]->vertexResourceId).name;
+    GLuint vb = m_pDriver->GetResourceManager()->GetResource(meshData[i]->vertexResourceId).name;
 
     {
       GLuint bytesize = 0;
@@ -324,13 +355,17 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
   drv.glEnable(eGL_DEPTH_TEST);
 
   // solid render
-  if(cfg.solidShadeMode != SolidShade::NoSolid && topo != eGL_PATCHES)
+  if(cfg.visualisationMode != Visualisation::NoSolid && topo != eGL_PATCHES)
   {
     drv.glDepthFunc(eGL_LESS);
+    if(HasExt[ARB_depth_clamp])
+      drv.glDisable(eGL_DEPTH_CLAMP);
 
     GLuint solidProg = prog;
 
-    if(cfg.solidShadeMode == SolidShade::Lit && DebugData.meshgsProg[0])
+    if((cfg.visualisationMode == Visualisation::Lit ||
+        cfg.visualisationMode == Visualisation::Explode) &&
+       DebugData.meshgsProg[0])
     {
       // pick program with GS for per-face lighting
       solidProg = DebugData.meshgsProg[progidx];
@@ -348,18 +383,17 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
     MeshUBOData *soliddata = (MeshUBOData *)drv.glMapBufferRange(
         eGL_UNIFORM_BUFFER, 0, sizeof(MeshUBOData), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
 
-    soliddata->mvp = ModelViewProj;
-    soliddata->pointSpriteSize = Vec2f(0.0f, 0.0f);
-    soliddata->homogenousInput = cfg.position.unproject;
+    if(!soliddata)
+    {
+      RDCERR("Map buffer failed %d", drv.glGetError());
+      return;
+    }
 
-    soliddata->color = Vec4f(0.8f, 0.8f, 0.0f, 1.0f);
+    uboParams.color = Vec4f(0.8f, 0.8f, 0.0f, 1.0f);
+    uboParams.displayFormat = VisModeToMeshDisplayFormat(cfg);
+    *soliddata = uboParams;
 
-    uint32_t OutputDisplayFormat = (uint32_t)cfg.solidShadeMode;
-    if(cfg.solidShadeMode == SolidShade::Secondary && cfg.second.showAlpha)
-      OutputDisplayFormat = MESHDISPLAY_SECONDARY_ALPHA;
-    soliddata->displayFormat = OutputDisplayFormat;
-
-    if(cfg.solidShadeMode == SolidShade::Lit)
+    if(cfg.visualisationMode == Visualisation::Lit || cfg.visualisationMode == Visualisation::Explode)
       soliddata->invProj = projMat.Inverse();
 
     drv.glUnmapBuffer(eGL_UNIFORM_BUFFER);
@@ -382,8 +416,7 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
 
       if(cfg.position.indexResourceId != ResourceId())
       {
-        GLuint ib =
-            m_pDriver->GetResourceManager()->GetCurrentResource(cfg.position.indexResourceId).name;
+        GLuint ib = m_pDriver->GetResourceManager()->GetResource(cfg.position.indexResourceId).name;
         drv.glBindBuffer(eGL_ELEMENT_ARRAY_BUFFER, ib);
       }
       drv.glDrawElementsBaseVertex(topo, cfg.position.numIndices, idxtype,
@@ -398,23 +431,33 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
     drv.glDisableVertexAttribArray(1);
 
     drv.glUseProgram(prog);
+
+    if(HasExt[ARB_depth_clamp])
+      drv.glEnable(eGL_DEPTH_CLAMP);
   }
 
   drv.glDepthFunc(eGL_ALWAYS);
 
+  uboParams.displayFormat = MESHDISPLAY_SOLID;
+
   // wireframe render
-  if(cfg.solidShadeMode == SolidShade::NoSolid || cfg.wireframeDraw || topo == eGL_PATCHES)
+  if(cfg.visualisationMode == Visualisation::NoSolid || cfg.wireframeDraw || topo == eGL_PATCHES)
   {
     uboParams.color = Vec4f(cfg.position.meshColor.x, cfg.position.meshColor.y,
                             cfg.position.meshColor.z, cfg.position.meshColor.w);
-
-    uboParams.displayFormat = MESHDISPLAY_SOLID;
 
     if(!IsGLES)
       drv.glPolygonMode(eGL_FRONT_AND_BACK, eGL_LINE);
 
     uboptr = (MeshUBOData *)drv.glMapBufferRange(eGL_UNIFORM_BUFFER, 0, sizeof(MeshUBOData),
                                                  GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+    if(!uboptr)
+    {
+      RDCERR("Map buffer failed %d", drv.glGetError());
+      return;
+    }
+
     *uboptr = uboParams;
     drv.glUnmapBuffer(eGL_UNIFORM_BUFFER);
 
@@ -427,10 +470,9 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
         idxtype = eGL_UNSIGNED_INT;
 
       if(cfg.position.indexResourceId != ResourceId() &&
-         m_pDriver->GetResourceManager()->HasCurrentResource(cfg.position.indexResourceId))
+         m_pDriver->GetResourceManager()->HasResource(cfg.position.indexResourceId))
       {
-        GLuint ib =
-            m_pDriver->GetResourceManager()->GetCurrentResource(cfg.position.indexResourceId).name;
+        GLuint ib = m_pDriver->GetResourceManager()->GetResource(cfg.position.indexResourceId).name;
         drv.glBindBuffer(eGL_ELEMENT_ARRAY_BUFFER, ib);
 
         drv.glDrawElementsBaseVertex(
@@ -446,6 +488,10 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
 
   // helpers always use basic float-input program
   drv.glUseProgram(DebugData.meshProg[0]);
+
+  uboParams.vtxExploderSNorm = 0.0f;
+  uboParams.exploderScale = 0.0f;
+  uboParams.exploderCentre = Vec3f();
 
   if(cfg.showBBox)
   {
@@ -479,11 +525,20 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
     uboParams.color = Vec4f(0.2f, 0.2f, 1.0f, 1.0f);
 
     Matrix4f mvpMat = projMat.Mul(camMat);
+    if(!cfg.position.unproject)
+      mvpMat = mvpMat.Mul(axisMapMat);
 
     uboParams.mvp = mvpMat;
 
     uboptr = (MeshUBOData *)drv.glMapBufferRange(eGL_UNIFORM_BUFFER, 0, sizeof(MeshUBOData),
                                                  GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+    if(!uboptr)
+    {
+      RDCERR("Map buffer failed %d", drv.glGetError());
+      return;
+    }
+
     *uboptr = uboParams;
     drv.glUnmapBuffer(eGL_UNIFORM_BUFFER);
 
@@ -503,6 +558,13 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
     uboParams.color = Vec4f(1.0f, 0.0f, 0.0f, 1.0f);
     uboptr = (MeshUBOData *)drv.glMapBufferRange(eGL_UNIFORM_BUFFER, 0, sizeof(MeshUBOData),
                                                  GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+    if(!uboptr)
+    {
+      RDCERR("Map buffer failed %d", drv.glGetError());
+      return;
+    }
+
     *uboptr = uboParams;
     drv.glUnmapBuffer(eGL_UNIFORM_BUFFER);
 
@@ -511,6 +573,13 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
     uboParams.color = Vec4f(0.0f, 1.0f, 0.0f, 1.0f);
     uboptr = (MeshUBOData *)drv.glMapBufferRange(eGL_UNIFORM_BUFFER, 0, sizeof(MeshUBOData),
                                                  GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+    if(!uboptr)
+    {
+      RDCERR("Map buffer failed %d", drv.glGetError());
+      return;
+    }
+
     *uboptr = uboParams;
     drv.glUnmapBuffer(eGL_UNIFORM_BUFFER);
     drv.glDrawArrays(eGL_LINES, 2, 2);
@@ -518,6 +587,13 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
     uboParams.color = Vec4f(0.0f, 0.0f, 1.0f, 1.0f);
     uboptr = (MeshUBOData *)drv.glMapBufferRange(eGL_UNIFORM_BUFFER, 0, sizeof(MeshUBOData),
                                                  GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+    if(!uboptr)
+    {
+      RDCERR("Map buffer failed %d", drv.glGetError());
+      return;
+    }
+
     *uboptr = uboParams;
     drv.glUnmapBuffer(eGL_UNIFORM_BUFFER);
     drv.glDrawArrays(eGL_LINES, 4, 2);
@@ -533,6 +609,13 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
 
     uboptr = (MeshUBOData *)drv.glMapBufferRange(eGL_UNIFORM_BUFFER, 0, sizeof(MeshUBOData),
                                                  GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+    if(!uboptr)
+    {
+      RDCERR("Map buffer failed %d", drv.glGetError());
+      return;
+    }
+
     *uboptr = uboParams;
     drv.glUnmapBuffer(eGL_UNIFORM_BUFFER);
 
@@ -589,7 +672,7 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
       if(cfg.position.unproject)
         ModelViewProj = projMat.Mul(camMat.Mul(guessProjInv));
       else
-        ModelViewProj = projMat.Mul(camMat);
+        ModelViewProj = projMat.Mul(camMat.Mul(axisMapMat));
 
       uboParams.homogenousInput = cfg.position.unproject;
 
@@ -607,6 +690,13 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
       {
         uboptr = (MeshUBOData *)drv.glMapBufferRange(eGL_UNIFORM_BUFFER, 0, sizeof(MeshUBOData),
                                                      GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+        if(!uboptr)
+        {
+          RDCERR("Map buffer failed %d", drv.glGetError());
+          return;
+        }
+
         *uboptr = uboParams;
         drv.glUnmapBuffer(eGL_UNIFORM_BUFFER);
 
@@ -623,6 +713,13 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
       {
         uboptr = (MeshUBOData *)drv.glMapBufferRange(eGL_UNIFORM_BUFFER, 0, sizeof(MeshUBOData),
                                                      GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+        if(!uboptr)
+        {
+          RDCERR("Map buffer failed %d", drv.glGetError());
+          return;
+        }
+
         *uboptr = uboParams;
         drv.glUnmapBuffer(eGL_UNIFORM_BUFFER);
 
@@ -645,11 +742,21 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
 
       uboptr = (MeshUBOData *)drv.glMapBufferRange(eGL_UNIFORM_BUFFER, 0, sizeof(MeshUBOData),
                                                    GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+      if(!uboptr)
+      {
+        RDCERR("Map buffer failed %d", drv.glGetError());
+        return;
+      }
+
       *uboptr = uboParams;
       drv.glUnmapBuffer(eGL_UNIFORM_BUFFER);
 
       FloatVector vertSprite[4] = {
-          activeVertex, activeVertex, activeVertex, activeVertex,
+          activeVertex,
+          activeVertex,
+          activeVertex,
+          activeVertex,
       };
 
       drv.glBindBuffer(eGL_ARRAY_BUFFER, DebugData.triHighlightBuffer);
@@ -662,6 +769,13 @@ void GLReplay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondar
 
       uboptr = (MeshUBOData *)drv.glMapBufferRange(eGL_UNIFORM_BUFFER, 0, sizeof(MeshUBOData),
                                                    GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+      if(!uboptr)
+      {
+        RDCERR("Map buffer failed %d", drv.glGetError());
+        return;
+      }
+
       *uboptr = uboParams;
       drv.glUnmapBuffer(eGL_UNIFORM_BUFFER);
 

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -38,7 +38,8 @@
 #include "maths/formatpacking.h"
 #include "maths/half_convert.h"
 #include "serialise/rdcfile.h"
-#include "stb/stb_image_resize.h"
+
+#include "stb/stb_image_resize2.h"
 
 // {5D6BF029-A6BA-417A-8523-120492B1DCE3}
 static const GUID CLSID_RDCThumbnailProvider = {0x5d6bf029,
@@ -53,7 +54,7 @@ struct RDCThumbnailProvider : public IThumbnailProvider, IInitializeWithStream
   unsigned int m_iRefcount;
   bool m_Inited;
   RDCThumb m_Thumb;
-  read_dds_data m_ddsData;
+  read_tex_data m_ddsData;
 
   RDCThumbnailProvider() : m_iRefcount(1), m_Inited(false) { InterlockedIncrement(&numProviders); }
   virtual ~RDCThumbnailProvider() { InterlockedDecrement(&numProviders); }
@@ -138,9 +139,10 @@ struct RDCThumbnailProvider : public IThumbnailProvider, IInitializeWithStream
       }
 
       StreamReader reader(captureHeader.data(), (ULONG)size);
-      m_ddsData = load_dds_from_file(&reader);
+      m_ddsData = {};
+      RDResult res = load_dds_from_file(&reader, m_ddsData);
 
-      if(m_ddsData.subresources.empty())
+      if(res != ResultCode::Succeeded)
       {
         return E_INVALIDARG;
       }
@@ -481,8 +483,7 @@ struct RDCThumbnailProvider : public IThumbnailProvider, IInitializeWithStream
               case ResourceFormatType::BC7:
                 DecompressBlockBC7(compBlockStart, decompressedBlock, NULL);
                 break;
-              default:
-                return E_NOTIMPL;    // other formats
+              default: return E_NOTIMPL;    // other formats
             }
 
             unsigned char *decompPointer = decompressedBlock;
@@ -542,8 +543,7 @@ struct RDCThumbnailProvider : public IThumbnailProvider, IInitializeWithStream
                     decompImagePointer[(pixelInStride * 4) + 2] = (unsigned char)(blueF * 255);
                   }
                   break;
-                default:
-                  return E_NOTIMPL;    // other formats
+                default: return E_NOTIMPL;    // other formats
               }
               decompImagePointer += decompressedStride;
             }
@@ -626,7 +626,7 @@ struct RDCThumbnailProvider : public IThumbnailProvider, IInitializeWithStream
       byte *resizedpixels = (byte *)malloc(3 * bi.bV5Width * bi.bV5Height);
 
       stbir_resize_uint8_srgb(thumbpixels, thumbwidth, thumbheight, 0, resizedpixels, bi.bV5Width,
-                              bi.bV5Height, 0, 3, -1, 0);
+                              bi.bV5Height, 0, STBIR_RGB);
 
       free(thumbpixels);
 

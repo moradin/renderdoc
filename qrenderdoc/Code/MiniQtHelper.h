@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -35,7 +35,7 @@ public:
   MiniQtHelper(ICaptureContext &ctx);
   virtual ~MiniQtHelper();
 
-  void InvokeOntoUIThread(std::function<void()> callback) override;
+  void InvokeOntoUIThread(UIInvokeCallback callback) override;
 
   QWidget *CreateToplevelWidget(const rdcstr &windowTitle, WidgetCallback closed) override;
   void CloseToplevelWidget(QWidget *widget) override;
@@ -68,11 +68,17 @@ public:
                      int32_t columnSpan) override;
   void AddWidget(QWidget *parent, QWidget *child) override;
   void InsertWidget(QWidget *parent, int32_t index, QWidget *child) override;
+  void SetLayoutSpacing(QWidget *layout, int spacing) override;
+  void SetLayoutMargins(QWidget *layout, int horizontal, int vertical) override;
 
   // widget manipulation
 
   void SetWidgetText(QWidget *widget, const rdcstr &text) override;
+  void AppendText(QWidget *widget, const rdcstr &text) override;
   rdcstr GetWidgetText(QWidget *widget) override;
+
+  void ScrollToTop(QWidget *widget) override;
+  void ScrollToBottom(QWidget *widget) override;
 
   void SetWidgetFont(QWidget *widget, const rdcstr &font, int32_t fontSize, bool bold,
                      bool italic) override;
@@ -116,6 +122,18 @@ public:
   QWidget *CreateComboBox(bool editable, WidgetCallback changed) override;
 
   void SetComboOptions(QWidget *combo, const rdcarray<rdcstr> &options) override;
+  size_t GetComboCount(QWidget *combo) override;
+  void SelectComboOption(QWidget *combo, const rdcstr &option) override;
+
+  QWidget *CreateProgressBar(bool horizontal) override;
+
+  void ResetProgressBar(QWidget *pbar) override;
+  void SetProgressBarValue(QWidget *pbar, int32_t value) override;
+  void UpdateProgressBarValue(QWidget *pbar, int32_t delta) override;
+  int32_t GetProgressBarValue(QWidget *pbar) override;
+  void SetProgressBarRange(QWidget *pbar, int32_t minimum, int32_t maximum) override;
+  int32_t GetProgressBarMinimum(QWidget *pbar) override;
+  int32_t GetProgressBarMaximum(QWidget *pbar) override;
 
 private:
   ICaptureContext &m_Ctx;

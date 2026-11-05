@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -134,6 +134,30 @@ static void Config2XML(pugi::xml_node &parent, const SDObject &child)
   }
 }
 
+static SDBasic getType(const char *typeStr)
+{
+  if(!typeStr)
+    return SDBasic::Chunk;
+
+  const SDBasic types[] = {
+      SDBasic::Array,         SDBasic::String, SDBasic::UnsignedInteger,
+      SDBasic::SignedInteger, SDBasic::Float,  SDBasic::Boolean,
+  };
+
+  static rdcarray<rdcstr> basicTypeStrings;
+  if(basicTypeStrings.empty())
+  {
+    for(SDBasic t : types)
+      basicTypeStrings.push_back(ToStr(t));
+  }
+
+  int idx = basicTypeStrings.indexOf(typeStr);
+  if(idx >= 0)
+    return types[idx];
+
+  return SDBasic::Chunk;
+}
+
 static SDObject *XML2Config(pugi::xml_node &obj)
 {
   SDObject *ret =
@@ -172,24 +196,15 @@ static SDObject *XML2Config(pugi::xml_node &obj)
 
     SDObject *valueObj = NULL;
 
-    const SDBasic types[] = {
-        SDBasic::Array,         SDBasic::String, SDBasic::UnsignedInteger,
-        SDBasic::SignedInteger, SDBasic::Float,  SDBasic::Boolean,
-    };
-
-    static rdcarray<rdcstr> basicTypeStrings;
-    for(SDBasic t : types)
-      basicTypeStrings.push_back(ToStr(t));
-
-    SDBasic type = types[basicTypeStrings.indexOf(obj.attribute("type").as_string())];
+    SDBasic type = getType(obj.attribute("type").as_string());
 
     if(type == SDBasic::Array)
     {
-      type = types[basicTypeStrings.indexOf(obj.attribute("elemtype").as_string())];
+      type = getType(obj.attribute("elemtype").as_string());
       valueObj = makeSDArray("value"_lit);
 
       uint32_t i = 0;
-      for(pugi::xml_node el = value.first_child(); el; el = el.next_sibling())
+      for(pugi::xml_node el = value; el; el = el.next_sibling())
       {
         SDObject *childObj = makeSDObject("$el"_lit, type, el);
 
@@ -352,29 +367,24 @@ static bool MergeConfigValues(const rdcstr &prefix, SDObject *dstConfig, const S
   return ret;
 }
 
-const bool &ConfigVarRegistration<bool>::value()
+bool ConfigVarRegistration<bool>::value() const
 {
-  // avoid warnings on stupid compilers
-  (void)tmp;
   return obj->data.basic.b;
 }
 
-const uint64_t &ConfigVarRegistration<uint64_t>::value()
+uint64_t ConfigVarRegistration<uint64_t>::value() const
 {
-  (void)tmp;
   return obj->data.basic.u;
 }
 
-const uint32_t &ConfigVarRegistration<uint32_t>::value()
+uint32_t ConfigVarRegistration<uint32_t>::value() const
 {
-  tmp = obj->data.basic.u & 0xFFFFFFFFU;
-  return tmp;
+  return obj->data.basic.u & 0xFFFFFFFFU;
 }
 
-const rdcstr &ConfigVarRegistration<rdcstr>::value()
+rdcstr ConfigVarRegistration<rdcstr>::value() const
 {
-  tmp = obj->data.str;
-  return tmp;
+  return obj->data.str;
 }
 
 template <typename T>
@@ -384,8 +394,9 @@ rdcstr DefValString(const T &el)
 }
 
 // this one needs a special implementation unfortunately to convert
-const rdcarray<rdcstr> &ConfigVarRegistration<rdcarray<rdcstr>>::value()
+rdcarray<rdcstr> ConfigVarRegistration<rdcarray<rdcstr>>::value() const
 {
+  rdcarray<rdcstr> tmp;
   tmp.resize(obj->NumChildren());
   for(size_t i = 0; i < tmp.size(); i++)
     tmp[i] = obj->GetChild(i)->data.str;

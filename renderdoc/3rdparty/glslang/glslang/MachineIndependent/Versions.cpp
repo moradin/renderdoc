@@ -1,7 +1,7 @@
 //
 // Copyright (C) 2002-2005  3Dlabs Inc. Ltd.
 // Copyright (C) 2012-2013 LunarG, Inc.
-// Copyright (C) 2017 ARM Limited.
+// Copyright (C) 2017, 2022-2024 Arm Limited.
 // Copyright (C) 2015-2020 Google, Inc.
 // Modifications Copyright (C) 2020 Advanced Micro Devices, Inc. All rights reserved.
 //
@@ -64,6 +64,7 @@
 //        checkDeprecated()
 //        requireNotRemoved()
 //        requireExtensions()
+//        extensionRequires()
 //
 //    Typically, only the first two calls are needed.  They go into a code path that
 //    implements Feature F, and will log the proper error/warning messages.  Parsing
@@ -78,9 +79,11 @@
 //     const char* const XXX_extension_X = "XXX_extension_X";
 //
 // 2) Add extension initialization to TParseVersions::initializeExtensionBehavior(),
-//    the first function below:
+//    the first function below and optionally a entry to extensionData for additional
+//    error checks:
 //
 //     extensionBehavior[XXX_extension_X] = EBhDisable;
+//     (Optional) exts[] = {XXX_extension_X, EShTargetSpv_1_4}
 //
 // 3) Add any preprocessor directives etc. in the next function, TParseVersions::getPreamble():
 //
@@ -140,13 +143,13 @@
 //    set of extensions that both enable them and are necessary, given the version of the symbol
 //    table. (There is a different symbol table for each version.)
 //
+// 7) If the extension has additional requirements like minimum SPIR-V version required, add them
+//    to extensionRequires()
 
 #include "parseVersions.h"
 #include "localintermediate.h"
 
 namespace glslang {
-
-#ifndef GLSLANG_WEB
 
 //
 // Initialize all extensions, almost always to 'disable', as once their features
@@ -155,6 +158,24 @@ namespace glslang {
 //
 void TParseVersions::initializeExtensionBehavior()
 {
+    typedef struct {
+        const char *const extensionName;
+        EShTargetLanguageVersion minSpvVersion;
+    } extensionData;
+
+    const extensionData exts[] = { {E_GL_EXT_ray_tracing, EShTargetSpv_1_4},
+                                   {E_GL_NV_ray_tracing_motion_blur, EShTargetSpv_1_4},
+                                   {E_GL_EXT_mesh_shader, EShTargetSpv_1_4},
+                                   {E_GL_NV_cooperative_matrix2, EShTargetSpv_1_6}
+                                 };
+
+    for (size_t ii = 0; ii < sizeof(exts) / sizeof(exts[0]); ii++) {
+        // Add only extensions which require > spv1.0 to save space in map
+        if (exts[ii].minSpvVersion > EShTargetSpv_1_0) {
+            extensionMinSpv[exts[ii].extensionName] = exts[ii].minSpvVersion;
+        }
+    }
+
     extensionBehavior[E_GL_OES_texture_3D]                   = EBhDisable;
     extensionBehavior[E_GL_OES_standard_derivatives]         = EBhDisable;
     extensionBehavior[E_GL_EXT_frag_depth]                   = EBhDisable;
@@ -167,7 +188,7 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_3DL_array_objects]                = EBhDisable;
     extensionBehavior[E_GL_ARB_shading_language_420pack]     = EBhDisable;
     extensionBehavior[E_GL_ARB_texture_gather]               = EBhDisable;
-    extensionBehavior[E_GL_ARB_gpu_shader5]                  = EBhDisablePartial;
+    extensionBehavior[E_GL_ARB_gpu_shader5]                  = EBhDisable;
     extensionBehavior[E_GL_ARB_separate_shader_objects]      = EBhDisable;
     extensionBehavior[E_GL_ARB_compute_shader]               = EBhDisable;
     extensionBehavior[E_GL_ARB_tessellation_shader]          = EBhDisable;
@@ -179,6 +200,7 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_ARB_explicit_uniform_location]    = EBhDisable;
     extensionBehavior[E_GL_ARB_shader_image_load_store]      = EBhDisable;
     extensionBehavior[E_GL_ARB_shader_atomic_counters]       = EBhDisable;
+    extensionBehavior[E_GL_ARB_shader_atomic_counter_ops]    = EBhDisable;
     extensionBehavior[E_GL_ARB_shader_draw_parameters]       = EBhDisable;
     extensionBehavior[E_GL_ARB_shader_group_vote]            = EBhDisable;
     extensionBehavior[E_GL_ARB_derivative_control]           = EBhDisable;
@@ -200,6 +222,15 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_ARB_shader_bit_encoding]          = EBhDisable;
     extensionBehavior[E_GL_ARB_shader_image_size]            = EBhDisable;
     extensionBehavior[E_GL_ARB_shader_storage_buffer_object] = EBhDisable;
+    extensionBehavior[E_GL_ARB_shading_language_packing]     = EBhDisable;
+    extensionBehavior[E_GL_ARB_texture_query_lod]            = EBhDisable;
+    extensionBehavior[E_GL_ARB_vertex_attrib_64bit]          = EBhDisable;
+    extensionBehavior[E_GL_NV_gpu_shader5]                   = EBhDisable;
+    extensionBehavior[E_GL_ARB_draw_instanced]               = EBhDisable;
+    extensionBehavior[E_GL_ARB_bindless_texture]             = EBhDisable;
+    extensionBehavior[E_GL_ARB_fragment_coord_conventions]   = EBhDisable;
+    extensionBehavior[E_GL_ARB_conservative_depth]           = EBhDisable;
+
 
     extensionBehavior[E_GL_KHR_shader_subgroup_basic]            = EBhDisable;
     extensionBehavior[E_GL_KHR_shader_subgroup_vote]             = EBhDisable;
@@ -207,6 +238,7 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_KHR_shader_subgroup_ballot]           = EBhDisable;
     extensionBehavior[E_GL_KHR_shader_subgroup_shuffle]          = EBhDisable;
     extensionBehavior[E_GL_KHR_shader_subgroup_shuffle_relative] = EBhDisable;
+    extensionBehavior[E_GL_KHR_shader_subgroup_rotate]           = EBhDisable;
     extensionBehavior[E_GL_KHR_shader_subgroup_clustered]        = EBhDisable;
     extensionBehavior[E_GL_KHR_shader_subgroup_quad]             = EBhDisable;
     extensionBehavior[E_GL_KHR_memory_scope_semantics]           = EBhDisable;
@@ -229,10 +261,22 @@ void TParseVersions::initializeExtensionBehavior()
 
     extensionBehavior[E_GL_EXT_shader_16bit_storage]                    = EBhDisable;
     extensionBehavior[E_GL_EXT_shader_8bit_storage]                     = EBhDisable;
+    extensionBehavior[E_GL_EXT_subgroup_uniform_control_flow]           = EBhDisable;
+    extensionBehavior[E_GL_EXT_maximal_reconvergence]                   = EBhDisable;
+
+    extensionBehavior[E_GL_EXT_fragment_shader_barycentric]             = EBhDisable;
+    extensionBehavior[E_GL_EXT_expect_assume]                           = EBhDisable;
+
+    extensionBehavior[E_GL_EXT_control_flow_attributes2]                = EBhDisable;
+    extensionBehavior[E_GL_EXT_spec_constant_composites]                = EBhDisable;
+
+    extensionBehavior[E_GL_KHR_cooperative_matrix]                      = EBhDisable;
+    extensionBehavior[E_GL_NV_cooperative_vector]                       = EBhDisable;
 
     // #line and #include
     extensionBehavior[E_GL_GOOGLE_cpp_style_line_directive]          = EBhDisable;
     extensionBehavior[E_GL_GOOGLE_include_directive]                 = EBhDisable;
+    extensionBehavior[E_GL_ARB_shading_language_include]             = EBhDisable;
 
     extensionBehavior[E_GL_AMD_shader_ballot]                        = EBhDisable;
     extensionBehavior[E_GL_AMD_shader_trinary_minmax]                = EBhDisable;
@@ -244,6 +288,7 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_AMD_shader_image_load_store_lod]          = EBhDisable;
     extensionBehavior[E_GL_AMD_shader_fragment_mask]                 = EBhDisable;
     extensionBehavior[E_GL_AMD_gpu_shader_half_float_fetch]          = EBhDisable;
+    extensionBehavior[E_GL_AMD_shader_early_and_late_fragment_tests] = EBhDisable;
 
     extensionBehavior[E_GL_INTEL_shader_integer_functions2]          = EBhDisable;
 
@@ -258,14 +303,31 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_NV_shader_subgroup_partitioned]           = EBhDisable;
     extensionBehavior[E_GL_NV_shading_rate_image]                    = EBhDisable;
     extensionBehavior[E_GL_NV_ray_tracing]                           = EBhDisable;
+    extensionBehavior[E_GL_NV_ray_tracing_motion_blur]               = EBhDisable;
     extensionBehavior[E_GL_NV_fragment_shader_barycentric]           = EBhDisable;
     extensionBehavior[E_GL_NV_compute_shader_derivatives]            = EBhDisable;
     extensionBehavior[E_GL_NV_shader_texture_footprint]              = EBhDisable;
     extensionBehavior[E_GL_NV_mesh_shader]                           = EBhDisable;
-
     extensionBehavior[E_GL_NV_cooperative_matrix]                    = EBhDisable;
     extensionBehavior[E_GL_NV_shader_sm_builtins]                    = EBhDisable;
     extensionBehavior[E_GL_NV_integer_cooperative_matrix]            = EBhDisable;
+    extensionBehavior[E_GL_NV_shader_invocation_reorder]             = EBhDisable;
+    extensionBehavior[E_GL_NV_displacement_micromap]                 = EBhDisable;
+    extensionBehavior[E_GL_NV_shader_atomic_fp16_vector]             = EBhDisable;
+    extensionBehavior[E_GL_NV_cooperative_matrix2]                   = EBhDisable;
+    extensionBehavior[E_GL_NV_cluster_acceleration_structure]        = EBhDisable;
+    extensionBehavior[E_GL_NV_linear_swept_spheres]                  = EBhDisable;
+    extensionBehavior[E_GL_NV_push_constant_bank]                    = EBhDisable;
+
+    // ARM
+    extensionBehavior[E_GL_ARM_shader_core_builtins]                 = EBhDisable;
+    extensionBehavior[E_GL_ARM_tensors]                              = EBhDisable;
+
+    // QCOM
+    extensionBehavior[E_GL_QCOM_image_processing]                    = EBhDisable;
+    extensionBehavior[E_GL_QCOM_image_processing2]                   = EBhDisable;
+    extensionBehavior[E_GL_QCOM_tile_shading]                        = EBhDisable;
+    extensionBehavior[E_GL_QCOM_cooperative_matrix_conversion]       = EBhDisable;
 
     // AEP
     extensionBehavior[E_GL_ANDROID_extension_pack_es31a]             = EBhDisable;
@@ -283,6 +345,8 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_EXT_tessellation_point_size]              = EBhDisable;
     extensionBehavior[E_GL_EXT_texture_buffer]                       = EBhDisable;
     extensionBehavior[E_GL_EXT_texture_cube_map_array]               = EBhDisable;
+    extensionBehavior[E_GL_EXT_null_initializer]                     = EBhDisable;
+    extensionBehavior[E_GL_EXT_descriptor_heap]                      = EBhDisable;
 
     // OES matching AEP
     extensionBehavior[E_GL_OES_geometry_shader]          = EBhDisable;
@@ -294,6 +358,7 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_OES_tessellation_point_size]  = EBhDisable;
     extensionBehavior[E_GL_OES_texture_buffer]           = EBhDisable;
     extensionBehavior[E_GL_OES_texture_cube_map_array]   = EBhDisable;
+    extensionBehavior[E_GL_EXT_shader_integer_mix]       = EBhDisable;
 
     // EXT extensions
     extensionBehavior[E_GL_EXT_device_group]                = EBhDisable;
@@ -302,6 +367,31 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_EXT_ray_tracing]                 = EBhDisable;
     extensionBehavior[E_GL_EXT_ray_query]                   = EBhDisable;
     extensionBehavior[E_GL_EXT_ray_flags_primitive_culling] = EBhDisable;
+    extensionBehavior[E_GL_EXT_ray_cull_mask]               = EBhDisable;
+    extensionBehavior[E_GL_EXT_blend_func_extended]         = EBhDisable;
+    extensionBehavior[E_GL_EXT_shader_implicit_conversions] = EBhDisable;
+    extensionBehavior[E_GL_EXT_fragment_shading_rate]       = EBhDisable;
+    extensionBehavior[E_GL_EXT_shader_image_int64]          = EBhDisable;
+    extensionBehavior[E_GL_EXT_terminate_invocation]        = EBhDisable;
+    extensionBehavior[E_GL_EXT_shared_memory_block]         = EBhDisable;
+    extensionBehavior[E_GL_EXT_spirv_intrinsics]            = EBhDisable;
+    extensionBehavior[E_GL_EXT_mesh_shader]                 = EBhDisable;
+    extensionBehavior[E_GL_EXT_opacity_micromap]            = EBhDisable;
+    extensionBehavior[E_GL_EXT_shader_quad_control]         = EBhDisable;
+    extensionBehavior[E_GL_EXT_ray_tracing_position_fetch]  = EBhDisable;
+    extensionBehavior[E_GL_EXT_shader_tile_image]           = EBhDisable;
+    extensionBehavior[E_GL_EXT_texture_shadow_lod]          = EBhDisable;
+    extensionBehavior[E_GL_EXT_draw_instanced]              = EBhDisable;
+    extensionBehavior[E_GL_EXT_texture_array]               = EBhDisable;
+    extensionBehavior[E_GL_EXT_texture_offset_non_const]    = EBhDisable;
+    extensionBehavior[E_GL_EXT_nontemporal_keyword]         = EBhDisable;
+    extensionBehavior[E_GL_EXT_bfloat16]                    = EBhDisable;
+    extensionBehavior[E_GL_EXT_float_e4m3]                  = EBhDisable;
+    extensionBehavior[E_GL_EXT_float_e5m2]                  = EBhDisable;
+    extensionBehavior[E_GL_EXT_uniform_buffer_unsized_array] = EBhDisable;
+    extensionBehavior[E_GL_EXT_shader_64bit_indexing]       = EBhDisable;
+    extensionBehavior[E_GL_EXT_conservative_depth]          = EBhDisable;
+    extensionBehavior[E_GL_EXT_long_vector]                 = EBhDisable;
 
     // OVR extensions
     extensionBehavior[E_GL_OVR_multiview]                = EBhDisable;
@@ -322,8 +412,16 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_EXT_shader_subgroup_extended_types_int16]   = EBhDisable;
     extensionBehavior[E_GL_EXT_shader_subgroup_extended_types_int64]   = EBhDisable;
     extensionBehavior[E_GL_EXT_shader_subgroup_extended_types_float16] = EBhDisable;
+    extensionBehavior[E_GL_EXT_shader_atomic_float]                    = EBhDisable;
+    extensionBehavior[E_GL_EXT_shader_atomic_float2]                   = EBhDisable;
+
+    extensionBehavior[E_GL_EXT_integer_dot_product]                    = EBhDisable;
+
+    extensionBehavior[E_GL_EXT_shader_invocation_reorder]              = EBhDisable;
+
+    // Record extensions not for spv.
+    spvUnsupportedExt.push_back(E_GL_ARB_bindless_texture);
 }
-#endif // GLSLANG_WEB
 
 // Get code that is not part of a shared symbol table, is specific to this shader,
 // or needed by the preprocessor (which does not use a shared symbol table).
@@ -333,9 +431,6 @@ void TParseVersions::getPreamble(std::string& preamble)
         preamble =
             "#define GL_ES 1\n"
             "#define GL_FRAGMENT_PRECISION_HIGH 1\n"
-#ifdef GLSLANG_WEB
-            ;
-#else
             "#define GL_OES_texture_3D 1\n"
             "#define GL_OES_standard_derivatives 1\n"
             "#define GL_EXT_frag_depth 1\n"
@@ -344,6 +439,8 @@ void TParseVersions::getPreamble(std::string& preamble)
             "#define GL_EXT_YUV_target 1\n"
             "#define GL_EXT_shader_texture_lod 1\n"
             "#define GL_EXT_shadow_samplers 1\n"
+            "#define GL_EXT_fragment_shading_rate 1\n"
+            "#define GL_EXT_conservative_depth 1\n"
 
             // AEP
             "#define GL_ANDROID_extension_pack_es31a 1\n"
@@ -360,6 +457,10 @@ void TParseVersions::getPreamble(std::string& preamble)
             "#define GL_EXT_tessellation_point_size 1\n"
             "#define GL_EXT_texture_buffer 1\n"
             "#define GL_EXT_texture_cube_map_array 1\n"
+            "#define GL_EXT_shader_implicit_conversions 1\n"
+            "#define GL_EXT_shader_integer_mix 1\n"
+            "#define GL_EXT_blend_func_extended 1\n"
+            "#define GL_EXT_descriptor_heap 1\n"
 
             // OES matching AEP
             "#define GL_OES_geometry_shader 1\n"
@@ -372,15 +473,24 @@ void TParseVersions::getPreamble(std::string& preamble)
             "#define GL_OES_texture_buffer 1\n"
             "#define GL_OES_texture_cube_map_array 1\n"
             "#define GL_EXT_shader_non_constant_global_initializers 1\n"
+
+            "#define GL_QCOM_image_processing 1\n"
+            "#define GL_QCOM_image_processing2 1\n"
+            "#define GL_QCOM_tile_shading 1\n"
+            "#define GL_QCOM_cooperative_matrix_conversion 1\n"
             ;
 
-            if (isEsProfile() && version >= 300) {
+            if (version >= 300) {
                 preamble += "#define GL_NV_shader_noperspective_interpolation 1\n";
             }
+            if (version >= 310) {
+                preamble += "#define GL_EXT_null_initializer 1\n";
+                preamble += "#define GL_EXT_subgroup_uniform_control_flow 1\n";
+                preamble += "#define GL_EXT_maximal_reconvergence 1\n";
+            }
 
-    } else {
+    } else { // !isEsProfile()
         preamble =
-            "#define GL_FRAGMENT_PRECISION_HIGH 1\n"
             "#define GL_ARB_texture_rectangle 1\n"
             "#define GL_ARB_shading_language_420pack 1\n"
             "#define GL_ARB_texture_gather 1\n"
@@ -409,12 +519,20 @@ void TParseVersions::getPreamble(std::string& preamble)
             "#define GL_ARB_shader_stencil_export 1\n"
             "#define GL_ARB_sample_shading 1\n"
             "#define GL_ARB_shader_image_size 1\n"
+            "#define GL_ARB_shading_language_packing 1\n"
 //            "#define GL_ARB_cull_distance 1\n"    // present for 4.5, but need extension control over block members
             "#define GL_ARB_post_depth_coverage 1\n"
             "#define GL_ARB_fragment_shader_interlock 1\n"
             "#define GL_ARB_uniform_buffer_object 1\n"
             "#define GL_ARB_shader_bit_encoding 1\n"
             "#define GL_ARB_shader_storage_buffer_object 1\n"
+            "#define GL_ARB_texture_query_lod 1\n"
+            "#define GL_ARB_vertex_attrib_64bit 1\n"
+            "#define GL_NV_gpu_shader5 1\n"
+            "#define GL_ARB_draw_instanced 1\n"
+            "#define GL_ARB_fragment_coord_conventions 1\n"
+            "#define GL_ARB_conservative_depth 1\n"
+
             "#define GL_EXT_shader_non_constant_global_initializers 1\n"
             "#define GL_EXT_shader_image_load_formatted 1\n"
             "#define GL_EXT_post_depth_coverage 1\n"
@@ -430,6 +548,10 @@ void TParseVersions::getPreamble(std::string& preamble)
             "#define GL_EXT_buffer_reference_uvec2 1\n"
             "#define GL_EXT_demote_to_helper_invocation 1\n"
             "#define GL_EXT_debug_printf 1\n"
+            "#define GL_EXT_fragment_shading_rate 1\n"
+            "#define GL_EXT_shared_memory_block 1\n"
+            "#define GL_EXT_shader_integer_mix 1\n"
+            "#define GL_EXT_spec_constant_composites 1\n"
 
             // GL_KHR_shader_subgroup
             "#define GL_KHR_shader_subgroup_basic 1\n"
@@ -441,11 +563,18 @@ void TParseVersions::getPreamble(std::string& preamble)
             "#define GL_KHR_shader_subgroup_clustered 1\n"
             "#define GL_KHR_shader_subgroup_quad 1\n"
 
-            "#define E_GL_EXT_shader_atomic_int64 1\n"
-            "#define E_GL_EXT_shader_realtime_clock 1\n"
-            "#define E_GL_EXT_ray_tracing 1\n"
-            "#define E_GL_EXT_ray_query 1\n"
-            "#define E_GL_EXT_ray_flags_primitive_culling 1\n"
+            "#define GL_KHR_cooperative_matrix 1\n"
+
+            "#define GL_EXT_shader_image_int64 1\n"
+            "#define GL_EXT_shader_atomic_int64 1\n"
+            "#define GL_EXT_shader_realtime_clock 1\n"
+            "#define GL_EXT_ray_tracing 1\n"
+            "#define GL_EXT_ray_query 1\n"
+            "#define GL_EXT_ray_flags_primitive_culling 1\n"
+            "#define GL_EXT_ray_cull_mask 1\n"
+            "#define GL_EXT_ray_tracing_position_fetch 1\n"
+            "#define GL_EXT_spirv_intrinsics 1\n"
+            "#define GL_EXT_mesh_shader 1\n"
 
             "#define GL_AMD_shader_ballot 1\n"
             "#define GL_AMD_shader_trinary_minmax 1\n"
@@ -468,12 +597,20 @@ void TParseVersions::getPreamble(std::string& preamble)
             "#define GL_NV_shader_subgroup_partitioned 1\n"
             "#define GL_NV_shading_rate_image 1\n"
             "#define GL_NV_ray_tracing 1\n"
+            "#define GL_NV_ray_tracing_motion_blur 1\n"
             "#define GL_NV_fragment_shader_barycentric 1\n"
             "#define GL_NV_compute_shader_derivatives 1\n"
             "#define GL_NV_shader_texture_footprint 1\n"
             "#define GL_NV_mesh_shader 1\n"
             "#define GL_NV_cooperative_matrix 1\n"
             "#define GL_NV_integer_cooperative_matrix 1\n"
+            "#define GL_NV_shader_invocation_reorder 1\n"
+            "#define GL_NV_cooperative_matrix2 1\n"
+
+            "#define GL_QCOM_image_processing 1\n"
+            "#define GL_QCOM_image_processing2 1\n"
+            "#define GL_QCOM_tile_shading 1\n"
+            "#define GL_QCOM_cooperative_matrix_conversion 1\n"
 
             "#define GL_EXT_shader_explicit_arithmetic_types 1\n"
             "#define GL_EXT_shader_explicit_arithmetic_types_int8 1\n"
@@ -488,7 +625,30 @@ void TParseVersions::getPreamble(std::string& preamble)
             "#define GL_EXT_shader_subgroup_extended_types_int16 1\n"
             "#define GL_EXT_shader_subgroup_extended_types_int64 1\n"
             "#define GL_EXT_shader_subgroup_extended_types_float16 1\n"
+
+            "#define GL_EXT_shader_atomic_float 1\n"
+            "#define GL_EXT_shader_atomic_float2 1\n"
+
+            "#define GL_EXT_fragment_shader_barycentric 1\n"
+            "#define GL_EXT_shader_quad_control 1\n"
+            "#define GL_EXT_texture_array 1\n"
+
+            "#define GL_EXT_control_flow_attributes2 1\n"
+
+            "#define GL_EXT_integer_dot_product 1\n"
+            "#define GL_EXT_bfloat16 1\n"
+            "#define GL_EXT_float_e5m2 1\n"
+            "#define GL_EXT_float_e4m3 1\n"
+            "#define GL_EXT_uniform_buffer_unsized_array 1\n"
+            "#define GL_EXT_shader_64bit_indexing 1\n"
+
+            "#define GL_EXT_shader_invocation_reorder 1\n"
+            "#define GL_EXT_descriptor_heap 1\n"
             ;
+
+        if (spvVersion.spv == 0) {
+            preamble += "#define GL_ARB_bindless_texture 1\n";
+        }
 
         if (version >= 150) {
             // define GL_core_profile and GL_compatibility_profile
@@ -497,10 +657,21 @@ void TParseVersions::getPreamble(std::string& preamble)
             if (profile == ECompatibilityProfile)
                 preamble += "#define GL_compatibility_profile 1\n";
         }
-#endif // GLSLANG_WEB
+        if (version >= 140) {
+            preamble += "#define GL_EXT_null_initializer 1\n";
+            preamble += "#define GL_EXT_subgroup_uniform_control_flow 1\n";
+            preamble += "#define GL_EXT_maximal_reconvergence 1\n";
+        }
+        if (version >= 130) {
+            preamble +="#define GL_FRAGMENT_PRECISION_HIGH 1\n";
+        }
     }
 
-#ifndef GLSLANG_WEB
+    if ((!isEsProfile() && version >= 460) ||
+        (isEsProfile() && version >= 320)) {
+        preamble += "#define GL_EXT_nontemporal_keyword 1\n";
+    }
+
     if ((!isEsProfile() && version >= 140) ||
         (isEsProfile() && version >= 310)) {
         preamble +=
@@ -508,6 +679,11 @@ void TParseVersions::getPreamble(std::string& preamble)
             "#define GL_EXT_multiview 1\n"
             "#define GL_NV_shader_sm_builtins 1\n"
             ;
+    }
+
+    if ((!isEsProfile() && version >= 130) ||
+        (isEsProfile() && version >= 300)) {
+        preamble += "#define GL_EXT_texture_offset_non_const 1\n";
     }
 
     if (version >= 300 /* both ES and non-ES */) {
@@ -523,7 +699,11 @@ void TParseVersions::getPreamble(std::string& preamble)
             "#define GL_GOOGLE_include_directive 1\n"
             "#define GL_KHR_blend_equation_advanced 1\n"
             ;
-#endif
+
+    // other general extensions
+    preamble +=
+            "#define GL_EXT_terminate_invocation 1\n"
+            ;
 
     // #define VULKAN XXXX
     const int numberBufSize = 12;
@@ -535,7 +715,6 @@ void TParseVersions::getPreamble(std::string& preamble)
         preamble += "\n";
     }
 
-#ifndef GLSLANG_WEB
     // #define GL_SPIRV XXXX
     if (spvVersion.openGl > 0) {
         preamble += "#define GL_SPIRV ";
@@ -543,7 +722,27 @@ void TParseVersions::getPreamble(std::string& preamble)
         preamble += numberBuf;
         preamble += "\n";
     }
-#endif
+
+    // GL_EXT_spirv_intrinsics
+    if (!isEsProfile()) {
+        switch (language) {
+        case EShLangVertex:         preamble += "#define GL_VERTEX_SHADER 1 \n";                    break;
+        case EShLangTessControl:    preamble += "#define GL_TESSELLATION_CONTROL_SHADER 1 \n";      break;
+        case EShLangTessEvaluation: preamble += "#define GL_TESSELLATION_EVALUATION_SHADER 1 \n";   break;
+        case EShLangGeometry:       preamble += "#define GL_GEOMETRY_SHADER 1 \n";                  break;
+        case EShLangFragment:       preamble += "#define GL_FRAGMENT_SHADER 1 \n";                  break;
+        case EShLangCompute:        preamble += "#define GL_COMPUTE_SHADER 1 \n";                   break;
+        case EShLangRayGen:         preamble += "#define GL_RAY_GENERATION_SHADER_EXT 1 \n";        break;
+        case EShLangIntersect:      preamble += "#define GL_INTERSECTION_SHADER_EXT 1 \n";          break;
+        case EShLangAnyHit:         preamble += "#define GL_ANY_HIT_SHADER_EXT 1 \n";               break;
+        case EShLangClosestHit:     preamble += "#define GL_CLOSEST_HIT_SHADER_EXT 1 \n";           break;
+        case EShLangMiss:           preamble += "#define GL_MISS_SHADER_EXT 1 \n";                  break;
+        case EShLangCallable:       preamble += "#define GL_CALLABLE_SHADER_EXT 1 \n";              break;
+        case EShLangTask:           preamble += "#define GL_TASK_SHADER_EXT 1 \n";                  break;
+        case EShLangMesh:           preamble += "#define GL_MESH_SHADER_EXT 1 \n";                  break;
+        default:                                                                                    break;
+        }
+    }
 }
 
 //
@@ -555,7 +754,6 @@ const char* StageName(EShLanguage stage)
     case EShLangVertex:         return "vertex";
     case EShLangFragment:       return "fragment";
     case EShLangCompute:        return "compute";
-#ifndef GLSLANG_WEB
     case EShLangTessControl:    return "tessellation control";
     case EShLangTessEvaluation: return "tessellation evaluation";
     case EShLangGeometry:       return "geometry";
@@ -565,9 +763,8 @@ const char* StageName(EShLanguage stage)
     case EShLangClosestHit:     return "closest-hit";
     case EShLangMiss:           return "miss";
     case EShLangCallable:       return "callable";
-    case EShLangMeshNV:         return "mesh";
-    case EShLangTaskNV:         return "task";
-#endif
+    case EShLangMesh:           return "mesh";
+    case EShLangTask:           return "task";
     default:                    return "unknown stage";
     }
 }
@@ -592,7 +789,6 @@ void TParseVersions::requireStage(const TSourceLoc& loc, EShLanguage stage, cons
     requireStage(loc, static_cast<EShLanguageMask>(1 << stage), featureDesc);
 }
 
-#ifndef GLSLANG_WEB
 //
 // When to use requireProfile():
 //
@@ -630,12 +826,11 @@ void TParseVersions::profileRequires(const TSourceLoc& loc, int profileMask, int
 {
     if (profile & profileMask) {
         bool okay = minVersion > 0 && version >= minVersion;
-#ifndef GLSLANG_WEB
         for (int i = 0; i < numExtensions; ++i) {
             switch (getExtensionBehavior(extensions[i])) {
             case EBhWarn:
-                infoSink.info.message(EPrefixWarning, ("extension " + TString(extensions[i]) + " is being used for " + featureDesc).c_str(), loc);
-                // fall through
+                infoSink.info.message(EPrefixWarning, ("extension " + TString(extensions[i]) + " is being used for " + featureDesc).c_str(), loc, (messages & EShMsgAbsolutePath) != 0, (messages & EShMsgDisplayErrorColumn) != 0);
+                DELIBERATE_FALLTHROUGH;
             case EBhRequire:
             case EBhEnable:
                 okay = true;
@@ -643,7 +838,6 @@ void TParseVersions::profileRequires(const TSourceLoc& loc, int profileMask, int
             default: break; // some compilers want this
             }
         }
-#endif
         if (! okay)
             error(loc, "not supported for this version or the enabled extensions", featureDesc, "");
     }
@@ -673,7 +867,8 @@ void TParseVersions::checkDeprecated(const TSourceLoc& loc, int profileMask, int
                 error(loc, "deprecated, may be removed in future release", featureDesc, "");
             else if (! suppressWarnings())
                 infoSink.info.message(EPrefixWarning, (TString(featureDesc) + " deprecated in version " +
-                                                       String(depVersion) + "; may be removed in future release").c_str(), loc);
+                                                       String(depVersion) + "; may be removed in future release").c_str(), 
+                                                       loc, (messages & EShMsgAbsolutePath) != 0, (messages & EShMsgDisplayErrorColumn) != 0);
         }
     }
 }
@@ -710,11 +905,14 @@ bool TParseVersions::checkExtensionsRequested(const TSourceLoc& loc, int numExte
     for (int i = 0; i < numExtensions; ++i) {
         TExtensionBehavior behavior = getExtensionBehavior(extensions[i]);
         if (behavior == EBhDisable && relaxedErrors()) {
-            infoSink.info.message(EPrefixWarning, "The following extension must be enabled to use this feature:", loc);
+            infoSink.info.message(EPrefixWarning, "The following extension must be enabled to use this feature:", loc,
+                                  (messages & EShMsgAbsolutePath) != 0, (messages & EShMsgDisplayErrorColumn) != 0);
             behavior = EBhWarn;
         }
         if (behavior == EBhWarn) {
-            infoSink.info.message(EPrefixWarning, ("extension " + TString(extensions[i]) + " is being used for " + featureDesc).c_str(), loc);
+            infoSink.info.message(EPrefixWarning,
+                                  ("extension " + TString(extensions[i]) + " is being used for " + featureDesc).c_str(),
+                                  loc, (messages & EShMsgAbsolutePath) != 0, (messages & EShMsgDisplayErrorColumn) != 0);
             warned = true;
         }
     }
@@ -727,7 +925,8 @@ bool TParseVersions::checkExtensionsRequested(const TSourceLoc& loc, int numExte
 // Use when there are no profile/version to check, it's just an error if one of the
 // extensions is not present.
 //
-void TParseVersions::requireExtensions(const TSourceLoc& loc, int numExtensions, const char* const extensions[], const char* featureDesc)
+void TParseVersions::requireExtensions(const TSourceLoc& loc, int numExtensions, const char* const extensions[],
+    const char* featureDesc)
 {
     if (checkExtensionsRequested(loc, numExtensions, extensions, featureDesc))
         return;
@@ -746,7 +945,8 @@ void TParseVersions::requireExtensions(const TSourceLoc& loc, int numExtensions,
 // Use by preprocessor when there are no profile/version to check, it's just an error if one of the
 // extensions is not present.
 //
-void TParseVersions::ppRequireExtensions(const TSourceLoc& loc, int numExtensions, const char* const extensions[], const char* featureDesc)
+void TParseVersions::ppRequireExtensions(const TSourceLoc& loc, int numExtensions, const char* const extensions[],
+    const char* featureDesc)
 {
     if (checkExtensionsRequested(loc, numExtensions, extensions, featureDesc))
         return;
@@ -812,9 +1012,13 @@ void TParseVersions::updateExtensionBehavior(int line, const char* extension, co
         error(getCurrentLoc(), "behavior not supported:", "#extension", behaviorString);
         return;
     }
+    bool on = behavior != EBhDisable;
 
     // check if extension is used with correct shader stage
     checkExtensionStage(getCurrentLoc(), extension);
+
+    // check if extension has additional requirements
+    extensionRequires(getCurrentLoc(), extension, behaviorString);
 
     // update the requested extension
     updateExtensionBehavior(extension, behavior);
@@ -847,6 +1051,8 @@ void TParseVersions::updateExtensionBehavior(int line, const char* extension, co
         updateExtensionBehavior(line, "GL_OES_shader_io_blocks", behaviorString);
     else if (strcmp(extension, "GL_GOOGLE_include_directive") == 0)
         updateExtensionBehavior(line, "GL_GOOGLE_cpp_style_line_directive", behaviorString);
+    else if (strcmp(extension, "GL_ARB_shading_language_include") == 0)
+        updateExtensionBehavior(line, "GL_GOOGLE_cpp_style_line_directive", behaviorString);
     // subgroup_* to subgroup_basic
     else if (strcmp(extension, "GL_KHR_shader_subgroup_vote") == 0)
         updateExtensionBehavior(line, "GL_KHR_shader_subgroup_basic", behaviorString);
@@ -869,6 +1075,8 @@ void TParseVersions::updateExtensionBehavior(int line, const char* extension, co
         updateExtensionBehavior(line, "GL_EXT_buffer_reference", behaviorString);
     else if (strcmp(extension, "GL_NV_integer_cooperative_matrix") == 0)
         updateExtensionBehavior(line, "GL_NV_cooperative_matrix", behaviorString);
+    else if (strcmp(extension, "GL_NV_cooperative_matrix2") == 0)
+        updateExtensionBehavior(line, "GL_KHR_cooperative_matrix", behaviorString);
     // subgroup extended types to explicit types
     else if (strcmp(extension, "GL_EXT_shader_subgroup_extended_types_int8") == 0)
         updateExtensionBehavior(line, "GL_EXT_shader_explicit_arithmetic_types_int8", behaviorString);
@@ -878,6 +1086,35 @@ void TParseVersions::updateExtensionBehavior(int line, const char* extension, co
         updateExtensionBehavior(line, "GL_EXT_shader_explicit_arithmetic_types_int64", behaviorString);
     else if (strcmp(extension, "GL_EXT_shader_subgroup_extended_types_float16") == 0)
         updateExtensionBehavior(line, "GL_EXT_shader_explicit_arithmetic_types_float16", behaviorString);
+
+    // see if we need to update the numeric features
+    else if (strcmp(extension, "GL_EXT_shader_explicit_arithmetic_types") == 0)
+        intermediate.updateNumericFeature(TNumericFeatures::shader_explicit_arithmetic_types, on);
+    else if (strcmp(extension, "GL_EXT_shader_explicit_arithmetic_types_int8") == 0)
+        intermediate.updateNumericFeature(TNumericFeatures::shader_explicit_arithmetic_types_int8, on);
+    else if (strcmp(extension, "GL_EXT_shader_explicit_arithmetic_types_int16") == 0)
+        intermediate.updateNumericFeature(TNumericFeatures::shader_explicit_arithmetic_types_int16, on);
+    else if (strcmp(extension, "GL_EXT_shader_explicit_arithmetic_types_int32") == 0)
+        intermediate.updateNumericFeature(TNumericFeatures::shader_explicit_arithmetic_types_int32, on);
+    else if (strcmp(extension, "GL_EXT_shader_explicit_arithmetic_types_int64") == 0)
+        intermediate.updateNumericFeature(TNumericFeatures::shader_explicit_arithmetic_types_int64, on);
+    else if (strcmp(extension, "GL_EXT_shader_explicit_arithmetic_types_float16") == 0)
+        intermediate.updateNumericFeature(TNumericFeatures::shader_explicit_arithmetic_types_float16, on);
+    else if (strcmp(extension, "GL_EXT_shader_explicit_arithmetic_types_float32") == 0)
+        intermediate.updateNumericFeature(TNumericFeatures::shader_explicit_arithmetic_types_float32, on);
+    else if (strcmp(extension, "GL_EXT_shader_explicit_arithmetic_types_float64") == 0)
+        intermediate.updateNumericFeature(TNumericFeatures::shader_explicit_arithmetic_types_float64, on);
+    else if (strcmp(extension, "GL_EXT_shader_implicit_conversions") == 0)
+        intermediate.updateNumericFeature(TNumericFeatures::shader_implicit_conversions, on);
+    else if (strcmp(extension, "GL_ARB_gpu_shader_fp64") == 0)
+        intermediate.updateNumericFeature(TNumericFeatures::gpu_shader_fp64, on);
+    else if (strcmp(extension, "GL_AMD_gpu_shader_int16") == 0)
+        intermediate.updateNumericFeature(TNumericFeatures::gpu_shader_int16, on);
+    else if (strcmp(extension, "GL_AMD_gpu_shader_half_float") == 0)
+        intermediate.updateNumericFeature(TNumericFeatures::gpu_shader_half_float, on);
+    else if (strcmp(extension, "GL_NV_gpu_shader5") == 0) {
+        intermediate.updateNumericFeature(TNumericFeatures::nv_gpu_shader5_types, on);
+    }
 }
 
 void TParseVersions::updateExtensionBehavior(const char* extension, TExtensionBehavior behavior)
@@ -913,7 +1150,7 @@ void TParseVersions::updateExtensionBehavior(const char* extension, TExtensionBe
         } else {
             if (iter->second == EBhDisablePartial)
                 warn(getCurrentLoc(), "extension is only partially supported:", "#extension", extension);
-            if (behavior == EBhEnable || behavior == EBhRequire)
+            if (behavior != EBhDisable)
                 intermediate.addRequestedExtension(extension);
             iter->second = behavior;
         }
@@ -925,10 +1162,47 @@ void TParseVersions::checkExtensionStage(const TSourceLoc& loc, const char * con
 {
     // GL_NV_mesh_shader extension is only allowed in task/mesh shaders
     if (strcmp(extension, "GL_NV_mesh_shader") == 0) {
-        requireStage(loc, (EShLanguageMask)(EShLangTaskNVMask | EShLangMeshNVMask | EShLangFragmentMask),
+        requireStage(loc, (EShLanguageMask)(EShLangTaskMask | EShLangMeshMask | EShLangFragmentMask),
                      "#extension GL_NV_mesh_shader");
-        profileRequires(loc, ECoreProfile, 450, 0, "#extension GL_NV_mesh_shader");
-        profileRequires(loc, EEsProfile, 320, 0, "#extension GL_NV_mesh_shader");
+        profileRequires(loc, ECoreProfile, 450, nullptr, "#extension GL_NV_mesh_shader");
+        profileRequires(loc, EEsProfile, 320, nullptr, "#extension GL_NV_mesh_shader");
+        if (extensionTurnedOn(E_GL_EXT_mesh_shader)) {
+            error(loc, "GL_EXT_mesh_shader is already turned on, and not allowed with", "#extension", extension);
+        }
+    }
+    else if (strcmp(extension, "GL_EXT_mesh_shader") == 0) {
+        requireStage(loc, (EShLanguageMask)(EShLangTaskMask | EShLangMeshMask | EShLangFragmentMask),
+                     "#extension GL_EXT_mesh_shader");
+        profileRequires(loc, ECoreProfile, 450, nullptr, "#extension GL_EXT_mesh_shader");
+        profileRequires(loc, EEsProfile, 320, nullptr, "#extension GL_EXT_mesh_shader");
+        if (extensionTurnedOn(E_GL_NV_mesh_shader)) {
+            error(loc, "GL_NV_mesh_shader is already turned on, and not allowed with", "#extension", extension);
+        }
+    }
+}
+
+// Check if extension has additional requirements
+void TParseVersions::extensionRequires(const TSourceLoc &loc, const char * const extension, const char *behaviorString)
+{
+    bool isEnabled = false;
+    if (!strcmp("require", behaviorString))
+        isEnabled = true;
+    else if (!strcmp("enable", behaviorString))
+        isEnabled = true;
+
+    if (isEnabled) {
+        unsigned int minSpvVersion = 0;
+        auto iter = extensionMinSpv.find(TString(extension));
+        if (iter != extensionMinSpv.end())
+            minSpvVersion = iter->second;
+        requireSpv(loc, extension, minSpvVersion);
+    }
+
+    if (spvVersion.spv != 0){
+        for (auto ext : spvUnsupportedExt){
+            if (strcmp(extension, ext.c_str()) == 0)
+                error(loc, "not allowed when using generating SPIR-V codes", extension, "");
+        }
     }
 }
 
@@ -942,8 +1216,13 @@ void TParseVersions::fullIntegerCheck(const TSourceLoc& loc, const char* op)
 // Call for any operation needing GLSL double data-type support.
 void TParseVersions::doubleCheck(const TSourceLoc& loc, const char* op)
 {
+
     //requireProfile(loc, ECoreProfile | ECompatibilityProfile, op);
-    profileRequires(loc, ECoreProfile | ECompatibilityProfile, 400, E_GL_ARB_gpu_shader_fp64, op);
+    if (language == EShLangVertex) {
+        const char* const f64_Extensions[] = {E_GL_ARB_gpu_shader_fp64, E_GL_ARB_vertex_attrib_64bit};
+        profileRequires(loc, ECoreProfile | ECompatibilityProfile, 400, 2, f64_Extensions, op);
+    } else
+        profileRequires(loc, ECoreProfile | ECompatibilityProfile, 400, E_GL_ARB_gpu_shader_fp64, op);
 }
 
 // Call for any operation needing GLSL float16 data-type support.
@@ -963,6 +1242,7 @@ bool TParseVersions::float16Arithmetic()
     const char* const extensions[] = {
                                        E_GL_AMD_gpu_shader_half_float,
                                        E_GL_EXT_shader_explicit_arithmetic_types,
+                                       E_GL_NV_gpu_shader5,
                                        E_GL_EXT_shader_explicit_arithmetic_types_float16};
     return extensionsTurnedOn(sizeof(extensions)/sizeof(extensions[0]), extensions);
 }
@@ -972,6 +1252,7 @@ bool TParseVersions::int16Arithmetic()
     const char* const extensions[] = {
                                        E_GL_AMD_gpu_shader_int16,
                                        E_GL_EXT_shader_explicit_arithmetic_types,
+                                       E_GL_NV_gpu_shader5,
                                        E_GL_EXT_shader_explicit_arithmetic_types_int16};
     return extensionsTurnedOn(sizeof(extensions)/sizeof(extensions[0]), extensions);
 }
@@ -980,6 +1261,7 @@ bool TParseVersions::int8Arithmetic()
 {
     const char* const extensions[] = {
                                        E_GL_EXT_shader_explicit_arithmetic_types,
+                                       E_GL_NV_gpu_shader5,
                                        E_GL_EXT_shader_explicit_arithmetic_types_int8};
     return extensionsTurnedOn(sizeof(extensions)/sizeof(extensions[0]), extensions);
 }
@@ -994,6 +1276,7 @@ void TParseVersions::requireFloat16Arithmetic(const TSourceLoc& loc, const char*
     const char* const extensions[] = {
                                        E_GL_AMD_gpu_shader_half_float,
                                        E_GL_EXT_shader_explicit_arithmetic_types,
+                                       E_GL_NV_gpu_shader5,
                                        E_GL_EXT_shader_explicit_arithmetic_types_float16};
     requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, combined.c_str());
 }
@@ -1008,6 +1291,7 @@ void TParseVersions::requireInt16Arithmetic(const TSourceLoc& loc, const char* o
     const char* const extensions[] = {
                                        E_GL_AMD_gpu_shader_int16,
                                        E_GL_EXT_shader_explicit_arithmetic_types,
+                                       E_GL_NV_gpu_shader5,
                                        E_GL_EXT_shader_explicit_arithmetic_types_int16};
     requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, combined.c_str());
 }
@@ -1021,6 +1305,7 @@ void TParseVersions::requireInt8Arithmetic(const TSourceLoc& loc, const char* op
 
     const char* const extensions[] = {
                                        E_GL_EXT_shader_explicit_arithmetic_types,
+                                       E_GL_NV_gpu_shader5,
                                        E_GL_EXT_shader_explicit_arithmetic_types_int8};
     requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, combined.c_str());
 }
@@ -1032,7 +1317,38 @@ void TParseVersions::float16ScalarVectorCheck(const TSourceLoc& loc, const char*
                                            E_GL_AMD_gpu_shader_half_float,
                                            E_GL_EXT_shader_16bit_storage,
                                            E_GL_EXT_shader_explicit_arithmetic_types,
+                                           E_GL_NV_gpu_shader5,
                                            E_GL_EXT_shader_explicit_arithmetic_types_float16};
+        requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, op);
+    }
+}
+
+void TParseVersions::bfloat16ScalarVectorCheck(const TSourceLoc& loc, const char* op, bool builtIn)
+{
+    if (!builtIn) {
+        const char* const extensions[] = {
+                                           E_GL_EXT_bfloat16,
+                                         };
+        requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, op);
+    }
+}
+
+void TParseVersions::floate5m2ScalarVectorCheck(const TSourceLoc& loc, const char* op, bool builtIn)
+{
+    if (!builtIn) {
+        const char* const extensions[] = {
+                                           E_GL_EXT_float_e5m2,
+                                         };
+        requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, op);
+    }
+}
+
+void TParseVersions::floate4m3ScalarVectorCheck(const TSourceLoc& loc, const char* op, bool builtIn)
+{
+    if (!builtIn) {
+        const char* const extensions[] = {
+                                           E_GL_EXT_float_e4m3,
+                                         };
         requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, op);
     }
 }
@@ -1041,9 +1357,10 @@ void TParseVersions::float16ScalarVectorCheck(const TSourceLoc& loc, const char*
 void TParseVersions::explicitFloat32Check(const TSourceLoc& loc, const char* op, bool builtIn)
 {
     if (!builtIn) {
-        const char* const extensions[2] = {E_GL_EXT_shader_explicit_arithmetic_types,
+        const char* const extensions[] = {E_GL_EXT_shader_explicit_arithmetic_types,
+                                          E_GL_NV_gpu_shader5,
                                            E_GL_EXT_shader_explicit_arithmetic_types_float32};
-        requireExtensions(loc, 2, extensions, op);
+        requireExtensions(loc, sizeof(extensions) / sizeof(extensions[0]), extensions, op);
     }
 }
 
@@ -1051,11 +1368,15 @@ void TParseVersions::explicitFloat32Check(const TSourceLoc& loc, const char* op,
 void TParseVersions::explicitFloat64Check(const TSourceLoc& loc, const char* op, bool builtIn)
 {
     if (!builtIn) {
-        const char* const extensions[2] = {E_GL_EXT_shader_explicit_arithmetic_types,
+        const char* const extensions[] = {E_GL_EXT_shader_explicit_arithmetic_types,
+                                           E_GL_NV_gpu_shader5,
                                            E_GL_EXT_shader_explicit_arithmetic_types_float64};
-        requireExtensions(loc, 2, extensions, op);
+        requireExtensions(loc, sizeof(extensions) / sizeof(extensions[0]), extensions, op);
         requireProfile(loc, ECoreProfile | ECompatibilityProfile, op);
-        profileRequires(loc, ECoreProfile | ECompatibilityProfile, 400, nullptr, op);
+        if(extensionTurnedOn(E_GL_ARB_gpu_shader_fp64) && extensionTurnedOn(E_GL_NV_gpu_shader5))
+            profileRequires(loc, ECoreProfile | ECompatibilityProfile, 150, nullptr, op);
+        else
+            profileRequires(loc, ECoreProfile | ECompatibilityProfile, 400, nullptr, op);
     }
 }
 
@@ -1098,6 +1419,7 @@ void TParseVersions::int16ScalarVectorCheck(const TSourceLoc& loc, const char* o
                                            E_GL_AMD_gpu_shader_int16,
                                            E_GL_EXT_shader_16bit_storage,
                                            E_GL_EXT_shader_explicit_arithmetic_types,
+                                           E_GL_NV_gpu_shader5,
                                            E_GL_EXT_shader_explicit_arithmetic_types_int16};
         requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, op);
     }
@@ -1109,6 +1431,7 @@ void TParseVersions::int8ScalarVectorCheck(const TSourceLoc& loc, const char* op
     	const char* const extensions[] = {
                                            E_GL_EXT_shader_8bit_storage,
                                            E_GL_EXT_shader_explicit_arithmetic_types,
+                                           E_GL_NV_gpu_shader5,
                                            E_GL_EXT_shader_explicit_arithmetic_types_int8};
         requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, op);
     }
@@ -1118,9 +1441,10 @@ void TParseVersions::int8ScalarVectorCheck(const TSourceLoc& loc, const char* op
 void TParseVersions::explicitInt32Check(const TSourceLoc& loc, const char* op, bool builtIn)
 {
     if (! builtIn) {
-        const char* const extensions[2] = {E_GL_EXT_shader_explicit_arithmetic_types,
+        const char* const extensions[] = {E_GL_EXT_shader_explicit_arithmetic_types,
+                                           E_GL_NV_gpu_shader5,
                                            E_GL_EXT_shader_explicit_arithmetic_types_int32};
-        requireExtensions(loc, 2, extensions, op);
+        requireExtensions(loc, sizeof(extensions) / sizeof(extensions[0]), extensions, op);
     }
 }
 
@@ -1128,16 +1452,20 @@ void TParseVersions::explicitInt32Check(const TSourceLoc& loc, const char* op, b
 void TParseVersions::int64Check(const TSourceLoc& loc, const char* op, bool builtIn)
 {
     if (! builtIn) {
-        const char* const extensions[3] = {E_GL_ARB_gpu_shader_int64,
+        const char* const extensions[] = {E_GL_ARB_gpu_shader_int64,
                                            E_GL_EXT_shader_explicit_arithmetic_types,
+                                           E_GL_NV_gpu_shader5,
                                            E_GL_EXT_shader_explicit_arithmetic_types_int64};
-        requireExtensions(loc, 3, extensions, op);
+        requireExtensions(loc, sizeof(extensions) / sizeof(extensions[0]), extensions, op);
         requireProfile(loc, ECoreProfile | ECompatibilityProfile, op);
+        if (extensionTurnedOn(E_GL_NV_gpu_shader5))
+            profileRequires(loc, ECoreProfile | ECompatibilityProfile, 150, nullptr, op);
+        else
         profileRequires(loc, ECoreProfile | ECompatibilityProfile, 400, nullptr, op);
     }
 }
 
-void TParseVersions::fcoopmatCheck(const TSourceLoc& loc, const char* op, bool builtIn)
+void TParseVersions::fcoopmatCheckNV(const TSourceLoc& loc, const char* op, bool builtIn)
 {
     if (!builtIn) {
         const char* const extensions[] = {E_GL_NV_cooperative_matrix};
@@ -1145,14 +1473,70 @@ void TParseVersions::fcoopmatCheck(const TSourceLoc& loc, const char* op, bool b
     }
 }
 
-void TParseVersions::intcoopmatCheck(const TSourceLoc& loc, const char* op, bool builtIn)
+void TParseVersions::intcoopmatCheckNV(const TSourceLoc& loc, const char* op, bool builtIn)
 {
     if (!builtIn) {
         const char* const extensions[] = {E_GL_NV_integer_cooperative_matrix};
         requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, op);
     }
 }
-#endif // GLSLANG_WEB
+
+void TParseVersions::coopmatCheck(const TSourceLoc& loc, const char* op, bool builtIn)
+{
+    if (!builtIn) {
+        const char* const extensions[] = {E_GL_KHR_cooperative_matrix};
+        requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, op);
+    }
+}
+
+void TParseVersions::coopmatConverisonCheckQCOM(const TSourceLoc& loc, const char* op, bool builtIn)
+{
+  if (!builtIn) {
+    const char* const extensions[] = {E_GL_KHR_cooperative_matrix};
+    requireExtensions(loc, sizeof(extensions) / sizeof(extensions[0]), extensions, op);
+  }
+}
+
+void TParseVersions::tensorLayoutViewCheck(const TSourceLoc& loc, const char* op, bool builtIn)
+{
+    if (!builtIn) {
+        const char* const extensions[] = {E_GL_NV_cooperative_matrix2};
+        requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, op);
+    }
+}
+
+void TParseVersions::coopvecCheck(const TSourceLoc& loc, const char* op, bool builtIn)
+{
+    if (!builtIn) {
+        const char* const extensions[] = {E_GL_NV_cooperative_vector};
+        requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, op);
+    }
+}
+
+void TParseVersions::intattachmentCheck(const TSourceLoc& loc, const char* op, bool builtIn)
+{
+    if (!builtIn) {
+        const char* const extensions[] = {E_GL_QCOM_tile_shading};
+        requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, op);
+    }
+}
+
+void TParseVersions::tensorCheckARM(const TSourceLoc& loc, const char* op, bool builtIn)
+{
+    if (!builtIn) {
+        const char* const extensions[] = {E_GL_ARM_tensors};
+        requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, op);
+    }
+}
+
+void TParseVersions::longVectorCheck(const TSourceLoc& loc, const char* op, bool builtIn)
+{
+    if (!builtIn) {
+        const char* const extensions[] = {E_GL_EXT_long_vector};
+        requireExtensions(loc, sizeof(extensions)/sizeof(extensions[0]), extensions, op);
+    }
+}
+
 // Call for any operation removed because SPIR-V is in use.
 void TParseVersions::spvRemoved(const TSourceLoc& loc, const char* op)
 {
@@ -1163,26 +1547,27 @@ void TParseVersions::spvRemoved(const TSourceLoc& loc, const char* op)
 // Call for any operation removed because Vulkan SPIR-V is being generated.
 void TParseVersions::vulkanRemoved(const TSourceLoc& loc, const char* op)
 {
-    if (spvVersion.vulkan > 0)
+    if (spvVersion.vulkan > 0 && !spvVersion.vulkanRelaxed)
         error(loc, "not allowed when using GLSL for Vulkan", op, "");
 }
 
 // Call for any operation that requires Vulkan.
 void TParseVersions::requireVulkan(const TSourceLoc& loc, const char* op)
 {
-#ifndef GLSLANG_WEB
     if (spvVersion.vulkan == 0)
         error(loc, "only allowed when using GLSL for Vulkan", op, "");
-#endif
 }
 
 // Call for any operation that requires SPIR-V.
 void TParseVersions::requireSpv(const TSourceLoc& loc, const char* op)
 {
-#ifndef GLSLANG_WEB
     if (spvVersion.spv == 0)
         error(loc, "only allowed when generating SPIR-V", op, "");
-#endif
+}
+void TParseVersions::requireSpv(const TSourceLoc& loc, const char *op, unsigned int version)
+{
+    if (spvVersion.spv < version)
+        error(loc, "not supported for current targeted SPIR-V version", op, "");
 }
 
 } // end namespace glslang

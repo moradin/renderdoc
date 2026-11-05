@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -37,6 +37,9 @@ enum class ShaderStage
   Geometry,
   Fragment,
   Compute,
+  // gap of 6 for RT shaders
+  Task = Compute + 7,
+  Mesh,
   Invalid,
 };
 
@@ -57,6 +60,8 @@ struct CompilationSettings
   InputLanguage lang = InputLanguage::Unknown;
   bool debugInfo = false;
   bool gles = false;
+  bool autoMapBindings = false;
+  bool autoMapLocations = false;
   rdcstr entryPoint;
 };
 

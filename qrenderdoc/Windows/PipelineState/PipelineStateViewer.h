@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -47,10 +47,20 @@ class D3D11PipelineStateViewer;
 class D3D12PipelineStateViewer;
 class GLPipelineStateViewer;
 class VulkanPipelineStateViewer;
+class D3D9PipelineStateViewer;
 
 class PipelineStateViewer;
 
-class RDPreviewTooltip : public QFrame, public ITreeViewTipDisplay
+struct ScopedTreeUpdater
+{
+  ScopedTreeUpdater(RDTreeWidget *widget);
+  ~ScopedTreeUpdater();
+
+  RDTreeWidget *m_Widget;
+  int vs;
+};
+
+class RDPreviewTooltip : public QFrame, public ICustomToolTipDisplay
 {
 private:
   Q_OBJECT
@@ -65,8 +75,8 @@ public:
                             ICaptureContext &ctx);
 
   void hideTip();
-  QSize configureTip(QWidget *widget, QModelIndex idx, QString text);
-  void showTip(QPoint pos);
+  QSize configureTip(QWidget *widget, QString text, QModelIndex idx);
+  void showTipAtPos(QPoint pos);
   bool forceTip(QWidget *widget, QModelIndex idx);
 
 protected:
@@ -102,12 +112,13 @@ public:
   void SetStencilTreeItemValue(RDTreeWidgetItem *item, int column, uint8_t value);
 
   void SetupShaderEditButton(QToolButton *button, ResourceId pipelineId, ResourceId shaderId,
-                             const ShaderBindpointMapping &bindpointMapping,
                              const ShaderReflection *shaderDetails);
 
   void SetupResourceView(RDTreeWidget *view);
 
   QString GetVBufferFormatString(uint32_t slot);
+
+  QColor GetViewDetailsColor();
 
   void setTopologyDiagram(QLabel *diagram, Topology topo);
   void setMeshViewPixmap(RDLabel *meshView);
@@ -130,7 +141,7 @@ private:
   Ui::PipelineStateViewer *ui;
   ICaptureContext &m_Ctx;
 
-  QMenu *editMenus[6] = {};
+  QMenu *editMenus[NumShaderStages] = {};
 
   RDPreviewTooltip *m_Tooltip = NULL;
 
@@ -143,11 +154,10 @@ private:
   void ShowResourceContextMenu(RDTreeWidget *widget, const QPoint &pos, ResourceId id,
                                const rdcarray<EventUsage> &usage);
 
-  QString GenerateHLSLStub(const ShaderBindpointMapping &bindpointMapping,
-                           const ShaderReflection *shaderDetails, const QString &entryFunc);
+  QString GenerateHLSLStub(const ShaderReflection *shaderDetails, const QString &entryFunc);
   IShaderViewer *EditShader(ResourceId id, ShaderStage shaderType, const rdcstr &entry,
-                            ShaderCompileFlags compileFlags, ShaderEncoding encoding,
-                            const rdcstrpairs &files);
+                            ShaderCompileFlags compileFlags, KnownShaderTool knownTool,
+                            ShaderEncoding shaderEncoding, const rdcstrpairs &files);
   IShaderViewer *EditOriginalShaderSource(ResourceId id, const ShaderReflection *shaderDetails);
   IShaderViewer *EditDecompiledSource(const ShaderProcessingTool &tool, ResourceId id,
                                       const ShaderReflection *shaderDetails);
@@ -161,6 +171,7 @@ private:
   void setToD3D12();
   void setToGL();
   void setToVulkan();
+  void setToD3D9();
   void reset();
 
   QString GetCurrentAPI();
@@ -169,5 +180,6 @@ private:
   D3D12PipelineStateViewer *m_D3D12;
   GLPipelineStateViewer *m_GL;
   VulkanPipelineStateViewer *m_Vulkan;
+  D3D9PipelineStateViewer *m_D3D9 = NULL;
   ICaptureViewer *m_Current;
 };

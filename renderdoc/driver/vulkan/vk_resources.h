@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -32,6 +32,14 @@
 #include "vk_common.h"
 #include "vk_dispatch_defs.h"
 #include "vk_hookset_defs.h"
+
+namespace Threading
+{
+namespace JobSystem
+{
+struct Job;
+};
+};
 
 struct VkResourceRecord;
 
@@ -75,6 +83,8 @@ enum VkResourceType
   eResSurface,
   eResDescUpdateTemplate,
   eResSamplerConversion,
+  eResAccelerationStructureKHR,
+  eResShaderEXT,
 };
 
 DECLARE_REFLECTION_ENUM(VkResourceType);
@@ -155,7 +165,12 @@ struct WrappedVkNonDispRes : public WrappedVkRes
 
   RealVkRes real;
   ResourceId id;
-  VkResourceRecord *record;
+
+  union
+  {
+    VkResourceRecord *record;
+    Threading::JobSystem::Job *deferredJob;
+  };
 };
 
 class WrappedVulkan;
@@ -203,7 +218,11 @@ struct WrappedVkDispRes : public WrappedVkRes
   uintptr_t loaderTable, table;
   RealVkRes real;
   ResourceId id;
-  VkResourceRecord *record;
+  union
+  {
+    VkResourceRecord *record;
+    Threading::JobSystem::Job *deferredJob;
+  };
   // we store this here so that any entry point with a dispatchable object can find the
   // write instance to invoke into, without needing to keep any around. Its lifetime is
   // tied to the VkInstance
@@ -559,6 +578,29 @@ struct WrappedVkSamplerYcbcrConversion : WrappedVkNonDispRes
     TypeEnum = eResSamplerConversion,
   };
 };
+struct WrappedVkAccelerationStructureKHR : WrappedVkNonDispRes
+{
+  WrappedVkAccelerationStructureKHR(VkAccelerationStructureKHR obj, ResourceId objId)
+      : WrappedVkNonDispRes(obj, objId)
+  {
+  }
+  typedef VkAccelerationStructureKHR InnerType;
+  ALLOCATE_WITH_WRAPPED_POOL(WrappedVkAccelerationStructureKHR);
+  enum
+  {
+    TypeEnum = eResAccelerationStructureKHR,
+  };
+};
+struct WrappedVkShaderEXT : WrappedVkNonDispRes
+{
+  WrappedVkShaderEXT(VkShaderEXT obj, ResourceId objId) : WrappedVkNonDispRes(obj, objId) {}
+  typedef VkShaderEXT InnerType;
+  ALLOCATE_WITH_WRAPPED_POOL(WrappedVkShaderEXT);
+  enum
+  {
+    TypeEnum = eResShaderEXT,
+  };
+};
 
 // VkDisplayKHR and VkDisplayModeKHR are both UNWRAPPED because there's no need to wrap them.
 // The only thing we need to wrap VkSurfaceKHR for is to get back the window from it later.
@@ -586,24 +628,27 @@ struct UnwrapHelper
 {
 };
 
-#define UNWRAP_HELPER(vulkantype)                                             \
-  template <>                                                                 \
-  struct UnwrapHelper<vulkantype>                                             \
-  {                                                                           \
-    typedef WrappedVkDispRes ParentType;                                      \
-    enum                                                                      \
-    {                                                                         \
-      DispatchableType = 1                                                    \
-    };                                                                        \
-    typedef CONCAT(Wrapped, vulkantype) Outer;                                \
-    static TypedRealHandle ToTypedHandle(vulkantype real)                     \
-    {                                                                         \
-      TypedRealHandle h;                                                      \
-      h.type = (VkResourceType)Outer::TypeEnum;                               \
-      h.real = RealVkRes((void *)real);                                       \
-      return h;                                                               \
-    }                                                                         \
-    static Outer *FromHandle(vulkantype wrapped) { return (Outer *)wrapped; } \
+#define UNWRAP_HELPER(vulkantype)                         \
+  template <>                                             \
+  struct UnwrapHelper<vulkantype>                         \
+  {                                                       \
+    typedef WrappedVkDispRes ParentType;                  \
+    enum                                                  \
+    {                                                     \
+      DispatchableType = 1                                \
+    };                                                    \
+    typedef CONCAT(Wrapped, vulkantype) Outer;            \
+    static TypedRealHandle ToTypedHandle(vulkantype real) \
+    {                                                     \
+      TypedRealHandle h;                                  \
+      h.type = (VkResourceType)Outer::TypeEnum;           \
+      h.real = RealVkRes((void *)real);                   \
+      return h;                                           \
+    }                                                     \
+    static Outer *FromHandle(vulkantype wrapped)          \
+    {                                                     \
+      return (Outer *)wrapped;                            \
+    }                                                     \
   };
 
 #define UNWRAP_NONDISP_HELPER(vulkantype)                     \
@@ -658,6 +703,8 @@ UNWRAP_NONDISP_HELPER(VkSwapchainKHR)
 UNWRAP_NONDISP_HELPER(VkSurfaceKHR)
 UNWRAP_NONDISP_HELPER(VkDescriptorUpdateTemplate)
 UNWRAP_NONDISP_HELPER(VkSamplerYcbcrConversion)
+UNWRAP_NONDISP_HELPER(VkAccelerationStructureKHR)
+UNWRAP_NONDISP_HELPER(VkShaderEXT)
 
 // VkDisplayKHR and VkDisplayModeKHR are both UNWRAPPED because there's no need to wrap them.
 // The only thing we need to wrap VkSurfaceKHR for is to get back the window from it later.
@@ -814,7 +861,9 @@ inline void SetTableIfDispatchable(bool writing, VkDevice parent, WrappedVulkan 
 }
 
 bool IsDispatchableRes(WrappedVkRes *ptr);
+bool IsDispatchableRes(VkResourceType type);
 bool IsPostponableRes(const WrappedVkRes *ptr);
+VkResourceType TryIdentifyTypeByPtr(WrappedVkRes *ptr);
 VkResourceType IdentifyTypeByPtr(WrappedVkRes *ptr);
 
 #define UNKNOWN_PREV_IMG_LAYOUT ((VkImageLayout)0xffffffff)
@@ -855,6 +904,8 @@ struct ImageInfo
   uint16_t levelCount = 0;
   uint16_t sampleCount = 0;
   bool storage = false;
+  bool isExternal = false;
+  bool isAHB = false;
   VkExtent3D extent = {0, 0, 0};
   VkImageType imageType = VK_IMAGE_TYPE_2D;
   VkFormat format = VK_FORMAT_UNDEFINED;
@@ -898,7 +949,7 @@ struct ImageInfo
     }
     aspects = FormatImageAspects(format);
 
-    if(ci.usage & VK_IMAGE_USAGE_STORAGE_BIT)
+    if(GetImageUsageFlags(&ci) & VK_IMAGE_USAGE_STORAGE_BIT)
     {
       storage = true;
     }
@@ -931,9 +982,9 @@ DECLARE_REFLECTION_STRUCT(ImageInfo);
 
 struct PresentInfo
 {
-  VkQueue presentQueue;
+  VkQueue presentQueue = VK_NULL_HANDLE;
   rdcarray<VkSemaphore> waitSemaphores;
-  uint32_t imageIndex;
+  uint32_t imageIndex = 0;
 };
 
 struct SwapchainInfo
@@ -948,16 +999,25 @@ struct SwapchainInfo
 
   struct SwapImage
   {
-    VkImage im;
+    // the handle returned to the user, whether real or fake
+    VkImage userSwapImage = VK_NULL_HANDLE;
+    // if we made a fake swap image then this is the real unwrapped swapchain image
+    VkImage unwrappedRealSwapImage = VK_NULL_HANDLE;
 
-    VkImageView view;
-    VkFramebuffer fb;
+    uint64_t fakeImageMemoryOffset = 0;
 
-    VkFence fence;
-    VkCommandBuffer cmd;
-    VkSemaphore overlaydone;
+    VkImageView view = VK_NULL_HANDLE;
+    VkFramebuffer fb = VK_NULL_HANDLE;
+
+    VkFence fence = VK_NULL_HANDLE;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkSemaphore overlaydone = VK_NULL_HANDLE;
   };
   rdcarray<SwapImage> images;
+  VkDeviceMemory imageMemory = VK_NULL_HANDLE;
+  uint32_t imageMemoryIndex = ~0U;
+  uint64_t imageMemorySize = 0;
+
   PresentInfo lastPresent;
 };
 
@@ -969,15 +1029,93 @@ struct AspectSparseTable
 
 DECLARE_REFLECTION_STRUCT(AspectSparseTable);
 
+struct DescriptorUniquenessKey
+{
+  DescriptorUniquenessKey(VkImageLayout layout, VkDescriptorType type)
+      : layout(layout), offset(0), size(0), fmt(VK_FORMAT_UNDEFINED), type(type)
+  {
+  }
+  DescriptorUniquenessKey(uint64_t offset, uint64_t size, VkFormat fmt, VkDescriptorType type)
+      : layout(VK_IMAGE_LAYOUT_UNDEFINED), offset(offset), size(size), fmt(fmt), type(type)
+  {
+  }
+
+  bool operator==(const DescriptorUniquenessKey &key) const
+  {
+    return layout == key.layout && offset == key.offset && size == key.size && fmt == key.fmt &&
+           type == key.type;
+  }
+
+  VkImageLayout layout;
+  uint64_t offset, size;
+  VkFormat fmt;
+  VkDescriptorType type;
+};
+
+namespace std
+{
+template <>
+struct hash<DescriptorUniquenessKey>
+{
+  std::size_t operator()(const DescriptorUniquenessKey &key) const
+  {
+    std::size_t hash = std::hash<uint32_t>()(key.layout);
+    hash ^= std::hash<uint64_t>()(key.offset) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+    hash ^= std::hash<uint64_t>()(key.size) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+    hash ^= std::hash<uint32_t>()(key.fmt) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+    hash ^= std::hash<uint32_t>()(key.type) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+    return hash;
+  }
+};
+};
+
 // these structs are allocated for images and buffers, then pointed to (non-owning) by views
 struct ResourceInfo
 {
+  ResourceInfo() = default;
+  ResourceInfo(const ResourceInfo &other)
+      : banDedicated(other.banDedicated),
+        sparseAspect(other.sparseAspect),
+        dedicatedMemory(other.dedicatedMemory),
+        memreqs(other.memreqs),
+        imageInfo(other.imageInfo)
+  {
+    // this constructor is used to duplicate an image's resinfo in an image view when descriptor
+    // buffers are in use so that each view can have its own descriptor tracking.
+
+    // sparse table info deliberately not copied as it is mutable, and obviously the same for the descriptors
+  }
+
   // commonly we expect only one aspect (COLOR is vastly likely and METADATA is rare) so have one
   // directly accessible. If we have others (like separate DEPTH and STENCIL, or anything and
   // METADATA) we put them in the array.
   Sparse::PageTable sparseTable;
   rdcarray<AspectSparseTable> altSparseAspects;
+
+  // for images this is a self pointer. For image views when we are using descriptor buffers we
+  // can't alias the resInfo in each view's record because each view needs to track its own
+  // descriptors - instead we point back to the image's resInfo here for sparse info. blech
+  ResourceInfo *parentResInfo = this;
+
+  // for buffers, or for images when layouts can affect descriptors, the set of descriptors which
+  // have already been serialised
+  Threading::CriticalSection descriptorLock;
+  std::unordered_set<DescriptorUniquenessKey> descriptors;
+
+  // return true if this is a new descriptor, false if we already had it
+  bool AddDescriptor(DescriptorUniquenessKey key)
+  {
+    SCOPED_LOCK(descriptorLock);
+    return descriptors.insert(key).second;
+  }
+
+  // for external images if we query both external and non-external and the sizes are different, we
+  // can't allow dedicated memory as it is required to precisely match in size.
+  bool banDedicated = false;
+
   VkImageAspectFlags sparseAspect;
+
+  ResourceId dedicatedMemory;
 
   Sparse::PageTable &getSparseTableForAspect(VkImageAspectFlags aspects)
   {
@@ -1002,8 +1140,10 @@ struct ResourceInfo
   ImageInfo imageInfo;
 
   bool IsSparse() const { return sparseTable.getPageByteSize() > 0; }
-  void Update(uint32_t numBindings, const VkSparseMemoryBind *pBindings);
-  void Update(uint32_t numBindings, const VkSparseImageMemoryBind *pBindings);
+  void Update(uint32_t numBindings, const VkSparseMemoryBind *pBindings,
+              std::set<ResourceId> &memories);
+  void Update(uint32_t numBindings, const VkSparseImageMemoryBind *pBindings,
+              std::set<ResourceId> &memories);
 };
 
 struct MemRefs
@@ -1031,6 +1171,24 @@ struct MemRefs
 struct ImgRefs;
 struct ImageState;
 
+class VkPendingSubmissionCompleteCallbacks
+{
+public:
+  VkPendingSubmissionCompleteCallbacks() = default;
+  VkPendingSubmissionCompleteCallbacks(const VkPendingSubmissionCompleteCallbacks &) = delete;
+  VkPendingSubmissionCompleteCallbacks(VkPendingSubmissionCompleteCallbacks &&) = delete;
+
+  void AddRef() { Atomic::Inc32(&refCount); }
+  void Release();
+
+  VkDevice device = VK_NULL_HANDLE;
+  VkEvent event = VK_NULL_HANDLE;
+  rdcarray<std::function<void()>> callbacks;
+
+private:
+  int32_t refCount = 1;
+};
+
 struct CmdPoolInfo
 {
   CmdPoolInfo() : pool(4 * 1024) {}
@@ -1047,13 +1205,19 @@ struct CmdPoolInfo
 
 struct CmdBufferRecordingInfo
 {
-  CmdBufferRecordingInfo(CmdPoolInfo &pool) : alloc(pool.pool) {}
+  CmdBufferRecordingInfo(CmdPoolInfo &pool)
+      : alloc(pool.pool),
+        pendingSubmissionCompleteCallbacks(new VkPendingSubmissionCompleteCallbacks())
+  {
+  }
   CmdBufferRecordingInfo(const CmdBufferRecordingInfo &) = delete;
   CmdBufferRecordingInfo(CmdBufferRecordingInfo &&) = delete;
   CmdBufferRecordingInfo &operator=(const CmdBufferRecordingInfo &) = delete;
   ~CmdBufferRecordingInfo()
   {
     // nothing to do explicitly, the alloc destructor will clean up any pages it holds
+    // pendingSubmissionCompleteCallbacks manages itself via ref-counting
+    pendingSubmissionCompleteCallbacks->Release();
   }
 
   VkDevice device;
@@ -1071,7 +1235,7 @@ struct CmdBufferRecordingInfo
   // a list of descriptor sets that are bound at any point in this command buffer
   // used to look up all the frame refs per-desc set and apply them on queue
   // submit with latest binding refs.
-  std::set<VkDescriptorSet> boundDescSets;
+  std::set<rdcpair<ResourceId, VkResourceRecord *>> boundDescSets;
 
   // barriers to apply when the current render pass ends. Calculated at begin time in case the
   // framebuffer is imageless and we need to use the image views passed in at begin time to
@@ -1083,6 +1247,12 @@ struct CmdBufferRecordingInfo
   rdcflatmap<ResourceId, ImageState> imageStates;
 
   std::unordered_map<ResourceId, MemRefs> memFrameRefs;
+
+  // A list of acceleration structures that this command buffer will build or copy
+  rdcarray<VkResourceRecord *> accelerationStructures;
+
+  // The VkEvent and the list of callbacks to be executed once it has been signalled
+  VkPendingSubmissionCompleteCallbacks *pendingSubmissionCompleteCallbacks = NULL;
 
   // AdvanceFrame/Present should be called after this buffer is submitted
   bool present;
@@ -1136,7 +1306,6 @@ struct MemMapState
   VkDeviceSize mapOffset = 0, mapSize = 0;
   bool dedicated = false;
   bool needRefData = false;
-  bool mapFlushed = false;
   bool mapCoherent = false;
   bool readbackOnGPU = false;
   // pointer to base of memory, may not be valid until after mapOffset bytes
@@ -1507,6 +1676,16 @@ public:
     m_value = ImageSubresourceState(VK_QUEUE_FAMILY_IGNORED, UNKNOWN_PREV_IMG_LAYOUT, refType);
   }
 
+  bool IsInitialised() const
+  {
+    // When merging image states from a secondary command buffer into a primary, some of those image
+    // states may have been added in an unknown layout when the image was referenced and never
+    // updated. These cases need to be detected and handled separately, otherwise the layout
+    // transitions recorded to the primary may be improperly overwritten.
+    return (!m_values.empty() || m_value.oldLayout != UNKNOWN_PREV_IMG_LAYOUT ||
+            m_value.newLayout != UNKNOWN_PREV_IMG_LAYOUT);
+  }
+
   void ToArray(rdcarray<ImageSubresourceStateForRange> &arr);
 
   void FromArray(const rdcarray<ImageSubresourceStateForRange> &arr);
@@ -1649,29 +1828,51 @@ public:
   inline size_t size() const { return RDCMAX(m_values.size(), (size_t)1); }
 };
 
-template <typename Barrier>
-struct BarrierSequence
+struct ImageBarrierSequence
 {
   static const uint32_t MAX_BATCH_COUNT = 4;
-  static const uint32_t MAX_QUEUE_FAMILY_COUNT = 3;
 
   // batches[batchIndex][queueFamilyIndex] = array of barriers to submit to queueFamilyIndex as part
   // of batchIndex
-  rdcarray<Barrier> batches[MAX_BATCH_COUNT][MAX_QUEUE_FAMILY_COUNT];
+  using Batch = rdcarray<VkImageMemoryBarrier>;
+  rdcarray<Batch> batches[MAX_BATCH_COUNT];
   size_t barrierCount = 0;
-  void AddWrapped(uint32_t batchIndex, uint32_t queueFamilyIndex, const Barrier &barrier);
-  void Merge(const BarrierSequence<Barrier> &other);
+  void AddWrapped(uint32_t batchIndex, uint32_t queueFamilyIndex,
+                  const VkImageMemoryBarrier &barrier);
+  void Merge(const ImageBarrierSequence &other);
   bool IsBatchEmpty(uint32_t batchIndex) const;
-  void ExtractUnwrappedBatch(uint32_t batchIndex, uint32_t queueFamilyIndex,
-                             rdcarray<Barrier> &result);
-  void ExtractFirstUnwrappedBatchForQueue(uint32_t queueFamilyIndex, rdcarray<Barrier> &result);
-  void ExtractLastUnwrappedBatchForQueue(uint32_t queueFamilyIndex, rdcarray<Barrier> &result);
+  void ExtractUnwrappedBatch(uint32_t batchIndex, uint32_t queueFamilyIndex, Batch &result);
+  void ExtractFirstUnwrappedBatchForQueue(uint32_t queueFamilyIndex, Batch &result);
+  void ExtractLastUnwrappedBatchForQueue(uint32_t queueFamilyIndex, Batch &result);
   inline bool empty() const { return barrierCount == 0; }
   inline size_t size() const { return barrierCount; }
-  static void UnwrapBarriers(rdcarray<Barrier> &barriers);
-};
+  static void UnwrapBarriers(Batch &barriers);
 
-using ImageBarrierSequence = BarrierSequence<VkImageMemoryBarrier>;
+  static uint32_t GetMaxQueueFamilyIndex() { return MaxQueueFamilyIndex; }
+  static void SetMaxQueueFamilyIndex(uint32_t maxQueueFamilyIndex)
+  {
+    if(maxQueueFamilyIndex > MaxQueueFamilyIndex)
+      MaxQueueFamilyIndex = maxQueueFamilyIndex;
+  }
+
+  void ResizeForMaxQueueFamilyIndex(uint32_t maxQueueFamilyIndex)
+  {
+    for(uint32_t i = 0; i < MAX_BATCH_COUNT; i++)
+      batches[i].resize_for_index(maxQueueFamilyIndex);
+  }
+
+  ImageBarrierSequence()
+  {
+    for(uint32_t i = 0; i < MAX_BATCH_COUNT; i++)
+      batches[i].resize_for_index(MaxQueueFamilyIndex);
+  }
+
+private:
+  // defaults to 4, resizes up as needed when a device is created with higher queue family indices
+  // used to reserve the size of batches above on construction to avoid copying large arrays when
+  // resizing it
+  static uint32_t MaxQueueFamilyIndex;
+};
 
 struct ImageTransitionInfo
 {
@@ -2135,15 +2336,27 @@ inline FrameRefType MarkMemoryReferenced(std::unordered_map<ResourceId, MemRefs>
   return MarkMemoryReferenced(memRefs, mem, offset, size, refType, ComposeFrameRefs);
 }
 
+// Used as an alternative backing store to VkQueryPool to replace query results
+class QueryPoolInfo
+{
+public:
+  QueryPoolInfo(WrappedVulkan *driver, VkDevice device, const VkQueryPoolCreateInfo *pCreateInfo);
+  ~QueryPoolInfo();
+
+  GPUBuffer m_Buffer;
+  byte *m_MappedMem;
+};
+
 struct DescUpdateTemplate;
 struct ImageLayouts;
+struct VkAccelerationStructureInfo;
 
 struct VkResourceRecord : public ResourceRecord
 {
 public:
   enum
   {
-    NullResource = VK_NULL_HANDLE
+    NullResource = 0u
   };
 
   static byte markerValue[32];
@@ -2171,6 +2384,9 @@ public:
     RDCASSERT(bakedCommands->cmdInfo->imageStates.empty());
     cmdInfo->imageStates.swap(bakedCommands->cmdInfo->imageStates);
     cmdInfo->memFrameRefs.swap(bakedCommands->cmdInfo->memFrameRefs);
+    cmdInfo->accelerationStructures.swap(bakedCommands->cmdInfo->accelerationStructures);
+    std::swap(cmdInfo->pendingSubmissionCompleteCallbacks,
+              bakedCommands->cmdInfo->pendingSubmissionCompleteCallbacks);
   }
 
   // we have a lot of 'cold' data in the resource record, as it can be accessed
@@ -2190,11 +2406,14 @@ public:
   ResourceId baseResource;
   ResourceId baseResourceMem;    // for image views, we need to point to both the image and mem
 
-  VkDeviceSize memOffset;
-  VkDeviceSize memSize;
+  VkDeviceSize memOffset = 0ULL;
+  VkDeviceSize memSize = 0ULL;
   VkResourceType resType;
   bool storable = false;
   bool dedicated = false;
+  bool hasBDA = false;
+  bool hasDescriptorSaved = false;
+  bool hasNULLDescriptorSaved = false;
 
   void MarkMemoryFrameReferenced(ResourceId mem, VkDeviceSize offset, VkDeviceSize size,
                                  FrameRefType refType);
@@ -2226,6 +2445,8 @@ public:
     DescPoolInfo *descPoolInfo;              // only for descriptor pools
     CmdPoolInfo *cmdPoolInfo;                // only for command pools
     uint32_t queueFamilyIndex;               // only for queues
+    QueryPoolInfo *queryPoolInfo;            // only for query pools
+    VkAccelerationStructureInfo *accelerationStructureInfo;    // only for acceleration structures
   };
 
   VkResourceRecord *bakedCommands;
@@ -2376,7 +2597,7 @@ bool IsStencilFormat(VkFormat f);
 bool IsStencilOnlyFormat(VkFormat f);
 bool IsSRGBFormat(VkFormat f);
 bool IsUIntFormat(VkFormat f);
-bool IsDoubleFormat(VkFormat f);
+bool Is64BitFormat(VkFormat f);
 bool IsSIntFormat(VkFormat f);
 bool IsYUVFormat(VkFormat f);
 VkImageAspectFlags FormatImageAspects(VkFormat f);
@@ -2391,9 +2612,73 @@ struct Vec4u;
 
 void GetYUVShaderParameters(VkFormat f, Vec4u &YUVDownsampleRate, Vec4u &YUVAChannels);
 
-uint32_t GetByteSize(uint32_t Width, uint32_t Height, uint32_t Depth, VkFormat Format, uint32_t mip);
-uint32_t GetPlaneByteSize(uint32_t Width, uint32_t Height, uint32_t Depth, VkFormat Format,
+// The shape of blocks in (a plane of) an image format.
+// Non-block formats are considered to have 1x1 blocks.
+// For some planar formats, the block shape depends on the plane--
+// e.g. VK_FORMAT_G8_B8R8_2PLANE_422_UNORM has 8 bits per 1x1 block in plane 0, but 16 bits per 1x1
+// block in plane 1.
+struct BlockShape
+{
+  // the width of a block, in texels (or 1 for non-block formats)
+  uint32_t width;
+
+  // the height of a block, in texels (or 1 for non-block formats)
+  uint32_t height;
+
+  // the number of bytes used to encode the block
+  uint32_t bytes;
+
+  // the depth, for 3D ASTC only
+  uint32_t depth;
+};
+
+BlockShape GetBlockShape(VkFormat Format, uint32_t plane);
+VkExtent2D GetPlaneShape(uint32_t Width, uint32_t Height, VkFormat Format, uint32_t plane);
+
+uint64_t GetByteSize(uint32_t Width, uint32_t Height, uint32_t Depth, VkFormat Format, uint32_t mip);
+uint64_t GetPlaneByteSize(uint32_t Width, uint32_t Height, uint32_t Depth, VkFormat Format,
                           uint32_t mip, uint32_t plane);
+
+template <typename T>
+VkObjectType objType();
+
+template <typename T>
+void NameVulkanObject(T obj, const rdcstr &name)
+{
+  if(!VkMarkerRegion::vk)
+    return;
+
+  VkDevice dev = VkMarkerRegion::GetDev();
+
+  if(!ObjDisp(dev)->SetDebugUtilsObjectNameEXT)
+    return;
+
+  VkDebugUtilsObjectNameInfoEXT info = {};
+  info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+  info.objectType = objType<T>();
+  info.objectHandle = NON_DISP_TO_UINT64(Unwrap(obj));
+  info.pObjectName = name.c_str();
+  ObjDisp(dev)->SetDebugUtilsObjectNameEXT(Unwrap(dev), &info);
+}
+
+template <typename T>
+void NameUnwrappedVulkanObject(T obj, const rdcstr &name)
+{
+  if(!VkMarkerRegion::vk)
+    return;
+
+  VkDevice dev = VkMarkerRegion::GetDev();
+
+  if(!ObjDisp(dev)->SetDebugUtilsObjectNameEXT)
+    return;
+
+  VkDebugUtilsObjectNameInfoEXT info = {};
+  info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+  info.objectType = objType<T>();
+  info.objectHandle = NON_DISP_TO_UINT64(obj);
+  info.pObjectName = name.c_str();
+  ObjDisp(dev)->SetDebugUtilsObjectNameEXT(Unwrap(dev), &info);
+}
 
 template <typename Compose>
 FrameRefType MarkImageReferenced(rdcflatmap<ResourceId, ImgRefs> &imgRefs, ResourceId img,

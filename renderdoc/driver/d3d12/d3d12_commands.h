@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,79 +26,69 @@
 
 #include "common/common.h"
 #include "d3d12_common.h"
+#include "d3d12_device.h"
+#include "d3d12_resources.h"
 #include "d3d12_state.h"
 
-struct D3D12ActionTreeNode
+struct D3D12ExecuteData
 {
-  D3D12ActionTreeNode() {}
-  explicit D3D12ActionTreeNode(const ActionDescription &a) : action(a) {}
-  D3D12ActionTreeNode(const D3D12ActionTreeNode &other) { *this = other; }
-  ~D3D12ActionTreeNode() { SAFE_DELETE(state); }
+  ID3D12Resource *argBuf = NULL;
+  ID3D12Resource *countBuf = NULL;
+  uint64_t argOffs = 0;
+  uint64_t countOffs = 0;
+  WrappedID3D12CommandSignature *sig = NULL;
+  UINT maxCount = 0;
+  UINT reservedCount = 0;
+};
+
+struct D3D12EventNode
+{
+  D3D12EventNode() = default;
+  ~D3D12EventNode() { SAFE_DELETE(state); }
+  D3D12EventNode(const D3D12EventNode &other) { *this = other; }
+  D3D12EventNode &operator=(const D3D12EventNode &a)
+  {
+    event = a.event;
+    action = a.action;
+    if(a.state)
+    {
+      state = new D3D12RenderState();
+      *state = *a.state;
+    }
+    executeData = a.executeData;
+    resourceUsage = a.resourceUsage;
+    debugMessages = a.debugMessages;
+    annotations = a.annotations;
+    cmdListID = a.cmdListID;
+    primaryCmdId = a.primaryCmdId;
+    childCmdBufId = a.childCmdBufId;
+    addActionUse = a.addActionUse;
+    addPrimaryExecute = a.addPrimaryExecute;
+    hasExecuteData = a.hasExecuteData;
+    return *this;
+  }
+
+  // eventId is not used
+  APIEvent event;
+
   ActionDescription action;
-  rdcarray<D3D12ActionTreeNode> children;
 
   D3D12RenderState *state = NULL;
 
-  rdcarray<rdcpair<ResourceId, EventUsage> > resourceUsage;
+  D3D12ExecuteData executeData;
 
-  rdcarray<ResourceId> executedCmds;
+  rdcarray<rdcpair<ResourceId, ResourceUsage>> resourceUsage;
 
-  D3D12ActionTreeNode &operator=(const ActionDescription &a)
-  {
-    *this = D3D12ActionTreeNode(a);
-    return *this;
-  }
+  // eventId is not used
+  rdcarray<DebugMessage> debugMessages;
+  rdcarray<PendingAnnotation> annotations;
 
-  D3D12ActionTreeNode &operator=(const D3D12ActionTreeNode &a)
-  {
-    action = a.action;
-    children = a.children;
-
-    if(a.state)
-      state = new D3D12RenderState(*a.state);
-    else
-      state = NULL;
-
-    resourceUsage = a.resourceUsage;
-
-    executedCmds = a.executedCmds;
-    return *this;
-  }
-
-  void InsertAndUpdateIDs(const D3D12ActionTreeNode &child, uint32_t baseEventID, uint32_t baseDrawID)
-  {
-    for(size_t i = 0; i < child.resourceUsage.size(); i++)
-    {
-      resourceUsage.push_back(child.resourceUsage[i]);
-      resourceUsage.back().second.eventId += baseEventID;
-    }
-
-    for(size_t i = 0; i < child.children.size(); i++)
-    {
-      children.push_back(child.children[i]);
-      children.back().action.eventId += baseEventID;
-      children.back().action.actionId += baseDrawID;
-
-      for(APIEvent &ev : children.back().action.events)
-        ev.eventId += baseEventID;
-    }
-  }
-
-  rdcarray<ActionDescription> Bake()
-  {
-    rdcarray<ActionDescription> ret;
-    if(children.empty())
-      return ret;
-
-    ret.resize(children.size());
-    for(size_t i = 0; i < children.size(); i++)
-    {
-      ret[i] = children[i].action;
-      ret[i].children = children[i].Bake();
-    }
-
-    return ret;
-  }
+  ResourceId cmdListID;
+  ResourceId primaryCmdId;
+  ResourceId childCmdBufId;
+  bool addActionUse = false;
+  bool addPrimaryExecute = false;
+  bool hasExecuteData = false;
 };
 
 struct D3D12ActionCallback
@@ -172,41 +162,49 @@ struct D3D12ActionCallback
 };
 
 class WrappedID3D12CommandSignature;
+struct AccStructPatchInfo;
 
 struct BakedCmdListInfo
 {
-  ~BakedCmdListInfo() { SAFE_DELETE(action); }
-  void ShiftForRemoved(uint32_t shiftActionID, uint32_t shiftEID, size_t idx);
+  ~BakedCmdListInfo() {}
 
-  struct ExecuteData
+  SubresourceStateVector GetState(WrappedID3D12Device *device, ResourceId id);
+
+  rdcarray<D3D12EventNode> eventNodes;
+
+  rdcarray<PendingAnnotation> pendingAnnotations;
+
+  struct PatchRaytracing
   {
-    uint32_t baseEvent = 0;
-    uint32_t lastEvent = 0;
-    bool patched = false;
-    ID3D12Resource *argBuf = NULL;
-    ID3D12Resource *countBuf = NULL;
-    uint64_t argOffs = 0;
-    uint64_t countOffs = 0;
-    WrappedID3D12CommandSignature *sig = NULL;
-    UINT maxCount = 0;
-    UINT realCount = 0;
+    bool m_patched = false;
+    uint32_t numDescs = 0;
+    D3D12GpuBuffer *patchedInstanceBuffer = NULL;
+    D3D12GpuBuffer *unpatchedInstanceBufferReadback = NULL;
+    ResourceId destinationAS;
   };
 
-  rdcarray<ID3D12GraphicsCommandListX *> crackedLists;
-  rdcarray<ExecuteData> executeEvents;
+  rdcflatmap<uint32_t, PatchRaytracing> m_patchRaytracingInfo;
 
-  rdcarray<APIEvent> curEvents;
-  rdcarray<DebugMessage> debugMessages;
-  rdcarray<D3D12ActionTreeNode *> actionStack;
+  struct OutstandingQuery
+  {
+    ID3D12QueryHeap *heap;
+    D3D12_QUERY_TYPE Type;
+    UINT Index;
 
-  rdcarray<rdcpair<ResourceId, EventUsage> > resourceUsage;
+    bool operator==(const OutstandingQuery &q) const
+    {
+      return heap == q.heap && Type == q.Type && Index == q.Index;
+    }
+  };
+
+  rdcarray<OutstandingQuery> m_OutstandingQueries;
 
   ResourceId allocator;
   D3D12_COMMAND_LIST_TYPE type;
   UINT nodeMask;
   D3D12RenderState state;
 
-  rdcarray<D3D12_RESOURCE_BARRIER> barriers;
+  BarrierSet barriers;
 
   ResourceId parentList;
 
@@ -217,10 +215,10 @@ struct BakedCmdListInfo
   uint32_t beginChunk = 0;
   uint32_t endChunk = 0;
 
-  D3D12ActionTreeNode *action = NULL;    // the root action to copy from when submitting
-  uint32_t eventCount;                   // how many events are in this cmd list, for quick skipping
-  uint32_t curEventID;                   // current event ID while reading or executing
-  uint32_t actionCount;                  // similar to above
+  uint32_t eventCount;    // how many events are in this cmd list, for quick skipping
+  uint32_t curEventID;    // current event ID while replaying, not used during loading
+
+  bool hasExecuteDatas = false;
 };
 
 class WrappedID3D12Device;
@@ -235,7 +233,7 @@ struct D3D12CommandData
 
   ResourceId m_LastCmdListID;
 
-  std::map<ResourceId, ID3D12CommandAllocator *> m_CrackedAllocators;
+  RDResult m_FailedReplayResult = ResultCode::APIReplayFailed;
 
   rdcarray<ID3D12Resource *> m_IndirectBuffers;
   static const uint64_t m_IndirectSize = 4 * 1024 * 1024;
@@ -244,6 +242,9 @@ struct D3D12CommandData
   std::map<ResourceId, BakedCmdListInfo> m_BakedCmdListInfo;
 
   D3D12RenderState m_RenderState;
+
+  rdcarray<SDObject *> m_EventAnnotations;
+  SDObject *m_RootAnnotation = NULL;
 
   D3D12RenderState &GetCurRenderState()
   {
@@ -281,7 +282,7 @@ struct D3D12CommandData
     // However, a single baked command list can be executed multiple times - so we have to have a
     // list of base events
     // Map from bakeID -> vector<baseEventID>
-    std::map<ResourceId, rdcarray<uint32_t> > cmdListExecs;
+    std::map<ResourceId, rdcarray<uint32_t>> cmdListExecs;
 
     // This is just the baked ID of the parent command list that's partially replayed
     // If we are in the middle of a partial replay - allows fast checking in all CmdList chunks,
@@ -307,7 +308,8 @@ struct D3D12CommandData
   // so we just set this command list
   ID3D12GraphicsCommandListX *m_OutsideCmdList = NULL;
 
-  void InsertActionsAndRefreshIDs(ResourceId cmd, rdcarray<D3D12ActionTreeNode> &cmdBufNodes);
+  SDObject *InsertEventNodes(WrappedID3D12GraphicsCommandList *replayList, ResourceId cmd,
+                             BakedCmdListInfo &cmdListInfo);
 
   // this is a list of uint64_t file offset -> uint32_t EIDs of where each
   // action is used. E.g. the action at offset 873954 is EID 50. If a
@@ -338,13 +340,14 @@ struct D3D12CommandData
   std::map<ResourceId, ID3D12GraphicsCommandListX *> m_RerecordCmds;
   rdcarray<ID3D12GraphicsCommandListX *> m_RerecordCmdList;
 
-  bool m_AddedAction;
-
-  rdcarray<APIEvent> m_RootEvents, m_Events;
+  rdcarray<APIEvent> m_Events;
+  D3D12EventNode m_LoadingEventNode;
+  rdcarray<D3D12EventNode> m_EventNodes;
+  bool m_AddedEventNode;
 
   uint64_t m_CurChunkOffset;
   SDChunkMetaData m_ChunkMetadata;
-  uint32_t m_RootEventID, m_RootActionID;
+  uint32_t m_RootEventID;
   uint32_t m_FirstEventID, m_LastEventID;
   D3D12Chunk m_LastChunk;
 
@@ -354,19 +357,16 @@ struct D3D12CommandData
   double m_TimeFrequency = 1.0f;
   SDFile *m_StructuredFile;
 
-  std::map<ResourceId, rdcarray<EventUsage> > m_ResourceUses;
+  rdcarray<PatchedRayDispatch> m_RayDispatches;
 
-  D3D12ActionTreeNode m_ParentAction;
+  std::map<ResourceId, rdcarray<EventUsage>> m_ResourceUses;
 
-  rdcarray<D3D12ActionTreeNode *> m_RootActionStack;
-
-  rdcarray<D3D12ActionTreeNode *> &GetActionStack()
+  struct IndirectReplayData
   {
-    if(m_LastCmdListID != ResourceId())
-      return m_BakedCmdListInfo[m_LastCmdListID].actionStack;
-
-    return m_RootActionStack;
-  }
+    ID3D12CommandSignature *commandSig = NULL;
+    ID3D12Resource *argsBuffer = NULL;
+    UINT64 argsOffset = 0;
+  } m_IndirectData;
 
   void GetIndirectBuffer(size_t size, ID3D12Resource **buf, uint64_t *offs);
 
@@ -383,7 +383,24 @@ struct D3D12CommandData
 
   void AddAction(const ActionDescription &a);
   void AddEvent();
-  void AddUsage(const D3D12RenderState &state, D3D12ActionTreeNode &actionNode);
-  void AddUsage(D3D12ActionTreeNode &actionNode, ResourceId id, uint32_t EID, ResourceUsage usage);
-  void AddUsage(ResourceId id, ResourceUsage usage);
+
+  D3D12EventNode &GetLastEventNode()
+  {
+    rdcarray<D3D12EventNode> &eventNodes =
+        (m_LastCmdListID != ResourceId() ? m_BakedCmdListInfo[m_LastCmdListID].eventNodes
+                                         : m_EventNodes);
+    return eventNodes.back();
+  }
+
+  void BakeEventNodes(ActionDescription &rootAction);
+
+  void AddUsage(const D3D12RenderState &state, D3D12EventNode &eventNode);
+
+  void AddUsageForBindInRootSig(const D3D12RenderState &state, D3D12EventNode &eventNode,
+                                const D3D12RenderState::RootSignature *rootsig,
+                                D3D12_DESCRIPTOR_RANGE_TYPE type, uint32_t space, uint32_t bind,
+                                uint32_t rangeSize);
+
+  void AddResourceUsage(D3D12EventNode &eventNode, ResourceId id, ResourceUsage usage);
+  void AddCPUUsage(ResourceId id, ResourceUsage usage);
 };

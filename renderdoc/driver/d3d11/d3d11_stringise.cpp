@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -59,7 +59,7 @@ rdcstr DoStringise(const D3D11ResourceType &el)
 template <>
 rdcstr DoStringise(const D3D11Chunk &el)
 {
-  RDCCOMPILE_ASSERT((uint32_t)D3D11Chunk::Max == 1131, "Chunks changed without updating names");
+  RDCCOMPILE_ASSERT((uint32_t)D3D11Chunk::Max == 1132, "Chunks changed without updating names");
 
   BEGIN_ENUM_STRINGISE(D3D11Chunk)
   {
@@ -213,6 +213,8 @@ rdcstr DoStringise(const D3D11Chunk &el)
     STRINGISE_ENUM_CLASS_NAMED(OpenSharedResource1, "ID3D11Device1::OpenSharedResource1");
     STRINGISE_ENUM_CLASS_NAMED(OpenSharedResourceByName, "ID3D11Device1::OpenSharedResourceByName");
     STRINGISE_ENUM_CLASS_NAMED(SetShaderExtUAV, "VendorExtension::SetExtensionUAVSlot");
+    STRINGISE_ENUM_CLASS_NAMED(SetCommandAnnotation, "Internal::SetCommandAnnotation");
+
     STRINGISE_ENUM_CLASS_NAMED(Max, "Max Chunk");
   }
   END_ENUM_STRINGISE()
@@ -676,9 +678,9 @@ rdcstr DoStringise(const D3D11_MAP &el)
 }
 
 template <>
-rdcstr DoStringise(const D3D11_PRIMITIVE_TOPOLOGY &el)
+rdcstr DoStringise(const D3D_PRIMITIVE_TOPOLOGY &el)
 {
-  BEGIN_ENUM_STRINGISE(D3D11_PRIMITIVE_TOPOLOGY);
+  BEGIN_ENUM_STRINGISE(D3D_PRIMITIVE_TOPOLOGY);
   {
     STRINGISE_ENUM(D3D_PRIMITIVE_TOPOLOGY_UNDEFINED);
     STRINGISE_ENUM(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
@@ -686,6 +688,7 @@ rdcstr DoStringise(const D3D11_PRIMITIVE_TOPOLOGY &el)
     STRINGISE_ENUM(D3D_PRIMITIVE_TOPOLOGY_LINESTRIP);
     STRINGISE_ENUM(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     STRINGISE_ENUM(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    STRINGISE_ENUM(D3D_PRIMITIVE_TOPOLOGY_TRIANGLEFAN);
     STRINGISE_ENUM(D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ);
     STRINGISE_ENUM(D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ);
     STRINGISE_ENUM(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ);

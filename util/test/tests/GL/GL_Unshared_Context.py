@@ -9,16 +9,16 @@ class GL_Unshared_Context(rdtest.TestCase):
         
         action = self.find_action("Draw")
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
-        texs: List[rd.BoundResourceArray] = pipe.GetReadOnlyResources(rd.ShaderStage.Fragment)
+        texs = pipe.GetReadOnlyResources(rd.ShaderStage.Fragment)
         
-        id = texs[0].resources[0].resourceId
+        id = texs[0].descriptor.resource
 
         #sample 4 corners and middle
-        magic_value: rd.PixelValue = [1.0, 0.5, 0.25, 1.0]
+        magic_value = [1.0, 0.5, 0.25, 1.0]
         epsilon = .005
         
         self.check_pixel_value(id, 0.0, 0.0, magic_value, eps=epsilon)

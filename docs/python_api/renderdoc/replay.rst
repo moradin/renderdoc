@@ -1,7 +1,10 @@
-Replay Control
-==============
+API Reference: Replay Control
+=============================
 
-.. contents::
+This is the API reference for the functions, classes, and enums in the ``renderdoc`` module which represents the underlying interface that the UI is built on top of. For more high-level information and instructions on using the python API, see :doc:`../index`.
+
+.. contents:: Sections
+   :local:
 
 .. currentmodule:: renderdoc
 
@@ -14,6 +17,12 @@ Initialisation and Shutdown
 .. autoclass:: renderdoc.GlobalEnvironment
   :members:
 
+.. autoclass:: renderdoc.ResultCode
+  :members:
+
+.. autoclass:: renderdoc.ResultDetails
+  :members:
+
 Capture File Access
 -------------------
 
@@ -23,9 +32,6 @@ Capture File Access
   :members:
 
 .. autoclass:: renderdoc.CaptureFile
-  :members:
-
-.. autoclass:: renderdoc.ReplayStatus
   :members:
 
 .. autoclass:: renderdoc.ReplaySupport

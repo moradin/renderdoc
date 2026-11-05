@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -69,7 +69,10 @@ v2f RENDERDOC_TextVS(uint vid : SV_VertexID, uint inst : SV_InstanceID)
 {
   // easy-mode on FL10 and up, use vertex/instance index
   float2 verts[] = {
-      float2(0.0, 0.0), float2(1.0, 0.0), float2(0.0, 1.0), float2(1.0, 1.0),
+      float2(0.0, 0.0),
+      float2(1.0, 0.0),
+      float2(0.0, 1.0),
+      float2(1.0, 1.0),
   };
 
   return Text(verts[vid], int(inst), chars[inst].x);

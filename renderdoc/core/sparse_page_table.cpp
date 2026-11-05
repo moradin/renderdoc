@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2021 Baldur Karlsson
+ * Copyright (c) 2021-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,31 +28,34 @@
 
 namespace Sparse
 {
-static uint32_t calcPageForTileCoord(const Coord &coord, const Coord &subresourcePageDim)
+static uint64_t calcPageForTileCoord(const Coord &coord, const Coord &subresourcePageDim)
 {
   return (((coord.z * subresourcePageDim.y) + coord.y) * subresourcePageDim.x) + coord.x;
 }
 
-void PageRangeMapping::createPages(uint32_t numPages, uint32_t pageSize)
+void PageRangeMapping::createPages(uint64_t numPages, uint32_t pageByteSize)
 {
   // don't do anything if the pages have already been populated
   if(!pages.empty())
     return;
 
+  // this only truncates on 32-bit builds, where we don't expect large resources
+  size_t count = (size_t)numPages;
+
   // otherwise allocate them. If we have a single page mapping we can just duplicate and it's easy
   if(singlePageReused || singleMapping.memory == ResourceId())
   {
-    pages.fill(numPages, singleMapping);
+    pages.fill(count, singleMapping);
   }
   else
   {
     // otherwise we need to allocate and increment
-    pages.reserve(numPages);
+    pages.reserve(count);
     pages.clear();
-    for(uint32_t i = 0; i < numPages; i++)
+    for(uint64_t i = 0; i < numPages; i++)
     {
       pages.push_back(singleMapping);
-      singleMapping.offset += pageSize;
+      singleMapping.offset += pageByteSize;
     }
   }
 
@@ -68,7 +71,7 @@ void PageTable::Initialise(uint64_t bufferByteSize, uint32_t pageByteSize)
   m_ArraySize = 1;
   m_MipCount = 1;
 
-  m_TextureDim = {(uint32_t)bufferByteSize, 1, 1};
+  m_TextureDim = {bufferByteSize, 1, 1};
   m_PageTexelSize = {pageByteSize, 1, 1};
 
   // initialise mip tail with buffer properties
@@ -82,20 +85,20 @@ void PageTable::Initialise(uint64_t bufferByteSize, uint32_t pageByteSize)
 }
 
 void PageTable::Initialise(const Coord &overallTexelDim, uint32_t numMips, uint32_t numArraySlices,
-                           uint32_t pageByteSize, const Sparse::Coord &pageTexelDim,
-                           uint32_t firstTailMip, uint64_t mipTailOffset, uint64_t mipTailStride,
+                           uint32_t pageByteSize, const Coord &pageTexelDim, uint32_t firstTailMip,
+                           uint64_t mipTailOffset, uint64_t mipTailStride,
                            uint64_t mipTailTotalPackedSize)
 {
   // sanitise inputs to be safe
   m_PageByteSize = RDCMAX(1U, pageByteSize);
   m_ArraySize = RDCMAX(1U, numArraySlices);
   m_MipCount = RDCMAX(1U, numMips);
-  m_PageTexelSize.x = RDCMAX(1U, pageTexelDim.x);
-  m_PageTexelSize.y = RDCMAX(1U, pageTexelDim.y);
-  m_PageTexelSize.z = RDCMAX(1U, pageTexelDim.z);
-  m_TextureDim.x = RDCMAX(1U, overallTexelDim.x);
-  m_TextureDim.y = RDCMAX(1U, overallTexelDim.y);
-  m_TextureDim.z = RDCMAX(1U, overallTexelDim.z);
+  m_PageTexelSize.x = RDCMAX((uint64_t)1ULL, pageTexelDim.x);
+  m_PageTexelSize.y = RDCMAX((uint64_t)1ULL, pageTexelDim.y);
+  m_PageTexelSize.z = RDCMAX((uint64_t)1ULL, pageTexelDim.z);
+  m_TextureDim.x = RDCMAX((uint64_t)1ULL, overallTexelDim.x);
+  m_TextureDim.y = RDCMAX((uint64_t)1ULL, overallTexelDim.y);
+  m_TextureDim.z = RDCMAX((uint64_t)1ULL, overallTexelDim.z);
 
   // initialise the subresources
   m_Subresources.resize(m_ArraySize * m_MipCount);
@@ -162,8 +165,12 @@ uint64_t PageTable::setMipTailRange(uint64_t resourceByteOffset, ResourceId memo
     return m_MipTail.byteOffset + m_MipTail.totalPackedByteSize;
   }
 
+  const uint64_t numTailPages =
+      ((m_MipTail.totalPackedByteSize + m_PageByteSize - 1) / m_PageByteSize);
+
   // if we're setting the whole mip tail at once, store it as a single page mapping
-  if(resourceByteOffset == 0 && byteSize == m_MipTail.totalPackedByteSize)
+  if(resourceByteOffset == 0 &&
+     (byteSize == m_MipTail.totalPackedByteSize || byteSize == numTailPages * m_PageByteSize))
   {
     for(size_t i = 0; i < m_MipTail.mappings.size(); i++)
     {
@@ -188,9 +195,7 @@ uint64_t PageTable::setMipTailRange(uint64_t resourceByteOffset, ResourceId memo
     // referenced pages
     PageRangeMapping &mapping = m_MipTail.mappings[0];
 
-    mapping.createPages(
-        uint32_t((m_MipTail.totalPackedByteSize + m_PageByteSize - 1) / m_PageByteSize),
-        m_PageByteSize);
+    mapping.createPages(numTailPages, m_PageByteSize);
 
     // iterate through each referenced resource page
     for(size_t
@@ -205,6 +210,8 @@ uint64_t PageTable::setMipTailRange(uint64_t resourceByteOffset, ResourceId memo
       if(!useSinglePage && memory != ResourceId())
         memoryByteOffset += m_PageByteSize;
     }
+
+    mapping.simplifyUnmapped();
 
     // return how much of the mip tail we consumed, clamped to the size. Note resourceByteOffset has
     // been remapped to be mip-tail relative here
@@ -244,9 +251,8 @@ uint64_t PageTable::setMipTailRange(uint64_t resourceByteOffset, ResourceId memo
       }
       else
       {
-        mapping.createPages(
-            uint32_t((mipTailSubresourceByteSize + m_PageByteSize - 1) / m_PageByteSize),
-            m_PageByteSize);
+        mapping.createPages(((mipTailSubresourceByteSize + m_PageByteSize - 1) / m_PageByteSize),
+                            m_PageByteSize);
 
         // iterate through each referenced page in this subresource's mip tail. Note we only iterate
         // over as many pages as this mapping has, even if the bound region is larger.
@@ -285,6 +291,9 @@ uint64_t PageTable::setMipTailRange(uint64_t resourceByteOffset, ResourceId memo
         // if we don't have enough remaining to hit the stride, we just zero-out the number of bytes
         // remaining
         byteSize -= RDCMIN(byteSize, m_MipTail.byteStride - mipTailSubresourceByteSize);
+
+        // simplify current mapping before moving on to next subresource
+        mapping.simplifyUnmapped();
         sub++;
       }
       else
@@ -297,6 +306,11 @@ uint64_t PageTable::setMipTailRange(uint64_t resourceByteOffset, ResourceId memo
       }
     }
 
+    // simplify the last tail that we touched, as long as it's still valid. If we just incremented
+    // past the last, we will have simplified above where sub is incremented
+    if(sub < m_MipTail.mappings.size())
+      m_MipTail.mappings[sub].simplifyUnmapped();
+
     if(byteSize > 0)
       RDCERR("Unclaimed bytes being assigned to image after iterating over all subresources");
 
@@ -304,11 +318,11 @@ uint64_t PageTable::setMipTailRange(uint64_t resourceByteOffset, ResourceId memo
   }
 }
 
-void PageTable::setImageBoxRange(uint32_t subresource, const Sparse::Coord &coord,
-                                 const Sparse::Coord &dim, ResourceId memory,
-                                 uint64_t memoryByteOffset, bool useSinglePage)
+void PageTable::setImageBoxRange(uint32_t subresource, const Coord &coord, const Coord &dim,
+                                 ResourceId memory, uint64_t memoryByteOffset, bool useSinglePage)
 {
   const Coord subresourcePageDim = calcSubresourcePageDim(subresource);
+  const Coord subresourceImgDim = getSubresourceDim(subresource);
 
   RDCASSERT((coord.x % m_PageTexelSize.x) == 0);
   RDCASSERT((coord.y % m_PageTexelSize.y) == 0);
@@ -316,23 +330,23 @@ void PageTable::setImageBoxRange(uint32_t subresource, const Sparse::Coord &coor
 
   // dimension may be misaligned if it's referring to part of a page on a non-page-aligned texture
   // dimension
-  RDCASSERT((dim.x % m_PageTexelSize.x) == 0 || (coord.x + dim.x == m_TextureDim.x), dim.x, coord.x,
-            m_PageTexelSize.x, m_TextureDim.x);
-  RDCASSERT((dim.y % m_PageTexelSize.y) == 0 || (coord.y + dim.y == m_TextureDim.y), dim.y, coord.y,
-            m_PageTexelSize.y, m_TextureDim.y);
-  RDCASSERT((dim.z % m_PageTexelSize.z) == 0 || (coord.z + dim.z == m_TextureDim.z), dim.z, coord.z,
-            m_PageTexelSize.z, m_TextureDim.z);
+  RDCASSERT((dim.x % m_PageTexelSize.x) == 0 || (coord.x + dim.x == subresourceImgDim.x),
+            subresource, dim.x, coord.x, m_PageTexelSize.x, m_TextureDim.x, subresourceImgDim.x);
+  RDCASSERT((dim.y % m_PageTexelSize.y) == 0 || (coord.y + dim.y == subresourceImgDim.y),
+            subresource, dim.y, coord.y, m_PageTexelSize.y, m_TextureDim.y, subresourceImgDim.y);
+  RDCASSERT((dim.z % m_PageTexelSize.z) == 0 || (coord.z + dim.z == subresourceImgDim.z),
+            subresource, dim.z, coord.z, m_PageTexelSize.z, m_TextureDim.z, subresourceImgDim.z);
 
   // convert coords and dim to pages for ease of calculation
-  Sparse::Coord curCoord = coord;
+  Coord curCoord = coord;
   curCoord.x /= m_PageTexelSize.x;
   curCoord.y /= m_PageTexelSize.y;
   curCoord.z /= m_PageTexelSize.z;
 
-  Sparse::Coord curDim = dim;
-  curDim.x = RDCMAX(1U, (curDim.x + m_PageTexelSize.x - 1) / m_PageTexelSize.x);
-  curDim.y = RDCMAX(1U, (curDim.y + m_PageTexelSize.y - 1) / m_PageTexelSize.y);
-  curDim.z = RDCMAX(1U, (curDim.z + m_PageTexelSize.z - 1) / m_PageTexelSize.z);
+  Coord curDim = dim;
+  curDim.x = RDCMAX((uint64_t)1ULL, (curDim.x + m_PageTexelSize.x - 1) / m_PageTexelSize.x);
+  curDim.y = RDCMAX((uint64_t)1ULL, (curDim.y + m_PageTexelSize.y - 1) / m_PageTexelSize.y);
+  curDim.z = RDCMAX((uint64_t)1ULL, (curDim.z + m_PageTexelSize.z - 1) / m_PageTexelSize.z);
 
   RDCASSERT(subresource < m_Subresources.size(), subresource, m_Subresources.size());
   RDCASSERT(curCoord.x < subresourcePageDim.x && curCoord.y < subresourcePageDim.y &&
@@ -359,21 +373,21 @@ void PageTable::setImageBoxRange(uint32_t subresource, const Sparse::Coord &coor
   {
     // either we're starting at a coord somewhere into the subresource, or we don't cover it all.
     // Split the subresource into pages if needed and update.
-    const uint32_t numSubresourcePages =
-        subresourcePageDim.x * subresourcePageDim.y * subresourcePageDim.z;
+    const uint64_t numSubresourcePages =
+        (subresourcePageDim.x * subresourcePageDim.y * subresourcePageDim.z);
     sub.createPages(numSubresourcePages, m_PageByteSize);
 
-    for(uint32_t z = curCoord.z; z < curCoord.z + curDim.z; z++)
+    for(uint64_t z = curCoord.z; z < curCoord.z + curDim.z; z++)
     {
-      for(uint32_t y = curCoord.y; y < curCoord.y + curDim.y; y++)
+      for(uint64_t y = curCoord.y; y < curCoord.y + curDim.y; y++)
       {
-        for(uint32_t x = curCoord.x; x < curCoord.x + curDim.x; x++)
+        for(uint64_t x = curCoord.x; x < curCoord.x + curDim.x; x++)
         {
           // calculate the page
-          const uint32_t page = calcPageForTileCoord({x, y, z}, subresourcePageDim);
+          const uint64_t page = calcPageForTileCoord({x, y, z}, subresourcePageDim);
 
-          sub.pages[page].memory = memory;
-          sub.pages[page].offset = memoryByteOffset;
+          sub.accessPage(page).memory = memory;
+          sub.accessPage(page).offset = memoryByteOffset;
 
           // if we're not mapping all resource pages to a single memory page, advance the offset
           if(!useSinglePage && memory != ResourceId())
@@ -381,6 +395,8 @@ void PageTable::setImageBoxRange(uint32_t subresource, const Sparse::Coord &coor
         }
       }
     }
+
+    sub.simplifyUnmapped();
   }
 }
 
@@ -410,9 +426,13 @@ rdcpair<uint32_t, Coord> PageTable::setImageWrappedRange(uint32_t subresource,
   while(byteSize > 0 && (isSubresourceInMipTail(subresource) || subresource < m_Subresources.size()))
   {
     const Coord subresourcePageDim = calcSubresourcePageDim(subresource);
-    const uint32_t numSubresourcePages =
+    const uint64_t numMipTailPages =
+        uint64_t((m_MipTail.totalPackedByteSize / RDCMAX(1U, (uint32_t)m_MipTail.mappings.size())) +
+                 m_PageByteSize - 1) /
+        m_PageByteSize;
+    const uint64_t numSubresourcePages =
         isSubresourceInMipTail(subresource)
-            ? uint32_t(m_MipTail.totalPackedByteSize / m_MipTail.mappings.size()) / m_PageByteSize
+            ? numMipTailPages
             : subresourcePageDim.x * subresourcePageDim.y * subresourcePageDim.z;
 
     PageRangeMapping &sub = isSubresourceInMipTail(subresource) ? getMipTailMapping(subresource)
@@ -467,7 +487,7 @@ rdcpair<uint32_t, Coord> PageTable::setImageWrappedRange(uint32_t subresource,
       // note that numPages could be more pages than in the subresource! hence below we check both
       // that we haven't exhausted the incoming pages and that we haven't exhausted the pages in the
       // subresource
-      const uint32_t numPages = uint32_t(byteSize / m_PageByteSize);
+      const uint64_t numPages = byteSize / m_PageByteSize;
 
       if(isSubresourceInMipTail(subresource))
       {
@@ -485,16 +505,16 @@ rdcpair<uint32_t, Coord> PageTable::setImageWrappedRange(uint32_t subresource,
       }
 
       // calculate the starting page
-      uint32_t startingPage =
+      uint64_t startingPage =
           (((curCoord.z * subresourcePageDim.y) + curCoord.y) * subresourcePageDim.x) + curCoord.x;
 
-      for(uint32_t page = startingPage;
+      for(uint64_t page = startingPage;
           page < startingPage + numPages && page < numSubresourcePages; page++)
       {
         if(updateMappings)
         {
-          sub.pages[page].memory = memory;
-          sub.pages[page].offset = memoryByteOffset;
+          sub.accessPage(page).memory = memory;
+          sub.accessPage(page).offset = memoryByteOffset;
         }
 
         // if we're not mapping all resource pages to a single memory page, advance the offset
@@ -503,13 +523,16 @@ rdcpair<uint32_t, Coord> PageTable::setImageWrappedRange(uint32_t subresource,
         byteSize -= m_PageByteSize;
       }
 
+      if(updateMappings)
+        sub.simplifyUnmapped();
+
       // if we consumed all bytes and didn't get to the end of the subresource, calculate where we
       // ended up
       if(byteSize == 0 && startingPage + numPages < numSubresourcePages)
       {
         if(isSubresourceInMipTail(subresource))
         {
-          curCoord.x += numPages * m_PageByteSize;
+          curCoord.x = (curCoord.x + numPages) * m_PageTexelSize.x;
         }
         else
         {
@@ -533,6 +556,7 @@ rdcpair<uint32_t, Coord> PageTable::setImageWrappedRange(uint32_t subresource,
       {
         const uint32_t slice = subresource / m_MipCount;
         subresource = (slice + 1) * m_MipCount;
+        curCoord = {0, 0, 0};
       }
       else
       {
@@ -583,9 +607,9 @@ void PageTable::copyImageBoxRange(uint32_t dstSubresource, const Coord &coordInT
     // otherwise we just do a page-by-page copy
     else
     {
-      uint32_t dstStartPage = coordInTiles.x;
-      uint32_t srcStartPage = srcCoordInTiles.x;
-      for(uint32_t pageIdx = 0; pageIdx < dimInTiles.x; pageIdx++)
+      uint64_t dstStartPage = coordInTiles.x;
+      uint64_t srcStartPage = srcCoordInTiles.x;
+      for(uint64_t pageIdx = 0; pageIdx < dimInTiles.x; pageIdx++)
       {
         Page srcPageContents = srcMapping.getPage(srcStartPage + pageIdx, m_PageByteSize);
         setMipTailRange(dstStartPage * m_PageByteSize, srcPageContents.memory,
@@ -647,20 +671,22 @@ void PageTable::copyImageBoxRange(uint32_t dstSubresource, const Coord &coordInT
 
   dstSub.createPages(dstSubSize.x * dstSubSize.y * dstSubSize.z, m_PageByteSize);
 
-  for(uint32_t z = 0; z < dimInTiles.z; z++)
+  for(uint64_t z = 0; z < dimInTiles.z; z++)
   {
-    for(uint32_t y = 0; y < dimInTiles.y; y++)
+    for(uint64_t y = 0; y < dimInTiles.y; y++)
     {
-      for(uint32_t x = 0; x < dimInTiles.x; x++)
+      for(uint64_t x = 0; x < dimInTiles.x; x++)
       {
-        const uint32_t dstPage = calcPageForTileCoord(
+        const uint64_t dstPage = calcPageForTileCoord(
             {coordInTiles.x + x, coordInTiles.y + y, coordInTiles.z + z}, dstSubSize);
-        const uint32_t srcPage = calcPageForTileCoord(
+        const uint64_t srcPage = calcPageForTileCoord(
             {srcCoordInTiles.x + x, srcCoordInTiles.y + y, srcCoordInTiles.z + z}, srcSubSize);
-        dstSub.pages[dstPage] = srcSub.getPage(srcPage, m_PageByteSize);
+        dstSub.accessPage(dstPage) = srcSub.getPage(srcPage, m_PageByteSize);
       }
     }
   }
+
+  dstSub.simplifyUnmapped();
 }
 
 void PageTable::copyImageWrappedRange(uint32_t dstSubresource, const Coord &coordInTiles,
@@ -694,9 +720,9 @@ void PageTable::copyImageWrappedRange(uint32_t dstSubresource, const Coord &coor
     // otherwise we just do a page-by-page copy
     else
     {
-      uint32_t dstStartPage = coordInTiles.x;
-      uint32_t srcStartPage = srcCoordInTiles.x;
-      for(uint32_t pageIdx = 0; pageIdx < numTiles; pageIdx++)
+      uint64_t dstStartPage = coordInTiles.x;
+      uint64_t srcStartPage = srcCoordInTiles.x;
+      for(uint64_t pageIdx = 0; pageIdx < numTiles; pageIdx++)
       {
         Page srcPageContents = srcMapping.getPage(srcStartPage + pageIdx, m_PageByteSize);
         setMipTailRange(dstStartPage * m_PageByteSize, srcPageContents.memory,
@@ -715,17 +741,17 @@ void PageTable::copyImageWrappedRange(uint32_t dstSubresource, const Coord &coor
   const Sparse::PageRangeMapping *srcMapping = &srcPageTable.getSubresource(srcSubresource);
   Sparse::PageRangeMapping *dstMapping = &m_Subresources[dstSubresource];
 
-  uint32_t dstPage =
+  uint64_t dstPage =
       calcPageForTileCoord({coordInTiles.x, coordInTiles.y, coordInTiles.z}, dstSubSize);
-  uint32_t srcPage =
+  uint64_t srcPage =
       calcPageForTileCoord({srcCoordInTiles.x, srcCoordInTiles.y, srcCoordInTiles.z}, srcSubSize);
 
   for(uint64_t i = 0; i < numTiles;)
   {
     const uint64_t remainingTiles = numTiles - i;
 
-    const uint32_t dstSubTiles = dstSubSize.x * dstSubSize.y * dstSubSize.z;
-    const uint32_t srcSubTiles = srcSubSize.x * srcSubSize.y * srcSubSize.z;
+    const uint64_t dstSubTiles = (dstSubSize.x * dstSubSize.y * dstSubSize.z);
+    const uint64_t srcSubTiles = (srcSubSize.x * srcSubSize.y * srcSubSize.z);
 
     // if we currently have enough tiles remaining to update the whole next resource and we're
     // pointing at 0,0,0 and our source range is a single mapping, copy that single mapping.
@@ -745,7 +771,7 @@ void PageTable::copyImageWrappedRange(uint32_t dstSubresource, const Coord &coor
     {
       // otherwise just copy the current page
       dstMapping->createPages(dstSubTiles, m_PageByteSize);
-      dstMapping->pages[dstPage] = srcMapping->getPage(srcPage, m_PageByteSize);
+      dstMapping->accessPage(dstPage) = srcMapping->getPage(srcPage, m_PageByteSize);
 
       dstPage++;
       srcPage++;
@@ -796,12 +822,17 @@ void PageTable::copyImageWrappedRange(uint32_t dstSubresource, const Coord &coor
         dstSubresource++;
       }
 
+      // simplify the mapping before we move on
+      dstMapping->simplifyUnmapped();
+
       dstSubSize = calcSubresourcePageDim(dstSubresource);
       dstMapping = &m_Subresources[dstSubresource];
     }
 
     if(srcSubresource >= srcPageTable.getNumSubresources())
     {
+      dstMapping->simplifyUnmapped();
+
       RDCERR(
           "Number of tiles %u in image wrapped range copy exceeded source page table subresource "
           "count %u",
@@ -811,6 +842,8 @@ void PageTable::copyImageWrappedRange(uint32_t dstSubresource, const Coord &coor
 
     if(dstSubresource >= getNumSubresources())
     {
+      dstMapping->simplifyUnmapped();
+
       RDCERR(
           "Number of tiles %u in image wrapped range copy exceeded dest page table subresource "
           "count %u",
@@ -818,21 +851,31 @@ void PageTable::copyImageWrappedRange(uint32_t dstSubresource, const Coord &coor
       return;
     }
   }
+
+  // simplify the last mapping we were working on
+  if(dstMapping < m_Subresources.end())
+    dstMapping->simplifyUnmapped();
+}
+
+const Coord PageTable::getSubresourceDim(uint32_t subresource) const
+{
+  const uint32_t mipLevel = subresource % m_MipCount;
+
+  return {
+      RDCMAX((uint64_t)1ULL, m_TextureDim.x >> mipLevel),
+      RDCMAX((uint64_t)1ULL, m_TextureDim.y >> mipLevel),
+      RDCMAX((uint64_t)1ULL, m_TextureDim.z >> mipLevel),
+  };
 }
 
 Coord PageTable::calcSubresourcePageDim(uint32_t subresource) const
 {
-  const uint32_t mipLevel = subresource % m_MipCount;
-
-  const Sparse::Coord mipDim = {
-      RDCMAX(1U, m_TextureDim.x >> mipLevel), RDCMAX(1U, m_TextureDim.y >> mipLevel),
-      RDCMAX(1U, m_TextureDim.z >> mipLevel),
-  };
+  const Coord mipDim = getSubresourceDim(subresource);
 
   // for each page that is fully or partially used
-  return {RDCMAX(1U, (mipDim.x + m_PageTexelSize.x - 1) / m_PageTexelSize.x),
-          RDCMAX(1U, (mipDim.y + m_PageTexelSize.y - 1) / m_PageTexelSize.y),
-          RDCMAX(1U, (mipDim.z + m_PageTexelSize.z - 1) / m_PageTexelSize.z)};
+  return {RDCMAX((uint64_t)1ULL, (mipDim.x + m_PageTexelSize.x - 1) / m_PageTexelSize.x),
+          RDCMAX((uint64_t)1ULL, (mipDim.y + m_PageTexelSize.y - 1) / m_PageTexelSize.y),
+          RDCMAX((uint64_t)1ULL, (mipDim.z + m_PageTexelSize.z - 1) / m_PageTexelSize.z)};
 }
 
 uint64_t PageTable::GetSerialiseSize() const
@@ -869,16 +912,31 @@ uint64_t PageTable::GetSerialiseSize() const
 template <typename SerialiserType>
 void DoSerialise(SerialiserType &ser, Sparse::Coord &el)
 {
-  SERIALISE_MEMBER(x);
-  SERIALISE_MEMBER(y);
-  SERIALISE_MEMBER(z);
+  if(ser.VersionAtLeast(0x20))
+  {
+    SERIALISE_MEMBER(x);
+    SERIALISE_MEMBER(y);
+    SERIALISE_MEMBER(z);
+  }
+  else
+  {
+    // older co-ords were 32-bit.
+    RDCASSERT(ser.IsReading());
+    SERIALISE_ELEMENT_LOCAL(x, uint32_t(0));
+    SERIALISE_ELEMENT_LOCAL(y, uint32_t(0));
+    SERIALISE_ELEMENT_LOCAL(z, uint32_t(0));
+
+    el.x = x;
+    el.y = y;
+    el.z = z;
+  }
 }
 
 template <typename SerialiserType>
 void DoSerialise(SerialiserType &ser, Sparse::Page &el)
 {
   SERIALISE_MEMBER(memory);
-  SERIALISE_MEMBER(offset);
+  SERIALISE_MEMBER(offset).OffsetOrSize();
 }
 
 template <typename SerialiserType>
@@ -892,9 +950,9 @@ template <typename SerialiserType>
 void DoSerialise(SerialiserType &ser, Sparse::MipTail &el)
 {
   SERIALISE_MEMBER(firstMip);
-  SERIALISE_MEMBER(byteOffset);
-  SERIALISE_MEMBER(byteStride);
-  SERIALISE_MEMBER(totalPackedByteSize);
+  SERIALISE_MEMBER(byteOffset).OffsetOrSize();
+  SERIALISE_MEMBER(byteStride).OffsetOrSize();
+  SERIALISE_MEMBER(totalPackedByteSize).OffsetOrSize();
   SERIALISE_MEMBER(mappings);
 }
 
@@ -904,7 +962,7 @@ void DoSerialise(SerialiserType &ser, Sparse::PageTable &el)
   SERIALISE_MEMBER(m_TextureDim);
   SERIALISE_MEMBER(m_MipCount);
   SERIALISE_MEMBER(m_ArraySize);
-  SERIALISE_MEMBER(m_PageByteSize);
+  SERIALISE_MEMBER(m_PageByteSize).OffsetOrSize();
   SERIALISE_MEMBER(m_PageTexelSize);
   SERIALISE_MEMBER(m_Subresources);
   SERIALISE_MEMBER(m_MipTail);
@@ -921,9 +979,15 @@ INSTANTIATE_SERIALISE_TYPE(Sparse::PageTable);
 #include "catch/catch.hpp"
 
 template <>
-rdcstr DoStringise(const Sparse::Coord &el)
+rdcstr DoStringise(const Sparse::Coord32 &el)
 {
   return StringFormat::Fmt("{%u, %u, %u}", el.x, el.y, el.z);
+}
+
+template <>
+rdcstr DoStringise(const Sparse::Coord &el)
+{
+  return StringFormat::Fmt("{%llu, %llu, %llu}", el.x, el.y, el.z);
 }
 
 template <>
@@ -1027,6 +1091,30 @@ TEST_CASE("Test sparse page table mapping", "[sparse]")
       CHECK(pageTable.getMipTail().mappings[0].pages[2] == Sparse::Page({mem, 256}));
       CHECK(pageTable.getMipTail().mappings[0].pages[3] == Sparse::Page({ResourceId(), 0}));
     };
+
+    SECTION("Setting with wrapped incrementally")
+    {
+      ResourceId mem = ResourceIDGen::GetNewUniqueID();
+
+      rdcpair<uint32_t, Sparse::Coord> curCoord = {0, {0, 0, 0}};
+      curCoord = pageTable.setImageWrappedRange(curCoord.first, curCoord.second, 64, mem, 1024,
+                                                false, true);
+
+      CHECK(curCoord.first == 0);
+      CHECK(curCoord.second == Sparse::Coord({64, 0, 0}));
+
+      curCoord = pageTable.setImageWrappedRange(curCoord.first, curCoord.second, 64, mem, 1024,
+                                                false, true);
+
+      CHECK(curCoord.first == 0);
+      CHECK(curCoord.second == Sparse::Coord({128, 0, 0}));
+
+      curCoord = pageTable.setImageWrappedRange(curCoord.first, curCoord.second, 128, mem, 1024,
+                                                false, true);
+
+      CHECK(curCoord.first == 1);
+      CHECK(curCoord.second == Sparse::Coord({0, 0, 0}));
+    };
   };
 
   SECTION("one-page buffer")
@@ -1120,6 +1208,41 @@ TEST_CASE("Test sparse page table mapping", "[sparse]")
     CHECK(pageTable.getMipTail().mappings[0].hasSingleMapping());
     CHECK(pageTable.getMipTail().mappings[0].singleMapping == Sparse::Page({ResourceId(), 0}));
   };
+
+  SECTION("64-bit sized buffer")
+  {
+    const uint32_t k64 = 64 * 1024;
+    pageTable.Initialise(10ULL << 30ULL, k64);
+
+    CHECK(pageTable.getPageByteSize() == k64);
+    CHECK(pageTable.getMipTail().byteOffset == 0);
+    CHECK(pageTable.getMipTail().byteStride == 0);
+    CHECK(pageTable.getMipTail().totalPackedByteSize == 10ULL << 30ULL);
+    CHECK(pageTable.getMipTail().firstMip == 0);
+    REQUIRE(pageTable.getMipTail().mappings.size() == 1);
+
+    uint64_t nextTailOffset;
+
+    ResourceId mem = ResourceIDGen::GetNewUniqueID();
+
+    nextTailOffset = pageTable.setBufferRange(0x200000000ULL, mem, 128 * 1024, 128 * 1024, false);
+
+    CHECK(nextTailOffset == 0x200020000ULL);
+
+    CHECK(!pageTable.getMipTail().mappings[0].hasSingleMapping());
+    CHECK(pageTable.getMipTail().mappings[0].pages.size() == (10ULL << 30ULL) / k64);
+
+    size_t idx = size_t(0x200000000ULL / k64);
+
+    CHECK(pageTable.getMipTail().mappings[0].pages[idx - 1].memory == ResourceId());
+    CHECK(pageTable.getMipTail().mappings[0].pages[idx - 1].offset == 0);
+    CHECK(pageTable.getMipTail().mappings[0].pages[idx + 0].memory == mem);
+    CHECK(pageTable.getMipTail().mappings[0].pages[idx + 0].offset == 128 * 1024);
+    CHECK(pageTable.getMipTail().mappings[0].pages[idx + 1].memory == mem);
+    CHECK(pageTable.getMipTail().mappings[0].pages[idx + 1].offset == 192 * 1024);
+    CHECK(pageTable.getMipTail().mappings[0].pages[idx + 2].memory == ResourceId());
+    CHECK(pageTable.getMipTail().mappings[0].pages[idx + 2].offset == 0);
+  }
 
   SECTION("2D texture")
   {
@@ -1271,9 +1394,11 @@ TEST_CASE("Test sparse page table mapping", "[sparse]")
       // wrap a binding part-way into a mip tail
       nextCoord = pageTable.setImageWrappedRange(3, {0, 0, 0}, 64 + 128, sub, 0, false);
 
-      // the 'coord' for mip tail is effectively 1D and 1 texel per tile
+      // the 'coord' for mip tail is effectively 1D. For compatibility with the D3D12 API it returns
+      // coords with 1 page worth of texels per tile (since D3D12 we unconditionally multiply the
+      // tile region coords with tile size to get texel coords, which also applies to the miptail
       CHECK(nextCoord.first == 4);
-      CHECK(nextCoord.second == Sparse::Coord({128, 0, 0}));
+      CHECK(nextCoord.second == Sparse::Coord({64, 0, 0}));
 
       CHECK(pageTable.getSubresource(3).hasSingleMapping());
       CHECK(pageTable.getSubresource(3).singleMapping == Sparse::Page({sub, 0}));
@@ -1535,6 +1660,7 @@ TEST_CASE("Test sparse page table mapping", "[sparse]")
     ResourceId mem0 = ResourceIDGen::GetNewUniqueID();
     ResourceId mem1 = ResourceIDGen::GetNewUniqueID();
     ResourceId mem2 = ResourceIDGen::GetNewUniqueID();
+    ResourceId mem3 = ResourceIDGen::GetNewUniqueID();
 
 #undef _idx
 #define _idx(x, y) y * 16 + x
@@ -1561,6 +1687,10 @@ TEST_CASE("Test sparse page table mapping", "[sparse]")
     CHECK(pageTable.getSubresource(0).pages[_idx(11, 3)] == Sparse::Page({mem2, 0}));
     CHECK(pageTable.getSubresource(0).pages[_idx(12, 3)] == Sparse::Page({mem1, 0}));
     CHECK(pageTable.getSubresource(0).pages[_idx(13, 3)] == Sparse::Page({mem1, 0}));
+
+    pageTable.setImageBoxRange(1, {224, 0, 0}, {26, 32, 1}, mem3, 0, true);
+
+    CHECK(pageTable.getSubresource(1).pages[_idx(7, 0)] == Sparse::Page({mem3, 0}));
   };
 
   SECTION("2D texture that's all mip tail")
@@ -1603,6 +1733,104 @@ TEST_CASE("Test sparse page table mapping", "[sparse]")
     CHECK(pageTable.getMipTail().mappings[0].pages[3] == Sparse::Page({mip, 704}));
     CHECK(pageTable.getMipTail().mappings[0].pages[4] == Sparse::Page({ResourceId(), 0}));
     CHECK(pageTable.getMipTail().mappings[0].pages[5] == Sparse::Page({ResourceId(), 0}));
+  };
+
+  SECTION("mip tails smaller than the page size")
+  {
+    ResourceId mip = ResourceIDGen::GetNewUniqueID();
+
+    SECTION("normal texture")
+    {
+      pageTable.Initialise({256, 256, 1}, 6, 1, 65536, {32, 32, 1}, 4, 0, 0, 8192);
+
+      uint64_t nextTailOffset;
+
+      nextTailOffset = pageTable.setMipTailRange(0, mip, 65536 * 3, 8192, false);
+
+      CHECK(nextTailOffset == 8192);
+      CHECK(pageTable.getMipTail().mappings[0].hasSingleMapping());
+      REQUIRE(pageTable.getMipTail().mappings[0].pages.size() == 0);
+      CHECK(pageTable.getMipTail().mappings[0].singleMapping == Sparse::Page({mip, 65536 * 3}));
+
+      nextTailOffset = pageTable.setMipTailRange(0, mip, 65536 * 3, 65536, false);
+
+      CHECK(nextTailOffset == 8192);
+      CHECK(pageTable.getMipTail().mappings[0].hasSingleMapping());
+      REQUIRE(pageTable.getMipTail().mappings[0].pages.size() == 0);
+      CHECK(pageTable.getMipTail().mappings[0].singleMapping == Sparse::Page({mip, 65536 * 3}));
+
+      rdcpair<uint32_t, Sparse::Coord> nextCoord;
+      // setImageWrappedRange doesn't support anything but page-sized byte sizes to set
+      nextCoord = pageTable.setImageWrappedRange(4, {0, 0, 0}, 65536, mip, 65536 * 10, false, true);
+
+      CHECK(nextCoord.first == 6);
+      CHECK(nextCoord.second == Sparse::Coord({0, 0, 0}));
+      CHECK(pageTable.getMipTail().mappings[0].hasSingleMapping());
+      REQUIRE(pageTable.getMipTail().mappings[0].pages.size() == 0);
+      CHECK(pageTable.getMipTail().mappings[0].singleMapping == Sparse::Page({mip, 65536 * 10}));
+    };
+
+    SECTION("texture that's all mip tail")
+    {
+      pageTable.Initialise({256, 256, 1}, 6, 1, 65536, {32, 32, 1}, 0, 0, 0, 8192);
+
+      uint64_t nextTailOffset;
+
+      nextTailOffset = pageTable.setMipTailRange(0, mip, 65536 * 3, 8192, false);
+
+      CHECK(nextTailOffset == 8192);
+      CHECK(pageTable.getMipTail().mappings[0].hasSingleMapping());
+      REQUIRE(pageTable.getMipTail().mappings[0].pages.size() == 0);
+      CHECK(pageTable.getMipTail().mappings[0].singleMapping == Sparse::Page({mip, 65536 * 3}));
+
+      nextTailOffset = pageTable.setMipTailRange(0, mip, 65536 * 3, 65536, false);
+
+      CHECK(nextTailOffset == 8192);
+      CHECK(pageTable.getMipTail().mappings[0].hasSingleMapping());
+      REQUIRE(pageTable.getMipTail().mappings[0].pages.size() == 0);
+      CHECK(pageTable.getMipTail().mappings[0].singleMapping == Sparse::Page({mip, 65536 * 3}));
+
+      rdcpair<uint32_t, Sparse::Coord> nextCoord;
+      // setImageWrappedRange doesn't support anything but page-sized byte sizes to set
+      nextCoord = pageTable.setImageWrappedRange(0, {0, 0, 0}, 65536, mip, 65536 * 10, false, true);
+
+      CHECK(nextCoord.first == 6);
+      CHECK(nextCoord.second == Sparse::Coord({0, 0, 0}));
+      CHECK(pageTable.getMipTail().mappings[0].hasSingleMapping());
+      REQUIRE(pageTable.getMipTail().mappings[0].pages.size() == 0);
+      CHECK(pageTable.getMipTail().mappings[0].singleMapping == Sparse::Page({mip, 65536 * 10}));
+    };
+
+    SECTION("small no-mips texture")
+    {
+      pageTable.Initialise({8, 8, 1}, 1, 1, 65536, {32, 32, 1}, 0, 0, 0, 8192);
+
+      uint64_t nextTailOffset;
+
+      nextTailOffset = pageTable.setMipTailRange(0, mip, 65536 * 3, 8192, false);
+
+      CHECK(nextTailOffset == 8192);
+      CHECK(pageTable.getMipTail().mappings[0].hasSingleMapping());
+      REQUIRE(pageTable.getMipTail().mappings[0].pages.size() == 0);
+      CHECK(pageTable.getMipTail().mappings[0].singleMapping == Sparse::Page({mip, 65536 * 3}));
+
+      nextTailOffset = pageTable.setMipTailRange(0, mip, 65536 * 3, 65536, false);
+
+      CHECK(nextTailOffset == 8192);
+      CHECK(pageTable.getMipTail().mappings[0].hasSingleMapping());
+      REQUIRE(pageTable.getMipTail().mappings[0].pages.size() == 0);
+      CHECK(pageTable.getMipTail().mappings[0].singleMapping == Sparse::Page({mip, 65536 * 3}));
+
+      rdcpair<uint32_t, Sparse::Coord> nextCoord;
+      // setImageWrappedRange doesn't support anything but page-sized byte sizes to set
+      nextCoord = pageTable.setImageWrappedRange(0, {0, 0, 0}, 65536, mip, 65536 * 10, false, true);
+
+      CHECK(nextCoord.first == 1);
+      CHECK(nextCoord.second == Sparse::Coord({0, 0, 0}));
+      CHECK(pageTable.getMipTail().mappings[0].hasSingleMapping());
+      REQUIRE(pageTable.getMipTail().mappings[0].pages.size() == 0);
+      CHECK(pageTable.getMipTail().mappings[0].singleMapping == Sparse::Page({mip, 65536 * 10}));
+    };
   };
 
   SECTION("2D texture being set with unbounded range")
@@ -2618,6 +2846,78 @@ TEST_CASE("Test sparse page table mapping", "[sparse]")
         CHECK(pageTable.getSubresource(0).pages[_idx(2, 4)] == Sparse::Page({ResourceId(), 0}));
       };
     };
+  };
+
+  SECTION("Test unmapped checks")
+  {
+    // create a 256x256 texture with 32x32 pages, 6 mips (the last two are in the mip tail)
+    pageTable.Initialise({256, 256, 1}, 6, 1, 64, {32, 32, 1}, 4, 0, 0, 8192);
+
+    CHECK_FALSE(pageTable.getSubresource(0).isMapped());
+    CHECK_FALSE(pageTable.getSubresource(1).isMapped());
+    CHECK_FALSE(pageTable.getSubresource(2).isMapped());
+    CHECK_FALSE(pageTable.getSubresource(3).isMapped());
+    CHECK_FALSE(pageTable.getMipTail().mappings[0].isMapped());
+  };
+
+  SECTION("Test unmapped simplification")
+  {
+    // create a 256x256 texture with 32x32 pages, 6 mips (the last two are in the mip tail)
+    pageTable.Initialise({256, 256, 1}, 6, 1, 64, {32, 32, 1}, 4, 0, 0, 8192);
+
+    CHECK_FALSE(pageTable.getSubresource(0).isMapped());
+    CHECK_FALSE(pageTable.getSubresource(1).isMapped());
+    CHECK_FALSE(pageTable.getSubresource(2).isMapped());
+    CHECK_FALSE(pageTable.getSubresource(3).isMapped());
+    CHECK_FALSE(pageTable.getMipTail().mappings[0].isMapped());
+
+    ResourceId mem = ResourceIDGen::GetNewUniqueID();
+
+    pageTable.setMipTailRange(0, mem, 128, 256, false);
+
+    CHECK_FALSE(pageTable.getSubresource(0).isMapped());
+    CHECK_FALSE(pageTable.getSubresource(1).isMapped());
+    CHECK_FALSE(pageTable.getSubresource(2).isMapped());
+    CHECK_FALSE(pageTable.getSubresource(3).isMapped());
+    CHECK(pageTable.getMipTail().mappings[0].isMapped());
+
+    pageTable.setMipTailRange(0, ResourceId(), 128, 256, false);
+
+    CHECK_FALSE(pageTable.getSubresource(0).isMapped());
+    CHECK_FALSE(pageTable.getSubresource(1).isMapped());
+    CHECK_FALSE(pageTable.getSubresource(2).isMapped());
+    CHECK_FALSE(pageTable.getSubresource(3).isMapped());
+    CHECK_FALSE(pageTable.getMipTail().mappings[0].isMapped());
+
+    pageTable.setImageWrappedRange(0, {0, 0, 0}, ~0U, mem, 0, false);
+
+    CHECK(pageTable.getSubresource(0).isMapped());
+    CHECK(pageTable.getSubresource(1).isMapped());
+    CHECK(pageTable.getSubresource(2).isMapped());
+    CHECK(pageTable.getSubresource(3).isMapped());
+    CHECK(pageTable.getMipTail().mappings[0].isMapped());
+
+    ResourceId mem2 = ResourceIDGen::GetNewUniqueID();
+
+    pageTable.setImageBoxRange(0, {0, 0, 0}, {32, 32, 1}, mem2, 1024, false);
+
+    CHECK(pageTable.getSubresource(0).isMapped());
+
+    pageTable.setImageBoxRange(0, {64, 0, 0}, {32, 32, 1}, ResourceId(), 1024, false);
+
+    CHECK(pageTable.getSubresource(0).isMapped());
+
+    pageTable.setImageBoxRange(0, {0, 0, 0}, {32, 32, 1}, ResourceId(), 1024, false);
+
+    CHECK(pageTable.getSubresource(0).isMapped());
+
+    pageTable.setImageBoxRange(0, {0, 0, 0}, {256, 192, 1}, ResourceId(), 1024, false);
+
+    CHECK(pageTable.getSubresource(0).isMapped());
+
+    pageTable.setImageBoxRange(0, {0, 192, 0}, {256, 64, 1}, ResourceId(), 1024, false);
+
+    CHECK_FALSE(pageTable.getSubresource(0).isMapped());
   };
 };
 

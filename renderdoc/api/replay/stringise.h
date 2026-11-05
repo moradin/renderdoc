@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -52,10 +52,10 @@ rdcstr ToStr(const T &el)
 #define BEGIN_ENUM_STRINGISE(type)                               \
   using enumType = type;                                         \
   static const char unknown_prefix[] = #type "(";                \
-  static rdcliteral empty_ret = STRING_LITERAL(#type "(0)");     \
+  constexpr rdcliteral empty_ret = STRING_LITERAL(#type "(0)");  \
   static_assert(std::is_same<const type &, decltype(el)>::value, \
                 "Type in macro doesn't match el");               \
-  (void)(enumType) el;                                           \
+  (void)(enumType)el;                                            \
   switch(el)                                                     \
   {                                                              \
     default: break;
@@ -85,11 +85,11 @@ rdcstr ToStr(const T &el)
 #define BEGIN_BITFIELD_STRINGISE(type)                           \
   using enumType = type;                                         \
   static const char unknown_prefix[] = " | " #type "(";          \
-  static rdcliteral empty_ret = STRING_LITERAL(#type "(0)");     \
+  constexpr rdcliteral empty_ret = STRING_LITERAL(#type "(0)");  \
   static_assert(std::is_same<const type &, decltype(el)>::value, \
                 "Type in macro doesn't match el");               \
   uint64_t local = (uint64_t)el;                                 \
-  (void)(enumType) el;                                           \
+  (void)(enumType)el;                                            \
   rdcstr ret;
 
 #define STRINGISE_BITFIELD_VALUE(b) \

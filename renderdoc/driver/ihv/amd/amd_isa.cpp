@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,6 +23,8 @@
  ******************************************************************************/
 
 #include "amd_isa.h"
+#include <ctype.h>
+#include "api/replay/renderdoc_replay.h"
 #include "common/common.h"
 #include "common/formatting.h"
 #include "core/plugins.h"
@@ -41,7 +43,7 @@ namespace GCNISA
 static const rdcstr amdspv_name = "amdspv.exe";
 static const rdcstr virtualcontext_name = "VirtualContext.exe";
 #else
-static const rdcstr amdspv_name = "amdspv.sh";
+static const rdcstr amdspv_name = "amdspv";
 static const rdcstr virtualcontext_name = "VirtualContext";
 #endif
 
@@ -66,7 +68,7 @@ static bool CheckForSupport(ShaderEncoding encoding)
     return true;
   }
 
-  if(encoding == ShaderEncoding::SPIRV)
+  if(encoding == ShaderEncoding::SPIRV || encoding == ShaderEncoding::OpenGLSPIRV)
   {
     // TODO need to check if an AMD context is running
     rdcstr amdspv = LocatePluginFile(pluginPath, amdspv_name);
@@ -92,17 +94,23 @@ static bool CheckForSupport(ShaderEncoding encoding)
   return false;
 }
 
+// the AMD plugins can't compile D3D9's SM1-3 bytecode, so it has no ISA targets
+static bool HasISATargets(GraphicsAPI api)
+{
+  return api != GraphicsAPI::D3D9;
+}
+
 static void GetEncodings(GraphicsAPI api, ShaderEncoding &primary, ShaderEncoding &secondary)
 {
-  if(IsD3D(api))
+  if(api == GraphicsAPI::D3D11 || api == GraphicsAPI::D3D12)
   {
     primary = ShaderEncoding::DXBC;
-    secondary = ShaderEncoding::DXBC;
+    secondary = ShaderEncoding::DXIL;
   }
   else if(api == GraphicsAPI::OpenGL)
   {
     primary = ShaderEncoding::GLSL;
-    secondary = ShaderEncoding::SPIRV;
+    secondary = ShaderEncoding::OpenGLSPIRV;
   }
   else if(api == GraphicsAPI::Vulkan)
   {
@@ -113,6 +121,8 @@ static void GetEncodings(GraphicsAPI api, ShaderEncoding &primary, ShaderEncodin
 
 bool encodingCached[arraydim<ShaderEncoding>()] = {};
 bool encodingSupported[arraydim<ShaderEncoding>()] = {};
+
+static const rdcstr unsupportedTargetName = "AMD GCN ISA";
 
 Threading::ThreadHandle supportCheckThread = 0;
 
@@ -150,20 +160,89 @@ static bool IsSupported(ShaderEncoding encoding)
 
 void CacheSupport(GraphicsAPI api)
 {
+  if(!HasISATargets(api))
+    return;
+
   ShaderEncoding primary = ShaderEncoding::SPIRV, secondary = ShaderEncoding::SPIRV;
   GetEncodings(api, primary, secondary);
 
   CacheSupport(primary, secondary);
 }
 
-void GetTargets(GraphicsAPI api, rdcarray<rdcstr> &targets)
+void GetTargets(GraphicsAPI api, const DriverInformation &driver, rdcarray<rdcstr> &targets)
 {
+  if(!HasISATargets(api))
+    return;
+
   targets.reserve(asicCount + 1);
 
   ShaderEncoding primary = ShaderEncoding::SPIRV, secondary = ShaderEncoding::SPIRV;
   GetEncodings(api, primary, secondary);
 
-  if(IsSupported(primary) || IsSupported(secondary))
+  bool validAMDGLDriver = true;
+
+  if(api == GraphicsAPI::OpenGL)
+  {
+    if(driver.vendor == GPUVendor::AMD)
+    {
+      // try to see if we're on 22.7.1 or newer. This is a bit of guesswork but we assume the
+      // version string won't change *too* much over time. If it does, it's impossible to predict
+      // how so this code will just need to be changed.
+      // We match any /[0-9.]+/ substrings by hand, discard if one looks like an OpenGL version
+      // (4.x.y) and assume the next is the driver version
+      const char *num = driver.version;
+      const char *end = num + sizeof(driver.version);
+      while(*num && num < end)
+      {
+        // skip any non-matching digits
+        if(!isdigit(*num) && *num != '.')
+        {
+          num++;
+          continue;
+        }
+
+        // consume all matching digits
+        rdcstr versionStr;
+        while(isdigit(*num) || *num == '.')
+        {
+          versionStr.push_back(*num);
+          num++;
+        }
+
+        // ignore OpenGL-looking versions
+        if(versionStr.beginsWith("4."))
+          continue;
+
+        int versionNum[3] = {};
+        int idx = 0;
+        for(char c : versionStr)
+        {
+          if(isdigit(c))
+          {
+            versionNum[idx] *= 10;
+            versionNum[idx] += int(c - '0');
+          }
+          else if(c == '.')
+          {
+            idx++;
+
+            if(idx > 2)
+              break;
+          }
+        }
+
+        RDCLOG("Running on AMD driver version %d.%d.%d", versionNum[0], versionNum[1], versionNum[2]);
+
+        if(versionNum[0] > 22 || versionNum[1] >= 7)
+          validAMDGLDriver = false;
+
+        // we found a match, stop regardless
+        break;
+      }
+    }
+  }
+
+  if(validAMDGLDriver && (IsSupported(primary) || IsSupported(secondary)))
   {
     targets.push_back("AMDIL");
 
@@ -174,7 +253,7 @@ void GetTargets(GraphicsAPI api, rdcarray<rdcstr> &targets)
   {
     // if unsupported, push a 'dummy' target, so that when the user selects it they'll see the error
     // message
-    targets.push_back("AMD GCN ISA");
+    targets.push_back(unsupportedTargetName);
   }
 }
 
@@ -229,6 +308,14 @@ rdcstr DisassembleSPIRV(ShaderStage stage, const bytebuf &shaderBytes, const rdc
     case ShaderStage::Geometry: stageName = "geom"; break;
     case ShaderStage::Fragment: stageName = "frag"; break;
     case ShaderStage::Compute: stageName = "comp"; break;
+    case ShaderStage::Task: stageName = "task"; break;
+    case ShaderStage::Mesh: stageName = "mesh"; break;
+    case ShaderStage::RayGen: stageName = "rgen"; break;
+    case ShaderStage::Intersection: stageName = "rint"; break;
+    case ShaderStage::AnyHit: stageName = "rahit"; break;
+    case ShaderStage::ClosestHit: stageName = "rchit"; break;
+    case ShaderStage::Miss: stageName = "rmiss"; break;
+    case ShaderStage::Callable: stageName = "rcall"; break;
     case ShaderStage::Count: return "; Cannot identify shader type";
   }
 
@@ -294,10 +381,11 @@ rdcstr DisassembleSPIRV(ShaderStage stage, const bytebuf &shaderBytes, const rdc
 
 rdcstr DisassembleGLSL(ShaderStage stage, const bytebuf &shaderBytes, const rdcstr &target)
 {
-  if(!IsSupported(ShaderEncoding::GLSL))
+  if(!IsSupported(ShaderEncoding::GLSL) || target == unsupportedTargetName)
   {
     return R"(; GLSL disassembly not supported, couldn't locate VirtualContext.exe or it failed to run.
-; It only works when the AMD driver is currently being used for graphics.
+; It only works when the AMD driver is currently being used for graphics, and only on drivers older
+; *older* than 22.7.1, where support for this method of disassembly stopped.
 ;
 ; To see instructions on how to download and configure the plugins on your system, go to:
 ; https://github.com/baldurk/renderdoc/wiki/GCN-ISA)";
@@ -331,6 +419,38 @@ rdcstr DisassembleGLSL(ShaderStage stage, const bytebuf &shaderBytes, const rdcs
     case ShaderStage::Compute:
       stageIndex = 5;
       stageName = "comp";
+      break;
+    case ShaderStage::Task:
+      stageIndex = 6;
+      stageName = "task";
+      break;
+    case ShaderStage::Mesh:
+      stageIndex = 7;
+      stageName = "mesh";
+      break;
+    case ShaderStage::RayGen:
+      stageIndex = 8;
+      stageName = "rgen";
+      break;
+    case ShaderStage::Intersection:
+      stageIndex = 9;
+      stageName = "rint";
+      break;
+    case ShaderStage::AnyHit:
+      stageIndex = 10;
+      stageName = "rahit";
+      break;
+    case ShaderStage::ClosestHit:
+      stageIndex = 11;
+      stageName = "rchit";
+      break;
+    case ShaderStage::Miss:
+      stageIndex = 12;
+      stageName = "rmiss";
+      break;
+    case ShaderStage::Callable:
+      stageIndex = 13;
+      stageName = "rcall";
       break;
     case ShaderStage::Count: return "; Cannot identify shader type";
   }
@@ -380,7 +500,7 @@ rdcstr DisassembleGLSL(ShaderStage stage, const bytebuf &shaderBytes, const rdcs
   // dummy values
   if(!found)
   {
-    const asic &a = asicInfo[0];
+    const asic &a = asicInfo[legacyAsicCount];
     cmdLine += StringFormat::Fmt("%d;%d;", a.chipFamily, a.chipRevision);
   }
 
@@ -463,7 +583,7 @@ rdcstr Disassemble(ShaderEncoding encoding, ShaderStage stage, const bytebuf &sh
   if(encoding == ShaderEncoding::DXBC)
     return DisassembleDXBC(shaderBytes, target);
 
-  if(encoding == ShaderEncoding::SPIRV)
+  if(encoding == ShaderEncoding::SPIRV || encoding == ShaderEncoding::OpenGLSPIRV)
     return DisassembleSPIRV(stage, shaderBytes, target);
 
   if(encoding == ShaderEncoding::GLSL)

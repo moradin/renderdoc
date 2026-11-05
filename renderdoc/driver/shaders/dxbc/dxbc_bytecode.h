@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -540,96 +540,6 @@ enum CBufferAccessPattern
   NUM_PATTERNS,
 };
 
-enum TessellatorDomain
-{
-  DOMAIN_UNDEFINED = 0,
-  DOMAIN_ISOLINE,
-  DOMAIN_TRI,
-  DOMAIN_QUAD,
-
-  NUM_DOMAINS,
-};
-
-enum TessellatorPartitioning
-{
-  PARTITIONING_UNDEFINED = 0,
-  PARTITIONING_INTEGER,
-  PARTITIONING_POW2,
-  PARTITIONING_FRACTIONAL_ODD,
-  PARTITIONING_FRACTIONAL_EVEN,
-
-  NUM_PARTITIONINGS,
-};
-
-enum TessellatorOutputPrimitive
-{
-  OUTPUT_PRIMITIVE_UNDEFINED = 0,
-  OUTPUT_PRIMITIVE_POINT,
-  OUTPUT_PRIMITIVE_LINE,
-  OUTPUT_PRIMITIVE_TRIANGLE_CW,
-  OUTPUT_PRIMITIVE_TRIANGLE_CCW,
-
-  NUM_OUTPUT_PRIMITIVES,
-};
-
-enum InterpolationMode
-{
-  INTERPOLATION_UNDEFINED = 0,
-  INTERPOLATION_CONSTANT,
-  INTERPOLATION_LINEAR,
-  INTERPOLATION_LINEAR_CENTROID,
-  INTERPOLATION_LINEAR_NOPERSPECTIVE,
-  INTERPOLATION_LINEAR_NOPERSPECTIVE_CENTROID,
-  INTERPOLATION_LINEAR_SAMPLE,
-  INTERPOLATION_LINEAR_NOPERSPECTIVE_SAMPLE,
-
-  NUM_INTERPOLATIONS,
-};
-
-enum PrimitiveType
-{
-  PRIMITIVE_UNDEFINED = 0,
-  PRIMITIVE_POINT,
-  PRIMITIVE_LINE,
-  PRIMITIVE_TRIANGLE,
-  PRIMITIVE_LINE_ADJ,
-  PRIMITIVE_TRIANGLE_ADJ,
-  PRIMITIVE_1_CONTROL_POINT_PATCH,
-  PRIMITIVE_2_CONTROL_POINT_PATCH,
-  PRIMITIVE_3_CONTROL_POINT_PATCH,
-  PRIMITIVE_4_CONTROL_POINT_PATCH,
-  PRIMITIVE_5_CONTROL_POINT_PATCH,
-  PRIMITIVE_6_CONTROL_POINT_PATCH,
-  PRIMITIVE_7_CONTROL_POINT_PATCH,
-  PRIMITIVE_8_CONTROL_POINT_PATCH,
-  PRIMITIVE_9_CONTROL_POINT_PATCH,
-  PRIMITIVE_10_CONTROL_POINT_PATCH,
-  PRIMITIVE_11_CONTROL_POINT_PATCH,
-  PRIMITIVE_12_CONTROL_POINT_PATCH,
-  PRIMITIVE_13_CONTROL_POINT_PATCH,
-  PRIMITIVE_14_CONTROL_POINT_PATCH,
-  PRIMITIVE_15_CONTROL_POINT_PATCH,
-  PRIMITIVE_16_CONTROL_POINT_PATCH,
-  PRIMITIVE_17_CONTROL_POINT_PATCH,
-  PRIMITIVE_18_CONTROL_POINT_PATCH,
-  PRIMITIVE_19_CONTROL_POINT_PATCH,
-  PRIMITIVE_20_CONTROL_POINT_PATCH,
-  PRIMITIVE_21_CONTROL_POINT_PATCH,
-  PRIMITIVE_22_CONTROL_POINT_PATCH,
-  PRIMITIVE_23_CONTROL_POINT_PATCH,
-  PRIMITIVE_24_CONTROL_POINT_PATCH,
-  PRIMITIVE_25_CONTROL_POINT_PATCH,
-  PRIMITIVE_26_CONTROL_POINT_PATCH,
-  PRIMITIVE_27_CONTROL_POINT_PATCH,
-  PRIMITIVE_28_CONTROL_POINT_PATCH,
-  PRIMITIVE_29_CONTROL_POINT_PATCH,
-  PRIMITIVE_30_CONTROL_POINT_PATCH,
-  PRIMITIVE_31_CONTROL_POINT_PATCH,
-  PRIMITIVE_32_CONTROL_POINT_PATCH,
-
-  NUM_PRIMITIVES,
-};
-
 enum SemanticName
 {
   SEMANTIC_UNDEFINED = 0,
@@ -750,6 +660,7 @@ struct Operand
   }
 
   bool operator==(const Operand &o) const;
+  bool operator<(const Operand &o) const;
 
   // helper function that compares operands by their type and first index (for resources the logical
   // identifier - excluding register range on SM5.1)
@@ -937,6 +848,16 @@ struct RegIndex
 
     return false;
   }
+  bool operator<(const RegIndex &o) const
+  {
+    if(absolute != o.absolute)
+      return absolute < o.absolute;
+    if(relative != o.relative)
+      return relative < o.relative;
+    if(index != o.index)
+      return index < o.index;
+    return operand < o.operand;
+  }
 
   rdcstr toString(const DXBC::Reflection *reflection, ToString flags) const;
 
@@ -1057,7 +978,7 @@ struct Declaration
     struct
     {
       // only used for PS inputs
-      InterpolationMode inputInterpolation;
+      DXBC::InterpolationMode inputInterpolation;
       DXBC::SVSemantic systemValue;
     } inputOutput;
 
@@ -1068,19 +989,19 @@ struct Declaration
     SamplerMode samplerMode;
 
     // OPCODE_DCL_TESS_DOMAIN
-    TessellatorDomain tessDomain;
+    DXBC::TessellatorDomain tessDomain;
 
     // OPCODE_DCL_INPUT_CONTROL_POINT_COUNT
     uint32_t controlPointCount;
 
     // OPCODE_DCL_TESS_PARTITIONING
-    TessellatorPartitioning tessPartition;
+    DXBC::TessellatorPartitioning tessPartition;
 
     // OPCODE_DCL_TESS_OUTPUT_PRIMITIVE
-    TessellatorOutputPrimitive tessOutputPrimitive;
+    DXBC::TessellatorOutputPrimitive tessOutputPrimitive;
 
     // OPCODE_DCL_GS_INPUT_PRIMITIVE
-    PrimitiveType geomInputPrimitive;
+    DXBC::PrimitiveType geomInputPrimitive;
 
     // OPCODE_DCL_GS_OUTPUT_PRIMITIVE_TOPOLOGY
     D3D_PRIMITIVE_TOPOLOGY geomOutputTopology;
@@ -1196,6 +1117,9 @@ public:
   void FetchComputeProperties(DXBC::Reflection *reflection);
   DXBC::Reflection *GuessReflection();
 
+  void CalculateEvalSampleCache(const DXDebug::InputFetcherConfig &cfg,
+                                DXDebug::InputFetcher &fetcher) const;
+
   const rdcarray<uint32_t> &GetTokens() const { return m_ProgramWords; }
   rdcstr GetDebugStatus();
 
@@ -1205,6 +1129,7 @@ public:
   uint32_t GetMajorVersion() const { return m_Major; }
   uint32_t GetMinorVersion() const { return m_Minor; }
   bool IsShaderModel51() const { return m_Major == 5 && m_Minor == 1; }
+  DXBC::ThreadScope GetThreadScope() const { return m_Threadscope; }
   D3D_PRIMITIVE_TOPOLOGY GetOutputTopology();
   const rdcstr &GetDisassembly()
   {
@@ -1224,6 +1149,7 @@ public:
   rdcstr GetRegisterName(OperandType oper, uint32_t index) const;
 
   static bool UsesExtensionUAV(uint32_t slot, uint32_t space, const byte *bytes, size_t length);
+  static D3D_PRIMITIVE_TOPOLOGY GetOutputTopology(const byte *bytes, size_t length);
 
 protected:
   friend class Program;
@@ -1241,6 +1167,7 @@ protected:
 
   DXBC::ShaderType m_Type = DXBC::ShaderType::Max;
   uint32_t m_Major = 0, m_Minor = 0;
+  DXBC::ThreadScope m_Threadscope = DXBC::ThreadScope::Thread;
 
   rdcarray<uint32_t> m_ProgramWords;
 
@@ -1250,6 +1177,8 @@ protected:
 
   uint32_t m_NumTemps = 0;
   rdcarray<uint32_t> m_IndexTempSizes;
+  // each one is declared with byteStride, elementCount
+  rdcarray<rdcpair<uint32_t, uint32_t>> m_GroupsharedTempSizes;
 
   // most regular outputs, including system value outputs like primitive ID are given a register
   // number

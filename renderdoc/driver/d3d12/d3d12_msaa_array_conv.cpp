@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -48,6 +48,10 @@ rdcpair<ID3D12PipelineState *, ID3D12PipelineState *> D3D12DebugManager::GetMSTo
     pipeDesc.PS.BytecodeLength = m_FloatMS2Array->GetBufferSize();
     pipeDesc.PS.pShaderBytecode = m_FloatMS2Array->GetBufferPointer();
 
+    pipeDesc.NumRenderTargets = 1;
+    pipeDesc.RTVFormats[0] = format;
+    pipeDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+
     if(IsDepthFormat(format))
     {
       pipeDesc.PS.BytecodeLength = m_DepthMS2Array->GetBufferSize();
@@ -61,9 +65,6 @@ rdcpair<ID3D12PipelineState *, ID3D12PipelineState *> D3D12DebugManager::GetMSTo
     }
     else if(IsUIntFormat(format) || IsIntFormat(format))
     {
-      pipeDesc.NumRenderTargets = 1;
-      pipeDesc.RTVFormats[0] = format;
-      pipeDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
       pipeDesc.PS.BytecodeLength = m_IntMS2Array->GetBufferSize();
       pipeDesc.PS.pShaderBytecode = m_IntMS2Array->GetBufferPointer();
     }
@@ -326,7 +327,7 @@ void D3D12DebugManager::CopyTex2DMSToArray(ID3D12GraphicsCommandList *list,
 
     ID3D12CommandList *l = list;
     m_pDevice->GetQueue()->GetReal()->ExecuteCommandLists(1, &l);
-    m_pDevice->GPUSync(m_pDevice->GetQueue()->GetReal(), Unwrap(m_DebugFence));
+    m_pDevice->QueueWaitForIdle(m_pDevice->GetQueue()->GetReal(), Unwrap(m_DebugFence));
     m_DebugAlloc->Reset();
   }
 }
@@ -599,7 +600,7 @@ void D3D12DebugManager::CopyArrayToTex2DMS(ID3D12Resource *destMS, ID3D12Resourc
 
   ID3D12CommandList *l = m_DebugList;
   m_pDevice->GetQueue()->ExecuteCommandLists(1, &l);
-  m_pDevice->GPUSync();
+  m_pDevice->InternalQueueWaitForIdle();
   m_DebugAlloc->Reset();
 
   SAFE_RELEASE(pso);

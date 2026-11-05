@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -136,11 +136,11 @@ bool WrappedOpenGL::Serialise_glObjectLabel(SerialiserType &ser, GLenum identifi
 
   if(IsReplayingAndReading() && Resource.name)
   {
-    ResourceId origId = GetResourceManager()->GetOriginalID(GetResourceManager()->GetResID(Resource));
+    ResourceId id = GetResourceManager()->GetResID(Resource);
 
-    GetResourceManager()->SetName(origId, Label);
+    GetResourceManager()->SetName(id, Label);
 
-    ResourceDescription &descr = GetReplay()->GetResourceDesc(origId);
+    ResourceDescription &descr = GetReplay()->GetResourceDesc(id);
     if(!Label.empty())
       descr.SetCustomName(Label);
     AddResourceCurChunk(descr);
@@ -226,13 +226,138 @@ void WrappedOpenGL::glObjectPtrLabel(const void *ptr, GLsizei length, const GLch
     USE_SCRATCH_SERIALISER();
     SCOPED_SERIALISE_CHUNK(gl_CurChunk);
     ResourceId id = GetResourceManager()->GetSyncID((GLsync)ptr);
-    Serialise_glObjectLabel(ser, eGL_SYNC_FENCE, GetResourceManager()->GetCurrentResource(id).name,
-                            length, label);
+    Serialise_glObjectLabel(ser, eGL_SYNC_FENCE, GetResourceManager()->GetResource(id).name, length,
+                            label);
 
     GetResourceManager()->SetName(id, DecodeLabel(length, label));
 
     GetContextRecord()->AddChunk(scope.Get());
   }
+}
+
+template <typename SerialiserType>
+bool WrappedOpenGL::Serialise_SetCommandAnnotation(SerialiserType &ser, rdcstr key,
+                                                   RENDERDOC_AnnotationType valueType,
+                                                   uint32_t valueVectorWidth,
+                                                   RENDERDOC_AnnotationValue value)
+{
+  SERIALISE_ELEMENT(key);
+  SERIALISE_ELEMENT(valueType);
+  ser.SetStructArg(valueType);
+  SERIALISE_ELEMENT(valueVectorWidth);
+  SERIALISE_ELEMENT(value);
+
+  SERIALISE_CHECK_READ_ERRORS();
+
+  if(IsReplayingAndReading())
+  {
+    if(IsLoading(m_State))
+    {
+      if(!m_RootAnnotation)
+        m_RootAnnotation = new SDObject("Event Annotations"_lit, "Event Annotations"_lit);
+
+      SDObject *root = m_RootAnnotation;
+
+      if(valueType == eRENDERDOC_Empty)
+      {
+        root->EraseChildByKeyPath(key);
+      }
+      else
+      {
+        WriteAnnotation(root->CreateChildByKeyPath(key), valueType, valueVectorWidth, value);
+      }
+
+      GetReplay()->WriteFrameRecord().frameInfo.containsAnnotations = true;
+    }
+  }
+
+  return true;
+}
+
+uint32_t WrappedOpenGL::SetCommandAnnotation(void *queueOrCommandBuffer, const char *key,
+                                             RENDERDOC_AnnotationType valueType,
+                                             uint32_t valueVectorWidth,
+                                             const RENDERDOC_AnnotationValue *value)
+{
+  if(queueOrCommandBuffer != NULL)
+    return 2;
+
+  if(IsActiveCapturing(m_State))
+  {
+    SERIALISE_TIME_CALL();
+
+    if(IsActiveCapturing(m_State))
+    {
+      USE_SCRATCH_SERIALISER();
+      GET_SERIALISER.SetActionChunk();
+      SCOPED_SERIALISE_CHUNK(GLChunk::SetCommandAnnotation);
+
+      RENDERDOC_AnnotationValue val = value ? *value : RENDERDOC_AnnotationValue();
+
+      if(valueType == eRENDERDOC_APIObject && val.apiObject)
+      {
+        RENDERDOC_GLResourceReference *reference = (RENDERDOC_GLResourceReference *)val.apiObject;
+        ResourceId id = GetResourceManager()->GetResID(
+            GetResource((GLenum)reference->identifier, reference->name));
+        RDCCOMPILE_ASSERT(sizeof(val.uint64) == sizeof(id), "ResourceId isn't 64-bit!");
+        memcpy(&val.uint64, &id, sizeof(id));
+      }
+
+      Serialise_SetCommandAnnotation(GET_SERIALISER, key, valueType, valueVectorWidth, val);
+
+      m_ContextRecord->AddChunk(scope.Get());
+    }
+
+    return 0;
+  }
+
+  return 0;
+}
+
+uint32_t WrappedOpenGL::SetObjectAnnotation(void *object, const char *key,
+                                            RENDERDOC_AnnotationType valueType,
+                                            uint32_t valueVectorWidth,
+                                            const RENDERDOC_AnnotationValue *value)
+{
+  RENDERDOC_GLResourceReference *reference = (RENDERDOC_GLResourceReference *)object;
+  ResourceId id =
+      GetResourceManager()->GetResID(GetResource((GLenum)reference->identifier, reference->name));
+
+  if(id != ResourceId())
+  {
+    RENDERDOC_AnnotationValue val = value ? *value : RENDERDOC_AnnotationValue();
+
+    // Convert API object references to ResourceId
+    if(valueType == eRENDERDOC_APIObject && val.apiObject)
+    {
+      reference = (RENDERDOC_GLResourceReference *)val.apiObject;
+      ResourceId valId =
+          GetResourceManager()->GetResID(GetResource((GLenum)reference->identifier, reference->name));
+      RDCCOMPILE_ASSERT(sizeof(val.uint64) == sizeof(valId), "ResourceId isn't 64-bit!");
+      memcpy(&val.uint64, &valId, sizeof(valId));
+    }
+
+    SDObject *root = NULL;
+    {
+      SCOPED_LOCK(m_AnnotationsLock);
+      root = m_Annotations[id];
+      if(!root)
+        root = m_Annotations[id] = new SDObject("Object Annotations"_lit, "Object Annotations"_lit);
+    }
+
+    if(valueType == eRENDERDOC_Empty)
+    {
+      root->EraseChildByKeyPath(key);
+    }
+    else
+    {
+      WriteAnnotation(root->CreateChildByKeyPath(key), valueType, valueVectorWidth, val);
+    }
+
+    return 0;
+  }
+
+  return 2;
 }
 
 void WrappedOpenGL::glDebugMessageCallback(GLDEBUGPROC callback, const void *userParam)
@@ -600,3 +725,6 @@ INSTANTIATE_FUNCTION_SERIALISED(void, glInsertEventMarkerEXT, GLsizei length, co
 INSTANTIATE_FUNCTION_SERIALISED(void, glPushDebugGroup, GLenum source, GLuint id, GLsizei length,
                                 const GLchar *message);
 INSTANTIATE_FUNCTION_SERIALISED(void, glPopDebugGroup);
+INSTANTIATE_FUNCTION_SERIALISED(void, SetCommandAnnotation, rdcstr key,
+                                RENDERDOC_AnnotationType valueType, uint32_t valueVectorWidth,
+                                RENDERDOC_AnnotationValue value);

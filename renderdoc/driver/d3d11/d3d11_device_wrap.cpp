@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -27,6 +27,16 @@
 #include "d3d11_context.h"
 #include "d3d11_debug.h"
 #include "d3d11_resources.h"
+
+void WrappedID3D11Device::MaskResourceMiscFlags(UINT &MiscFlags)
+{
+  MiscFlags &=
+      ~(D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
+        D3D11_RESOURCE_MISC_GDI_COMPATIBLE | D3D11_RESOURCE_MISC_SHARED_NTHANDLE |
+        D3D11_RESOURCE_MISC_RESTRICTED_CONTENT | D3D11_RESOURCE_MISC_RESTRICT_SHARED_RESOURCE |
+        D3D11_RESOURCE_MISC_RESTRICT_SHARED_RESOURCE_DRIVER | D3D11_RESOURCE_MISC_GUARDED |
+        D3D11_RESOURCE_MISC_HW_PROTECTED);
+}
 
 template <typename SerialiserType>
 bool WrappedID3D11Device::Serialise_CreateBuffer(SerialiserType &ser, const D3D11_BUFFER_DESC *pDesc,
@@ -99,9 +109,7 @@ bool WrappedID3D11Device::Serialise_CreateBuffer(SerialiserType &ser, const D3D1
     HRESULT hr = S_OK;
 
     // unset flags that are unimportant/problematic in replay
-    Descriptor.MiscFlags &=
-        ~(D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
-          D3D11_RESOURCE_MISC_GDI_COMPATIBLE | D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
+    MaskResourceMiscFlags(Descriptor.MiscFlags);
 
     D3D11_SUBRESOURCE_DATA data;
     data.pSysMem = InitialData;
@@ -111,14 +119,13 @@ bool WrappedID3D11Device::Serialise_CreateBuffer(SerialiserType &ser, const D3D1
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating buffer, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11Buffer(ret, Descriptor.ByteWidth, this);
-
-      GetResourceManager()->AddLiveResource(pBuffer, ret);
+      ret = new WrappedID3D11Buffer(pBuffer, ret, Descriptor.ByteWidth, this);
     }
 
     AddResource(pBuffer, ResourceType::Buffer, "Buffer");
@@ -163,6 +170,11 @@ HRESULT WrappedID3D11Device::CreateBuffer(const D3D11_BUFFER_DESC *pDesc,
                                           const D3D11_SUBRESOURCE_DATA *pInitialData,
                                           ID3D11Buffer **ppBuffer)
 {
+  // Tiled resources are not supported
+  if(pDesc && ((pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILED) ||
+               (pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILE_POOL)))
+    return DXGI_ERROR_UNSUPPORTED;
+
   // validation, returns S_FALSE for valid params, or an error code
   if(ppBuffer == NULL)
     return m_pDevice->CreateBuffer(pDesc, pInitialData, NULL);
@@ -210,7 +222,7 @@ HRESULT WrappedID3D11Device::CreateBuffer(const D3D11_BUFFER_DESC *pDesc,
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11Buffer(real, pDesc->ByteWidth, this);
+    wrapped = new WrappedID3D11Buffer(ResourceId(), real, pDesc->ByteWidth, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -228,12 +240,6 @@ HRESULT WrappedID3D11Device::CreateBuffer(const D3D11_BUFFER_DESC *pDesc,
       RDCASSERT(record);
       record->AddChunk(chunk);
       record->SetDataPtr(chunk->GetData());
-    }
-    else
-    {
-      WrappedID3D11Buffer *w = (WrappedID3D11Buffer *)wrapped;
-
-      GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
     }
 
     *ppBuffer = wrapped;
@@ -408,9 +414,7 @@ bool WrappedID3D11Device::Serialise_CreateTexture1D(SerialiserType &ser,
     TextureDisplayType dispType = DispTypeForTexture(Descriptor);
 
     // unset flags that are unimportant/problematic in replay
-    Descriptor.MiscFlags &=
-        ~(D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
-          D3D11_RESOURCE_MISC_GDI_COMPATIBLE | D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
+    MaskResourceMiscFlags(Descriptor.MiscFlags);
 
     if(pInitialData != NULL)
       hr = m_pDevice->CreateTexture1D(&Descriptor, &descs[0], &ret);
@@ -421,14 +425,13 @@ bool WrappedID3D11Device::Serialise_CreateTexture1D(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating 1D texture, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11Texture1D(ret, this, dispType);
-
-      GetResourceManager()->AddLiveResource(pTexture, ret);
+      ret = new WrappedID3D11Texture1D(pTexture, ret, this, dispType);
     }
 
     const char *prefix = Descriptor.ArraySize > 1 ? "1D TextureArray" : "1D Texture";
@@ -466,7 +469,7 @@ HRESULT WrappedID3D11Device::CreateTexture1D(const D3D11_TEXTURE1D_DESC *pDesc,
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11Texture1D(real, this);
+    wrapped = new WrappedID3D11Texture1D(ResourceId(), real, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -486,12 +489,6 @@ HRESULT WrappedID3D11Device::CreateTexture1D(const D3D11_TEXTURE1D_DESC *pDesc,
 
       record->AddChunk(chunk);
       record->SetDataPtr(chunk->GetData());
-    }
-    else
-    {
-      WrappedID3D11Texture1D *w = (WrappedID3D11Texture1D *)wrapped;
-
-      GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
     }
 
     *ppTexture1D = wrapped;
@@ -550,9 +547,7 @@ bool WrappedID3D11Device::Serialise_CreateTexture2D(SerialiserType &ser,
     APIProps.YUVTextures |= IsYUVFormat(Descriptor.Format);
 
     // unset flags that are unimportant/problematic in replay
-    Descriptor.MiscFlags &=
-        ~(D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
-          D3D11_RESOURCE_MISC_GDI_COMPATIBLE | D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
+    MaskResourceMiscFlags(Descriptor.MiscFlags);
 
     if(pInitialData != NULL)
       hr = m_pDevice->CreateTexture2D(&Descriptor, &descs[0], &ret);
@@ -561,14 +556,13 @@ bool WrappedID3D11Device::Serialise_CreateTexture2D(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating 2D texture, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11Texture2D1(ret, this, dispType);
-
-      GetResourceManager()->AddLiveResource(pTexture, ret);
+      ret = new WrappedID3D11Texture2D1(pTexture, ret, this, dispType);
     }
 
     const char *prefix = Descriptor.ArraySize > 1 ? "2D TextureArray" : "2D Texture";
@@ -592,6 +586,10 @@ HRESULT WrappedID3D11Device::CreateTexture2D(const D3D11_TEXTURE2D_DESC *pDesc,
                                              const D3D11_SUBRESOURCE_DATA *pInitialData,
                                              ID3D11Texture2D **ppTexture2D)
 {
+  // Tiled resources are not supported
+  if(pDesc && pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILED)
+    return DXGI_ERROR_UNSUPPORTED;
+
   // validation, returns S_FALSE for valid params, or an error code
   if(ppTexture2D == NULL)
     return m_pDevice->CreateTexture2D(pDesc, pInitialData, NULL);
@@ -606,7 +604,7 @@ HRESULT WrappedID3D11Device::CreateTexture2D(const D3D11_TEXTURE2D_DESC *pDesc,
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11Texture2D1(real, this);
+    wrapped = new WrappedID3D11Texture2D1(ResourceId(), real, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -626,12 +624,6 @@ HRESULT WrappedID3D11Device::CreateTexture2D(const D3D11_TEXTURE2D_DESC *pDesc,
 
       record->AddChunk(chunk);
       record->SetDataPtr(chunk->GetData());
-    }
-    else
-    {
-      WrappedID3D11Texture2D1 *w = (WrappedID3D11Texture2D1 *)wrapped;
-
-      GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
     }
 
     *ppTexture2D = wrapped;
@@ -689,9 +681,7 @@ bool WrappedID3D11Device::Serialise_CreateTexture3D(SerialiserType &ser,
     APIProps.YUVTextures |= IsYUVFormat(Descriptor.Format);
 
     // unset flags that are unimportant/problematic in replay
-    Descriptor.MiscFlags &=
-        ~(D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
-          D3D11_RESOURCE_MISC_GDI_COMPATIBLE | D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
+    MaskResourceMiscFlags(Descriptor.MiscFlags);
 
     if(pInitialData != NULL)
       hr = m_pDevice->CreateTexture3D(&Descriptor, &descs[0], &ret);
@@ -700,14 +690,13 @@ bool WrappedID3D11Device::Serialise_CreateTexture3D(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating 3D texture, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11Texture3D1(ret, this, dispType);
-
-      GetResourceManager()->AddLiveResource(pTexture, ret);
+      ret = new WrappedID3D11Texture3D1(pTexture, ret, this, dispType);
     }
 
     const char *prefix = "3D Texture";
@@ -745,7 +734,7 @@ HRESULT WrappedID3D11Device::CreateTexture3D(const D3D11_TEXTURE3D_DESC *pDesc,
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11Texture3D1(real, this);
+    wrapped = new WrappedID3D11Texture3D1(ResourceId(), real, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -765,12 +754,6 @@ HRESULT WrappedID3D11Device::CreateTexture3D(const D3D11_TEXTURE3D_DESC *pDesc,
 
       record->AddChunk(chunk);
       record->SetDataPtr(chunk->GetData());
-    }
-    else
-    {
-      WrappedID3D11Texture3D1 *w = (WrappedID3D11Texture3D1 *)wrapped;
-
-      GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
     }
 
     *ppTexture3D = wrapped;
@@ -840,14 +823,13 @@ bool WrappedID3D11Device::Serialise_CreateShaderResourceView(
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating SRV, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11ShaderResourceView1(ret, pResource, this);
-
-      GetResourceManager()->AddLiveResource(pView, ret);
+      ret = new WrappedID3D11ShaderResourceView1(pView, ret, pResource, this);
     }
 
     AddResource(pView, ResourceType::View, "Shader Resource View");
@@ -876,7 +858,7 @@ HRESULT WrappedID3D11Device::CreateShaderResourceView(ID3D11Resource *pResource,
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11ShaderResourceView1(real, pResource, this);
+    wrapped = new WrappedID3D11ShaderResourceView1(ResourceId(), real, pResource, this);
 
     Chunk *chunk = NULL;
 
@@ -967,14 +949,13 @@ bool WrappedID3D11Device::Serialise_CreateUnorderedAccessView(
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating UAV, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11UnorderedAccessView1(ret, pResource, this);
-
-      GetResourceManager()->AddLiveResource(pView, ret);
+      ret = new WrappedID3D11UnorderedAccessView1(pView, ret, pResource, this);
     }
 
     AddResource(pView, ResourceType::View, "Unordered Access View");
@@ -1016,7 +997,7 @@ HRESULT WrappedID3D11Device::CreateUnorderedAccessView(ID3D11Resource *pResource
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11UnorderedAccessView1(real, pResource, this);
+    wrapped = new WrappedID3D11UnorderedAccessView1(ResourceId(), real, pResource, this);
 
     Chunk *chunk = NULL;
 
@@ -1118,14 +1099,13 @@ bool WrappedID3D11Device::Serialise_CreateRenderTargetView(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating RTV, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11RenderTargetView1(ret, pResource, this);
-
-      GetResourceManager()->AddLiveResource(pView, ret);
+      ret = new WrappedID3D11RenderTargetView1(pView, ret, pResource, this);
     }
 
     AddResource(pView, ResourceType::View, "Render Target View");
@@ -1154,7 +1134,7 @@ HRESULT WrappedID3D11Device::CreateRenderTargetView(ID3D11Resource *pResource,
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11RenderTargetView1(real, pResource, this);
+    wrapped = new WrappedID3D11RenderTargetView1(ResourceId(), real, pResource, this);
 
     Chunk *chunk = NULL;
 
@@ -1217,14 +1197,13 @@ bool WrappedID3D11Device::Serialise_CreateDepthStencilView(
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating DSV, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11DepthStencilView(ret, pResource, this);
-
-      GetResourceManager()->AddLiveResource(pView, ret);
+      ret = new WrappedID3D11DepthStencilView(pView, ret, pResource, this);
     }
 
     AddResource(pView, ResourceType::View, "Depth Stencil View");
@@ -1253,7 +1232,7 @@ HRESULT WrappedID3D11Device::CreateDepthStencilView(ID3D11Resource *pResource,
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11DepthStencilView(real, pResource, this);
+    wrapped = new WrappedID3D11DepthStencilView(ResourceId(), real, pResource, this);
 
     Chunk *chunk = NULL;
 
@@ -1305,7 +1284,7 @@ bool WrappedID3D11Device::Serialise_CreateInputLayout(
   SERIALISE_ELEMENT_ARRAY(pInputElementDescs, NumElements).Important();
   SERIALISE_ELEMENT(NumElements);
   SERIALISE_ELEMENT_ARRAY(pShaderBytecodeWithInputSignature, BytecodeLength_);
-  SERIALISE_ELEMENT_LOCAL(BytecodeLength, uint64_t(BytecodeLength_));
+  SERIALISE_ELEMENT_LOCAL(BytecodeLength, uint64_t(BytecodeLength_)).OffsetOrSize();
   SERIALISE_ELEMENT_LOCAL(pInputLayout, GetIDForDeviceChild(*ppInputLayout))
       .TypedAs("ID3D11InputLayout *"_lit);
 
@@ -1324,14 +1303,13 @@ bool WrappedID3D11Device::Serialise_CreateInputLayout(
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating input layout, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11InputLayout(ret, this);
-
-      GetResourceManager()->AddLiveResource(pInputLayout, ret);
+      ret = new WrappedID3D11InputLayout(pInputLayout, ret, this);
     }
 
     AddResource(pInputLayout, ResourceType::StateObject, "Input Layout");
@@ -1340,9 +1318,9 @@ bool WrappedID3D11Device::Serialise_CreateInputLayout(
       m_LayoutDescs[ret] = rdcarray<D3D11_INPUT_ELEMENT_DESC>(pInputElementDescs, NumElements);
 
     if(BytecodeLength > 0 && pShaderBytecodeWithInputSignature)
-      m_LayoutShaders[ret] = new WrappedShader(this, pInputLayout, GetIDForDeviceChild(ret),
-                                               (const byte *)pShaderBytecodeWithInputSignature,
-                                               (size_t)BytecodeLength);
+      m_LayoutShaders[ret] =
+          new WrappedShader(this, pInputLayout, (const byte *)pShaderBytecodeWithInputSignature,
+                            (size_t)BytecodeLength);
   }
 
   return true;
@@ -1371,7 +1349,7 @@ HRESULT WrappedID3D11Device::CreateInputLayout(const D3D11_INPUT_ELEMENT_DESC *p
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11InputLayout(real, this);
+    wrapped = new WrappedID3D11InputLayout(ResourceId(), real, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -1422,15 +1400,14 @@ bool WrappedID3D11Device::Serialise_CreateVertexShader(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating vertex shader, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11Shader<ID3D11VertexShader>(ret, pShader, (const byte *)pShaderBytecode,
+      ret = new WrappedID3D11Shader<ID3D11VertexShader>(pShader, ret, (const byte *)pShaderBytecode,
                                                         (size_t)BytecodeLength, this);
-
-      GetResourceManager()->AddLiveResource(pShader, ret);
     }
 
     AddResource(pShader, ResourceType::Shader, "Vertex Shader");
@@ -1471,7 +1448,7 @@ HRESULT WrappedID3D11Device::CreateVertexShader(const void *pShaderBytecode, SIZ
 
     FlushPendingDead();
     wrapped = new WrappedID3D11Shader<ID3D11VertexShader>(
-        real, ResourceId(), (const byte *)pShaderBytecode, BytecodeLength, this);
+        ResourceId(), real, (const byte *)pShaderBytecode, BytecodeLength, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -1518,8 +1495,6 @@ HRESULT WrappedID3D11Device::CreateVertexShader(const void *pShaderBytecode, SIZ
 
       if(m_GlobalEXTUAV != ~0U)
         w->SetShaderExtSlot(m_GlobalEXTUAV);
-
-      GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
     }
 
     *ppVertexShader = wrapped;
@@ -1556,15 +1531,14 @@ bool WrappedID3D11Device::Serialise_CreateGeometryShader(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating geometry shader, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
       ret = new WrappedID3D11Shader<ID3D11GeometryShader>(
-          ret, pShader, (const byte *)pShaderBytecode, (size_t)BytecodeLength, this);
-
-      GetResourceManager()->AddLiveResource(pShader, ret);
+          pShader, ret, (const byte *)pShaderBytecode, (size_t)BytecodeLength, this);
     }
 
     AddResource(pShader, ResourceType::Shader, "Geometry Shader");
@@ -1605,7 +1579,7 @@ HRESULT WrappedID3D11Device::CreateGeometryShader(const void *pShaderBytecode, S
 
     FlushPendingDead();
     wrapped = new WrappedID3D11Shader<ID3D11GeometryShader>(
-        real, ResourceId(), (const byte *)pShaderBytecode, BytecodeLength, this);
+        ResourceId(), real, (const byte *)pShaderBytecode, BytecodeLength, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -1655,8 +1629,6 @@ HRESULT WrappedID3D11Device::CreateGeometryShader(const void *pShaderBytecode, S
 
       if(m_GlobalEXTUAV != ~0U)
         w->SetShaderExtSlot(m_GlobalEXTUAV);
-
-      GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
     }
 
     *ppGeometryShader = wrapped;
@@ -1680,7 +1652,7 @@ bool WrappedID3D11Device::Serialise_CreateGeometryShaderWithStreamOutput(
   SERIALISE_ELEMENT_LOCAL(BytecodeLength, uint64_t(BytecodeLength_));
   SERIALISE_ELEMENT_ARRAY(pSODeclaration, NumEntries).Important();
   SERIALISE_ELEMENT(NumEntries);
-  SERIALISE_ELEMENT_ARRAY(pBufferStrides, NumStrides);
+  SERIALISE_ELEMENT_ARRAY(pBufferStrides, NumStrides).OffsetOrSize();
   SERIALISE_ELEMENT(NumStrides);
   SERIALISE_ELEMENT(RasterizedStream);
   SERIALISE_ELEMENT(pClassLinkage);
@@ -1698,15 +1670,51 @@ bool WrappedID3D11Device::Serialise_CreateGeometryShaderWithStreamOutput(
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating geometry shader with stream output, HRESULT: %s",
+                       ToStr(hr).c_str());
       return false;
     }
     else
     {
       ret = new WrappedID3D11Shader<ID3D11GeometryShader>(
-          ret, pShader, (const byte *)pShaderBytecode, (size_t)BytecodeLength, this);
+          pShader, ret, (const byte *)pShaderBytecode, (size_t)BytecodeLength, this);
+    }
 
-      GetResourceManager()->AddLiveResource(pShader, ret);
+    D3D_PRIMITIVE_TOPOLOGY topo =
+        DXBC::DXBCContainer::GetOutputTopology(pShaderBytecode, size_t(BytecodeLength));
+
+    uint32_t vertsPerPrim = 1;
+    if(topo == D3D_PRIMITIVE_TOPOLOGY_LINELIST)
+      vertsPerPrim = 1;
+    else if(topo == D3D_PRIMITIVE_TOPOLOGY_LINELIST)
+      vertsPerPrim = 2;
+    else
+      vertsPerPrim = 3;
+
+    SOShaderData &soshader = m_SOShaders[GetIDForDeviceChild(ret)];
+
+    soshader.rastStream = RasterizedStream;
+
+    for(UINT i = 0; i < NumStrides; i++)
+      soshader.strides[i] = pBufferStrides[i] * vertsPerPrim;
+
+    // Undocumented, but D3D11 auto-calculates tight strides if they are not specified, based on the
+    // declarations (which are tightly packed)
+    for(UINT i = NumStrides; i < D3D11_SO_STREAM_COUNT; i++)
+    {
+      // count the entries writing to this slot
+      for(size_t decl = 0; decl < NumEntries; decl++)
+      {
+        if(pSODeclaration[decl].OutputSlot == i)
+        {
+          // all components are written as 32-bit values
+          soshader.strides[i] += pSODeclaration[decl].ComponentCount * sizeof(uint32_t);
+        }
+      }
+
+      // still want the stride per-primitive not per-vertex
+      soshader.strides[i] *= vertsPerPrim;
     }
 
     AddResource(pShader, ResourceType::Shader, "Geometry Shader");
@@ -1751,7 +1759,43 @@ HRESULT WrappedID3D11Device::CreateGeometryShaderWithStreamOutput(
 
     FlushPendingDead();
     wrapped = new WrappedID3D11Shader<ID3D11GeometryShader>(
-        real, ResourceId(), (const byte *)pShaderBytecode, BytecodeLength, this);
+        ResourceId(), real, (const byte *)pShaderBytecode, BytecodeLength, this);
+
+    D3D_PRIMITIVE_TOPOLOGY topo =
+        DXBC::DXBCContainer::GetOutputTopology(pShaderBytecode, BytecodeLength);
+
+    uint32_t vertsPerPrim = 1;
+    if(topo == D3D_PRIMITIVE_TOPOLOGY_LINELIST)
+      vertsPerPrim = 1;
+    else if(topo == D3D_PRIMITIVE_TOPOLOGY_LINELIST)
+      vertsPerPrim = 2;
+    else
+      vertsPerPrim = 3;
+
+    SOShaderData &soshader = m_SOShaders[GetIDForDeviceChild(wrapped)];
+
+    soshader.rastStream = RasterizedStream;
+
+    for(UINT i = 0; i < NumStrides; i++)
+      soshader.strides[i] = pBufferStrides[i] * vertsPerPrim;
+
+    // Undocumented, but D3D11 auto-calculates tight strides if they are not specified, based on the
+    // declarations (which are tightly packed)
+    for(UINT i = NumStrides; i < D3D11_SO_STREAM_COUNT; i++)
+    {
+      // count the entries writing to this slot
+      for(size_t decl = 0; decl < NumEntries; decl++)
+      {
+        if(pSODeclaration[decl].OutputSlot == i)
+        {
+          // all components are written as 32-bit values
+          soshader.strides[i] += pSODeclaration[decl].ComponentCount * sizeof(uint32_t);
+        }
+      }
+
+      // still want the stride per-primitive not per-vertex
+      soshader.strides[i] *= vertsPerPrim;
+    }
 
     if(IsCaptureMode(m_State))
     {
@@ -1802,8 +1846,6 @@ HRESULT WrappedID3D11Device::CreateGeometryShaderWithStreamOutput(
 
       if(m_GlobalEXTUAV != ~0U)
         w->SetShaderExtSlot(m_GlobalEXTUAV);
-
-      GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
     }
 
     *ppGeometryShader = wrapped;
@@ -1839,15 +1881,14 @@ bool WrappedID3D11Device::Serialise_CreatePixelShader(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating pixel shader, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11Shader<ID3D11PixelShader>(ret, pShader, (const byte *)pShaderBytecode,
+      ret = new WrappedID3D11Shader<ID3D11PixelShader>(pShader, ret, (const byte *)pShaderBytecode,
                                                        (size_t)BytecodeLength, this);
-
-      GetResourceManager()->AddLiveResource(pShader, ret);
     }
 
     AddResource(pShader, ResourceType::Shader, "Pixel Shader");
@@ -1888,7 +1929,7 @@ HRESULT WrappedID3D11Device::CreatePixelShader(const void *pShaderBytecode, SIZE
 
     FlushPendingDead();
     wrapped = new WrappedID3D11Shader<ID3D11PixelShader>(
-        real, ResourceId(), (const byte *)pShaderBytecode, BytecodeLength, this);
+        ResourceId(), real, (const byte *)pShaderBytecode, BytecodeLength, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -1936,8 +1977,6 @@ HRESULT WrappedID3D11Device::CreatePixelShader(const void *pShaderBytecode, SIZE
 
       if(m_GlobalEXTUAV != ~0U)
         w->SetShaderExtSlot(m_GlobalEXTUAV);
-
-      GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
     }
 
     *ppPixelShader = wrapped;
@@ -1972,15 +2011,14 @@ bool WrappedID3D11Device::Serialise_CreateHullShader(SerialiserType &ser, const 
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating hull shader, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11Shader<ID3D11HullShader>(ret, pShader, (const byte *)pShaderBytecode,
+      ret = new WrappedID3D11Shader<ID3D11HullShader>(pShader, ret, (const byte *)pShaderBytecode,
                                                       (size_t)BytecodeLength, this);
-
-      GetResourceManager()->AddLiveResource(pShader, ret);
     }
 
     AddResource(pShader, ResourceType::Shader, "Hull Shader");
@@ -2021,7 +2059,7 @@ HRESULT WrappedID3D11Device::CreateHullShader(const void *pShaderBytecode, SIZE_
 
     FlushPendingDead();
     wrapped = new WrappedID3D11Shader<ID3D11HullShader>(
-        real, ResourceId(), (const byte *)pShaderBytecode, BytecodeLength, this);
+        ResourceId(), real, (const byte *)pShaderBytecode, BytecodeLength, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -2069,8 +2107,6 @@ HRESULT WrappedID3D11Device::CreateHullShader(const void *pShaderBytecode, SIZE_
 
       if(m_GlobalEXTUAV != ~0U)
         w->SetShaderExtSlot(m_GlobalEXTUAV);
-
-      GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
     }
 
     *ppHullShader = wrapped;
@@ -2107,15 +2143,14 @@ bool WrappedID3D11Device::Serialise_CreateDomainShader(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating domain shader, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11Shader<ID3D11DomainShader>(ret, pShader, (const byte *)pShaderBytecode,
+      ret = new WrappedID3D11Shader<ID3D11DomainShader>(pShader, ret, (const byte *)pShaderBytecode,
                                                         (size_t)BytecodeLength, this);
-
-      GetResourceManager()->AddLiveResource(pShader, ret);
     }
 
     AddResource(pShader, ResourceType::Shader, "Domain Shader");
@@ -2156,7 +2191,7 @@ HRESULT WrappedID3D11Device::CreateDomainShader(const void *pShaderBytecode, SIZ
 
     FlushPendingDead();
     wrapped = new WrappedID3D11Shader<ID3D11DomainShader>(
-        real, ResourceId(), (const byte *)pShaderBytecode, BytecodeLength, this);
+        ResourceId(), real, (const byte *)pShaderBytecode, BytecodeLength, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -2205,8 +2240,6 @@ HRESULT WrappedID3D11Device::CreateDomainShader(const void *pShaderBytecode, SIZ
 
       if(m_GlobalEXTUAV != ~0U)
         w->SetShaderExtSlot(m_GlobalEXTUAV);
-
-      GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
     }
 
     *ppDomainShader = wrapped;
@@ -2243,15 +2276,14 @@ bool WrappedID3D11Device::Serialise_CreateComputeShader(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating compute shader, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
       ret = new WrappedID3D11Shader<ID3D11ComputeShader>(
-          ret, pShader, (const byte *)pShaderBytecode, (size_t)BytecodeLength, this);
-
-      GetResourceManager()->AddLiveResource(pShader, ret);
+          pShader, ret, (const byte *)pShaderBytecode, (size_t)BytecodeLength, this);
     }
 
     AddResource(pShader, ResourceType::Shader, "Compute Shader");
@@ -2292,7 +2324,7 @@ HRESULT WrappedID3D11Device::CreateComputeShader(const void *pShaderBytecode, SI
 
     FlushPendingDead();
     wrapped = new WrappedID3D11Shader<ID3D11ComputeShader>(
-        real, ResourceId(), (const byte *)pShaderBytecode, BytecodeLength, this);
+        ResourceId(), real, (const byte *)pShaderBytecode, BytecodeLength, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -2342,8 +2374,6 @@ HRESULT WrappedID3D11Device::CreateComputeShader(const void *pShaderBytecode, SI
 
       if(m_GlobalEXTUAV != ~0U)
         w->SetShaderExtSlot(m_GlobalEXTUAV);
-
-      GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
     }
 
     *ppComputeShader = wrapped;
@@ -2388,15 +2418,14 @@ bool WrappedID3D11Device::Serialise_CreateClassInstance(SerialiserType &ser, LPC
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating class instance, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
       FlushPendingDead();
-      wrapped = new WrappedID3D11ClassInstance(real, pClassLinkage, this);
-
-      GetResourceManager()->AddLiveResource(pInstance, wrapped);
+      wrapped = new WrappedID3D11ClassInstance(pInstance, real, pClassLinkage, this);
     }
 
     AddResource(pInstance, ResourceType::ShaderBinding, "Class Instance");
@@ -2417,7 +2446,7 @@ ID3D11ClassInstance *WrappedID3D11Device::CreateClassInstance(
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11ClassInstance(*ppInstance, pClassLinkage, this);
+    wrapped = new WrappedID3D11ClassInstance(ResourceId(), *ppInstance, pClassLinkage, this);
 
     {
       USE_SCRATCH_SERIALISER();
@@ -2461,15 +2490,14 @@ bool WrappedID3D11Device::Serialise_GetClassInstance(SerialiserType &ser, LPCSTR
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed getting class instance, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
       FlushPendingDead();
-      wrapped = new WrappedID3D11ClassInstance(real, pClassLinkage, this);
-
-      GetResourceManager()->AddLiveResource(pInstance, wrapped);
+      wrapped = new WrappedID3D11ClassInstance(pInstance, real, pClassLinkage, this);
     }
 
     AddResource(pInstance, ResourceType::ShaderBinding, "Class Instance");
@@ -2491,7 +2519,7 @@ ID3D11ClassInstance *WrappedID3D11Device::GetClassInstance(LPCSTR pClassInstance
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11ClassInstance(*ppInstance, pClassLinkage, this);
+    wrapped = new WrappedID3D11ClassInstance(ResourceId(), *ppInstance, pClassLinkage, this);
 
     {
       USE_SCRATCH_SERIALISER();
@@ -2526,14 +2554,13 @@ bool WrappedID3D11Device::Serialise_CreateClassLinkage(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating class linkage, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11ClassLinkage(ret, this);
-
-      GetResourceManager()->AddLiveResource(pLinkage, ret);
+      ret = new WrappedID3D11ClassLinkage(pLinkage, ret, this);
     }
 
     AddResource(pLinkage, ResourceType::ShaderBinding, "Class Linkage");
@@ -2557,7 +2584,7 @@ HRESULT WrappedID3D11Device::CreateClassLinkage(ID3D11ClassLinkage **ppLinkage)
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11ClassLinkage(real, this);
+    wrapped = new WrappedID3D11ClassLinkage(ResourceId(), real, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -2596,25 +2623,15 @@ bool WrappedID3D11Device::Serialise_CreateBlendState(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating blend state, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      if(GetResourceManager()->HasWrapper(ret))
-      {
-        ret->Release();
-        ret = (ID3D11BlendState *)GetResourceManager()->GetWrapper(ret);
-        ret->AddRef();
+      GetResourceManager()->OverrideWrapper(ret);
 
-        GetResourceManager()->AddLiveResource(pState, ret);
-      }
-      else
-      {
-        ret = new WrappedID3D11BlendState1(ret, this);
-
-        GetResourceManager()->AddLiveResource(pState, ret);
-      }
+      ret = new WrappedID3D11BlendState1(pState, ret, this);
     }
 
     AddResource(pState, ResourceType::StateObject, "Blend State");
@@ -2629,6 +2646,8 @@ HRESULT WrappedID3D11Device::CreateBlendState(const D3D11_BLEND_DESC *pBlendStat
   // validation, returns S_FALSE for valid params, or an error code
   if(ppBlendState == NULL)
     return m_pDevice->CreateBlendState(pBlendStateDesc, NULL);
+
+  CachedObjectsGarbageCollect();
 
   ID3D11BlendState *real = NULL;
   HRESULT ret;
@@ -2652,9 +2671,7 @@ HRESULT WrappedID3D11Device::CreateBlendState(const D3D11_BLEND_DESC *pBlendStat
     }
 
     FlushPendingDead();
-    ID3D11BlendState *wrapped = new WrappedID3D11BlendState1(real, this);
-
-    CachedObjectsGarbageCollect();
+    ID3D11BlendState *wrapped = new WrappedID3D11BlendState1(ResourceId(), real, this);
 
     {
       RDCASSERT(m_CachedStateObjects.find(wrapped) == m_CachedStateObjects.end());
@@ -2710,25 +2727,15 @@ bool WrappedID3D11Device::Serialise_CreateDepthStencilState(
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating depth-stencil state, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      if(GetResourceManager()->HasWrapper(ret))
-      {
-        ret->Release();
-        ret = (ID3D11DepthStencilState *)GetResourceManager()->GetWrapper(ret);
-        ret->AddRef();
+      GetResourceManager()->OverrideWrapper(ret);
 
-        GetResourceManager()->AddLiveResource(pState, ret);
-      }
-      else
-      {
-        ret = new WrappedID3D11DepthStencilState(ret, this);
-
-        GetResourceManager()->AddLiveResource(pState, ret);
-      }
+      ret = new WrappedID3D11DepthStencilState(pState, ret, this);
     }
 
     AddResource(pState, ResourceType::StateObject, "Depth-Stencil State");
@@ -2743,6 +2750,8 @@ HRESULT WrappedID3D11Device::CreateDepthStencilState(const D3D11_DEPTH_STENCIL_D
   // validation, returns S_FALSE for valid params, or an error code
   if(ppDepthStencilState == NULL)
     return m_pDevice->CreateDepthStencilState(pDepthStencilDesc, NULL);
+
+  CachedObjectsGarbageCollect();
 
   ID3D11DepthStencilState *real = NULL;
   HRESULT ret;
@@ -2766,9 +2775,7 @@ HRESULT WrappedID3D11Device::CreateDepthStencilState(const D3D11_DEPTH_STENCIL_D
     }
 
     FlushPendingDead();
-    ID3D11DepthStencilState *wrapped = new WrappedID3D11DepthStencilState(real, this);
-
-    CachedObjectsGarbageCollect();
+    ID3D11DepthStencilState *wrapped = new WrappedID3D11DepthStencilState(ResourceId(), real, this);
 
     {
       RDCASSERT(m_CachedStateObjects.find(wrapped) == m_CachedStateObjects.end());
@@ -2822,25 +2829,15 @@ bool WrappedID3D11Device::Serialise_CreateRasterizerState(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating rasterizer state, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      if(GetResourceManager()->HasWrapper(ret))
-      {
-        ret->Release();
-        ret = (ID3D11RasterizerState *)GetResourceManager()->GetWrapper(ret);
-        ret->AddRef();
+      GetResourceManager()->OverrideWrapper(ret);
 
-        GetResourceManager()->AddLiveResource(pState, ret);
-      }
-      else
-      {
-        ret = new WrappedID3D11RasterizerState2(ret, this);
-
-        GetResourceManager()->AddLiveResource(pState, ret);
-      }
+      ret = new WrappedID3D11RasterizerState2(pState, ret, this);
     }
 
     AddResource(pState, ResourceType::StateObject, "Rasterizer State");
@@ -2855,6 +2852,8 @@ HRESULT WrappedID3D11Device::CreateRasterizerState(const D3D11_RASTERIZER_DESC *
   // validation, returns S_FALSE for valid params, or an error code
   if(ppRasterizerState == NULL)
     return m_pDevice->CreateRasterizerState(pRasterizerDesc, NULL);
+
+  CachedObjectsGarbageCollect();
 
   ID3D11RasterizerState *real = NULL;
   HRESULT ret;
@@ -2878,9 +2877,7 @@ HRESULT WrappedID3D11Device::CreateRasterizerState(const D3D11_RASTERIZER_DESC *
     }
 
     FlushPendingDead();
-    ID3D11RasterizerState *wrapped = new WrappedID3D11RasterizerState2(real, this);
-
-    CachedObjectsGarbageCollect();
+    ID3D11RasterizerState *wrapped = new WrappedID3D11RasterizerState2(ResourceId(), real, this);
 
     {
       RDCASSERT(m_CachedStateObjects.find(wrapped) == m_CachedStateObjects.end());
@@ -2934,25 +2931,15 @@ bool WrappedID3D11Device::Serialise_CreateSamplerState(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating sampler state, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      if(GetResourceManager()->HasWrapper(ret))
-      {
-        ret->Release();
-        ret = (ID3D11SamplerState *)GetResourceManager()->GetWrapper(ret);
-        ret->AddRef();
+      GetResourceManager()->OverrideWrapper(ret);
 
-        GetResourceManager()->AddLiveResource(pState, ret);
-      }
-      else
-      {
-        ret = new WrappedID3D11SamplerState(ret, this);
-
-        GetResourceManager()->AddLiveResource(pState, ret);
-      }
+      ret = new WrappedID3D11SamplerState(pState, ret, this);
     }
 
     AddResource(pState, ResourceType::Sampler, "Sampler State");
@@ -2967,6 +2954,8 @@ HRESULT WrappedID3D11Device::CreateSamplerState(const D3D11_SAMPLER_DESC *pSampl
   // validation, returns S_FALSE for valid params, or an error code
   if(ppSamplerState == NULL)
     return m_pDevice->CreateSamplerState(pSamplerDesc, NULL);
+
+  CachedObjectsGarbageCollect();
 
   ID3D11SamplerState *real = NULL;
   HRESULT ret;
@@ -2990,9 +2979,7 @@ HRESULT WrappedID3D11Device::CreateSamplerState(const D3D11_SAMPLER_DESC *pSampl
     }
 
     FlushPendingDead();
-    ID3D11SamplerState *wrapped = new WrappedID3D11SamplerState(real, this);
-
-    CachedObjectsGarbageCollect();
+    ID3D11SamplerState *wrapped = new WrappedID3D11SamplerState(ResourceId(), real, this);
 
     {
       RDCASSERT(m_CachedStateObjects.find(wrapped) == m_CachedStateObjects.end());
@@ -3045,14 +3032,13 @@ bool WrappedID3D11Device::Serialise_CreateQuery(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating query, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11Query1(ret, this);
-
-      GetResourceManager()->AddLiveResource(pQuery, ret);
+      ret = new WrappedID3D11Query1(pQuery, ret, this);
     }
 
     AddResource(pQuery, ResourceType::Query, "Query");
@@ -3077,7 +3063,7 @@ HRESULT WrappedID3D11Device::CreateQuery(const D3D11_QUERY_DESC *pQueryDesc, ID3
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11Query1(real, this);
+    wrapped = new WrappedID3D11Query1(ResourceId(), real, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -3129,14 +3115,13 @@ bool WrappedID3D11Device::Serialise_CreatePredicate(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating predicate, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11Predicate(ret, this);
-
-      GetResourceManager()->AddLiveResource(pPredicate, ret);
+      ret = new WrappedID3D11Predicate(pPredicate, ret, this);
     }
 
     AddResource(pPredicate, ResourceType::Query, "Predicate");
@@ -3168,7 +3153,7 @@ HRESULT WrappedID3D11Device::CreatePredicate(const D3D11_QUERY_DESC *pPredicateD
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11Predicate(real, this);
+    wrapped = new WrappedID3D11Predicate(ResourceId(), real, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -3221,14 +3206,13 @@ bool WrappedID3D11Device::Serialise_CreateCounter(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating counter, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11Query1(ret, this);
-
-      GetResourceManager()->AddLiveResource(pCounter, ret);
+      ret = new WrappedID3D11Query1(pCounter, ret, this);
     }
 
     AddResource(pCounter, ResourceType::Query, "Counter");
@@ -3254,7 +3238,7 @@ HRESULT WrappedID3D11Device::CreateCounter(const D3D11_COUNTER_DESC *pCounterDes
     SCOPED_LOCK(m_D3DLock);
 
     FlushPendingDead();
-    wrapped = new WrappedID3D11Counter(real, this);
+    wrapped = new WrappedID3D11Counter(ResourceId(), real, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -3304,16 +3288,19 @@ bool WrappedID3D11Device::Serialise_CreateDeferredContext(SerialiserType &ser,
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating deferred context, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11DeviceContext(this, ret);
+      WrappedID3D11DeviceContext *ctx = new WrappedID3D11DeviceContext(this, ret);
+      ctx->SetReplayResourceID(pDeferredContext);
+      m_ResourceManager->AddResource(pDeferredContext, ctx);
+
+      ret = ctx;
 
       AddDeferredContext((WrappedID3D11DeviceContext *)ret);
-
-      GetResourceManager()->AddLiveResource(pDeferredContext, ret);
     }
 
     AddResource(pDeferredContext, ResourceType::CommandBuffer, "Deferred Context");
@@ -3422,9 +3409,7 @@ bool WrappedID3D11Device::Serialise_OpenSharedResource(SerialiserType &ser, HAND
       HRESULT hr = S_OK;
 
       // unset flags that are unimportant/problematic in replay
-      Descriptor.MiscFlags &=
-          ~(D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
-            D3D11_RESOURCE_MISC_GDI_COMPATIBLE | D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
+      MaskResourceMiscFlags(Descriptor.MiscFlags);
 
       D3D11_SUBRESOURCE_DATA data;
       data.pSysMem = BufferContents;
@@ -3434,14 +3419,13 @@ bool WrappedID3D11Device::Serialise_OpenSharedResource(SerialiserType &ser, HAND
 
       if(FAILED(hr))
       {
-        RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+        SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                         "Failed creating fake shared buffer, HRESULT: %s", ToStr(hr).c_str());
         return false;
       }
       else
       {
-        ret = new WrappedID3D11Buffer(ret, Descriptor.ByteWidth, this);
-
-        GetResourceManager()->AddLiveResource(pResource, ret);
+        ret = new WrappedID3D11Buffer(pResource, ret, Descriptor.ByteWidth, this);
       }
 
       AddResource(pResource, ResourceType::Buffer, "Shared Buffer");
@@ -3502,22 +3486,19 @@ bool WrappedID3D11Device::Serialise_OpenSharedResource(SerialiserType &ser, HAND
       TextureDisplayType dispType = DispTypeForTexture(Descriptor);
 
       // unset flags that are unimportant/problematic in replay
-      Descriptor.MiscFlags &=
-          ~(D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
-            D3D11_RESOURCE_MISC_GDI_COMPATIBLE | D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
+      MaskResourceMiscFlags(Descriptor.MiscFlags);
 
       hr = m_pDevice->CreateTexture1D(&Descriptor, NULL, &ret);
 
       if(FAILED(hr))
       {
-        RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+        SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                         "Failed creating fake shared 1D texture, HRESULT: %s", ToStr(hr).c_str());
         return false;
       }
       else
       {
-        ret = new WrappedID3D11Texture1D(ret, this, dispType);
-
-        GetResourceManager()->AddLiveResource(pResource, ret);
+        ret = new WrappedID3D11Texture1D(pResource, ret, this, dispType);
       }
 
       AddResource(pResource, ResourceType::Texture, "Shared 1D Texture");
@@ -3548,22 +3529,19 @@ bool WrappedID3D11Device::Serialise_OpenSharedResource(SerialiserType &ser, HAND
       TextureDisplayType dispType = DispTypeForTexture(Descriptor);
 
       // unset flags that are unimportant/problematic in replay
-      Descriptor.MiscFlags &=
-          ~(D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
-            D3D11_RESOURCE_MISC_GDI_COMPATIBLE | D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
+      MaskResourceMiscFlags(Descriptor.MiscFlags);
 
       hr = m_pDevice->CreateTexture2D(&Descriptor, NULL, &ret);
 
       if(FAILED(hr))
       {
-        RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+        SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                         "Failed creating fake shared 2D texture, HRESULT: %s", ToStr(hr).c_str());
         return false;
       }
       else
       {
-        ret = new WrappedID3D11Texture2D1(ret, this, dispType);
-
-        GetResourceManager()->AddLiveResource(pResource, ret);
+        ret = new WrappedID3D11Texture2D1(pResource, ret, this, dispType);
       }
 
       AddResource(pResource, ResourceType::Texture, "Shared 2D Texture");
@@ -3594,22 +3572,19 @@ bool WrappedID3D11Device::Serialise_OpenSharedResource(SerialiserType &ser, HAND
       TextureDisplayType dispType = DispTypeForTexture(Descriptor);
 
       // unset flags that are unimportant/problematic in replay
-      Descriptor.MiscFlags &=
-          ~(D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
-            D3D11_RESOURCE_MISC_GDI_COMPATIBLE | D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
+      MaskResourceMiscFlags(Descriptor.MiscFlags);
 
       hr = m_pDevice->CreateTexture3D(&Descriptor, NULL, &ret);
 
       if(FAILED(hr))
       {
-        RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+        SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                         "Failed creating fake shared 3D texture, HRESULT: %s", ToStr(hr).c_str());
         return false;
       }
       else
       {
-        ret = new WrappedID3D11Texture3D1(ret, this, dispType);
-
-        GetResourceManager()->AddLiveResource(pResource, ret);
+        ret = new WrappedID3D11Texture3D1(pResource, ret, this, dispType);
       }
 
       AddResource(pResource, ResourceType::Texture, "Shared 3D Texture");
@@ -3655,7 +3630,7 @@ HRESULT WrappedID3D11Device::OpenSharedResourceInternal(D3D11Chunk chunkType,
   // fences aren't serialised
   if(ReturnedInterface == __uuidof(ID3D11Fence))
   {
-    WrappedID3D11Fence *w = new WrappedID3D11Fence((ID3D11Fence *)*ppResource, this);
+    WrappedID3D11Fence *w = new WrappedID3D11Fence(ResourceId(), (ID3D11Fence *)*ppResource, this);
 
     *ppResource = (ID3D11Fence *)w;
 
@@ -3743,7 +3718,7 @@ HRESULT WrappedID3D11Device::OpenSharedResourceInternal(D3D11Chunk chunkType,
 
     if(isBuf)
     {
-      WrappedID3D11Buffer *w = new WrappedID3D11Buffer((ID3D11Buffer *)res, 0, this);
+      WrappedID3D11Buffer *w = new WrappedID3D11Buffer(ResourceId(), (ID3D11Buffer *)res, 0, this);
       wrappedID = w->GetResourceID();
 
       ppvWrapped = (ID3D11Buffer *)w;
@@ -3764,7 +3739,8 @@ HRESULT WrappedID3D11Device::OpenSharedResourceInternal(D3D11Chunk chunkType,
     }
     else if(isTex1D)
     {
-      WrappedID3D11Texture1D *w = new WrappedID3D11Texture1D((ID3D11Texture1D *)res, this);
+      WrappedID3D11Texture1D *w =
+          new WrappedID3D11Texture1D(ResourceId(), (ID3D11Texture1D *)res, this);
       wrappedID = w->GetResourceID();
 
       ppvWrapped = (ID3D11Texture1D *)w;
@@ -3789,7 +3765,7 @@ HRESULT WrappedID3D11Device::OpenSharedResourceInternal(D3D11Chunk chunkType,
       if(ReturnedInterface == __uuidof(ID3D11Texture2D1))
         tex2d = (ID3D11Texture2D1 *)res;
 
-      WrappedID3D11Texture2D1 *w = new WrappedID3D11Texture2D1(tex2d, this);
+      WrappedID3D11Texture2D1 *w = new WrappedID3D11Texture2D1(ResourceId(), tex2d, this);
       wrappedID = w->GetResourceID();
 
       ppvWrapped = (ID3D11Texture2D *)w;
@@ -3816,7 +3792,7 @@ HRESULT WrappedID3D11Device::OpenSharedResourceInternal(D3D11Chunk chunkType,
       if(ReturnedInterface == __uuidof(ID3D11Texture3D1))
         tex3d = (ID3D11Texture3D1 *)res;
 
-      WrappedID3D11Texture3D1 *w = new WrappedID3D11Texture3D1(tex3d, this);
+      WrappedID3D11Texture3D1 *w = new WrappedID3D11Texture3D1(ResourceId(), tex3d, this);
       wrappedID = w->GetResourceID();
 
       ppvWrapped = (ID3D11Texture3D *)w;
@@ -3857,6 +3833,9 @@ HRESULT WrappedID3D11Device::OpenSharedResourceInternal(D3D11Chunk chunkType,
     record->AddChunk(chunk);
     record->SetDataPtr(chunk->GetData());
 
+    if(IsActiveCapturing(m_State))
+      Prepare_InitialState(GetResourceManager()->GetResource(wrappedID));
+
     return S_OK;
   }
 
@@ -3896,21 +3875,36 @@ HRESULT WrappedID3D11Device::CheckCounter(const D3D11_COUNTER_DESC *pDesc, D3D11
 HRESULT WrappedID3D11Device::CheckFeatureSupport(D3D11_FEATURE Feature, void *pFeatureSupportData,
                                                  UINT FeatureSupportDataSize)
 {
-  if(Feature == D3D11_FEATURE_D3D11_OPTIONS2)
+  if((Feature == D3D11_FEATURE_D3D11_OPTIONS1) || (Feature == D3D11_FEATURE_D3D11_OPTIONS2))
   {
     HRESULT hr = m_pDevice->CheckFeatureSupport(Feature, pFeatureSupportData, FeatureSupportDataSize);
 
     if(SUCCEEDED(hr))
     {
-      D3D11_FEATURE_DATA_D3D11_OPTIONS2 *opts =
-          (D3D11_FEATURE_DATA_D3D11_OPTIONS2 *)pFeatureSupportData;
-      if(FeatureSupportDataSize != sizeof(D3D11_FEATURE_DATA_D3D11_OPTIONS2))
-        return E_INVALIDARG;
+      if(Feature == D3D11_FEATURE_D3D11_OPTIONS1)
+      {
+        D3D11_FEATURE_DATA_D3D11_OPTIONS1 *opts =
+            (D3D11_FEATURE_DATA_D3D11_OPTIONS1 *)pFeatureSupportData;
+        if(FeatureSupportDataSize != sizeof(D3D11_FEATURE_DATA_D3D11_OPTIONS1))
+          return E_INVALIDARG;
 
-      // don't support tiled resources
-      opts->TiledResourcesTier = D3D11_TILED_RESOURCES_NOT_SUPPORTED;
+        // don't support tiled resources
+        opts->TiledResourcesTier = D3D11_TILED_RESOURCES_NOT_SUPPORTED;
 
-      return S_OK;
+        return S_OK;
+      }
+      else
+      {
+        D3D11_FEATURE_DATA_D3D11_OPTIONS2 *opts =
+            (D3D11_FEATURE_DATA_D3D11_OPTIONS2 *)pFeatureSupportData;
+        if(FeatureSupportDataSize != sizeof(D3D11_FEATURE_DATA_D3D11_OPTIONS2))
+          return E_INVALIDARG;
+
+        // don't support tiled resources
+        opts->TiledResourcesTier = D3D11_TILED_RESOURCES_NOT_SUPPORTED;
+
+        return S_OK;
+      }
     }
 
     return hr;

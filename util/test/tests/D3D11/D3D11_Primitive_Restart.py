@@ -8,21 +8,21 @@ class D3D11_Primitive_Restart(rdtest.TestCase):
     def check_capture(self):
         action = self.find_action("Draw")
 
-        self.check(action is not None)
+        assert action is not None
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
         postvs_data = self.get_postvs(action, rd.MeshDataStage.VSOut, 0, action.numIndices)
 
         ib = pipe.GetIBuffer()
 
         # Calculate the strip restart index for this index width
-        striprestart_index = pipe.GetStripRestartIndex() & ((1 << (ib.byteStride*8)) - 1)
+        striprestart_index = pipe.GetRestartIndex() & ((1 << (ib.byteStride*8)) - 1)
 
         # We don't check all of the output, we check a few key vertices to ensure they match up
-        postvs_ref = {
+        postvs_ref: rdtest.MeshReference = {
             0: {
                 'vtx': 0,
                 'idx': 0,
@@ -54,9 +54,9 @@ class D3D11_Primitive_Restart(rdtest.TestCase):
         # Now check the action with a vertex offset
         action = self.find_action("Draw", action.eventId+1)
 
-        self.check(action is not None)
+        assert action is not None
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
         postvs_data = self.get_postvs(action, rd.MeshDataStage.VSOut, 0, action.numIndices)
 
@@ -65,7 +65,7 @@ class D3D11_Primitive_Restart(rdtest.TestCase):
         self.check_mesh_data(postvs_ref, postvs_data)
 
         # Check that the rendered mesh is as expected
-        out = pipe.GetOutputTargets()[0].resourceId
+        out = pipe.GetOutputTargets()[0].resource
         for x in [x*0.01 for x in range(1, 100)]:
             self.check_pixel_value(out, x, 0.1, [0.2, 0.2, 0.2, 1.0])
             self.check_pixel_value(out, x, 0.5, [0.2, 0.2, 0.2, 1.0])

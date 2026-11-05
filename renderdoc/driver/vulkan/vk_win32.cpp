@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,6 +29,7 @@
 #include <shlwapi.h>
 
 static int dllLocator = 0;
+extern "C" const rdcstr VulkanLayerJSONBasename;
 
 void VulkanReplay::OutputWindow::SetWindowHandle(WindowingData window)
 {
@@ -50,7 +51,7 @@ void VulkanReplay::OutputWindow::CreateSurface(WrappedVulkan *driver, VkInstance
       (const char *)&dllLocator, (HMODULE *)&createInfo.hinstance);
 
   VkResult vkr = ObjDisp(inst)->CreateWin32SurfaceKHR(Unwrap(inst), &createInfo, NULL, &surface);
-  driver->CheckVkResult(vkr);
+  CHECK_VKR(driver, vkr);
 }
 
 void VulkanReplay::GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h)
@@ -126,6 +127,21 @@ void WrappedVulkan::AddRequiredExtensions(bool instance, rdcarray<rdcstr> &exten
       // don't add duplicates
       if(!extensionList.contains(VK_KHR_SWAPCHAIN_EXTENSION_NAME))
         extensionList.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    }
+    if((supportedExtensions.find(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME) ==
+        supportedExtensions.end()) ||
+       (supportedExtensions.find(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME) ==
+        supportedExtensions.end()))
+    {
+      RDCWARN("Unsupported required instance extension for NVIDIA performance counters '%s'",
+              VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
+    }
+    else
+    {
+      if(!extensionList.contains(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME))
+        extensionList.push_back(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
+      if(!extensionList.contains(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME))
+        extensionList.push_back(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME);
     }
   }
 }
@@ -242,6 +258,8 @@ bool ProcessImplicitLayersKey(HKEY key, const rdcstr &path, rdcarray<rdcstr> *ot
   for(size_t i = 0; i < myJSON.length(); i++)
     myJSON[i] = towlower(myJSON[i]);
 
+  rdcwstr VulkanLayerJSONFilename = StringFormat::UTF82Wide(VulkanLayerJSONBasename + ".json");
+
   while(ret == ERROR_SUCCESS)
   {
     // convert the name here so we preserve casing
@@ -254,7 +272,7 @@ bool ProcessImplicitLayersKey(HKEY key, const rdcstr &path, rdcarray<rdcstr> *ot
     {
       thisRegistered = true;
     }
-    else if(wcsstr(name, L"renderdoc.json") != NULL)
+    else if(wcsstr(name, VulkanLayerJSONFilename.c_str()) != NULL)
     {
       if(otherJSONs)
         otherJSONs->push_back(utf8name);

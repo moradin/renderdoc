@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -87,11 +87,87 @@ TEST_CASE("Test basic stream I/O operations", "[streamio]")
   CHECK_FALSE(reader.IsErrored());
   CHECK(reader.AtEnd());
 
+  EXPECT_ERROR();
+
   // reading off the end should read 0s and move to error state
   reader.Read(test);
   CHECK(test == 0);
+  CHECK(DID_ERROR_HAPPEN());
 
   CHECK(reader.IsErrored());
+};
+
+TEST_CASE("Test stream I/O with invalid/broken outputs", "[streamio]")
+{
+  SECTION("NULL file writer")
+  {
+    EXPECT_ERROR();
+    StreamWriter writer((FILE *)NULL, Ownership::Stream);
+
+    CHECK(writer.IsErrored());
+    CHECK(DID_ERROR_HAPPEN());
+
+    uint32_t test = 5;
+    writer.Write(test);
+
+    CHECK(writer.IsErrored());
+  };
+
+  SECTION("NULL socket writer")
+  {
+    EXPECT_ERROR();
+    StreamWriter writer((Network::Socket *)NULL, Ownership::Stream);
+
+    CHECK(writer.IsErrored());
+    CHECK(DID_ERROR_HAPPEN());
+
+    uint32_t test = 5;
+    writer.Write(test);
+
+    CHECK(writer.IsErrored());
+  };
+
+  SECTION("NULL file reader")
+  {
+    EXPECT_ERROR();
+    StreamReader reader((FILE *)NULL, 0, Ownership::Stream);
+
+    CHECK(reader.IsErrored());
+    CHECK(DID_ERROR_HAPPEN());
+
+    uint32_t test = 5;
+    reader.Read(test);
+
+    CHECK(reader.IsErrored());
+  };
+
+  SECTION("NULL file reader")
+  {
+    EXPECT_ERROR();
+    StreamReader reader((FILE *)NULL);
+
+    CHECK(reader.IsErrored());
+    CHECK(DID_ERROR_HAPPEN());
+
+    uint32_t test = 5;
+    reader.Read(test);
+
+    CHECK(reader.IsErrored());
+  };
+
+  SECTION("NULL socket reader")
+  {
+    EXPECT_ERROR();
+    StreamReader reader((Network::Socket *)NULL, Ownership::Stream);
+
+    CHECK(reader.IsErrored());
+    CHECK(DID_ERROR_HAPPEN());
+
+    uint32_t test = 5;
+    reader.Read(test);
+
+    CHECK(reader.IsErrored());
+  };
 };
 
 TEST_CASE("Test stream I/O operations over the network", "[streamio][network]")
@@ -227,7 +303,6 @@ TEST_CASE("Test stream I/O operations over the network", "[streamio][network]")
     uint64_t vals[10] = {1, 6, 0, 5, 3, 8, 7, 9, 2, 4};
 
     sendThread = Threading::CreateThread([&threadA, sender, &writer, &vals]() {
-
       PerformanceTimer timer;
 
       for(int32_t i = 0; i < 128; i++)

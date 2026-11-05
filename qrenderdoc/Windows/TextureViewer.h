@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -48,13 +48,14 @@ struct Following
   FollowType Type;
   ShaderStage Stage;
   int index;
-  int arrayEl;
+  uint32_t arrayEl;
 
   // this is only for QVariant compatibility and will generate an invalid Following instance! do not
   // use!
   Following();
 
-  Following(const TextureViewer &tex, FollowType t, ShaderStage s, int i, int a);
+  Following(const TextureViewer &tex, FollowType type, ShaderStage stage, uint32_t index,
+            uint32_t arrayElement);
   Following(const Following &other);
   Following &operator=(const Following &other);
 
@@ -67,21 +68,19 @@ struct Following
   CompType GetTypeHint(ICaptureContext &ctx);
 
   ResourceId GetResourceId(ICaptureContext &ctx);
-  BoundResource GetBoundResource(ICaptureContext &ctx, int arrayIdx);
+  Descriptor GetDescriptor(ICaptureContext &ctx, uint32_t arrayIdx);
 
-  static rdcarray<BoundResource> GetOutputTargets(ICaptureContext &ctx);
+  static rdcarray<Descriptor> GetOutputTargets(ICaptureContext &ctx);
 
-  static BoundResource GetDepthTarget(ICaptureContext &ctx);
-  static rdcarray<BoundResourceArray> GetReadWriteResources(ICaptureContext &ctx, ShaderStage stage,
-                                                            bool onlyUsed);
-  static rdcarray<BoundResourceArray> GetReadOnlyResources(ICaptureContext &ctx, ShaderStage stage,
-                                                           bool onlyUsed);
+  static Descriptor GetDepthTarget(ICaptureContext &ctx);
+  static Descriptor GetDepthResolveTarget(ICaptureContext &ctx);
+  static rdcarray<UsedDescriptor> GetReadWriteResources(ICaptureContext &ctx, ShaderStage stage,
+                                                        bool onlyUsed);
+  static rdcarray<UsedDescriptor> GetReadOnlyResources(ICaptureContext &ctx, ShaderStage stage,
+                                                       bool onlyUsed);
 
   const ShaderReflection *GetReflection(ICaptureContext &ctx);
   static const ShaderReflection *GetReflection(ICaptureContext &ctx, ShaderStage stage);
-
-  const ShaderBindpointMapping &GetMapping(ICaptureContext &ctx);
-  static const ShaderBindpointMapping &GetMapping(ICaptureContext &ctx, ShaderStage stage);
 
 private:
   const TextureViewer &tex;
@@ -143,10 +142,12 @@ public:
 
   Subresource GetSelectedSubresource() override;
   void SetSelectedSubresource(Subresource sub) override;
+  rdcpair<int32_t, int32_t> GetPickedLocation() override;
   void GotoLocation(uint32_t x, uint32_t y) override;
   DebugOverlay GetTextureOverlay() override;
   void SetTextureOverlay(DebugOverlay overlay) override;
 
+  TextureDisplay GetTextureDisplay() override { return m_TexDisplay; }
   bool IsZoomAutoFit() override;
   float GetZoomLevel() override;
   void SetZoomLevel(bool autofit, float zoom) override;
@@ -155,6 +156,7 @@ public:
   void SetHistogramRange(float blackpoint, float whitepoint) override;
 
   uint32_t GetChannelVisibilityBits() override;
+  rdcfixedarray<bool, 4> GetChannelVisibility() override;
   void SetChannelVisibility(bool red, bool green, bool blue, bool alpha) override;
 
   // ICaptureViewer
@@ -256,6 +258,8 @@ private:
 
   void SelectPreview(ResourcePreview *prev);
 
+  void ShowPixelHistory(bool failedDebug);
+
   void SetupTextureTabs();
   void RemoveTextureTabs(int firstIndex);
 
@@ -266,13 +270,14 @@ private:
 
   ResourcePreview *UI_CreateThumbnail(ThumbnailStrip *strip);
   void UI_CreateThumbnails();
-  void InitResourcePreview(ResourcePreview *prev, BoundResource res, bool force, Following &follow,
+  void InitResourcePreview(ResourcePreview *prev, Descriptor res, bool force, Following &follow,
                            const QString &bindName, const QString &slotName);
 
-  void InitStageResourcePreviews(ShaderStage stage, const rdcarray<ShaderResource> &resourceDetails,
-                                 const rdcarray<Bindpoint> &mapping,
-                                 rdcarray<BoundResourceArray> &ResList, ThumbnailStrip *prevs,
+  void InitStageResourcePreviews(ShaderStage stage, const rdcarray<ShaderResource> &shaderInterface,
+                                 const rdcarray<UsedDescriptor> &descriptors, ThumbnailStrip *prevs,
                                  int &prevIndex, bool copy, bool rw);
+
+  void UI_PreviewResized(ResourcePreview *prev);
 
   void AddResourceUsageEntry(QMenu &menu, uint32_t start, uint32_t end, ResourceUsage usage);
   void OpenResourceContextMenu(ResourceId id, bool input, const rdcarray<EventUsage> &usage);
@@ -306,6 +311,8 @@ private:
   void ShowGotoPopup();
 
   bool ShouldFlipForGL();
+  uint32_t MipCoordFromBase(int coord, const uint32_t dim);
+  uint32_t BaseCoordFromMip(int coord, const uint32_t dim);
 
   void UI_UpdateFittedScale();
   void UI_SetScale(float s);
@@ -354,8 +361,17 @@ private:
 
   friend struct Following;
 
-  rdcarray<BoundResourceArray> m_ReadOnlyResources[(uint32_t)ShaderStage::Count];
-  rdcarray<BoundResourceArray> m_ReadWriteResources[(uint32_t)ShaderStage::Count];
+  rdcarray<UsedDescriptor> m_ReadOnlyResources[NumShaderStages];
+  rdcarray<UsedDescriptor> m_ReadWriteResources[NumShaderStages];
+
+  struct DescriptorThumbUpdate
+  {
+    DescriptorAccess access;
+    ResourcePreview *preview;
+    QString slotName;
+  };
+
+  rdcarray<DescriptorThumbUpdate> m_DescriptorThumbUpdates;
 
   QTime m_CustomShaderTimer;
   int m_CustomShaderWriteTime = 0;

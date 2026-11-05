@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,5 +28,9 @@ IO_LOCATION(0) out vec4 color_out;
 
 void main(void)
 {
-  color_out = intBitsToFloat(gl_PrimitiveID).xxxx;
+#ifdef INT_BITS_TO_FLOAT_NOT_SUPPORTED
+  color_out = vec4(float(gl_PrimitiveID));
+#else
+  color_out = vec4(intBitsToFloat(gl_PrimitiveID));
+#endif
 }

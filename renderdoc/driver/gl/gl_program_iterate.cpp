@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -88,140 +88,140 @@ struct UnrolledSPIRVConstant
 
 static GLenum MakeGLType(const ShaderConstantType &type)
 {
-  if(type.descriptor.type == VarType::Double)
+  if(type.baseType == VarType::Double)
   {
-    if(type.descriptor.columns == 4 && type.descriptor.rows == 4)
+    if(type.columns == 4 && type.rows == 4)
       return eGL_DOUBLE_MAT4;
-    if(type.descriptor.columns == 4 && type.descriptor.rows == 3)
+    if(type.columns == 4 && type.rows == 3)
       return eGL_DOUBLE_MAT4x3;
-    if(type.descriptor.columns == 4 && type.descriptor.rows == 2)
+    if(type.columns == 4 && type.rows == 2)
       return eGL_DOUBLE_MAT4x2;
-    if(type.descriptor.columns == 4 && type.descriptor.rows == 1)
+    if(type.columns == 4 && type.rows == 1)
       return eGL_DOUBLE_VEC4;
 
-    if(type.descriptor.columns == 3 && type.descriptor.rows == 4)
+    if(type.columns == 3 && type.rows == 4)
       return eGL_DOUBLE_MAT3x4;
-    if(type.descriptor.columns == 3 && type.descriptor.rows == 3)
+    if(type.columns == 3 && type.rows == 3)
       return eGL_DOUBLE_MAT3;
-    if(type.descriptor.columns == 3 && type.descriptor.rows == 2)
+    if(type.columns == 3 && type.rows == 2)
       return eGL_DOUBLE_MAT3x2;
-    if(type.descriptor.columns == 3 && type.descriptor.rows == 1)
+    if(type.columns == 3 && type.rows == 1)
       return eGL_DOUBLE_VEC3;
 
-    if(type.descriptor.columns == 2 && type.descriptor.rows == 4)
+    if(type.columns == 2 && type.rows == 4)
       return eGL_DOUBLE_MAT2x4;
-    if(type.descriptor.columns == 2 && type.descriptor.rows == 3)
+    if(type.columns == 2 && type.rows == 3)
       return eGL_DOUBLE_MAT2x4;
-    if(type.descriptor.columns == 2 && type.descriptor.rows == 2)
+    if(type.columns == 2 && type.rows == 2)
       return eGL_DOUBLE_MAT2;
-    if(type.descriptor.columns == 2 && type.descriptor.rows == 1)
+    if(type.columns == 2 && type.rows == 1)
       return eGL_DOUBLE_VEC2;
 
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 4)
+    if(type.columns == 1 && type.rows == 4)
       return eGL_DOUBLE_VEC4;
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 3)
+    if(type.columns == 1 && type.rows == 3)
       return eGL_DOUBLE_VEC3;
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 2)
+    if(type.columns == 1 && type.rows == 2)
       return eGL_DOUBLE_VEC2;
 
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 4)
+    if(type.rows == 1 && type.columns == 4)
       return eGL_DOUBLE_VEC4;
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 3)
+    if(type.rows == 1 && type.columns == 3)
       return eGL_DOUBLE_VEC3;
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 2)
+    if(type.rows == 1 && type.columns == 2)
       return eGL_DOUBLE_VEC2;
 
     return eGL_DOUBLE;
   }
-  else if(type.descriptor.type == VarType::Float)
+  else if(type.baseType == VarType::Float)
   {
-    if(type.descriptor.columns == 4 && type.descriptor.rows == 4)
+    if(type.columns == 4 && type.rows == 4)
       return eGL_FLOAT_MAT4;
-    if(type.descriptor.columns == 4 && type.descriptor.rows == 3)
+    if(type.columns == 4 && type.rows == 3)
       return eGL_FLOAT_MAT4x3;
-    if(type.descriptor.columns == 4 && type.descriptor.rows == 2)
+    if(type.columns == 4 && type.rows == 2)
       return eGL_FLOAT_MAT4x2;
-    if(type.descriptor.columns == 4 && type.descriptor.rows == 1)
+    if(type.columns == 4 && type.rows == 1)
       return eGL_FLOAT_VEC4;
 
-    if(type.descriptor.columns == 3 && type.descriptor.rows == 4)
+    if(type.columns == 3 && type.rows == 4)
       return eGL_FLOAT_MAT3x4;
-    if(type.descriptor.columns == 3 && type.descriptor.rows == 3)
+    if(type.columns == 3 && type.rows == 3)
       return eGL_FLOAT_MAT3;
-    if(type.descriptor.columns == 3 && type.descriptor.rows == 2)
+    if(type.columns == 3 && type.rows == 2)
       return eGL_FLOAT_MAT3x2;
-    if(type.descriptor.columns == 3 && type.descriptor.rows == 1)
+    if(type.columns == 3 && type.rows == 1)
       return eGL_FLOAT_VEC3;
 
-    if(type.descriptor.columns == 2 && type.descriptor.rows == 4)
+    if(type.columns == 2 && type.rows == 4)
       return eGL_FLOAT_MAT2x4;
-    if(type.descriptor.columns == 2 && type.descriptor.rows == 3)
+    if(type.columns == 2 && type.rows == 3)
       return eGL_FLOAT_MAT2x4;
-    if(type.descriptor.columns == 2 && type.descriptor.rows == 2)
+    if(type.columns == 2 && type.rows == 2)
       return eGL_FLOAT_MAT2;
-    if(type.descriptor.columns == 2 && type.descriptor.rows == 1)
+    if(type.columns == 2 && type.rows == 1)
       return eGL_FLOAT_VEC2;
 
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 4)
+    if(type.columns == 1 && type.rows == 4)
       return eGL_FLOAT_VEC4;
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 3)
+    if(type.columns == 1 && type.rows == 3)
       return eGL_FLOAT_VEC3;
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 2)
+    if(type.columns == 1 && type.rows == 2)
       return eGL_FLOAT_VEC2;
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 1)
+    if(type.columns == 1 && type.rows == 1)
       return eGL_FLOAT;
 
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 4)
+    if(type.rows == 1 && type.columns == 4)
       return eGL_FLOAT_VEC4;
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 3)
+    if(type.rows == 1 && type.columns == 3)
       return eGL_FLOAT_VEC3;
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 2)
+    if(type.rows == 1 && type.columns == 2)
       return eGL_FLOAT_VEC2;
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 1)
+    if(type.rows == 1 && type.columns == 1)
       return eGL_FLOAT;
 
     return eGL_FLOAT;
   }
-  else if(type.descriptor.type == VarType::SInt)
+  else if(type.baseType == VarType::SInt)
   {
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 4)
+    if(type.columns == 1 && type.rows == 4)
       return eGL_INT_VEC4;
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 3)
+    if(type.columns == 1 && type.rows == 3)
       return eGL_INT_VEC3;
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 2)
+    if(type.columns == 1 && type.rows == 2)
       return eGL_INT_VEC2;
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 1)
+    if(type.columns == 1 && type.rows == 1)
       return eGL_INT;
 
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 4)
+    if(type.rows == 1 && type.columns == 4)
       return eGL_INT_VEC4;
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 3)
+    if(type.rows == 1 && type.columns == 3)
       return eGL_INT_VEC3;
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 2)
+    if(type.rows == 1 && type.columns == 2)
       return eGL_INT_VEC2;
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 1)
+    if(type.rows == 1 && type.columns == 1)
       return eGL_INT;
 
     return eGL_INT;
   }
-  else if(type.descriptor.type == VarType::UInt)
+  else if(type.baseType == VarType::UInt)
   {
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 4)
+    if(type.columns == 1 && type.rows == 4)
       return eGL_UNSIGNED_INT_VEC4;
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 3)
+    if(type.columns == 1 && type.rows == 3)
       return eGL_UNSIGNED_INT_VEC3;
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 2)
+    if(type.columns == 1 && type.rows == 2)
       return eGL_UNSIGNED_INT_VEC2;
-    if(type.descriptor.columns == 1 && type.descriptor.rows == 1)
+    if(type.columns == 1 && type.rows == 1)
       return eGL_UNSIGNED_INT;
 
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 4)
+    if(type.rows == 1 && type.columns == 4)
       return eGL_UNSIGNED_INT_VEC4;
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 3)
+    if(type.rows == 1 && type.columns == 3)
       return eGL_UNSIGNED_INT_VEC3;
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 2)
+    if(type.rows == 1 && type.columns == 2)
       return eGL_UNSIGNED_INT_VEC2;
-    if(type.descriptor.rows == 1 && type.descriptor.columns == 1)
+    if(type.rows == 1 && type.columns == 1)
       return eGL_UNSIGNED_INT;
 
     return eGL_UNSIGNED_INT;
@@ -249,7 +249,7 @@ static void UnrollConstant(rdcarray<UnrolledSPIRVConstant> &unrolled, const Shad
     name = var.name;
   }
 
-  const uint32_t arraySize = RDCMAX(1U, var.type.descriptor.elements);
+  const uint32_t arraySize = RDCMAX(1U, var.type.elements);
 
   if(var.type.members.empty())
   {
@@ -291,7 +291,7 @@ static void UnrollConstant(rdcarray<UnrolledSPIRVConstant> &unrolled, const Shad
 static void UnrollConstants(const PerStageReflections &stages,
                             rdcarray<UnrolledSPIRVConstant> &globals)
 {
-  for(size_t s = 0; s < 6; s++)
+  for(size_t s = 0; s < NumShaderStages; s++)
   {
     if(!stages.refls[s])
       continue;
@@ -569,12 +569,14 @@ static void ForAllProgramUniforms(SerialiserType *ser, CaptureState state,
   // we only need to process uniform values - for compatibility we still serialise the same, but we
   // skip fetching or applying UBO bindings etc.
   bool IsSrcProgramSPIRV = false;
-  for(size_t i = 0; i < 6; i++)
-    IsSrcProgramSPIRV |= srcStages.refls[i] && srcStages.refls[i]->encoding == ShaderEncoding::SPIRV;
+  for(size_t i = 0; i < NumShaderStages; i++)
+    IsSrcProgramSPIRV |=
+        srcStages.refls[i] && srcStages.refls[i]->encoding == ShaderEncoding::OpenGLSPIRV;
 
   bool IsDstProgramSPIRV = false;
-  for(size_t i = 0; i < 6; i++)
-    IsDstProgramSPIRV |= dstStages.refls[i] && dstStages.refls[i]->encoding == ShaderEncoding::SPIRV;
+  for(size_t i = 0; i < NumShaderStages; i++)
+    IsDstProgramSPIRV |=
+        dstStages.refls[i] && dstStages.refls[i]->encoding == ShaderEncoding::OpenGLSPIRV;
 
   RDCASSERTMSG("Expect both programs to be SPIR-V in ForAllProgramUniforms",
                IsSrcProgramSPIRV == IsDstProgramSPIRV, IsSrcProgramSPIRV, IsDstProgramSPIRV);
@@ -756,9 +758,7 @@ static void ForAllProgramUniforms(SerialiserType *ser, CaptureState state,
           case eGL_DOUBLE:
           case eGL_DOUBLE_VEC2:
           case eGL_DOUBLE_VEC3:
-          case eGL_DOUBLE_VEC4:
-            GL.glGetUniformdv(progSrc, srcLocation, dv);
-            break;
+          case eGL_DOUBLE_VEC4: GL.glGetUniformdv(progSrc, srcLocation, dv); break;
 
           // treat all samplers as just an int (since they just store their binding value)
           case eGL_SAMPLER_1D:
@@ -836,9 +836,7 @@ static void ForAllProgramUniforms(SerialiserType *ser, CaptureState state,
           case eGL_INT:
           case eGL_INT_VEC2:
           case eGL_INT_VEC3:
-          case eGL_INT_VEC4:
-            GL.glGetUniformiv(progSrc, srcLocation, iv);
-            break;
+          case eGL_INT_VEC4: GL.glGetUniformiv(progSrc, srcLocation, iv); break;
           // bools are unsigned integers
           case eGL_UNSIGNED_INT:
           case eGL_BOOL:
@@ -1192,11 +1190,11 @@ template void SerialiseProgramUniforms(WriteSerialiser &ser, CaptureState state,
                                        const PerStageReflections &stages, GLuint prog,
                                        std::map<GLint, GLint> *locTranslate);
 
-bool CopyProgramAttribBindings(GLuint progsrc, GLuint progdst, ShaderReflection *refl)
+bool CopyProgramAttribBindings(GLuint progsrc, GLuint progdst, const ShaderReflection *refl)
 {
   // don't try to copy bindings for SPIR-V shaders. The queries by name may fail, and the bindings
   // are immutable anyway
-  if(refl->encoding == ShaderEncoding::SPIRV)
+  if(refl->encoding == ShaderEncoding::OpenGLSPIRV)
     return false;
 
   // copy over attrib bindings
@@ -1206,19 +1204,23 @@ bool CopyProgramAttribBindings(GLuint progsrc, GLuint progdst, ShaderReflection 
     if(sig.systemValue != ShaderBuiltin::Undefined)
       continue;
 
-    GLint idx = GL.glGetAttribLocation(progsrc, sig.varName.c_str());
+    rdcstr name = sig.varName;
+    if(name.endsWith(":col0"))
+      name.resize(name.size() - 5);
+
+    GLint idx = GL.glGetAttribLocation(progsrc, name.c_str());
     if(idx >= 0)
-      GL.glBindAttribLocation(progdst, (GLuint)idx, sig.varName.c_str());
+      GL.glBindAttribLocation(progdst, (GLuint)idx, name.c_str());
   }
 
   return !refl->inputSignature.empty();
 }
 
-bool CopyProgramFragDataBindings(GLuint progsrc, GLuint progdst, ShaderReflection *refl)
+bool CopyProgramFragDataBindings(GLuint progsrc, GLuint progdst, const ShaderReflection *refl)
 {
   // don't try to copy bindings for SPIR-V shaders. The queries by name may fail, and the bindings
   // are immutable anyway
-  if(refl->encoding == ShaderEncoding::SPIRV)
+  if(refl->encoding == ShaderEncoding::OpenGLSPIRV)
     return false;
 
   uint64_t used = 0;
@@ -1270,8 +1272,8 @@ bool SerialiseProgramBindings(SerialiserType &ser, CaptureState state,
   // instead just skip the fetch & apply steps, so that we can still serialise in a backwards
   // compatible way.
   bool IsProgramSPIRV = false;
-  for(size_t i = 0; i < 6; i++)
-    IsProgramSPIRV |= stages.refls[i] && stages.refls[i]->encoding == ShaderEncoding::SPIRV;
+  for(size_t i = 0; i < NumShaderStages; i++)
+    IsProgramSPIRV |= stages.refls[i] && stages.refls[i]->encoding == ShaderEncoding::OpenGLSPIRV;
 
   const bool hasVert = stages.refls[0] != NULL;
   const bool hasFrag = stages.refls[5] != NULL;

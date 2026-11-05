@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2021 Baldur Karlsson
+ * Copyright (c) 2021-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -159,6 +159,7 @@ public:
 
   void RemoveOperation(size_t idx, size_t count = 1) { m_Instructions.erase(idx, count); }
   Operation &GetInstruction(size_t idx) { return m_Instructions[idx]; };
+  Declaration &GetDeclaration(size_t idx) { return m_Declarations[idx]; };
 private:
   bytebuf &m_OutBlob;
   bool m_SM51 = false;

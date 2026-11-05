@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -35,7 +35,6 @@
 #include "Windows/MainWindow.h"
 #include "flowlayout/FlowLayout.h"
 #include "toolwindowmanager/ToolWindowManager.h"
-#include "LiveCapture.h"
 #include "ui_CaptureDialog.h"
 
 #define JSON_ID "rdocCaptureSettings"
@@ -471,7 +470,9 @@ void CaptureDialog::vulkanLayerWarn_mouseClick()
         bool needReg = RENDERDOC_NeedVulkanLayerRegistration(NULL);
         ui->vulkanLayerWarn->setVisible(needReg);
 
-#if !defined(Q_OS_LINUX)
+        (void)admin;
+
+#if !defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD)
         // can't alert the user on linux because the command might still be running - there's
         // seemingly no portable way to wait for the command to finish.
         if(needReg)
@@ -490,7 +491,7 @@ void CaptureDialog::vulkanLayerWarn_mouseClick()
       {
 // linux sometimes can't run GUI apps as root, so we have to run renderdoccmd. Check that it's
 // installed, error if not, then invoke it.
-#if defined(Q_OS_LINUX)
+#if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD)
         QDir binDir = QFileInfo(qApp->applicationFilePath()).absoluteDir();
 
         QString cmd = lit("renderdoccmd");
@@ -568,7 +569,6 @@ void CaptureDialog::CheckAndroidSetup(QString &filename)
   ui->androidWarn->setVisible(false);
 
   LambdaThread *scan = new LambdaThread([this, filename]() {
-
     rdcstr host = m_Ctx.Replay().CurrentRemote().Hostname();
     RENDERDOC_CheckAndroidPackage(host, filename, &m_AndroidFlags);
 
@@ -619,74 +619,9 @@ void CaptureDialog::androidWarn_mouseClick()
   QString msg = tr(R"(In order to debug on Android, the package must be <b>debuggable</b>.
 <br><br>
 On UE4 you must disable <em>for distribution</em>, on Unity enable <em>development mode</em>.
-<br><br>
-RenderDoc can try to add the flag for you, which will involve completely reinstalling your package
-as well as re-signing it with a debug key. This method is prone to error and is
-<b>not recommended</b>. It is instead advised to configure your app to be debuggable at build time.
-<br><br>
-Would you like RenderDoc to try patching your package?
 )");
 
-  QMessageBox::StandardButton prompt = RDDialog::question(this, caption, msg, RDDialog::YesNoCancel);
-
-  if(prompt == QMessageBox::Yes)
-  {
-    float progress = 0.0f;
-    bool patchSucceeded = false;
-
-    // call into APK pull, patch, install routine, then continue
-    LambdaThread *patch = new LambdaThread([this, host, exe, &patchSucceeded, &progress]() {
-      AndroidFlags result =
-          RENDERDOC_MakeDebuggablePackage(host, exe, [&progress](float p) { progress = p; });
-
-      if(result & AndroidFlags::Debuggable)
-      {
-        // Sucess!
-        patchSucceeded = true;
-
-        RDDialog::information(this, tr("Patch succeeded!"),
-                              tr("The patch process succeeded and the package is ready to debug"));
-      }
-      else
-      {
-        QString failmsg = tr("Something has gone wrong and the patching process failed.<br><br>");
-
-        if(result == AndroidFlags::MissingTools)
-        {
-          failmsg +=
-              tr("Tools required for the process were not found. Try configuring the path to your "
-                 "android SDK or java JDK in the settings dialog.");
-        }
-        else if(result == AndroidFlags::ManifestPatchFailure)
-        {
-          failmsg +=
-              tr("The package manifest could not be patched. This is not solveable, you will have "
-                 "to rebuild the package with the debuggable flag.");
-        }
-        else if(result == AndroidFlags::RepackagingAPKFailure)
-        {
-          failmsg += tr("The package was patched but could not be repackaged and installed.");
-        }
-
-        RDDialog::critical(this, tr("Failed to patch package"), failmsg);
-      }
-    });
-
-    patch->setName(lit("Android patch"));
-    patch->start();
-    // wait a few ms before popping up a progress bar
-    patch->wait(500);
-    if(patch->isRunning())
-    {
-      ShowProgressDialog(this, tr("Patching %1, please wait...").arg(exe),
-                         [patch]() { return !patch->isRunning(); },
-                         [&progress]() { return progress; });
-    }
-    patch->deleteLater();
-
-    if(patchSucceeded)
-      ui->androidWarn->setVisible(false);
-  }
+  RDDialog::information(this, caption, msg);
 }
 
 void CaptureDialog::lineEdit_keyPress(QKeyEvent *ev)
@@ -694,7 +629,7 @@ void CaptureDialog::lineEdit_keyPress(QKeyEvent *ev)
   if((ev->key() == Qt::Key_Return || ev->key() == Qt::Key_Enter) &&
      ev->modifiers() & Qt::ControlModifier)
   {
-    TriggerCapture();
+    Launch();
   }
 }
 
@@ -739,12 +674,14 @@ void CaptureDialog::on_exePathBrowse_clicked()
   }
 
   QString filename;
+  bool remoteSelection = false;
 
   if(m_Ctx.Replay().CurrentRemote().IsValid())
   {
     VirtualFileDialog vfd(m_Ctx, initDir, this);
     RDDialog::show(&vfd);
     filename = vfd.chosenPath();
+    remoteSelection = true;
   }
   else
   {
@@ -753,7 +690,7 @@ void CaptureDialog::on_exePathBrowse_clicked()
 
   if(!filename.isEmpty())
   {
-    SetExecutableFilename(filename);
+    SetExecutableFilename(filename, remoteSelection);
 
     if(m_Ctx.Replay().CurrentRemote().Protocol() &&
        m_Ctx.Replay().CurrentRemote().Protocol()->GetProtocolName() == "adb")
@@ -893,15 +830,15 @@ void CaptureDialog::on_toggleGlobal_clicked()
 
     QString capturefile = m_Ctx.TempCaptureFilename(QFileInfo(exe).baseName());
 
-    bool success = RENDERDOC_StartGlobalHook(exe, capturefile, Settings().options);
+    ResultDetails success = RENDERDOC_StartGlobalHook(exe, capturefile, Settings().options);
 
-    if(!success)
+    if(!success.OK())
     {
       // tidy up and exit
-      RDDialog::critical(
-          this, tr("Couldn't start global hook"),
-          tr("Aborting. Couldn't start global hook. Check diagnostic log in help menu for more "
-             "information"));
+      RDDialog::critical(this, tr("Couldn't start global hook"),
+                         tr("Aborting. Couldn't start global hook.\n"
+                            "%1")
+                             .arg(success.Message()));
 
       setEnabledMultiple(enableDisableWidgets, true);
 
@@ -964,12 +901,12 @@ void CaptureDialog::on_loadLastCapture_clicked()
 
 void CaptureDialog::on_launch_clicked()
 {
-  TriggerCapture();
+  Launch();
 }
 
 void CaptureDialog::on_processList_activated(const QModelIndex &index)
 {
-  TriggerCapture();
+  Launch();
 }
 
 void CaptureDialog::SetSettings(CaptureSettings settings)
@@ -993,6 +930,7 @@ void CaptureDialog::SetSettings(CaptureSettings settings)
   ui->DelayForDebugger->setValue(settings.options.delayForDebugger);
   ui->VerifyBufferAccess->setChecked(settings.options.verifyBufferAccess);
   ui->AutoStart->setChecked(settings.autoStart);
+  ui->SoftMemoryLimit->setValue(settings.options.softMemoryLimit);
 
   // force flush this state
   on_CaptureCallstacks_toggled(ui->CaptureCallstacks->isChecked());
@@ -1012,7 +950,7 @@ void CaptureDialog::SetSettings(CaptureSettings settings)
 
   if(settings.autoStart)
   {
-    TriggerCapture();
+    Launch();
   }
 }
 
@@ -1026,7 +964,7 @@ CaptureSettings CaptureDialog::Settings()
 
   ret.executable = ui->exePath->text();
   ret.workingDir = ui->workDirPath->text();
-  ret.commandLine = ui->cmdline->text();
+  ret.commandLine = GetCommandLine();
 
   ret.environment = m_EnvModifications;
 
@@ -1040,6 +978,7 @@ CaptureSettings CaptureDialog::Settings()
   ret.options.captureAllCmdLists = ui->CaptureAllCmdLists->isChecked();
   ret.options.delayForDebugger = (uint32_t)ui->DelayForDebugger->value();
   ret.options.verifyBufferAccess = ui->VerifyBufferAccess->isChecked();
+  ret.options.softMemoryLimit = (uint32_t)ui->SoftMemoryLimit->value();
 
   if(ui->queueFrameCap->isChecked())
   {
@@ -1094,11 +1033,11 @@ void CaptureDialog::fillProcessList()
   }
 }
 
-void CaptureDialog::SetExecutableFilename(const rdcstr &filename)
+void CaptureDialog::SetExecutableFilename(const rdcstr &filename, bool remoteSelection)
 {
   QString fn = filename;
 
-  if(!m_Ctx.Replay().CurrentRemote().IsValid())
+  if(!m_Ctx.Replay().CurrentRemote().IsValid() && !remoteSelection)
     fn = QDir::toNativeSeparators(QFileInfo(fn).absoluteFilePath());
 
   ui->exePath->setText(fn);
@@ -1124,7 +1063,7 @@ void CaptureDialog::SetExecutableFilename(const rdcstr &filename)
 
     m_Ctx.Replay().CurrentRemote().SetLastCapturePath(fn);
   }
-  else
+  else if(!remoteSelection)
   {
     m_Ctx.Config().LastCapturePath = QFileInfo(fn).absolutePath();
     m_Ctx.Config().LastCaptureExe = QFileInfo(fn).fileName();
@@ -1141,6 +1080,13 @@ void CaptureDialog::SetWorkingDirectory(const rdcstr &dir)
 void CaptureDialog::SetCommandLine(const rdcstr &cmd)
 {
   ui->cmdline->setText(cmd);
+}
+
+QString CaptureDialog::GetCommandLine()
+{
+  return ui->cmdline->text()
+      .replace(QLatin1Char('\n'), QLatin1Char(' '))
+      .replace(QLatin1Char('\r'), QLatin1Char(' '));
 }
 
 void CaptureDialog::LoadSettings(const rdcstr &filename)
@@ -1223,8 +1169,9 @@ void CaptureDialog::SetEnvironmentModifications(const rdcarray<EnvironmentModifi
   ui->envVar->setText(envModText);
 }
 
-void CaptureDialog::TriggerCapture()
+ICaptureConnection *CaptureDialog::Launch()
 {
+  ICaptureConnection *ret = NULL;
   if(IsInjectMode())
   {
     QModelIndexList sel = ui->processList->selectionModel()->selectedRows();
@@ -1239,11 +1186,13 @@ void CaptureDialog::TriggerCapture()
       QString name = m_ProcessModel->data(m_ProcessModel->index(item.row(), 0)).toString();
       uint32_t PID = m_ProcessModel->data(m_ProcessModel->index(item.row(), 1)).toUInt();
 
-      m_InjectCallback(
-          PID, Settings().environment, name, Settings().options, [this](LiveCapture *live) {
-            if(ui->queueFrameCap->isChecked())
-              live->QueueCapture((int)ui->queuedFrame->value(), (int)ui->numFrames->value());
-          });
+      m_InjectCallback(PID, Settings().environment, name, Settings().options,
+                       [this, &ret](ICaptureConnection *live) {
+                         if(ui->queueFrameCap->isChecked())
+                           live->QueueCapture((int)ui->queuedFrame->value(),
+                                              (int)ui->numFrames->value());
+                         ret = live;
+                       });
     }
     else
     {
@@ -1260,34 +1209,37 @@ void CaptureDialog::TriggerCapture()
       RDDialog::critical(this, tr("No executable selected"),
                          tr("No program selected to launch, click browse next to 'Executable Path' "
                             "above to select the program to launch."));
-      return;
+      return NULL;
     }
 
     // for non-remote captures, check the executable locally
     if(!m_Ctx.Replay().CurrentRemote().IsValid())
     {
-      if(!QFileInfo::exists(exe))
+      if(!QFileInfo::exists(exe) && QStandardPaths::findExecutable(exe).isEmpty())
       {
-        RDDialog::critical(this, tr("Invalid executable"),
-                           tr("Invalid application executable: %1").arg(exe));
-        return;
+        RDDialog::critical(
+            this, tr("Invalid executable"),
+            tr("Invalid executable: %1\nCan't locate this path or a matching executable in PATH")
+                .arg(exe));
+        return NULL;
       }
     }
 
-    QString workingDir;
+    QString workingDir = ui->workDirPath->text();
 
     // for non-remote captures, check the directory locally
-    if(m_Ctx.Replay().CurrentRemote().IsValid())
+    if(!m_Ctx.Replay().CurrentRemote().IsValid())
     {
-      workingDir = ui->workDirPath->text();
-    }
-    else
-    {
-      if(QDir(ui->workDirPath->text()).exists())
-        workingDir = ui->workDirPath->text();
+      if(!QDir(ui->workDirPath->text()).exists())
+      {
+        RDDialog::critical(
+            this, tr("Invalid working directory"),
+            tr("Invalid working directory: %1\nThis path does not exist").arg(workingDir));
+        return NULL;
+      }
     }
 
-    QString cmdLine = ui->cmdline->text();
+    QString cmdLine = GetCommandLine();
 
     SaveSettings(mostRecentFilename());
 
@@ -1305,15 +1257,18 @@ void CaptureDialog::TriggerCapture()
                               "The intent arguments must include the full parameters e.g. "
                               "--es args \"my arguments\"")
                                .arg(cmdLine));
-        return;
+        return NULL;
       }
     }
 
     m_CaptureCallback(exe, workingDir, cmdLine, Settings().environment, Settings().options,
-                      [this](LiveCapture *live) {
+                      [this, &ret](ICaptureConnection *live) {
                         if(ui->queueFrameCap->isChecked())
                           live->QueueCapture((int)ui->queuedFrame->value(),
                                              (int)ui->numFrames->value());
+                        ret = live;
                       });
   }
+
+  return ret;
 }

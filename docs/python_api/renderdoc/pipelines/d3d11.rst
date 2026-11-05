@@ -1,7 +1,10 @@
-D3D11 Pipeline State
-====================
+API Reference: D3D11 Pipeline State
+====================================
 
-.. contents::
+This is the API reference for the functions, classes, and enums in the ``renderdoc`` module which represents the underlying interface that the UI is built on top of. For more high-level information and instructions on using the python API, see :doc:`../../index`.
+
+.. contents:: Sections
+   :local:
 
 .. currentmodule:: renderdoc
 
@@ -27,15 +30,6 @@ Shaders and Bindings
 --------------------
 
 .. autoclass:: D3D11Shader
-  :members:
-
-.. autoclass:: D3D11ConstantBuffer
-  :members:
-
-.. autoclass:: D3D11Sampler
-  :members:
-
-.. autoclass:: D3D11View
   :members:
 
 Stream-out

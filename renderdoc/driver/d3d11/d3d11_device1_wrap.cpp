@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -84,31 +84,27 @@ bool WrappedID3D11Device::Serialise_CreateBlendState1(SerialiserType &ser,
     HRESULT hr = E_NOINTERFACE;
 
     if(m_pDevice1)
+    {
       hr = m_pDevice1->CreateBlendState1(&Descriptor, &ret);
+    }
     else
-      RDCERR("Replaying a D3D11.1 device without D3D11.1 available");
+    {
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Replaying a D3D11.1 capture without D3D11.1 available");
+      return false;
+    }
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating D3D11.1 blend state, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      if(GetResourceManager()->HasWrapper(ret))
-      {
-        ret->Release();
-        ret = (ID3D11BlendState1 *)GetResourceManager()->GetWrapper(ret);
-        ret->AddRef();
+      GetResourceManager()->OverrideWrapper(ret);
 
-        GetResourceManager()->AddLiveResource(pState, ret);
-      }
-      else
-      {
-        ret = new WrappedID3D11BlendState1(ret, this);
-
-        GetResourceManager()->AddLiveResource(pState, ret);
-      }
+      ret = new WrappedID3D11BlendState1(pState, ret, this);
     }
 
     AddResource(pState, ResourceType::StateObject, "Blend State");
@@ -124,6 +120,8 @@ HRESULT WrappedID3D11Device::CreateBlendState1(const D3D11_BLEND_DESC1 *pBlendSt
     return E_NOINTERFACE;
   if(ppBlendState == NULL)
     return m_pDevice1->CreateBlendState1(pBlendStateDesc, NULL);
+
+  CachedObjectsGarbageCollect();
 
   ID3D11BlendState1 *real = NULL;
   HRESULT ret = m_pDevice1->CreateBlendState1(pBlendStateDesc, &real);
@@ -145,9 +143,7 @@ HRESULT WrappedID3D11Device::CreateBlendState1(const D3D11_BLEND_DESC1 *pBlendSt
       return ret;
     }
 
-    ID3D11BlendState1 *wrapped = new WrappedID3D11BlendState1(real, this);
-
-    CachedObjectsGarbageCollect();
+    ID3D11BlendState1 *wrapped = new WrappedID3D11BlendState1(ResourceId(), real, this);
 
     {
       RDCASSERT(m_CachedStateObjects.find(wrapped) == m_CachedStateObjects.end());
@@ -195,31 +191,27 @@ bool WrappedID3D11Device::Serialise_CreateRasterizerState1(
     HRESULT hr = E_NOINTERFACE;
 
     if(m_pDevice1)
+    {
       hr = m_pDevice1->CreateRasterizerState1(&Descriptor, &ret);
+    }
     else
-      RDCERR("Replaying a D3D11.1 device without D3D11.1 available");
+    {
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Replaying a D3D11.1 capture without D3D11.1 available");
+      return false;
+    }
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating D3D11.1 rasterizer state, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      if(GetResourceManager()->HasWrapper(ret))
-      {
-        ret->Release();
-        ret = (ID3D11RasterizerState1 *)GetResourceManager()->GetWrapper(ret);
-        ret->AddRef();
+      GetResourceManager()->OverrideWrapper(ret);
 
-        GetResourceManager()->AddLiveResource(pState, ret);
-      }
-      else
-      {
-        ret = new WrappedID3D11RasterizerState2(ret, this);
-
-        GetResourceManager()->AddLiveResource(pState, ret);
-      }
+      ret = new WrappedID3D11RasterizerState2(pState, ret, this);
     }
 
     AddResource(pState, ResourceType::StateObject, "Rasterizer State");
@@ -235,6 +227,8 @@ HRESULT WrappedID3D11Device::CreateRasterizerState1(const D3D11_RASTERIZER_DESC1
     return E_NOINTERFACE;
   if(ppRasterizerState == NULL)
     return m_pDevice1->CreateRasterizerState1(pRasterizerDesc, NULL);
+
+  CachedObjectsGarbageCollect();
 
   ID3D11RasterizerState1 *real = NULL;
   HRESULT ret = m_pDevice1->CreateRasterizerState1(pRasterizerDesc, &real);
@@ -256,9 +250,7 @@ HRESULT WrappedID3D11Device::CreateRasterizerState1(const D3D11_RASTERIZER_DESC1
       return ret;
     }
 
-    ID3D11RasterizerState1 *wrapped = new WrappedID3D11RasterizerState2(real, this);
-
-    CachedObjectsGarbageCollect();
+    ID3D11RasterizerState1 *wrapped = new WrappedID3D11RasterizerState2(ResourceId(), real, this);
 
     {
       RDCASSERT(m_CachedStateObjects.find(wrapped) == m_CachedStateObjects.end());
@@ -312,7 +304,8 @@ HRESULT WrappedID3D11Device::CreateDeviceContextState(UINT Flags,
   {
     SCOPED_LOCK(m_D3DLock);
 
-    WrappedID3DDeviceContextState *wrapped = new WrappedID3DDeviceContextState(real, this);
+    WrappedID3DDeviceContextState *wrapped =
+        new WrappedID3DDeviceContextState(ResourceId(), real, this);
 
     wrapped->state->CopyState(*m_pImmediateContext->GetCurrentPipelineState());
 

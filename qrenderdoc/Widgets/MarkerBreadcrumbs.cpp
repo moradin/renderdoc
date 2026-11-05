@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2021 Baldur Karlsson
+ * Copyright (c) 2021-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -319,12 +319,13 @@ void MarkerBreadcrumbs::AddPathButton(const ActionDescription *action)
 {
   RDToolButton *b = new RDToolButton();
   b->setText(action ? QString(action->customName) : QString());
+  b->setToolTip(b->text());
   if(!action)
   {
     b->setIcon(Icons::house());
     b->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    b->setToolTip(tr("Capture Root"));
   }
-  b->setToolTip(b->text());
 
   bool hasChildMarkers = false;
 

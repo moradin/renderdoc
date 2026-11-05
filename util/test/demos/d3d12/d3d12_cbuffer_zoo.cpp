@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -295,6 +295,19 @@ cbuffer rootconsts : register(b1)
   float3_1 root_d;
 };
 
+cbuffer packed_consts : register(b2)
+{
+  float col1z : packoffset(c1.z); // 4+2
+  float col2w : packoffset(c2.w); // 8+3
+};
+
+struct ArrayStruct
+{
+  float4 a;
+};
+
+ConstantBuffer<ArrayStruct> array_consts[2] : register(b3);
+
 cbuffer hugespace : register(b0, space999999999)
 {
   float4 huge_val;
@@ -302,7 +315,7 @@ cbuffer hugespace : register(b0, space999999999)
 
 float4 main() : SV_Target0
 {
-	return test + root_zero + huge_val * 1e-30f + float4(0.1f, 0.0f, 0.0f, 0.0f);
+	return test + root_zero + huge_val * 1e-30f + col1z + array_consts[0].a + array_consts[1].a + float4(0.1f, 0.0f, 0.0f, 0.0f);
 }
 
 )EOSHADER";
@@ -330,8 +343,13 @@ float4 main() : SV_Target0
     ID3DBlobPtr vs5blob = Compile(D3DDefaultVertex, "main", "vs_5_0");
     ID3DBlobPtr ps5blob = Compile(pixel, "main", "ps_5_1");
 
-    ID3DBlobPtr vs6blob = m_DXILSupport ? Compile(D3DDefaultVertex, "main", "vs_6_0") : NULL;
-    ID3DBlobPtr ps6blob = m_DXILSupport ? Compile(pixel, "main", "ps_6_0") : NULL;
+    bool supportSM60 = (m_HighestShaderModel >= D3D_SHADER_MODEL_6_0) && m_DXILSupport;
+    bool supportSM66 = (m_HighestShaderModel >= D3D_SHADER_MODEL_6_6) && m_DXILSupport;
+
+    ID3DBlobPtr vs6blob = supportSM60 ? Compile(D3DDefaultVertex, "main", "vs_6_0") : NULL;
+    ID3DBlobPtr ps6blob = supportSM60 ? Compile(pixel, "main", "ps_6_0") : NULL;
+    ID3DBlobPtr vs66blob = supportSM66 ? Compile(D3DDefaultVertex, "main", "vs_6_6") : NULL;
+    ID3DBlobPtr ps66blob = supportSM66 ? Compile(pixel, "main", "ps_6_6") : NULL;
 
     const size_t bindOffset = 16;
 
@@ -343,6 +361,21 @@ float4 main() : SV_Target0
     for(int i = 0; i < 512; i++)
       cbufferdata[bindOffset + i] =
           Vec4f(float(i * 4 + 0), float(i * 4 + 1), float(i * 4 + 2), float(i * 4 + 3));
+
+    float packed_consts[12];
+    for(int i = 0; i < 12; i++)
+      packed_consts[i] = (float)i;
+
+    struct AlignedCB
+    {
+      Vec4f col;
+      Vec4f padding[15];
+    };
+    static_assert(sizeof(AlignedCB) == 256, "Invalid alignment for CB data");
+
+    AlignedCB array_consts[2];
+    for(uint32_t i = 0; i < 2; ++i)
+      array_consts[i].col = Vec4f(i / 1.0f, i + 1 / 1.0f, 0.5f, 0.5f);
 
     RootData rootData = {};
 
@@ -368,12 +401,18 @@ float4 main() : SV_Target0
 
     ID3D12ResourcePtr vb = MakeBuffer().Data(DefaultTri);
     ID3D12ResourcePtr cb = MakeBuffer().Data(cbufferdata);
+    ID3D12ResourcePtr cbPacked = MakeBuffer().Data(packed_consts);
+    ID3D12ResourcePtr cbArray = MakeBuffer().Data(array_consts).Size(sizeof(AlignedCB) * 2);
+    for(uint32_t i = 0; i < 2; ++i)
+      MakeCBV(cbArray).SizeBytes(256).Offset(i * sizeof(AlignedCB)).CreateGPU(i);
 
     ID3D12RootSignaturePtr sig = MakeSig({
         cbvParam(D3D12_SHADER_VISIBILITY_PIXEL, 0, 7),
         constParam(D3D12_SHADER_VISIBILITY_VERTEX, 0, 1, sizeof(rootData) / sizeof(uint32_t)),
         constParam(D3D12_SHADER_VISIBILITY_PIXEL, 0, 1, sizeof(rootData) / sizeof(uint32_t)),
         constParam(D3D12_SHADER_VISIBILITY_GEOMETRY, 0, 1, sizeof(rootData) / sizeof(uint32_t)),
+        cbvParam(D3D12_SHADER_VISIBILITY_PIXEL, 0, 2),
+        tableParam(D3D12_SHADER_VISIBILITY_PIXEL, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 0, 3, 2, 0),
         cbvParam(D3D12_SHADER_VISIBILITY_PIXEL, 999999999, 0),
     });
 
@@ -387,8 +426,18 @@ float4 main() : SV_Target0
       dxilpso = MakePSO().RootSig(sig).InputLayout().VS(vs6blob).PS(ps6blob).RTVs(
           {DXGI_FORMAT_R32G32B32A32_FLOAT});
 
+    ID3D12PipelineStatePtr sm6_6pso = NULL;
+
+    if(vs66blob && ps66blob)
+      sm6_6pso = MakePSO().RootSig(sig).InputLayout().VS(vs66blob).PS(ps66blob).RTVs(
+          {DXGI_FORMAT_R32G32B32A32_FLOAT});
+
     ResourceBarrier(vb, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
     ResourceBarrier(cb, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+    ResourceBarrier(cbPacked, D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+    ResourceBarrier(cbArray, D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
 
     ID3D12ResourcePtr rtvtex = MakeTexture(DXGI_FORMAT_R32G32B32A32_FLOAT, screenWidth, screenHeight)
                                    .RTV()
@@ -416,13 +465,16 @@ float4 main() : SV_Target0
       IASetVertexBuffer(cmd, vb, sizeof(DefaultA2V), 0);
       cmd->SetPipelineState(dxbcpso);
       cmd->SetGraphicsRootSignature(sig);
+      cmd->SetDescriptorHeaps(1, &m_CBVUAVSRV.GetInterfacePtr());
       cmd->SetGraphicsRootConstantBufferView(
           0, cb->GetGPUVirtualAddress() + bindOffset * sizeof(Vec4f));
       cmd->SetGraphicsRoot32BitConstants(1, sizeof(emptyRoot) / sizeof(uint32_t), &emptyRoot, 0);
       cmd->SetGraphicsRoot32BitConstants(2, sizeof(rootData) / sizeof(uint32_t), &rootData, 0);
       cmd->SetGraphicsRoot32BitConstants(3, sizeof(emptyRoot) / sizeof(uint32_t), &emptyRoot, 0);
+      cmd->SetGraphicsRootConstantBufferView(4, cbPacked->GetGPUVirtualAddress());
+      cmd->SetGraphicsRootDescriptorTable(5, m_CBVUAVSRV->GetGPUDescriptorHandleForHeapStart());
       cmd->SetGraphicsRootConstantBufferView(
-          4, cb->GetGPUVirtualAddress() + bindOffset * sizeof(Vec4f) + 256);
+          6, cb->GetGPUVirtualAddress() + bindOffset * sizeof(Vec4f) + 256);
 
       RSSetViewport(cmd, {0.0f, 0.0f, (float)screenWidth, (float)screenHeight, 0.0f, 1.0f});
       RSSetScissorRect(cmd, {0, 0, screenWidth, screenHeight});
@@ -436,7 +488,15 @@ float4 main() : SV_Target0
       {
         cmd->SetPipelineState(dxilpso);
 
-        setMarker(cmd, "DXIL Draw");
+        setMarker(cmd, "SM6.0");
+        cmd->DrawInstanced(3, 1, 0, 0);
+      }
+
+      if(sm6_6pso)
+      {
+        cmd->SetPipelineState(sm6_6pso);
+
+        setMarker(cmd, "SM6.6");
         cmd->DrawInstanced(3, 1, 0, 0);
       }
 

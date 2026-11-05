@@ -1,26 +1,26 @@
 /******************************************************************************
-* The MIT License (MIT)
-*
-* Copyright (c) 2019-2021 Baldur Karlsson
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-* THE SOFTWARE.
-******************************************************************************/
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2018-2026 Baldur Karlsson
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ ******************************************************************************/
 
 #pragma once
 
@@ -33,6 +33,11 @@ COM_SMARTPTR(ID3DBlob);
 
 COM_SMARTPTR(ID3D12Debug);
 COM_SMARTPTR(ID3D12Debug1);
+
+COM_SMARTPTR(ID3D12SDKConfiguration);
+COM_SMARTPTR(ID3D12SDKConfiguration1);
+COM_SMARTPTR(ID3D12DeviceFactory);
+COM_SMARTPTR(ID3D12DeviceConfiguration);
 
 COM_SMARTPTR(ID3D12Device);
 COM_SMARTPTR(ID3D12Device1);
@@ -75,6 +80,11 @@ COM_SMARTPTR(ID3D12InfoQueue);
 
 COM_SMARTPTR(ID3D12CommandQueueDownlevel);
 
+COM_SMARTPTR(ID3D12StateObject);
+COM_SMARTPTR(ID3D12StateObjectProperties);
+
+COM_SMARTPTR(ID3D12QueryHeap);
+
 struct D3D12GraphicsTest;
 
 class D3D12PSOCreator
@@ -83,6 +93,8 @@ public:
   D3D12PSOCreator(ID3D12DevicePtr dev);
 
   D3D12PSOCreator &VS(ID3DBlobPtr blob);
+  D3D12PSOCreator &AS(ID3DBlobPtr blob);
+  D3D12PSOCreator &MS(ID3DBlobPtr blob);
   D3D12PSOCreator &HS(ID3DBlobPtr blob);
   D3D12PSOCreator &DS(ID3DBlobPtr blob);
   D3D12PSOCreator &GS(ID3DBlobPtr blob);
@@ -108,8 +120,15 @@ public:
   D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsDesc = {};
   D3D12_COMPUTE_PIPELINE_STATE_DESC ComputeDesc = {};
 
+  const D3D12_SHADER_BYTECODE &GetAS() const { return m_AS; };
+  const D3D12_SHADER_BYTECODE &GetMS() const { return m_MS; };
+
 private:
+  D3D12_SHADER_BYTECODE m_AS = {};
+  D3D12_SHADER_BYTECODE m_MS = {};
   ID3D12DevicePtr m_Dev;
+
+  ID3DBlobPtr vsblob, psblob, hsblob, dsblob, gsblob, csblob, asblob, msblob;
 };
 
 class D3D12BufferCreator
@@ -118,7 +137,9 @@ public:
   D3D12BufferCreator(ID3D12DevicePtr dev, D3D12GraphicsTest *test);
 
   D3D12BufferCreator &UAV();
+  D3D12BufferCreator &ASB();
 
+  D3D12BufferCreator &GPUUpload();
   D3D12BufferCreator &Upload();
   D3D12BufferCreator &Readback();
 
@@ -137,6 +158,8 @@ public:
     return Data(data.data()).Size(UINT(data.size() * sizeof(T)));
   }
 
+  D3D12BufferCreator &InitialState(D3D12_RESOURCE_STATES initialState);
+
   operator ID3D12ResourcePtr() const;
 
 private:
@@ -146,6 +169,7 @@ private:
   D3D12_RESOURCE_DESC m_BufDesc;
   D3D12_HEAP_PROPERTIES m_HeapDesc;
   const void *m_Initdata = NULL;
+  D3D12_RESOURCE_STATES m_InitialState;
 };
 
 class D3D12TextureCreator
@@ -160,6 +184,7 @@ public:
   D3D12TextureCreator &UAV();
   D3D12TextureCreator &RTV();
   D3D12TextureCreator &DSV();
+  D3D12TextureCreator &NoSRV();
 
   D3D12TextureCreator &Upload();
   D3D12TextureCreator &Readback();
@@ -168,6 +193,7 @@ public:
   D3D12TextureCreator &Shared();
 
   D3D12TextureCreator &InitialState(D3D12_RESOURCE_STATES state);
+  D3D12TextureCreator &ClearVal(const D3D12_CLEAR_VALUE &clearVal);
 
   operator ID3D12ResourcePtr() const;
 
@@ -178,6 +204,7 @@ protected:
   D3D12_RESOURCE_DESC m_TexDesc;
   D3D12_HEAP_PROPERTIES m_HeapDesc;
   D3D12_HEAP_FLAGS m_HeapFlags = D3D12_HEAP_FLAG_NONE;
+  D3D12_CLEAR_VALUE m_ClearVal;
 };
 
 class D3D12ViewCreator
@@ -264,6 +291,8 @@ private:
 };
 
 D3D12_ROOT_PARAMETER1 cbvParam(D3D12_SHADER_VISIBILITY vis, UINT space, UINT reg);
+D3D12_ROOT_PARAMETER1 srvParam(D3D12_SHADER_VISIBILITY vis, UINT space, UINT reg);
+D3D12_ROOT_PARAMETER1 uavParam(D3D12_SHADER_VISIBILITY vis, UINT space, UINT reg);
 
 D3D12_ROOT_PARAMETER1 constParam(D3D12_SHADER_VISIBILITY vis, UINT space, UINT reg, UINT num);
 
@@ -293,3 +322,9 @@ D3D12_INDIRECT_ARGUMENT_DESC dispatchArg();
       exit(1);                                                                            \
     }                                                                                     \
   }
+
+template <typename T>
+void setName(T obj, const std::string &name)
+{
+  obj->SetName(UTF82Wide(name).c_str());
+}

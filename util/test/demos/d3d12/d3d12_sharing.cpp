@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -61,9 +61,17 @@ RD_TEST(D3D12_Sharing, D3D12GraphicsTest)
     if(!d3d11.Init(pDXGIAdapter))
       return 4;
 
-    ID3D12DevicePtr devB = CreateDevice({pDXGIAdapter}, D3D_FEATURE_LEVEL_11_0);
-    if(!devB)
-      return 2;
+    ID3D12DevicePtr devB;
+    if(m_SingletonDevice)
+    {
+      devB = CreateDevice({pDXGIAdapter}, D3D_FEATURE_LEVEL_11_0);
+      if(!devB)
+        return 2;
+    }
+    else
+    {
+      devB = dev;
+    }
 
     ID3DBlobPtr vsblob = Compile(D3DDefaultVertex, "main", "vs_4_0");
     ID3DBlobPtr psblob = Compile(D3DDefaultPixel, "main", "ps_4_0");
@@ -79,22 +87,28 @@ RD_TEST(D3D12_Sharing, D3D12GraphicsTest)
 
     IDXGIResourcePtr dxgi = d3d11vb;
     HANDLE handle = NULL;
-    dxgi->GetSharedHandle(&handle);
+    hr = dxgi->GetSharedHandle(&handle);
+    if(FAILED(hr))
+      TEST_ERROR("GetSharedHandle failed: %x", hr);
 
     ID3D12ResourcePtr d3d12vb;
-    dev->OpenSharedHandle(handle, __uuidof(ID3D12Resource), (void **)&d3d12vb);
+    hr = dev->OpenSharedHandle(handle, __uuidof(ID3D12Resource), (void **)&d3d12vb);
+    if(FAILED(hr))
+      TEST_ERROR("OpenSharedHandle failed: %x", hr);
 
     ID3D12RootSignaturePtr sig = MakeSig({});
 
     // swap dev with devB, to force pso to be created on the 'second' device (should be identical to
-    // the first). This may be completely redundant as we might have two identical pointers, but
-    // that's not guaranteed.
-    std::swap(dev, devB);
+    // the first if not using dynamic DLLs). This may be completely redundant as we might have two
+    // identical pointers, but that's not guaranteed.
+    if(!devFactory)
+      std::swap(dev, devB);
 
     ID3D12PipelineStatePtr pso = MakePSO().RootSig(sig).InputLayout().VS(vsblob).PS(psblob);
 
     // set them back
-    std::swap(dev, devB);
+    if(!devFactory)
+      std::swap(dev, devB);
 
     ResourceBarrier(d3d12vb, D3D12_RESOURCE_STATE_COMMON,
                     D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
@@ -139,6 +153,8 @@ RD_TEST(D3D12_Sharing, D3D12GraphicsTest)
       RSSetScissorRect(cmd, {0, 0, screenWidth, screenHeight});
 
       OMSetRenderTargets(cmd, {rtv}, {});
+
+      setMarker(cmd, "Draw");
 
       cmd->DrawInstanced(3, 1, 0, 0);
 

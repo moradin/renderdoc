@@ -47,7 +47,11 @@ popd; # docs
 # if we didn't produce an html file, bail out even if sphinx didn't return an error code above
 if [ ! -f ./Documentation/html/index.html ]; then
 	echo "Didn't get successful build of html docs."
-	exit 1;
+
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Fail to build html documentation.";
+		exit 1;
+	fi
 fi
 
 # Build android libraries and apks
@@ -56,11 +60,21 @@ export PATH=$PATH:$ANDROID_SDK/tools/
 # Check that we're set up to build for android
 if [ ! -d $ANDROID_SDK/tools ] ; then
 	echo "\$ANDROID_SDK is not correctly configured: '$ANDROID_SDK'"
+
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Fail to build Android.";
+		exit 1;
+	fi
 	exit 0;
 fi
 
 if [ ! -d $LLVM_ARM32 ] || [ ! -d $LLVM_ARM64 ] ; then
 	echo "llvm is not available, expected $LLVM_ARM32 and $LLVM_ARM64 respectively."
+
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Fail to build Android.";
+		exit 1;
+	fi
 	exit 0;
 fi
 
@@ -86,6 +100,12 @@ else
 
 	if ! ls bin/*.apk; then
 		echo "Android build failed"
+
+		if [[ "$STRICT" == "yes" ]]; then
+			echo "Strict mode: Fail to build Android.";
+			exit 1;
+		fi
+
 		exit 0;
 	fi
 
@@ -108,6 +128,12 @@ else
 
 	if ! ls bin/*.apk; then
 		echo "Android build failed"
+
+		if [[ "$STRICT" == "yes" ]]; then
+			echo "Strict mode: Fail to build Android.";
+			exit 1;
+		fi
+
 		exit 0;
 	fi
 

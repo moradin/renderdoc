@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -46,6 +46,15 @@ public:
     pos = Vec3f(x, y, z);
   }
 
+  void SetNearFar(float n, float f)
+  {
+    m_Near = n;
+    m_Far = f;
+  }
+
+  float GetNear() { return m_Near; }
+  float GetFar() { return m_Far; }
+
   // Arcball functions
   void ResetArcball();
   void SetArcballDistance(float d)
@@ -75,6 +84,8 @@ private:
 
   bool dirty;
   Matrix4f mat, basis;
+
+  float m_Near = 0.1f, m_Far = 100000.0f;
 
   Vec3f pos;
 

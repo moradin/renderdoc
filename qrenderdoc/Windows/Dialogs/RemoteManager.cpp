@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -149,11 +149,18 @@ void RemoteManager::setRemoteServerLive(RDTreeWidgetItem *node, bool live, bool 
     QString text = live ? tr("Remote server running") : tr("No remote server");
 
     if(host.IsConnected())
+    {
       text += tr(" (Active Context)");
+    }
     else if(host.IsVersionMismatch())
-      text += tr(" (Version Mismatch)");
+    {
+      QString message = host.VersionMismatchError();
+      text += QFormatStr(" (%1)").arg(message);
+    }
     else if(host.IsBusy())
+    {
       text += tr(" (Busy)");
+    }
 
     node->setText(1, text);
 
@@ -215,7 +222,7 @@ void RemoteManager::refreshHost(RDTreeWidgetItem *node)
 
   // this function looks up the remote connections and for each one open
   // queries it for the API, target (usually executable name) and if any user is already connected
-  LambdaThread *th = new LambdaThread([ this, node, h = host ]() {
+  LambdaThread *th = new LambdaThread([this, node, h = host]() {
     QByteArray username = GetSystemUsername().toUtf8();
 
     // make a mutable copy and check the status
@@ -597,10 +604,10 @@ void RemoteManager::on_connect_clicked()
       }
       else
       {
-        ReplayStatus status = ReplayStatus::Succeeded;
-        LambdaThread *th = new LambdaThread([&host, &status]() {
+        ResultDetails result = {ResultCode::Succeeded};
+        LambdaThread *th = new LambdaThread([&host, &result]() {
           IRemoteServer *server = NULL;
-          status = host.Connect(&server);
+          result = host.Connect(&server);
           if(server)
             server->ShutdownServerAndConnection();
         });
@@ -615,9 +622,9 @@ void RemoteManager::on_connect_clicked()
 
         setRemoteServerLive(node, false, false);
 
-        if(status != ReplayStatus::Succeeded)
+        if(!result.OK())
           RDDialog::critical(this, tr("Shutdown error"),
-                             tr("Error shutting down remote server: %1").arg(ToQStr(status)));
+                             tr("Error shutting down remote server: %1").arg(result.Message()));
       }
 
       // kick off a thread to check the status

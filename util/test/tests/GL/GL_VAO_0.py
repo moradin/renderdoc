@@ -10,18 +10,18 @@ class GL_VAO_0(rdtest.TestCase):
 
         # There are 4 actions with variations on client-memory VBs or IBs
         for i in range(0, 4):
-            self.check(action is not None)
+            assert action is not None
 
-            self.controller.SetFrameEvent(action.eventId, False)
+            self.set_event(action.eventId, False)
 
-            pipe: rd.PipeState = self.controller.GetPipelineState()
-            vp: rd.Viewport = pipe.GetViewport(0)
+            pipe = self.controller.GetPipelineState()
+            vp = pipe.GetViewport(0)
 
             self.check_triangle(vp=(vp.x, vp.y, vp.width, vp.height))
 
             postvs_data = self.get_postvs(action, rd.MeshDataStage.VSOut, 0, action.numIndices)
 
-            postvs_ref = {
+            postvs_ref: rdtest.MeshReference = {
                 0: {
                     'vtx': 0,
                     'idx': 0,
@@ -50,19 +50,19 @@ class GL_VAO_0(rdtest.TestCase):
 
             self.check_mesh_data(postvs_ref, postvs_data)
 
-            action = action.next
+            action = action.nextAction
 
         action = self.find_action("Instanced")
 
-        self.check(action is not None)
+        assert action is not None
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
         # Each instance should have color output of 0.5 * instance in blue
         for i in range(0, action.numInstances):
             postvs_data = self.get_postvs(action, rd.MeshDataStage.VSOut, 0, action.numIndices, i)
 
-            postvs_ref = {
+            postvs_ref: rdtest.MeshReference = {
                 0: {
                     'vtx': 0,
                     'idx': 0,
@@ -72,4 +72,4 @@ class GL_VAO_0(rdtest.TestCase):
 
             self.check_mesh_data(postvs_ref, postvs_data)
 
-            rdtest.log.success('Instance {} is OK'.format(i))
+            rdtest.log.success(f'Instance {i} is OK')

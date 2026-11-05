@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -49,6 +49,9 @@ void ImageSubresourceState::Update(const ImageSubresourceState &other, FrameRefC
 
   if(other.newLayout != UNKNOWN_PREV_IMG_LAYOUT)
     newLayout = other.newLayout;
+
+  if(refType == eFrameRef_Unknown)
+    refType = other.refType;
 
   refType = compose(refType, other.refType);
 }
@@ -732,54 +735,47 @@ template ImageSubresourceMap::SubresourcePairRef &ImageSubresourceMap::Subresour
 template ImageSubresourceMap::ConstSubresourcePairRef &ImageSubresourceMap::SubresourceRangeIterTemplate<
     const ImageSubresourceMap, ImageSubresourceMap::ConstSubresourcePairRef>::operator*();
 
-template <typename Barrier>
-void BarrierSequence<Barrier>::AddWrapped(uint32_t batchIndex, uint32_t queueFamilyIndex,
-                                          const Barrier &barrier)
+uint32_t ImageBarrierSequence::MaxQueueFamilyIndex = 4;
+
+void ImageBarrierSequence::AddWrapped(uint32_t batchIndex, uint32_t queueFamilyIndex,
+                                      const VkImageMemoryBarrier &barrier)
 {
   RDCASSERT(batchIndex < MAX_BATCH_COUNT);
-  RDCASSERT(queueFamilyIndex < MAX_QUEUE_FAMILY_COUNT);
+  RDCASSERT(queueFamilyIndex < batches[batchIndex].size(), queueFamilyIndex,
+            batches[batchIndex].size());
   batches[batchIndex][queueFamilyIndex].push_back(barrier);
   ++barrierCount;
 }
-template void BarrierSequence<VkImageMemoryBarrier>::AddWrapped(uint32_t batchIndex,
-                                                                uint32_t queueFamilyIndex,
-                                                                const VkImageMemoryBarrier &barrier);
 
-template <typename Barrier>
-void BarrierSequence<Barrier>::Merge(const BarrierSequence<Barrier> &other)
+void ImageBarrierSequence::Merge(const ImageBarrierSequence &other)
 {
   for(uint32_t batchIndex = 0; batchIndex < MAX_BATCH_COUNT; ++batchIndex)
   {
-    rdcarray<Barrier> *batch = batches[batchIndex];
-    const rdcarray<Barrier> *otherBatch = other.batches[batchIndex];
-    for(uint32_t queueFamilyIndex = 0; queueFamilyIndex < MAX_QUEUE_FAMILY_COUNT; ++queueFamilyIndex)
+    rdcarray<Batch> &batch = batches[batchIndex];
+    const rdcarray<Batch> &otherBatch = other.batches[batchIndex];
+    for(size_t queueFamilyIndex = 0; queueFamilyIndex < batch.size(); ++queueFamilyIndex)
     {
-      rdcarray<Barrier> &barriers = batch[queueFamilyIndex];
-      const rdcarray<Barrier> &otherBarriers = otherBatch[queueFamilyIndex];
+      Batch &barriers = batch[queueFamilyIndex];
+      const Batch &otherBarriers = otherBatch[queueFamilyIndex];
       barriers.insert(barriers.size(), otherBarriers.begin(), otherBarriers.size());
       barrierCount += otherBarriers.size();
     }
   }
 }
-template void BarrierSequence<VkImageMemoryBarrier>::Merge(
-    const BarrierSequence<VkImageMemoryBarrier> &other);
 
-template <typename Barrier>
-bool BarrierSequence<Barrier>::IsBatchEmpty(uint32_t batchIndex) const
+bool ImageBarrierSequence::IsBatchEmpty(uint32_t batchIndex) const
 {
   if(batchIndex >= MAX_BATCH_COUNT)
     return true;
-  for(uint32_t queueFamilyIndex = 0; queueFamilyIndex < MAX_QUEUE_FAMILY_COUNT; ++queueFamilyIndex)
+  for(size_t queueFamilyIndex = 0; queueFamilyIndex < batches[batchIndex].size(); ++queueFamilyIndex)
   {
     if(!batches[batchIndex][queueFamilyIndex].empty())
       return false;
   }
   return true;
 }
-template bool BarrierSequence<VkImageMemoryBarrier>::IsBatchEmpty(uint32_t batchIndex) const;
 
-template <>
-void BarrierSequence<VkImageMemoryBarrier>::UnwrapBarriers(rdcarray<VkImageMemoryBarrier> &barriers)
+void ImageBarrierSequence::UnwrapBarriers(rdcarray<VkImageMemoryBarrier> &barriers)
 {
   for(auto it = barriers.begin(); it != barriers.end(); ++it)
   {
@@ -787,24 +783,19 @@ void BarrierSequence<VkImageMemoryBarrier>::UnwrapBarriers(rdcarray<VkImageMemor
   }
 }
 
-template <typename Barrier>
-void BarrierSequence<Barrier>::ExtractUnwrappedBatch(uint32_t batchIndex, uint32_t queueFamilyIndex,
-                                                     rdcarray<Barrier> &result)
+void ImageBarrierSequence::ExtractUnwrappedBatch(uint32_t batchIndex, uint32_t queueFamilyIndex,
+                                                 Batch &result)
 {
-  if(batchIndex >= MAX_BATCH_COUNT || queueFamilyIndex >= MAX_QUEUE_FAMILY_COUNT)
+  if(batchIndex >= MAX_BATCH_COUNT || queueFamilyIndex >= batches[batchIndex].size())
     return;
-  rdcarray<Barrier> &batch = batches[batchIndex][queueFamilyIndex];
+  Batch &batch = batches[batchIndex][queueFamilyIndex];
   batch.swap(result);
   batch.clear();
   barrierCount -= result.size();
   UnwrapBarriers(result);
 }
-template void BarrierSequence<VkImageMemoryBarrier>::ExtractUnwrappedBatch(
-    uint32_t batchIndex, uint32_t queueFamilyIndex, rdcarray<VkImageMemoryBarrier> &result);
 
-template <typename Barrier>
-void BarrierSequence<Barrier>::ExtractFirstUnwrappedBatchForQueue(uint32_t queueFamilyIndex,
-                                                                  rdcarray<Barrier> &result)
+void ImageBarrierSequence::ExtractFirstUnwrappedBatchForQueue(uint32_t queueFamilyIndex, Batch &result)
 {
   for(uint32_t batchIndex = 0; batchIndex < MAX_BATCH_COUNT; ++batchIndex)
   {
@@ -818,12 +809,8 @@ void BarrierSequence<Barrier>::ExtractFirstUnwrappedBatchForQueue(uint32_t queue
     }
   }
 }
-template void BarrierSequence<VkImageMemoryBarrier>::ExtractFirstUnwrappedBatchForQueue(
-    uint32_t queueFamilyIndex, rdcarray<VkImageMemoryBarrier> &result);
 
-template <typename Barrier>
-void BarrierSequence<Barrier>::ExtractLastUnwrappedBatchForQueue(uint32_t queueFamilyIndex,
-                                                                 rdcarray<Barrier> &result)
+void ImageBarrierSequence::ExtractLastUnwrappedBatchForQueue(uint32_t queueFamilyIndex, Batch &result)
 {
   for(uint32_t batchIndex = MAX_BATCH_COUNT; batchIndex > 0;)
   {
@@ -838,8 +825,6 @@ void BarrierSequence<Barrier>::ExtractLastUnwrappedBatchForQueue(uint32_t queueF
     }
   }
 }
-template void BarrierSequence<VkImageMemoryBarrier>::ExtractLastUnwrappedBatchForQueue(
-    uint32_t queueFamilyIndex, rdcarray<VkImageMemoryBarrier> &result);
 
 ImageState ImageState::InitialState() const
 {
@@ -956,7 +941,15 @@ void ImageState::Merge(rdcflatmap<ResourceId, ImageState> &states,
   {
     if(it == states.end() || dstIt->first < it->first)
     {
-      it = states.insert(it, {dstIt->first, dstIt->second.InitialState()});
+      // If we're merging in an image state our source hasn't seen before, we first add an initial
+      // state for that image, then merge in the current image state. However, if the destination
+      // only referenced the image and never recorded an explicit layout transition the layout of
+      // that image will be unknown. In that case we copy it as-is to avoid improperly recording a
+      // transition back to initial state.
+      if(dstIt->second.subresourceStates.IsInitialised())
+        it = states.insert(it, {dstIt->first, dstIt->second.InitialState()});
+      else
+        it = states.insert(it, *dstIt);
     }
     else if(it->first < dstIt->first)
     {
@@ -1031,7 +1024,7 @@ void ImageState::RecordBarrier(VkImageMemoryBarrier barrier, uint32_t queueFamil
      barrier.dstQueueFamilyIndex == VK_QUEUE_FAMILY_EXTERNAL ||
      barrier.dstQueueFamilyIndex == VK_QUEUE_FAMILY_FOREIGN_EXT)
   {
-    RDCERR("External/foreign queue families are not supported");
+    RDCDEBUG("External/foreign queue families are not supported");
     return;
   }
   if(GetImageInfo().sharingMode == VK_SHARING_MODE_CONCURRENT)
@@ -1039,7 +1032,8 @@ void ImageState::RecordBarrier(VkImageMemoryBarrier barrier, uint32_t queueFamil
     if(!(barrier.srcQueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED &&
          barrier.dstQueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED))
     {
-      RDCWARN("Barrier contains invalid queue families for VK_SHARING_MODE_CONCURRENT");
+      RDCWARN("Barrier contains invalid queue families for VK_SHARING_MODE_CONCURRENT (%u %u)",
+              barrier.srcQueueFamilyIndex, barrier.dstQueueFamilyIndex);
     }
     barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = queueFamilyIndex;
   }
@@ -1153,6 +1147,11 @@ void ImageState::ResetToOldState(ImageBarrierSequence &barriers, ImageTransition
       // Transitioning back to PREINITIALIZED; this is impossible, so transition to GENERAL instead.
       newLayout = VK_IMAGE_LAYOUT_GENERAL;
     }
+    if(oldLayout != VK_IMAGE_LAYOUT_ZERO_INITIALIZED_EXT &&
+       newLayout == VK_IMAGE_LAYOUT_ZERO_INITIALIZED_EXT)
+    {
+      newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    }
 
     uint32_t srcQueueFamilyIndex = subIt->state().newQueueFamilyIndex;
     uint32_t dstQueueFamilyIndex = subIt->state().oldQueueFamilyIndex;
@@ -1210,7 +1209,7 @@ void ImageState::ResetToOldState(ImageBarrierSequence &barriers, ImageTransition
     if(subRange.baseDepthSlice != 0)
     {
       // We can't issue barriers per depth slice, so skip the barriers for non-zero depth slices.
-      // The zero depth slice barrier will implicitly cover the non-zerp depth slices.
+      // The zero depth slice barrier will implicitly cover the non-zero depth slices.
       continue;
     }
 
@@ -1240,6 +1239,12 @@ void ImageState::ResetToOldState(ImageBarrierSequence &barriers, ImageTransition
         /* image = */ wrappedHandle,
         /* subresourceRange = */ subRange,
     };
+    if(GetImageInfo().imageType == VK_IMAGE_TYPE_3D)
+    {
+      RDCASSERTEQUAL(subRange.baseArrayLayer, 0);
+      RDCASSERTEQUAL(subRange.layerCount, 1);
+      barrier.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
+    }
     barriers.AddWrapped(MAIN_BATCH_INDEX, submitQueueFamilyIndex, barrier);
 
     // acquire the subresource in the dstQueueFamily, if necessary
@@ -1305,6 +1310,13 @@ void ImageState::Transition(const ImageState &dstState, VkAccessFlags srcAccessM
         // Transitioning to PREINITIALIZED, which is invalid. This happens when we are resetting to
         // an earlier image state.
         // Instead, we transition to GENERAL, and make the image owned by oldQueueFamilyIndex.
+        newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        dstQueueFamilyIndex = srcSub.oldQueueFamilyIndex;
+        RDCASSERT(dstQueueFamilyIndex != VK_QUEUE_FAMILY_IGNORED);
+      }
+      if(newLayout == VK_IMAGE_LAYOUT_ZERO_INITIALIZED_EXT &&
+         oldLayout != VK_IMAGE_LAYOUT_ZERO_INITIALIZED_EXT)
+      {
         newLayout = VK_IMAGE_LAYOUT_GENERAL;
         dstQueueFamilyIndex = srcSub.oldQueueFamilyIndex;
         RDCASSERT(dstQueueFamilyIndex != VK_QUEUE_FAMILY_IGNORED);
@@ -1396,6 +1408,13 @@ void ImageState::Transition(const ImageState &dstState, VkAccessFlags srcAccessM
               /* layerCount = */ endArrayLayer - baseArrayLayer,
           },
       };
+      if(GetImageInfo().imageType == VK_IMAGE_TYPE_3D)
+      {
+        RDCASSERTEQUAL(baseArrayLayer, 0);
+        RDCASSERTEQUAL(barrier.subresourceRange.layerCount, 1);
+        barrier.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
+      }
+
       barriers.AddWrapped(MAIN_BATCH_INDEX, submitQueueFamilyIndex, barrier);
 
       // acquire the subresource in the dstQueueFamily, if necessary

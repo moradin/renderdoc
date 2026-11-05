@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -44,11 +44,14 @@ struct EventItemTag;
 class RDLabel;
 class RDTreeWidget;
 class RDTreeWidgetItem;
+class RDLineEdit;
+class RDToolButton;
 class RDTextEdit;
 class QListWidget;
 class QCheckBox;
 class QCompleter;
 class QStringListModel;
+class QRClickToolButton;
 
 typedef QSet<uint> RDTreeViewExpansionState;
 
@@ -77,7 +80,7 @@ struct FilterExpression
 
   QString printName() const
   {
-    if(name == lit("$any$"))
+    if(name == lit("$subexp$"))
       return lit("(...)");
     if(function)
       return QFormatStr("$%1(%2)").arg(name).arg(params);
@@ -138,6 +141,12 @@ public:
   void SetShowAllParameters(bool show) override;
   void SetEmptyRegionsVisible(bool show) override;
 
+  void SetHighlightedAnnotation(const rdcstr &annotationPath) override;
+  rdcstr GetHighlightedAnnotation() override;
+
+  void SetDurationColumnVisible(bool show) override;
+  void SetAnnotationColumnVisible(bool show) override;
+
   // ICaptureViewer
   void OnCaptureLoaded() override;
   void OnCaptureClosed() override;
@@ -180,6 +189,9 @@ private slots:
   void events_keyPress(QKeyEvent *event);
   void events_contextMenu(const QPoint &pos);
   void events_currentChanged(const QModelIndex &current, const QModelIndex &previous);
+  void locationEdit_clicked();
+  void location_leave();
+  void location_keyPress(QKeyEvent *e);
 
 private:
   void ExpandNode(QModelIndex idx);
@@ -194,6 +206,8 @@ private:
   void jumpToBookmark(int idx);
   void repopulateBookmarks();
   void highlightBookmarks();
+  void updateStepNextPrevButtonState();
+  void bookmarkContextMenu(QRClickToolButton *button, uint32_t EID);
 
   int FindEvent(QModelIndex parent, QString filter, uint32_t after, bool forward);
   int FindEvent(QString filter, uint32_t after, bool forward);
@@ -228,8 +242,11 @@ private:
 
   FlowLayout *m_BookmarkStripLayout;
   QSpacerItem *m_BookmarkSpacer;
-  QMap<uint32_t, QToolButton *> m_BookmarkButtons;
+  QMap<uint32_t, QRClickToolButton *> m_BookmarkButtons;
 
+  RDLineEdit *m_BreadcrumbLocationText;
+  RDToolButton *m_BreadcrumbLocationEditButton;
+  QString m_InitialBreadcrumbLocation;
   MarkerBreadcrumbs *m_Breadcrumbs;
 
   struct

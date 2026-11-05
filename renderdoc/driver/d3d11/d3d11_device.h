@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -46,6 +46,20 @@ class D3D11Replay;
 #define D3D11_1_UAV_SLOT_COUNT 64
 #endif
 
+struct StreamOutData
+{
+  ID3D11Query *query = NULL;
+  bool running = false;
+  uint64_t numPrims = 0;
+  uint32_t stride = 0;
+};
+
+struct SOShaderData
+{
+  uint32_t rastStream = 0;
+  uint32_t strides[4] = {};
+};
+
 enum TextureDisplayType
 {
   TEXDISPLAY_UNKNOWN = 0,
@@ -68,7 +82,7 @@ struct D3D11InitParams
   uint32_t VendorUAV = ~0U;
 
   // check if a frame capture section version is supported
-  static const uint64_t CurrentVersion = 0x12;
+  static const uint64_t CurrentVersion = 0x14;
   static bool IsSupportedVersion(uint64_t ver);
 };
 
@@ -557,11 +571,12 @@ private:
   D3D11ResourceRecord *m_DeviceRecord;
 
   CaptureState m_State;
+  void *m_FirstFrameCaptureWindow = NULL;
   bool m_AppControlledCapture = false;
 
   PerformanceTimer m_CaptureTimer;
 
-  ReplayStatus m_FailedReplayStatus = ReplayStatus::APIReplayFailed;
+  RDResult m_FailedReplayResult = ResultCode::APIReplayFailed;
 
   std::set<ID3D11DeviceChild *> m_CachedStateObjects;
 
@@ -577,12 +592,15 @@ private:
   // rarely kick in - only in the case where a lot of unique state objects are
   // created then released and never re-used.
   //
-  // Must be called while m_D3DLock is held.
+  // Internally locks m_D3DLock
   void CachedObjectsGarbageCollect();
 
   std::set<WrappedID3D11DeviceContext *> m_DeferredContexts;
   std::map<ID3D11InputLayout *, rdcarray<D3D11_INPUT_ELEMENT_DESC> > m_LayoutDescs;
   std::map<ID3D11InputLayout *, WrappedShader *> m_LayoutShaders;
+
+  std::map<ResourceId, StreamOutData> m_StreamOutCounters;
+  std::map<ResourceId, SOShaderData> m_SOShaders;
 
   static WrappedID3D11Device *m_pCurrentWrappedDevice;
 
@@ -600,11 +618,14 @@ private:
   SDFile *m_StructuredFile = NULL;
   SDFile *m_StoredStructuredData;
 
+  int m_OOMHandler = 0;
   rdcarray<DebugMessage> m_DebugMessages;
-  ReplayStatus m_FatalError = ReplayStatus::Succeeded;
+  RDResult m_FatalError = ResultCode::Succeeded;
 
   rdcarray<FrameDescription> m_CapturedFrames;
   rdcarray<ActionDescription *> m_Actions;
+
+  void MaskResourceMiscFlags(UINT &MiscFlags);
 
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11Device);
@@ -648,6 +669,9 @@ public:
   void RemoveDeferredContext(WrappedID3D11DeviceContext *defctx);
   WrappedID3D11DeviceContext *GetDeferredContext(size_t idx);
 
+  const std::map<ResourceId, StreamOutData> &GetSOHiddenCounters() { return m_StreamOutCounters; }
+  StreamOutData &GetSOHiddenCounterForBuffer(ResourceId id) { return m_StreamOutCounters[id]; }
+  const SOShaderData &GetSOShaderData(ResourceId id) { return m_SOShaders[id]; }
   ResourceId GetResourceID() { return m_ResourceID; }
   const ActionDescription *GetAction(uint32_t eventId);
   ResourceDescription &GetResourceDesc(ResourceId id);
@@ -661,15 +685,27 @@ public:
   void UnlockForChunkRemoval();
 
   SDFile *GetStructuredFile() { return m_StructuredFile; }
-  void DetachStructuredFile() { m_StoredStructuredData = m_StructuredFile = NULL; }
+  SDFile *DetachStructuredFile()
+  {
+    SDFile *ret = m_StoredStructuredData;
+    m_StoredStructuredData = m_StructuredFile = NULL;
+    return ret;
+  }
   uint64_t GetTimeBase() { return m_TimeBase; }
   double GetTimeFrequency() { return m_TimeFrequency; }
   void FirstFrame(IDXGISwapper *swapper);
 
+  void HandleOOM(bool handle)
+  {
+    if(handle)
+      m_OOMHandler++;
+    else
+      m_OOMHandler--;
+  }
   void CheckHRESULT(HRESULT hr);
-  void ReportFatalError(ReplayStatus error) { m_FatalError = error; }
-  ReplayStatus FatalErrorCheck() { return m_FatalError; }
-  bool HasFatalError() { return m_FatalError != ReplayStatus::Succeeded; }
+  void ReportFatalError(RDResult error) { m_FatalError = error; }
+  RDResult FatalErrorCheck() { return m_FatalError; }
+  bool HasFatalError() { return m_FatalError != ResultCode::Succeeded; }
   rdcarray<DebugMessage> GetDebugMessages();
   void AddDebugMessage(DebugMessage msg);
   void AddDebugMessage(MessageCategory c, MessageSeverity sv, MessageSource src, rdcstr d);
@@ -682,11 +718,17 @@ public:
   bool Serialise_CaptureScope(SerialiserType &ser);
 
   RDCDriver GetFrameCaptureDriver() { return RDCDriver::D3D11; }
-  void StartFrameCapture(void *dev, void *wnd);
-  bool EndFrameCapture(void *dev, void *wnd);
-  bool DiscardFrameCapture(void *dev, void *wnd);
+  void StartFrameCapture(DeviceOwnedWindow devWnd);
+  bool EndFrameCapture(DeviceOwnedWindow devWnd);
+  bool DiscardFrameCapture(DeviceOwnedWindow devWnd);
+  uint32_t SetObjectAnnotation(void *object, const char *key, RENDERDOC_AnnotationType valueType,
+                               uint32_t valueVectorWidth, const RENDERDOC_AnnotationValue *value);
+  uint32_t SetCommandAnnotation(void *queueOrCommandBuffer, const char *key,
+                                RENDERDOC_AnnotationType valueType, uint32_t valueVectorWidth,
+                                const RENDERDOC_AnnotationValue *value);
 
   ID3DUserDefinedAnnotation *GetAnnotations() { return m_RealAnnotations; }
+  ID3D11InfoQueue *GetInfoQueue() { return m_pInfoQueue; }
   // interface for DXGI
   virtual IUnknown *GetRealIUnknown() { return GetReal(); }
   void *GetFrameCapturerDevice() { return (ID3D11Device *)this; }
@@ -730,14 +772,14 @@ public:
                               const D3D11InitialContents *initial);
 
   void Create_InitialState(ResourceId id, ID3D11DeviceChild *live, bool hasData);
-  void Apply_InitialState(ID3D11DeviceChild *live, const D3D11InitialContents &initial);
+  void Apply_InitialState(ID3D11DeviceChild *live, D3D11InitialContents &initial);
 
   void SetStructuredExport(uint64_t sectionVersion)
   {
     m_SectionVersion = sectionVersion;
     m_State = CaptureState::StructuredExport;
   }
-  ReplayStatus ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers);
+  RDResult ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers);
   bool ProcessChunk(ReadSerialiser &ser, D3D11Chunk context);
   void ReplayLog(uint32_t startEventID, uint32_t endEventID, ReplayLogType replayType);
 
@@ -784,6 +826,7 @@ public:
   ResourceId GetBackbufferResourceID() { return m_BBID; }
   void ReportDeath(ID3D11DeviceChild *obj);
   void FlushPendingDead();
+  void DestroyDeadObject(ID3D11DeviceChild *child);
   void Resurrect(ID3D11DeviceChild *obj);
 
   ////////////////////////////////////////////////////////////////

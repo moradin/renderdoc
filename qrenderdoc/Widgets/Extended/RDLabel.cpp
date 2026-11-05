@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -45,7 +45,9 @@ void RDLabel::modifySizeHint(QSize &sz) const
     sz.setWidth(qMax(RichResourceTextWidthHint(this, font(), m_variant) + contentsMargins().left() +
                          contentsMargins().right() + margin() * 2,
                      sz.width()));
-    sz.setHeight(qMax(RichResourceTextHeightHint(this, font(), m_variant), sz.height()));
+    sz.setHeight(qMax(RichResourceTextHeightHint(this, font(), m_variant) +
+                          contentsMargins().top() + contentsMargins().bottom() + margin() * 2,
+                      sz.height()));
   }
 }
 
@@ -187,6 +189,7 @@ void RDLabel::resizeEvent(QResizeEvent *event)
     }
   }
 
+  emit resized();
   QLabel::resizeEvent(event);
 }
 

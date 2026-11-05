@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2021-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -125,6 +125,9 @@ OUT main(float3 pos : POSITION, float4 col : COLOR0)
 
     ResourceBarrier(vb, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
 
+    if(opts6.ShadingRateImageTileSize == 0)
+      opts6.ShadingRateImageTileSize = 1;
+
     ID3D12ResourcePtr shadImage =
         MakeTexture(DXGI_FORMAT_R8_UINT, screenWidth / opts6.ShadingRateImageTileSize,
                     screenHeight / opts6.ShadingRateImageTileSize)
@@ -183,7 +186,8 @@ OUT main(float3 pos : POSITION, float4 col : COLOR0)
       ID3D12GraphicsCommandList5Ptr cmd5 = cmd;
 
       D3D12_SHADING_RATE_COMBINER combiners[] = {
-          D3D12_SHADING_RATE_COMBINER_MAX, D3D12_SHADING_RATE_COMBINER_MAX,
+          D3D12_SHADING_RATE_COMBINER_MAX,
+          D3D12_SHADING_RATE_COMBINER_MAX,
       };
 
       pushMarker(cmd, "First");
@@ -206,7 +210,7 @@ OUT main(float3 pos : POSITION, float4 col : COLOR0)
         cmd5->RSSetShadingRate(D3D12_SHADING_RATE_1X1, combiners);
       }
 
-      if(vertpso)
+      if(opts6.VariableShadingRateTier == D3D12_VARIABLE_SHADING_RATE_TIER_2)
       {
         setMarker(cmd, "Vertex");
 
@@ -216,10 +220,6 @@ OUT main(float3 pos : POSITION, float4 col : COLOR0)
         cmd->DrawInstanced(6, 1, 0, 0);
 
         cmd->SetPipelineState(pso);
-      }
-
-      if(opts6.VariableShadingRateTier == D3D12_VARIABLE_SHADING_RATE_TIER_2)
-      {
         setMarker(cmd, "Image");
 
         cmd5->RSSetShadingRateImage(shadImage);
@@ -228,10 +228,7 @@ OUT main(float3 pos : POSITION, float4 col : COLOR0)
         cmd->DrawInstanced(6, 1, 0, 0);
 
         cmd5->RSSetShadingRateImage(NULL);
-      }
 
-      if(vertpso)
-      {
         setMarker(cmd, "Base + Vertex");
 
         cmd5->RSSetShadingRate(D3D12_SHADING_RATE_2X2, combiners);
@@ -242,10 +239,7 @@ OUT main(float3 pos : POSITION, float4 col : COLOR0)
 
         cmd->SetPipelineState(pso);
         cmd5->RSSetShadingRate(D3D12_SHADING_RATE_1X1, combiners);
-      }
 
-      if(opts6.VariableShadingRateTier == D3D12_VARIABLE_SHADING_RATE_TIER_2)
-      {
         setMarker(cmd, "Base + Image");
 
         cmd5->RSSetShadingRate(D3D12_SHADING_RATE_2X2, combiners);
@@ -256,10 +250,7 @@ OUT main(float3 pos : POSITION, float4 col : COLOR0)
 
         cmd5->RSSetShadingRateImage(NULL);
         cmd5->RSSetShadingRate(D3D12_SHADING_RATE_1X1, combiners);
-      }
 
-      if(vertpso && opts6.VariableShadingRateTier == D3D12_VARIABLE_SHADING_RATE_TIER_2)
-      {
         setMarker(cmd, "Vertex + Image");
 
         cmd5->RSSetShadingRateImage(shadImage);
@@ -270,10 +261,7 @@ OUT main(float3 pos : POSITION, float4 col : COLOR0)
 
         cmd->SetPipelineState(pso);
         cmd5->RSSetShadingRateImage(NULL);
-      }
 
-      if(opts6.VariableShadingRateTier == D3D12_VARIABLE_SHADING_RATE_TIER_2)
-      {
         ResourceBarrier(cmd, shadImage, D3D12_RESOURCE_STATE_SHADING_RATE_SOURCE,
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
       }
@@ -312,40 +300,28 @@ OUT main(float3 pos : POSITION, float4 col : COLOR0)
         cmdB->DrawInstanced(0, 0, 0, 0);
       }
 
-      if(vertpso)
+      if(opts6.VariableShadingRateTier == D3D12_VARIABLE_SHADING_RATE_TIER_2)
       {
         setMarker(cmdB, "Vertex");
 
         RSSetViewport(cmdB, {x * 2.0f, 0.0f, x, y, 0.0f, 1.0f});
         cmdB->DrawInstanced(0, 0, 0, 0);
-      }
 
-      if(opts6.VariableShadingRateTier == D3D12_VARIABLE_SHADING_RATE_TIER_2)
-      {
         setMarker(cmdB, "Image");
 
         RSSetViewport(cmdB, {x * 3.0f, 0.0f, x, y, 0.0f, 1.0f});
         cmdB->DrawInstanced(0, 0, 0, 0);
-      }
 
-      if(vertpso)
-      {
         setMarker(cmdB, "Base + Vertex");
 
         RSSetViewport(cmdB, {x * 0.0f, y, x, y, 0.0f, 1.0f});
         cmdB->DrawInstanced(0, 0, 0, 0);
-      }
 
-      if(opts6.VariableShadingRateTier == D3D12_VARIABLE_SHADING_RATE_TIER_2)
-      {
         setMarker(cmdB, "Base + Image");
 
         RSSetViewport(cmdB, {x * 3.0f, y, x, y, 0.0f, 1.0f});
         cmdB->DrawInstanced(0, 0, 0, 0);
-      }
 
-      if(vertpso && opts6.VariableShadingRateTier == D3D12_VARIABLE_SHADING_RATE_TIER_2)
-      {
         setMarker(cmdB, "Vertex + Image");
 
         RSSetViewport(cmdB, {x * 3.0f, y * 2.0f, x, y, 0.0f, 1.0f});

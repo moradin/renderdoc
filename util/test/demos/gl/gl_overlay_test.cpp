@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -85,6 +85,48 @@ void main()
 
 )EOSHADER";
 
+  std::string fragdepthpixel = R"EOSHADER(
+
+in v2f vertIn;
+
+layout(location = 0, index = 0) out vec4 Color;
+
+void main()
+{
+	Color = vertIn.col;
+
+	if ((gl_FragCoord.x > 180.0) && (gl_FragCoord.x < 185.0) &&
+      (gl_FragCoord.y > 135.0) && (gl_FragCoord.y < 145.0))
+	{
+		gl_FragDepth = 0.0;
+	}
+  else
+  {
+		gl_FragDepth = gl_FragCoord.z;
+  }
+}
+
+)EOSHADER";
+
+  std::string discardpixel = R"EOSHADER(
+
+in v2f vertIn;
+
+layout(location = 0, index = 0) out vec4 Color;
+
+void main()
+{
+	Color = vertIn.col;
+
+	if ((gl_FragCoord.x > 327.0) && (gl_FragCoord.x < 339.0) &&
+      (gl_FragCoord.y > 252.0) && (gl_FragCoord.y < 262.0))
+	{
+    discard;
+  }
+}
+
+)EOSHADER";
+
   int main()
   {
     // initialise, create window, create context, etc
@@ -159,6 +201,11 @@ void main()
         {Vec3f(-1.3f, -1.3f, 0.95f), Vec4f(0.1f, 0.1f, 0.5f, 1.0f), Vec2f(0.0f, 0.0f)},
         {Vec3f(0.0f, 1.3f, 0.95f), Vec4f(0.1f, 0.1f, 0.5f, 1.0f), Vec2f(0.0f, 1.0f)},
         {Vec3f(1.3f, -1.3f, 0.95f), Vec4f(0.1f, 0.1f, 0.5f, 1.0f), Vec2f(1.0f, 0.0f)},
+
+        // discard rectangle
+        {Vec3f(0.6f, +0.7f, 0.5f), Vec4f(0.0f, 0.0f, 0.0f, 1.0f), Vec2f(0.0f, 0.0f)},
+        {Vec3f(0.7f, +0.9f, 0.5f), Vec4f(0.0f, 0.0f, 0.0f, 1.0f), Vec2f(0.0f, 1.0f)},
+        {Vec3f(0.8f, +0.7f, 0.5f), Vec4f(0.0f, 0.0f, 0.0f, 1.0f), Vec2f(1.0f, 0.0f)},
     };
 
     GLuint vb = MakeBuffer();
@@ -176,36 +223,61 @@ void main()
 
     GLuint program = MakeProgram(common + vertex, common + pixel);
     GLuint whiteprogram = MakeProgram(common + vertex, whitepixel);
+    GLuint fragdepthprogram = MakeProgram(common + vertex, common + fragdepthpixel);
+    GLuint discardprogram = MakeProgram(common + vertex, common + discardpixel);
 
-    GLuint fbo = MakeFBO();
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    const char *fmtNames[] = {"D24_S8", "D32F_S8", "D16_S0", "D24_S0", "D32F_S0"};
+    GLenum fmts[] = {GL_DEPTH24_STENCIL8, GL_DEPTH32F_STENCIL8, GL_DEPTH_COMPONENT16,
+                     GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT32F};
+    const size_t countFmts = ARRAY_COUNT(fmts);
 
-    // Color render texture
-    GLuint attachments[] = {MakeTexture(), MakeTexture(), MakeTexture(), MakeTexture()};
+    GLuint fbos[countFmts];
+    GLuint msaafbos[countFmts];
+    for(size_t f = 0; f < countFmts; f++)
+    {
+      GLenum fmt = fmts[f];
 
-    glBindTexture(GL_TEXTURE_2D, attachments[0]);
-    glTexStorage2D(GL_TEXTURE_2D, 1, GL_SRGB8_ALPHA8, screenWidth, screenHeight);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, attachments[0], 0);
+      // Color render texture
+      GLuint attachments[] = {MakeTexture(), MakeTexture(), MakeTexture(), MakeTexture()};
+      GLenum dsAttachment = GL_DEPTH_ATTACHMENT;
+      if(fmt == GL_DEPTH24_STENCIL8 || fmt == GL_DEPTH32F_STENCIL8)
+        dsAttachment = GL_DEPTH_STENCIL_ATTACHMENT;
+      if(fmt == GL_STENCIL_INDEX8)
+        dsAttachment = GL_STENCIL_ATTACHMENT;
 
-    glBindTexture(GL_TEXTURE_2D, attachments[1]);
-    glTexStorage2D(GL_TEXTURE_2D, 1, GL_DEPTH24_STENCIL8, screenWidth, screenHeight);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D,
-                           attachments[1], 0);
+      {
+        GLuint fbo = MakeFBO();
+        fbos[f] = fbo;
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
-    GLuint msaafbo = MakeFBO();
-    glBindFramebuffer(GL_FRAMEBUFFER, msaafbo);
+        glBindTexture(GL_TEXTURE_2D, attachments[0]);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_SRGB8_ALPHA8, screenWidth, screenHeight);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, attachments[0],
+                               0);
 
-    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, attachments[2]);
-    glTexStorage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_SRGB8_ALPHA8, screenWidth,
-                              screenHeight, GL_TRUE);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE,
-                           attachments[2], 0);
+        glBindTexture(GL_TEXTURE_2D, attachments[1]);
+        glTexStorage2D(GL_TEXTURE_2D, 1, fmt, screenWidth, screenHeight);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, dsAttachment, GL_TEXTURE_2D, attachments[1], 0);
+      }
 
-    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, attachments[3]);
-    glTexStorage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_DEPTH24_STENCIL8, screenWidth,
-                              screenHeight, GL_TRUE);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D_MULTISAMPLE,
-                           attachments[3], 0);
+      {
+        GLuint msaafbo = MakeFBO();
+        msaafbos[f] = msaafbo;
+        glBindFramebuffer(GL_FRAMEBUFFER, msaafbo);
+
+        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, attachments[2]);
+        glTexStorage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_SRGB8_ALPHA8, screenWidth,
+                                  screenHeight, GL_TRUE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE,
+                               attachments[2], 0);
+
+        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, attachments[3]);
+        glTexStorage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, fmt, screenWidth, screenHeight,
+                                  GL_TRUE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, dsAttachment, GL_TEXTURE_2D_MULTISAMPLE,
+                               attachments[3], 0);
+      }
+    }
 
     GLuint subtex = MakeTexture();
     glBindTexture(GL_TEXTURE_2D_ARRAY, subtex);
@@ -242,62 +314,105 @@ void main()
     {
       glBindVertexArray(vao);
 
-      glUseProgram(program);
-
-      for(GLuint fb : {fbo, msaafbo})
+      for(size_t i = 0; i < countFmts; ++i)
       {
-        glEnable(GL_CULL_FACE);
-        glFrontFace(GL_CW);
-
-        glDepthMask(GL_TRUE);
-        glEnable(GL_DEPTH_TEST);
-        glEnable(GL_SCISSOR_TEST);
-        glDisable(GL_DEPTH_CLAMP);
-        glDisable(GL_STENCIL_TEST);
-        glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-        glStencilFunc(GL_ALWAYS, 0x55, 0xff);
-
-        glViewport(10, 10, GLsizei(screenWidth) - 20, GLsizei(screenHeight) - 20);
-        glScissor(0, 0, screenWidth, screenHeight);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, fb);
-        float col[] = {0.2f, 0.2f, 0.2f, 1.0f};
-        glClearBufferfv(GL_COLOR, 0, col);
-        glClearBufferfi(GL_DEPTH_STENCIL, 0, 1.0f, 0);
-
-        // 1: write depth
-        glDepthFunc(GL_ALWAYS);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-
-        // 2: write stencil
-        glDepthFunc(GL_LEQUAL);
-        glEnable(GL_STENCIL_TEST);
-        glDrawArrays(GL_TRIANGLES, 3, 3);
-
-        // 3: write background
-        glDisable(GL_STENCIL_TEST);
-        glDrawArrays(GL_TRIANGLES, 6, 3);
-
-        // add a marker so we can easily locate this draw
-        setMarker(fb == msaafbo ? "MSAA Test" : "Normal Test");
-
-        glEnable(GL_STENCIL_TEST);
-        glStencilFunc(GL_GREATER, 0x55, 0xff);
-        glDrawArrays(GL_TRIANGLES, 9, 24);
-
-        if(fb != msaafbo)
+        GLenum fmt = fmts[i];
+        std::string fmtName(fmtNames[i]);
+        for(bool is_msaa : {false, true})
         {
-          setMarker("Viewport Test");
-          glDisable(GL_STENCIL_TEST);
-          glViewport(10, screenHeight - 90, 80, 80);
-          glScissor(24, screenHeight - 76, 52, 52);
-          glDrawArrays(GL_TRIANGLES, 33, 3);
-        }
+          bool hasStencil = false;
+          if(fmt == GL_DEPTH24_STENCIL8 || fmt == GL_DEPTH32F_STENCIL8)
+            hasStencil = true;
 
-        glScissor(0, 0, screenWidth, screenHeight);
+          GLuint fb = is_msaa ? msaafbos[i] : fbos[i];
+
+          glEnable(GL_CULL_FACE);
+          glFrontFace(GL_CW);
+
+          glDepthMask(GL_TRUE);
+          glEnable(GL_DEPTH_TEST);
+          glEnable(GL_SCISSOR_TEST);
+          glDisable(GL_DEPTH_CLAMP);
+          glDisable(GL_STENCIL_TEST);
+          glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+          glStencilFunc(GL_ALWAYS, 0x55, 0xff);
+
+          glViewport(10, 10, GLsizei(screenWidth) - 20, GLsizei(screenHeight) - 20);
+          glScissor(0, 0, screenWidth, screenHeight);
+
+          glBindFramebuffer(GL_FRAMEBUFFER, fb);
+          float col[] = {0.2f, 0.2f, 0.2f, 1.0f};
+          glClearBufferfv(GL_COLOR, 0, col);
+          glClearBufferfi(GL_DEPTH_STENCIL, 0, 1.0f, 0);
+
+          if(hasStencil)
+          {
+            glScissor(32, GLsizei(screenHeight) - 32, 6, 6);
+            glClearBufferfi(GL_DEPTH_STENCIL, 0, 1.0f, 1);
+            glScissor(0, 0, screenWidth, screenHeight);
+          }
+
+          glUseProgram(program);
+
+          // 1: write depth
+          glDepthFunc(GL_ALWAYS);
+          glDrawArrays(GL_TRIANGLES, 0, 3);
+
+          glDepthFunc(GL_LEQUAL);
+          if(hasStencil)
+          {
+            // 2: write stencil
+            glEnable(GL_STENCIL_TEST);
+            glDrawArrays(GL_TRIANGLES, 3, 3);
+          }
+
+          // 3: write background
+          glDisable(GL_STENCIL_TEST);
+          glDrawArrays(GL_TRIANGLES, 6, 3);
+
+          // add a marker so we can easily locate this draw
+          std::string markerName(is_msaa ? "MSAA Test " : "Normal Test ");
+          markerName += fmtName;
+          setMarker(markerName);
+
+          glEnable(GL_STENCIL_TEST);
+          glStencilFunc(GL_GREATER, 0x55, 0xff);
+          glUseProgram(fragdepthprogram);
+          glDrawArrays(GL_TRIANGLES, 9, 24);
+
+          markerName = "Discard " + markerName;
+          setMarker(markerName);
+          glUseProgram(discardprogram);
+          glDrawArrays(GL_TRIANGLES, 36, 3);
+          glUseProgram(program);
+
+          if(!is_msaa)
+          {
+            setMarker("Viewport Test " + fmtName);
+            glDisable(GL_STENCIL_TEST);
+            glViewport(10, screenHeight - 90, 80, 80);
+            glScissor(24, screenHeight - 76, 52, 52);
+            glDrawArrays(GL_TRIANGLES, 33, 3);
+          }
+
+          if(is_msaa)
+          {
+            setMarker("Sample Mask Test " + fmtName);
+            glDisable(GL_STENCIL_TEST);
+            glEnable(GL_SAMPLE_MASK);
+            glSampleMaski(0, 0x2);
+            glViewport(0, screenHeight - 80, 80, 80);
+            glScissor(0, screenHeight - 80, 80, 80);
+            glDrawArrays(GL_TRIANGLES, 6, 3);
+            glSampleMaski(0, ~0U);
+            glDisable(GL_SAMPLE_MASK);
+          }
+
+          glScissor(0, 0, screenWidth, screenHeight);
+        }
       }
 
-      glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, fbos[0]);
       glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
       glBlitFramebuffer(0, 0, screenWidth, screenHeight, 0, 0, screenWidth, screenHeight,
                         GL_COLOR_BUFFER_BIT, GL_LINEAR);

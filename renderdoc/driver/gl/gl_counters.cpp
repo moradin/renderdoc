@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -27,6 +27,7 @@
 #include "driver/ihv/amd/amd_counters.h"
 #include "driver/ihv/arm/arm_counters.h"
 #include "driver/ihv/intel/intel_gl_counters.h"
+#include "driver/ihv/nv/nv_gl_counters.h"
 #include "gl_driver.h"
 #include "gl_replay.h"
 #include "gl_resources.h"
@@ -71,6 +72,13 @@ rdcarray<GPUCounter> GLReplay::EnumerateCounters()
     ret.append(m_pARMCounters->GetPublicCounterIds());
   }
 
+#if DISABLED(RDOC_ANDROID) && DISABLED(RDOC_APPLE)
+  if(m_pNVCounters)
+  {
+    ret.append(m_pNVCounters->EnumerateCounters());
+  }
+#endif
+
   return ret;
 }
 
@@ -106,6 +114,14 @@ CounterDescription GLReplay::DescribeCounter(GPUCounter counterID)
   {
     return m_pARMCounters->GetCounterDescription(counterID);
   }
+
+#if DISABLED(RDOC_ANDROID) && DISABLED(RDOC_APPLE)
+  /////NVIDIA/////
+  if(m_pNVCounters && m_pNVCounters->HasCounter(counterID))
+  {
+    return m_pNVCounters->DescribeCounter(counterID);
+  }
+#endif
 
   // FFBA5548-FBF8-405D-BA18-F0329DA370A0
   desc.uuid.words[0] = 0xFFBA5548;
@@ -259,9 +275,10 @@ void GLReplay::FillTimers(GLCounterContext &ctx, const ActionDescription &action
   for(size_t i = 0; i < actionnode.children.size(); i++)
   {
     const ActionDescription &a = actionnode.children[i];
-    FillTimers(ctx, actionnode.children[i], counters);
+    FillTimers(ctx, a, counters);
 
-    if(a.events.empty())
+    // for marker regions and multi-actions, don't fetch counters for them, only their children
+    if(!a.children.empty())
       continue;
 
     GPUQueries *queries = NULL;
@@ -322,7 +339,8 @@ void GLReplay::FillTimersAMD(uint32_t *eventStartID, uint32_t *sampleIndex,
 
     FillTimersAMD(eventStartID, sampleIndex, eventIDs, actionnode.children[i]);
 
-    if(a.events.empty())
+    if(a.events.empty() ||
+       (a.flags & (ActionFlags::PushMarker | ActionFlags::SetMarker | ActionFlags::PopMarker)))
       continue;
 
     eventIDs->push_back(a.eventId);
@@ -603,6 +621,21 @@ rdcarray<CounterResult> GLReplay::FetchCounters(const rdcarray<GPUCounter> &allC
     if(!armCounters.empty())
       ret = FetchCountersARM(armCounters);
   }
+
+#if DISABLED(RDOC_ANDROID) && DISABLED(RDOC_APPLE)
+  if(m_pNVCounters)
+  {
+    // Filter out the NVIDIA counters
+    rdcarray<GPUCounter> nvCounters;
+    std::copy_if(allCounters.begin(), allCounters.end(), std::back_inserter(nvCounters),
+                 [=](const GPUCounter &c) { return m_pNVCounters->HasCounter(c); });
+    if(!nvCounters.empty())
+    {
+      rdcarray<CounterResult> results = m_pNVCounters->FetchCounters(nvCounters, m_pDriver);
+      ret.append(results);
+    }
+  }
+#endif
 
   m_pDriver->SetFetchCounters(false);
 

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2021 Baldur Karlsson
+ * Copyright (c) 2021-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -43,7 +43,8 @@ HRESULT WrappedID3D12Device::CreateShaderCacheSession(_In_ const D3D12_SHADER_CA
 
   if(SUCCEEDED(ret))
   {
-    WrappedID3D12ShaderCacheSession *wrapped = new WrappedID3D12ShaderCacheSession(real, this);
+    WrappedID3D12ShaderCacheSession *wrapped =
+        new WrappedID3D12ShaderCacheSession(ResourceId(), real, this);
 
     if(riid == __uuidof(ID3D12ShaderCacheSession))
       *ppvSession = (ID3D12ShaderCacheSession *)wrapped;
@@ -78,22 +79,33 @@ bool WrappedID3D12Device::Serialise_CreateCommandQueue1(SerialiserType &ser,
     ID3D12CommandQueue *ret = NULL;
     HRESULT hr = E_NOINTERFACE;
     if(m_pDevice9)
-      hr = m_pDevice9->CreateCommandQueue1(&Descriptor, creator, guid, (void **)&ret);
+    {
+      void *realptr = NULL;
+      hr = m_pDevice9->CreateCommandQueue1(&Descriptor, creator, guid, &realptr);
+
+      if(guid == __uuidof(ID3D12CommandQueue))
+        ret = (ID3D12CommandQueue *)realptr;
+      else if(guid == __uuidof(ID3D12CommandQueue1))
+        ret = (ID3D12CommandQueue1 *)realptr;
+    }
     else
-      RDCERR("Replaying a without D3D12.9 available");
+    {
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Capture requires ID3D12Device9 which isn't available");
+      return false;
+    }
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating command queue, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
       SetObjName(ret, StringFormat::Fmt("Command Queue %s", ToStr(pCommandQueue).c_str()));
 
-      ret = new WrappedID3D12CommandQueue(ret, this, m_State);
-
-      GetResourceManager()->AddLiveResource(pCommandQueue, ret);
+      ret = new WrappedID3D12CommandQueue(pCommandQueue, ret, this, m_State);
 
       AddResource(pCommandQueue, ResourceType::Queue, "Command Queue");
 
@@ -129,16 +141,23 @@ HRESULT WrappedID3D12Device::CreateCommandQueue1(const D3D12_COMMAND_QUEUE_DESC 
   if(ppCommandQueue == NULL)
     return m_pDevice9->CreateCommandQueue1(pDesc, CreatorID, riid, NULL);
 
-  if(riid != __uuidof(ID3D12CommandQueue))
+  if(riid != __uuidof(ID3D12CommandQueue) && riid != __uuidof(ID3D12CommandQueue1))
     return E_NOINTERFACE;
 
-  ID3D12CommandQueue *real = NULL;
+  void *realptr = NULL;
   HRESULT ret;
-  SERIALISE_TIME_CALL(ret = m_pDevice9->CreateCommandQueue1(pDesc, CreatorID, riid, (void **)&real));
+  SERIALISE_TIME_CALL(ret = m_pDevice9->CreateCommandQueue1(pDesc, CreatorID, riid, &realptr));
+
+  ID3D12CommandQueue *real = NULL;
+  if(riid == __uuidof(ID3D12CommandQueue))
+    real = (ID3D12CommandQueue *)realptr;
+  else if(riid == __uuidof(ID3D12CommandQueue1))
+    real = (ID3D12CommandQueue1 *)realptr;
 
   if(SUCCEEDED(ret))
   {
-    WrappedID3D12CommandQueue *wrapped = new WrappedID3D12CommandQueue(real, this, m_State);
+    WrappedID3D12CommandQueue *wrapped =
+        new WrappedID3D12CommandQueue(ResourceId(), real, this, m_State);
 
     if(IsCaptureMode(m_State))
     {
@@ -148,10 +167,6 @@ HRESULT WrappedID3D12Device::CreateCommandQueue1(const D3D12_COMMAND_QUEUE_DESC 
       Serialise_CreateCommandQueue1(ser, pDesc, CreatorID, riid, (void **)&wrapped);
 
       wrapped->GetCreationRecord()->AddChunk(scope.Get());
-    }
-    else
-    {
-      GetResourceManager()->AddLiveResource(wrapped->GetResourceID(), wrapped);
     }
 
     if(pDesc->Type == D3D12_COMMAND_LIST_TYPE_DIRECT && m_Queue == NULL)
@@ -185,11 +200,14 @@ HRESULT WrappedID3D12Device::CreateCommandQueue1(const D3D12_COMMAND_QUEUE_DESC 
           wrapped->GetCreationRecord()->GetResourceID(), eFrameRef_Read);
     }
 
-    *ppCommandQueue = (ID3D12CommandQueue *)wrapped;
+    if(riid == __uuidof(ID3D12CommandQueue))
+      *ppCommandQueue = (ID3D12CommandQueue *)wrapped;
+    else if(riid == __uuidof(ID3D12CommandQueue1))
+      *ppCommandQueue = (ID3D12CommandQueue1 *)wrapped;
   }
   else
   {
-    CheckHRESULT(ret);
+    CHECK_HR(this, ret);
   }
 
   return ret;

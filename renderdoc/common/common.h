@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -42,11 +42,24 @@
 #include <signal.h>
 
 #define __PRETTY_FUNCTION_SIGNATURE__ __PRETTY_FUNCTION__
+
 #if ENABLED(RDOC_SWITCH)
+
 #include <stdlib.h>
 #define OS_DEBUG_BREAK() abort()
+
+#elif ENABLED(RDOC_LINUX) && (defined(__i386__) || defined(__x86_64__))
+
+#define OS_DEBUG_BREAK()           \
+  do                               \
+  {                                \
+    __asm__ volatile("int $0x03"); \
+  } while((void)0, 0)
+
 #else
+
 #define OS_DEBUG_BREAK() raise(SIGTRAP)
+
 #endif
 
 #if defined(__clang__)
@@ -281,6 +294,12 @@ inline T AlignUpPtr(T x, A a)
   return (T)AlignUp<uintptr_t>((uintptr_t)x, (uintptr_t)a);
 }
 
+template <typename T>
+T AlignToMultiple(T value, T multiple)
+{
+  return ((value + multiple - 1) / multiple) * multiple | 0;
+}
+
 #define MAKE_FOURCC(a, b, c, d) \
   (((uint32_t)(d) << 24) | ((uint32_t)(c) << 16) | ((uint32_t)(b) << 8) | (uint32_t)(a))
 
@@ -293,8 +312,10 @@ byte *AllocAlignedBuffer(uint64_t size, uint64_t alignment = 64);
 void FreeAlignedBuffer(byte *buf);
 
 uint32_t Log2Floor(uint32_t value);
+uint32_t Log2Ceil(uint32_t value);
 #if ENABLED(RDOC_X64)
 uint64_t Log2Floor(uint64_t value);
+uint64_t Log2Ceil(uint64_t value);
 #endif
 
 // super ugly - on apple size_t is a separate type, so we need a new overload
@@ -305,6 +326,15 @@ inline size_t Log2Floor(size_t value)
   return (size_t)Log2Floor((uint64_t)value);
 #else
   return (size_t)Log2Floor((uint32_t)value);
+#endif
+}
+
+inline size_t Log2Ceil(size_t value)
+{
+#if ENABLED(RDOC_X64)
+  return (size_t)Log2Ceil((uint64_t)value);
+#else
+  return (size_t)Log2Ceil((uint32_t)value);
 #endif
 }
 #endif

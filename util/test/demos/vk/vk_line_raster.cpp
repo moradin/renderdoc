@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -111,12 +111,14 @@ void main()
     pipeCreateInfo.rasterizationState.pNext = &lineRasterSetup;
 
     A2V linePoints[2] = {
-        {Vec3f(0.9f, 0.9f, 0.0f)}, {Vec3f(-0.9f, -0.9f, 0.0f)},
+        {Vec3f(0.9f, 0.9f, 0.0f)},
+        {Vec3f(-0.9f, -0.9f, 0.0f)},
     };
 
     AllocatedBuffer vb(
-        this, vkh::BufferCreateInfo(sizeof(linePoints), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                                                            VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        this,
+        vkh::BufferCreateInfo(sizeof(linePoints),
+                              VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
 
     vb.upload(linePoints);

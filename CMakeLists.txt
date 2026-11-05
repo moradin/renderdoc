@@ -1,9 +1,20 @@
-cmake_minimum_required(VERSION 2.8.12)
+if (NOT CMAKE_VERSION VERSION_LESS "4.0")
+  cmake_minimum_required(VERSION 3.5)
+else()
+  cmake_minimum_required(VERSION 2.8.12)
+endif()
 
 if(APPLE)
-  SET(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "Build architectures for Mac OS X" FORCE)
-  SET(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum SDK for Mac OS X" FORCE)
+  # Building for Apple requires at least CMake 3.23.0
+  cmake_minimum_required(VERSION 3.23.0)
+
+  SET(CMAKE_OSX_DEPLOYMENT_TARGET "12.00" CACHE STRING "Minimum SDK for Mac OS X")
   SET(CMAKE_XCODE_GENERATE_SCHEME ON)
+  SET(CMAKE_XCODE_SCHEME_ENABLE_GPU_FRAME_CAPTURE_MODE "Disabled")
+endif()
+
+if("${CMAKE_HOST_SYSTEM_NAME}" STREQUAL "FreeBSD")
+  set(FREEBSD YES)
 endif()
 
 # Configure some stuff that needs to be set really early
@@ -94,6 +105,19 @@ set(RENDERDOC_APK_PATH "" CACHE STRING "Path to RenderDoc .apk files after insta
 
 set(LIB_SUFFIX "" CACHE STRING "Suffix for 'lib' folder in target directory structure. E.g. set to '64' to use /usr/local/lib64 instead of /usr/local/lib.")
 set(LIB_SUBFOLDER "" CACHE STRING "Subfolder under the 'lib' folder in target directory structure. E.g. set to 'renderdoc' to use /usr/local/lib/renderdoc instead of /usr/local/lib.")
+set(VULKAN_JSON_SUFFIX "" CACHE STRING "Suffix for the vulkan implicit_layer json file. E.g. set to '.x86_64' to use renderdoc_capture.x86_64.json instead of renderdoc_capture.json")
+
+SET(FORCE_PY_VERSION "" CACHE STRING "Force a particular version of python to be searched for")
+
+option(INTERNAL_SELF_CAPTURE "Internal option: enable self-capture" OFF)
+
+set(RDOC_BASE_NAME "renderdoc")
+if(INTERNAL_SELF_CAPTURE)
+    set(RDOC_BASE_NAME "rdocself")
+    add_definitions(-DRDOC_SELFCAPTURE_LIMITEDAPI=1)
+endif()
+string(TOUPPER ${RDOC_BASE_NAME} RDOC_BASE_NAME_UPPER)
+add_definitions(-DRDOC_BASE_NAME=${RDOC_BASE_NAME})
 
 if(NOT LIB_SUFFIX STREQUAL "")
     add_definitions(-DRENDERDOC_LIB_SUFFIX=${LIB_SUFFIX})
@@ -105,6 +129,8 @@ if(NOT LIB_SUBFOLDER STREQUAL "")
     add_definitions(-DRENDERDOC_LIB_SUBFOLDER=${LIB_SUBFOLDER})
     set(LIB_SUBFOLDER_TRAIL_SLASH "${LIB_SUBFOLDER}/")
 endif()
+
+add_definitions(-DRENDERDOC_VULKAN_JSON_SUFFIX=${VULKAN_JSON_SUFFIX})
 
 if(BUILD_VERSION_STABLE)
     add_definitions(-DRENDERDOC_STABLE_BUILD=1)
@@ -180,18 +206,24 @@ option(ENABLE_GL "Enable GL driver" ON)
 option(ENABLE_GLES "Enable GL ES driver" ON)
 option(ENABLE_EGL "Enable EGL" ON)
 option(ENABLE_VULKAN "Enable Vulkan driver" ON)
+option(ENABLE_METAL "Enable Metal driver" OFF)
 option(ENABLE_RENDERDOCCMD "Enable renderdoccmd" ON)
 option(ENABLE_QRENDERDOC "Enable qrenderdoc" ON)
 option(ENABLE_PYRENDERDOC "Enable renderdoc python modules" ON)
 
 option(ENABLE_XLIB "Enable xlib windowing support" ON)
 option(ENABLE_XCB "Enable xcb windowing support" ON)
-option(ENABLE_WAYLAND "Enable experimental wayland windowing support" OFF)
-option(ENABLE_GGP "Enable GGP support" OFF)
+option(ENABLE_UNSUPPORTED_EXPERIMENTAL_POSSIBLY_BROKEN_WAYLAND "Enable EXPERIMENTAL, POSSIBLY BROKEN, UNSUPPORTED wayland windowing support" OFF)
 
 option(ENABLE_ASAN "Enable address sanitizer" OFF)
 option(ENABLE_TSAN "Enable thread sanitizer" OFF)
 option(ENABLE_MSAN "Enable memory sanitizer" OFF)
+
+if(APPLE)
+  if (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 12.0)
+    message(FATAL_ERROR "Xcode 12.2 or newer is required to build for Apple")
+  endif()
+endif()
 
 if(ENABLE_ASAN)
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
@@ -203,7 +235,7 @@ if(ENABLE_TSAN)
     message(STATUS "Enabling thread sanitizer - may cause issues if capturing, only recommended for use with replay only")
 endif()
 
-if(ENABLE_WAYLAND)
+if(ENABLE_UNSUPPORTED_EXPERIMENTAL_POSSIBLY_BROKEN_WAYLAND)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(PKG_WAYLAND QUIET wayland-client)
 
@@ -214,7 +246,7 @@ if(ENABLE_WAYLAND)
         endif()
     else()
         message(WARNING "Wayland not found - disabling support")
-        set(ENABLE_WAYLAND OFF CACHE BOOL "" FORCE)
+        set(ENABLE_UNSUPPORTED_EXPERIMENTAL_POSSIBLY_BROKEN_WAYLAND OFF CACHE BOOL "" FORCE)
     endif()
 endif()
 
@@ -250,6 +282,16 @@ if(APPLE)
     set(ENABLE_EGL OFF CACHE BOOL "" FORCE)
 endif()
 
+if(INTERNAL_SELF_CAPTURE)
+    message(STATUS "Disabling GL/GLES for self-capture")
+    set(ENABLE_GLES OFF CACHE BOOL "" FORCE)
+    set(ENABLE_EGL OFF CACHE BOOL "" FORCE)
+    
+    message(STATUS "Disabling qrenderdoc & python modules for self-capture")
+    set(ENABLE_QRENDERDOC OFF CACHE BOOL "" FORCE)
+    set(ENABLE_PYRENDERDOC OFF CACHE BOOL "" FORCE)
+endif()
+
 if(ANDROID)
     if(ENABLE_GL)
         message(STATUS "Disabling GL driver on android")
@@ -268,20 +310,6 @@ if(ANDROID)
 
     message(STATUS "Using Android ABI ${ANDROID_ABI}")
     message(STATUS "Using Android native API level ${ANDROID_NATIVE_API_LEVEL}")
-endif()
-
-if(ENABLE_GGP)
-    message(STATUS "Disabling GL, GLES driver on ggp")
-    set(ENABLE_GL OFF CACHE BOOL "" FORCE)
-    set(ENABLE_GLES OFF CACHE BOOL "" FORCE)
-    set(ENABLE_EGL OFF CACHE BOOL "" FORCE)
-
-    # GGP doesn't support the Qt UI
-    message(STATUS "Disabling qrenderdoc for ggp build")
-    set(ENABLE_QRENDERDOC OFF CACHE BOOL "" FORCE)
-
-    message(STATUS "Disabling renderdoc python modules for ggp build")
-    set(ENABLE_PYRENDERDOC OFF CACHE BOOL "" FORCE)
 endif()
 
 if(ENABLE_GLES AND NOT ENABLE_EGL)
@@ -316,6 +344,10 @@ if(ENABLE_VULKAN)
     add_definitions(-DRENDERDOC_SUPPORT_VULKAN)
 endif()
 
+if(ENABLE_METAL)
+    add_definitions(-DRENDERDOC_SUPPORT_METAL)
+endif()
+
 string(TOLOWER "${CMAKE_BUILD_TYPE}" cmake_build_type_lower)
 
 set(RELEASE_MODE 0)
@@ -345,12 +377,17 @@ if(STRIP_ANDROID_LIBRARY AND BUILD_ANDROID AND RELEASE_MODE)
     message(STATUS "libraries will be stripped with ${ANDROID_STRIP_TOOL}")
 endif()
 
+# Build as C++14
+if (CMAKE_VERSION VERSION_LESS "3.1")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
+else ()
+    set (CMAKE_CXX_STANDARD 14)
+    set (CMAKE_CXX_STANDARD_REQUIRED ON)
+endif ()
+
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -fno-strict-aliasing")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-strict-aliasing")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=hidden -fvisibility-inlines-hidden")
-    if(ENABLE_GGP)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -gline-tables-only -fno-omit-frame-pointer")
-    endif()
 
     set(warning_flags
         -Wall
@@ -370,6 +407,20 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7.0)
             list(APPEND warning_flags -Wimplicit-fallthrough=2)
         endif()
+
+        # False positives due to function inlining decisions
+        # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=103993
+        if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 11.0.9)
+            list(APPEND warning_flags -Wno-mismatched-new-delete)
+        endif()
+        
+        if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 11.9)
+            list(APPEND warning_flags -Wno-unused-value)
+        endif()
+        
+        if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 13.9)
+            list(APPEND warning_flags -Wno-cast-user-defined)
+        endif()
     endif()
 
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -380,8 +431,26 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         list(APPEND warning_flags -Wcomma)
     endif()
 
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 5.0 AND NOT APPLE)
-        list(APPEND warning_flags -Wno-unused-lambda-capture)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0 AND NOT ANDROID)
+        list(APPEND warning_flags -Wshadow)
+        list(APPEND warning_flags -Wshorten-64-to-32)
+    endif()
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13.0 AND NOT APPLE)
+        list(APPEND warning_flags -Wno-unused-but-set-variable -Wno-deprecated-copy)
+    endif()
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13.1 AND APPLE)
+        list(APPEND warning_flags -Wno-unused-but-set-variable -Wno-deprecated-copy)
+    endif()
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 19.1)
+        list(APPEND warning_flags -Wno-deprecated-literal-operator)
+    endif()
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 17 AND APPLE)
+        # See related https://github.com/swig/swig/issues/1259
+        list(APPEND warning_flags -Wno-cast-function-type-mismatch)
     endif()
 
     if(NOT RELEASE_MODE)
@@ -396,9 +465,6 @@ if(ANDROID)
     add_definitions(-DRENDERDOC_PLATFORM_ANDROID)
 elseif(APPLE)
     add_definitions(-DRENDERDOC_PLATFORM_APPLE)
-elseif(ENABLE_GGP)
-    add_definitions(-DRENDERDOC_PLATFORM_GGP)
-    add_definitions(-DRENDERDOC_WINDOWING_GGP)
 elseif(UNIX)
     add_definitions(-DRENDERDOC_PLATFORM_LINUX)
 
@@ -410,7 +476,7 @@ elseif(UNIX)
         add_definitions(-DRENDERDOC_WINDOWING_XCB)
     endif()
 
-    if(ENABLE_WAYLAND)
+    if(ENABLE_UNSUPPORTED_EXPERIMENTAL_POSSIBLY_BROKEN_WAYLAND)
         add_definitions(-DRENDERDOC_WINDOWING_WAYLAND)
     endif()
 endif()
@@ -422,12 +488,22 @@ add_subdirectory(renderdoc)
 # are handled in common
 if(ENABLE_QRENDERDOC OR ENABLE_PYRENDERDOC)
     # Make sure Python 3 is found
-    set(Python_ADDITIONAL_VERSIONS 3.9 3.8 3.7 3.6 3.5 3.4)
+    set(Python_ADDITIONAL_VERSIONS 3.18 3.17 3.16 3.15 3.14 3.13 3.12 3.11 3.10 3.9 3.8 3.7 3.6 3.5 3.4)
     if(NOT ${CMAKE_VERSION} VERSION_LESS "3.12")
-        find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+
+        if(NOT FORCE_PY_VERSION STREQUAL "")
+            message(STATUS "Searching for python version ${FORCE_PY_VERSION}")
+            find_package(Python3 ${FORCE_PY_VERSION} EXACT COMPONENTS Interpreter Development REQUIRED)
+        else()
+            message(STATUS "Searching for any version of python")
+            find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+        endif()
+
         set(PYTHON_EXECUTABLE ${Python3_EXECUTABLE})
         set(PYTHON_LIBRARY ${Python3_LIBRARIES})
         set(PYTHON_INCLUDE_DIR ${Python3_INCLUDE_DIRS})
+        set(PythonLibs_FOUND ${Python3_FOUND})
+        set(PYTHON_VERSION_MINOR ${Python3_VERSION_MINOR})
     else()
         find_package(PythonInterp 3 REQUIRED)
         find_package(PythonLibs 3 REQUIRED)
@@ -468,7 +544,11 @@ if(ENABLE_VULKAN)
     message(STATUS "  - Vulkan")
 endif()
 
-if(UNIX AND NOT ANDROID AND NOT APPLE AND NOT ENABLE_GGP)
+if(ENABLE_METAL)
+    message(STATUS "  - Metal")
+endif()
+
+if(UNIX AND NOT ANDROID AND NOT APPLE)
     message(STATUS "Enabled Window System Support:")
 
     if(ENABLE_XLIB)
@@ -479,8 +559,12 @@ if(UNIX AND NOT ANDROID AND NOT APPLE AND NOT ENABLE_GGP)
         message(STATUS "  - XCB")
     endif()
 
-    if(ENABLE_WAYLAND)
+    if(ENABLE_UNSUPPORTED_EXPERIMENTAL_POSSIBLY_BROKEN_WAYLAND)
         message(STATUS "  - Wayland")
     endif()
+endif()
+
+if(INTERNAL_SELF_CAPTURE)
+    message(STATUS "INTERNAL: Configuring for self-capture")
 endif()
 

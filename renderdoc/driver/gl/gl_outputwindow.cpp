@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -41,8 +41,12 @@ void GLReplay::CreateOutputWindowBackbuffer(OutputWindow &outwin, bool depth)
   drv.glGenFramebuffers(1, &outwin.BlitData.windowFBO);
   drv.glBindFramebuffer(eGL_FRAMEBUFFER, outwin.BlitData.windowFBO);
 
+  drv.glObjectLabel(eGL_FRAMEBUFFER, outwin.BlitData.windowFBO, -1, "FBO for output window");
+
   drv.glGenTextures(1, &outwin.BlitData.backbuffer);
   drv.glBindTexture(eGL_TEXTURE_2D, outwin.BlitData.backbuffer);
+
+  drv.glObjectLabel(eGL_TEXTURE, outwin.BlitData.backbuffer, -1, "Colour for output window");
 
   drv.glTextureImage2DEXT(outwin.BlitData.backbuffer, eGL_TEXTURE_2D, 0, eGL_SRGB8_ALPHA8,
                           outwin.width, outwin.height, 0, eGL_RGBA, eGL_UNSIGNED_BYTE, NULL);
@@ -62,6 +66,9 @@ void GLReplay::CreateOutputWindowBackbuffer(OutputWindow &outwin, bool depth)
   {
     drv.glGenTextures(1, &outwin.BlitData.depthstencil);
     drv.glBindTexture(eGL_TEXTURE_2D, outwin.BlitData.depthstencil);
+
+    drv.glObjectLabel(eGL_TEXTURE, outwin.BlitData.depthstencil, -1,
+                      "Depth-stencil for output window");
 
     drv.glTextureImage2DEXT(outwin.BlitData.depthstencil, eGL_TEXTURE_2D, 0, eGL_DEPTH_COMPONENT24,
                             outwin.width, outwin.height, 0, eGL_DEPTH_COMPONENT, eGL_UNSIGNED_INT,
@@ -97,9 +104,13 @@ void GLReplay::InitOutputWindow(OutputWindow &outwin)
   drv.glGenVertexArrays(1, &outwin.BlitData.emptyVAO);
   drv.glBindVertexArray(outwin.BlitData.emptyVAO);
 
+  drv.glObjectLabel(eGL_VERTEX_ARRAY, outwin.BlitData.emptyVAO, -1, "Empty VAO for output window");
+
   drv.glGenFramebuffers(1, &outwin.BlitData.readFBO);
   drv.glBindFramebuffer(eGL_READ_FRAMEBUFFER, outwin.BlitData.readFBO);
   drv.glReadBuffer(eGL_COLOR_ATTACHMENT0);
+
+  drv.glObjectLabel(eGL_FRAMEBUFFER, outwin.BlitData.readFBO, -1, "Read FBO for output window");
 
   if(HasExt[EXT_framebuffer_sRGB])
     drv.glEnable(eGL_FRAMEBUFFER_SRGB);
@@ -285,37 +296,6 @@ void GLReplay::GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h)
   m_pDriver->m_Platform.GetOutputWindowDimensions(outw, w, h);
 }
 
-void GLReplay::SetOutputWindowDimensions(uint64_t id, int32_t w, int32_t h)
-{
-  if(id == 0 || m_OutputWindows.find(id) == m_OutputWindows.end())
-    return;
-
-  OutputWindow &outw = m_OutputWindows[id];
-
-  // can't resize an output with an actual window backing
-  if(outw.system != WindowingSystem::Headless)
-    return;
-
-  outw.width = w;
-  outw.height = h;
-
-  MakeCurrentReplayContext(m_DebugCtx);
-
-  WrappedOpenGL &drv = *m_pDriver;
-
-  bool haddepth = false;
-
-  drv.glDeleteTextures(1, &outw.BlitData.backbuffer);
-  if(outw.BlitData.depthstencil)
-  {
-    haddepth = true;
-    drv.glDeleteTextures(1, &outw.BlitData.depthstencil);
-  }
-  drv.glDeleteFramebuffers(1, &outw.BlitData.windowFBO);
-
-  CreateOutputWindowBackbuffer(outw, haddepth);
-}
-
 void GLReplay::GetOutputWindowData(uint64_t id, bytebuf &retData)
 {
   if(id == 0 || m_OutputWindows.find(id) == m_OutputWindows.end())
@@ -359,7 +339,7 @@ void GLReplay::GetOutputWindowData(uint64_t id, bytebuf &retData)
   {
     for(int32_t x = 0; x < outw.width; x++)
     {
-      memcpy(dst, src, 3);
+      memmove(dst, src, 3);
       dst += 3;
       src += 4;
     }

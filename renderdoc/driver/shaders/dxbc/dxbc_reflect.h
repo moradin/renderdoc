@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -30,9 +30,9 @@ class DXBCContainer;
 }
 
 struct ShaderReflection;
-struct ShaderBindpointMapping;
+struct ShaderEntryPoint;
 
 #define D3Dx_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT 32
 
-void MakeShaderReflection(DXBC::DXBCContainer *dxbc, ShaderReflection *refl,
-                          ShaderBindpointMapping *mapping);
+void MakeShaderReflection(DXBC::DXBCContainer *dxbc, const ShaderEntryPoint &entry,
+                          ShaderReflection *refl);

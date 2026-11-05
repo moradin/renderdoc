@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -253,17 +253,21 @@ PerformanceCounterSelection::PerformanceCounterSelection(ICaptureContext &ctx,
 
   ui->counterTree->setMouseTracking(true);
 
-  ctx.Replay().AsyncInvoke([this, selectedCounters](IReplayController *controller) {
+  QPointer<PerformanceCounterSelection> ptr(this);
+  ctx.Replay().AsyncInvoke([this, ptr, selectedCounters](IReplayController *controller) {
     QVector<CounterDescription> counterDescriptions;
     for(const GPUCounter counter : controller->EnumerateCounters())
     {
       counterDescriptions.append(controller->DescribeCounter(counter));
     }
 
-    GUIInvoke::call(this, [counterDescriptions, selectedCounters, this]() {
-      SetCounters(counterDescriptions);
-      SetSelectedCounters(selectedCounters);
-    });
+    if(ptr)
+    {
+      GUIInvoke::call(this, [counterDescriptions, selectedCounters, this]() {
+        SetCounters(counterDescriptions);
+        SetSelectedCounters(selectedCounters);
+      });
+    }
   });
 }
 
@@ -303,23 +307,31 @@ void PerformanceCounterSelection::SetCounters(const QVector<CounterDescription> 
 
     RDTreeWidgetItem *categoryItem = NULL;
 
-    const rdcstr category = desc.category;
-    auto categoryIterator = categories.find(category);
-
-    if(categoryIterator == categories.end())
+    if(desc.category.empty())
     {
-      RDTreeWidgetItem *item = new RDTreeWidgetItem();
-      item->setText(0, desc.category);
-      item->setCheckState(0, Qt::Unchecked);
-      item->setData(0, PreviousCheckStateRole, Qt::Unchecked);
-      currentRoot->addChild(item);
-
-      categories[category] = item;
-      categoryItem = item;
+      // Show uncategorized counters at the root level
+      categoryItem = currentRoot;
     }
     else
     {
-      categoryItem = categoryIterator.value();
+      const rdcstr category = desc.category;
+      auto categoryIterator = categories.find(category);
+
+      if(categoryIterator == categories.end())
+      {
+        RDTreeWidgetItem *item = new RDTreeWidgetItem();
+        item->setText(0, desc.category);
+        item->setCheckState(0, Qt::Unchecked);
+        item->setData(0, PreviousCheckStateRole, Qt::Unchecked);
+        currentRoot->addChild(item);
+
+        categories[category] = item;
+        categoryItem = item;
+      }
+      else
+      {
+        categoryItem = categoryIterator.value();
+      }
     }
 
     RDTreeWidgetItem *counterItem = new RDTreeWidgetItem();

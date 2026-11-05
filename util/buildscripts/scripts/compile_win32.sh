@@ -5,11 +5,23 @@ mkdir -p "${REPO_ROOT}/dist"
 # pushd into the git checkout
 pushd "${REPO_ROOT}"
 
+echo Using ${PYTHON_ROOT} and ${QT_ROOT} for build
+
 # Build 32-bit Release
-MSYS2_ARG_CONV_EXCL="*" msbuild.exe /nologo /m /fl4 /flp4':Verbosity=minimal;Encoding=ASCII;logfile=dist/build32.log' renderdoc.sln /t:Rebuild /p:'Configuration=Release;Platform=x86'
+MSYS2_ARG_CONV_EXCL="*" msbuild.exe /p:VSPythonOverridePath="$(native_path "${PYTHON_ROOT}")" /p:QtOverridePath="$(native_path "${QT_ROOT}")" /nologo /m /fl4 /flp4':Verbosity=minimal;Encoding=ASCII;logfile=dist/build32.log' renderdoc.sln /t:Rebuild /p:'Configuration=Release;Platform=x86'
+
+if [ ! -f ./Win32/Release/renderdoc.dll ] || [ ! -f ./Win32/Release/qrenderdoc.exe ] || [ ! -f ./Win32/Release/renderdoccmd.exe ] ; then
+	echo "Failed to build 32-bit release mode.";
+	exit 1;
+fi
 
 # Build 64-bit Release
-MSYS2_ARG_CONV_EXCL="*" msbuild.exe /nologo /m /fl4 /flp4':Verbosity=minimal;Encoding=ASCII;logfile=dist/build64.log' renderdoc.sln /t:Rebuild /p:'Configuration=Release;Platform=x64'
+MSYS2_ARG_CONV_EXCL="*" msbuild.exe /p:VSPythonOverridePath="$(native_path "${PYTHON_ROOT}")" /p:QtOverridePath="$(native_path "${QT_ROOT}")" /nologo /m /fl4 /flp4':Verbosity=minimal;Encoding=ASCII;logfile=dist/build64.log' renderdoc.sln /t:Rebuild /p:'Configuration=Release;Platform=x64'
+
+if [ ! -f ./x64/Release/renderdoc.dll ] || [ ! -f ./x64/Release/qrenderdoc.exe ] || [ ! -f ./x64/Release/renderdoccmd.exe ] ; then
+	echo "Failed to build 64-bit release mode.";
+	exit 1;
+fi
 
 # Step into the docs folder and build
 pushd docs
@@ -21,24 +33,28 @@ popd; # docs
 # if we didn't produce a chm file, bail out even if sphinx didn't return an error code above
 if [ ! -f ./Documentation/htmlhelp/renderdoc.chm ]; then
 	echo "Didn't auto-build chm file. Missing HTML Help Workshop?"
-	exit 1;
+
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Fail to build CHM help file.";
+		exit 1;
+	fi
 fi
 
 # Transform ANDROID_SDK / ANDROID_NDK to native paths if needed
 if echo "${ANDROID_SDK}" | grep -q :; then
-        NATIVE_ANDROID_SDK_PATH=$(echo "${ANDROID_SDK}" | sed -e '{s#^\(.\):[/\]#\1/#g}' | tr '\\' '/')
-        # Add on wherever windows drives are
-        ANDROID_SDK="${WIN_ROOT}${NATIVE_ANDROID_SDK_PATH}"
+	NATIVE_ANDROID_SDK_PATH=$(echo "${ANDROID_SDK}" | sed -e '{s#^\(.\):[/\]#\1/#g}' | tr '\\' '/')
+	# Add on wherever windows drives are
+	ANDROID_SDK="${WIN_ROOT}${NATIVE_ANDROID_SDK_PATH}"
 
-        export ANDROID_SDK
+	export ANDROID_SDK
 fi
 
 if echo "${ANDROID_NDK}" | grep -q :; then
-        NATIVE_ANDROID_NDK_PATH=$(echo "${ANDROID_NDK}" | sed -e '{s#^\(.\):[/\]#\1/#g}' | tr '\\' '/')
-        # Add on wherever windows drives are
-        ANDROID_NDK="${WIN_ROOT}${NATIVE_ANDROID_NDK_PATH}"
+	NATIVE_ANDROID_NDK_PATH=$(echo "${ANDROID_NDK}" | sed -e '{s#^\(.\):[/\]#\1/#g}' | tr '\\' '/')
+	# Add on wherever windows drives are
+	ANDROID_NDK="${WIN_ROOT}${NATIVE_ANDROID_NDK_PATH}"
 
-        export ANDROID_NDK
+	export ANDROID_NDK
 fi
 
 export PATH=$PATH:"${ANDROID_SDK}/tools"
@@ -46,22 +62,46 @@ export PATH=$PATH:"${ANDROID_SDK}/tools"
 # Check that we're set up to build for android
 if [ ! -d "${ANDROID_SDK}"/tools ] ; then
 	echo "\$ANDROID_SDK is not correctly configured: '$ANDROID_SDK'"
+
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Fail to build Android.";
+		exit 1;
+	fi
+
 	# Don't return an error code, consider android errors non-fatal
 	exit 0;
 fi
 
 if ! which cmake > /dev/null 2>&1; then
 	echo "Don't have cmake, can't build android";
+
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Fail to build Android.";
+		exit 1;
+	fi
+
 	exit 0;
 fi
 
 if ! which make > /dev/null 2>&1; then
 	echo "Don't have make, can't build android";
+
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Fail to build Android.";
+		exit 1;
+	fi
+
 	exit 0;
 fi
 
 if [ ! -d $LLVM_ARM32 ] || [ ! -d $LLVM_ARM64 ] ; then
 	echo "llvm is not available, expected $LLVM_ARM32 and $LLVM_ARM64 respectively."
+
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Fail to build Android.";
+		exit 1;
+	fi
+
 	# Don't return an error code, consider android errors non-fatal
 	exit 0;
 fi
@@ -78,11 +118,13 @@ AAPT=$(ls $ANDROID_SDK/build-tools/*/aapt{,.exe} 2>/dev/null | tail -n 1)
 VERSION32=$($AAPT dump badging build-android-arm32/bin/*apk 2>/dev/null | grep -Eo "versionName='[0-9a-f]*'" | grep -Eo "'.*'" | tr -d "'")
 VERSION64=$($AAPT dump badging build-android-arm64/bin/*apk 2>/dev/null | grep -Eo "versionName='[0-9a-f]*'" | grep -Eo "'.*'" | tr -d "'")
 
-if [ "$VERSION32" == "$GITTAG" ]; then
+if [ "$VERSION32" == "$GITHASH" ]; then
 
-	echo "Found existing compatible arm32 build at $GITTAG, not rebuilding";
+	echo "Found existing compatible arm32 build at $GITHASH, not rebuilding";
 
 else
+
+	echo "Rebuilding as existing build is $VERSION32";
 
 	# Build the arm32 variant
 	rm -rf build-android-arm32
@@ -94,17 +136,24 @@ else
 
 	if ! ls bin/*.apk; then
 		echo "Android build failed"
+
+		if [[ "$STRICT" == "yes" ]]; then
+			echo "Strict mode: Fail to build Android.";
+			exit 1;
+		fi
 	fi
 
 	popd # build-android-arm32
 
 fi
 
-if [ "$VERSION64" == "$GITTAG" ]; then
+if [ "$VERSION64" == "$GITHASH" ]; then
 
-	echo "Found existing compatible arm64 build at $GITTAG, not rebuilding";
+	echo "Found existing compatible arm64 build at $GITHASH, not rebuilding";
 
 else
+
+	echo "Rebuilding as existing build is $VERSION64";
 
 	rm -rf build-android-arm64
 	mkdir -p build-android-arm64
@@ -115,6 +164,11 @@ else
 
 	if ! ls bin/*.apk; then
 		echo "Android build failed"
+
+		if [[ "$STRICT" == "yes" ]]; then
+			echo "Strict mode: Fail to build Android.";
+			exit 1;
+		fi
 	fi
 
 	popd # build-android-arm64

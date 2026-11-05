@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -84,6 +84,7 @@ void main()
 
   gl_Position = verts[gl_VertexID%3];
   col = vec4(0, 1, 1, 1);
+  col2 = vec2(0.5, 0.5);
 
   basevtx = gl_BaseVertex;
   baseinst = gl_BaseInstance;
@@ -291,6 +292,10 @@ void main()
 
       glDrawArrays(GL_POINTS, 6, 4);
 
+      setMarker("Lines");
+
+      glDrawArrays(GL_LINES, 6, 4);
+
       setMarker("Stride 0");
 
       glBindVertexArray(stride0vao);
@@ -330,6 +335,10 @@ void main()
       glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
       glBlitFramebuffer(0, 0, screenWidth, screenHeight, 0, 0, screenWidth, screenHeight,
                         GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+      setMarker("Empty");
+
+      glDrawArrays(GL_TRIANGLES, 0, 0);
 
       Present();
     }

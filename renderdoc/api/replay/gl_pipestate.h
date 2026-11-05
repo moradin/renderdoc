@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -29,7 +29,11 @@
 
 namespace GLPipe
 {
-DOCUMENT(R"(Describes the configuration for a single vertex attribute.
+DOCUMENT(R"(
+GLVertexAttribute()
+GLVertexAttribute(other: GLVertexAttribute)
+
+Describes the configuration for a single vertex attribute.
 
 .. note:: If old-style vertex attrib pointer setup was used for the vertex attributes then it will
   be decomposed into 1:1 attributes and buffers.
@@ -43,7 +47,8 @@ struct VertexAttribute
 
   bool operator==(const VertexAttribute &o) const
   {
-    return enabled == o.enabled && floatCast == o.floatCast && format == o.format &&
+    return enabled == o.enabled && floatCast == o.floatCast &&
+           boundShaderInput == o.boundShaderInput && format == o.format &&
            !memcmp(&genericValue, &o.genericValue, sizeof(genericValue)) &&
            vertexBufferSlot == o.vertexBufferSlot && byteOffset == o.byteOffset;
   }
@@ -53,6 +58,8 @@ struct VertexAttribute
       return enabled < o.enabled;
     if(!(floatCast == o.floatCast))
       return floatCast < o.floatCast;
+    if(!(boundShaderInput == o.boundShaderInput))
+      return boundShaderInput < o.boundShaderInput;
     if(!(format == o.format))
       return format < o.format;
     if(memcmp(&genericValue, &o.genericValue, sizeof(genericValue)) < 0)
@@ -63,15 +70,29 @@ struct VertexAttribute
       return byteOffset < o.byteOffset;
     return false;
   }
-  DOCUMENT("``True`` if this vertex attribute is enabled.");
+  DOCUMENT(R"(``True`` if this vertex attribute is enabled.
+
+:type: bool
+)");
   bool enabled = false;
 
   DOCUMENT(R"(Only valid for integer formatted attributes, ``True`` if they are cast to float.
 
-This is because they were specified with an integer format but glVertexAttribFormat (not
-glVertexAttribIFormat) so they will be cast.
+This is because they were specified with an integer format but ``glVertexAttribFormat`` (not
+``glVertexAttribIFormat``) so they will be cast.
+
+:type: bool
 )");
   bool floatCast = false;
+
+  DOCUMENT(R"(This lists which shader input is bound to this attribute, as an index in the
+:data:`ShaderReflection.inputSignature` list.
+
+If any value is set to ``-1`` then the attribute is unbound.
+
+:type: int
+)");
+  int32_t boundShaderInput = -1;
 
   DOCUMENT(R"(The format describing how the vertex attribute is interpreted.
 
@@ -85,15 +106,25 @@ glVertexAttribIFormat) so they will be cast.
 )");
   PixelValue genericValue;
 
-  DOCUMENT("The vertex buffer input slot where the data is sourced from.");
+  DOCUMENT(R"(The vertex buffer input slot where the data is sourced from.
+
+:type: int
+)");
   uint32_t vertexBufferSlot = 0;
   DOCUMENT(R"(The byte offset from the start of the vertex data in the vertex buffer from
 :data:`vertexBufferSlot`.
+
+:type: int
 )");
   uint32_t byteOffset = 0;
 };
 
-DOCUMENT("Describes a single OpenGL vertex buffer binding.")
+DOCUMENT(R"(
+GLVertexBuffer()
+GLVertexBuffer(other: GLVertexBuffer)
+
+Describes a single OpenGL vertex buffer binding.
+)")
 struct VertexBuffer
 {
   DOCUMENT("");
@@ -118,12 +149,21 @@ struct VertexBuffer
       return instanceDivisor < o.instanceDivisor;
     return false;
   }
-  DOCUMENT("The :class:`ResourceId` of the buffer bound to this slot.");
+  DOCUMENT(R"(The :class:`ResourceId` of the buffer bound to this slot.
+
+:type: ResourceId
+)");
   ResourceId resourceId;
 
-  DOCUMENT("The byte stride between the start of one set of vertex data and the next.");
+  DOCUMENT(R"(The byte stride between the start of one set of vertex data and the next.
+
+:type: int
+)");
   uint32_t byteStride = 0;
-  DOCUMENT("The byte offset from the start of the buffer to the beginning of the vertex data.");
+  DOCUMENT(R"(The byte offset from the start of the buffer to the beginning of the vertex data.
+
+:type: int
+)");
   uint32_t byteOffset = 0;
   DOCUMENT(R"(The instance rate divisor.
 
@@ -131,11 +171,18 @@ If this is ``0`` then the vertex buffer is read at vertex rate.
 
 If it's ``1`` then one element is read for each instance, and for ``N`` greater than ``1`` then
 ``N`` instances read the same element before advancing.
+
+:type: int
 )");
   uint32_t instanceDivisor = 0;
 };
 
-DOCUMENT("Describes the setup for fixed-function vertex input fetch.");
+DOCUMENT(R"(
+GLVertexInput()
+GLVertexInput(other: GLVertexInput)
+
+Describes the setup for fixed-function vertex input fetch.
+)");
 struct VertexInput
 {
   DOCUMENT("");
@@ -143,7 +190,10 @@ struct VertexInput
   VertexInput(const VertexInput &) = default;
   VertexInput &operator=(const VertexInput &) = default;
 
-  DOCUMENT("The :class:`ResourceId` of the vertex array object that's bound.");
+  DOCUMENT(R"(The :class:`ResourceId` of the vertex array object that's bound.
+
+:type: ResourceId
+)");
   ResourceId vertexArrayObject;
 
   DOCUMENT(R"(The vertex attributes.
@@ -158,7 +208,10 @@ struct VertexInput
 )");
   rdcarray<VertexBuffer> vertexBuffers;
 
-  DOCUMENT("The :class:`ResourceId` of the index buffer.");
+  DOCUMENT(R"(The :class:`ResourceId` of the index buffer.
+
+:type: ResourceId
+)");
   ResourceId indexBuffer;
   DOCUMENT(R"(The byte width of the index buffer - typically 1, 2 or 4 bytes. It can be 0 for
 non-indexed draws.
@@ -166,6 +219,8 @@ non-indexed draws.
 .. note::
   This does not correspond to a real GL state since the index type is specified per-action in the call
   itself. This is an implicit state derived from the last (or current) action at any given event.
+
+:type: int
 )");
   uint32_t indexByteStride = 0;
   DOCUMENT(R"(The byte width of the index buffer - typically 1, 2 or 4 bytes.
@@ -173,21 +228,36 @@ non-indexed draws.
 .. note::
   This does not correspond to a real GL state since the topology is specified per-action in the call
   itself. This is an implicit state derived from the last (or current) action at any given event.
+
+:type: Topology
 )");
   Topology topology = Topology::Unknown;
-  DOCUMENT("``True`` if primitive restart is enabled for strip primitives.");
+  DOCUMENT(R"(``True`` if primitive restart is enabled for strip primitives.
+
+:type: bool
+)");
   bool primitiveRestart = false;
-  DOCUMENT("The index value to use to indicate a strip restart.");
+  DOCUMENT(R"(The index value to use to indicate a strip restart.
+
+:type: int
+)");
   uint32_t restartIndex = 0;
 
   DOCUMENT(R"(``True`` if the provoking vertex is the last one in the primitive.
 
 ``False`` if the provoking vertex is the first one.
+
+:type: bool
 )");
   bool provokingVertexLast = false;
 };
 
-DOCUMENT("Describes an OpenGL shader stage.");
+DOCUMENT(R"(
+GLShader()
+GLShader(other: GLShader)
+
+Describes an OpenGL shader stage.
+)");
 struct Shader
 {
   DOCUMENT("");
@@ -195,24 +265,28 @@ struct Shader
   Shader(const Shader &) = default;
   Shader &operator=(const Shader &) = default;
 
-  DOCUMENT("The :class:`ResourceId` of the shader object itself.");
+  DOCUMENT(R"(The :class:`ResourceId` of the shader object itself.
+
+:type: ResourceId
+)");
   ResourceId shaderResourceId;
 
-  DOCUMENT("The :class:`ResourceId` of the program bound to this stage.");
+  DOCUMENT(R"(The :class:`ResourceId` of the program bound to this stage.
+
+:type: ResourceId
+)");
   ResourceId programResourceId;
 
   DOCUMENT(R"(The reflection data for this shader.
 
 :type: ShaderReflection
 )");
-  ShaderReflection *reflection = NULL;
-  DOCUMENT(R"(The bindpoint mapping data to match :data:`reflection`.
+  const ShaderReflection *reflection = NULL;
 
-:type: ShaderBindpointMapping
+  DOCUMENT(R"(A :class:`ShaderStage` identifying which stage this shader is bound to.
+
+:type: ShaderStage
 )");
-  ShaderBindpointMapping bindpointMapping;
-
-  DOCUMENT("A :class:`ShaderStage` identifying which stage this shader is bound to.");
   ShaderStage stage = ShaderStage::Vertex;
 
   DOCUMENT(R"(A list of integers with the subroutine values.
@@ -222,7 +296,12 @@ struct Shader
   rdcarray<uint32_t> subroutines;
 };
 
-DOCUMENT("Describes the setup for fixed vertex processing operations.");
+DOCUMENT(R"(
+GLFixedVertexProcessing()
+GLFixedVertexProcessing(other: GLFixedVertexProcessing)
+
+Describes the setup for fixed vertex processing operations.
+)");
 struct FixedVertexProcessing
 {
   DOCUMENT("");
@@ -240,7 +319,10 @@ struct FixedVertexProcessing
 :type: Tuple[float,float,float,float]
 )");
   rdcfixedarray<float, 4> defaultOuterLevel = {0.0f, 0.0f, 0.0f, 0.0f};
-  DOCUMENT("``True`` if primitives should be discarded during rasterization.");
+  DOCUMENT(R"(``True`` if primitives should be discarded during rasterization.
+
+:type: bool
+)");
   bool discard = false;
 
   DOCUMENT(R"(An 8-tuple of ``bool`` determining which user clipping planes are enabled.
@@ -251,249 +333,72 @@ struct FixedVertexProcessing
   DOCUMENT(R"(``True`` if the clipping origin should be in the lower left.
 
 ``False`` if it's in the upper left.
+
+:type: bool
 )");
   bool clipOriginLowerLeft = false;
   DOCUMENT(R"(``True`` if the clip-space Z goes from ``-1`` to ``1``.
 
 ``False`` if the clip-space Z goes from ``0`` to ``1``.
+
+:type: bool
 )");
   bool clipNegativeOneToOne = false;
 };
 
-DOCUMENT("Describes the details of a texture.");
-struct Texture
+DOCUMENT(R"(
+GLTextureCompleteness()
+GLTextureCompleteness(other: GLTextureCompleteness)
+
+Describes the a texture completeness issue of a descriptor.
+)");
+struct TextureCompleteness
 {
   DOCUMENT("");
-  Texture() = default;
-  Texture(const Texture &) = default;
-  Texture &operator=(const Texture &) = default;
+  TextureCompleteness() = default;
+  TextureCompleteness(const TextureCompleteness &) = default;
+  TextureCompleteness &operator=(const TextureCompleteness &) = default;
 
-  bool operator==(const Texture &o) const
+  bool operator==(const TextureCompleteness &o) const
   {
-    return resourceId == o.resourceId && firstMip == o.firstMip && numMips == o.numMips &&
-           type == o.type && swizzle == o.swizzle && depthReadChannel == o.depthReadChannel;
+    return descriptorByteOffset == o.descriptorByteOffset && completeStatus == o.completeStatus;
   }
-  bool operator<(const Texture &o) const
+  bool operator<(const TextureCompleteness &o) const
   {
-    if(!(resourceId == o.resourceId))
-      return resourceId < o.resourceId;
-    if(!(firstMip == o.firstMip))
-      return firstMip < o.firstMip;
-    if(!(numMips == o.numMips))
-      return numMips < o.numMips;
-    if(!(type == o.type))
-      return type < o.type;
-    if(!(swizzle == o.swizzle))
-      return swizzle < o.swizzle;
-    if(!(depthReadChannel == o.depthReadChannel))
-      return depthReadChannel < o.depthReadChannel;
-    return false;
+    return descriptorByteOffset < o.descriptorByteOffset;
   }
-  DOCUMENT("The :class:`ResourceId` of the underlying resource the view refers to.");
-  ResourceId resourceId;
-  DOCUMENT("Valid for textures - the first mip that is available.");
-  uint32_t firstMip = 0;
-  DOCUMENT("Valid for textures - the number of mips that are available.");
-  uint32_t numMips = 0;
-  DOCUMENT("The :class:`TextureType` of the texture.");
-  TextureType type = TextureType::Unknown;
 
-  DOCUMENT(R"(The swizzle applied to a texture.
+  DOCUMENT(R"(The byte offset in the GL descriptor storage of the problematic descriptor
 
-:type: TextureSwizzle4
+:type: int
 )");
-  TextureSwizzle4 swizzle;
-  DOCUMENT(R"(The channel to read from in a depth-stencil texture.
-
-``-1`` for non depth-stencil textures.
-
-``0`` if depth should be read.
-
-``1`` if stencil should be read.
-)");
-  int32_t depthReadChannel = -1;
+  uint64_t descriptorByteOffset = 0;
 
   DOCUMENT(R"(The details of the texture's (in)completeness. If this string is empty, the texture is
 complete. Otherwise it contains an explanation of why the texture is believed to be incomplete.
+
+:type: str
 )");
   rdcstr completeStatus;
+
+  DOCUMENT(R"(The details of any type conflict on this binding. This can happen if
+multiple uniforms are pointing to the same binding but with different types. In this case it is
+impossible to disambiguate which binding was used.
+
+If this string is empty, no conflict is present. Otherwise it contains the bindings which are
+in conflict and their types.
+
+:type: str
+)");
+  rdcstr typeConflict;
 };
 
-DOCUMENT("Describes the sampler properties of a texture.");
-struct Sampler
-{
-  DOCUMENT("");
-  Sampler() = default;
-  Sampler(const Sampler &) = default;
-  Sampler &operator=(const Sampler &) = default;
+DOCUMENT(R"(
+GLFeedback()
+GLFeedback(other: GLFeedback)
 
-  bool operator==(const Sampler &o) const
-  {
-    return resourceId == o.resourceId && addressS == o.addressS && addressT == o.addressT &&
-           addressR == o.addressR && borderColor == o.borderColor &&
-           compareFunction == o.compareFunction && filter == o.filter &&
-           seamlessCubeMap == o.seamlessCubeMap && maxAnisotropy == o.maxAnisotropy &&
-           maxLOD == o.maxLOD && minLOD == o.minLOD && mipLODBias == o.mipLODBias;
-  }
-  bool operator<(const Sampler &o) const
-  {
-    if(!(resourceId == o.resourceId))
-      return resourceId < o.resourceId;
-    if(!(addressS == o.addressS))
-      return addressS < o.addressS;
-    if(!(addressT == o.addressT))
-      return addressT < o.addressT;
-    if(!(addressR == o.addressR))
-      return addressR < o.addressR;
-    if(!(borderColor == o.borderColor))
-      return borderColor < o.borderColor;
-    if(!(compareFunction == o.compareFunction))
-      return compareFunction < o.compareFunction;
-    if(!(filter == o.filter))
-      return filter < o.filter;
-    if(!(seamlessCubeMap == o.seamlessCubeMap))
-      return seamlessCubeMap < o.seamlessCubeMap;
-    if(!(maxAnisotropy == o.maxAnisotropy))
-      return maxAnisotropy < o.maxAnisotropy;
-    if(!(maxLOD == o.maxLOD))
-      return maxLOD < o.maxLOD;
-    if(!(minLOD == o.minLOD))
-      return minLOD < o.minLOD;
-    if(!(mipLODBias == o.mipLODBias))
-      return mipLODBias < o.mipLODBias;
-    return false;
-  }
-  DOCUMENT("The :class:`ResourceId` of the sampler object, if a separate one is set.");
-  ResourceId resourceId;
-  DOCUMENT("The :class:`AddressMode` in the S direction.");
-  AddressMode addressS = AddressMode::Wrap;
-  DOCUMENT("The :class:`AddressMode` in the T direction.");
-  AddressMode addressT = AddressMode::Wrap;
-  DOCUMENT("The :class:`AddressMode` in the R direction.");
-  AddressMode addressR = AddressMode::Wrap;
-  DOCUMENT(R"(The RGBA border color.
-  
-:type: Tuple[float,float,float,float]
+Describes the current feedback state.
 )");
-  rdcfixedarray<float, 4> borderColor = {0.0f, 0.0f, 0.0f, 0.0f};
-  DOCUMENT("The :class:`CompareFunction` for comparison samplers.");
-  CompareFunction compareFunction = CompareFunction::AlwaysTrue;
-  DOCUMENT(R"(The filtering mode.
-
-:type: TextureFilter
-)");
-  TextureFilter filter;
-  DOCUMENT("``True`` if seamless cubemap filtering is enabled for this texture.");
-  bool seamlessCubeMap = false;
-  DOCUMENT("The maximum anisotropic filtering level to use.");
-  float maxAnisotropy = 0.0f;
-  DOCUMENT("The maximum mip level that can be used.");
-  float maxLOD = 0.0f;
-  DOCUMENT("The minimum mip level that can be used.");
-  float minLOD = 0.0f;
-  DOCUMENT("A bias to apply to the calculated mip level before sampling.");
-  float mipLODBias = 0.0f;
-
-  DOCUMENT(R"(Check if the border color is used in this OpenGL sampler.
-
-:return: ``True`` if the border color is used, ``False`` otherwise.
-:rtype: bool
-)");
-  bool UseBorder() const
-  {
-    return addressS == AddressMode::ClampBorder || addressT == AddressMode::ClampBorder ||
-           addressR == AddressMode::ClampBorder;
-  }
-};
-
-DOCUMENT("Describes the properties of a buffer.");
-struct Buffer
-{
-  DOCUMENT("");
-  Buffer() = default;
-  Buffer(const Buffer &) = default;
-  Buffer &operator=(const Buffer &) = default;
-
-  bool operator==(const Buffer &o) const
-  {
-    return resourceId == o.resourceId && byteOffset == o.byteOffset && byteSize == o.byteSize;
-  }
-  bool operator<(const Buffer &o) const
-  {
-    if(!(resourceId == o.resourceId))
-      return resourceId < o.resourceId;
-    if(!(byteOffset == o.byteOffset))
-      return byteOffset < o.byteOffset;
-    if(!(byteSize == o.byteSize))
-      return byteSize < o.byteSize;
-    return false;
-  }
-  DOCUMENT("The :class:`ResourceId` of the buffer object.");
-  ResourceId resourceId;
-  DOCUMENT("The byte offset from the start of the buffer.");
-  uint64_t byteOffset = 0;
-  DOCUMENT("The byte size of the buffer.");
-  uint64_t byteSize = 0;
-};
-
-DOCUMENT("Describes the properties of a load/store image.");
-struct ImageLoadStore
-{
-  DOCUMENT("");
-  ImageLoadStore() = default;
-  ImageLoadStore(const ImageLoadStore &) = default;
-  ImageLoadStore &operator=(const ImageLoadStore &) = default;
-
-  bool operator==(const ImageLoadStore &o) const
-  {
-    return resourceId == o.resourceId && mipLevel == o.mipLevel && layered == o.layered &&
-           slice == o.slice && type == o.type && readAllowed == o.readAllowed &&
-           writeAllowed == o.writeAllowed && imageFormat == o.imageFormat;
-  }
-  bool operator<(const ImageLoadStore &o) const
-  {
-    if(!(resourceId == o.resourceId))
-      return resourceId < o.resourceId;
-    if(!(mipLevel == o.mipLevel))
-      return mipLevel < o.mipLevel;
-    if(!(layered == o.layered))
-      return layered < o.layered;
-    if(!(slice == o.slice))
-      return slice < o.slice;
-    if(!(type == o.type))
-      return type < o.type;
-    if(!(readAllowed == o.readAllowed))
-      return readAllowed < o.readAllowed;
-    if(!(writeAllowed == o.writeAllowed))
-      return writeAllowed < o.writeAllowed;
-    if(!(imageFormat == o.imageFormat))
-      return imageFormat < o.imageFormat;
-    return false;
-  }
-  DOCUMENT("The :class:`ResourceId` of the texture object.");
-  ResourceId resourceId;
-  DOCUMENT("The mip of the texture that's used in the attachment.");
-  uint32_t mipLevel = 0;
-  DOCUMENT(R"(``True`` if multiple layers are bound together to the image.
-``False`` if only one layer is bound.
-)");
-  bool layered = false;
-  DOCUMENT("The slice of the texture that's used in the attachment.");
-  uint32_t slice = 0;
-  DOCUMENT("The :class:`TextureType` of the texture.");
-  TextureType type = TextureType::Unknown;
-  DOCUMENT("``True`` if loading from the image is allowed.");
-  bool readAllowed = false;
-  DOCUMENT("``True`` if storing to the image is allowed.");
-  bool writeAllowed = false;
-  DOCUMENT(R"(The format that the image is bound as.
-
-:type: ResourceFormat
-)");
-  ResourceFormat imageFormat;
-};
-
-DOCUMENT("Describes the current feedback state.");
 struct Feedback
 {
   DOCUMENT("");
@@ -501,7 +406,10 @@ struct Feedback
   Feedback(const Feedback &) = default;
   Feedback &operator=(const Feedback &) = default;
 
-  DOCUMENT("The :class:`ResourceId` of the transform feedback binding.");
+  DOCUMENT(R"(The :class:`ResourceId` of the transform feedback binding.
+
+:type: ResourceId
+)");
   ResourceId feedbackResourceId;
   DOCUMENT(R"(The buffer bindings.
   
@@ -518,13 +426,24 @@ struct Feedback
 :type: Tuple[int,int,int,int]
 )");
   rdcfixedarray<uint64_t, 4> byteSize = {0, 0, 0, 0};
-  DOCUMENT("``True`` if the transform feedback object is currently active.");
+  DOCUMENT(R"(``True`` if the transform feedback object is currently active.
+
+:type: bool
+)");
   bool active = false;
-  DOCUMENT("``True`` if the transform feedback object is currently paused.");
+  DOCUMENT(R"(``True`` if the transform feedback object is currently paused.
+
+:type: bool
+)");
   bool paused = false;
 };
 
-DOCUMENT("Describes the rasterizer state toggles.");
+DOCUMENT(R"(
+GLRasterizerState()
+GLRasterizerState(other: GLRasterizerState)
+
+Describes the rasterizer state toggles.
+)");
 struct RasterizerState
 {
   DOCUMENT("");
@@ -532,65 +451,131 @@ struct RasterizerState
   RasterizerState(const RasterizerState &) = default;
   RasterizerState &operator=(const RasterizerState &) = default;
 
-  DOCUMENT("The polygon :class:`FillMode`.");
+  DOCUMENT(R"(The polygon :class:`FillMode`.
+
+:type: FillMode
+)");
   FillMode fillMode = FillMode::Solid;
-  DOCUMENT("The polygon :class:`CullMode`.");
+  DOCUMENT(R"(The polygon :class:`CullMode`.
+
+:type: CullMode
+)");
   CullMode cullMode = CullMode::NoCull;
   DOCUMENT(R"(``True`` if counter-clockwise polygons are front-facing.
 ``False`` if clockwise polygons are front-facing.
+
+:type: bool
 )");
   bool frontCCW = false;
-  DOCUMENT("The fixed depth bias value to apply to z-values.");
+  DOCUMENT(R"(The fixed depth bias value to apply to z-values.
+
+:type: float
+)");
   float depthBias = 0.0f;
-  DOCUMENT("The slope-scaled depth bias value to apply to z-values.");
+  DOCUMENT(R"(The slope-scaled depth bias value to apply to z-values.
+
+:type: float
+)");
   float slopeScaledDepthBias = 0.0f;
   DOCUMENT(R"(The clamp value for calculated depth bias from :data:`depthBias` and
 :data:`slopeScaledDepthBias`
+
+:type: float
 )");
   float offsetClamp = 0.0f;
   DOCUMENT(R"(``True`` if pixels outside of the near and far depth planes should be clamped and
 to ``0.0`` to ``1.0`` and not clipped.
+
+:type: bool
 )");
   bool depthClamp = false;
 
-  DOCUMENT("``True`` if multisampling should be used during rendering.");
+  DOCUMENT(R"(``True`` if multisampling should be used during rendering.
+
+:type: bool
+)");
   bool multisampleEnable = false;
-  DOCUMENT("``True`` if rendering should happen at sample-rate frequency.");
+  DOCUMENT(R"(``True`` if rendering should happen at sample-rate frequency.
+
+:type: bool
+)");
   bool sampleShading = false;
   DOCUMENT(R"(``True`` if the generated samples should be bitwise ``AND`` masked with
 :data:`sampleMaskValue`.
+
+:type: bool
 )");
   bool sampleMask = false;
-  DOCUMENT("The sample mask value that should be masked against the generated coverage.");
+  DOCUMENT(R"(The sample mask value that should be masked against the generated coverage.
+
+:type: int
+)");
   uint32_t sampleMaskValue = ~0U;
   DOCUMENT(R"(``True`` if a temporary mask using :data:`sampleCoverageValue` should be used to
 resolve the final output color.
+
+:type: bool
 )");
   bool sampleCoverage = false;
-  DOCUMENT("``True`` if the temporary sample coverage mask should be inverted.");
+  DOCUMENT(R"(``True`` if the temporary sample coverage mask should be inverted.
+
+:type: bool
+)");
   bool sampleCoverageInvert = false;
-  DOCUMENT("The sample coverage value used if :data:`sampleCoverage` is ``True``.");
+  DOCUMENT(R"(The sample coverage value used if :data:`sampleCoverage` is ``True``.
+
+:type: float
+)");
   float sampleCoverageValue = 1.0f;
-  DOCUMENT("``True`` if alpha-to-coverage should be used when blending to an MSAA target.");
+  DOCUMENT(R"(``True`` if alpha-to-coverage should be used when blending to an MSAA target.
+
+:type: bool
+)");
   bool alphaToCoverage = false;
-  DOCUMENT("``True`` if alpha-to-one should be used when blending to an MSAA target.");
+  DOCUMENT(R"(``True`` if alpha-to-one should be used when blending to an MSAA target.
+
+:type: bool
+)");
   bool alphaToOne = false;
-  DOCUMENT("The minimum sample shading rate.");
+  DOCUMENT(R"(The minimum sample shading rate.
+
+:type: float
+)");
   float minSampleShadingRate = 0.0f;
 
-  DOCUMENT("``True`` if the point size can be programmably exported from a shader.");
+  DOCUMENT(R"(``True`` if the point size can be programmably exported from a shader.
+
+:type: bool
+)");
   bool programmablePointSize = false;
-  DOCUMENT("The fixed point size in pixels.");
+  DOCUMENT(R"(The fixed point size in pixels.
+
+:type: float
+)");
   float pointSize = 1.0f;
-  DOCUMENT("The fixed line width in pixels.");
+  DOCUMENT(R"(The fixed line width in pixels.
+
+:type: float
+)");
   float lineWidth = 1.0f;
-  DOCUMENT("The threshold value at which points are clipped if they exceed this size.");
+  DOCUMENT(R"(The threshold value at which points are clipped if they exceed this size.
+
+:type: float
+)");
   float pointFadeThreshold = 0.0f;
-  DOCUMENT("``True`` if the point sprite texture origin is upper-left. ``False`` if lower-left.");
+  DOCUMENT(R"(``True`` if the point sprite texture origin is upper-left. ``False`` if lower-left.
+
+:type: bool
+)");
   bool pointOriginUpperLeft = false;
 };
 
-DOCUMENT("Describes the rasterization state of the OpenGL pipeline.");
+DOCUMENT(R"(
+GLRasterizer()
+GLRasterizer(other: GLRasterizer)
+
+Describes the rasterization state of the OpenGL pipeline.
+)");
 struct Rasterizer
 {
   DOCUMENT("");
@@ -617,7 +602,12 @@ struct Rasterizer
   RasterizerState state;
 };
 
-DOCUMENT("Describes the depth state.");
+DOCUMENT(R"(
+GLDepthState()
+GLDepthState(other: GLDepthState)
+
+Describes the depth state.
+)");
 struct DepthState
 {
   DOCUMENT("");
@@ -625,21 +615,44 @@ struct DepthState
   DepthState(const DepthState &) = default;
   DepthState &operator=(const DepthState &) = default;
 
-  DOCUMENT("``True`` if depth testing should be performed.");
+  DOCUMENT(R"(``True`` if depth testing should be performed.
+
+:type: bool
+)");
   bool depthEnable = false;
-  DOCUMENT("The :class:`CompareFunction` to use for testing depth values.");
+  DOCUMENT(R"(The :class:`CompareFunction` to use for testing depth values.
+
+:type: CompareFunction
+)");
   CompareFunction depthFunction = CompareFunction::AlwaysTrue;
-  DOCUMENT("``True`` if depth values should be written to the depth target.");
+  DOCUMENT(R"(``True`` if depth values should be written to the depth target.
+
+:type: bool
+)");
   bool depthWrites = false;
-  DOCUMENT("``True`` if depth bounds tests should be applied.");
+  DOCUMENT(R"(``True`` if depth bounds tests should be applied.
+
+:type: bool
+)");
   bool depthBounds = false;
-  DOCUMENT("The near plane bounding value.");
+  DOCUMENT(R"(The near plane bounding value.
+
+:type: float
+)");
   double nearBound = 0.0;
-  DOCUMENT("The far plane bounding value.");
+  DOCUMENT(R"(The far plane bounding value.
+
+:type: float
+)");
   double farBound = 0.0;
 };
 
-DOCUMENT("Describes the stencil state.");
+DOCUMENT(R"(
+GLStencilState()
+GLStencilState(other: GLStencilState)
+
+Describes the stencil state.
+)");
 struct StencilState
 {
   DOCUMENT("");
@@ -647,7 +660,10 @@ struct StencilState
   StencilState(const StencilState &) = default;
   StencilState &operator=(const StencilState &) = default;
 
-  DOCUMENT("``True`` if stencil operations should be performed.");
+  DOCUMENT(R"(``True`` if stencil operations should be performed.
+
+:type: bool
+)");
   bool stencilEnable = false;
 
   DOCUMENT(R"(The stencil state for front-facing polygons.
@@ -663,47 +679,12 @@ struct StencilState
   StencilFace backFace;
 };
 
-DOCUMENT("Describes the state of a framebuffer attachment.");
-struct Attachment
-{
-  DOCUMENT("");
-  Attachment() = default;
-  Attachment(const Attachment &) = default;
-  Attachment &operator=(const Attachment &) = default;
+DOCUMENT(R"(
+GLFBO()
+GLFBO(other: GLFBO)
 
-  bool operator==(const Attachment &o) const
-  {
-    return resourceId == o.resourceId && slice == o.slice && numSlices == o.numSlices &&
-           mipLevel == o.mipLevel && swizzle == o.swizzle;
-  }
-  bool operator<(const Attachment &o) const
-  {
-    if(!(resourceId == o.resourceId))
-      return resourceId < o.resourceId;
-    if(!(slice == o.slice))
-      return slice < o.slice;
-    if(!(mipLevel == o.mipLevel))
-      return mipLevel < o.mipLevel;
-    if(!(swizzle == o.swizzle))
-      return swizzle < o.swizzle;
-    return false;
-  }
-  DOCUMENT("The :class:`ResourceId` of the texture bound to this attachment.");
-  ResourceId resourceId;
-  DOCUMENT("The slice of the texture that's used in the attachment.");
-  uint32_t slice = 0;
-  DOCUMENT("The number of slices of the texture that are used in the attachment.");
-  uint32_t numSlices = 1;
-  DOCUMENT("The mip of the texture that's used in the attachment.");
-  uint32_t mipLevel = 0;
-  DOCUMENT(R"(The swizzle applied to the texture.
-
-:type: TextureSwizzle4
+Describes the contents of a framebuffer object.
 )");
-  TextureSwizzle4 swizzle;
-};
-
-DOCUMENT("Describes the contents of a framebuffer object.");
 struct FBO
 {
   DOCUMENT("");
@@ -711,34 +692,45 @@ struct FBO
   FBO(const FBO &) = default;
   FBO &operator=(const FBO &) = default;
 
-  DOCUMENT("The :class:`ResourceId` of the framebuffer.");
+  DOCUMENT(R"(The :class:`ResourceId` of the framebuffer.
+
+:type: ResourceId
+)");
   ResourceId resourceId;
   DOCUMENT(R"(The framebuffer color attachments.
 
-:type: List[GLAttachment]
+:type: List[Descriptor]
 )");
-  rdcarray<Attachment> colorAttachments;
+  rdcarray<Descriptor> colorAttachments;
   DOCUMENT(R"(The framebuffer depth attachment.
 
-:type: GLAttachment
+:type: Descriptor
 )");
-  Attachment depthAttachment;
+  Descriptor depthAttachment;
   DOCUMENT(R"(The framebuffer stencil attachment.
 
-:type: GLAttachment
+:type: Descriptor
 )");
-  Attachment stencilAttachment;
+  Descriptor stencilAttachment;
 
   DOCUMENT(R"(The draw buffer indices into the :data:`colorAttachments` attachment list.
 
 :type: List[int]
 )");
   rdcarray<int32_t> drawBuffers;
-  DOCUMENT("The read buffer index in the :data:`colorAttachments` attachment list.");
+  DOCUMENT(R"(The read buffer index in the :data:`colorAttachments` attachment list.
+
+:type: int
+)");
   int32_t readBuffer = 0;
 };
 
-DOCUMENT("Describes the blend pipeline state.");
+DOCUMENT(R"(
+GLBlendState()
+GLBlendState(other: GLBlendState)
+
+Describes the blend pipeline state.
+)");
 struct BlendState
 {
   DOCUMENT("");
@@ -759,7 +751,12 @@ struct BlendState
   rdcfixedarray<float, 4> blendFactor = {1.0f, 1.0f, 1.0f, 1.0f};
 };
 
-DOCUMENT("Describes the current state of the framebuffer stage of the pipeline.");
+DOCUMENT(R"(
+GLFrameBuffer()
+GLFrameBuffer(other: GLFrameBuffer)
+
+Describes the current state of the framebuffer stage of the pipeline.
+)");
 struct FrameBuffer
 {
   DOCUMENT("");
@@ -767,10 +764,15 @@ struct FrameBuffer
   FrameBuffer(const FrameBuffer &) = default;
   FrameBuffer &operator=(const FrameBuffer &) = default;
 
-  DOCUMENT(
-      "``True`` if sRGB correction should be applied when writing to an sRGB-formatted texture.");
+  DOCUMENT(R"(``True`` if sRGB correction should be applied when writing to an sRGB-formatted texture.
+
+:type: bool
+)");
   bool framebufferSRGB = false;
-  DOCUMENT("``True`` if dithering should be used when writing to color buffers.");
+  DOCUMENT(R"(``True`` if dithering should be used when writing to color buffers.
+
+:type: bool
+)");
   bool dither = false;
 
   DOCUMENT(R"(The draw framebuffer.
@@ -791,7 +793,12 @@ struct FrameBuffer
   BlendState blendState;
 };
 
-DOCUMENT("Describes the current state of GL hints and smoothing.");
+DOCUMENT(R"(
+GLHints()
+GLHints(other: GLHints)
+
+Describes the current state of GL hints and smoothing.
+)");
 struct Hints
 {
   DOCUMENT("");
@@ -799,21 +806,41 @@ struct Hints
   Hints(const Hints &) = default;
   Hints &operator=(const Hints &) = default;
 
-  DOCUMENT("A :class:`QualityHint` with the derivatives hint.");
+  DOCUMENT(R"(A :class:`QualityHint` with the derivatives hint.
+
+:type: QualityHint
+)");
   QualityHint derivatives = QualityHint::DontCare;
-  DOCUMENT("A :class:`QualityHint` with the line smoothing hint.");
+  DOCUMENT(R"(A :class:`QualityHint` with the line smoothing hint.
+
+:type: QualityHint
+)");
   QualityHint lineSmoothing = QualityHint::DontCare;
-  DOCUMENT("A :class:`QualityHint` with the polygon smoothing hint.");
+  DOCUMENT(R"(A :class:`QualityHint` with the polygon smoothing hint.
+
+:type: QualityHint
+)");
   QualityHint polySmoothing = QualityHint::DontCare;
-  DOCUMENT("A :class:`QualityHint` with the texture compression hint.");
+  DOCUMENT(R"(A :class:`QualityHint` with the texture compression hint.
+
+:type: QualityHint
+)");
   QualityHint textureCompression = QualityHint::DontCare;
-  DOCUMENT("``True`` if line smoothing is enabled.");
+  DOCUMENT(R"(``True`` if line smoothing is enabled.
+
+:type: bool
+)");
   bool lineSmoothingEnabled = false;
-  DOCUMENT("``True`` if polygon smoothing is enabled.");
+  DOCUMENT(R"(``True`` if polygon smoothing is enabled.
+
+:type: bool
+)");
   bool polySmoothingEnabled = false;
 };
 
-DOCUMENT("The full current OpenGL pipeline state.");
+DOCUMENT(R"(
+The full current OpenGL pipeline state.
+)");
 struct State
 {
 #if !defined(RENDERDOC_EXPORTS)
@@ -860,7 +887,10 @@ struct State
 )");
   Shader computeShader;
 
-  DOCUMENT("The :class:`ResourceId` of the program pipeline (if active).");
+  DOCUMENT(R"(The :class:`ResourceId` of the program pipeline (if active).
+
+:type: ResourceId
+)");
   ResourceId pipelineResourceId;
 
   DOCUMENT(R"(The fixed-function vertex processing stage.
@@ -869,39 +899,29 @@ struct State
 )");
   FixedVertexProcessing vertexProcessing;
 
-  DOCUMENT(R"(The currently bound textures.
+  DOCUMENT(R"(The virtual descriptor storage.
 
-:type: List[GLTexture]
+:type: ResourceId
 )");
-  rdcarray<Texture> textures;
-  DOCUMENT(R"(The currently bound samplers.
+  ResourceId descriptorStore;
 
- :type: List[GLSampler]
+  DOCUMENT(R"(The number of descriptors in the virtual descriptor storage.
+
+:type: int
 )");
-  rdcarray<Sampler> samplers;
+  uint32_t descriptorCount = 0;
 
-  DOCUMENT(R"(The currently bound atomic buffers.
+  DOCUMENT(R"(The byte size of a descriptor in the virtual descriptor storage.
 
-:type: List[GLBuffer]
+:type: int
 )");
-  rdcarray<Buffer> atomicBuffers;
-  DOCUMENT(R"(The currently bound uniform buffers.
- 
-:type: List[GLBuffer]
+  uint32_t descriptorByteSize = 0;
+
+  DOCUMENT(R"(Texture completeness issues of descriptors in the descriptor store.
+
+:type: GLTextureCompleteness
 )");
-  rdcarray<Buffer> uniformBuffers;
-
-  DOCUMENT(R"(The currently bound shader storage buffers.
-
-:type: List[GLBuffer]
-)");
-  rdcarray<Buffer> shaderStorageBuffers;
-
-  DOCUMENT(R"(The currently bound load/store images.
-
-:type: List[GLImageLoadStore]
-)");
-  rdcarray<ImageLoadStore> images;
+  rdcarray<TextureCompleteness> textureCompleteness;
 
   DOCUMENT(R"(The transform feedback stage.
 
@@ -947,16 +967,12 @@ DECLARE_REFLECTION_STRUCT(GLPipe::VertexBuffer);
 DECLARE_REFLECTION_STRUCT(GLPipe::VertexInput);
 DECLARE_REFLECTION_STRUCT(GLPipe::Shader);
 DECLARE_REFLECTION_STRUCT(GLPipe::FixedVertexProcessing);
-DECLARE_REFLECTION_STRUCT(GLPipe::Texture);
-DECLARE_REFLECTION_STRUCT(GLPipe::Sampler);
-DECLARE_REFLECTION_STRUCT(GLPipe::Buffer);
-DECLARE_REFLECTION_STRUCT(GLPipe::ImageLoadStore);
+DECLARE_REFLECTION_STRUCT(GLPipe::TextureCompleteness);
 DECLARE_REFLECTION_STRUCT(GLPipe::Feedback);
 DECLARE_REFLECTION_STRUCT(GLPipe::RasterizerState);
 DECLARE_REFLECTION_STRUCT(GLPipe::Rasterizer);
 DECLARE_REFLECTION_STRUCT(GLPipe::DepthState);
 DECLARE_REFLECTION_STRUCT(GLPipe::StencilState);
-DECLARE_REFLECTION_STRUCT(GLPipe::Attachment);
 DECLARE_REFLECTION_STRUCT(GLPipe::FBO);
 DECLARE_REFLECTION_STRUCT(GLPipe::BlendState);
 DECLARE_REFLECTION_STRUCT(GLPipe::FrameBuffer);

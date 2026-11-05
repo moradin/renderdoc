@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2021 Baldur Karlsson
+ * Copyright (c) 2021-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -434,9 +434,9 @@ rdcstr DoStringise(const DXBCBytecode::ResinfoRetType &el)
 }
 
 template <>
-rdcstr DoStringise(const DXBCBytecode::InterpolationMode &el)
+rdcstr DoStringise(const DXBC::InterpolationMode &el)
 {
-  BEGIN_ENUM_STRINGISE(DXBCBytecode::InterpolationMode)
+  BEGIN_ENUM_STRINGISE(DXBC::InterpolationMode)
   {
     STRINGISE_ENUM_CLASS_NAMED(INTERPOLATION_UNDEFINED, "undefined");
     // differs slightly from fxc but it's very convenient to use the hlsl terms, which are used in
@@ -538,7 +538,7 @@ rdcstr toString(const uint32_t values[], uint32_t numComps)
 
     if(floatOutput)
     {
-      str += ToStr(vf[0]);
+      str += StringFormat::Fmt("%0.6f", vf[0]);
     }
     else
     {

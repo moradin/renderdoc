@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,6 +23,17 @@
  ******************************************************************************/
 
 #include "vk_info.h"
+#include "core/settings.h"
+#include "lz4/lz4.h"
+#include "vk_core.h"
+
+// for compatibility we use the same DXBC name since it's now configured by the UI
+RDOC_EXTERN_CONFIG(rdcarray<rdcstr>, DXBC_Debug_SearchDirPaths);
+
+ResourceId VulkanCreationInfo::pushConstantDescriptorStorage;
+rdcarray<ResourceId> VulkanCreationInfo::descriptorSetStorage;
+rdcarray<ResourceId> VulkanCreationInfo::descriptorBufferStorage;
+rdcarray<ResourceId> VulkanCreationInfo::inlineBufferStorage;
 
 VkDynamicState ConvertDynamicState(VulkanDynamicStateIndex idx)
 {
@@ -39,29 +50,77 @@ VkDynamicState ConvertDynamicState(VulkanDynamicStateIndex idx)
     case VkDynamicStencilReference: return VK_DYNAMIC_STATE_STENCIL_REFERENCE;
     case VkDynamicViewportWScalingNV: return VK_DYNAMIC_STATE_VIEWPORT_W_SCALING_NV;
     case VkDynamicDiscardRectangleEXT: return VK_DYNAMIC_STATE_DISCARD_RECTANGLE_EXT;
+    case VkDynamicDiscardRectangleEnableEXT: return VK_DYNAMIC_STATE_DISCARD_RECTANGLE_ENABLE_EXT;
+    case VkDynamicDiscardRectangleModeEXT: return VK_DYNAMIC_STATE_DISCARD_RECTANGLE_MODE_EXT;
     case VkDynamicSampleLocationsEXT: return VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT;
-    case VkDynamicRayTracingStackSizeEXT:
+    case VkDynamicRayTracingStackSizeKHR:
       return VK_DYNAMIC_STATE_RAY_TRACING_PIPELINE_STACK_SIZE_KHR;
     case VkDynamicViewportShadingRatePaletteNV:
       return VK_DYNAMIC_STATE_VIEWPORT_SHADING_RATE_PALETTE_NV;
     case VkDynamicViewportCoarseSampleOrderNV:
       return VK_DYNAMIC_STATE_VIEWPORT_COARSE_SAMPLE_ORDER_NV;
     case VkDynamicExclusiveScissorNV: return VK_DYNAMIC_STATE_EXCLUSIVE_SCISSOR_NV;
+    case VkDynamicExclusiveScissorEnableNV: return VK_DYNAMIC_STATE_EXCLUSIVE_SCISSOR_ENABLE_NV;
     case VkDynamicShadingRateKHR: return VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR;
-    case VkDynamicLineStippleEXT: return VK_DYNAMIC_STATE_LINE_STIPPLE_EXT;
-    case VkDynamicCullModeEXT: return VK_DYNAMIC_STATE_CULL_MODE_EXT;
-    case VkDynamicFrontFaceEXT: return VK_DYNAMIC_STATE_FRONT_FACE_EXT;
-    case VkDynamicPrimitiveTopologyEXT: return VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT;
-    case VkDynamicViewportCountEXT: return VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT_EXT;
-    case VkDynamicScissorCountEXT: return VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT_EXT;
-    case VkDynamicVertexInputBindingStrideEXT:
-      return VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT;
-    case VkDynamicDepthTestEnableEXT: return VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT;
-    case VkDynamicDepthWriteEnableEXT: return VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT;
-    case VkDynamicDepthCompareOpEXT: return VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT;
-    case VkDynamicDepthBoundsTestEnableEXT: return VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE_EXT;
-    case VkDynamicStencilTestEnableEXT: return VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT;
-    case VkDynamicStencilOpEXT: return VK_DYNAMIC_STATE_STENCIL_OP_EXT;
+    case VkDynamicLineStipple: return VK_DYNAMIC_STATE_LINE_STIPPLE;
+    case VkDynamicCullMode: return VK_DYNAMIC_STATE_CULL_MODE;
+    case VkDynamicFrontFace: return VK_DYNAMIC_STATE_FRONT_FACE;
+    case VkDynamicPrimitiveTopology: return VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY;
+    case VkDynamicViewportCount: return VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT;
+    case VkDynamicScissorCount: return VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT;
+    case VkDynamicVertexInputBindingStride: return VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
+    case VkDynamicDepthTestEnable: return VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE;
+    case VkDynamicDepthWriteEnable: return VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE;
+    case VkDynamicDepthCompareOp: return VK_DYNAMIC_STATE_DEPTH_COMPARE_OP;
+    case VkDynamicDepthBoundsTestEnable: return VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE;
+    case VkDynamicStencilTestEnable: return VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE;
+    case VkDynamicStencilOp: return VK_DYNAMIC_STATE_STENCIL_OP;
+    case VkDynamicVertexInputEXT: return VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
+    case VkDynamicControlPointsEXT: return VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT;
+    case VkDynamicRastDiscard: return VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE;
+    case VkDynamicDepthBiasEnable: return VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE;
+    case VkDynamicLogicOpEXT: return VK_DYNAMIC_STATE_LOGIC_OP_EXT;
+    case VkDynamicPrimRestart: return VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE;
+    case VkDynamicColorWriteEXT: return VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT;
+    case VkDynamicTessDomainOriginEXT: return VK_DYNAMIC_STATE_TESSELLATION_DOMAIN_ORIGIN_EXT;
+    case VkDynamicDepthClampEnableEXT: return VK_DYNAMIC_STATE_DEPTH_CLAMP_ENABLE_EXT;
+    case VkDynamicPolygonModeEXT: return VK_DYNAMIC_STATE_POLYGON_MODE_EXT;
+    case VkDynamicRasterizationSamplesEXT: return VK_DYNAMIC_STATE_RASTERIZATION_SAMPLES_EXT;
+    case VkDynamicSampleMaskEXT: return VK_DYNAMIC_STATE_SAMPLE_MASK_EXT;
+    case VkDynamicAlphaToCoverageEXT: return VK_DYNAMIC_STATE_ALPHA_TO_COVERAGE_ENABLE_EXT;
+    case VkDynamicAlphaToOneEXT: return VK_DYNAMIC_STATE_ALPHA_TO_ONE_ENABLE_EXT;
+    case VkDynamicLogicOpEnableEXT: return VK_DYNAMIC_STATE_LOGIC_OP_ENABLE_EXT;
+    case VkDynamicColorBlendEnableEXT: return VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT;
+    case VkDynamicColorBlendEquationEXT: return VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT;
+    case VkDynamicColorWriteMaskEXT: return VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT;
+    case VkDynamicRasterizationStreamEXT: return VK_DYNAMIC_STATE_RASTERIZATION_STREAM_EXT;
+    case VkDynamicConservativeRastModeEXT:
+      return VK_DYNAMIC_STATE_CONSERVATIVE_RASTERIZATION_MODE_EXT;
+    case VkDynamicOverstimationSizeEXT:
+      return VK_DYNAMIC_STATE_EXTRA_PRIMITIVE_OVERESTIMATION_SIZE_EXT;
+    case VkDynamicDepthClipEnableEXT: return VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT;
+    case VkDynamicSampleLocationsEnableEXT: return VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_ENABLE_EXT;
+    case VkDynamicStateColorBlendAdvancedEXT: return VK_DYNAMIC_STATE_COLOR_BLEND_ADVANCED_EXT;
+    case VkDynamicProvokingVertexModeEXT: return VK_DYNAMIC_STATE_PROVOKING_VERTEX_MODE_EXT;
+    case VkDynamicLineRastModeEXT: return VK_DYNAMIC_STATE_LINE_RASTERIZATION_MODE_EXT;
+    case VkDynamicLineStippleEnableEXT: return VK_DYNAMIC_STATE_LINE_STIPPLE_ENABLE_EXT;
+    case VkDynamicDepthClipNegativeOneEXT:
+      return VK_DYNAMIC_STATE_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE_EXT;
+    case VkDynamicViewportWScalingEXT: return VK_DYNAMIC_STATE_VIEWPORT_W_SCALING_ENABLE_NV;
+    case VkDynamicViewportSwizzleEXT: return VK_DYNAMIC_STATE_VIEWPORT_SWIZZLE_NV;
+    case VkDynamicCoverageToColorEnableEXT: return VK_DYNAMIC_STATE_COVERAGE_TO_COLOR_ENABLE_NV;
+    case VkDynamicCoverageToColorLocationEXT: return VK_DYNAMIC_STATE_COVERAGE_TO_COLOR_LOCATION_NV;
+    case VkDynamicCoverageModulationModeEXT: return VK_DYNAMIC_STATE_COVERAGE_MODULATION_MODE_NV;
+    case VkDynamicCoverageModulationTableEnableEXT:
+      return VK_DYNAMIC_STATE_COVERAGE_MODULATION_TABLE_ENABLE_NV;
+    case VkDynamicCoverageModulationTableEXT: return VK_DYNAMIC_STATE_COVERAGE_MODULATION_TABLE_NV;
+    case VkDynamicShadingRateImageEnableEXT: return VK_DYNAMIC_STATE_SHADING_RATE_IMAGE_ENABLE_NV;
+    case VkDynamicRepresentativeFragTestEXT:
+      return VK_DYNAMIC_STATE_REPRESENTATIVE_FRAGMENT_TEST_ENABLE_NV;
+    case VkDynamicCoverageReductionModeEXT: return VK_DYNAMIC_STATE_COVERAGE_REDUCTION_MODE_NV;
+    case VkDynamicAttachmentFeedbackLoopEnableEXT:
+      return VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT;
+    case VkDynamicAttachmentDepthClampRangeEXT: return VK_DYNAMIC_STATE_DEPTH_CLAMP_RANGE_EXT;
     case VkDynamicCount: break;
   }
 
@@ -85,29 +144,77 @@ VulkanDynamicStateIndex ConvertDynamicState(VkDynamicState state)
     case VK_DYNAMIC_STATE_STENCIL_REFERENCE: return VkDynamicStencilReference;
     case VK_DYNAMIC_STATE_VIEWPORT_W_SCALING_NV: return VkDynamicViewportWScalingNV;
     case VK_DYNAMIC_STATE_DISCARD_RECTANGLE_EXT: return VkDynamicDiscardRectangleEXT;
+    case VK_DYNAMIC_STATE_DISCARD_RECTANGLE_ENABLE_EXT: return VkDynamicDiscardRectangleEnableEXT;
+    case VK_DYNAMIC_STATE_DISCARD_RECTANGLE_MODE_EXT: return VkDynamicDiscardRectangleModeEXT;
     case VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT: return VkDynamicSampleLocationsEXT;
     case VK_DYNAMIC_STATE_RAY_TRACING_PIPELINE_STACK_SIZE_KHR:
-      return VkDynamicRayTracingStackSizeEXT;
+      return VkDynamicRayTracingStackSizeKHR;
     case VK_DYNAMIC_STATE_VIEWPORT_SHADING_RATE_PALETTE_NV:
       return VkDynamicViewportShadingRatePaletteNV;
     case VK_DYNAMIC_STATE_VIEWPORT_COARSE_SAMPLE_ORDER_NV:
       return VkDynamicViewportCoarseSampleOrderNV;
     case VK_DYNAMIC_STATE_EXCLUSIVE_SCISSOR_NV: return VkDynamicExclusiveScissorNV;
+    case VK_DYNAMIC_STATE_EXCLUSIVE_SCISSOR_ENABLE_NV: return VkDynamicExclusiveScissorEnableNV;
     case VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR: return VkDynamicShadingRateKHR;
-    case VK_DYNAMIC_STATE_LINE_STIPPLE_EXT: return VkDynamicLineStippleEXT;
-    case VK_DYNAMIC_STATE_CULL_MODE_EXT: return VkDynamicCullModeEXT;
-    case VK_DYNAMIC_STATE_FRONT_FACE_EXT: return VkDynamicFrontFaceEXT;
-    case VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT: return VkDynamicPrimitiveTopologyEXT;
-    case VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT_EXT: return VkDynamicViewportCountEXT;
-    case VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT_EXT: return VkDynamicScissorCountEXT;
-    case VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT:
-      return VkDynamicVertexInputBindingStrideEXT;
-    case VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT: return VkDynamicDepthTestEnableEXT;
-    case VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT: return VkDynamicDepthWriteEnableEXT;
-    case VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT: return VkDynamicDepthCompareOpEXT;
-    case VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE_EXT: return VkDynamicDepthBoundsTestEnableEXT;
-    case VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT: return VkDynamicStencilTestEnableEXT;
-    case VK_DYNAMIC_STATE_STENCIL_OP_EXT: return VkDynamicStencilOpEXT;
+    case VK_DYNAMIC_STATE_LINE_STIPPLE: return VkDynamicLineStipple;
+    case VK_DYNAMIC_STATE_CULL_MODE: return VkDynamicCullMode;
+    case VK_DYNAMIC_STATE_FRONT_FACE: return VkDynamicFrontFace;
+    case VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY: return VkDynamicPrimitiveTopology;
+    case VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT: return VkDynamicViewportCount;
+    case VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT: return VkDynamicScissorCount;
+    case VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE: return VkDynamicVertexInputBindingStride;
+    case VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE: return VkDynamicDepthTestEnable;
+    case VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE: return VkDynamicDepthWriteEnable;
+    case VK_DYNAMIC_STATE_DEPTH_COMPARE_OP: return VkDynamicDepthCompareOp;
+    case VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE: return VkDynamicDepthBoundsTestEnable;
+    case VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE: return VkDynamicStencilTestEnable;
+    case VK_DYNAMIC_STATE_STENCIL_OP: return VkDynamicStencilOp;
+    case VK_DYNAMIC_STATE_VERTEX_INPUT_EXT: return VkDynamicVertexInputEXT;
+    case VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT: return VkDynamicControlPointsEXT;
+    case VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE: return VkDynamicRastDiscard;
+    case VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE: return VkDynamicDepthBiasEnable;
+    case VK_DYNAMIC_STATE_LOGIC_OP_EXT: return VkDynamicLogicOpEXT;
+    case VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE: return VkDynamicPrimRestart;
+    case VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT: return VkDynamicColorWriteEXT;
+    case VK_DYNAMIC_STATE_TESSELLATION_DOMAIN_ORIGIN_EXT: return VkDynamicTessDomainOriginEXT;
+    case VK_DYNAMIC_STATE_DEPTH_CLAMP_ENABLE_EXT: return VkDynamicDepthClampEnableEXT;
+    case VK_DYNAMIC_STATE_POLYGON_MODE_EXT: return VkDynamicPolygonModeEXT;
+    case VK_DYNAMIC_STATE_RASTERIZATION_SAMPLES_EXT: return VkDynamicRasterizationSamplesEXT;
+    case VK_DYNAMIC_STATE_SAMPLE_MASK_EXT: return VkDynamicSampleMaskEXT;
+    case VK_DYNAMIC_STATE_ALPHA_TO_COVERAGE_ENABLE_EXT: return VkDynamicAlphaToCoverageEXT;
+    case VK_DYNAMIC_STATE_ALPHA_TO_ONE_ENABLE_EXT: return VkDynamicAlphaToOneEXT;
+    case VK_DYNAMIC_STATE_LOGIC_OP_ENABLE_EXT: return VkDynamicLogicOpEnableEXT;
+    case VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT: return VkDynamicColorBlendEnableEXT;
+    case VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT: return VkDynamicColorBlendEquationEXT;
+    case VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT: return VkDynamicColorWriteMaskEXT;
+    case VK_DYNAMIC_STATE_RASTERIZATION_STREAM_EXT: return VkDynamicRasterizationStreamEXT;
+    case VK_DYNAMIC_STATE_CONSERVATIVE_RASTERIZATION_MODE_EXT:
+      return VkDynamicConservativeRastModeEXT;
+    case VK_DYNAMIC_STATE_EXTRA_PRIMITIVE_OVERESTIMATION_SIZE_EXT:
+      return VkDynamicOverstimationSizeEXT;
+    case VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT: return VkDynamicDepthClipEnableEXT;
+    case VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_ENABLE_EXT: return VkDynamicSampleLocationsEnableEXT;
+    case VK_DYNAMIC_STATE_COLOR_BLEND_ADVANCED_EXT: return VkDynamicStateColorBlendAdvancedEXT;
+    case VK_DYNAMIC_STATE_PROVOKING_VERTEX_MODE_EXT: return VkDynamicProvokingVertexModeEXT;
+    case VK_DYNAMIC_STATE_LINE_RASTERIZATION_MODE_EXT: return VkDynamicLineRastModeEXT;
+    case VK_DYNAMIC_STATE_LINE_STIPPLE_ENABLE_EXT: return VkDynamicLineStippleEnableEXT;
+    case VK_DYNAMIC_STATE_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE_EXT:
+      return VkDynamicDepthClipNegativeOneEXT;
+    case VK_DYNAMIC_STATE_VIEWPORT_W_SCALING_ENABLE_NV: return VkDynamicViewportWScalingEXT;
+    case VK_DYNAMIC_STATE_VIEWPORT_SWIZZLE_NV: return VkDynamicViewportSwizzleEXT;
+    case VK_DYNAMIC_STATE_COVERAGE_TO_COLOR_ENABLE_NV: return VkDynamicCoverageToColorEnableEXT;
+    case VK_DYNAMIC_STATE_COVERAGE_TO_COLOR_LOCATION_NV: return VkDynamicCoverageToColorLocationEXT;
+    case VK_DYNAMIC_STATE_COVERAGE_MODULATION_MODE_NV: return VkDynamicCoverageModulationModeEXT;
+    case VK_DYNAMIC_STATE_COVERAGE_MODULATION_TABLE_ENABLE_NV:
+      return VkDynamicCoverageModulationTableEnableEXT;
+    case VK_DYNAMIC_STATE_COVERAGE_MODULATION_TABLE_NV: return VkDynamicCoverageModulationTableEXT;
+    case VK_DYNAMIC_STATE_SHADING_RATE_IMAGE_ENABLE_NV: return VkDynamicShadingRateImageEnableEXT;
+    case VK_DYNAMIC_STATE_REPRESENTATIVE_FRAGMENT_TEST_ENABLE_NV:
+      return VkDynamicRepresentativeFragTestEXT;
+    case VK_DYNAMIC_STATE_COVERAGE_REDUCTION_MODE_NV: return VkDynamicCoverageReductionModeEXT;
+    case VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT:
+      return VkDynamicAttachmentFeedbackLoopEnableEXT;
+    case VK_DYNAMIC_STATE_DEPTH_CLAMP_RANGE_EXT: return VkDynamicAttachmentDepthClampRangeEXT;
     case VK_DYNAMIC_STATE_MAX_ENUM: break;
   }
 
@@ -116,18 +223,129 @@ VulkanDynamicStateIndex ConvertDynamicState(VkDynamicState state)
   return VkDynamicCount;
 }
 
-void DescSetLayout::Init(VulkanResourceManager *resourceMan, VulkanCreationInfo &info,
-                         const VkDescriptorSetLayoutCreateInfo *pCreateInfo)
+static VkGraphicsPipelineLibraryFlagsEXT DynamicStateValidState(VkDynamicState state)
 {
+  const VkGraphicsPipelineLibraryFlagsEXT vinput =
+      VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT;
+  const VkGraphicsPipelineLibraryFlagsEXT vert =
+      VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT;
+  const VkGraphicsPipelineLibraryFlagsEXT frag = VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT;
+  const VkGraphicsPipelineLibraryFlagsEXT colout =
+      VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT;
+
+  switch(state)
+  {
+    case VK_DYNAMIC_STATE_VIEWPORT: return vert;
+    case VK_DYNAMIC_STATE_SCISSOR: return vert;
+    case VK_DYNAMIC_STATE_LINE_WIDTH: return frag;
+    case VK_DYNAMIC_STATE_DEPTH_BIAS: return frag;
+    case VK_DYNAMIC_STATE_BLEND_CONSTANTS: return colout;
+    case VK_DYNAMIC_STATE_DEPTH_BOUNDS: return frag;
+    case VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK: return frag;
+    case VK_DYNAMIC_STATE_STENCIL_WRITE_MASK: return frag;
+    case VK_DYNAMIC_STATE_STENCIL_REFERENCE: return frag;
+    case VK_DYNAMIC_STATE_VIEWPORT_W_SCALING_NV: return vert;
+    case VK_DYNAMIC_STATE_DISCARD_RECTANGLE_EXT: return vert;
+    case VK_DYNAMIC_STATE_DISCARD_RECTANGLE_ENABLE_EXT: return vert;
+    case VK_DYNAMIC_STATE_DISCARD_RECTANGLE_MODE_EXT: return vert;
+    case VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT: return frag | colout;
+    case VK_DYNAMIC_STATE_RAY_TRACING_PIPELINE_STACK_SIZE_KHR:
+      return (VkGraphicsPipelineLibraryFlagsEXT)0;
+    case VK_DYNAMIC_STATE_VIEWPORT_SHADING_RATE_PALETTE_NV: return vert;
+    case VK_DYNAMIC_STATE_VIEWPORT_COARSE_SAMPLE_ORDER_NV: return vert;
+    case VK_DYNAMIC_STATE_EXCLUSIVE_SCISSOR_NV: return vert;
+    case VK_DYNAMIC_STATE_EXCLUSIVE_SCISSOR_ENABLE_NV: return vert;
+    case VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR: return vert | frag;
+    case VK_DYNAMIC_STATE_LINE_STIPPLE: return vert;
+    case VK_DYNAMIC_STATE_CULL_MODE: return vert;
+    case VK_DYNAMIC_STATE_FRONT_FACE: return vert;
+    case VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY: return vinput;
+    case VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT: return vert;
+    case VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT: return vert;
+    case VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE: return vinput;
+    case VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE: return frag;
+    case VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE: return frag;
+    case VK_DYNAMIC_STATE_DEPTH_COMPARE_OP: return frag;
+    case VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE: return frag;
+    case VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE: return frag;
+    case VK_DYNAMIC_STATE_STENCIL_OP: return frag;
+    case VK_DYNAMIC_STATE_VERTEX_INPUT_EXT: return vinput;
+    case VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT: return vert;
+    case VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE: return vert;
+    case VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE: return frag;
+    case VK_DYNAMIC_STATE_LOGIC_OP_EXT: return colout;
+    case VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE: return vinput;
+    case VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT: return colout;
+    case VK_DYNAMIC_STATE_TESSELLATION_DOMAIN_ORIGIN_EXT: return vert;
+    case VK_DYNAMIC_STATE_DEPTH_CLAMP_ENABLE_EXT: return vert;
+    case VK_DYNAMIC_STATE_POLYGON_MODE_EXT: return vert;
+    case VK_DYNAMIC_STATE_RASTERIZATION_SAMPLES_EXT: return frag | colout;
+    case VK_DYNAMIC_STATE_SAMPLE_MASK_EXT: return frag | colout;
+    case VK_DYNAMIC_STATE_ALPHA_TO_COVERAGE_ENABLE_EXT: return frag | colout;
+    case VK_DYNAMIC_STATE_ALPHA_TO_ONE_ENABLE_EXT: return frag | colout;
+    case VK_DYNAMIC_STATE_LOGIC_OP_ENABLE_EXT: return colout;
+    case VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT: return colout;
+    case VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT: return colout;
+    case VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT: return colout;
+    case VK_DYNAMIC_STATE_RASTERIZATION_STREAM_EXT: return vert;
+    case VK_DYNAMIC_STATE_CONSERVATIVE_RASTERIZATION_MODE_EXT: return vert;
+    case VK_DYNAMIC_STATE_EXTRA_PRIMITIVE_OVERESTIMATION_SIZE_EXT: return vert;
+    case VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT: return vert;
+    case VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_ENABLE_EXT: return frag | colout;
+    case VK_DYNAMIC_STATE_COLOR_BLEND_ADVANCED_EXT: return colout;
+    case VK_DYNAMIC_STATE_PROVOKING_VERTEX_MODE_EXT: return vert;
+    case VK_DYNAMIC_STATE_LINE_RASTERIZATION_MODE_EXT: return vert;
+    case VK_DYNAMIC_STATE_LINE_STIPPLE_ENABLE_EXT: return vert;
+    case VK_DYNAMIC_STATE_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE_EXT: return vert;
+    case VK_DYNAMIC_STATE_VIEWPORT_W_SCALING_ENABLE_NV: return vert;
+    case VK_DYNAMIC_STATE_VIEWPORT_SWIZZLE_NV: return vert;
+    case VK_DYNAMIC_STATE_COVERAGE_TO_COLOR_ENABLE_NV: return frag | colout;
+    case VK_DYNAMIC_STATE_COVERAGE_TO_COLOR_LOCATION_NV: return frag | colout;
+    case VK_DYNAMIC_STATE_COVERAGE_MODULATION_MODE_NV: return frag | colout;
+    case VK_DYNAMIC_STATE_COVERAGE_MODULATION_TABLE_ENABLE_NV: return frag | colout;
+    case VK_DYNAMIC_STATE_COVERAGE_MODULATION_TABLE_NV: return frag | colout;
+    case VK_DYNAMIC_STATE_SHADING_RATE_IMAGE_ENABLE_NV: return vert;
+    case VK_DYNAMIC_STATE_REPRESENTATIVE_FRAGMENT_TEST_ENABLE_NV: return frag;
+    case VK_DYNAMIC_STATE_COVERAGE_REDUCTION_MODE_NV: return frag | colout;
+    case VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT: return colout;
+    case VK_DYNAMIC_STATE_DEPTH_CLAMP_RANGE_EXT: return vert;
+    case VK_DYNAMIC_STATE_MAX_ENUM: break;
+  }
+
+  RDCERR("Unexpected vulkan state %u", state);
+
+  return VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT |
+         VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT |
+         VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT |
+         VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT;
+}
+
+void DescSetLayout::Init(VulkanResourceManager *resourceMan, VulkanCreationInfo &info,
+                         ResourceId id, const VkDescriptorSetLayoutCreateInfo *pCreateInfo)
+{
+  resourceId = id;
+
   dynamicCount = 0;
   inlineCount = 0;
   inlineByteSize = 0;
+  accelerationStructureCount = 0;
+  accelerationStructureWriteCount = 0;
+
+  const VkMutableDescriptorTypeCreateInfoEXT *mutableInfo =
+      (const VkMutableDescriptorTypeCreateInfoEXT *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT);
 
   flags = pCreateInfo->flags;
 
-  VkDescriptorSetLayoutBindingFlagsCreateInfo *bindingFlags =
-      (VkDescriptorSetLayoutBindingFlagsCreateInfo *)FindNextStruct(
+  anyStageFlags = 0;
+
+  const VkDescriptorSetLayoutBindingFlagsCreateInfo *bindingFlags =
+      (const VkDescriptorSetLayoutBindingFlagsCreateInfo *)FindNextStruct(
           pCreateInfo, VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
+
+  // ignore degenerate struct
+  if(bindingFlags && bindingFlags->bindingCount == 0)
+    bindingFlags = NULL;
 
   // descriptor set layouts can be sparse, such that only three bindings exist
   // but they are at 0, 5 and 10.
@@ -141,25 +359,49 @@ void DescSetLayout::Init(VulkanResourceManager *resourceMan, VulkanCreationInfo 
   {
     uint32_t b = pCreateInfo->pBindings[i].binding;
     // expand to fit the binding
-    if(b >= bindings.size())
-      bindings.resize(b + 1);
+    bindings.resize_for_index(b);
+
+    if(mutableInfo && i < mutableInfo->mutableDescriptorTypeListCount)
+    {
+      const VkMutableDescriptorTypeListEXT &mutableTypes =
+          mutableInfo->pMutableDescriptorTypeLists[i];
+
+      RDCCOMPILE_ASSERT(uint64_t(DescriptorSlotType::Count) < 64,
+                        "Descriptor types don't fit in 64-bit bitmask anymore");
+
+      // encode a bitmask with the available types for this descriptor
+      uint64_t mask = 0;
+      for(uint32_t m = 0; m < mutableTypes.descriptorTypeCount; m++)
+        mask |= (1ULL << uint64_t(convert(mutableTypes.pDescriptorTypes[m])));
+
+      mutableBitmasks.resize_for_index(b);
+      mutableBitmasks[b] = mask;
+    }
+
+    VkDescriptorType type = pCreateInfo->pBindings[i].descriptorType;
 
     bindings[b].descriptorCount = pCreateInfo->pBindings[i].descriptorCount;
-    bindings[b].descriptorType = pCreateInfo->pBindings[i].descriptorType;
+    bindings[b].layoutDescType = type;
     bindings[b].stageFlags = pCreateInfo->pBindings[i].stageFlags;
 
-    if(bindings[b].descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
-       bindings[b].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
-      dynamicCount++;
+    anyStageFlags |= bindings[b].stageFlags;
 
-    if(bindings[b].descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT)
+    if(type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+       type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+      dynamicCount += bindings[b].descriptorCount;
+
+    if(type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
     {
       inlineCount++;
       inlineByteSize = AlignUp4(inlineByteSize + bindings[b].descriptorCount);
     }
+    else if(type == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
+    {
+      accelerationStructureWriteCount++;
+      accelerationStructureCount += bindings[b].descriptorCount;
+    }
 
-    if((bindings[b].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER ||
-        bindings[b].descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) &&
+    if((type == VK_DESCRIPTOR_TYPE_SAMPLER || type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) &&
        pCreateInfo->pBindings[i].pImmutableSamplers)
     {
       bindings[b].immutableSampler = new ResourceId[bindings[b].descriptorCount];
@@ -188,7 +430,7 @@ void DescSetLayout::Init(VulkanResourceManager *resourceMan, VulkanCreationInfo 
     if(bindings[b].variableSize)
       break;
 
-    if(bindings[b].descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT)
+    if(bindings[b].layoutDescType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
     {
       elemOffset++;
     }
@@ -213,7 +455,35 @@ void DescSetLayout::CreateBindingsArray(BindingStorage &bindingStorage, uint32_t
     if(inlineByteSize == 0)
     {
       for(size_t i = 0; i < bindings.size(); i++)
+      {
         bindingStorage.binds[i] = bindingStorage.elems.data() + bindings[i].elemOffset;
+
+        if(bindings[i].immutableSampler)
+        {
+          for(uint32_t a = 0; a < bindings[i].descriptorCount; a++)
+          {
+            // set immutable samplers here so it's always present in the descriptor and we don't
+            // have to do a per-descriptor lookup of immutable samplers later
+            bindingStorage.binds[i][a].sampler = bindings[i].immutableSampler[a];
+
+            // immutable samplers cannot be used with mutable descriptors, so if we have immutable
+            // samplers set the type from the layout. That way even if the descriptor is never
+            // written we still process immutable samplers properly.
+            bindingStorage.binds[i][a].type = convert(bindings[i].layoutDescType);
+
+            bindingStorage.binds[i][a].offset = 1;
+          }
+        }
+
+        // set the type for dynamic descriptors so we always know which descriptors consume dynamic
+        // offsets, even if they are unwritten.
+        if(bindings[i].layoutDescType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+           bindings[i].layoutDescType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+        {
+          for(uint32_t a = 0; a < bindings[i].descriptorCount; a++)
+            bindingStorage.binds[i][a].type = convert(bindings[i].layoutDescType);
+        }
+      }
 
       bindingStorage.inlineBytes.clear();
     }
@@ -224,10 +494,16 @@ void DescSetLayout::CreateBindingsArray(BindingStorage &bindingStorage, uint32_t
       {
         bindingStorage.binds[i] = bindingStorage.elems.data() + bindings[i].elemOffset;
 
-        if(bindings[i].descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT)
+        if(bindings[i].layoutDescType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
         {
-          bindingStorage.binds[i]->inlineOffset = inlineOffset;
+          bindingStorage.binds[i]->type = DescriptorSlotType::InlineBlock;
+          bindingStorage.binds[i]->offset = inlineOffset;
+          bindingStorage.binds[i]->range = bindings[i].descriptorCount;
           inlineOffset = AlignUp4(inlineOffset + bindings[i].descriptorCount);
+
+          // update range with variable allocation here
+          if(bindings[i].variableSize)
+            bindingStorage.binds[i]->range = variableAllocSize;
         }
       }
 
@@ -251,53 +527,36 @@ void DescSetLayout::UpdateBindingsArray(const DescSetLayout &prevLayout,
     // resize to the new size, discarding any excess we don't need anymore
     bindingStorage.binds.resize(bindings.size());
 
-    if(inlineByteSize == 0)
+    uint32_t inlineOffset = 0;
+    for(size_t i = 0; i < bindings.size(); i++)
     {
-      for(size_t i = 0; i < bindings.size(); i++)
-      {
-        DescriptorSetSlot *newSlots = newElems.data() + bindings[i].elemOffset;
+      DescriptorSetSlot *newSlots = newElems.data() + bindings[i].elemOffset;
 
+      if(bindings[i].layoutDescType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
+      {
+        bindingStorage.binds[i]->type = DescriptorSlotType::InlineBlock;
+        bindingStorage.binds[i]->offset = inlineOffset;
+        bindingStorage.binds[i]->range = bindings[i].descriptorCount;
+        inlineOffset = AlignUp4(inlineOffset + bindings[i].descriptorCount);
+      }
+      else
+      {
         // copy over any previous bindings that overlapped
         if(i < prevLayout.bindings.size())
           memcpy(newSlots, bindingStorage.binds[i],
                  sizeof(DescriptorSetSlot) *
                      RDCMIN(prevLayout.bindings[i].descriptorCount, bindings[i].descriptorCount));
-
-        bindingStorage.binds[i] = newSlots;
-      }
-    }
-    else
-    {
-      uint32_t inlineOffset = 0;
-      for(size_t i = 0; i < bindings.size(); i++)
-      {
-        DescriptorSetSlot *newSlots = newElems.data() + bindings[i].elemOffset;
-
-        if(bindings[i].descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT)
-        {
-          bindingStorage.binds[i]->inlineOffset = inlineOffset;
-          inlineOffset = AlignUp4(inlineOffset + bindings[i].descriptorCount);
-        }
-        else
-        {
-          // copy over any previous bindings that overlapped
-          if(i < prevLayout.bindings.size())
-            memcpy(newSlots, bindingStorage.binds[i],
-                   sizeof(DescriptorSetSlot) *
-                       RDCMIN(prevLayout.bindings[i].descriptorCount, bindings[i].descriptorCount));
-        }
-
-        bindingStorage.binds[i] = newSlots;
       }
 
-      bindingStorage.inlineBytes.resize(inlineByteSize);
+      bindingStorage.binds[i] = newSlots;
     }
 
+    bindingStorage.inlineBytes.resize(inlineByteSize);
     bindingStorage.elems.swap(newElems);
   }
 }
 
-bool DescSetLayout::operator==(const DescSetLayout &other) const
+bool DescSetLayout::isCompatible(const DescSetLayout &other) const
 {
   // shortcut for equality to ourselves
   if(this == &other)
@@ -314,7 +573,7 @@ bool DescSetLayout::operator==(const DescSetLayout &other) const
     const Binding &b = other.bindings[i];
 
     // if the type/stages/count are different, the layout is different
-    if(a.descriptorCount != b.descriptorCount || a.descriptorType != b.descriptorType ||
+    if(a.descriptorCount != b.descriptorCount || a.layoutDescType != b.layoutDescType ||
        a.stageFlags != b.stageFlags)
       return false;
 
@@ -336,30 +595,707 @@ bool DescSetLayout::operator==(const DescSetLayout &other) const
   return true;
 }
 
+bool IsValid(bool allowNULLDescriptors, const VkWriteDescriptorSet &write, uint32_t arrayElement)
+{
+  if(write.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
+    return true;
+
+  // this makes assumptions that only hold within the context of Serialise_InitialState below,
+  // specifically that if pTexelBufferView/pBufferInfo is set then we are using them. In the general
+  // case they can be garbage and we must ignore them based on the descriptorType
+
+  if(write.pTexelBufferView)
+    return allowNULLDescriptors ? true : write.pTexelBufferView[arrayElement] != VK_NULL_HANDLE;
+
+  if(write.pBufferInfo)
+    return allowNULLDescriptors ? true : write.pBufferInfo[arrayElement].buffer != VK_NULL_HANDLE;
+
+  if(write.pImageInfo)
+  {
+    // only these two types need samplers
+    bool needSampler = (write.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER ||
+                        write.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+
+    // but all types that aren't just a sampler need an image
+    bool needImage = (write.descriptorType != VK_DESCRIPTOR_TYPE_SAMPLER);
+
+    if(allowNULLDescriptors)
+      needImage = false;
+
+    if(needSampler && write.pImageInfo[arrayElement].sampler == VK_NULL_HANDLE)
+      return false;
+
+    if(needImage && write.pImageInfo[arrayElement].imageView == VK_NULL_HANDLE)
+      return false;
+
+    return true;
+  }
+
+  if(write.descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
+  {
+    if(allowNULLDescriptors)
+      return true;
+
+    const VkWriteDescriptorSetAccelerationStructureKHR *asDesc =
+        (const VkWriteDescriptorSetAccelerationStructureKHR *)FindNextStruct(
+            &write, VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR);
+    return asDesc != VK_NULL_HANDLE;
+  }
+
+  RDCERR("Encountered VkWriteDescriptorSet with no data!");
+
+  return false;
+}
+
+bool CreateDescriptorWritesForSlotData(WrappedVulkan *vk, rdcarray<VkWriteDescriptorSet> &writes,
+                                       VkDescriptorBufferInfo *&writeScratch,
+                                       const DescriptorSetSlot *slots, uint32_t descriptorCount,
+                                       VkDescriptorSet set, uint32_t dstBind,
+                                       const DescSetLayout::Binding &layoutBind)
+{
+  bool ret = true;
+
+  RDCCOMPILE_ASSERT(sizeof(VkDescriptorImageInfo) <= sizeof(VkDescriptorBufferInfo),
+                    "VkDescriptorBufferInfo should be large enough for all descriptor write types");
+  RDCCOMPILE_ASSERT(sizeof(VkBufferView) <= sizeof(VkDescriptorBufferInfo),
+                    "VkDescriptorBufferInfo should be large enough for all descriptor write types");
+
+  ResourceId *immutableSamplers = layoutBind.immutableSampler;
+
+  VkWriteDescriptorSet templateWrite = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+  templateWrite.dstSet = set;
+  templateWrite.dstBinding = dstBind;
+
+  writes.push_back(templateWrite);
+
+  VulkanResourceManager *rm = vk->GetResourceManager();
+
+  // loop over every slot in this descriptor array
+  for(uint32_t slot = 0; slot < descriptorCount; slot++)
+  {
+    VkDescriptorType descType = convert(slots[slot].type);
+
+    // if the previous write had some contents, and is a different type to this one,
+    // finish
+    // it off and start a new one. In theory if this descriptor were invalid and NULL
+    // descriptors are supported we could write NULL and continue to combine, but we don't
+    // do that.
+    // note that the previous write is from THIS descriptor as we don't batch across
+    // descriptors - even though there is 'rollover' behaviour allowing this.
+    if(writes.back().descriptorCount > 0 && writes.back().descriptorType != descType)
+    {
+      // consume the write arrays used
+      writeScratch += writes.back().descriptorCount;
+
+      writes.push_back(templateWrite);
+      writes.back().dstArrayElement = slot;
+    }
+
+    // skip unwritten descriptors
+    if(descType == VK_DESCRIPTOR_TYPE_MAX_ENUM)
+      continue;
+
+    // skip immutable sampler-only descriptors
+    if(immutableSamplers && descType == VK_DESCRIPTOR_TYPE_SAMPLER)
+      continue;
+
+    // the current write is either empty, in which case we can just set it to what we
+    // want,
+    // or it's the same type in which case we're appending to its array
+
+    VkDescriptorBufferInfo *writeBuffer = writeScratch;
+    VkDescriptorImageInfo *writeImage = (VkDescriptorImageInfo *)writeScratch;
+    VkBufferView *writeTexelBuffer = (VkBufferView *)writeScratch;
+
+    // set the type and base of this write if the previous one is as-yet unused.
+    if(writes.back().descriptorCount == 0)
+    {
+      writes.back().descriptorType = descType;
+      writes.back().dstArrayElement = slot;
+    }
+
+    // array index in the above writeArrays, relative to the start of the current
+    // contiguous
+    // range starting at dstArrayElement
+    uint32_t arrayIdx = slot - writes.back().dstArrayElement;
+
+    ResourceId resId = slots[slot].resource;
+    ResourceId sampId = slots[slot].sampler;
+
+    switch(descType)
+    {
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+      {
+        if(descType != VK_DESCRIPTOR_TYPE_SAMPLER && rm->HasResource(resId))
+          writeImage[arrayIdx].imageView = rm->GetHandle<VkImageView>(resId);
+        else
+          writeImage[arrayIdx].imageView = VK_NULL_HANDLE;
+
+        if((descType == VK_DESCRIPTOR_TYPE_SAMPLER ||
+            descType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) &&
+           rm->HasResource(sampId))
+          writeImage[arrayIdx].sampler = rm->GetHandle<VkSampler>(sampId);
+        else
+          writeImage[arrayIdx].sampler = VK_NULL_HANDLE;
+
+        writeImage[arrayIdx].imageLayout = convert(slots[slot].imageLayoutOrFormat);
+
+        // if we're not updating a SAMPLER descriptor fill in immutable samplers so that
+        // our
+        // validity checking doesn't have to look them up.
+        if(immutableSamplers && descType != VK_DESCRIPTOR_TYPE_SAMPLER)
+        {
+          writeImage[arrayIdx].sampler = rm->GetHandle<VkSampler>(immutableSamplers[slot]);
+        }
+
+        // set the write array (possibly redundant if we're collating as writeImage only
+        // moves when we commit some writes)
+        writes.back().pImageInfo = writeImage;
+        break;
+      }
+      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+      {
+        if(rm->HasResource(resId))
+          writeTexelBuffer[arrayIdx] = rm->GetHandle<VkBufferView>(resId);
+        else
+          writeTexelBuffer[arrayIdx] = VK_NULL_HANDLE;
+
+        writes.back().pTexelBufferView = writeTexelBuffer;
+        break;
+      }
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+      {
+        if(rm->HasResource(resId))
+          writeBuffer[arrayIdx].buffer = rm->GetHandle<VkBuffer>(resId);
+        else
+          writeBuffer[arrayIdx].buffer = VK_NULL_HANDLE;
+        writeBuffer[arrayIdx].offset = slots[slot].offset;
+        writeBuffer[arrayIdx].range = slots[slot].GetRange();
+
+        writes.back().pBufferInfo = writeBuffer;
+        break;
+      }
+      default:
+      {
+        RDCERR("Unexpected descriptor type %d", descType);
+        ret = false;
+      }
+    }
+
+    // if we made a valid write, count it
+    if(IsValid(vk->NULLDescriptorsAllowed(), writes.back(), arrayIdx))
+    {
+      writes.back().descriptorCount++;
+    }
+    else
+    {
+      // otherwise this is an invalid write. If we previously had valid writes we need to
+      // end them to ensure we don't skip
+      if(writes.back().descriptorCount > 0)
+      {
+        // consume the write arrays used
+        writeScratch += writes.back().descriptorCount;
+
+        writes.push_back(templateWrite);
+        writes.back().dstArrayElement = slot;
+      }
+    }
+  }
+
+  // take any final descriptor write that had descriptors and commit them. E.g. if all
+  // writes succeeded and were the same type then the above loop won't have committed them
+  // yet, since it only commits when it needs to break a range of writes (due to one being
+  // unwritten, or due to types differing)
+  if(writes.back().descriptorCount > 0)
+  {
+    // consume the write arrays used
+    writeScratch += writes.back().descriptorCount;
+  }
+  else if(writes.back().descriptorCount == 0)
+  {
+    // similarly remove the last write if it was unused
+    writes.pop_back();
+  }
+
+  return ret;
+}
+
+uint32_t GetDescriptorSizeOfBind(VulkanResourceManager *resourceMan,
+                                 const rdcarray<DescSetLayout::Binding> &bindings,
+                                 const rdcarray<uint64_t> &mutableBitmasks, uint32_t fixedBindNumber)
+{
+  if(bindings[fixedBindNumber].layoutDescType != VK_DESCRIPTOR_TYPE_MUTABLE_EXT)
+    return resourceMan->DescriptorDataSize(bindings[fixedBindNumber].layoutDescType);
+
+  uint64_t bitmask = mutableBitmasks[fixedBindNumber];
+  uint32_t ret = 0;
+
+  for(uint64_t m = 0; m < (uint64_t)DescriptorSlotType::Count; m++)
+  {
+    if(bitmask & (1ULL << m))
+    {
+      ret = RDCMAX(ret, resourceMan->DescriptorDataSize(convert(DescriptorSlotType(m))));
+    }
+  }
+
+  return ret;
+}
+
+static void ProcessStaticDescriptorAccess(VulkanResourceManager *resourceMan,
+                                          const ShaderReflection *refl, ResourceId specStorage,
+                                          rdcarray<DescriptorAccess> &descriptorAccess,
+                                          rdcarray<const DescSetLayout *> setLayoutInfos)
+{
+  if(!refl)
+    return;
+
+  const uint32_t descSetLayoutsCount = (uint32_t)setLayoutInfos.size();
+
+  DescriptorAccess access;
+  access.stage = refl->stage;
+
+  // desciptor set storage is fake, so byteSize is just 1
+
+  descriptorAccess.reserve(descriptorAccess.size() + refl->constantBlocks.size() +
+                           refl->samplers.size() + refl->readOnlyResources.size() +
+                           refl->readWriteResources.size());
+
+  RDCASSERT(refl->constantBlocks.size() < 0xffff, refl->constantBlocks.size());
+  for(uint16_t i = 0; i < refl->constantBlocks.size(); i++)
+  {
+    const ConstantBlock &bind = refl->constantBlocks[i];
+    // arrayed descriptors will be handled with bindless feedback
+    if(bind.bindArraySize > 1)
+      continue;
+
+    access.type = DescriptorType::ConstantBuffer;
+    access.index = i;
+
+    if(!bind.bufferBacked)
+    {
+      access.byteSize = 1;
+
+      if(bind.compileConstants)
+      {
+        // spec constants
+        access.descriptorStore = specStorage;
+        access.byteOffset = 0;
+        descriptorAccess.push_back(access);
+      }
+      else
+      {
+        // push constants
+        access.descriptorStore = VulkanCreationInfo::pushConstantDescriptorStorage;
+        access.byteOffset = 0;
+        descriptorAccess.push_back(access);
+      }
+    }
+    else
+    {
+      // Ignore bindings which are not in the descriptor set layouts
+      if((bind.fixedBindSetOrSpace >= descSetLayoutsCount) ||
+         bind.fixedBindNumber >= setLayoutInfos[bind.fixedBindSetOrSpace]->bindings.size())
+        continue;
+
+      const DescSetLayout *setLayout = setLayoutInfos[bind.fixedBindSetOrSpace];
+
+      // VkShaderStageFlagBits and ShaderStageMask are identical bit-for-bit.
+      // this might be deliberate if the binding is never actually used dynamically, only
+      // statically used bindings must be declared
+      if((setLayout->bindings[bind.fixedBindNumber].stageFlags &
+          (VkShaderStageFlags)MaskForStage(refl->stage)) == 0)
+        continue;
+
+      if((setLayout->flags & (VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT |
+                              VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT |
+                              VK_DESCRIPTOR_SET_LAYOUT_CREATE_EMBEDDED_IMMUTABLE_SAMPLERS_BIT_EXT)) ==
+         VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT)
+      {
+        if(setLayout->bindings[bind.fixedBindNumber].layoutDescType ==
+           VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
+        {
+          access.descriptorStore = VulkanCreationInfo::inlineBufferStorage[bind.fixedBindSetOrSpace];
+          access.byteSize = setLayout->bindings[bind.fixedBindNumber].descriptorCount;
+        }
+        else
+        {
+          access.descriptorStore =
+              VulkanCreationInfo::descriptorBufferStorage[bind.fixedBindSetOrSpace];
+          access.byteSize = GetDescriptorSizeOfBind(
+              resourceMan, setLayout->bindings, setLayout->mutableBitmasks, bind.fixedBindNumber);
+        }
+
+        // we are only handling non-arrays here
+        access.byteOffset = setLayout->bindings[bind.fixedBindNumber].elemOffset;
+      }
+      else
+      {
+        access.descriptorStore = VulkanCreationInfo::descriptorSetStorage[bind.fixedBindSetOrSpace];
+        access.byteSize = 1;
+        access.byteOffset =
+            setLayout->bindings[bind.fixedBindNumber].elemOffset + setLayout->inlineByteSize;
+      }
+
+      descriptorAccess.push_back(access);
+    }
+  }
+
+  access.descriptorStore = ResourceId();
+
+  RDCASSERT(refl->samplers.size() < 0xffff, refl->samplers.size());
+  for(uint16_t i = 0; i < refl->samplers.size(); i++)
+  {
+    const ShaderSampler &bind = refl->samplers[i];
+    // arrayed descriptors will be handled with bindless feedback
+    if(bind.bindArraySize > 1)
+      continue;
+
+    // Ignore bindings which are not in the descriptor set layouts
+    if((bind.fixedBindSetOrSpace >= descSetLayoutsCount) ||
+       bind.fixedBindNumber >= setLayoutInfos[bind.fixedBindSetOrSpace]->bindings.size())
+      continue;
+
+    const DescSetLayout *setLayout = setLayoutInfos[bind.fixedBindSetOrSpace];
+
+    // VkShaderStageFlagBits and ShaderStageMask are identical bit-for-bit.
+    // this might be deliberate if the binding is never actually used dynamically, only
+    // statically used bindings must be declared
+    if((setLayout->bindings[bind.fixedBindNumber].stageFlags &
+        (VkShaderStageFlags)MaskForStage(refl->stage)) == 0)
+      continue;
+
+    access.type = DescriptorType::Sampler;
+    access.index = i;
+
+    if((setLayout->flags & (VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT |
+                            VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT |
+                            VK_DESCRIPTOR_SET_LAYOUT_CREATE_EMBEDDED_IMMUTABLE_SAMPLERS_BIT_EXT)) ==
+       VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT)
+    {
+      access.descriptorStore = VulkanCreationInfo::descriptorBufferStorage[bind.fixedBindSetOrSpace];
+      access.byteSize = GetDescriptorSizeOfBind(resourceMan, setLayout->bindings,
+                                                setLayout->mutableBitmasks, bind.fixedBindNumber);
+
+      // we are only handling non-arrays here
+      access.byteOffset = setLayout->bindings[bind.fixedBindNumber].elemOffset;
+    }
+    else if(setLayout->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_EMBEDDED_IMMUTABLE_SAMPLERS_BIT_EXT)
+    {
+      access.descriptorStore = setLayout->resourceId;
+      access.byteSize = 1;
+      access.byteOffset = bind.fixedBindNumber;
+    }
+    else
+    {
+      access.descriptorStore = VulkanCreationInfo::descriptorSetStorage[bind.fixedBindSetOrSpace];
+      access.byteSize = 1;
+      access.byteOffset =
+          setLayout->bindings[bind.fixedBindNumber].elemOffset + setLayout->inlineByteSize;
+    }
+
+    descriptorAccess.push_back(access);
+  }
+
+  RDCASSERT(refl->readOnlyResources.size() < 0xffff, refl->readOnlyResources.size());
+  for(uint16_t i = 0; i < refl->readOnlyResources.size(); i++)
+  {
+    const ShaderResource &bind = refl->readOnlyResources[i];
+    // arrayed descriptors will be handled with bindless feedback
+    if(bind.bindArraySize > 1)
+      continue;
+
+    // Ignore bindings which are not in the descriptor set layouts
+    if((bind.fixedBindSetOrSpace >= descSetLayoutsCount) ||
+       bind.fixedBindNumber >= setLayoutInfos[bind.fixedBindSetOrSpace]->bindings.size())
+      continue;
+
+    const DescSetLayout *setLayout = setLayoutInfos[bind.fixedBindSetOrSpace];
+
+    // VkShaderStageFlagBits and ShaderStageMask are identical bit-for-bit.
+    // this might be deliberate if the binding is never actually used dynamically, only
+    // statically used bindings must be declared
+    if((setLayout->bindings[bind.fixedBindNumber].stageFlags &
+        (VkShaderStageFlags)MaskForStage(refl->stage)) == 0)
+      continue;
+
+    access.type = refl->readOnlyResources[i].descriptorType;
+    access.index = i;
+
+    if((setLayout->flags & (VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT |
+                            VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT |
+                            VK_DESCRIPTOR_SET_LAYOUT_CREATE_EMBEDDED_IMMUTABLE_SAMPLERS_BIT_EXT)) ==
+       VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT)
+    {
+      access.descriptorStore = VulkanCreationInfo::descriptorBufferStorage[bind.fixedBindSetOrSpace];
+      access.byteSize = GetDescriptorSizeOfBind(resourceMan, setLayout->bindings,
+                                                setLayout->mutableBitmasks, bind.fixedBindNumber);
+
+      // we are only handling non-arrays here
+      access.byteOffset = setLayout->bindings[bind.fixedBindNumber].elemOffset;
+    }
+    else
+    {
+      access.descriptorStore = VulkanCreationInfo::descriptorSetStorage[bind.fixedBindSetOrSpace];
+      access.byteSize = 1;
+      access.byteOffset =
+          setLayout->bindings[bind.fixedBindNumber].elemOffset + setLayout->inlineByteSize;
+    }
+
+    descriptorAccess.push_back(access);
+  }
+
+  RDCASSERT(refl->readWriteResources.size() < 0xffff, refl->readWriteResources.size());
+  for(uint16_t i = 0; i < refl->readWriteResources.size(); i++)
+  {
+    const ShaderResource &bind = refl->readWriteResources[i];
+    // arrayed descriptors will be handled with bindless feedback
+    if(bind.bindArraySize > 1)
+      continue;
+
+    // Ignore bindings which are not in the descriptor set layouts
+    if((bind.fixedBindSetOrSpace >= descSetLayoutsCount) ||
+       bind.fixedBindNumber >= setLayoutInfos[bind.fixedBindSetOrSpace]->bindings.size())
+      continue;
+
+    const DescSetLayout *setLayout = setLayoutInfos[bind.fixedBindSetOrSpace];
+
+    // VkShaderStageFlagBits and ShaderStageMask are identical bit-for-bit.
+    // this might be deliberate if the binding is never actually used dynamically, only
+    // statically used bindings must be declared
+    if((setLayout->bindings[bind.fixedBindNumber].stageFlags &
+        (VkShaderStageFlags)MaskForStage(refl->stage)) == 0)
+      continue;
+
+    access.type = refl->readWriteResources[i].descriptorType;
+    access.index = i;
+
+    if((setLayout->flags & (VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT |
+                            VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT |
+                            VK_DESCRIPTOR_SET_LAYOUT_CREATE_EMBEDDED_IMMUTABLE_SAMPLERS_BIT_EXT)) ==
+       VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT)
+    {
+      access.descriptorStore = VulkanCreationInfo::descriptorBufferStorage[bind.fixedBindSetOrSpace];
+      access.byteSize = GetDescriptorSizeOfBind(resourceMan, setLayout->bindings,
+                                                setLayout->mutableBitmasks, bind.fixedBindNumber);
+
+      // we are only handling non-arrays here
+      access.byteOffset = setLayout->bindings[bind.fixedBindNumber].elemOffset;
+    }
+    else
+    {
+      access.descriptorStore = VulkanCreationInfo::descriptorSetStorage[bind.fixedBindSetOrSpace];
+      access.byteSize = 1;
+      access.byteOffset =
+          setLayout->bindings[bind.fixedBindNumber].elemOffset + setLayout->inlineByteSize;
+    }
+
+    descriptorAccess.push_back(access);
+  }
+}
+
+void VulkanCreationInfo::ShaderObject::Init(VulkanResourceManager *resourceMan,
+                                            VulkanCreationInfo &info, ResourceId id,
+                                            const VkShaderCreateInfoEXT *pCreateInfo)
+{
+  flags = pCreateInfo->flags;
+
+  shad.module = id;
+
+  shad.stage = StageFromIndex(StageIndex(pCreateInfo->stage));
+
+  nextStage = pCreateInfo->nextStage;
+
+  codeType = pCreateInfo->codeType;
+
+  // fake ShaderModule for SPIR-V processing and reflection
+  VkShaderModuleCreateInfo smInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0};
+
+  if(codeType & VK_SHADER_CODE_TYPE_SPIRV_EXT)
+  {
+    smInfo.codeSize = pCreateInfo->codeSize;
+    smInfo.pCode = (const uint32_t *)pCreateInfo->pCode;
+  }
+
+  info.m_ShaderModule[id].Init(resourceMan, info, &smInfo);
+
+  shad.entryPoint = pCreateInfo->pName;
+
+  // descriptor set layouts
+  if(pCreateInfo->pSetLayouts)
+  {
+    descSetLayouts.resize(pCreateInfo->setLayoutCount);
+    for(uint32_t i = 0; i < pCreateInfo->setLayoutCount; i++)
+      descSetLayouts[i] = GetResID(pCreateInfo->pSetLayouts[i]);
+  }
+
+  // push constants
+  if(pCreateInfo->pPushConstantRanges)
+  {
+    pushRanges.reserve(pCreateInfo->pushConstantRangeCount);
+    for(uint32_t i = 0; i < pCreateInfo->pushConstantRangeCount; i++)
+      pushRanges.push_back(pCreateInfo->pPushConstantRanges[i]);
+  }
+
+  ShaderModuleReflectionKey key(shad.stage, shad.entryPoint, ResourceId());
+
+  // specialization info
+  if(pCreateInfo->pSpecializationInfo)
+  {
+    const byte *data = (const byte *)pCreateInfo->pSpecializationInfo->pData;
+
+    const VkSpecializationMapEntry *maps = pCreateInfo->pSpecializationInfo->pMapEntries;
+    for(uint32_t s = 0; s < pCreateInfo->pSpecializationInfo->mapEntryCount; s++)
+    {
+      SpecConstant spec;
+      spec.specID = maps[s].constantID;
+      memcpy(&spec.value, data + maps[s].offset, maps[s].size);
+      spec.dataSize = maps[s].size;
+      shad.specialization.push_back(spec);
+
+      virtualSpecialisationByteSize =
+          RDCMAX(virtualSpecialisationByteSize, uint32_t((spec.specID + 1) * sizeof(uint64_t)));
+    }
+  }
+
+  const VkCustomResolveCreateInfoEXT *customResInfo =
+      (const VkCustomResolveCreateInfoEXT *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_CUSTOM_RESOLVE_CREATE_INFO_EXT);
+  if(customResInfo)
+  {
+    hasCustomResCreateInfo = true;
+    customResolve = (customResInfo->customResolve == VK_TRUE);
+  }
+
+  ShaderModuleReflection &reflData = info.m_ShaderModule[id].m_Reflections[key];
+
+  reflData.Init(resourceMan, info, id, shad.entryPoint, pCreateInfo->stage, shad.specialization);
+
+  shad.refl = reflData.refl;
+  shad.patchData = &reflData.patchData;
+
+  rdcarray<const DescSetLayout *> setLayoutInfos;
+  for(ResourceId setLayout : descSetLayouts)
+    setLayoutInfos.push_back(&info.m_DescSetLayout[setLayout]);
+
+  ProcessStaticDescriptorAccess(resourceMan, shad.refl, id, staticDescriptorAccess, setLayoutInfos);
+}
+
 void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan,
                                         VulkanCreationInfo &info, ResourceId id,
                                         const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
-  flags = pCreateInfo->flags;
+  const VkPipelineCreateFlags2CreateInfo *createFlags2 =
+      (const VkPipelineCreateFlags2CreateInfo *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO);
 
-  layout = GetResID(pCreateInfo->layout);
+  flags = createFlags2 ? createFlags2->flags : pCreateInfo->flags;
+  useCreateFlags2 = createFlags2 != NULL;
+
+  graphicsPipe = true;
+
+  // this is used to e.g. filter specified dynamic states so we only consider the ones valid for
+  // this pipeline. If we're not using libraries, all states are valid
+  availStages = VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT |
+                VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT |
+                VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT |
+                VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT;
+
+  const VkGraphicsPipelineLibraryCreateInfoEXT *graphicsLibraryCreate =
+      (const VkGraphicsPipelineLibraryCreateInfoEXT *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT);
+  if(graphicsLibraryCreate)
+    availStages = graphicsLibraryCreate->flags;
+
+  ownLayout = vertLayout = fragLayout = GetResID(pCreateInfo->layout);
   renderpass = GetResID(pCreateInfo->renderPass);
   subpass = pCreateInfo->subpass;
+
+  const VkPipelineRenderingCreateInfo *dynRenderCreate =
+      (const VkPipelineRenderingCreateInfo *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO);
+  if(dynRenderCreate)
+  {
+    viewMask = dynRenderCreate->viewMask;
+    colorFormats.assign(dynRenderCreate->pColorAttachmentFormats,
+                        dynRenderCreate->colorAttachmentCount);
+    depthFormat = dynRenderCreate->depthAttachmentFormat;
+    stencilFormat = dynRenderCreate->stencilAttachmentFormat;
+  }
+  else
+  {
+    viewMask = 0;
+    colorFormats.clear();
+    depthFormat = VK_FORMAT_UNDEFINED;
+    stencilFormat = VK_FORMAT_UNDEFINED;
+  }
+  const VkCustomResolveCreateInfoEXT *customResInfo =
+      (const VkCustomResolveCreateInfoEXT *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_CUSTOM_RESOLVE_CREATE_INFO_EXT);
+  if(customResInfo)
+  {
+    hasCustomResCreateInfo = true;
+    customResCreateInfo.customResolve = (customResInfo->customResolve == VK_TRUE);
+    customResCreateInfo.colorFormats.assign(customResInfo->pColorAttachmentFormats,
+                                            customResInfo->colorAttachmentCount);
+    customResCreateInfo.depthFormat = customResInfo->depthAttachmentFormat;
+    customResCreateInfo.stencilFormat = customResInfo->stencilAttachmentFormat;
+  }
+  else
+  {
+    hasCustomResCreateInfo = false;
+    customResCreateInfo.customResolve = false;
+    customResCreateInfo.colorFormats.clear();
+    customResCreateInfo.depthFormat = VK_FORMAT_UNDEFINED;
+    customResCreateInfo.stencilFormat = VK_FORMAT_UNDEFINED;
+  }
+
+  dynamicRenderingLocalRead.Init((const VkBaseInStructure *)pCreateInfo);
 
   RDCEraseEl(dynamicStates);
   if(pCreateInfo->pDynamicState)
   {
     for(uint32_t i = 0; i < pCreateInfo->pDynamicState->dynamicStateCount; i++)
-      dynamicStates[ConvertDynamicState(pCreateInfo->pDynamicState->pDynamicStates[i])] = true;
+    {
+      VkDynamicState d = pCreateInfo->pDynamicState->pDynamicStates[i];
+
+      // ignore dynamic states not available for this library (e.g.
+      // VK_DYNAMIC_STATE_VERTEX_INPUT_EXT in a library with only FRAGMENT_OUTPUT_INTERFACE_BIT_EXT)
+      if((DynamicStateValidState(d) & availStages) == 0)
+        continue;
+
+      dynamicStates[ConvertDynamicState(d)] = true;
+    }
 
     // if the viewports and counts are dynamic this supersets the viewport only being dynamic. For
     // ease of code elsewhere, turn off the older one if both are specified so that we don't call
     // vkCmdSetViewports when the count is also dynamic.
-    if(dynamicStates[VkDynamicViewportCountEXT])
+    if(dynamicStates[VkDynamicViewportCount])
       dynamicStates[VkDynamicViewport] = false;
-    if(dynamicStates[VkDynamicScissorCountEXT])
+    if(dynamicStates[VkDynamicScissorCount])
       dynamicStates[VkDynamicScissor] = false;
   }
+
+  vertexInputRobustness = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT;
+  const VkPipelineRobustnessCreateInfo *robustness =
+      (const VkPipelineRobustnessCreateInfo *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO);
+  if(robustness)
+    vertexInputRobustness = robustness->vertexInputs;
+
+  maxFragmentDensityMapLayers = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT;
+  const VkPipelineFragmentDensityMapLayeredCreateInfoVALVE *layered =
+      (const VkPipelineFragmentDensityMapLayeredCreateInfoVALVE *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_DENSITY_MAP_LAYERED_CREATE_INFO_VALVE);
+  if(layered)
+    maxFragmentDensityMapLayers = layered->maxFragmentDensityMapLayers;
 
   // VkPipelineShaderStageCreateInfo
   for(uint32_t i = 0; i < pCreateInfo->stageCount; i++)
@@ -369,17 +1305,45 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan,
     // convert shader bit to shader index
     int stageIndex = StageIndex(pCreateInfo->pStages[i].stage);
 
-    Shader &shad = shaders[stageIndex];
+    ShaderEntry &shad = shaders[stageIndex];
+
+    shad.storageBufferRobustness = shad.uniformBufferRobustness =
+        VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT;
+    shad.imageRobustness = VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DEVICE_DEFAULT;
+
+    const VkPipelineRobustnessCreateInfo *shaderRobustness =
+        (const VkPipelineRobustnessCreateInfo *)FindNextStruct(
+            &pCreateInfo->pStages[i], VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO);
+
+    // If VkPipelineRobustnessCreateInfo is specified for both a pipeline and a pipeline stage, the
+    // VkPipelineRobustnessCreateInfo specified for the pipeline stage will take precedence.
+    if(shaderRobustness == NULL)
+      shaderRobustness = robustness;
+
+    if(shaderRobustness)
+    {
+      shad.storageBufferRobustness = shaderRobustness->storageBuffers;
+      shad.uniformBufferRobustness = shaderRobustness->uniformBuffers;
+      shad.imageRobustness = shaderRobustness->images;
+    }
+
+    const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *subgroupSize =
+        (const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *)FindNextStruct(
+            &pCreateInfo->pStages[i],
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO);
+    if(subgroupSize)
+      shad.requiredSubgroupSize = subgroupSize->requiredSubgroupSize;
 
     shad.module = shadid;
     shad.entryPoint = pCreateInfo->pStages[i].pName;
     shad.stage = ShaderStage(stageIndex);
+    shad.flags = pCreateInfo->pStages[i].flags;
 
-    ShaderModuleReflectionKey key(shad.entryPoint, ResourceId());
+    ShaderModuleReflectionKey key(shad.stage, shad.entryPoint, ResourceId());
 
     if(pCreateInfo->pStages[i].pSpecializationInfo)
     {
-      key = ShaderModuleReflectionKey(shad.entryPoint, id);
+      key = ShaderModuleReflectionKey(shad.stage, shad.entryPoint, id);
 
       const byte *data = (const byte *)pCreateInfo->pStages[i].pSpecializationInfo->pData;
 
@@ -391,16 +1355,18 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan,
         memcpy(&spec.value, data + maps[s].offset, maps[s].size);
         spec.dataSize = maps[s].size;
         shad.specialization.push_back(spec);
+
+        virtualSpecialisationByteSize =
+            RDCMAX(virtualSpecialisationByteSize, uint32_t((spec.specID + 1) * sizeof(uint64_t)));
       }
     }
 
     ShaderModuleReflection &reflData = info.m_ShaderModule[shadid].m_Reflections[key];
 
-    reflData.Init(resourceMan, shadid, info.m_ShaderModule[shadid].spirv, shad.entryPoint,
-                  pCreateInfo->pStages[i].stage, shad.specialization);
+    reflData.Init(resourceMan, info, shadid, shad.entryPoint, pCreateInfo->pStages[i].stage,
+                  shad.specialization);
 
     shad.refl = reflData.refl;
-    shad.mapping = &reflData.mapping;
     shad.patchData = &reflData.patchData;
   }
 
@@ -420,15 +1386,15 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan,
     }
 
     // if there's a divisors struct, apply them now
-    const VkPipelineVertexInputDivisorStateCreateInfoEXT *divisors =
-        (const VkPipelineVertexInputDivisorStateCreateInfoEXT *)FindNextStruct(
+    const VkPipelineVertexInputDivisorStateCreateInfo *divisors =
+        (const VkPipelineVertexInputDivisorStateCreateInfo *)FindNextStruct(
             pCreateInfo->pVertexInputState,
-            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT);
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO);
     if(divisors)
     {
       for(uint32_t b = 0; b < divisors->vertexBindingDivisorCount; b++)
       {
-        const VkVertexInputBindingDivisorDescriptionEXT &div = divisors->pVertexBindingDivisors[b];
+        const VkVertexInputBindingDivisorDescription &div = divisors->pVertexBindingDivisors[b];
 
         if(div.binding < vertexBindings.size())
           vertexBindings[div.binding].instanceDivisor = div.divisor;
@@ -448,8 +1414,16 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan,
     }
   }
 
-  topology = pCreateInfo->pInputAssemblyState->topology;
-  primitiveRestartEnable = pCreateInfo->pInputAssemblyState->primitiveRestartEnable ? true : false;
+  if(pCreateInfo->pInputAssemblyState)
+  {
+    topology = pCreateInfo->pInputAssemblyState->topology;
+    primitiveRestartEnable = pCreateInfo->pInputAssemblyState->primitiveRestartEnable ? true : false;
+  }
+  else
+  {
+    topology = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
+    primitiveRestartEnable = false;
+  }
 
   if(pCreateInfo->pTessellationState)
     patchControlPoints = pCreateInfo->pTessellationState->patchControlPoints;
@@ -471,15 +1445,37 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan,
     viewportCount = 0;
 
   viewports.resize(viewportCount);
-  scissors.resize(viewportCount);
 
   for(uint32_t i = 0; i < viewportCount; i++)
   {
     if(pCreateInfo->pViewportState->pViewports)
       viewports[i] = pCreateInfo->pViewportState->pViewports[i];
+  }
 
+  if(pCreateInfo->pViewportState)
+    scissorCount = pCreateInfo->pViewportState->scissorCount;
+  else
+    scissorCount = 0;
+
+  scissors.resize(scissorCount);
+
+  for(uint32_t i = 0; i < scissorCount; i++)
+  {
     if(pCreateInfo->pViewportState->pScissors)
       scissors[i] = pCreateInfo->pViewportState->pScissors[i];
+  }
+
+  // VkPipelineFragmentShadingRateStateCreateInfoKHR
+  shadingRate = {1, 1};
+  shadingRateCombiners[0] = shadingRateCombiners[1] = VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR;
+  const VkPipelineFragmentShadingRateStateCreateInfoKHR *shadingRateInfo =
+      (const VkPipelineFragmentShadingRateStateCreateInfoKHR *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR);
+  if(shadingRateInfo)
+  {
+    shadingRate = shadingRateInfo->fragmentSize;
+    shadingRateCombiners[0] = shadingRateInfo->combinerOps[0];
+    shadingRateCombiners[1] = shadingRateInfo->combinerOps[1];
   }
 
   // VkPipelineDiscardRectangleStateCreateInfoEXT
@@ -502,16 +1498,33 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan,
   }
 
   // VkPipelineRasterStateCreateInfo
-  depthClampEnable = pCreateInfo->pRasterizationState->depthClampEnable ? true : false;
-  rasterizerDiscardEnable = pCreateInfo->pRasterizationState->rasterizerDiscardEnable ? true : false;
-  polygonMode = pCreateInfo->pRasterizationState->polygonMode;
-  cullMode = pCreateInfo->pRasterizationState->cullMode;
-  frontFace = pCreateInfo->pRasterizationState->frontFace;
-  depthBiasEnable = pCreateInfo->pRasterizationState->depthBiasEnable ? true : false;
-  depthBiasConstantFactor = pCreateInfo->pRasterizationState->depthBiasConstantFactor;
-  depthBiasClamp = pCreateInfo->pRasterizationState->depthBiasClamp;
-  depthBiasSlopeFactor = pCreateInfo->pRasterizationState->depthBiasSlopeFactor;
-  lineWidth = pCreateInfo->pRasterizationState->lineWidth;
+  if(pCreateInfo->pRasterizationState)
+  {
+    depthClampEnable = pCreateInfo->pRasterizationState->depthClampEnable ? true : false;
+    rasterizerDiscardEnable =
+        pCreateInfo->pRasterizationState->rasterizerDiscardEnable ? true : false;
+    polygonMode = pCreateInfo->pRasterizationState->polygonMode;
+    cullMode = pCreateInfo->pRasterizationState->cullMode;
+    frontFace = pCreateInfo->pRasterizationState->frontFace;
+    depthBiasEnable = pCreateInfo->pRasterizationState->depthBiasEnable ? true : false;
+    depthBiasConstantFactor = pCreateInfo->pRasterizationState->depthBiasConstantFactor;
+    depthBiasClamp = pCreateInfo->pRasterizationState->depthBiasClamp;
+    depthBiasSlopeFactor = pCreateInfo->pRasterizationState->depthBiasSlopeFactor;
+    lineWidth = pCreateInfo->pRasterizationState->lineWidth;
+  }
+  else
+  {
+    depthClampEnable = false;
+    rasterizerDiscardEnable = false;
+    polygonMode = VK_POLYGON_MODE_FILL;
+    cullMode = VK_CULL_MODE_NONE;
+    frontFace = VK_FRONT_FACE_CLOCKWISE;
+    depthBiasEnable = false;
+    depthBiasConstantFactor = 0.0f;
+    depthBiasClamp = 0.0f;
+    depthBiasSlopeFactor = 0.0f;
+    lineWidth = 1.0f;
+  }
 
   // VkPipelineRasterizationStateStreamCreateInfoEXT
   rasterizationStream = 0;
@@ -549,15 +1562,28 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan,
     extraPrimitiveOverestimationSize = conservRast->extraPrimitiveOverestimationSize;
   }
 
-  // VkPipelineRasterizationLineStateCreateInfoEXT
-  lineRasterMode = VK_LINE_RASTERIZATION_MODE_DEFAULT_EXT;
+  // VkDepthBiasRepresentationInfoEXT
+  depthBiasRepresentation = VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORMAT_EXT;
+  depthBiasExact = false;
+
+  const VkDepthBiasRepresentationInfoEXT *depthBiasRepr =
+      (const VkDepthBiasRepresentationInfoEXT *)FindNextStruct(
+          pCreateInfo->pRasterizationState, VK_STRUCTURE_TYPE_DEPTH_BIAS_REPRESENTATION_INFO_EXT);
+  if(depthBiasRepr)
+  {
+    depthBiasRepresentation = depthBiasRepr->depthBiasRepresentation;
+    depthBiasExact = depthBiasRepr->depthBiasExact;
+  }
+
+  // VkPipelineRasterizationLineStateCreateInfo
+  lineRasterMode = VK_LINE_RASTERIZATION_MODE_DEFAULT;
   stippleEnabled = false;
   stippleFactor = stipplePattern = 0;
 
-  const VkPipelineRasterizationLineStateCreateInfoEXT *lineRasterState =
-      (const VkPipelineRasterizationLineStateCreateInfoEXT *)FindNextStruct(
+  const VkPipelineRasterizationLineStateCreateInfo *lineRasterState =
+      (const VkPipelineRasterizationLineStateCreateInfo *)FindNextStruct(
           pCreateInfo->pRasterizationState,
-          VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT);
+          VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO);
   if(lineRasterState)
   {
     lineRasterMode = lineRasterState->lineRasterizationMode;
@@ -653,28 +1679,39 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan,
     logicOp = pCreateInfo->pColorBlendState->logicOp;
     memcpy(blendConst, pCreateInfo->pColorBlendState->blendConstants, sizeof(blendConst));
 
-    attachments.resize(pCreateInfo->pColorBlendState->attachmentCount);
+    // It is ignored if the pipeline is created with VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT,
+    // VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT, and VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT dynamic
+    // states set, and either VK_DYNAMIC_STATE_COLOR_BLEND_ADVANCED_EXT set or the
+    // advancedBlendCoherentOperations feature is not enabled.
+    const bool fullyDynamicBlend = dynamicStates[VkDynamicColorBlendEquationEXT] &&
+                                   dynamicStates[VkDynamicColorBlendEnableEXT] &&
+                                   dynamicStates[VkDynamicColorWriteMaskEXT];
 
-    for(uint32_t i = 0; i < pCreateInfo->pColorBlendState->attachmentCount; i++)
+    if(!fullyDynamicBlend)
     {
-      attachments[i].blendEnable =
-          pCreateInfo->pColorBlendState->pAttachments[i].blendEnable ? true : false;
+      attachments.resize(pCreateInfo->pColorBlendState->attachmentCount);
 
-      attachments[i].blend.Source =
-          pCreateInfo->pColorBlendState->pAttachments[i].srcColorBlendFactor;
-      attachments[i].blend.Destination =
-          pCreateInfo->pColorBlendState->pAttachments[i].dstColorBlendFactor;
-      attachments[i].blend.Operation = pCreateInfo->pColorBlendState->pAttachments[i].colorBlendOp;
+      for(uint32_t i = 0; i < pCreateInfo->pColorBlendState->attachmentCount; i++)
+      {
+        attachments[i].blendEnable =
+            pCreateInfo->pColorBlendState->pAttachments[i].blendEnable ? true : false;
 
-      attachments[i].alphaBlend.Source =
-          pCreateInfo->pColorBlendState->pAttachments[i].srcAlphaBlendFactor;
-      attachments[i].alphaBlend.Destination =
-          pCreateInfo->pColorBlendState->pAttachments[i].dstAlphaBlendFactor;
-      attachments[i].alphaBlend.Operation =
-          pCreateInfo->pColorBlendState->pAttachments[i].alphaBlendOp;
+        attachments[i].blend.Source =
+            pCreateInfo->pColorBlendState->pAttachments[i].srcColorBlendFactor;
+        attachments[i].blend.Destination =
+            pCreateInfo->pColorBlendState->pAttachments[i].dstColorBlendFactor;
+        attachments[i].blend.Operation = pCreateInfo->pColorBlendState->pAttachments[i].colorBlendOp;
 
-      attachments[i].channelWriteMask =
-          (uint8_t)pCreateInfo->pColorBlendState->pAttachments[i].colorWriteMask;
+        attachments[i].alphaBlend.Source =
+            pCreateInfo->pColorBlendState->pAttachments[i].srcAlphaBlendFactor;
+        attachments[i].alphaBlend.Destination =
+            pCreateInfo->pColorBlendState->pAttachments[i].dstAlphaBlendFactor;
+        attachments[i].alphaBlend.Operation =
+            pCreateInfo->pColorBlendState->pAttachments[i].alphaBlendOp;
+
+        attachments[i].channelWriteMask =
+            (uint8_t)pCreateInfo->pColorBlendState->pAttachments[i].colorWriteMask;
+      }
     }
   }
   else
@@ -685,30 +1722,319 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan,
 
     attachments.clear();
   }
+
+  // this struct probably will never get used, since the user could just set the colorWriteMask
+  // above to 0. It's really only useful for specifying how the dynamic state works. However just
+  // for completeness...
+  const VkPipelineColorWriteCreateInfoEXT *colorWriteEnable =
+      (const VkPipelineColorWriteCreateInfoEXT *)FindNextStruct(
+          pCreateInfo->pRasterizationState, VK_STRUCTURE_TYPE_PIPELINE_COLOR_WRITE_CREATE_INFO_EXT);
+  if(colorWriteEnable)
+  {
+    RDCASSERTEQUAL(attachments.size(), colorWriteEnable->attachmentCount);
+    for(size_t i = 0; i < attachments.size() && i < colorWriteEnable->attachmentCount; i++)
+    {
+      if(!colorWriteEnable->pColorWriteEnables[i])
+        attachments[i].channelWriteMask = 0;
+    }
+  }
+
+  // VkPipelineViewportDepthClipControlCreateInfoEXT
+  negativeOneToOne = false;
+
+  const VkPipelineViewportDepthClipControlCreateInfoEXT *depthClipControl =
+      (const VkPipelineViewportDepthClipControlCreateInfoEXT *)FindNextStruct(
+          pCreateInfo->pViewportState,
+          VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT);
+  if(depthClipControl)
+    negativeOneToOne = depthClipControl->negativeOneToOne != VK_FALSE;
+
+  // VkPipelineRasterizationProvokingVertexStateCreateInfoEXT
+  provokingVertex = VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT;
+
+  const VkPipelineRasterizationProvokingVertexStateCreateInfoEXT *provokeInfo =
+      (const VkPipelineRasterizationProvokingVertexStateCreateInfoEXT *)FindNextStruct(
+          pCreateInfo->pRasterizationState,
+          VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT);
+  if(provokeInfo)
+    provokingVertex = provokeInfo->provokingVertexMode;
+
+  const VkPipelineLibraryCreateInfoKHR *libraryReference =
+      (const VkPipelineLibraryCreateInfoKHR *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR);
+  if(libraryReference)
+  {
+    // unconditionally pull in state from libraries - the state must not overlap (or must be
+    // identical where overlap is inevitable)
+    for(uint32_t l = 0; l < libraryReference->libraryCount; l++)
+    {
+      ResourceId pipeid = GetResID(libraryReference->pLibraries[l]);
+
+      parentLibraries.push_back(pipeid);
+
+      const Pipeline &pipeInfo = info.m_Pipeline[pipeid];
+
+      for(size_t i = 0; i < VkDynamicCount; i++)
+        dynamicStates[i] |= pipeInfo.dynamicStates[i];
+
+      if(pipeInfo.availStages & VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT)
+      {
+        vertexBindings = pipeInfo.vertexBindings;
+        vertexAttrs = pipeInfo.vertexAttrs;
+
+        topology = pipeInfo.topology;
+        primitiveRestartEnable = pipeInfo.primitiveRestartEnable;
+      }
+
+      if(pipeInfo.availStages & VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT)
+      {
+        renderpass = pipeInfo.renderpass;
+        subpass = pipeInfo.subpass;
+
+        for(uint32_t i = 0; i < 4; i++)
+        {
+          shaders[i] = pipeInfo.shaders[i];
+          info.m_ShaderModule[shaders[i].module].m_PipeReferences[id] = pipeid;
+        }
+        for(uint32_t i : {(uint32_t)ShaderStage::Task, (uint32_t)ShaderStage::Mesh})
+        {
+          shaders[i] = pipeInfo.shaders[i];
+          info.m_ShaderModule[shaders[i].module].m_PipeReferences[id] = pipeid;
+        }
+
+        vertLayout = pipeInfo.vertLayout;
+
+        viewportCount = pipeInfo.viewportCount;
+        scissorCount = pipeInfo.scissorCount;
+        viewports = pipeInfo.viewports;
+        scissors = pipeInfo.scissors;
+
+        depthClampEnable = pipeInfo.depthClampEnable;
+        rasterizerDiscardEnable = pipeInfo.rasterizerDiscardEnable;
+        polygonMode = pipeInfo.polygonMode;
+        cullMode = pipeInfo.cullMode;
+        frontFace = pipeInfo.frontFace;
+        depthBiasEnable = pipeInfo.depthBiasEnable;
+        depthBiasConstantFactor = pipeInfo.depthBiasConstantFactor;
+        depthBiasClamp = pipeInfo.depthBiasClamp;
+        depthBiasSlopeFactor = pipeInfo.depthBiasSlopeFactor;
+        depthBiasRepresentation = pipeInfo.depthBiasRepresentation;
+        depthBiasExact = pipeInfo.depthBiasExact;
+        lineWidth = pipeInfo.lineWidth;
+
+        rasterizationStream = pipeInfo.rasterizationStream;
+        depthClipEnable = pipeInfo.depthClipEnable;
+        patchControlPoints = pipeInfo.patchControlPoints;
+        tessellationDomainOrigin = pipeInfo.tessellationDomainOrigin;
+
+        conservativeRasterizationMode = pipeInfo.conservativeRasterizationMode;
+        extraPrimitiveOverestimationSize = pipeInfo.extraPrimitiveOverestimationSize;
+
+        lineRasterMode = pipeInfo.lineRasterMode;
+        stippleEnabled = pipeInfo.stippleEnabled;
+        stippleFactor = pipeInfo.stippleFactor;
+        stipplePattern = pipeInfo.stipplePattern;
+
+        discardRectangles = pipeInfo.discardRectangles;
+        discardMode = pipeInfo.discardMode;
+
+        negativeOneToOne = pipeInfo.negativeOneToOne;
+
+        provokingVertex = pipeInfo.provokingVertex;
+
+        flags |= pipeInfo.flags;
+      }
+
+      if(pipeInfo.availStages & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT)
+      {
+        renderpass = pipeInfo.renderpass;
+        subpass = pipeInfo.subpass;
+
+        shaders[4] = pipeInfo.shaders[4];
+        info.m_ShaderModule[shaders[4].module].m_PipeReferences[id] = pipeid;
+
+        fragLayout = pipeInfo.fragLayout;
+
+        sampleLocations = pipeInfo.sampleLocations;
+
+        depthTestEnable = pipeInfo.depthTestEnable;
+        depthWriteEnable = pipeInfo.depthWriteEnable;
+        depthCompareOp = pipeInfo.depthCompareOp;
+        depthBoundsEnable = pipeInfo.depthBoundsEnable;
+        stencilTestEnable = pipeInfo.stencilTestEnable;
+        front = pipeInfo.front;
+        back = pipeInfo.back;
+        minDepthBounds = pipeInfo.minDepthBounds;
+        maxDepthBounds = pipeInfo.maxDepthBounds;
+
+        shadingRate = pipeInfo.shadingRate;
+        shadingRateCombiners[0] = pipeInfo.shadingRateCombiners[0];
+        shadingRateCombiners[1] = pipeInfo.shadingRateCombiners[1];
+
+        dynamicRenderingLocalRead.CopyInputIndices(pipeInfo.dynamicRenderingLocalRead);
+
+        flags |= pipeInfo.flags;
+      }
+
+      if(pipeInfo.availStages & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT)
+      {
+        renderpass = pipeInfo.renderpass;
+        subpass = pipeInfo.subpass;
+
+        // this is duplicated in the fragment shader interface "if sample shading is enabled or
+        // renderpass is not VK_NULL_HANDLE", but since it must be identical in both places we just
+        // treat this as canonical so we don't have to figure out if that condition is satisfied.
+        rasterizationSamples = pipeInfo.rasterizationSamples;
+        sampleShadingEnable = pipeInfo.sampleShadingEnable;
+        minSampleShading = pipeInfo.minSampleShading;
+        sampleMask = pipeInfo.sampleMask;
+        alphaToCoverageEnable = pipeInfo.alphaToCoverageEnable;
+        alphaToOneEnable = pipeInfo.alphaToOneEnable;
+
+        logicOpEnable = pipeInfo.logicOpEnable;
+        logicOp = pipeInfo.logicOp;
+        memcpy(blendConst, pipeInfo.blendConst, sizeof(blendConst));
+
+        attachments = pipeInfo.attachments;
+
+        viewMask = pipeInfo.viewMask;
+        colorFormats = pipeInfo.colorFormats;
+        depthFormat = pipeInfo.depthFormat;
+        stencilFormat = pipeInfo.stencilFormat;
+
+        dynamicRenderingLocalRead.CopyLocations(pipeInfo.dynamicRenderingLocalRead);
+
+        flags |= pipeInfo.flags;
+      }
+    }
+  }
+
+  // calculate descSetLayouts. If only one layout is set, just copy the layouts from it
+  if(vertLayout == ResourceId())
+  {
+    descSetLayouts = info.m_PipelineLayout[fragLayout].descSetLayouts;
+  }
+  else if(fragLayout == ResourceId())
+  {
+    descSetLayouts = info.m_PipelineLayout[vertLayout].descSetLayouts;
+  }
+  // if they're both the same (both must be non-empty or we would have hit a case above) it doesn't
+  // matter
+  else if(vertLayout == fragLayout)
+  {
+    descSetLayouts = info.m_PipelineLayout[vertLayout].descSetLayouts;
+  }
+  else
+  {
+    // in this case vertLayout is not the same as fragLayout, so we have independent sets and this
+    // is the linked pipeline
+    // fortunately one of the requirements of independent set is that any descriptor sets which
+    // contain any fragment visible descriptors are present in the fragment layout, and vice-versa
+    // for non-fragment. Any sets which contain both must be identical in both.
+    // That means we can start by picking all the set layouts from the fragment pipeline layout that
+    // reference fragments (ignoring any others that may be empty or not but are ignored), then for
+    // all other sets unconditionally pick the one from the vertex layout
+
+    const rdcarray<ResourceId> &vSets = info.m_PipelineLayout[vertLayout].descSetLayouts;
+    const rdcarray<ResourceId> &fSets = info.m_PipelineLayout[fragLayout].descSetLayouts;
+
+    descSetLayouts.resize(RDCMAX(vSets.size(), fSets.size()));
+
+    for(size_t i = 0; i < fSets.size(); i++)
+    {
+      if((info.m_DescSetLayout[fSets[i]].anyStageFlags & VK_SHADER_STAGE_FRAGMENT_BIT) != 0)
+        descSetLayouts[i] = fSets[i];
+    }
+
+    for(size_t i = 0; i < vSets.size(); i++)
+    {
+      if(descSetLayouts[i] == ResourceId())
+        descSetLayouts[i] = vSets[i];
+    }
+
+    // it's possible we have sets which are unused by both - maybe empty, dummy, or they only appear
+    // in the layout which ignores them. Pick from whichever layout contained that element as it
+    // doesn't matter.
+    for(size_t i = 0; i < descSetLayouts.size(); i++)
+    {
+      if(descSetLayouts[i] == ResourceId())
+      {
+        if(i < vSets.size())
+          descSetLayouts[i] = vSets[i];
+        else
+          descSetLayouts[i] = fSets[i];
+      }
+    }
+  }
+
+  rdcarray<const DescSetLayout *> setLayoutInfos;
+  for(ResourceId setLayout : descSetLayouts)
+    setLayoutInfos.push_back(&info.m_DescSetLayout[setLayout]);
+
+  for(const ShaderEntry &shad : shaders)
+    ProcessStaticDescriptorAccess(resourceMan, shad.refl, id, staticDescriptorAccess, setLayoutInfos);
 }
 
 void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan, VulkanCreationInfo &info,
                                         ResourceId id, const VkComputePipelineCreateInfo *pCreateInfo)
 {
-  flags = pCreateInfo->flags;
+  const VkPipelineCreateFlags2CreateInfo *createFlags2 =
+      (const VkPipelineCreateFlags2CreateInfo *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO);
 
-  layout = GetResID(pCreateInfo->layout);
+  flags = createFlags2 ? createFlags2->flags : pCreateInfo->flags;
+  useCreateFlags2 = createFlags2 != NULL;
+
+  graphicsPipe = false;
+
+  compLayout = GetResID(pCreateInfo->layout);
+
+  descSetLayouts = info.m_PipelineLayout[compLayout].descSetLayouts;
 
   // need to figure out which states are valid to be NULL
+
+  // If VkPipelineRobustnessCreateInfo is specified for both a pipeline and a pipeline stage, the
+  // VkPipelineRobustnessCreateInfo specified for the pipeline stage will take precedence.
+  const VkPipelineRobustnessCreateInfo *shaderRobustness =
+      (const VkPipelineRobustnessCreateInfo *)FindNextStruct(
+          &pCreateInfo->stage, VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO);
+
+  if(shaderRobustness == NULL)
+    shaderRobustness = (const VkPipelineRobustnessCreateInfo *)FindNextStruct(
+        pCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO);
 
   // VkPipelineShaderStageCreateInfo
   {
     ResourceId shadid = GetResID(pCreateInfo->stage.module);
-    Shader &shad = shaders[5];    // 5 is the compute shader's index (VS, TCS, TES, GS, FS, CS)
+    ShaderEntry &shad = shaders[5];    // 5 is the compute shader's index (VS, TCS, TES, GS, FS, CS)
+
+    shad.storageBufferRobustness = shad.uniformBufferRobustness =
+        VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT;
+    shad.imageRobustness = VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DEVICE_DEFAULT;
+    if(shaderRobustness)
+    {
+      shad.storageBufferRobustness = shaderRobustness->storageBuffers;
+      shad.uniformBufferRobustness = shaderRobustness->uniformBuffers;
+      shad.imageRobustness = shaderRobustness->images;
+    }
+
+    const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *subgroupSize =
+        (const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *)FindNextStruct(
+            &pCreateInfo->stage,
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO);
+    if(subgroupSize)
+      shad.requiredSubgroupSize = subgroupSize->requiredSubgroupSize;
 
     shad.module = shadid;
     shad.entryPoint = pCreateInfo->stage.pName;
+    shad.stage = ShaderStage::Compute;
+    shad.flags = pCreateInfo->stage.flags;
 
-    ShaderModuleReflectionKey key(shad.entryPoint, ResourceId());
+    ShaderModuleReflectionKey key(ShaderStage::Compute, shad.entryPoint, ResourceId());
 
     if(pCreateInfo->stage.pSpecializationInfo)
     {
-      key = ShaderModuleReflectionKey(shad.entryPoint, id);
+      key = ShaderModuleReflectionKey(ShaderStage::Compute, shad.entryPoint, id);
 
       const byte *data = (const byte *)pCreateInfo->stage.pSpecializationInfo->pData;
 
@@ -720,16 +2046,18 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan, Vulk
         memcpy(&spec.value, data + maps[s].offset, maps[s].size);
         spec.dataSize = maps[s].size;
         shad.specialization.push_back(spec);
+
+        virtualSpecialisationByteSize =
+            RDCMAX(virtualSpecialisationByteSize, uint32_t((spec.specID + 1) * sizeof(uint64_t)));
       }
     }
 
     ShaderModuleReflection &reflData = info.m_ShaderModule[shadid].m_Reflections[key];
 
-    reflData.Init(resourceMan, shadid, info.m_ShaderModule[shadid].spirv, shad.entryPoint,
-                  pCreateInfo->stage.stage, shad.specialization);
+    reflData.Init(resourceMan, info, shadid, shad.entryPoint, pCreateInfo->stage.stage,
+                  shad.specialization);
 
     shad.refl = reflData.refl;
-    shad.mapping = &reflData.mapping;
     shad.patchData = &reflData.patchData;
   }
 
@@ -741,6 +2069,7 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan, Vulk
   tessellationDomainOrigin = VK_TESSELLATION_DOMAIN_ORIGIN_UPPER_LEFT;
 
   viewportCount = 0;
+  scissorCount = 0;
 
   // VkPipelineRasterStateCreateInfo
   depthClampEnable = false;
@@ -772,12 +2101,84 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan, Vulk
   alphaToCoverageEnable = false;
   logicOpEnable = false;
   logicOp = VK_LOGIC_OP_NO_OP;
+
+  rdcarray<const DescSetLayout *> setLayoutInfos;
+  for(ResourceId setLayout : descSetLayouts)
+    setLayoutInfos.push_back(&info.m_DescSetLayout[setLayout]);
+
+  for(const ShaderEntry &shad : shaders)
+    ProcessStaticDescriptorAccess(resourceMan, shad.refl, id, staticDescriptorAccess, setLayoutInfos);
+}
+
+void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan,
+                                        VulkanCreationInfo &info, ResourceId id,
+                                        const VkRayTracingPipelineCreateInfoKHR *pCreateInfo)
+{
+  const VkPipelineCreateFlags2CreateInfo *createFlags2 =
+      (const VkPipelineCreateFlags2CreateInfo *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO);
+
+  flags = createFlags2 ? createFlags2->flags : pCreateInfo->flags;
+  useCreateFlags2 = createFlags2 != NULL;
+
+  graphicsPipe = false;
+
+  compLayout = GetResID(pCreateInfo->layout);
+
+  descSetLayouts = info.m_PipelineLayout[compLayout].descSetLayouts;
+
+  topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  primitiveRestartEnable = false;
+
+  patchControlPoints = 0;
+
+  tessellationDomainOrigin = VK_TESSELLATION_DOMAIN_ORIGIN_UPPER_LEFT;
+
+  viewportCount = 0;
+  scissorCount = 0;
+
+  // VkPipelineRasterStateCreateInfo
+  depthClampEnable = false;
+  rasterizerDiscardEnable = false;
+  polygonMode = VK_POLYGON_MODE_FILL;
+  cullMode = VK_CULL_MODE_NONE;
+  frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+  // VkPipelineRasterizationConservativeStateCreateInfoEXT
+  conservativeRasterizationMode = VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT;
+  extraPrimitiveOverestimationSize = 0.0f;
+
+  // VkPipelineMultisampleStateCreateInfo
+  rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  sampleShadingEnable = false;
+  minSampleShading = 1.0f;
+  sampleMask = ~0U;
+
+  // VkPipelineDepthStencilStateCreateInfo
+  depthTestEnable = false;
+  depthWriteEnable = false;
+  depthCompareOp = VK_COMPARE_OP_ALWAYS;
+  depthBoundsEnable = false;
+  stencilTestEnable = false;
+  RDCEraseEl(front);
+  RDCEraseEl(back);
+
+  // VkPipelineColorBlendStateCreateInfo
+  alphaToCoverageEnable = false;
+  logicOpEnable = false;
+  logicOp = VK_LOGIC_OP_NO_OP;
+
+  rdcarray<const DescSetLayout *> setLayoutInfos;
+  for(ResourceId setLayout : descSetLayouts)
+    setLayoutInfos.push_back(&info.m_DescSetLayout[setLayout]);
 }
 
 void VulkanCreationInfo::PipelineLayout::Init(VulkanResourceManager *resourceMan,
                                               VulkanCreationInfo &info,
                                               const VkPipelineLayoutCreateInfo *pCreateInfo)
 {
+  flags = pCreateInfo->flags;
+
   if(pCreateInfo->pSetLayouts)
   {
     descSetLayouts.resize(pCreateInfo->setLayoutCount);
@@ -868,6 +2269,8 @@ void VulkanCreationInfo::RenderPass::Init(VulkanResourceManager *resourceMan,
     if(dst.depthstencilAttachment >= 0)
       attachments[dst.depthstencilAttachment].used = true;
 
+    dst.depthstencilResolveAttachment = -1;
+
     dst.fragmentDensityAttachment =
         (fragmentDensity &&
                  fragmentDensity->fragmentDensityMapAttachment.attachment != VK_ATTACHMENT_UNUSED
@@ -880,6 +2283,15 @@ void VulkanCreationInfo::RenderPass::Init(VulkanResourceManager *resourceMan,
              ? fragmentDensity->fragmentDensityMapAttachment.layout
              : VK_IMAGE_LAYOUT_UNDEFINED);
 
+    dst.shadingRateAttachment = -1;
+    dst.shadingRateLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    dst.shadingRateTexelSize = VkExtent2D({1, 1});
+
+    dst.feedbackLoop = false;
+
+    dst.tileOnlyMSAAEnable = false;
+    dst.tileOnlyMSAASampleCount = VK_SAMPLE_COUNT_1_BIT;
+
     if(multiview && multiview->subpassCount > 0)
     {
       uint32_t mask = multiview->pViewMasks[subp];
@@ -888,6 +2300,15 @@ void VulkanCreationInfo::RenderPass::Init(VulkanResourceManager *resourceMan,
         if(mask & (1 << i))
           dst.multiviews.push_back(i);
       }
+    }
+    dst.customResolve = (src.flags & VK_SUBPASS_DESCRIPTION_CUSTOM_RESOLVE_BIT_EXT) != 0;
+  }
+
+  for(uint32_t i = 0; i < pCreateInfo->dependencyCount; i++)
+  {
+    if(pCreateInfo->pDependencies[i].dependencyFlags & VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT)
+    {
+      subpasses[pCreateInfo->pDependencies[i].dstSubpass].feedbackLoop = true;
     }
   }
 }
@@ -912,10 +2333,9 @@ void VulkanCreationInfo::RenderPass::Init(VulkanResourceManager *resourceMan,
     dst.stencilFinalLayout = dst.finalLayout = pCreateInfo->pAttachments[i].finalLayout;
 
     // VK_KHR_separate_depth_stencil_layouts
-    const VkAttachmentDescriptionStencilLayoutKHR *separateStencil =
-        (const VkAttachmentDescriptionStencilLayoutKHR *)FindNextStruct(
-            &pCreateInfo->pAttachments[i],
-            VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_STENCIL_LAYOUT_KHR);
+    const VkAttachmentDescriptionStencilLayout *separateStencil =
+        (const VkAttachmentDescriptionStencilLayout *)FindNextStruct(
+            &pCreateInfo->pAttachments[i], VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_STENCIL_LAYOUT);
 
     if(separateStencil)
     {
@@ -942,9 +2362,9 @@ void VulkanCreationInfo::RenderPass::Init(VulkanResourceManager *resourceMan,
     {
       dst.inputAttachments[i] = src.pInputAttachments[i].attachment;
       dst.inputStencilLayouts[i] = dst.inputLayouts[i] = src.pInputAttachments[i].layout;
-      const VkAttachmentReferenceStencilLayoutKHR *stencilLayout =
-          (const VkAttachmentReferenceStencilLayoutKHR *)FindNextStruct(
-              &src.pInputAttachments[i], VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_STENCIL_LAYOUT_KHR);
+      const VkAttachmentReferenceStencilLayout *stencilLayout =
+          (const VkAttachmentReferenceStencilLayout *)FindNextStruct(
+              &src.pInputAttachments[i], VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_STENCIL_LAYOUT);
       if(stencilLayout != NULL)
         dst.inputStencilLayouts[i] = stencilLayout->stencilLayout;
     }
@@ -980,13 +2400,28 @@ void VulkanCreationInfo::RenderPass::Init(VulkanResourceManager *resourceMan,
       attachments[dst.depthstencilAttachment].used = true;
 
     // VK_KHR_separate_depth_stencil_layouts
-    const VkAttachmentReferenceStencilLayoutKHR *separateStencil =
-        (const VkAttachmentReferenceStencilLayoutKHR *)FindNextStruct(
-            src.pDepthStencilAttachment, VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_STENCIL_LAYOUT_KHR);
+    const VkAttachmentReferenceStencilLayout *separateStencil =
+        (const VkAttachmentReferenceStencilLayout *)FindNextStruct(
+            src.pDepthStencilAttachment, VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_STENCIL_LAYOUT);
 
     if(separateStencil)
       dst.stencilLayout = separateStencil->stencilLayout;
 
+    // VK_KHR_depth_stencil_resolve
+    const VkSubpassDescriptionDepthStencilResolve *depthstencilResolve =
+        (const VkSubpassDescriptionDepthStencilResolve *)FindNextStruct(
+            &src, VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE);
+
+    // Note: with VK_EXT_multisampled_render_to_single_sampled, it's possible for
+    // VkSubpassDescriptionDepthStencilResolve to be provided (for the sake of specifying the
+    // resolve mode) without an attachment.
+    dst.depthstencilResolveAttachment =
+        (depthstencilResolve && depthstencilResolve->pDepthStencilResolveAttachment &&
+                 depthstencilResolve->pDepthStencilResolveAttachment->attachment != VK_ATTACHMENT_UNUSED
+             ? depthstencilResolve->pDepthStencilResolveAttachment->attachment
+             : -1);
+
+    // VK_EXT_fragment_density_map
     dst.fragmentDensityAttachment =
         (fragmentDensity &&
                  fragmentDensity->fragmentDensityMapAttachment.attachment != VK_ATTACHMENT_UNUSED
@@ -999,11 +2434,41 @@ void VulkanCreationInfo::RenderPass::Init(VulkanResourceManager *resourceMan,
              ? fragmentDensity->fragmentDensityMapAttachment.layout
              : VK_IMAGE_LAYOUT_UNDEFINED);
 
+    // VK_KHR_fragment_shading_rate
+    const VkFragmentShadingRateAttachmentInfoKHR *shadingRate =
+        (const VkFragmentShadingRateAttachmentInfoKHR *)FindNextStruct(
+            &src, VK_STRUCTURE_TYPE_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR);
+    dst.shadingRateAttachment =
+        (shadingRate && shadingRate->pFragmentShadingRateAttachment &&
+                 shadingRate->pFragmentShadingRateAttachment->attachment != VK_ATTACHMENT_UNUSED
+             ? shadingRate->pFragmentShadingRateAttachment->attachment
+             : -1);
+
+    dst.shadingRateLayout =
+        (shadingRate && shadingRate->pFragmentShadingRateAttachment &&
+                 shadingRate->pFragmentShadingRateAttachment->attachment != VK_ATTACHMENT_UNUSED
+             ? shadingRate->pFragmentShadingRateAttachment->layout
+             : VK_IMAGE_LAYOUT_UNDEFINED);
+
+    dst.shadingRateTexelSize =
+        shadingRate ? shadingRate->shadingRateAttachmentTexelSize : VkExtent2D({1, 1});
+
+    // VK_EXT_multisampled_render_to_single_sampled
+    const VkMultisampledRenderToSingleSampledInfoEXT *tileOnlyMSAA =
+        (const VkMultisampledRenderToSingleSampledInfoEXT *)FindNextStruct(
+            &src, VK_STRUCTURE_TYPE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_INFO_EXT);
+
+    dst.tileOnlyMSAAEnable =
+        tileOnlyMSAA ? tileOnlyMSAA->multisampledRenderToSingleSampledEnable != VK_FALSE : false;
+    dst.tileOnlyMSAASampleCount =
+        tileOnlyMSAA ? tileOnlyMSAA->rasterizationSamples : VK_SAMPLE_COUNT_1_BIT;
+
     for(uint32_t i = 0; i < 32; i++)
     {
       if(src.viewMask & (1 << i))
         dst.multiviews.push_back(i);
     }
+    dst.customResolve = (src.flags & VK_SUBPASS_DESCRIPTION_CUSTOM_RESOLVE_BIT_EXT) != 0;
   }
 }
 
@@ -1055,6 +2520,15 @@ void VulkanCreationInfo::Memory::Init(VulkanResourceManager *resourceMan, Vulkan
 {
   memoryTypeIndex = pAllocInfo->memoryTypeIndex;
   allocSize = wholeMemBufSize = pAllocInfo->allocationSize;
+
+  const VkMemoryOpaqueCaptureAddressAllocateInfo *memoryDeviceAddress =
+      (const VkMemoryOpaqueCaptureAddressAllocateInfo *)FindNextStruct(
+          pAllocInfo, VK_STRUCTURE_TYPE_MEMORY_OPAQUE_CAPTURE_ADDRESS_ALLOCATE_INFO);
+
+  if(memoryDeviceAddress)
+  {
+    opaqueAddr = memoryDeviceAddress->opaqueCaptureAddress;
+  }
 }
 
 void VulkanCreationInfo::Memory::SimplifyBindings()
@@ -1093,11 +2567,14 @@ void VulkanCreationInfo::Memory::SimplifyBindings()
 }
 
 void VulkanCreationInfo::Buffer::Init(VulkanResourceManager *resourceMan, VulkanCreationInfo &info,
-                                      const VkBufferCreateInfo *pCreateInfo)
+                                      const VkBufferCreateInfo *pCreateInfo,
+                                      VkMemoryRequirements origMrq)
 {
-  usage = pCreateInfo->usage;
+  usage = GetBufferUsageFlags(pCreateInfo);
   size = pCreateInfo->size;
   gpuAddress = 0;
+
+  mrq = origMrq;
 
   external = false;
 
@@ -1118,7 +2595,8 @@ void VulkanCreationInfo::BufferView::Init(VulkanResourceManager *resourceMan,
 }
 
 void VulkanCreationInfo::Image::Init(VulkanResourceManager *resourceMan, VulkanCreationInfo &info,
-                                     const VkImageCreateInfo *pCreateInfo)
+                                     const VkImageCreateInfo *pCreateInfo,
+                                     VkMemoryRequirements origMrq)
 {
   type = pCreateInfo->imageType;
   format = pCreateInfo->format;
@@ -1127,30 +2605,36 @@ void VulkanCreationInfo::Image::Init(VulkanResourceManager *resourceMan, VulkanC
   mipLevels = pCreateInfo->mipLevels;
   samples = RDCMAX(VK_SAMPLE_COUNT_1_BIT, pCreateInfo->samples);
 
+  mrq = origMrq;
+
   linear = pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR;
 
   external = false;
 
   if(FindNextStruct(pCreateInfo, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO_NV) ||
      FindNextStruct(pCreateInfo, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO) ||
-     FindNextStruct(pCreateInfo, VK_STRUCTURE_TYPE_EXTERNAL_FORMAT_ANDROID))
+     FindNextStruct(pCreateInfo, VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT) ||
+     FindNextStruct(pCreateInfo, VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT))
   {
     external = true;
   }
 
   creationFlags = TextureCategory::NoFlags;
 
-  if(pCreateInfo->usage & VK_IMAGE_USAGE_SAMPLED_BIT)
+  VkImageUsageFlagBits2KHR usage = (VkImageUsageFlagBits2KHR)GetImageUsageFlags(pCreateInfo);
+
+  if(usage & VK_IMAGE_USAGE_SAMPLED_BIT)
     creationFlags |= TextureCategory::ShaderRead;
-  if(pCreateInfo->usage &
-     (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT))
+  if(usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT))
     creationFlags |= TextureCategory::ColorTarget;
-  if(pCreateInfo->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
+  if(usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
     creationFlags |= TextureCategory::DepthTarget;
-  if(pCreateInfo->usage & VK_IMAGE_USAGE_STORAGE_BIT)
+  if(usage & VK_IMAGE_USAGE_STORAGE_BIT)
     creationFlags |= TextureCategory::ShaderReadWrite;
 
-  cube = (pCreateInfo->flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) ? true : false;
+  cube = (GetImageCreateFlags(pCreateInfo) & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) ? true : false;
+
+  address = 0;
 }
 
 void VulkanCreationInfo::Sampler::Init(VulkanResourceManager *resourceMan, VulkanCreationInfo &info,
@@ -1170,6 +2654,10 @@ void VulkanCreationInfo::Sampler::Init(VulkanResourceManager *resourceMan, Vulka
   maxLod = pCreateInfo->maxLod;
   borderColor = pCreateInfo->borderColor;
   unnormalizedCoordinates = pCreateInfo->unnormalizedCoordinates != 0;
+
+  seamless = true;
+  if((pCreateInfo->flags & VK_SAMPLER_CREATE_NON_SEAMLESS_CUBE_MAP_BIT_EXT) != 0)
+    seamless = false;
 
   reductionMode = VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE;
 
@@ -1201,6 +2689,18 @@ void VulkanCreationInfo::Sampler::Init(VulkanResourceManager *resourceMan, Vulka
     customBorder = true;
     customBorderColor = border->customBorderColor;
     customBorderFormat = border->format;
+  }
+
+  RDCEraseEl(componentMapping);
+  srgbBorder = false;
+
+  const VkSamplerBorderColorComponentMappingCreateInfoEXT *borderSwizzle =
+      (const VkSamplerBorderColorComponentMappingCreateInfoEXT *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_SAMPLER_BORDER_COLOR_COMPONENT_MAPPING_CREATE_INFO_EXT);
+  if(borderSwizzle)
+  {
+    componentMapping = borderSwizzle->components;
+    srgbBorder = borderSwizzle->srgb != VK_FALSE;
   }
 }
 
@@ -1261,6 +2761,38 @@ void VulkanCreationInfo::ImageView::Init(VulkanResourceManager *resourceMan, Vul
     range.layerCount = info.m_Image[image].arrayLayers - range.baseArrayLayer;
 
   componentMapping = pCreateInfo->components;
+
+  minLOD = 0.0f;
+
+  const VkImageViewMinLodCreateInfoEXT *minLODInfo =
+      (const VkImageViewMinLodCreateInfoEXT *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_IMAGE_VIEW_MIN_LOD_CREATE_INFO_EXT);
+  if(minLODInfo)
+  {
+    minLOD = minLODInfo->minLod;
+  }
+
+  isDepthImage = !!(info.m_Image[image].creationFlags & TextureCategory::DepthTarget);
+
+  storageSliceOffset = 0;
+  storageSliceCount = 0;
+
+  const VkImageViewSlicedCreateInfoEXT *slicedInfo =
+      (const VkImageViewSlicedCreateInfoEXT *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_IMAGE_VIEW_SLICED_CREATE_INFO_EXT);
+  if(slicedInfo)
+  {
+    // only valid for 3D image views, which should have 0/1 layers currently
+    RDCASSERTEQUAL(range.baseArrayLayer, 0);
+    RDCASSERTEQUAL(range.layerCount, 1);
+    storageSliceOffset = slicedInfo->sliceOffset;
+    storageSliceCount = slicedInfo->sliceCount;
+
+    if(storageSliceCount == VK_REMAINING_3D_SLICES_EXT)
+    {
+      storageSliceCount = info.m_Image[image].extent.depth - storageSliceOffset;
+    }
+  }
 }
 
 void VulkanCreationInfo::ShaderModule::Init(VulkanResourceManager *resourceMan,
@@ -1275,13 +2807,230 @@ void VulkanCreationInfo::ShaderModule::Init(VulkanResourceManager *resourceMan,
   else
   {
     RDCASSERT(pCreateInfo->codeSize % sizeof(uint32_t) == 0);
-    spirv.Parse(rdcarray<uint32_t>((uint32_t *)(pCreateInfo->pCode),
-                                   pCreateInfo->codeSize / sizeof(uint32_t)));
+    spirv.Parse(pCreateInfo->pCode, pCreateInfo->codeSize);
   }
 }
 
+bytebuf FindAndLoadDebugBlob(bool lz4, const rdcstr &searchFilePath, rdcstr &foundFilePath,
+                             rdcstr &loadingLog)
+{
+  bytebuf ret;
+
+  rdcstr curFilePath = searchFilePath;
+
+  // could support more if we're willing to compile in the decompressor
+
+  FILE *originalShaderFile = NULL;
+
+  const rdcarray<rdcstr> &searchDirPaths = DXBC_Debug_SearchDirPaths();
+
+  size_t numSearchPaths = searchDirPaths.size();
+
+  loadingLog = StringFormat::Fmt(
+      "Details\n"
+      "-------\n\n"
+      "Shader filepath '%s'\n",
+      curFilePath.c_str());
+  if(numSearchPaths > 0)
+  {
+    loadingLog += rdcstr("\nSearch Path(s):\n");
+    for(size_t i = 0; i < numSearchPaths; i++)
+      loadingLog += StringFormat::Fmt("'%s'\n", searchDirPaths[i].c_str());
+  }
+  else
+  {
+    loadingLog += rdcstr("\nNo Search Paths\n");
+  }
+
+  // keep searching until we've exhausted all possible path options, or we've found a file that
+  // opens
+  while(originalShaderFile == NULL && !curFilePath.empty())
+  {
+    // while we haven't found a file, keep trying through the search paths. For i==0
+    // check the path on its own, in case it's an absolute path.
+    for(size_t i = 0; originalShaderFile == NULL && i <= numSearchPaths; i++)
+    {
+      if(i == 0)
+      {
+        loadingLog += rdcstr("\n");
+        originalShaderFile = FileIO::fopen(curFilePath, FileIO::ReadBinary);
+        foundFilePath = curFilePath;
+        if(originalShaderFile == NULL)
+          loadingLog +=
+              StringFormat::Fmt("File not found using filepath '%s'\n", foundFilePath.c_str());
+        else
+          loadingLog += StringFormat::Fmt("File found using filepath '%s'\n", foundFilePath.c_str());
+        continue;
+      }
+      else
+      {
+        const rdcstr &searchDirPath = searchDirPaths[i - 1];
+        foundFilePath = searchDirPath + "/" + curFilePath;
+        originalShaderFile = FileIO::fopen(foundFilePath, FileIO::ReadBinary);
+        if(originalShaderFile == NULL)
+          loadingLog += StringFormat::Fmt(
+              "File not found in search directory using filepath '%s'\n", foundFilePath.c_str());
+        else
+          loadingLog += StringFormat::Fmt("File found in search directory using filepath '%s'\n",
+                                          foundFilePath.c_str());
+      }
+    }
+
+    if(originalShaderFile == NULL)
+    {
+      // follow D3D's search behaviour for consistency: when presented with a
+      // relative path containing subfolders like foo/bar/blah.pdb then we should first try to
+      // append it to all search paths as-is, then strip off the top-level subdirectory to get
+      // bar/blah.pdb and try that in all search directories, and keep going. So if we got here
+      // and didn't open a file, try to strip off the the top directory and continue.
+      int32_t offs = curFilePath.find_first_of("\\/");
+
+      // if we couldn't find a directory separator there's nothing to do, stop looking
+      if(offs == -1)
+        break;
+
+      // otherwise strip up to there and keep going
+      curFilePath.erase(0, offs + 1);
+    }
+  }
+
+  // Try to retrieve debug file from the externally referenced files in the capture
+  if(originalShaderFile == NULL)
+  {
+    if(!RenderDoc::Inst().GetTrackedFileData(searchFilePath, ret))
+    {
+      loadingLog += StringFormat::Fmt(
+          "\nFile not found in files embedded in the capture using nickname '%s'\n",
+          searchFilePath.c_str());
+      return bytebuf();
+    }
+
+    loadingLog += StringFormat::Fmt(
+        "\nFound debug data from files embedded in the capture using nickname '%s'\n",
+        searchFilePath.c_str());
+  }
+  else
+  {
+    FileIO::fseek64(originalShaderFile, 0L, SEEK_END);
+    uint64_t originalShaderSize = FileIO::ftell64(originalShaderFile);
+    FileIO::fseek64(originalShaderFile, 0, SEEK_SET);
+
+    ret.resize((size_t)originalShaderSize);
+    FileIO::fread(&ret[0], sizeof(byte), (size_t)originalShaderSize, originalShaderFile);
+    FileIO::fclose(originalShaderFile);
+    originalShaderFile = NULL;
+    loadingLog +=
+        StringFormat::Fmt("\nFound debug data using filepath '%s'\n", foundFilePath.c_str());
+  }
+
+  if(lz4)
+  {
+    rdcarray<byte> decompressed;
+
+    // first try decompressing to 1MB flat
+    decompressed.resize(100 * 1024);
+
+    int lzret = LZ4_decompress_safe((const char *)&ret[0], (char *)&decompressed[0],
+                                    (int)ret.size(), (int)decompressed.size());
+
+    if(lzret < 0)
+    {
+      // if it failed, either source is corrupt or we didn't allocate enough space.
+      // Just allocate 255x compressed size since it can't need any more than that.
+      decompressed.resize(255 * ret.size());
+
+      lzret = LZ4_decompress_safe((const char *)&ret[0], (char *)&decompressed[0], (int)ret.size(),
+                                  (int)decompressed.size());
+
+      if(lzret < 0)
+      {
+        loadingLog +=
+            StringFormat::Fmt("\nFailed to decompress LZ4 data from '%s'\n", foundFilePath.c_str());
+        return bytebuf();
+      }
+    }
+
+    RDCASSERT(lzret > 0, lzret);
+
+    // we resize and memcpy instead of just doing .swap() because that would
+    // transfer over the over-large pessimistic capacity needed for decompression
+    ret.resize(lzret);
+    memcpy(&ret[0], &decompressed[0], ret.size());
+  }
+
+  return ret;
+}
+
+bool VulkanCreationInfo::ShaderModule::Reinit()
+{
+  bool lz4 = false;
+
+  rdcstr searchFilePath = unstrippedPath;
+
+  if(!strncmp(searchFilePath.c_str(), "lz4#", 4))
+  {
+    searchFilePath = searchFilePath.substr(4);
+    lz4 = true;
+  }
+
+  rdcstr foundFilePath, loadingLog;
+
+  bytebuf debugBytecode = FindAndLoadDebugBlob(lz4, searchFilePath, foundFilePath, loadingLog);
+
+  bool success = false;
+
+  if(!debugBytecode.empty())
+  {
+    rdcspv::Reflector reflTest;
+    if(reflTest.Parse(debugBytecode.data(), debugBytecode.size()))
+    {
+      spirv = reflTest;
+      RenderDoc::Inst().AddTrackedFileReference(searchFilePath, foundFilePath);
+      loadingLog += StringFormat::Fmt("Debug data parsed successfully (%u bytes)\n",
+                                      (uint32_t)debugBytecode.size());
+
+      debugBlobEverFound = true;
+
+      success = true;
+    }
+    else
+    {
+      loadingLog += StringFormat::Fmt("Debug data failed to parse (%u bytes)\n",
+                                      (uint32_t)debugBytecode.size());
+    }
+  }
+
+  // we store the loading log if:
+  // - the last load succeeded, as that's the debug blob we're using
+  // - we don't have a current log from a successful debug blob load, so this is the
+  //   most recent failed attempt
+  //
+  // this means the loading log always matches either the blob we're using or the most up to date
+  // failure. If we succeed once, load a blob, then reload/reinit and fail we don't keep the log
+  // from that failure. This could happen because the user deleted the file or changed search paths,
+  // the former of which can happen at any time even if we don't reload
+  if(success || !debugBlobEverFound)
+    debugInfoLoadingLog.swap(loadingLog);
+
+  return success;
+}
+
+void VulkanCreationInfo::ShaderModule::Reload(VulkanResourceManager *resourceMan,
+                                              const VulkanCreationInfo &info, ResourceId id)
+{
+  // Nothing to do if the shader does not have a separate debug info path
+  if(unstrippedPath.empty())
+    return;
+
+  if(!Reinit())
+    return;
+
+  for(auto it = m_Reflections.begin(); it != m_Reflections.end(); ++it)
+    it->second.Reload(resourceMan, info, id);
+}
+
 void VulkanCreationInfo::ShaderModuleReflection::Init(VulkanResourceManager *resourceMan,
-                                                      ResourceId id, const rdcspv::Reflector &spv,
+                                                      const VulkanCreationInfo &info, ResourceId id,
                                                       const rdcstr &entry,
                                                       VkShaderStageFlagBits stage,
                                                       const rdcarray<SpecConstant> &specInfo)
@@ -1291,17 +3040,51 @@ void VulkanCreationInfo::ShaderModuleReflection::Init(VulkanResourceManager *res
     entryPoint = entry;
     stageIndex = StageIndex(stage);
 
-    spv.MakeReflection(GraphicsAPI::Vulkan, ShaderStage(stageIndex), entryPoint, specInfo, *refl,
-                       mapping, patchData);
+    const ShaderModule &moduleInfo = info.m_ShaderModule.at(id);
 
-    refl->resourceId = resourceMan->GetOriginalID(id);
+    moduleInfo.spirv.MakeReflection(GraphicsAPI::Vulkan, ShaderStage(stageIndex), entryPoint,
+                                    specInfo, *refl, patchData);
+
+    refl->resourceId = id;
+
+    if(!moduleInfo.debugInfoLoadingLog.empty())
+    {
+      if(!moduleInfo.debugBlobEverFound)
+      {
+        refl->debugInfo.debugInfoLoadingLog = StringFormat::Fmt(
+            "Did not find debug data for '%s'\n\n", moduleInfo.unstrippedPath.c_str());
+      }
+      else
+      {
+        refl->debugInfo.debugInfoLoadingLog =
+            StringFormat::Fmt("Found debug data for '%s'\n\n", moduleInfo.unstrippedPath.c_str());
+      }
+
+      refl->debugInfo.debugInfoLoadingLog += moduleInfo.debugInfoLoadingLog;
+    }
+
+    specConstantData = specInfo;
   }
 }
 
 void VulkanCreationInfo::ShaderModuleReflection::PopulateDisassembly(const rdcspv::Reflector &spirv)
 {
   if(disassembly.empty())
-    disassembly = spirv.Disassemble(refl->entryPoint, instructionLines);
+    disassembly = spirv.Disassemble(refl->entryPoint, specConstantData, instructionLines);
+}
+
+void VulkanCreationInfo::ShaderModuleReflection::Reload(VulkanResourceManager *resourceMan,
+                                                        const VulkanCreationInfo &info, ResourceId id)
+{
+  const rdcstr entry = entryPoint;
+  entryPoint.clear();
+  disassembly.clear();
+  instructionLines.clear();
+  // refl : pointer is stored in other structures, can't delete it
+  *refl = ShaderReflection();
+  patchData = SPIRVPatchData();
+  VkShaderStageFlagBits stage = (VkShaderStageFlagBits)ShaderMaskFromIndex((size_t)(stageIndex));
+  Init(resourceMan, info, id, entry, stage, specConstantData);
 }
 
 void VulkanCreationInfo::QueryPool::Init(VulkanResourceManager *resourceMan, VulkanCreationInfo &info,
@@ -1318,6 +3101,29 @@ void VulkanCreationInfo::DescSetPool::Init(VulkanResourceManager *resourceMan,
 {
   maxSets = pCreateInfo->maxSets;
   poolSizes.assign(pCreateInfo->pPoolSizes, pCreateInfo->poolSizeCount);
+
+  const VkMutableDescriptorTypeCreateInfoEXT *mutableInfo =
+      (const VkMutableDescriptorTypeCreateInfoEXT *)FindNextStruct(
+          pCreateInfo, VK_STRUCTURE_TYPE_MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT);
+
+  if(mutableInfo)
+  {
+    for(uint32_t i = 0;
+        i < RDCMIN(pCreateInfo->poolSizeCount, mutableInfo->mutableDescriptorTypeListCount); i++)
+    {
+      const VkMutableDescriptorTypeListEXT &mutableTypes =
+          mutableInfo->pMutableDescriptorTypeLists[i];
+
+      RDCCOMPILE_ASSERT(uint64_t(DescriptorSlotType::Count) < 64,
+                        "Descriptor types don't fit in 64-bit bitmask anymore");
+
+      mutableBitmasks.resize_for_index(i);
+
+      // encode a bitmask with the available types for this descriptor
+      for(uint32_t m = 0; m < mutableTypes.descriptorTypeCount; m++)
+        mutableBitmasks[i] |= (1ULL << uint64_t(convert(mutableTypes.pDescriptorTypes[m])));
+    }
+  }
 }
 
 void VulkanCreationInfo::DescSetPool::CreateOverflow(VkDevice device,
@@ -1332,17 +3138,123 @@ void VulkanCreationInfo::DescSetPool::CreateOverflow(VkDevice device,
       &poolSizes[0],
   };
 
+  VkMutableDescriptorTypeCreateInfoEXT mutableCreateInfo = {
+      VK_STRUCTURE_TYPE_MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT,
+  };
+
+  // conservative resizing, not every descriptor type will be used but they can't overlap so at
+  // most we'll see 64 different types
+  VkDescriptorType mutableTypes[64];
+  rdcarray<VkMutableDescriptorTypeListEXT> mutableLists;
+
+  if(!mutableBitmasks.empty())
+  {
+    poolInfo.pNext = &mutableCreateInfo;
+
+    mutableLists.resize(poolInfo.poolSizeCount);
+
+    VkDescriptorType *cur = mutableTypes;
+    for(size_t i = 0; i < mutableBitmasks.size(); i++)
+    {
+      // list of descriptors starts here
+      mutableLists[i].pDescriptorTypes = cur;
+      mutableLists[i].descriptorTypeCount = 0;
+
+      // loop over every type
+      for(uint64_t m = 0; m < 64; m++)
+      {
+        // skip types not in this bitmask
+        if(((1ULL << m) & mutableBitmasks[i]) == 0)
+          continue;
+
+        // for types included, write them into the list and increment
+        *(cur++) = convert(DescriptorSlotType(m));
+        mutableLists[i].descriptorTypeCount++;
+      }
+    }
+
+    mutableCreateInfo.mutableDescriptorTypeListCount = poolInfo.poolSizeCount;
+    mutableCreateInfo.pMutableDescriptorTypeLists = mutableLists.data();
+  }
+
   VkDescriptorPool pool;
 
   VkResult ret = ObjDisp(device)->CreateDescriptorPool(Unwrap(device), &poolInfo, NULL, &pool);
   RDCASSERTEQUAL(ret, VK_SUCCESS);
 
-  ResourceId poolid = resourceMan->WrapResource(Unwrap(device), pool);
-
-  // register as a live-only resource, so it is cleaned up properly
-  resourceMan->AddLiveResource(poolid, pool);
+  ResourceId poolid = resourceMan->WrapResource(ResourceId(), Unwrap(device), pool);
 
   overflow.push_back(pool);
+}
+
+void VulkanCreationInfo::AccelerationStructure::Init(
+    VulkanResourceManager *resourceMan, VulkanCreationInfo &info,
+    const VkAccelerationStructureCreateInfoKHR *pCreateInfo)
+{
+  buffer = GetResID(pCreateInfo->buffer);
+  offset = pCreateInfo->offset;
+  size = pCreateInfo->size;
+  type = pCreateInfo->type;
+  address = 0;
+}
+
+void VulkanCreationInfo::AccelerationStructure::Init(
+    VulkanResourceManager *resourceMan, WrappedVulkan *vk, VulkanCreationInfo &info,
+    const VkAccelerationStructureCreateInfo2KHR *pCreateInfo)
+{
+  vk->GetResIDFromAddr(pCreateInfo->addressRange.address, buffer, offset);
+  size = pCreateInfo->addressRange.size;
+  type = pCreateInfo->type;
+  address = pCreateInfo->addressRange.address;
+}
+
+const VulkanCreationInfo::PipelineLayout &VulkanCreationInfo::GetPipelineLayoutInfo(ResourceId rp) const
+{
+  auto it = m_PipelineLayout.find(rp);
+  RDCASSERT(it != m_PipelineLayout.end());
+  return it->second;
+}
+
+const DescSetLayout &VulkanCreationInfo::GetDescSetLayout(ResourceId dsl) const
+{
+  auto it = m_DescSetLayout.find(dsl);
+  RDCASSERT(it != m_DescSetLayout.end());
+  return it->second;
+}
+
+const VulkanCreationInfo::Buffer &VulkanCreationInfo::GetBufferInfo(ResourceId buf) const
+{
+  auto it = m_Buffer.find(buf);
+  RDCASSERT(it != m_Buffer.end());
+  return it->second;
+}
+
+const VulkanCreationInfo::BufferView &VulkanCreationInfo::GetBufferViewInfo(ResourceId bufView) const
+{
+  auto it = m_BufferView.find(bufView);
+  RDCASSERT(it != m_BufferView.end());
+  return it->second;
+}
+
+const VulkanCreationInfo::Image &VulkanCreationInfo::GetImageInfo(ResourceId img) const
+{
+  auto it = m_Image.find(img);
+  RDCASSERT(it != m_Image.end());
+  return it->second;
+}
+
+const VulkanCreationInfo::ImageView &VulkanCreationInfo::GetImageViewInfo(ResourceId imgView) const
+{
+  auto it = m_ImageView.find(imgView);
+  RDCASSERT(it != m_ImageView.end());
+  return it->second;
+}
+
+const VulkanCreationInfo::Sampler &VulkanCreationInfo::GetSamplerInfo(ResourceId samp) const
+{
+  auto it = m_Sampler.find(samp);
+  RDCASSERT(it != m_Sampler.end());
+  return it->second;
 }
 
 void DescUpdateTemplate::Init(VulkanResourceManager *resourceMan, VulkanCreationInfo &info,
@@ -1357,6 +3269,9 @@ void DescUpdateTemplate::Init(VulkanResourceManager *resourceMan, VulkanCreation
   texelBufferViewCount = 0;
   bufferInfoCount = 0;
   imageInfoCount = 0;
+  inlineInfoCount = 0;
+  inlineByteSize = 0;
+  accelerationStructureCount = 0;
 
   for(const VkDescriptorUpdateTemplateEntry &entry : updates)
   {
@@ -1381,7 +3296,7 @@ void DescUpdateTemplate::Init(VulkanResourceManager *resourceMan, VulkanCreation
 
       imageInfoCount += entry.descriptorCount;
     }
-    else if(entry.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT)
+    else if(entry.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
     {
       // a bit of magic handling. The calculation is stride * descriptorCount bytes for the data,
       // plus the size of the 'base' structure. For inline uniform blocks there's no base structure
@@ -1393,6 +3308,13 @@ void DescUpdateTemplate::Init(VulkanResourceManager *resourceMan, VulkanCreation
       inlineInfoCount++;
       inlineByteSize += entry.descriptorCount;
       inlineByteSize = AlignUp4(inlineByteSize);
+    }
+    else if(entry.descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
+    {
+      entrySize = sizeof(VkAccelerationStructureKHR);
+
+      accelerationStructureWriteCount++;
+      accelerationStructureCount += entry.descriptorCount;
     }
     else
     {
@@ -1439,6 +3361,8 @@ void DescUpdateTemplate::Apply(const void *pData, DescUpdateTemplateApplication 
   application.imgInfo.reserve(imageInfoCount);
   application.inlineData.resize(inlineByteSize);
   application.inlineUniform.reserve(inlineInfoCount);
+  application.accelerationStructureWrite.reserve(accelerationStructureWriteCount);
+  application.accelerationStructure.reserve(accelerationStructureCount);
 
   uint32_t inlineOffset = 0;
   for(const VkDescriptorUpdateTemplateEntry &entry : updates)
@@ -1479,28 +3403,63 @@ void DescUpdateTemplate::Apply(const void *pData, DescUpdateTemplateApplication 
 
       application.imgInfo.resize(idx + entry.descriptorCount);
 
+      const DescSetLayout::Binding *layoutBinding = &layout.bindings[entry.dstBinding];
+
       for(uint32_t d = 0; d < entry.descriptorCount; d++)
       {
         memcpy(&application.imgInfo[idx + d], src, sizeof(VkDescriptorImageInfo));
         src += entry.stride;
+
+        if((entry.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER ||
+            entry.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) &&
+           layoutBinding->immutableSampler != NULL)
+        {
+          // force potentially garbage samplers to NULL here as by the time we get to serialising we
+          // will have no way to determine this anymore
+          application.imgInfo[idx + d].sampler = VK_NULL_HANDLE;
+        }
       }
 
       write.pImageInfo = &application.imgInfo[idx];
     }
-    else if(entry.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT)
+    else if(entry.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
     {
       application.inlineUniform.push_back({});
 
-      VkWriteDescriptorSetInlineUniformBlockEXT &inlineWrite = application.inlineUniform.back();
-      inlineWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK_EXT;
+      VkWriteDescriptorSetInlineUniformBlock &inlineWrite = application.inlineUniform.back();
+      inlineWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK;
       inlineWrite.pNext = NULL;
       inlineWrite.dataSize = entry.descriptorCount;
 
       void *dst = application.inlineData.data() + inlineOffset;
       memcpy(dst, src, inlineWrite.dataSize);
       inlineWrite.pData = dst;
+      inlineOffset += inlineWrite.dataSize;
+      inlineOffset = AlignUp4(inlineOffset);
 
       write.pNext = &inlineWrite;
+      write.descriptorCount = entry.descriptorCount;
+    }
+    else if(entry.descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
+    {
+      application.accelerationStructureWrite.push_back({});
+
+      VkWriteDescriptorSetAccelerationStructureKHR &asWrite =
+          application.accelerationStructureWrite.back();
+      asWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+      asWrite.pNext = NULL;
+      asWrite.accelerationStructureCount = entry.descriptorCount;
+
+      const size_t idx = application.accelerationStructure.size();
+      application.accelerationStructure.resize(idx + entry.descriptorCount);
+      for(uint32_t d = 0; d < entry.descriptorCount; d++)
+      {
+        memcpy(&application.accelerationStructure[idx + d], src, sizeof(VkAccelerationStructureKHR));
+        src += entry.stride;
+      }
+      asWrite.pAccelerationStructures = &application.accelerationStructure[idx];
+
+      write.pNext = &asWrite;
       write.descriptorCount = entry.descriptorCount;
     }
     else

@@ -7,12 +7,31 @@
 <PropertyGroup>
 
 	<RenderDocLatestWin10SDKVersion>$(Registry:HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Microsoft SDKs\Windows\v10.0@ProductVersion)</RenderDocLatestWin10SDKVersion>
+
+	<!-- VS2022 is 64-bit and apparently the win10 SDK doesn't set up 64-bit registry keys. So to cover that case explicitly check the 32-bit node -->
+	<RenderDocLatestWin10SDKVersion Condition="'$(RenderDocLatestWin10SDKVersion)'==''">$(Registry:HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Microsoft SDKs\Windows\v10.0@ProductVersion)</RenderDocLatestWin10SDKVersion>
+
 	<!-- version needed has extra .0 -->
 	<RenderDocLatestWin10SDKVersion Condition="'$(RenderDocLatestWin10SDKVersion)'!=''">$(RenderDocLatestWin10SDKVersion).0</RenderDocLatestWin10SDKVersion>
 
 	<!-- if we found the SDK version, use it. Otherwise fall back to 8.1. Since we require VS2015 which installed the 8.1 SDK at minimum we don't need to fallback any earlier (though we don't use anything from the 8.1 SDK either) -->
 	<WindowsTargetPlatformVersion Condition="'$(RenderDocLatestWin10SDKVersion)'!=''">$(RenderDocLatestWin10SDKVersion)</WindowsTargetPlatformVersion>
 	<WindowsTargetPlatformVersion Condition="'$(RenderDocLatestWin10SDKVersion)'==''">8.1</WindowsTargetPlatformVersion>
+
+	<!-- use the native toolset for each VS version -->
+
+	<!-- VS2015 - minimum version -->
+	<PlatformToolset Condition="'$(VisualStudioVersion)' == '14.0'">v140</PlatformToolset>
+	<!-- VS2017 -->
+	<PlatformToolset Condition="'$(VisualStudioVersion)' == '15.0'">v141</PlatformToolset>
+	<!-- VS2019 -->
+	<PlatformToolset Condition="'$(VisualStudioVersion)' == '16.0'">v142</PlatformToolset>
+	<!-- VS2022 -->
+	<PlatformToolset Condition="'$(VisualStudioVersion)' == '17.0'">v143</PlatformToolset>
+	<!-- VS2022 -->
+	<PlatformToolset Condition="'$(VisualStudioVersion)' == '18.0'">v145</PlatformToolset>
+	<!-- future VS version? -->
+	<PlatformToolset Condition="'$(PlatformToolset)' == ''">v145</PlatformToolset>
 </PropertyGroup>
 
 </Project>

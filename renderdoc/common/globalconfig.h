@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -36,8 +36,9 @@
 
 /////////////////////////////////////////////////
 // Build/machine configuration
-#if defined(__LP64__) || defined(_WIN64) || defined(__x86_64__) || defined(_M_X64) || \
-    defined(__ia64) || defined(_M_IA64) || defined(__aarch64__) || defined(__powerpc64__)
+#if defined(__LP64__) || defined(_WIN64) || defined(__x86_64__) || defined(_M_X64) ||        \
+    defined(__ia64) || defined(_M_IA64) || defined(__aarch64__) || defined(__powerpc64__) || \
+    (defined(__riscv64) && __riscv_xlen == 64)
 #define RDOC_X64 OPTION_ON
 #else
 #define RDOC_X64 OPTION_OFF
@@ -66,7 +67,6 @@
 #define RDOC_LINUX OPTION_OFF
 #define RDOC_APPLE OPTION_OFF
 #define RDOC_POSIX OPTION_OFF
-#define RDOC_GGP OPTION_OFF
 #define RDOC_SWITCH OPTION_OFF
 
 #elif defined(RENDERDOC_PLATFORM_ANDROID)
@@ -76,7 +76,6 @@
 #define RDOC_LINUX OPTION_OFF
 #define RDOC_APPLE OPTION_OFF
 #define RDOC_POSIX OPTION_ON
-#define RDOC_GGP OPTION_OFF
 #define RDOC_SWITCH OPTION_OFF
 
 #elif defined(RENDERDOC_PLATFORM_LINUX)
@@ -86,7 +85,6 @@
 #define RDOC_LINUX OPTION_ON
 #define RDOC_APPLE OPTION_OFF
 #define RDOC_POSIX OPTION_ON
-#define RDOC_GGP OPTION_OFF
 #define RDOC_SWITCH OPTION_OFF
 
 #elif defined(RENDERDOC_PLATFORM_APPLE)
@@ -96,17 +94,6 @@
 #define RDOC_LINUX OPTION_OFF
 #define RDOC_APPLE OPTION_ON
 #define RDOC_POSIX OPTION_ON
-#define RDOC_GGP OPTION_OFF
-#define RDOC_SWITCH OPTION_OFF
-
-#elif defined(RENDERDOC_PLATFORM_GGP)
-
-#define RDOC_WIN32 OPTION_OFF
-#define RDOC_ANDROID OPTION_OFF
-#define RDOC_LINUX OPTION_OFF
-#define RDOC_APPLE OPTION_OFF
-#define RDOC_POSIX OPTION_ON
-#define RDOC_GGP OPTION_ON
 #define RDOC_SWITCH OPTION_OFF
 
 #elif defined(RENDERDOC_PLATFORM_SWITCH)
@@ -116,7 +103,6 @@
 #define RDOC_LINUX OPTION_OFF
 #define RDOC_APPLE OPTION_OFF
 #define RDOC_POSIX OPTION_ON
-#define RDOC_GGP OPTION_OFF
 #define RDOC_SWITCH OPTION_ON
 
 #else
@@ -225,8 +211,8 @@ enum
 // this strips them completely
 #define STRIP_DEBUG_LOGS OPTION_OFF
 
-// disable unit tests on android
-#if ENABLED(RDOC_ANDROID)
+// disable unit tests on android and *BSD
+#if ENABLED(RDOC_ANDROID) || defined(__FreeBSD__)
 
 #define ENABLE_UNIT_TESTS OPTION_OFF
 

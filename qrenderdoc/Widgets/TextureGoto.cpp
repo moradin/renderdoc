@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -79,6 +79,9 @@ TextureGoto::TextureGoto(QWidget *parent, std::function<void(QPoint)> callback) 
   QObject::connect(m_X, &RDDoubleSpinBox::keyPress, this, &TextureGoto::location_keyPress);
   QObject::connect(m_Y, &RDDoubleSpinBox::keyPress, this, &TextureGoto::location_keyPress);
 
+  QObject::connect(m_X, &RDDoubleSpinBox::focusOut, this, &TextureGoto::focusOut);
+  QObject::connect(m_Y, &RDDoubleSpinBox::focusOut, this, &TextureGoto::focusOut);
+
   gridLayout->addWidget(m_Y, 1, 1, 1, 1);
 
   setTabOrder(m_X, m_Y);
@@ -108,11 +111,27 @@ void TextureGoto::show(QWidget *showParent, QPoint p)
 
 void TextureGoto::leaveEvent(QEvent *event)
 {
+}
+
+void TextureGoto::focusOutEvent(QFocusEvent *event)
+{
+  focusOut(event);
+}
+
+void TextureGoto::focusOut(QFocusEvent *event)
+{
+  if(QApplication::focusWidget() == m_X || QApplication::focusWidget() == m_Y || isHidden())
+    return;
+
   QDialog::hide();
 }
 
 void TextureGoto::location_keyPress(QKeyEvent *event)
 {
+  if(event->key() == Qt::Key_Escape)
+  {
+    QDialog::hide();
+  }
   if(event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
   {
     m_Callback(point());

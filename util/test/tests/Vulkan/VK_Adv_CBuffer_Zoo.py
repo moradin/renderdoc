@@ -8,21 +8,21 @@ class VK_Adv_CBuffer_Zoo(rdtest.TestCase):
     def check_capture(self):
         action = self.find_action("Draw")
 
-        self.check(action is not None)
+        assert action is not None
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
         stage = rd.ShaderStage.Vertex
 
-        cbuf: rd.BoundCBuffer = pipe.GetConstantBuffer(stage, 0, 0)
+        cbuf = pipe.GetConstantBlock(stage, 0, 0).descriptor
 
         var_check = rdtest.ConstantBufferChecker(
             self.controller.GetCBufferVariableContents(pipe.GetGraphicsPipelineObject(),
-                                                       pipe.GetShader(stage),
+                                                       pipe.GetShader(stage), stage,
                                                        pipe.GetShaderEntryPoint(stage), 0,
-                                                       cbuf.resourceId, cbuf.byteOffset, cbuf.byteSize))
+                                                       cbuf.resource, cbuf.byteOffset, cbuf.byteSize))
 
         # For more detailed reference for the below checks, see the commented definition of the cbuffer
         # in the shader source code in the demo itself
@@ -222,6 +222,6 @@ class VK_Adv_CBuffer_Zoo(rdtest.TestCase):
 
         rdtest.log.success("CBuffer variables are as expected")
 
-        self.check_pixel_value(pipe.GetOutputTargets()[0].resourceId, 0.5, 0.5, [0.0, 1.0, 0.0, 0.0])
+        self.check_pixel_value(pipe.GetOutputTargets()[0].resource, 0.5, 0.5, [0.0, 1.0, 0.0, 0.0])
 
         rdtest.log.success("Picked value is as expected")

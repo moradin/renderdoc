@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -40,7 +40,7 @@
 #include <set>
 
 // uncomment the following to print (very verbose) debugging prints for the android PLT hooking
-//#define HOOK_DEBUG_PRINT(...) RDCLOG(__VA_ARGS__)
+// #define HOOK_DEBUG_PRINT(...) RDCLOG(__VA_ARGS__)
 
 #if !defined(HOOK_DEBUG_PRINT)
 #define HOOK_DEBUG_PRINT(...) \
@@ -677,12 +677,23 @@ void PatchHookedFunctions()
 
 bool LibraryHooks::Detect(const char *identifier)
 {
-  return dlsym(RTLD_DEFAULT, identifier) != NULL;
+  const bool symbol = (dlsym(RTLD_DEFAULT, identifier) != NULL);
+  const bool env = (getenv(identifier) != NULL);
+
+  RDCLOG("Detecting symbol %s by dlsym: %s", identifier, symbol ? "yes" : "no");
+  RDCLOG("Detecting symbol %s by getenv: %s", identifier, env ? "yes" : "no");
+
+  return symbol || env;
 }
 
 void LibraryHooks::RemoveHooks()
 {
   RDCERR("Removing hooks is not possible on this platform");
+}
+
+void LibraryHooks::ReplayInitialise()
+{
+  // nothing to do
 }
 
 void LibraryHooks::BeginHookRegistration()
@@ -799,7 +810,7 @@ void LibraryHooks::EndHookRegistration()
       HOOK_DEBUG_PRINT("Calling callbacks for %s", it->first.c_str());
       for(FunctionLoadCallback callback : it->second)
         if(callback)
-          callback(handle);
+          callback(handle, it->first.c_str());
     }
   }
 

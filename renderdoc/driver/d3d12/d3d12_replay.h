@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,9 +34,20 @@ class AMDCounters;
 struct D3D12AMDActionCallback;
 class WrappedID3D12Device;
 
+class NVD3D12Counters;
+
 class D3D12DebugManager;
 
 struct PortableHandle;
+
+namespace DXBC
+{
+class DXBCContainer;
+};
+namespace DXDebug
+{
+struct InputFetcher;
+};
 
 enum TexDisplayFlags
 {
@@ -55,19 +66,35 @@ struct D3D12FeedbackBindIdentifier
   size_t rootEl;
   size_t rangeIndex;
   UINT descIndex;
+  ShaderStage shaderStage;    // Only used for direct access views
+  BindType bindType;          // Only used for direct access views
+  bool directAccess;
 
   bool operator<(const D3D12FeedbackBindIdentifier &o) const
   {
-    if(rootEl != o.rootEl)
-      return rootEl < o.rootEl;
-    if(rangeIndex != o.rangeIndex)
-      return rangeIndex < o.rangeIndex;
+    if(directAccess != o.directAccess)
+      return directAccess < o.directAccess;
+    if(!directAccess)
+    {
+      if(rootEl != o.rootEl)
+        return rootEl < o.rootEl;
+      if(rangeIndex != o.rangeIndex)
+        return rangeIndex < o.rangeIndex;
+    }
+    else
+    {
+      if(shaderStage != o.shaderStage)
+        return shaderStage < o.shaderStage;
+      if(bindType != o.bindType)
+        return bindType < o.bindType;
+    }
     return descIndex < o.descIndex;
   }
 
   bool operator==(const D3D12FeedbackBindIdentifier &o) const
   {
-    return rootEl == o.rootEl && rangeIndex == o.rangeIndex && descIndex == o.descIndex;
+    return rootEl == o.rootEl && rangeIndex == o.rangeIndex && descIndex == o.descIndex &&
+           directAccess == o.directAccess && shaderStage == o.shaderStage && bindType == o.bindType;
   }
 };
 
@@ -76,15 +103,18 @@ class D3D12Replay : public IReplayDriver
 public:
   D3D12Replay(WrappedID3D12Device *d);
 
+  D3D12DevConfiguration *GetDevConfiguration() { return m_DevConfig; }
+  void SetDevConfiguration(D3D12DevConfiguration *config) { m_DevConfig = config; }
+
   D3D12DebugManager *GetDebugManager() { return m_DebugManager; }
   void SetRGP(AMDRGPControl *rgp) { m_RGP = rgp; }
   void Set12On7(bool d3d12on7) { m_D3D12On7 = d3d12on7; }
   void SetProxy(bool proxy) { m_Proxy = proxy; }
   bool IsRemoteProxy() { return m_Proxy; }
-  void Initialise(IDXGIFactory1 *factory);
+  void Initialise(IDXGIFactory1 *factory, D3D12DevConfiguration *config);
   void Shutdown();
 
-  ReplayStatus FatalErrorCheck();
+  RDResult FatalErrorCheck();
   IReplayDriver *MakeDummyDriver();
 
   void CreateResources();
@@ -96,6 +126,9 @@ public:
   ResourceDescription &GetResourceDesc(ResourceId id);
   rdcarray<ResourceDescription> GetResources();
 
+  rdcarray<DescriptorStoreDescription> GetDescriptorStores();
+  void RegisterDescriptorStore(const DescriptorStoreDescription &desc);
+
   rdcarray<BufferDescription> GetBuffers();
   BufferDescription GetBuffer(ResourceId id);
 
@@ -105,7 +138,7 @@ public:
   rdcarray<DebugMessage> GetDebugMessages();
 
   rdcarray<ShaderEntryPoint> GetShaderEntryPoints(ResourceId shader);
-  ShaderReflection *GetShader(ResourceId pipeline, ResourceId shader, ShaderEntryPoint entry);
+  const ShaderReflection *GetShader(ResourceId pipeline, ResourceId shader, ShaderEntryPoint entry);
 
   rdcarray<rdcstr> GetDisassemblyTargets(bool withPipeline);
   rdcstr DisassembleShader(ResourceId pipeline, const ShaderReflection *refl, const rdcstr &target);
@@ -115,15 +148,22 @@ public:
   FrameRecord &WriteFrameRecord() { return m_FrameRecord; }
   FrameRecord GetFrameRecord() { return m_FrameRecord; }
   void SetPipelineStates(D3D11Pipe::State *d3d11, D3D12Pipe::State *d3d12, GLPipe::State *gl,
-                         VKPipe::State *vk)
+                         VKPipe::State *vk, D3D9Pipe::State *d3d9)
   {
     m_D3D12PipelineState = d3d12;
   }
   void SavePipelineState(uint32_t eventId);
+  rdcarray<Descriptor> GetDescriptors(ResourceId descriptorStore,
+                                      const rdcarray<DescriptorRange> &ranges);
+  rdcarray<SamplerDescriptor> GetSamplerDescriptors(ResourceId descriptorStore,
+                                                    const rdcarray<DescriptorRange> &ranges);
+  rdcarray<DescriptorAccess> GetDescriptorAccess(uint32_t eventId);
+  rdcarray<DescriptorLogicalLocation> GetDescriptorLocations(ResourceId descriptorStore,
+                                                             const rdcarray<DescriptorRange> &ranges);
   void FreeTargetResource(ResourceId id);
   void FreeCustomShader(ResourceId id);
 
-  ReplayStatus ReadLogInitialisation(RDCFile *rdc, bool readStructuredBuffers);
+  RDResult ReadLogInitialisation(RDCFile *rdc, bool readStructuredBuffers);
   void ReplayLog(uint32_t endEventID, ReplayLogType replayType);
   SDFile *GetStructuredFile();
 
@@ -141,7 +181,6 @@ public:
   void DestroyOutputWindow(uint64_t id);
   bool CheckResizeOutputWindow(uint64_t id);
   void GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h);
-  void SetOutputWindowDimensions(uint64_t id, int32_t w, int32_t h);
   void GetOutputWindowData(uint64_t id, bytebuf &retData);
   void ClearOutputWindowColor(uint64_t id, FloatVector col);
   void ClearOutputWindowDepth(uint64_t id, float depth, uint8_t stencil);
@@ -150,11 +189,11 @@ public:
   void FlipOutputWindow(uint64_t id);
 
   void InitPostVSBuffers(uint32_t eventId);
+  void InitPostMSBuffers(uint32_t eventId);
   void InitPostVSBuffers(const rdcarray<uint32_t> &passEvents);
 
   // indicates that EID alias is the same as eventId
   void AliasPostVSBuffers(uint32_t eventId, uint32_t alias) { m_PostVSAlias[alias] = eventId; }
-  ResourceId GetLiveID(ResourceId id);
 
   void PickPixel(ResourceId texture, uint32_t x, uint32_t y, const Subresource &sub,
                  CompType typeCast, float pixel[4]);
@@ -173,17 +212,20 @@ public:
 
   rdcarray<ShaderEncoding> GetCustomShaderEncodings()
   {
-    return {ShaderEncoding::DXBC, ShaderEncoding::HLSL};
+    return {ShaderEncoding::DXBC, ShaderEncoding::DXIL, ShaderEncoding::HLSL};
   }
+  rdcarray<ShaderSourcePrefix> GetCustomShaderSourcePrefixes();
   rdcarray<ShaderEncoding> GetTargetShaderEncodings()
   {
-    return {ShaderEncoding::DXBC, ShaderEncoding::HLSL};
+    return {ShaderEncoding::DXBC, ShaderEncoding::DXIL, ShaderEncoding::HLSL};
   }
   void BuildTargetShader(ShaderEncoding sourceEncoding, const bytebuf &source, const rdcstr &entry,
                          const ShaderCompileFlags &compileFlags, ShaderStage type, ResourceId &id,
                          rdcstr &errors);
   void ReplaceResource(ResourceId from, ResourceId to);
   void RemoveReplacement(ResourceId id);
+  void ClearReplayCache();
+  void ReloadShaderDebugInformation();
 
   rdcarray<GPUCounter> EnumerateCounters();
   CounterDescription DescribeCounter(GPUCounter counterID);
@@ -206,18 +248,26 @@ public:
 
   void RenderHighlightBox(float w, float h, float scale);
 
-  void FillCBufferVariables(ResourceId pipeline, ResourceId shader, rdcstr entryPoint,
-                            uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
+  void FillCBufferVariables(ResourceId pipeline, ResourceId shader, ShaderStage stage,
+                            rdcstr entryPoint, uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
                             const bytebuf &data);
 
   rdcarray<PixelModification> PixelHistory(rdcarray<EventUsage> events, ResourceId target, uint32_t x,
                                            uint32_t y, const Subresource &sub, CompType typeCast);
+
+  ID3DBlob *CompileShaderDebugFetcher(const DXBC::DXBCContainer *dxbc, const rdcstr &hlsl);
+  ID3D12Resource *CreateInputFetchBuffer(DXDebug::InputFetcher &fetcher, uint64_t &laneDataOffset,
+                                         uint64_t &evalDataOffset);
+  ID3D12RootSignature *CreateInputFetchRootSig(bool compute, uint32_t &uavspace, uint32_t &sigElem);
+
   ShaderDebugTrace *DebugVertex(uint32_t eventId, uint32_t vertid, uint32_t instid, uint32_t idx,
                                 uint32_t view);
-  ShaderDebugTrace *DebugPixel(uint32_t eventId, uint32_t x, uint32_t y, uint32_t sample,
-                               uint32_t primitive);
+  ShaderDebugTrace *DebugPixel(uint32_t eventId, uint32_t x, uint32_t y,
+                               const DebugPixelInputs &inputs);
   ShaderDebugTrace *DebugThread(uint32_t eventId, const rdcfixedarray<uint32_t, 3> &groupid,
                                 const rdcfixedarray<uint32_t, 3> &threadid);
+  ShaderDebugTrace *DebugMeshThread(uint32_t eventId, const rdcfixedarray<uint32_t, 3> &groupid,
+                                    const rdcfixedarray<uint32_t, 3> &threadid);
   rdcarray<ShaderDebugState> ContinueDebug(ShaderDebugger *debugger);
   void FreeDebugger(ShaderDebugger *debugger);
 
@@ -231,23 +281,24 @@ public:
   void BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &source, const rdcstr &entry,
                          const ShaderCompileFlags &compileFlags, ShaderStage type, ResourceId &id,
                          rdcstr &errors);
-  ResourceId ApplyCustomShader(ResourceId shader, ResourceId texid, const Subresource &sub,
-                               CompType typeCast);
+  ResourceId ApplyCustomShader(TextureDisplay &display);
 
   RenderOutputSubresource GetRenderOutputSubresource(ResourceId id);
   bool IsRenderOutput(ResourceId id) { return GetRenderOutputSubresource(id).mip != ~0U; }
   void FileChanged() {}
   AMDCounters *GetAMDCounters() { return m_pAMDCounters; }
+  void PatchQuadWritePS(D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC &pipeDesc, uint32_t regSpace,
+                        bool dxil);
+
 private:
-  void FillRootElements(uint32_t eventId, const D3D12RenderState::RootSignature &rootSig,
-                        const ShaderBindpointMapping *mappings[(uint32_t)ShaderStage::Count],
-                        rdcarray<D3D12Pipe::RootSignatureRange> &rootElements);
-  void FillResourceView(D3D12Pipe::View &view, const D3D12Descriptor *desc);
+  void FillDescriptor(Descriptor &dst, const D3D12Descriptor *src);
+  void FillRootDescriptor(Descriptor &dst, const D3D12RenderState::SignatureElement &src);
+  void FillSamplerDescriptor(SamplerDescriptor &dst, const D3D12_SAMPLER_DESC2 &src);
 
   bool CreateSOBuffers();
   void ClearPostVSCache();
 
-  void FetchShaderFeedback(uint32_t eventId);
+  bool FetchShaderFeedback(uint32_t eventId);
   void ClearFeedbackCache();
 
   void RefreshDerivedReplacements();
@@ -268,12 +319,13 @@ private:
   struct D3D12DynamicShaderFeedback
   {
     bool compute = false, valid = false;
-    rdcarray<D3D12FeedbackBindIdentifier> used;
+    rdcarray<DescriptorAccess> access;
   };
 
   struct Feedback
   {
     ID3D12Resource *FeedbackBuffer = NULL;
+    ID3D12QueryHeap *PipeStatsHeap = NULL;
 
     std::unordered_map<uint32_t, D3D12DynamicShaderFeedback> Usage;
   } m_BindlessFeedback;
@@ -282,14 +334,28 @@ private:
   {
     struct InstData
     {
-      uint32_t numVerts = 0;
-      uint64_t bufOffset = 0;
+      union
+      {
+        uint64_t bufOffset;
+        uint32_t numIndices;
+        uint32_t ampDispatchSizeX;
+      };
+      union
+      {
+        uint32_t numVerts;
+        struct
+        {
+          uint16_t y;
+          uint16_t z;
+        } ampDispatchSizeYZ;
+      };
     };
 
     struct StageData
     {
       ID3D12Resource *buf = NULL;
-      D3D_PRIMITIVE_TOPOLOGY topo = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+      uint64_t bufSize = ~0ULL;
+      Topology topo = Topology::Unknown;
 
       uint32_t vertStride = 0;
 
@@ -297,18 +363,28 @@ private:
       uint32_t numVerts = 0;
       uint32_t instStride = 0;
 
-      // complex case - expansion per instance
+      // complex case - expansion per instance,
+      // also used for meshlet offsets and sizes
       rdcarray<InstData> instData;
+
+      uint32_t primStride = 0;
+      uint64_t primOffset = 0;
 
       bool useIndices = false;
       ID3D12Resource *idxBuf = NULL;
+      uint64_t idxBufSize = ~0ULL;
+      uint64_t idxOffset = 0;
       DXGI_FORMAT idxFmt = DXGI_FORMAT_UNKNOWN;
+
+      rdcfixedarray<uint32_t, 3> dispatchSize;
 
       bool hasPosOut = false;
 
       float nearPlane = 0.0f;
       float farPlane = 0.0f;
-    } vsin, vsout, gsout;
+
+      rdcstr status;
+    } vsout, gsout, ampout, meshout;
 
     const StageData &GetStage(MeshDataStage type)
     {
@@ -316,10 +392,28 @@ private:
         return vsout;
       else if(type == MeshDataStage::GSOut)
         return gsout;
-      else
-        RDCERR("Unexpected mesh data stage!");
+      else if(type == MeshDataStage::TaskOut)
+        return ampout;
+      else if(type == MeshDataStage::MeshOut)
+        return meshout;
 
-      return vsin;
+      if(type == MeshDataStage::Count)
+      {
+        if(gsout.buf)
+          return gsout;
+
+        if(vsout.buf)
+          return vsout;
+
+        if(meshout.buf)
+          return meshout;
+
+        return vsout;
+      }
+
+      RDCERR("Unexpected mesh data stage!");
+
+      return vsout;
     }
   };
 
@@ -349,6 +443,8 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE dsv;
     D3D12_RESOURCE_DESC bbDesc;
 
+    uint64_t rtvId, dsvId;
+
     WrappedID3D12Device *dev;
 
     void MakeRTV(bool multisampled);
@@ -361,8 +457,8 @@ private:
   float m_OutputHeight = 1.0f;
   D3D12_VIEWPORT m_OutputViewport;
 
-  uint64_t m_OutputWindowID = 1;
-  uint64_t m_DSVID = 0;
+  rdcarray<uint64_t> m_OutputWindowIDs;
+  rdcarray<uint64_t> m_DSVIDs;
   uint64_t m_CurrentOutputWindow = 0;
   std::map<uint64_t, OutputWindow> m_OutputWindows;
 
@@ -412,6 +508,9 @@ private:
     ID3DBlob *QuadOverdrawWriteDXILPS = NULL;
     ID3D12RootSignature *QuadResolveRootSig = NULL;
     ID3D12PipelineState *QuadResolvePipe[8] = {NULL};
+    ID3D12RootSignature *DepthCopyResolveRootSig = NULL;
+    ID3D12PipelineState *DepthResolvePipe[2][5] = {};
+    ID3D12PipelineState *DepthCopyPipe[2][5] = {};
 
     ID3D12Resource *Texture = NULL;
     ResourceId resourceId;
@@ -440,6 +539,18 @@ private:
     ID3D12Resource *Texture = NULL;
   } m_PixelPick;
 
+  struct PixelHistory
+  {
+    void Init(WrappedID3D12Device *device, D3D12DebugManager *debug);
+    void Release();
+
+    ID3DBlob *PrimitiveIDPS = NULL;
+    ID3DBlob *PrimitiveIDPSDxil = NULL;
+
+    ID3DBlob *FixedColorPS[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT] = {NULL};
+    ID3DBlob *FixedColorPSDxil[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT] = {NULL};
+  } m_PixelHistory;
+
   struct HistogramMinMax
   {
     void Init(WrappedID3D12Device *device, D3D12DebugManager *debug);
@@ -456,6 +567,7 @@ private:
   } m_Histogram;
 
   rdcarray<ResourceDescription> m_Resources;
+  rdcarray<DescriptorStoreDescription> m_DescriptorStores;
   std::map<ResourceId, size_t> m_ResourceIdx;
 
   bool m_ISAChecked = false;
@@ -469,6 +581,8 @@ private:
 
   D3D12DebugManager *m_DebugManager = NULL;
 
+  D3D12DevConfiguration *m_DevConfig = NULL;
+
   IDXGIFactory1 *m_pFactory = NULL;
   HMODULE m_D3D12Lib = NULL;
 
@@ -481,7 +595,10 @@ private:
 
   rdcarray<rdcstr> m_CustomShaderIncludes;
 
-  void FillTimersAMD(uint32_t *eventStartID, uint32_t *sampleIndex, rdcarray<uint32_t> *eventIDs);
+  std::map<rdcfixedarray<uint32_t, 4>, bytebuf> m_PatchedPSCache;
 
+  void FillTimersAMD(uint32_t *eventStartID, uint32_t *sampleIndex, rdcarray<uint32_t> *eventIDs);
   rdcarray<CounterResult> FetchCountersAMD(const rdcarray<GPUCounter> &counters);
+
+  NVD3D12Counters *m_pNVCounters = NULL;
 };

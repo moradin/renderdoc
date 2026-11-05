@@ -1,3 +1,4 @@
+
 %module(docstring="This is the API to QRenderDoc's high-level UI panels and functionality.") qrenderdoc
 
 %feature("autodoc", "0");
@@ -7,6 +8,28 @@
 #define DOCUMENT2(text1, text2) %feature("docstring") text1 text2
 #define DOCUMENT3(text1, text2, text3) %feature("docstring") text1 text2 text3
 #define DOCUMENT4(text1, text2, text3, text4) %feature("docstring") text1 text2 text3 text4
+
+%header %{
+#include "3rdparty/pythoncapi_compat.h"
+%}
+
+%begin %{
+
+#include <Python.h>
+
+#if PY_VERSION_HEX >= 0x030d0000
+inline PyObject *PyWeakref_GetObject_emu(PyObject *ref)
+{
+  PyObject *ret = NULL;
+  if(PyWeakref_GetRef(ref, &ret) > 0)
+    Py_DECREF(ret);
+  return ret;
+}
+#undef PyWeakref_GET_OBJECT
+#define PyWeakref_GET_OBJECT(x) PyWeakref_GetObject_emu(x)
+#endif
+
+%}
 
 %begin %{
 #undef slots
@@ -51,11 +74,11 @@ TEMPLATE_FIXEDARRAY_DECLARE(rdcfixedarray);
 %}
 
 %typemap(in) QWidget * {
-  if($input == Py_None)
+  if(Py_IsNone($input))
     $1 = NULL;
   else
     $1 = QWidgetFromPy($input);
-  if($input && $input != Py_None && !$1)
+  if($input && !Py_IsNone($input) && !$1)
   {
     SWIG_exception_fail(SWIG_TypeError, "in method '$symname' QWidget expected for argument $argnum of type '$1_basetype'");
   }
@@ -67,41 +90,10 @@ TEMPLATE_FIXEDARRAY_DECLARE(rdcfixedarray);
 
 // create a wrapper for passing python ICaptureViewer interface implementations to C++
 
-%{
+%wrapper %{
   struct PythonCaptureViewer : public ICaptureViewer
   {
-    PythonCaptureViewer(PyObject *s) : self(s)
-    {
-      Py_INCREF(self);
-      
-      StackExceptionHandler ex;
-
-      PyObject *meth = NULL;
-
-      {
-        meth = PyObject_GetAttrString(self, "OnCaptureLoaded");
-        m_OnCaptureLoaded = ConvertFunc<std::function<void()>>("ICaptureViewer::OnCaptureLoaded", meth, ex);
-        Py_XDECREF(meth);
-      }
-
-      {
-        meth = PyObject_GetAttrString(self, "OnCaptureClosed");
-        m_OnCaptureClosed = ConvertFunc<std::function<void()>>("ICaptureViewer::OnCaptureClosed", meth, ex);
-        Py_XDECREF(meth);
-      }
-
-      {
-        meth = PyObject_GetAttrString(self, "OnSelectedEventChanged");
-        m_OnSelectedEventChanged = ConvertFunc<std::function<void(uint32_t)>>("ICaptureViewer::OnSelectedEventChanged", meth, ex);
-        Py_XDECREF(meth);
-      }
-
-      {
-        meth = PyObject_GetAttrString(self, "OnEventChanged");
-        m_OnEventChanged = ConvertFunc<std::function<void(uint32_t)>>("ICaptureViewer::OnEventChanged", meth, ex);
-        Py_XDECREF(meth);
-      }
-    }
+    PythonCaptureViewer(PyObject *s);
 
     virtual ~PythonCaptureViewer()
     {
@@ -122,10 +114,13 @@ TEMPLATE_FIXEDARRAY_DECLARE(rdcfixedarray);
   static int capviewer_init(PyObject *self, PyObject *args) {
     PyObject *resultobj = 0;
     ICaptureViewer *result = 0;
+    
+    if(!SWIG_Python_UnpackTuple(args, "new_CaptureViewer", 0, 0, 0))
+      return -1;
 
     result = new PythonCaptureViewer(self);
     resultobj = SWIG_NewPointerObj(SWIG_as_voidptr(result), SWIGTYPE_p_ICaptureViewer, SWIG_BUILTIN_INIT | 0);
-    return resultobj == Py_None ? -1 : 0;
+    return Py_IsNone(resultobj) ? -1 : 0;
   }
 
   SWIGINTERN PyObject *capviewer_deinit(PyObject *self, PyObject *args)
@@ -176,9 +171,10 @@ SWIGPY_DESTRUCTOR_CLOSURE(capviewer_deinit) /* defines capviewer_deinit_destruct
 %include <stdint.i>
 
 %include "Code/Interface/QRDInterface.h"
-%include "Code/Interface/PersistantConfig.h"
+%include "Code/Interface/PersistentConfig.h"
 %include "Code/Interface/RemoteHost.h"
 %include "Code/Interface/Extensions.h"
+%include "Code/Interface/Helpers.h"
 
 DOCUMENT("");
 
@@ -189,13 +185,15 @@ TEMPLATE_ARRAY_INSTANTIATE(rdcarray, BugReport)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ExtensionMetadata)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, DialogButton)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, RemoteHost)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ConnectedTempCapture)
 TEMPLATE_ARRAY_INSTANTIATE_PTR(rdcarray, ICaptureViewer)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ParseError)
 
 // unignore the function from above
 %rename("%s") IReplayManager::BlockInvoke;
 
 %extend IReplayManager {
-  void BlockInvoke(InvokeCallback m) {
+  void BlockInvoke(ReplayInvokeCallback m) {
     PyObject *global_internal_handle = NULL;
 
     PyObject *globals = PyEval_GetGlobals();
@@ -258,6 +256,76 @@ QWidget *UnwrapBareQWidget(PyObject *obj)
   }
 
   return ret;
+}
+
+PythonCaptureViewer::PythonCaptureViewer(PyObject *s)
+{
+  self = s;
+  Py_INCREF(self);
+  
+  StackExceptionHandler ex;
+
+  PyObject *meth = NULL;
+
+  {
+    meth = PyObject_GetAttrString(self, "OnCaptureLoaded");
+    if(PyCFunction_Check(meth) && PyCFunction_GetFunction(meth) == &_wrap_CaptureViewer_OnCaptureLoaded)
+    {
+      Py_XDECREF(meth);
+      meth = NULL;
+    }
+
+    if(meth)
+    {
+      m_OnCaptureLoaded = ConvertFunc<std::function<void()>>("ICaptureViewer::OnCaptureLoaded", meth, ex);
+      Py_XDECREF(meth);
+    }
+  }
+
+  {
+    meth = PyObject_GetAttrString(self, "OnCaptureClosed");
+    if(PyCFunction_Check(meth) && PyCFunction_GetFunction(meth) == &_wrap_CaptureViewer_OnCaptureClosed)
+    {
+      Py_XDECREF(meth);
+      meth = NULL;
+    }
+
+    if(meth)
+    {
+      m_OnCaptureClosed = ConvertFunc<std::function<void()>>("ICaptureViewer::OnCaptureClosed", meth, ex);
+      Py_XDECREF(meth);
+    }
+  }
+
+  {
+    meth = PyObject_GetAttrString(self, "OnSelectedEventChanged");
+    if(PyCFunction_Check(meth) && PyCFunction_GetFunction(meth) == &_wrap_CaptureViewer_OnSelectedEventChanged)
+    {
+      Py_XDECREF(meth);
+      meth = NULL;
+    }
+
+    if(meth)
+    {
+      m_OnSelectedEventChanged = ConvertFunc<std::function<void(uint32_t)>>("ICaptureViewer::OnSelectedEventChanged", meth, ex);
+      Py_XDECREF(meth);
+    }
+  }
+
+  {
+    meth = PyObject_GetAttrString(self, "OnEventChanged");
+    if(PyCFunction_Check(meth) && PyCFunction_GetFunction(meth) == &_wrap_CaptureViewer_OnEventChanged)
+    {
+      Py_XDECREF(meth);
+      meth = NULL;
+    }
+
+    if(meth)
+    {
+      m_OnEventChanged = ConvertFunc<std::function<void(uint32_t)>>("ICaptureViewer::OnEventChanged", meth, ex);
+      Py_XDECREF(meth);
+    }
+  }
 }
 
 %}

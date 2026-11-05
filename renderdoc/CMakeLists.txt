@@ -37,14 +37,11 @@ elseif(APPLE)
         find_library(OPENGL_LIBRARY OpenGL)
         list(APPEND RDOC_LIBRARIES PRIVATE ${OPENGL_LIBRARY})
     endif()
-elseif(ENABLE_GGP)
-    find_package(PkgConfig REQUIRED)
-    find_package(Threads REQUIRED)
 
-    list(APPEND RDOC_LIBRARIES
-        PRIVATE -lm
-        PRIVATE -ldl
-        PRIVATE -lrt)
+    if(ENABLE_METAL)
+        find_library(METAL_LIBRARY Metal)
+        list(APPEND RDOC_LIBRARIES PRIVATE ${METAL_LIBRARY})
+    endif()
 elseif(UNIX)
     find_package(PkgConfig REQUIRED)
     find_package(Threads REQUIRED)
@@ -53,6 +50,15 @@ elseif(UNIX)
         PRIVATE -lm
         PRIVATE -ldl
         PRIVATE -lrt)
+
+    if(FREEBSD)
+        list(APPEND RDOC_LIBRARIES
+            PRIVATE -L/usr/local/lib
+            PRIVATE -liconv
+            PRIVATE -lexecinfo
+            PRIVATE -lutil
+        )
+    endif()
 
     if(ENABLE_XLIB)
         find_package(X11 REQUIRED)
@@ -77,7 +83,7 @@ elseif(UNIX)
             PRIVATE -l${XCB_LIBRARIES})
     endif()
 
-    if(ENABLE_WAYLAND)
+    if(ENABLE_UNSUPPORTED_EXPERIMENTAL_POSSIBLY_BROKEN_WAYLAND)
         pkg_check_modules(PKG_WAYLAND QUIET wayland-client)
 
         list(APPEND RDOC_INCLUDES
@@ -98,6 +104,7 @@ set(sources
     api/replay/capture_options.h
     api/replay/common_pipestate.h
     api/replay/pipestate.h
+    api/replay/pipestate.inl
     api/replay/control_types.h
     api/replay/data_types.h
     api/replay/rdcarray.h
@@ -113,6 +120,7 @@ set(sources
     api/replay/version.h
     api/replay/gl_pipestate.h
     api/replay/vk_pipestate.h
+    api/replay/d3d9_pipestate.h
     api/replay/renderdoc_replay.h
     api/replay/renderdoc_tostr.inl
     common/common.cpp
@@ -122,7 +130,10 @@ set(sources
     common/dds_readwrite.h
     common/formatting.h
     common/globalconfig.h
+    common/result.h
     common/shader_cache.h
+    common/jobsystem.cpp
+    common/tex_data.h
     common/threading.h
     common/timing.h
     common/wrapped_pool.h
@@ -131,11 +142,14 @@ set(sources
     core/image_viewer.cpp
     core/core.h
     core/crash_handler.h
+    core/gpu_address_range_tracker.cpp
+    core/gpu_address_range_tracker.h
     core/target_control.cpp
     core/remote_server.cpp
     core/remote_server.h
     core/settings.cpp
     core/settings.h
+    core/rdcbytetrie.h
     core/replay_proxy.cpp
     core/replay_proxy.h
     core/intervals.h
@@ -143,10 +157,8 @@ set(sources
     core/bit_flag_iterator.h
     core/bit_flag_iterator_tests.cpp
     android/android.cpp
-    android/android_patch.cpp
     android/android_tools.cpp
     android/android_utils.cpp
-    android/android_manifest.cpp
     android/android.h
     android/android_utils.h
     android/jdwp.h
@@ -188,6 +200,7 @@ set(sources
     replay/replay_output.cpp
     replay/replay_controller.cpp
     replay/replay_controller.h
+    replay/common/var_dispatch_helpers.h
     serialise/serialiser.cpp
     serialise/serialiser.h
     serialise/lz4io.cpp
@@ -203,6 +216,8 @@ set(sources
     serialise/comp_io_tests.cpp
     serialise/serialiser_tests.cpp
     serialise/streamio_tests.cpp
+    shaders/controlflow.cpp
+    shaders/controlflow.h
     strings/grisu2.cpp
     strings/string_utils.cpp
     strings/string_utils.h
@@ -211,7 +226,6 @@ set(sources
     3rdparty/jpeg-compressor/jpgd.h
     3rdparty/jpeg-compressor/jpge.cpp
     3rdparty/jpeg-compressor/jpge.h
-    3rdparty/aosp/android_manifest.h
     3rdparty/catch/catch.cpp
     3rdparty/catch/catch.hpp
     3rdparty/pugixml/pugixml.cpp
@@ -269,7 +283,7 @@ set(sources
     3rdparty/zstd/zstdmt_compress.h
     3rdparty/stb/stb_image.h
     3rdparty/stb/stb_image_write.h
-    3rdparty/stb/stb_image_resize.h
+    3rdparty/stb/stb_image_resize2.h
     3rdparty/stb/stb_impl.c
     3rdparty/stb/stb_truetype.h
     3rdparty/tinyexr/tinyexr.cpp
@@ -308,15 +322,15 @@ elseif(APPLE)
         os/posix/posix_stringio.cpp
         os/posix/posix_threading.cpp
         os/posix/posix_specific.h)
-elseif(ENABLE_GGP)
+elseif(FREEBSD)
     list(APPEND sources
         data/embedded_files.h
-        os/posix/ggp/ggp_stringio.cpp
-        os/posix/ggp/ggp_callstack.cpp
-        os/posix/ggp/ggp_process.cpp
-        os/posix/ggp/ggp_threading.cpp
-        os/posix/ggp/ggp_hook.cpp
-        os/posix/ggp/ggp_network.cpp
+        os/posix/bsd/bsd_stringio.cpp
+        os/posix/bsd/bsd_callstack.cpp
+        os/posix/bsd/bsd_threading.cpp
+        os/posix/bsd/bsd_process.cpp
+        os/posix/bsd/bsd_hook.cpp
+        os/posix/bsd/bsd_network.cpp
         3rdparty/plthook/plthook.h
         3rdparty/plthook/plthook_elf.c
         os/posix/posix_network.h
@@ -361,7 +375,7 @@ if(NOT ANDROID)
         3rdparty/compressonator/BC5_Encode_kernel.cpp
         3rdparty/compressonator/BC6_Encode_kernel.cpp
         3rdparty/compressonator/BC7_Encode_Kernel.cpp
-        PROPERTIES COMPILE_FLAGS "-D_LINUX -Wno-newline-eof -Wno-missing-braces -Wno-char-subscripts -Wno-sign-compare -Wno-unused-value -Wno-strict-aliasing -Wno-shift-negative-value")
+        PROPERTIES COMPILE_FLAGS "-D_LINUX -Wno-newline-eof -Wno-missing-braces -Wno-char-subscripts -Wno-sign-compare -Wno-unused-value -Wno-strict-aliasing -Wno-shift-negative-value -Wno-implicit-fallthrough")
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX)
@@ -387,13 +401,25 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR APPLE)
 
         set_property(SOURCE strings/utf8printf.cpp
             APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-unknown-warning -Wno-format-truncation")
+
+    	# stb_image requires these flags to enable ARM SIMD (NEON) for arm32
+        if (CMAKE_SYSTEM_PROCESSOR MATCHES "arm" AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+            set_source_files_properties(3rdparty/stb/stb_impl.c
+                PROPERTIES COMPILE_FLAGS "-mfpu=neon-vfpv4 -mfp16-format=ieee")
+        endif()
     endif()
 
     # Need to add -Wno-unknown-warning-option since only newer clang versions have
     # -Wno-unused-lambda-capture available
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         set_property(SOURCE 3rdparty/jpeg-compressor/jpgd.cpp
-            APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-unreachable-code-break -Wno-implicit-fallthrough")
+            APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-unreachable-code-break -Wno-implicit-fallthrough -Wno-shadow -Wno-shorten-64-to-32")
+
+        set_property(SOURCE 3rdparty/jpeg-compressor/jpge.cpp
+            APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-shorten-64-to-32")
+
+        set_property(SOURCE 3rdparty/compressonator/BC6_Encode_kernel.cpp
+            APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-tautological-constant-out-of-range-compare")
 
         # Only clang has this warning. Fixing it in this file causes a compile error on windows
         set_source_files_properties(os/os_specific.cpp
@@ -402,12 +428,20 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR APPLE)
         # We are deliberately testing self-assign here
         set_source_files_properties(replay/basic_types_tests.cpp
             PROPERTIES COMPILE_FLAGS "-Wno-unknown-warning-option -Wno-self-assign-overloaded")
+
+        # stb_image requires these flags to enable ARM SIMD (NEON) for arm32
+        if (CMAKE_SYSTEM_PROCESSOR MATCHES "arm" AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+            set_source_files_properties(3rdparty/stb/stb_impl.c
+                        PROPERTIES COMPILE_FLAGS "-mfpu=neon-vfpv4")
+        endif()
     endif()
 endif()
 
 set(data
     data/glsl/blit.vert
     data/glsl/checkerboard.frag
+    data/glsl/depth_copy.frag
+    data/glsl/depth_copyms.frag
     data/glsl/glsl_ubos.h
     data/glsl/glsl_globals.h
     data/glsl/fixedcol.frag
@@ -440,6 +474,13 @@ set(data
     data/glsl/deptharr2ms.frag
     data/glsl/depthms2arr.frag
     data/glsl/discard.frag
+    data/glsl/vk_ms2buffer.comp
+    data/glsl/vk_depthms2buffer.comp
+    data/glsl/vk_buffer2ms.comp
+    data/glsl/vk_depthbuf2ms.frag
+    data/glsl/debug_math.comp
+    data/glsl/debug_sample.frag
+    data/hlsl/quadswizzle.hlsl
     data/sourcecodepro.ttf
     driver/vulkan/renderdoc.json)
 
@@ -484,6 +525,11 @@ if(UNIX)
 endif()
 
 set(renderdoc_objects)
+
+if(ENABLE_METAL)
+    add_subdirectory(driver/metal)
+    list(APPEND renderdoc_objects $<TARGET_OBJECTS:rdoc_metal>)
+endif()
 
 if(ENABLE_GL OR ENABLE_GLES)
     add_subdirectory(driver/gl)
@@ -545,6 +591,12 @@ if(ENABLE_GL OR ENABLE_GLES)
     list(APPEND renderdoc_objects $<TARGET_OBJECTS:rdoc_arm>)
 endif()
 
+# pull in the NVIDIA folder
+if(ENABLE_GL OR ENABLE_GLES OR ENABLE_VULKAN)
+    add_subdirectory(driver/ihv/nv)
+    list(APPEND renderdoc_objects $<TARGET_OBJECTS:rdoc_nv>)
+endif()
+
 add_library(rdoc OBJECT ${sources})
 target_compile_definitions(rdoc ${RDOC_DEFINITIONS})
 target_include_directories(rdoc ${RDOC_INCLUDES})
@@ -584,14 +636,10 @@ target_link_libraries(renderdoc ${RDOC_LIBRARIES})
 add_dependencies(renderdoc renderdoc_libentry)
 
 if(UNIX AND NOT ANDROID AND NOT APPLE)
-    set(RDOC_LINK_FLAGS "-Wl,--undefined,force_include_libentry -Wl,--version-script,${CMAKE_CURRENT_SOURCE_DIR}/renderdoc.version")
+    set(RDOC_LINK_FLAGS "-Wl,--undefined,force_include_libentry -Wl,--version-script,${CMAKE_CURRENT_SOURCE_DIR}/${RDOC_BASE_NAME}.version")
 
     if(NOT ENABLE_ASAN AND NOT ENABLE_TSAN)
         set(RDOC_LINK_FLAGS "${RDOC_LINK_FLAGS} -Wl,--no-undefined")
-    endif()
-
-    if(ENABLE_GGP)
-        set(RDOC_LINK_FLAGS "${RDOC_LINK_FLAGS} -Wl,--hash-style=gnu -Wl,--build-id=sha1")
     endif()
 
     if(NOT RELEASE_MODE)
@@ -609,6 +657,10 @@ if(APPLE)
     set_target_properties(renderdoc PROPERTIES INSTALL_RPATH "@executable_path/../lib")
     set_target_properties(renderdoc PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE)
     set_target_properties(renderdoc PROPERTIES BUILD_WITH_INSTALL_NAME_DIR TRUE)
+endif()
+
+if(INTERNAL_SELF_CAPTURE)
+    set_target_properties(renderdoc PROPERTIES OUTPUT_NAME "rdocself")
 endif()
 
 if(ANDROID)

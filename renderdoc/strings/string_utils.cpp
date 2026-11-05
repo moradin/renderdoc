@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -46,6 +46,11 @@ uint32_t strhash(const char *str, uint32_t seed)
   }
 
   return hash;
+}
+
+uint32_t strhash(const char *str)
+{
+  return strhash(str, 5381);
 }
 
 rdcstr strlower(const rdcstr &str)
@@ -139,6 +144,41 @@ rdcstr strip_extension(const rdcstr &path)
     return path;
 
   return path.substr(0, offs);
+}
+
+rdcstr standardise_directory_separator(const rdcstr &path)
+{
+  // Replace '\' -> '/'
+  // Replace '//' -> '/'
+  rdcstr ret;
+  ret.reserve(path.size());
+  int slashCount = 0;
+  for(size_t i = 0; i < path.size(); ++i)
+  {
+    char c = path[i];
+    if(c == '\\')
+      c = '/';
+
+    if(c == '/')
+      slashCount++;
+    else
+      slashCount = 0;
+    if(slashCount < 2)
+      ret.push_back(c);
+  }
+  return ret;
+}
+
+void strip_nonbasic(rdcstr &str)
+{
+  for(char &c : str)
+  {
+    if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' ||
+       c == ' ')
+      continue;
+
+    c = '_';
+  }
 }
 
 void split(const rdcstr &in, rdcarray<rdcstr> &out, const char sep)
@@ -327,11 +367,44 @@ TEST_CASE("String manipulation", "[string]")
     CHECK(strip_extension("bar/foo.exe") == "bar/foo");
   };
 
+  SECTION("standardise_directory_separator")
+  {
+    CHECK(standardise_directory_separator("a/exe.ext") == "a/exe.ext");
+    CHECK(standardise_directory_separator("a\\exe.ext") == "a/exe.ext");
+    CHECK(standardise_directory_separator("a//exe.ext") == "a/exe.ext");
+    CHECK(standardise_directory_separator("a\\\\exe.ext") == "a/exe.ext");
+    CHECK(standardise_directory_separator("a\\b/exe.ext") == "a/b/exe.ext");
+    CHECK(standardise_directory_separator("a\\/b/\\exe.ext") == "a/b/exe.ext");
+    CHECK(standardise_directory_separator("a\\\\/b//exe.ext") == "a/b/exe.ext");
+  };
+
   SECTION("strupper")
   {
     CHECK(strupper("foobar") == "FOOBAR");
     CHECK(strupper("Foobar") == "FOOBAR");
     CHECK(strupper("FOOBAR") == "FOOBAR");
+  };
+
+  SECTION("strip_nonbasic")
+  {
+    // not unicode safe, so only testing ASCII characters
+    for(rdcpair<rdcstr, rdcstr> test : rdcarray<rdcpair<rdcstr, rdcstr>>({
+            {"", ""},
+            {"Foobar", "Foobar"},
+            {"foo123", "foo123"},
+            {"foo 123", "foo 123"},
+            {"foo . 123...", "foo . 123..."},
+            {"foo '' 123", "foo __ 123"},
+            {"foo -- 123", "foo __ 123"},
+            {"foo \t\n 123", "foo __ 123"},
+            {"foo @$.%^&*() 123", "foo __.______ 123"},
+        }))
+    {
+      rdcstr str = test.first;
+      INFO(str);
+      strip_nonbasic(str);
+      CHECK(str == test.second);
+    }
   };
 
   SECTION("split by comma")

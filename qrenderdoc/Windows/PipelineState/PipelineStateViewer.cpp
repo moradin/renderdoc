@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,6 +26,7 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QScrollBar>
 #include <QStylePainter>
 #include <QSvgRenderer>
 #include <QToolButton>
@@ -37,6 +38,7 @@
 #include "toolwindowmanager/ToolWindowManager.h"
 #include "D3D11PipelineStateViewer.h"
 #include "D3D12PipelineStateViewer.h"
+#include "D3D9PipelineStateViewer.h"
 #include "GLPipelineStateViewer.h"
 #include "VulkanPipelineStateViewer.h"
 #include "ui_PipelineStateViewer.h"
@@ -90,7 +92,7 @@ RDPreviewTooltip::RDPreviewTooltip(PipelineStateViewer *parent, CustomPaintWidge
 
   pipe = parent;
 
-  setWindowFlags(Qt::ToolTip);
+  setWindowFlags(Qt::ToolTip | Qt::WindowStaysOnTopHint);
   setAttribute(Qt::WA_TransparentForMouseEvents);
   setForegroundRole(QPalette::ToolTipText);
   setBackgroundRole(QPalette::ToolTipBase);
@@ -126,7 +128,7 @@ void RDPreviewTooltip::hideTip()
   hide();
 }
 
-QSize RDPreviewTooltip::configureTip(QWidget *widget, QModelIndex idx, QString text)
+QSize RDPreviewTooltip::configureTip(QWidget *widget, QString text, QModelIndex idx)
 {
   ResourceId id = pipe->updateThumbnail(widget, idx);
   if(id != ResourceId())
@@ -145,7 +147,7 @@ QSize RDPreviewTooltip::configureTip(QWidget *widget, QModelIndex idx, QString t
   return minimumSizeHint();
 }
 
-void RDPreviewTooltip::showTip(QPoint pos)
+void RDPreviewTooltip::showTipAtPos(QPoint pos)
 {
   move(pos);
   resize(minimumSize());
@@ -201,6 +203,7 @@ PipelineStateViewer::PipelineStateViewer(ICaptureContext &ctx, QWidget *parent)
   m_D3D12 = NULL;
   m_GL = NULL;
   m_Vulkan = NULL;
+  m_D3D9 = NULL;
 
   m_Current = NULL;
 
@@ -232,6 +235,8 @@ void PipelineStateViewer::OnCaptureLoaded()
     setToGL();
   else if(m_Ctx.APIProps().pipelineType == GraphicsAPI::Vulkan)
     setToVulkan();
+  else if(m_Ctx.APIProps().pipelineType == GraphicsAPI::D3D9)
+    setToD3D9();
 
   if(m_Current)
     m_Current->OnCaptureLoaded();
@@ -282,6 +287,8 @@ void PipelineStateViewer::OnEventChanged(uint32_t eventId)
     setToGL();
   else if(m_Ctx.APIProps().pipelineType == GraphicsAPI::Vulkan)
     setToVulkan();
+  else if(m_Ctx.APIProps().pipelineType == GraphicsAPI::D3D9)
+    setToD3D9();
 
   if(m_Current)
     m_Current->OnEventChanged(eventId);
@@ -297,6 +304,8 @@ QString PipelineStateViewer::GetCurrentAPI()
     return lit("OpenGL");
   else if(m_Current == m_Vulkan)
     return lit("Vulkan");
+  else if(m_Current == m_D3D9)
+    return lit("D3D9");
 
   return lit("");
 }
@@ -322,6 +331,8 @@ void PipelineStateViewer::setPersistData(const QVariant &persistData)
     setToGL();
   else if(str == lit("Vulkan"))
     setToVulkan();
+  else if(str == lit("D3D9"))
+    setToD3D9();
 }
 
 void PipelineStateViewer::reset()
@@ -330,11 +341,13 @@ void PipelineStateViewer::reset()
   delete m_D3D12;
   delete m_GL;
   delete m_Vulkan;
+  delete m_D3D9;
 
   m_D3D11 = NULL;
   m_D3D12 = NULL;
   m_GL = NULL;
   m_Vulkan = NULL;
+  m_D3D9 = NULL;
 
   m_Current = NULL;
 }
@@ -385,6 +398,18 @@ void PipelineStateViewer::setToVulkan()
   m_Vulkan = new VulkanPipelineStateViewer(m_Ctx, *this, this);
   ui->layout->addWidget(m_Vulkan);
   m_Current = m_Vulkan;
+}
+
+void PipelineStateViewer::setToD3D9()
+{
+  if(m_D3D9)
+    return;
+
+  reset();
+
+  m_D3D9 = new D3D9PipelineStateViewer(m_Ctx, *this, this);
+  ui->layout->addWidget(m_D3D9);
+  m_Current = m_D3D9;
 }
 
 QXmlStreamWriter *PipelineStateViewer::beginHTMLExport()
@@ -743,9 +768,9 @@ void PipelineStateViewer::MakeShaderVariablesHLSL(bool cbufferContents,
 {
   for(const ShaderConstant &v : vars)
   {
-    if(!v.type.members.isEmpty())
+    if(v.type.baseType == VarType::Struct)
     {
-      QString def = lit("struct %1 {\n").arg(v.type.descriptor.name);
+      QString def = lit("struct %1 {\n").arg(v.type.name);
 
       if(!struct_defs.contains(def))
       {
@@ -756,14 +781,13 @@ void PipelineStateViewer::MakeShaderVariablesHLSL(bool cbufferContents,
       }
     }
 
-    if(v.type.descriptor.elements > 1)
+    if(v.type.elements > 1)
     {
-      struct_contents +=
-          lit("\t%1 %2[%3]").arg(v.type.descriptor.name).arg(v.name).arg(v.type.descriptor.elements);
+      struct_contents += lit("\t%1 %2[%3]").arg(v.type.name).arg(v.name).arg(v.type.elements);
     }
     else
     {
-      struct_contents += lit("\t%1 %2").arg(v.type.descriptor.name).arg(v.name);
+      struct_contents += lit("\t%1 %2").arg(v.type.name).arg(v.name);
     }
 
     if((v.byteOffset % 4) != 0)
@@ -819,8 +843,7 @@ void PipelineStateViewer::SetStencilTreeItemValue(RDTreeWidgetItem *item, int co
                                .arg(value, 8, 2, QLatin1Char('0')));
 }
 
-QString PipelineStateViewer::GenerateHLSLStub(const ShaderBindpointMapping &bindpointMapping,
-                                              const ShaderReflection *shaderDetails,
+QString PipelineStateViewer::GenerateHLSLStub(const ShaderReflection *shaderDetails,
                                               const QString &entryFunc)
 {
   QString hlsl = lit("// HLSL function stub generated\n\n");
@@ -831,39 +854,21 @@ QString PipelineStateViewer::GenerateHLSLStub(const ShaderBindpointMapping &bind
       lit("Texture2DMSArray"), lit("Texture3D"),   lit("TextureCube"),    lit("TextureCubeArray"),
   };
 
-  // use bindpoint mapping
-
   for(const ShaderSampler &samp : shaderDetails->samplers)
   {
-    uint32_t reg = ~0U;
-
-    if(samp.bindPoint < bindpointMapping.samplers.count())
-      reg = bindpointMapping.samplers[samp.bindPoint].bind;
-    else
-      hlsl += lit("//");
-
     hlsl += lit("SamplerState %1 : register(s%2); // can't disambiguate\n"
                 "//SamplerComparisonState %1 : register(s%2); // can't disambiguate\n")
                 .arg(samp.name)
-                .arg(reg);
+                .arg(samp.fixedBindNumber);
   }
 
   for(int i = 0; i < 2; i++)
   {
-    const rdcarray<Bindpoint> &binds =
-        (i == 0 ? bindpointMapping.readOnlyResources : bindpointMapping.readWriteResources);
     const rdcarray<ShaderResource> &resources =
         (i == 0 ? shaderDetails->readOnlyResources : shaderDetails->readWriteResources);
     for(const ShaderResource &res : resources)
     {
       char regChar = 't';
-
-      uint32_t reg = ~0U;
-
-      if(res.bindPoint < binds.count())
-        reg = binds[res.bindPoint].bind;
-      else
-        hlsl += lit("//");
 
       if(i == 1)
       {
@@ -874,22 +879,22 @@ QString PipelineStateViewer::GenerateHLSLStub(const ShaderBindpointMapping &bind
       if(res.isTexture)
       {
         hlsl += lit("%1<%2> %3 : register(%4%5);\n")
-                    .arg(textureDim[(size_t)res.resType])
-                    .arg(res.variableType.descriptor.name)
+                    .arg(textureDim[(size_t)res.textureType])
+                    .arg(res.variableType.name)
                     .arg(res.name)
                     .arg(QLatin1Char(regChar))
-                    .arg(reg);
+                    .arg(res.fixedBindNumber);
       }
       else
       {
-        if(res.variableType.descriptor.rows > 1)
+        if(res.variableType.rows > 1)
           hlsl += lit("Structured");
 
         hlsl += lit("Buffer<%1> %2 : register(%3%4);\n")
-                    .arg(res.variableType.descriptor.name)
+                    .arg(res.variableType.name)
                     .arg(res.name)
                     .arg(QLatin1Char(regChar))
-                    .arg(reg);
+                    .arg(res.fixedBindNumber);
       }
     }
   }
@@ -903,22 +908,12 @@ QString PipelineStateViewer::GenerateHLSLStub(const ShaderBindpointMapping &bind
   {
     if(!cbuf.name.isEmpty() && !cbuf.variables.isEmpty())
     {
-      uint32_t reg = ~0U;
-
-      if(cbuf.bindPoint < bindpointMapping.constantBlocks.count())
-        reg = bindpointMapping.constantBlocks[cbuf.bindPoint].bind;
-      else
-        hlsl += lit("/*\n");
-
       QString cbufName = cbuf.name;
       if(cbufName == lit("$Globals"))
         cbufName = lit("_Globals");
-      cbuffers += lit("cbuffer %1 : register(b%2) {\n").arg(cbufName).arg(reg);
+      cbuffers += lit("cbuffer %1 : register(b%2) {\n").arg(cbufName).arg(cbuf.fixedBindNumber);
       MakeShaderVariablesHLSL(true, cbuf.variables, cbuffers, hlsl);
       cbuffers += lit("};\n\n");
-
-      if(reg == ~0U)
-        hlsl += lit("*/\n");
     }
     cbufIdx++;
   }
@@ -979,10 +974,12 @@ void PipelineStateViewer::shaderEdit_clicked()
 
 IShaderViewer *PipelineStateViewer::EditShader(ResourceId id, ShaderStage shaderType,
                                                const rdcstr &entry, ShaderCompileFlags compileFlags,
-                                               ShaderEncoding encoding, const rdcstrpairs &files)
+                                               KnownShaderTool knownTool,
+                                               ShaderEncoding shaderEncoding,
+                                               const rdcstrpairs &files)
 {
-  IShaderViewer *sv =
-      m_Ctx.EditShader(id, shaderType, entry, files, encoding, compileFlags, NULL, NULL);
+  IShaderViewer *sv = m_Ctx.EditShader(id, shaderType, entry, files, knownTool, shaderEncoding,
+                                       compileFlags, NULL, NULL);
 
   m_Ctx.AddDockWindow(sv->Widget(), DockReference::AddTo, this);
 
@@ -995,8 +992,22 @@ IShaderViewer *PipelineStateViewer::EditOriginalShaderSource(ResourceId id,
   QSet<uint> uniqueFiles;
   rdcstrpairs files;
 
-  for(const ShaderSourceFile &s : shaderDetails->debugInfo.files)
+  // add the entry point file first, if we have one
+  const int entryFile = shaderDetails->debugInfo.editBaseFile;
+
+  for(int i = -1; i < shaderDetails->debugInfo.files.count(); i++)
   {
+    int idx = i;
+    if(idx < 0)
+      idx = entryFile;
+    else if(idx == entryFile)
+      continue;
+
+    if(idx < 0)
+      continue;
+
+    const ShaderSourceFile &s = shaderDetails->debugInfo.files[idx];
+
     QString filename = s.filename;
 
     uint filenameHash = qHash(filename.toLower());
@@ -1011,8 +1022,9 @@ IShaderViewer *PipelineStateViewer::EditOriginalShaderSource(ResourceId id,
     files.push_back(make_rdcpair(s.filename, s.contents));
   }
 
-  return EditShader(id, shaderDetails->stage, shaderDetails->entryPoint,
-                    shaderDetails->debugInfo.compileFlags, shaderDetails->debugInfo.encoding, files);
+  return EditShader(id, shaderDetails->stage, shaderDetails->debugInfo.entrySourceName,
+                    shaderDetails->debugInfo.compileFlags, shaderDetails->debugInfo.compiler,
+                    shaderDetails->debugInfo.encoding, files);
 }
 
 IShaderViewer *PipelineStateViewer::EditDecompiledSource(const ShaderProcessingTool &tool,
@@ -1027,8 +1039,14 @@ IShaderViewer *PipelineStateViewer::EditDecompiledSource(const ShaderProcessingT
   rdcstrpairs files;
   files.push_back(rdcpair<rdcstr, rdcstr>("decompiled", source));
 
-  IShaderViewer *sv = EditShader(id, shaderDetails->stage, shaderDetails->entryPoint,
-                                 shaderDetails->debugInfo.compileFlags, tool.output, files);
+  ShaderCompileFlags flags;
+
+  for(const ShaderCompileFlag &flag : shaderDetails->debugInfo.compileFlags.flags)
+    if(flag.name == "@spirver")
+      flags.flags.push_back(flag);
+
+  IShaderViewer *sv = EditShader(id, shaderDetails->stage, shaderDetails->entryPoint, flags,
+                                 KnownShaderTool::Unknown, tool.output, files);
 
   sv->ShowErrors(out.log);
 
@@ -1037,7 +1055,6 @@ IShaderViewer *PipelineStateViewer::EditDecompiledSource(const ShaderProcessingT
 
 void PipelineStateViewer::SetupShaderEditButton(QToolButton *button, ResourceId pipelineId,
                                                 ResourceId shaderId,
-                                                const ShaderBindpointMapping &bindpointMapping,
                                                 const ShaderReflection *shaderDetails)
 {
   if(!shaderDetails || !button->isEnabled() || button->popupMode() != QToolButton::MenuButtonPopup)
@@ -1049,13 +1066,16 @@ void PipelineStateViewer::SetupShaderEditButton(QToolButton *button, ResourceId 
 
   rdcarray<ShaderEncoding> accepted = m_Ctx.TargetShaderEncodings();
 
+  const ShaderDebugInfo &dbg = shaderDetails->debugInfo;
+
   // if we have original source and it's in a known format, display it as the first most preferred
   // option
-  if(!shaderDetails->debugInfo.files.empty() &&
-     shaderDetails->debugInfo.encoding != ShaderEncoding::Unknown)
+  if(!dbg.files.empty() && dbg.encoding != ShaderEncoding::Unknown)
   {
-    QAction *action =
-        new QAction(tr("Edit Source - %1").arg(shaderDetails->debugInfo.files[0].filename), menu);
+    int entryFile = qMax(0, dbg.entryLocation.fileIndex);
+    if(dbg.editBaseFile >= 0 && dbg.editBaseFile < dbg.files.count())
+      entryFile = dbg.editBaseFile;
+    QAction *action = new QAction(tr("Edit Source - %1").arg(dbg.files[entryFile].filename), menu);
     action->setIcon(Icons::page_white_edit());
 
     QObject::connect(action, &QAction::triggered, [this, shaderId, shaderDetails]() {
@@ -1085,23 +1105,25 @@ void PipelineStateViewer::SetupShaderEditButton(QToolButton *button, ResourceId 
   }
 
   // if all else fails we can generate a stub for editing. Skip this for GLSL as it always has
-  // source above which is preferred.
-  if(shaderDetails->encoding != ShaderEncoding::GLSL)
+  // source above which is preferred, and for D3D9 bytecode which has no stub or pseudocode.
+  if(shaderDetails->encoding != ShaderEncoding::GLSL &&
+     shaderDetails->encoding != ShaderEncoding::D3D9Bytecode)
   {
     QString label = tr("Edit Generated Stub");
 
-    if(shaderDetails->encoding == ShaderEncoding::SPIRV)
+    if(shaderDetails->encoding == ShaderEncoding::SPIRV ||
+       shaderDetails->encoding == ShaderEncoding::OpenGLSPIRV)
       label = tr("Edit Pseudocode");
 
     QAction *action = new QAction(label, menu);
     action->setIcon(Icons::page_white_edit());
 
-    QObject::connect(action, &QAction::triggered, [this, pipelineId, shaderId, bindpointMapping,
-                                                   shaderDetails]() {
+    QObject::connect(action, &QAction::triggered, [this, pipelineId, shaderId, shaderDetails]() {
       QString entry;
       QString src;
 
-      if(shaderDetails->encoding == ShaderEncoding::SPIRV)
+      if(shaderDetails->encoding == ShaderEncoding::SPIRV ||
+         shaderDetails->encoding == ShaderEncoding::OpenGLSPIRV)
       {
         m_Ctx.Replay().AsyncInvoke([this, pipelineId, shaderId, shaderDetails](IReplayController *r) {
           rdcstr disasm = r->DisassembleShader(pipelineId, shaderDetails, "");
@@ -1117,22 +1139,23 @@ void PipelineStateViewer::SetupShaderEditButton(QToolButton *button, ResourceId 
             files.push_back(rdcpair<rdcstr, rdcstr>("pseudocode", editeddisasm));
 
             EditShader(shaderId, shaderDetails->stage, shaderDetails->entryPoint,
-                       shaderDetails->debugInfo.compileFlags, ShaderEncoding::Unknown, files);
+                       shaderDetails->debugInfo.compileFlags, KnownShaderTool::Unknown,
+                       ShaderEncoding::Unknown, files);
           });
         });
       }
-      else if(shaderDetails->encoding == ShaderEncoding::DXBC)
+      else if(shaderDetails->encoding == ShaderEncoding::DXBC ||
+              shaderDetails->encoding == ShaderEncoding::DXIL)
       {
         entry = lit("EditedShader%1S").arg(ToQStr(shaderDetails->stage, GraphicsAPI::D3D11)[0]);
 
         rdcstrpairs files;
-        files.push_back(rdcpair<rdcstr, rdcstr>(
-            "decompiled_stub.hlsl", GenerateHLSLStub(bindpointMapping, shaderDetails, entry)));
+        files.push_back(rdcpair<rdcstr, rdcstr>("decompiled_stub.hlsl",
+                                                GenerateHLSLStub(shaderDetails, entry)));
 
         EditShader(shaderId, shaderDetails->stage, entry, shaderDetails->debugInfo.compileFlags,
-                   ShaderEncoding::HLSL, files);
+                   KnownShaderTool::Unknown, ShaderEncoding::HLSL, files);
       }
-
     });
 
     menu->addAction(action);
@@ -1192,7 +1215,7 @@ void PipelineStateViewer::ShowResourceContextMenu(RDTreeWidget *widget, const QP
       m_Ctx.GetResourceInspector()->Inspect(id);
     });
 
-    CombineUsageEvents(m_Ctx, usage,
+    CombineUsageEvents(m_Ctx, usage, false,
                        [this, &contextMenu](uint32_t start, uint32_t end, ResourceUsage use) {
                          AddResourceUsageEntry(contextMenu, start, end, use);
                        });
@@ -1223,6 +1246,8 @@ ResourceId PipelineStateViewer::updateThumbnail(QWidget *widget, QModelIndex idx
         id = m_GL->GetResource(item);
       else if(m_Vulkan)
         id = m_Vulkan->GetResource(item);
+      else if(m_D3D9)
+        id = m_D3D9->GetResource(item);
     }
 
     TextureDescription *tex = m_Ctx.GetTexture(id);
@@ -1270,6 +1295,8 @@ bool PipelineStateViewer::hasThumbnail(QWidget *widget, QModelIndex idx)
         id = m_GL->GetResource(item);
       else if(m_Vulkan)
         id = m_Vulkan->GetResource(item);
+      else if(m_D3D9)
+        id = m_D3D9->GetResource(item);
     }
 
     if(id != ResourceId() && m_Ctx.GetTexture(id))
@@ -1294,6 +1321,8 @@ void PipelineStateViewer::SetupResourceView(RDTreeWidget *widget)
       id = m_GL->GetResource(item);
     else if(m_Vulkan)
       id = m_Vulkan->GetResource(item);
+    else if(m_D3D9)
+      id = m_D3D9->GetResource(item);
 
     if(id != ResourceId())
     {
@@ -1370,6 +1399,8 @@ QString PipelineStateViewer::GetVBufferFormatString(uint32_t slot)
 
   uint32_t offset = 0;
 
+  format = lit("struct vbuffer {\n");
+
   for(size_t i = 0; i < attrs.size(); i++)
   {
     // we disallowed overlaps above, but we do allow *duplicates*. So if our offset has already
@@ -1377,8 +1408,11 @@ QString PipelineStateViewer::GetVBufferFormatString(uint32_t slot)
     if(attrs[i].byteOffset < offset)
       continue;
 
-    // declare any padding from previous element to this one
-    format += BufferFormatter::DeclarePaddingBytes(attrs[i].byteOffset - offset);
+    // declare an explicit offset if there's a gap from previous element to this one
+    if(attrs[i].byteOffset > offset)
+      format += lit("  [[offset(%1)]]\n").arg(attrs[i].byteOffset);
+
+    format += lit("  ");
 
     const ResourceFormat &fmt = attrs[i].format;
 
@@ -1389,12 +1423,12 @@ QString PipelineStateViewer::GetVBufferFormatString(uint32_t slot)
       switch(fmt.type)
       {
         case ResourceFormatType::R10G10B10A2:
-          if(fmt.compType == CompType::UInt)
-            format += lit("uintten");
           if(fmt.compType == CompType::UNorm)
-            format += lit("unormten");
+            format += lit("[[packed(r10g10b10a2)]] [[unorm]] uint4");
+          else
+            format += lit("[[packed(r10g10b10a2)]] uint4");
           break;
-        case ResourceFormatType::R11G11B10: format += lit("floateleven"); break;
+        case ResourceFormatType::R11G11B10: format += lit("[[packed(r11g11b10)]] float3"); break;
         default: format += tr("// unknown type "); break;
       }
     }
@@ -1406,39 +1440,41 @@ QString PipelineStateViewer::GetVBufferFormatString(uint32_t slot)
 
       if(fmt.compType == CompType::UNorm || fmt.compType == CompType::UNormSRGB)
       {
-        format += lit("unorm%1").arg(widthchar[fmt.compByteWidth]);
+        format += lit("[[unorm]]");
       }
       else if(fmt.compType == CompType::SNorm)
       {
-        format += lit("snorm%1").arg(widthchar[fmt.compByteWidth]);
+        format += lit("[[snorm]]");
       }
-      else
-      {
-        if(fmt.compType == CompType::UInt)
-          format += lit("u");
 
-        if(fmt.compByteWidth == 1)
-        {
-          format += lit("byte");
-        }
-        else if(fmt.compByteWidth == 2)
-        {
-          if(fmt.compType == CompType::Float)
-            format += lit("half");
-          else
-            format += lit("short");
-        }
-        else if(fmt.compByteWidth == 4)
-        {
-          if(fmt.compType == CompType::Float)
-            format += lit("float");
-          else
-            format += lit("int");
-        }
-        else if(fmt.compByteWidth == 8)
-        {
+      if(fmt.compType == CompType::UInt || fmt.compType == CompType::UNorm ||
+         fmt.compType == CompType::UNormSRGB)
+        format += lit("u");
+
+      if(fmt.compByteWidth == 1)
+      {
+        format += lit("byte");
+      }
+      else if(fmt.compByteWidth == 2)
+      {
+        if(fmt.compType == CompType::Float)
+          format += lit("half");
+        else
+          format += lit("short");
+      }
+      else if(fmt.compByteWidth == 4)
+      {
+        if(fmt.compType == CompType::Float)
+          format += lit("float");
+        else
+          format += lit("int");
+      }
+      else if(fmt.compByteWidth == 8)
+      {
+        if(fmt.compType == CompType::Float)
           format += lit("double");
-        }
+        else
+          format += lit("long");
       }
 
       format += QString::number(fmt.compCount);
@@ -1448,6 +1484,7 @@ QString PipelineStateViewer::GetVBufferFormatString(uint32_t slot)
     QString sanitised_name = real_name;
 
     sanitised_name.replace(QLatin1Char('.'), QLatin1Char('_'))
+        .replace(QLatin1Char(':'), QLatin1Char('_'))
         .replace(QLatin1Char('['), QLatin1Char('_'))
         .replace(QLatin1Char(']'), QLatin1Char('_'));
 
@@ -1457,10 +1494,22 @@ QString PipelineStateViewer::GetVBufferFormatString(uint32_t slot)
       format += QFormatStr(" %1; // %2\n").arg(sanitised_name).arg(real_name);
   }
 
-  if(stride > 0)
-    format += BufferFormatter::DeclarePaddingBytes(stride - offset);
+  format += lit("}\n\nvbuffer vertex[];");
+
+  if(stride > offset)
+    format = lit("[[size(%1)]]\n").arg(stride) + format;
+
+  format = lit("#pack(scalar) // vertex buffers can be tightly packed\n"
+               "\n") +
+           format;
 
   return format;
+}
+
+QColor PipelineStateViewer::GetViewDetailsColor()
+{
+  return QColor::fromHslF(0.45f, 1.0f,
+                          qBound(0.25, palette().color(QPalette::Base).lightnessF(), 0.75));
 }
 
 bool PipelineStateViewer::SaveShaderFile(const ShaderReflection *shader)
@@ -1475,8 +1524,13 @@ bool PipelineStateViewer::SaveShaderFile(const ShaderReflection *shader)
     case ShaderEncoding::DXBC: filter = tr("DXBC Shader files (*.dxbc)"); break;
     case ShaderEncoding::HLSL: filter = tr("HLSL files (*.hlsl)"); break;
     case ShaderEncoding::GLSL: filter = tr("GLSL files (*.glsl)"); break;
-    case ShaderEncoding::SPIRV: filter = tr("SPIR-V files (*.spv)"); break;
-    case ShaderEncoding::SPIRVAsm: filter = tr("SPIR-V assembly files (*.spvasm)"); break;
+    case ShaderEncoding::SPIRV:
+    case ShaderEncoding::OpenGLSPIRV: filter = tr("SPIR-V files (*.spv)"); break;
+    case ShaderEncoding::SPIRVAsm:
+    case ShaderEncoding::OpenGLSPIRVAsm: filter = tr("SPIR-V assembly files (*.spvasm)"); break;
+    case ShaderEncoding::DXIL: filter = tr("DXIL Shader files (*.dxbc)"); break;
+    case ShaderEncoding::Slang: filter = tr("Slang Shader files (*.slang)"); break;
+    case ShaderEncoding::D3D9Bytecode: filter = tr("D3D9 Shader files (*.fxo)"); break;
     case ShaderEncoding::Unknown:
     case ShaderEncoding::Count: filter = tr("All files (*.*)"); break;
   }
@@ -1524,4 +1578,20 @@ void PipelineStateViewer::SelectPipelineStage(PipelineStage stage)
     m_GL->SelectPipelineStage(stage);
   else if(m_Vulkan)
     m_Vulkan->SelectPipelineStage(stage);
+  else if(m_D3D9)
+    m_D3D9->SelectPipelineStage(stage);
+}
+
+ScopedTreeUpdater::ScopedTreeUpdater(RDTreeWidget *widget) : m_Widget(widget)
+{
+  vs = m_Widget->verticalScrollBar()->value();
+  m_Widget->beginUpdate();
+  m_Widget->clear();
+}
+
+ScopedTreeUpdater::~ScopedTreeUpdater()
+{
+  m_Widget->clearSelection();
+  m_Widget->endUpdate();
+  m_Widget->verticalScrollBar()->setValue(vs);
 }

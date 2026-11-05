@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,7 +23,7 @@
  ******************************************************************************/
 
 #if defined(OPENGL_ES) && defined(NUM_VIEWS)
-#extension GL_OVR_multiview2 : require
+#extension GL_OVR_multiview : require
 #endif
 
 #include "glsl_globals.h"

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -38,6 +38,7 @@
 #include <QJsonDocument>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMetaMethod>
 #include <QMouseEvent>
@@ -47,6 +48,7 @@
 #include <QProgressDialog>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
+#include <QScreen>
 #include <QStandardPaths>
 #include <QTextBlock>
 #include <QTextBoundaryFinder>
@@ -55,12 +57,20 @@
 #include "Code/Resources.h"
 #include "Widgets/Extended/RDListWidget.h"
 #include "Widgets/Extended/RDTreeWidget.h"
+#include "scintilla/include/qt/ScintillaEdit.h"
 
 // normally this is in the renderdoc core library, but it's needed for the 'unknown enum' path,
 // so we implement it here using QString. It's inefficient, but this is a very uncommon path -
 // either for invalid values or for when a new enum is added and the code isn't updated
 template <>
 rdcstr DoStringise(const uint32_t &el)
+{
+  return QString::number(el);
+}
+
+// this could be needed for CHECKs in tests
+template <>
+rdcstr DoStringise(const uint16_t &el)
 {
   return QString::number(el);
 }
@@ -85,11 +95,13 @@ void PointerTypeRegistry::Init()
 
   // type ID 0 is reserved as a NULL/empty descriptor
   typeDescriptions.resize(1);
-  typeDescriptions[0].descriptor.name = "<Unknown>";
+  typeDescriptions[0].name = "<Unknown>";
 }
 
 uint32_t PointerTypeRegistry::GetTypeID(ResourceId shader, uint32_t pointerTypeId)
 {
+  if(pointerTypeId & TypeIDBit)
+    shader = ResourceId();
   return typeMapping[qMakePair(shader, pointerTypeId)];
 }
 
@@ -111,6 +123,45 @@ uint32_t PointerTypeRegistry::GetTypeID(const ShaderConstantType &structDef)
   return id;
 }
 
+static void UpdatePendingPointerTypes(ShaderConstantType &constType, QMap<uint32_t, uint32_t> remap)
+{
+  if(remap.contains(constType.pointerTypeID))
+    constType.pointerTypeID = remap[constType.pointerTypeID];
+
+  for(ShaderConstant &m : constType.members)
+    UpdatePendingPointerTypes(m.type, remap);
+}
+
+QList<uint32_t> PointerTypeRegistry::ResolveTypeIDsForPointerCycle(
+    QList<QPair<ShaderConstantType *, uint32_t>> structTypes)
+{
+  QList<uint32_t> ret;
+
+  // we don't attempt to deduplicate when declaring pointer cycles, we just allocate new types. This
+  // leads to a "leak" but it's expected to be small, rare, and limited in number
+  uint32_t base = (uint32_t)typeDescriptions.size();
+
+  QMap<uint32_t, uint32_t> remap;
+
+  typeDescriptions.reserve(base + structTypes.size());
+  for(int i = 0; i < structTypes.count(); i++)
+  {
+    uint32_t id = TypeIDBit | (uint32_t)typeDescriptions.size();
+
+    typeDescriptions.push_back(*structTypes[i].first);
+    typeMapping[qMakePair(ResourceId(), id)] = id;
+
+    remap[structTypes[i].second] = id;
+
+    ret.push_back(id);
+  }
+
+  for(int i = 0; i < structTypes.count(); i++)
+    UpdatePendingPointerTypes(typeDescriptions[base + i], remap);
+
+  return ret;
+}
+
 const ShaderConstantType &PointerTypeRegistry::GetTypeDescriptor(uint32_t typeId)
 {
   return typeDescriptions[typeId & ~TypeIDBit];
@@ -119,9 +170,9 @@ const ShaderConstantType &PointerTypeRegistry::GetTypeDescriptor(uint32_t typeId
 void PointerTypeRegistry::CacheSubTypes(const ShaderReflection *reflection,
                                         ShaderConstantType &structDef)
 {
-  if((structDef.descriptor.pointerTypeID & TypeIDBit) == 0)
-    structDef.descriptor.pointerTypeID =
-        PointerTypeRegistry::GetTypeID(reflection->pointerTypes[structDef.descriptor.pointerTypeID]);
+  if((structDef.pointerTypeID & TypeIDBit) == 0)
+    structDef.pointerTypeID =
+        PointerTypeRegistry::GetTypeID(reflection->pointerTypes[structDef.pointerTypeID]);
 
   for(ShaderConstant &member : structDef.members)
     CacheSubTypes(reflection, member.type);
@@ -164,9 +215,8 @@ rdcstr DoStringise(const PointerVal &el)
   }
 }
 
-QString GetTruncatedResourceName(ICaptureContext &ctx, ResourceId id)
+void TruncateStringFromEnd(QString &name)
 {
-  QString name = ctx.GetResourceName(id);
   if(name.length() > 64)
   {
     QTextBoundaryFinder boundaries(QTextBoundaryFinder::Grapheme, name.data(), name.length());
@@ -177,6 +227,12 @@ QString GetTruncatedResourceName(ICaptureContext &ctx, ResourceId id)
     name.resize(pos);
     name += lit("...");
   }
+}
+
+QString GetTruncatedResourceName(const ICaptureContext &ctx, ResourceId id)
+{
+  QString name = ctx.GetResourceName(id);
+  TruncateStringFromEnd(name);
 
   return name;
 }
@@ -188,6 +244,18 @@ struct ShaderMessageLink
 };
 
 Q_DECLARE_METATYPE(ShaderMessageLink);
+
+static QRegularExpression htmlRE(lit("<[^>]*>"));
+
+// resource link and shader message icons are sized to the font rather than always being 16 pixels,
+// which is taller than the text and than compact rows. 1.25x the ascent centres the icon on the
+// capitals, and it's kept within one line (rounded up, a fractional line spacing such as 9.64 still
+// fits a 10 pixel icon) so it stays clear of the row separators.
+static int RichResourceIconSize(const QFont &font)
+{
+  QFontMetricsF fm(font);
+  return qBound(8, qMin(qRound(fm.ascent() * 1.25), qCeil(fm.lineSpacing())), 16);
+}
 
 // this is an opaque struct that contains the data to render, hit-test, etc for some text that
 // contains links to resources. It will update and cache the names of the resources.
@@ -210,7 +278,7 @@ struct RichResourceText
   bool forcehtml = false;
 
   // cache the context once we've obtained it.
-  ICaptureContext *ctxptr = NULL;
+  const ICaptureContext *ctxptr = NULL;
 
   void cacheText(const QWidget *widget)
   {
@@ -220,7 +288,13 @@ struct RichResourceText
     if(!ctxptr)
       return;
 
-    ICaptureContext &ctx = *(ICaptureContext *)ctxptr;
+    cacheText(*ctxptr);
+  }
+
+  void cacheText(const ICaptureContext &ctx)
+  {
+    if(!ctxptr)
+      ctxptr = &ctx;
 
     int refCache = ctx.ResourceNameCacheID();
 
@@ -242,9 +316,24 @@ struct RichResourceText
       {
         text += lit("EID @%1").arg(v.toUInt());
       }
+      else if(v.userType() == qMetaTypeId<ShaderMessageLink>())
+      {
+        ShaderMessageLink link = v.value<ShaderMessageLink>();
+
+        text +=
+            QApplication::translate("qrenderdoc", "%n msg(s)", "Shader messages", link.numMessages);
+      }
       else
       {
-        text += v.toString();
+        if(forcehtml)
+        {
+          // strip html tags and convert any html entities
+          text += QUrl::fromPercentEncoding(v.toString().replace(htmlRE, QString()).toLatin1());
+        }
+        else
+        {
+          text += v.toString();
+        }
       }
     }
   }
@@ -274,6 +363,8 @@ struct RichResourceText
 
     bool highdpi = widget && widget->devicePixelRatioF() > 1.0;
 
+    int iconSize = RichResourceIconSize(widget ? widget->font() : doc.defaultFont());
+
     QVector<int> fragmentIndexFromBlockIndex;
 
     // there's an empty block at the start.
@@ -290,9 +381,10 @@ struct RichResourceText
         QString resname = GetTruncatedResourceName(ctx, v.value<ResourceId>()).toHtmlEscaped();
         html += lit("<td valign=\"middle\" style=\"line-height: 14px\"><b>%1</b></td>"
                     "<td valign=\"middle\" style=\"line-height: 14px\">"
-                    "<img width=\"16\" src=':/link%3.png'></td>")
+                    "<img width=\"%4\" height=\"%4\" src=':/link%3.png'></td>")
                     .arg(resname)
-                    .arg(highdpi ? lit("@2x") : QString());
+                    .arg(highdpi ? lit("@2x") : QString())
+                    .arg(iconSize);
         text += resname;
 
         // these generate two blocks (one for each cell)
@@ -307,10 +399,11 @@ struct RichResourceText
             QApplication::translate("qrenderdoc", "%n msg(s)", "Shader messages", link.numMessages);
 
         html += lit("<td valign=\"middle\" style=\"line-height: 14px\">"
-                    "<img width=\"16\" src=':/text_add%3.png'></td>"
+                    "<img width=\"%4\" height=\"%4\" src=':/text_add%3.png'></td>"
                     "<td valign=\"middle\" style=\"line-height: 14px\">%1</td>")
                     .arg(msgstr)
-                    .arg(highdpi ? lit("@2x") : QString());
+                    .arg(highdpi ? lit("@2x") : QString())
+                    .arg(iconSize);
         text += msgstr;
 
         fragmentIndexFromBlockIndex.push_back(i);
@@ -340,7 +433,15 @@ struct RichResourceText
             lit("\n"),
             lit("</td></tr></table><table><tr><td valign=\"middle\" style=\"line-height: 14px\">"));
 
-        text += v.toString();
+        if(forcehtml)
+        {
+          text += QUrl::fromPercentEncoding(v.toString().replace(htmlRE, QString()).toLatin1());
+        }
+        else
+        {
+          text += v.toString();
+        }
+
         html += lit("<td valign=\"middle\" style=\"line-height: 14px\">%1</td>").arg(htmlfrag);
 
         numLines += newlines;
@@ -404,6 +505,14 @@ void GPUAddress::cacheAddress(const QWidget *widget)
   if(!ctxptr)
     return;
 
+  cacheAddress(*ctxptr);
+}
+
+void GPUAddress::cacheAddress(const ICaptureContext &ctx)
+{
+  if(!ctxptr)
+    ctxptr = &ctx;
+
   // bail if we're already cached
   if(base != ResourceId())
     return;
@@ -458,11 +567,17 @@ QString GPUAddressToString(GPUAddressPtr addr)
     return QFormatStr("0x%1").arg(addr->val.pointer, 0, 16);
 }
 
+QString EnumInterpValueToString(EnumInterpValue val)
+{
+  return val.str;
+}
+
 void RegisterMetatypeConversions()
 {
   QMetaType::registerConverter<RichResourceTextPtr, QString>(&ResIdTextToString);
   QMetaType::registerConverter<ResourceId, QString>(&ResIdToString);
   QMetaType::registerConverter<GPUAddressPtr, QString>(&GPUAddressToString);
+  QMetaType::registerConverter<EnumInterpValue, QString>(&EnumInterpValueToString);
 }
 
 bool HandleURLFragment(RichResourceTextPtr linkedText, QString text, bool parseURLs)
@@ -682,6 +797,46 @@ bool RichResourceTextCheck(const QVariant &var)
 // the rich text case.
 static const int RichResourceTextMargin = 2;
 
+// The vertical offset to draw a rich text document at, in a row of the given height. A single line
+// document is placed so that its text's baseline is where a plain text row in the same font puts
+// it, so its text lines up with plain rows. Centring the whole document doesn't do that: its height
+// includes the table cells' padding and the icons, and how a line-height style shifts the text
+// inside its line differs between Qt versions. If baseline is given, it's set to the baseline in
+// document coordinates, or to -1 for a document with several lines, which is centred.
+static qreal RichResourceTextYOffset(RichResourceText *linkedText, const QFont &font, int height,
+                                     qreal *baseline = NULL)
+{
+  if(baseline)
+    *baseline = -1.0;
+
+  QTextDocument &doc = linkedText->doc;
+
+  if(linkedText->numLines == 1)
+  {
+    for(QTextBlock block = doc.begin(); block.isValid(); block = block.next())
+    {
+      // skip empty blocks and the blocks that only hold an icon
+      QString text = block.text();
+      text.remove(QChar::ObjectReplacementCharacter);
+      if(text.isEmpty() || !block.layout() || block.layout()->lineCount() == 0)
+        continue;
+
+      QTextLine line = block.layout()->lineAt(0);
+      qreal docBaseline =
+          doc.documentLayout()->blockBoundingRect(block).top() + line.y() + line.ascent();
+
+      if(baseline)
+        *baseline = docBaseline;
+
+      QFontMetricsF fm(font);
+      return (height - fm.height()) / 2.0 + fm.ascent() - docBaseline;
+    }
+  }
+
+  int diff = height - doc.size().height();
+  return diff / 2;
+}
+
 void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, QFont font,
                            QPalette palette, QStyle::State state, QPoint mousePos,
                            const QVariant &var)
@@ -700,7 +855,7 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
 
     static const int margin = RichResourceTextMargin;
 
-    rect.adjust(margin, 0, -margin * 2, 0);
+    rect.adjust(margin, 0, -margin, 0);
 
     QString name;
 
@@ -749,29 +904,30 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
     painter->setPen(foreBrush.color());
     painter->drawText(rect, Qt::AlignLeft | Qt::AlignVCenter, name);
 
-    QRect textRect =
-        painter->fontMetrics().boundingRect(rect, Qt::AlignLeft | Qt::AlignVCenter, name);
+    const QFontMetrics fm = painter->fontMetrics();
+    QRect textRect = fm.boundingRect(rect, Qt::AlignLeft | Qt::AlignVCenter, name);
+    // the underline goes where the font puts underlines, as with rich text rows
+    const int underline_y = textRect.top() + fm.ascent() + qMax(1, fm.underlinePos());
 
     const QPixmap &px = Pixmaps::link(owner->devicePixelRatio());
+    const int iconSize = RichResourceIconSize(font);
 
     painter->setClipRect(rect);
 
-    textRect.setLeft(rect.left());
-    textRect.setWidth(textRect.width() + margin + px.width());
-    textRect.setHeight(qMax(textRect.height(), px.height()));
+    // the icon follows the name, centred on it. The hover area covers both over the full cell
+    // height, the same as rich text cells.
+    QRect iconRect(textRect.right() + 1 + margin, textRect.center().y() - iconSize / 2, iconSize,
+                   iconSize);
 
-    QPoint pos;
-    pos.setX(textRect.right() - px.width() + 1);
-    pos.setY(textRect.center().y() - px.height() / 2);
+    QRect hoverRect(rect.left(), rect.top(), iconRect.right() - rect.left() + 1, rect.height());
 
-    painter->drawPixmap(pos, px, px.rect());
+    painter->setRenderHint(QPainter::SmoothPixmapTransform);
+    painter->drawPixmap(iconRect, px, px.rect());
 
-    if((state & QStyle::State_MouseOver) && textRect.contains(mousePos) && valid)
+    if((state & QStyle::State_MouseOver) && hoverRect.contains(mousePos) && valid)
     {
-      int underline_y = textRect.bottom() - margin;
-
       painter->setPen(QPen(foreBrush, 1.0));
-      painter->drawLine(QPoint(textRect.left(), underline_y), QPoint(textRect.right(), underline_y));
+      painter->drawLine(QPoint(rect.left(), underline_y), QPoint(iconRect.right(), underline_y));
     }
 
     painter->restore();
@@ -788,18 +944,15 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
   if(font != linkedText->doc.defaultFont())
     linkedText->doc.setDefaultFont(font);
 
-  // vertical align to the centre, if there's spare room.
-  int diff = rect.height() - linkedText->doc.size().height();
+  qreal baseline = -1.0;
+  qreal yoffset = RichResourceTextYOffset(linkedText.data(), font, rect.height(), &baseline);
 
-  if(diff > 0)
-    painter->translate(1, diff / 2);
-  else
-    painter->translate(1, 0);
+  painter->translate(1, yoffset);
 
   QAbstractTextDocumentLayout::PaintContext docCtx;
   docCtx.palette = palette;
 
-  docCtx.clip = QRectF(0, 0, rect.width() - 1, rect.height());
+  docCtx.clip = QRectF(0, -yoffset, rect.width() - 1, rect.height());
 
   if(state & QStyle::State_Selected)
   {
@@ -817,6 +970,9 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
 
   painter->setClipRect(docCtx.clip);
 
+  // the icons are scaled to the text's size
+  painter->setRenderHint(QPainter::SmoothPixmapTransform);
+
   linkedText->doc.documentLayout()->draw(painter, docCtx);
 
   if(state & QStyle::State_MouseOver)
@@ -825,11 +981,8 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
 
     QAbstractTextDocumentLayout *layout = linkedText->doc.documentLayout();
 
-    QPoint p = mousePos - rect.topLeft();
-    if(diff > 0)
-      p -= QPoint(1, diff / 2);
-    else
-      p -= QPoint(1, 0);
+    QPointF p = mousePos - rect.topLeft();
+    p -= QPointF(1, yoffset);
 
     int pos = layout->hitTest(p, Qt::FuzzyHit);
 
@@ -857,7 +1010,15 @@ void RichResourceTextPaint(const QWidget *owner, QPainter *painter, QRect rect, 
             blockrect = blockrect.united(layout->blockBoundingRect(block.next()));
           }
 
-          if(v.userType() != qMetaTypeId<QUrl>())
+          if(baseline >= 0.0)
+          {
+            // a single line is underlined where its font puts underlines, the bottom of its cells
+            // can be below the row
+            qreal underline = baseline + qMax(1.0, QFontMetricsF(font).underlinePos());
+            blockrect.setTop(underline);
+            blockrect.setBottom(underline);
+          }
+          else if(v.userType() != qMetaTypeId<QUrl>())
           {
             blockrect.translate(0.0, -2.0);
           }
@@ -911,9 +1072,8 @@ int RichResourceTextWidthHint(const QWidget *owner, const QFont &font, const QVa
         name = lit("NULL");
     }
 
-    const QPixmap &px = Pixmaps::link(owner->devicePixelRatio());
-
-    int ret = margin + metrics.boundingRect(name).width() + margin + px.width() + margin;
+    int ret =
+        margin + metrics.boundingRect(name).width() + margin + RichResourceIconSize(font) + margin;
     return ret;
   }
 
@@ -928,18 +1088,18 @@ int RichResourceTextHeightHint(const QWidget *owner, const QFont &font, const QV
 {
   QFontMetrics metrics(font);
 
+  static const int margin = RichResourceTextMargin;
+
   if(var.userType() == qMetaTypeId<RichResourceTextPtr>())
   {
     RichResourceTextPtr linkedText = var.value<RichResourceTextPtr>();
-
-    static const int margin = RichResourceTextMargin;
 
     linkedText->cacheDocument(owner);
 
     return linkedText->numLines * (metrics.lineSpacing() + margin * 2);
   }
 
-  return metrics.height();
+  return qMax(metrics.height(), RichResourceIconSize(font) + margin * 2);
 }
 
 bool RichResourceTextMouseEvent(const QWidget *owner, const QVariant &var, QRect rect,
@@ -958,7 +1118,7 @@ bool RichResourceTextMouseEvent(const QWidget *owner, const QVariant &var, QRect
   {
     ResourceId id;
     GPUAddressPtr ptr;
-    ICaptureContext *ctxptr = NULL;
+    const ICaptureContext *ctxptr = NULL;
 
     if(var.userType() == qMetaTypeId<ResourceId>())
     {
@@ -1008,11 +1168,12 @@ bool RichResourceTextMouseEvent(const QWidget *owner, const QVariant &var, QRect
 
     QRect textRect = QFontMetrics(f).boundingRect(rect, Qt::AlignLeft | Qt::AlignVCenter, name);
 
-    const QPixmap &px = Pixmaps::link(owner->devicePixelRatio());
+    // the same name and icon area, over the full cell height, that RichResourceTextPaint underlines.
+    const int iconSize = RichResourceIconSize(font);
+    QRect iconRect(textRect.right() + 1 + margin, textRect.center().y() - iconSize / 2, iconSize,
+                   iconSize);
 
-    rect.setTop(textRect.top());
-    rect.setWidth(textRect.width() + margin + px.width());
-    rect.setHeight(qMax(textRect.height(), px.height()));
+    rect.setRight(iconRect.right());
 
     if(rect.contains(event->pos()))
     {
@@ -1043,8 +1204,22 @@ bool RichResourceTextMouseEvent(const QWidget *owner, const QVariant &var, QRect
           QString formatter;
 
           if(!ptrType.members.isEmpty())
-            formatter = BufferFormatter::DeclareStruct(ptrType.descriptor.name, ptrType.members,
-                                                       ptrType.descriptor.arrayByteStride);
+          {
+            PackingRules pack = BufferFormatter::EstimatePackingRules(ResourceId(), ptrType);
+
+            // for scalar-wrapped structs (generated by 'float *foo' type declarations) use scalar
+            // packing by default as that's probably what people will want most often and if we
+            // guess we're going to guess very conservatively.
+            if(ptrType.name.isEmpty() && ptrType.members.size() == 1)
+              pack = PackingRules::Scalar();
+
+            formatter = BufferFormatter::DeclareStruct(pack, ResourceId(), ptrType.name,
+                                                       ptrType.members, ptrType.arrayByteStride);
+          }
+          else if(!ptrType.name.empty() && ptrType.name[0] != '<')
+          {
+            formatter = ptrType.name;
+          }
 
           IBufferViewer *view = ctx.ViewBuffer(ptr->offset, ~0ULL, ptr->base, formatter);
 
@@ -1064,14 +1239,8 @@ bool RichResourceTextMouseEvent(const QWidget *owner, const QVariant &var, QRect
 
   QAbstractTextDocumentLayout *layout = linkedText->doc.documentLayout();
 
-  // vertical align to the centre, if there's spare room.
-  int diff = rect.height() - linkedText->doc.size().height();
-
-  QPoint p = event->pos() - rect.topLeft();
-  if(diff > 0)
-    p -= QPoint(1, diff / 2);
-  else
-    p -= QPoint(1, 0);
+  QPointF p = event->pos() - rect.topLeft();
+  p -= QPointF(1, RichResourceTextYOffset(linkedText.data(), font, rect.height()));
 
   int pos = layout->hitTest(p, Qt::FuzzyHit);
 
@@ -1157,10 +1326,31 @@ QString RichResourceTextFormat(ICaptureContext &ctx, QVariant var)
   if(var.userType() == qMetaTypeId<ResourceId>())
     return GetTruncatedResourceName(ctx, var.value<ResourceId>());
 
+  if(var.userType() == qMetaTypeId<GPUAddressPtr>())
+  {
+    var.value<GPUAddressPtr>()->cacheAddress(ctx);
+
+    // a bit hacky, but recurse to pick up the 'name' of the pointer base buffer
+    return RichResourceTextFormat(ctx, var.toString());
+  }
+
+  if(var.userType() == qMetaTypeId<RichResourceTextPtr>())
+    var.value<RichResourceTextPtr>()->cacheText(ctx);
+
   // either it's something else and wasn't rich resource, in which case just return the string
   // representation, or it's a fully formatted rich resource document, where the cached text will do
   // the trick with ResIdTextToString.
   return var.toString();
+}
+
+FullEditorDelegate::FullEditorDelegate(QWidget *parent) : QStyledItemDelegate(parent)
+{
+}
+
+QWidget *FullEditorDelegate::createEditor(QWidget *parent, const QStyleOptionViewItem &option,
+                                          const QModelIndex &index) const
+{
+  return new QLineEdit(parent);
 }
 
 RichTextViewDelegate::RichTextViewDelegate(QAbstractItemView *parent)
@@ -1288,6 +1478,134 @@ bool RichTextViewDelegate::linkHover(QMouseEvent *e, const QFont &font, const QM
   return false;
 }
 
+ButtonDelegate::ButtonDelegate(const QIcon &icon, QString text, QWidget *parent)
+    : m_Icon(icon), m_Text(text), QStyledItemDelegate(parent)
+{
+}
+
+void ButtonDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
+                           const QModelIndex &index) const
+{
+  if(m_VisibleRole != -1 && index.data(m_VisibleRole) != m_VisibleValue)
+    return QStyledItemDelegate::paint(painter, option, index);
+
+  // draw the background to get selection etc
+  QApplication::style()->drawControl(QStyle::CE_ItemViewItem, &option, painter);
+
+  QStyleOptionButton button;
+
+  button.text = m_Text;
+  button.icon = m_Icon;
+
+  if(m_EnableRole == -1 || index.data(m_EnableRole) == m_EnableValue)
+    button.state = QStyle::State_Enabled;
+
+  if(m_ClickedIndex == index)
+    button.state |= QStyle::State_Sunken;
+
+  QSize sz =
+      QApplication::style()->sizeFromContents(QStyle::CT_PushButton, &button, option.decorationSize);
+
+  button.rect = getButtonRect(option.rect, sz);
+  button.iconSize = option.decorationSize;
+
+  QApplication::style()->drawControl(QStyle::CE_PushButton, &button, painter);
+}
+
+QSize ButtonDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const
+{
+  if(m_VisibleRole != -1 && index.data(m_VisibleRole) != m_VisibleValue)
+    return QStyledItemDelegate::sizeHint(option, index);
+
+  QStyleOptionButton button;
+  button.text = m_Text;
+  button.icon = m_Icon;
+  button.state = QStyle::State_Enabled;
+
+  return QApplication::style()->sizeFromContents(QStyle::CT_PushButton, &button,
+                                                 option.decorationSize);
+}
+
+bool ButtonDelegate::editorEvent(QEvent *event, QAbstractItemModel *model,
+                                 const QStyleOptionViewItem &option, const QModelIndex &index)
+{
+  if(m_VisibleRole != -1 && index.data(m_VisibleRole) != m_VisibleValue)
+    return QStyledItemDelegate::editorEvent(event, model, option, index);
+
+  if(event->type() == QEvent::MouseButtonPress)
+  {
+    QMouseEvent *e = (QMouseEvent *)event;
+
+    QPoint p = e->pos();
+
+    QSize sz = sizeHint(option, index);
+    QRect rect = getButtonRect(option.rect, sz);
+
+    if(rect.contains(p) && (m_EnableRole == -1 || index.data(m_EnableRole) == m_EnableValue))
+    {
+      m_ClickedIndex = index;
+      return true;
+    }
+  }
+  else if(event->type() == QEvent::MouseMove)
+  {
+    QMouseEvent *e = (QMouseEvent *)event;
+
+    if(m_ClickedIndex != index || (e->buttons() & Qt::LeftButton) == 0)
+    {
+      m_ClickedIndex = QModelIndex();
+    }
+    else
+    {
+      QPoint p = e->pos();
+
+      QSize sz = sizeHint(option, index);
+      QRect rect = getButtonRect(option.rect, sz);
+
+      if(!rect.contains(p))
+      {
+        m_ClickedIndex = QModelIndex();
+      }
+    }
+  }
+  else if(event->type() == QEvent::MouseButtonRelease)
+  {
+    if(m_ClickedIndex == index && index != QModelIndex())
+    {
+      m_ClickedIndex = QModelIndex();
+
+      QMouseEvent *e = (QMouseEvent *)event;
+
+      QPoint p = e->pos();
+
+      QSize sz = sizeHint(option, index);
+      QRect rect = getButtonRect(option.rect, sz);
+
+      if(rect.contains(p))
+      {
+        emit messageClicked(index);
+        return true;
+      }
+    }
+  }
+
+  return QStyledItemDelegate::editorEvent(event, model, option, index);
+}
+
+QRect ButtonDelegate::getButtonRect(const QRect boundsRect, const QSize sz) const
+{
+  QRect rect = boundsRect;
+  rect.setWidth(qMin(rect.width(), sz.width()));
+  rect.setHeight(qMin(rect.height(), sz.height()));
+  if(m_Centered)
+    rect.moveLeft(rect.center().x() - rect.width() / 2);
+  rect.moveTop(rect.center().y() - rect.height() / 2);
+  // clip if the rounding from centering caused us to go out of bounds
+  rect.setTop(qMax(rect.top(), boundsRect.top()));
+  rect.setLeft(qMax(rect.left(), boundsRect.left()));
+  return rect;
+}
+
 #include "renderdoc_tostr.inl"
 
 QString ToQStr(const ResourceUsage usage, const GraphicsAPI apitype)
@@ -1303,28 +1621,34 @@ QString ToQStr(const ResourceUsage usage, const GraphicsAPI apitype)
 
       case ResourceUsage::VS_Constants: return lit("VS - Constant Buffer");
       case ResourceUsage::GS_Constants: return lit("GS - Constant Buffer");
-      case ResourceUsage::HS_Constants: return lit("TCS - Constant Buffer");
-      case ResourceUsage::DS_Constants: return lit("TES - Constant Buffer");
+      case ResourceUsage::HS_Constants: return lit("HS - Constant Buffer");
+      case ResourceUsage::DS_Constants: return lit("DS - Constant Buffer");
+      case ResourceUsage::PS_Constants: return lit("PS - Constant Buffer");
       case ResourceUsage::CS_Constants: return lit("CS - Constant Buffer");
-      case ResourceUsage::PS_Constants: return lit("FS - Constant Buffer");
+      case ResourceUsage::TS_Constants: return lit("AS - Constant Buffer");
+      case ResourceUsage::MS_Constants: return lit("MS - Constant Buffer");
       case ResourceUsage::All_Constants: return lit("All - Constant Buffer");
 
       case ResourceUsage::StreamOut: return lit("Stream Out");
 
       case ResourceUsage::VS_Resource: return lit("VS - Resource");
       case ResourceUsage::GS_Resource: return lit("GS - Resource");
-      case ResourceUsage::HS_Resource: return lit("TCS - Resource");
-      case ResourceUsage::DS_Resource: return lit("TES - Resource");
+      case ResourceUsage::HS_Resource: return lit("HS - Resource");
+      case ResourceUsage::DS_Resource: return lit("DS - Resource");
+      case ResourceUsage::PS_Resource: return lit("PS - Resource");
       case ResourceUsage::CS_Resource: return lit("CS - Resource");
-      case ResourceUsage::PS_Resource: return lit("FS - Resource");
+      case ResourceUsage::TS_Resource: return lit("AS - Resource");
+      case ResourceUsage::MS_Resource: return lit("MS - Resource");
       case ResourceUsage::All_Resource: return lit("All - Resource");
 
       case ResourceUsage::VS_RWResource: return lit("VS - UAV");
-      case ResourceUsage::HS_RWResource: return lit("TCS - UAV");
-      case ResourceUsage::DS_RWResource: return lit("TES - UAV");
+      case ResourceUsage::HS_RWResource: return lit("HS - UAV");
+      case ResourceUsage::DS_RWResource: return lit("DS - UAV");
       case ResourceUsage::GS_RWResource: return lit("GS - UAV");
-      case ResourceUsage::PS_RWResource: return lit("FS - UAV");
+      case ResourceUsage::PS_RWResource: return lit("PS - UAV");
       case ResourceUsage::CS_RWResource: return lit("CS - UAV");
+      case ResourceUsage::TS_RWResource: return lit("AS - UAV");
+      case ResourceUsage::MS_RWResource: return lit("MS - UAV");
       case ResourceUsage::All_RWResource: return lit("All - UAV");
 
       case ResourceUsage::InputTarget: return lit("Color Input");
@@ -1362,33 +1686,39 @@ QString ToQStr(const ResourceUsage usage, const GraphicsAPI apitype)
 
       case ResourceUsage::VS_Constants: return lit("VS - Uniform Buffer");
       case ResourceUsage::GS_Constants: return lit("GS - Uniform Buffer");
-      case ResourceUsage::HS_Constants: return lit("HS - Uniform Buffer");
-      case ResourceUsage::DS_Constants: return lit("DS - Uniform Buffer");
+      case ResourceUsage::HS_Constants: return lit("TCS - Uniform Buffer");
+      case ResourceUsage::DS_Constants: return lit("TES - Uniform Buffer");
+      case ResourceUsage::PS_Constants: return lit("FS - Uniform Buffer");
       case ResourceUsage::CS_Constants: return lit("CS - Uniform Buffer");
-      case ResourceUsage::PS_Constants: return lit("PS - Uniform Buffer");
+      case ResourceUsage::TS_Constants: return lit("TS - Uniform Buffer");
+      case ResourceUsage::MS_Constants: return lit("MS - Uniform Buffer");
       case ResourceUsage::All_Constants: return lit("All - Uniform Buffer");
 
       case ResourceUsage::StreamOut: return lit("Transform Feedback");
 
       case ResourceUsage::VS_Resource: return lit("VS - Texture");
       case ResourceUsage::GS_Resource: return lit("GS - Texture");
-      case ResourceUsage::HS_Resource: return lit("HS - Texture");
-      case ResourceUsage::DS_Resource: return lit("DS - Texture");
+      case ResourceUsage::HS_Resource: return lit("TCS - Texture");
+      case ResourceUsage::DS_Resource: return lit("TES - Texture");
+      case ResourceUsage::PS_Resource: return lit("FS - Texture");
       case ResourceUsage::CS_Resource: return lit("CS - Texture");
-      case ResourceUsage::PS_Resource: return lit("PS - Texture");
+      case ResourceUsage::TS_Resource: return lit("TS - Texture");
+      case ResourceUsage::MS_Resource: return lit("MS - Texture");
       case ResourceUsage::All_Resource: return lit("All - Texture");
 
       case ResourceUsage::VS_RWResource: return lit("VS - Image/SSBO");
       case ResourceUsage::HS_RWResource: return lit("HS - Image/SSBO");
-      case ResourceUsage::DS_RWResource: return lit("DS - Image/SSBO");
-      case ResourceUsage::GS_RWResource: return lit("GS - Image/SSBO");
-      case ResourceUsage::PS_RWResource: return lit("PS - Image/SSBO");
+      case ResourceUsage::DS_RWResource: return lit("TCS - Image/SSBO");
+      case ResourceUsage::GS_RWResource: return lit("TES - Image/SSBO");
+      case ResourceUsage::PS_RWResource: return lit("FS - Image/SSBO");
       case ResourceUsage::CS_RWResource: return lit("CS - Image/SSBO");
+      case ResourceUsage::TS_RWResource: return lit("TS - Image/SSBO");
+      case ResourceUsage::MS_RWResource: return lit("MS - Image/SSBO");
       case ResourceUsage::All_RWResource: return lit("All - Image/SSBO");
 
-      case ResourceUsage::InputTarget: return lit("FBO Input");
-      case ResourceUsage::ColorTarget: return lit("FBO Color");
-      case ResourceUsage::DepthStencilTarget: return lit("FBO Depthstencil");
+      case ResourceUsage::InputTarget: return lit("FB Input");
+      case ResourceUsage::ColorTarget: return lit("FB Color");
+      case ResourceUsage::DepthStencilTarget: return lit("FB Depthstencil");
 
       case ResourceUsage::Indirect: return lit("Indirect argument");
 
@@ -1426,6 +1756,14 @@ QString ToQStr(const ShaderStage stage, const GraphicsAPI apitype)
       case ShaderStage::Geometry: return lit("Geometry");
       case ShaderStage::Pixel: return lit("Pixel");
       case ShaderStage::Compute: return lit("Compute");
+      case ShaderStage::Amplification: return lit("Amplif.");
+      case ShaderStage::Mesh: return lit("Mesh");
+      case ShaderStage::RayGen: return lit("RayGen");
+      case ShaderStage::Intersection: return lit("Intersection");
+      case ShaderStage::AnyHit: return lit("AnyHit");
+      case ShaderStage::ClosestHit: return lit("ClosestHit");
+      case ShaderStage::Miss: return lit("Miss");
+      case ShaderStage::Callable: return lit("Callable");
       default: break;
     }
   }
@@ -1439,6 +1777,14 @@ QString ToQStr(const ShaderStage stage, const GraphicsAPI apitype)
       case ShaderStage::Geometry: return lit("Geometry");
       case ShaderStage::Fragment: return lit("Fragment");
       case ShaderStage::Compute: return lit("Compute");
+      case ShaderStage::Task: return lit("Task");
+      case ShaderStage::Mesh: return lit("Mesh");
+      case ShaderStage::RayGen: return lit("RayGen");
+      case ShaderStage::Intersection: return lit("Intersection");
+      case ShaderStage::AnyHit: return lit("AnyHit");
+      case ShaderStage::ClosestHit: return lit("ClosestHit");
+      case ShaderStage::Miss: return lit("Miss");
+      case ShaderStage::Callable: return lit("Callable");
       default: break;
     }
   }
@@ -1559,6 +1905,8 @@ QString D3DSemanticString(const SigParameter &sig)
       lit("SV_ShadingRate"),
       lit("SV_Barycentrics"),
       lit("SV_CullPrimitive"),
+      lit("out indices"),
+      lit("SV_ViewID"),
   };
 
   static_assert(arraydim<ShaderBuiltin>() == ARRAY_COUNT(sysValues),
@@ -1590,19 +1938,133 @@ QString GetComponentString(byte mask)
   return ret;
 }
 
-void CombineUsageEvents(ICaptureContext &ctx, const rdcarray<EventUsage> &usage,
+QIcon MakeSwatchIcon(QWidget *parentWidget, QColor swatchColor)
+{
+  int h = parentWidget->fontMetrics().height();
+  QPixmap pm(1, 1);
+  pm.fill(swatchColor);
+  pm = pm.scaled(QSize(h, h));
+
+  {
+    QPainter painter(&pm);
+
+    QPen pen(parentWidget->palette().foreground(), 1.0);
+    painter.setPen(pen);
+    painter.drawLine(QPoint(0, 0), QPoint(h - 1, 0));
+    painter.drawLine(QPoint(h - 1, 0), QPoint(h - 1, h - 1));
+    painter.drawLine(QPoint(h - 1, h - 1), QPoint(0, h - 1));
+    painter.drawLine(QPoint(0, h - 1), QPoint(0, 0));
+  }
+
+  return QIcon(pm);
+}
+
+float ConvertLinearToSRGB(float linear)
+{
+  if(linear <= 0.0031308f)
+    return 12.92f * linear;
+
+  if(linear < 0.0f)
+    linear = 0.0f;
+  else if(linear > 1.0f)
+    linear = 1.0f;
+
+  return 1.055f * powf(linear, 1.0f / 2.4f) - 0.055f;
+}
+
+static const ActionDescription *GetParentMarker(ICaptureContext &ctx, uint32_t eventId)
+{
+  const ActionDescription *parent = ctx.GetAction(eventId);
+  if(!parent)
+  {
+    rdcarray<const ActionDescription *> actions;
+    // Search the actions to find which action contains this eventId
+    for(const ActionDescription &action : ctx.CurRootActions())
+      actions.push_back(&action);
+
+    while(!parent && !actions.empty())
+    {
+      const ActionDescription *action = actions.back();
+      for(const APIEvent &event : action->events)
+      {
+        if(event.eventId == eventId)
+        {
+          parent = action;
+          break;
+        }
+      }
+      actions.pop_back();
+      bool addChildren = (action->eventId < eventId);
+      if(!addChildren)
+      {
+        if(!action->children.empty())
+          addChildren = action->children[0].eventId < eventId;
+      }
+
+      if(addChildren)
+      {
+        for(const ActionDescription &child : action->children)
+          actions.push_back(&child);
+      }
+    }
+  }
+  while(parent != NULL && (parent->flags != ActionFlags::PushMarker))
+    parent = parent->parent;
+
+  return parent;
+}
+
+QString GetParentMarkerName(ICaptureContext &ctx, uint32_t eventId)
+{
+  const ActionDescription *parent = GetParentMarker(ctx, eventId);
+  return parent ? QString(parent->customName) : QString();
+}
+
+QString GetParentMarkerPath(ICaptureContext &ctx, uint32_t eventId, bool &hasParent)
+{
+  const ActionDescription *parent = GetParentMarker(ctx, eventId);
+
+  QString markerPath;
+  while(parent)
+  {
+    if(parent->flags & ActionFlags::PushMarker)
+    {
+      QString prevPath = markerPath;
+      markerPath = parent->customName;
+      if(!prevPath.isEmpty())
+      {
+        markerPath += lit(" -> ");
+        markerPath += prevPath;
+        hasParent = true;
+      }
+    }
+    parent = parent->parent;
+  }
+  return markerPath;
+}
+
+uint32_t GetParentMarkerEventId(ICaptureContext &ctx, uint32_t eventId)
+{
+  const ActionDescription *parent = GetParentMarker(ctx, eventId);
+  return parent ? parent->eventId : 0;
+}
+
+void CombineUsageEvents(ICaptureContext &ctx, const rdcarray<EventUsage> &usage, bool splitByMarker,
                         std::function<void(uint32_t startEID, uint32_t endEID, ResourceUsage use)> callback)
 {
   uint32_t start = 0;
   uint32_t end = 0;
   ResourceUsage us = ResourceUsage::IndexBuffer;
 
+  uint32_t parentEID = 0;
   for(const EventUsage &u : usage)
   {
     if(start == 0)
     {
       start = end = u.eventId;
       us = u.usage;
+
+      parentEID = GetParentMarkerEventId(ctx, u.eventId);
     }
 
     if(u.usage == us && u.eventId == end)
@@ -1612,9 +2074,12 @@ void CombineUsageEvents(ICaptureContext &ctx, const rdcarray<EventUsage> &usage,
 
     bool distinct = false;
 
+    const uint32_t newParentEID = GetParentMarkerEventId(ctx, u.eventId);
+
     // if the usage is different from the last, add a new entry,
     // or if the previous action link is broken.
-    if(u.usage != us || action == NULL || action->previous == 0)
+    if(u.usage != us || action == NULL || action->previousAction == 0 ||
+       (splitByMarker && (parentEID != newParentEID)))
     {
       distinct = true;
     }
@@ -1624,13 +2089,24 @@ void CombineUsageEvents(ICaptureContext &ctx, const rdcarray<EventUsage> &usage,
       // last event was where we were - otherwise it's a new
       // distinct set of actions and should have a separate
       // entry in the context menu
-      const ActionDescription *prev = action->previous;
+      const ActionDescription *prev = action->previousAction;
 
       while(prev != NULL && prev->eventId > end)
       {
-        if(!(prev->flags & (ActionFlags::Dispatch | ActionFlags::Drawcall | ActionFlags::CmdList)))
+        if(splitByMarker)
         {
-          prev = prev->previous;
+          const uint32_t prevParentEID = GetParentMarkerEventId(ctx, prev->eventId);
+          if(parentEID != prevParentEID)
+          {
+            distinct = true;
+            break;
+          }
+        }
+
+        if(!(prev->flags & (ActionFlags::Dispatch | ActionFlags::MeshDispatch |
+                            ActionFlags::Drawcall | ActionFlags::CmdList)))
+        {
+          prev = prev->previousAction;
         }
         else
         {
@@ -1654,6 +2130,7 @@ void CombineUsageEvents(ICaptureContext &ctx, const rdcarray<EventUsage> &usage,
       {
         start = end = u.eventId;
         us = u.usage;
+        parentEID = newParentEID;
       }
     }
 
@@ -1677,6 +2154,13 @@ QVariant SDObject2Variant(const SDObject *obj, bool inlineImportant)
   {
     param = QVariant::fromValue(obj->data.basic.id);
   }
+  else if(obj->type.basetype == SDBasic::GPUAddress)
+  {
+    PointerVal p;
+    p.pointerTypeID = ~0U;
+    p.pointer = obj->data.basic.u;
+    param = ToQStr(p);
+  }
   else if(obj->type.flags & SDTypeFlags::NullString)
   {
     param = lit("NULL");
@@ -1687,6 +2171,11 @@ QVariant SDObject2Variant(const SDObject *obj, bool inlineImportant)
   }
   else
   {
+    Formatter::FormatterFlags flags = Formatter::NoFlags;
+    if((obj->type.flags & SDTypeFlags::OffsetOrSize) ||
+       ((obj->GetParent() && obj->GetParent()->type.flags & SDTypeFlags::OffsetOrSize)))
+      flags = Formatter::OffsetSize;
+
     switch(obj->type.basetype)
     {
       case SDBasic::Chunk:
@@ -1796,9 +2285,14 @@ QVariant SDObject2Variant(const SDObject *obj, bool inlineImportant)
         param = trimmedStr.trimmed();
         break;
       }
+      // won't be hit, these are handled above
       case SDBasic::Resource:
+      case SDBasic::GPUAddress:
+        // normal cases
       case SDBasic::Enum:
-      case SDBasic::UnsignedInteger: param = Formatter::HumanFormat(obj->data.basic.u); break;
+      case SDBasic::UnsignedInteger:
+        param = Formatter::HumanFormat(obj->data.basic.u, flags);
+        break;
       case SDBasic::SignedInteger: param = Formatter::Format(obj->data.basic.i); break;
       case SDBasic::Float: param = Formatter::Format(obj->data.basic.d); break;
       case SDBasic::Boolean: param = (obj->data.basic.b ? lit("True") : lit("False")); break;
@@ -1824,6 +2318,7 @@ void addStructuredChildren(RDTreeWidgetItem *parent, const SDObject &parentObj)
       name = obj->name;
 
     RDTreeWidgetItem *item = new RDTreeWidgetItem({name, QString()});
+    item->setTag(QVariant::fromValue((void *)obj));
 
     item->setText(1, SDObject2Variant(obj, false));
 
@@ -2280,6 +2775,18 @@ QString RDDialog::getSaveFileName(QWidget *parent, const QString &caption, const
   return QString();
 }
 
+void RDDialog::closeEvent(QCloseEvent *e)
+{
+  emit(aboutToClose(e));
+  QDialog::closeEvent(e);
+}
+
+void RDDialog::keyPressEvent(QKeyEvent *e)
+{
+  emit(keyPress(e));
+  QDialog::keyPressEvent(e);
+}
+
 bool QFileFilterModel::filterAcceptsRow(int source_row, const QModelIndex &source_parent) const
 {
   QModelIndex idx = sourceModel()->index(source_row, 0, source_parent);
@@ -2336,7 +2843,8 @@ bool QCollatorSortFilterProxyModel::lessThan(const QModelIndex &source_left,
 void addGridLines(QGridLayout *grid, QColor gridColor)
 {
   QString style =
-      QFormatStr("border: solid #%1%2%3; border-bottom-width: 1px; border-right-width: 1px;")
+      QFormatStr(
+          "QLabel { border: solid #%1%2%3; border-bottom-width: 1px; border-right-width: 1px;")
           .arg(gridColor.red(), 2, 16, QLatin1Char('0'))
           .arg(gridColor.green(), 2, 16, QLatin1Char('0'))
           .arg(gridColor.blue(), 2, 16, QLatin1Char('0'));
@@ -2362,6 +2870,8 @@ void addGridLines(QGridLayout *grid, QColor gridColor)
       if(y == 0)
         cellStyle += lit("border-top-width: 1px;");
 
+      cellStyle += lit(" };");
+
       w->setStyleSheet(cellStyle);
     }
   }
@@ -2375,10 +2885,13 @@ QFont *Formatter::m_Font = NULL;
 QFont *Formatter::m_FixedFont = NULL;
 float Formatter::m_FontBaseSize = 10.0f;    // this should always be overridden below, but just in
                                             // case let's pick a sensible value
+QString Formatter::m_DefaultFontFamily;
+QString Formatter::m_DefaultMonoFontFamily;
 float Formatter::m_FixedFontBaseSize = 10.0f;
 QColor Formatter::m_DarkChecker, Formatter::m_LightChecker;
+OffsetSizeDisplayMode Formatter::m_OffsetSizeDisplayMode = OffsetSizeDisplayMode::Auto;
 
-void Formatter::setParams(const PersistantConfig &config)
+void Formatter::setParams(const PersistentConfig &config)
 {
   m_minFigures = qMax(0, config.Formatter_MinFigures);
   m_maxFigures = qMax(2, config.Formatter_MaxFigures);
@@ -2388,21 +2901,46 @@ void Formatter::setParams(const PersistantConfig &config)
   m_expNegValue = qPow(10.0, -config.Formatter_NegExp);
   m_expPosValue = qPow(10.0, config.Formatter_PosExp);
 
+  m_OffsetSizeDisplayMode = config.Formatter_OffsetSizeDisplayMode;
+
   if(!m_Font)
   {
     m_Font = new QFont();
     m_FontBaseSize = QApplication::font().pointSizeF();
     m_FixedFont = new QFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     m_FixedFontBaseSize = m_FixedFont->pointSizeF();
+    m_DefaultFontFamily = QApplication::font().family();
+    m_DefaultMonoFontFamily = QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
   }
 
-  *m_Font =
-      config.Font_PreferMonospaced ? QFontDatabase::systemFont(QFontDatabase::FixedFont) : QFont();
+  // this is only used for display to the user
+  if(m_DefaultFontFamily.isEmpty())
+    m_DefaultFontFamily = lit("System font");
+  if(m_DefaultMonoFontFamily.isEmpty())
+    m_DefaultMonoFontFamily = lit("System font");
+
+  if(config.Font_PreferMonospaced)
+  {
+    *m_Font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    if(!config.Font_MonoFamily.isEmpty())
+      m_Font->setFamily(config.Font_MonoFamily);
+  }
+  else
+  {
+    *m_Font = QFont();
+    if(!config.Font_Family.isEmpty())
+      m_Font->setFamily(config.Font_Family);
+  }
 
   m_Font->setPointSizeF(m_FontBaseSize * config.Font_GlobalScale);
   QFont f = QApplication::font();
   f.setPointSizeF(m_FontBaseSize * config.Font_GlobalScale);
+  if(!config.Font_Family.isEmpty())
+    f.setFamily(config.Font_Family);
   QApplication::setFont(f);
+
+  if(!config.Font_MonoFamily.isEmpty())
+    m_FixedFont->setFamily(config.Font_MonoFamily);
 
   m_FixedFont->setPointSizeF(m_FixedFontBaseSize * config.Font_GlobalScale);
 
@@ -2448,7 +2986,7 @@ QString Formatter::Format(double f, bool)
   return ret;
 }
 
-QString Formatter::HumanFormat(uint64_t u)
+QString Formatter::HumanFormat(uint64_t u, FormatterFlags flags)
 {
   if(u == UINT16_MAX)
     return lit("UINT16_MAX");
@@ -2458,8 +2996,26 @@ QString Formatter::HumanFormat(uint64_t u)
     return lit("UINT64_MAX");
 
   // format as hex when over a certain threshold
-  if(u > 0xffffff)
+  bool displayHex = (u > 0xffffff);
+
+  if(flags & OffsetSize)
+  {
+    switch(m_OffsetSizeDisplayMode)
+    {
+      case OffsetSizeDisplayMode::Hexadecimal: displayHex = true; break;
+      case OffsetSizeDisplayMode::Decimal: displayHex = false; break;
+      default: break;
+    }
+  }
+  if(displayHex)
+  {
+    if(u < UINT32_MAX)
+    {
+      uint32_t u32 = u;
+      return lit("0x") + Format(u32, true);
+    }
     return lit("0x") + Format(u, true);
+  }
 
   return Format(u);
 }
@@ -2469,8 +3025,7 @@ class RDProgressDialog : public QProgressDialog
 public:
   RDProgressDialog(const QString &labelText, QWidget *parent)
       // we add 1 so that the progress value never hits maximum until we are actually finished
-      : QProgressDialog(labelText, QString(), 0, maxProgress + 1, parent),
-        m_Label(this)
+      : QProgressDialog(labelText, QString(), 0, maxProgress + 1, parent), m_Label(this)
   {
     setWindowTitle(tr("Please Wait"));
     setWindowFlags(Qt::CustomizeWindowHint | Qt::Dialog | Qt::WindowTitleHint);
@@ -2638,12 +3193,17 @@ bool RunProcessAsAdmin(const QString &fullExecutablePath, const QStringList &par
 #else
   // try to find a way to run the application elevated.
   const QString graphicalSudo[] = {
-      lit("kdesudo"), lit("gksudo"), lit("beesu"),
+      lit("kdesudo"),
+      lit("gksudo"),
+      lit("beesu"),
   };
 
   // if none of the graphical options, then look for sudo and either
-  const QString termEmulator[] = {
-      lit("x-terminal-emulator"), lit("gnome-terminal"), lit("konsole"), lit("xterm"),
+  const QPair<QString, QString> termEmulator[] = {
+      qMakePair(lit("x-terminal-emulator"), lit("-e")),
+      qMakePair(lit("gnome-terminal"), lit("-x")),
+      qMakePair(lit("konsole"), lit("-e")),
+      qMakePair(lit("xterm"), lit("-e")),
   };
 
   for(const QString &sudo : graphicalSudo)
@@ -2692,9 +3252,9 @@ bool RunProcessAsAdmin(const QString &fullExecutablePath, const QStringList &par
     return false;
   }
 
-  for(const QString &term : termEmulator)
+  for(const QPair<QString, QString> &term : termEmulator)
   {
-    QString inPath = QStandardPaths::findExecutable(term);
+    QString inPath = QStandardPaths::findExecutable(term.first);
 
     // can't find in path
     if(inPath.isEmpty())
@@ -2704,12 +3264,12 @@ bool RunProcessAsAdmin(const QString &fullExecutablePath, const QStringList &par
 
     // run terminal sudo with emulator
     QStringList termParams;
-    termParams << lit("-e")
-               << lit("bash -c 'echo Running \"%1 %2\" as root.;echo;sudo %1 %2'")
+    termParams << term.second << lit("bash") << lit("-c")
+               << lit("echo Running \"%1 %2\" as root.;echo;sudo %1 %2")
                       .arg(fullExecutablePath)
                       .arg(params.join(QLatin1Char(' ')));
 
-    process->start(term, termParams);
+    process->start(term.first, termParams);
 
     // when the process exits, call the callback and delete
     QObject::connect(process, OverloadedSlot<int, QProcess::ExitStatus>::of(&QProcess::finished),
@@ -2735,8 +3295,8 @@ void RevealFilenameInExternalFileBrowser(const QString &filePath)
 {
 #if defined(Q_OS_WIN32)
   // on windows we can ask explorer to highlight the exact file.
-  QProcess::startDetached(lit("explorer.exe"), QStringList() << lit("/select,")
-                                                             << QDir::toNativeSeparators(filePath));
+  QProcess::startDetached(lit("explorer.exe"),
+                          QStringList() << lit("/select,") << QDir::toNativeSeparators(filePath));
 #else
   // on all other platforms, we just use QDesktopServices to invoke the external file browser on the
   // directory and hope that's close enough.
@@ -2880,7 +3440,7 @@ void ShowProgressDialog(QWidget *window, const QString &labelText, ProgressFinis
   // show the dialog
   RDDialog::show(&dialog);
 
-  // signal the thread to exit if somehow we got here without it finishing, then wait for it thread
+  // signal the thread to exit if somehow we got here without it finishing, then wait for the thread
   // to clean itself up
   tickerSemaphore.tryAcquire();
   progressTickerThread.wait();
@@ -3093,10 +3653,8 @@ void LambdaThread::windowsSetName()
       GetModuleHandleA("kernel32.dll"), "SetThreadDescription");
 
   if(setThreadDesc)
-  {
     setThreadDesc(GetCurrentThread(), m_Name.toStdWString().c_str());
-  }
-  else
+
   {
     // don't throw the exception if there's no debugger present
     if(!IsDebuggerPresent())
@@ -3171,6 +3729,15 @@ void UpdateVisibleColumns(rdcstr windowTitle, int columnCount, QHeaderView *head
 
     header->moveSection(header->visualIndex(logicalIdx), i);
   }
+}
+
+void EnsureLineScrolled(ScintillaEdit *editor, int line)
+{
+  int firstLine = editor->firstVisibleLine();
+  int linesVisible = editor->linesOnScreen();
+
+  if(editor->isVisible() && (line < firstLine || line > (firstLine + linesVisible - 1)))
+    editor->setFirstVisibleLine(qMax(0, line - linesVisible / 2));
 }
 
 const rdcarray<SDObject *> &StructuredDataItemModel::objects() const
@@ -3286,6 +3853,24 @@ QModelIndex StructuredDataItemModel::index(int row, int column, const QModelInde
     }
     else
     {
+      if(par->type.flags & SDTypeFlags::HiddenChildren)
+      {
+        // if this node has hidden children, get the index relative to only visible children
+        int idx = 0;
+        for(size_t i = 0; i < par->NumChildren(); i++)
+        {
+          SDObject *ch = par->GetChild(i);
+
+          if(ch->type.flags & SDTypeFlags::Hidden)
+            continue;
+
+          if(idx == row)
+            return createIndex(row, column, encodeIndex({Direct, ch, 0}));
+
+          idx++;
+        }
+      }
+
       return createIndex(row, column, encodeIndex({Direct, par->GetChild(row), 0}));
     }
   }
@@ -3354,9 +3939,21 @@ QModelIndex StructuredDataItemModel::parent(const QModelIndex &index) const
     }
 
     // search our parent to find out our child index
+    int idx = 0;
+    bool largeArray = isLargeArray(parent);
     for(size_t i = 0; i < parent->NumChildren(); i++)
-      if(parent->GetChild(i) == obj)
-        return createIndex((int)i, 0, obj);
+    {
+      const SDObject *ch = parent->GetChild(i);
+      if(ch == obj)
+        return createIndex(idx, 0, obj);
+
+      // for non-large arrays, we account for hidden children. Large arrays should not have any
+      // hidden children anyway
+      if(!largeArray && (ch->type.flags & SDTypeFlags::Hidden))
+        continue;
+
+      idx++;
+    }
 
     return QModelIndex();
   }
@@ -3393,9 +3990,30 @@ int StructuredDataItemModel::rowCount(const QModelIndex &parent) const
   if(obj)
   {
     if(isLargeArray(obj))
+    {
       return (int(obj->NumChildren()) + ArrayPageSize - 1) / ArrayPageSize;
+    }
     else
-      return (int)obj->NumChildren();
+    {
+      if(obj->type.flags & SDTypeFlags::HiddenChildren)
+      {
+        // if this node has hidden children, count the *actual* number of children
+        int numChildren = 0;
+        for(size_t i = 0; i < obj->NumChildren(); i++)
+        {
+          if(obj->GetChild(i)->type.flags & SDTypeFlags::Hidden)
+            continue;
+
+          numChildren++;
+        }
+
+        return numChildren;
+      }
+      else
+      {
+        return (int)obj->NumChildren();
+      }
+    }
   }
 
   return 0;
@@ -3475,4 +4093,16 @@ QVariant StructuredDataItemModel::data(const QModelIndex &index, int role) const
   }
 
   return QVariant();
+}
+
+QRClickToolButton::QRClickToolButton(QWidget *parent) : QToolButton(parent)
+{
+}
+
+void QRClickToolButton::mousePressEvent(QMouseEvent *e)
+{
+  if(e->button() == Qt::RightButton)
+    emit rightClicked();
+  else
+    QToolButton::mousePressEvent(e);
 }

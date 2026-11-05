@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -596,13 +596,28 @@ rdcstr GetTempRootPath()
 rdcstr GetAppFolderFilename(const rdcstr &filename)
 {
   passwd *pw = getpwuid(getuid());
-  const char *homedir = pw->pw_dir;
+  rdcstr homedir = pw ? pw->pw_dir : "";
 
-  rdcstr ret = rdcstr(homedir) + "/.renderdoc/";
+  if(homedir.empty())
+    homedir = Process::GetEnvVariable("HOME");
+
+  if(homedir.empty())
+  {
+    RDCERR("Can't get HOME directory, defaulting to '/' instead");
+    homedir = "";
+  }
+
+  rdcstr ret = homedir + "/.renderdoc/";
 
   mkdir(ret.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
 
   return ret + filename;
+}
+
+rdcstr DefaultFindFileInPath(const rdcstr &fileName);
+rdcstr FindFileInPath(const rdcstr &fileName)
+{
+  return DefaultFindFileInPath(fileName);
 }
 
 void GetExecutableFilename(rdcstr &selfName)
@@ -635,7 +650,7 @@ void GetLibraryFilename(rdcstr &selfName)
 
     ::fclose(f);
 
-    char *c = strstr(map_string, "/librenderdoc.so");
+    char *c = strstr(map_string, "/lib" STRINGIZE(RDOC_BASE_NAME) ".so");
 
     if(c)
     {
@@ -703,7 +718,8 @@ void GetLibraryFilename(rdcstr &selfName)
 
   if(librenderdoc_path.empty())
   {
-    RDCWARN("Couldn't get librenderdoc.so path from /proc/self/maps, falling back to dladdr");
+    RDCWARN("Couldn't get lib" STRINGIZE(
+        RDOC_BASE_NAME) ".so path from /proc/self/maps, falling back to dladdr");
 
     Dl_info info;
     if(dladdr(&LibraryLocator, &info))
@@ -723,11 +739,15 @@ iconv_t iconvUTF82Wide = (iconv_t)-1;
 // iconv is not thread safe when sharing an iconv_t descriptor
 // I don't expect much contention but if it happens we could TryLock
 // before creating a temporary iconv_t, or hold two iconv_ts, or something.
-Threading::CriticalSection iconvLock;
+Threading::CriticalSection &iconvLock()
+{
+  static Threading::CriticalSection *lock = new Threading::CriticalSection;
+  return *lock;
+}
 
 void Shutdown()
 {
-  SCOPED_LOCK(iconvLock);
+  SCOPED_LOCK(iconvLock());
 
   if(iconvWide2UTF8 != (iconv_t)-1)
     iconv_close(iconvWide2UTF8);
@@ -744,12 +764,13 @@ rdcstr Wide2UTF8(const rdcwstr &s)
   // utf-8 characters can be max 4 bytes.
   size_t len = (s.length() + 1) * 4;
 
-  rdcarray<char> charBuffer(len);
+  rdcarray<char> charBuffer;
+  charBuffer.resize(len);
 
   size_t ret;
 
   {
-    SCOPED_LOCK(iconvLock);
+    SCOPED_LOCK(iconvLock());
 
     if(iconvWide2UTF8 == (iconv_t)-1)
       iconvWide2UTF8 = iconv_open("UTF-8", "WCHAR_T");
@@ -788,12 +809,13 @@ rdcwstr UTF82Wide(const rdcstr &s)
   // input.
   size_t len = s.length() + 1;
 
-  rdcarray<wchar_t> wcharBuffer(len);
+  rdcarray<wchar_t> wcharBuffer;
+  wcharBuffer.resize(len);
 
   size_t ret;
 
   {
-    SCOPED_LOCK(iconvLock);
+    SCOPED_LOCK(iconvLock());
 
     if(iconvUTF82Wide == (iconv_t)-1)
       iconvUTF82Wide = iconv_open("WCHAR_T", "UTF-8");

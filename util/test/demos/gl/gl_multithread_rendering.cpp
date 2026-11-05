@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -115,8 +115,8 @@ void main()
     glBindTexture(GL_TEXTURE_2D, 0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    A.win = MakeWindow(32, 32, NULL);
-    B.win = MakeWindow(32, 32, NULL);
+    A.win = MakeWindow(32, 32, "A");
+    B.win = MakeWindow(32, 32, "B");
     A.ctx = MakeContext(A.win, mainContext);
     B.ctx = MakeContext(B.win, mainContext);
 

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -155,7 +155,19 @@ public:
     if(!index.isValid())
       return 0;
 
-    return QAbstractItemModel::flags(index) | Qt::ItemIsUserCheckable;
+    RDTreeWidgetItem *item = itemForIndex(index);
+
+    Qt::ItemFlags ret = QAbstractItemModel::flags(index) | Qt::ItemIsUserCheckable;
+
+    if(item->editable(index.column()))
+      ret |= Qt::ItemIsEditable;
+
+    if(item->selectable())
+      ret |= Qt::ItemIsSelectable;
+    else
+      ret &= ~Qt::ItemIsSelectable;
+
+    return ret;
   }
 
   QVariant headerData(int section, Qt::Orientation orientation, int role) const override
@@ -186,7 +198,8 @@ public:
     }
     else if(role == Qt::DecorationRole)
     {
-      if(widget->m_hoverColumn == index.column())
+      if(widget->m_hoverColumn == index.column() &&
+         (widget->m_hoverRole < 0 || item->data(widget->m_hoverColumn, widget->m_hoverRole).toBool()))
       {
         if(itemForIndex(widget->m_currentHoverIndex) == item)
           return widget->m_activeHoverIcon;
@@ -231,7 +244,7 @@ public:
 
     bool ret = false;
 
-    if(role == Qt::DisplayRole)
+    if(role == Qt::DisplayRole || role == Qt::EditRole)
     {
       if(index.column() < item->m_text.count())
       {
@@ -313,7 +326,6 @@ void RDTreeWidgetItem::sort(int column, Qt::SortOrder order)
 
   std::stable_sort(m_children.begin(), m_children.end(),
                    [ctx, column, order](const RDTreeWidgetItem *a, const RDTreeWidgetItem *b) {
-
                      if(a->treeWidget()->m_SortComparison)
                        return a->treeWidget()->m_SortComparison(column, order, a, b);
 
@@ -371,7 +383,7 @@ RDTreeWidgetItem::~RDTreeWidgetItem()
 
 QVariant RDTreeWidgetItem::data(int column, int role) const
 {
-  if(role == Qt::DisplayRole)
+  if(role == Qt::DisplayRole || role == Qt::EditRole)
   {
     return m_text[column];
   }
@@ -556,6 +568,7 @@ void RDTreeWidgetItem::clear()
   for(RDTreeWidgetItem *c : children)
   {
     c->m_parent = NULL;
+    c->m_widget = NULL;
     delete c;
   }
 
@@ -746,6 +759,11 @@ RDTreeWidgetItem *RDTreeWidget::itemAt(const QPoint &p) const
   return m_model->itemForIndex(indexAt(p));
 }
 
+bool RDTreeWidget::isItemExpanded(RDTreeWidgetItem *item)
+{
+  return isExpanded(m_model->indexForItem(item, 0));
+}
+
 void RDTreeWidget::expandItem(RDTreeWidgetItem *item)
 {
   expand(m_model->indexForItem(item, 0));
@@ -766,9 +784,14 @@ void RDTreeWidget::collapseAllItems(RDTreeWidgetItem *item)
   collapseAll(m_model->indexForItem(item, 0));
 }
 
-void RDTreeWidget::scrollToItem(RDTreeWidgetItem *node)
+void RDTreeWidget::scrollToItem(RDTreeWidgetItem *item)
 {
-  scrollTo(m_model->indexForItem(node, 0));
+  scrollTo(m_model->indexForItem(item, 0));
+}
+
+void RDTreeWidget::editItem(RDTreeWidgetItem *item)
+{
+  edit(m_model->indexForItem(item, 0));
 }
 
 void RDTreeWidget::clear()
@@ -791,12 +814,19 @@ void RDTreeWidget::mouseMoveEvent(QMouseEvent *e)
 
   RDTreeWidgetItem *newHover = m_model->itemForIndex(m_currentHoverIndex);
 
-  if(m_currentHoverIndex.column() == m_hoverColumn && m_hoverHandCursor)
+  if(m_hoverRole < 0 || newHover->data(m_hoverColumn, m_hoverRole).toBool())
   {
-    setCursor(QCursor(Qt::PointingHandCursor));
+    if(m_currentHoverIndex.column() == m_hoverColumn && m_hoverHandCursor)
+    {
+      setCursor(QCursor(Qt::PointingHandCursor));
+    }
+    else if(oldHoverIndex.column() == m_hoverColumn &&
+            m_currentHoverIndex.column() != m_hoverColumn && m_hoverHandCursor)
+    {
+      unsetCursor();
+    }
   }
-  else if(oldHoverIndex.column() == m_hoverColumn &&
-          m_currentHoverIndex.column() != m_hoverColumn && m_hoverHandCursor)
+  else
   {
     unsetCursor();
   }

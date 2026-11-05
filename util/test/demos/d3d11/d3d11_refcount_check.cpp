@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -167,6 +167,9 @@ RD_TEST(D3D11_Refcount_Check, D3D11GraphicsTest)
       reftest.annot = NULL;
       reftest.swapBlitVS = NULL;
       reftest.swapBlitPS = NULL;
+      reftest.DefaultTriVS = NULL;
+      reftest.DefaultTriPS = NULL;
+      reftest.DefaultTriVB = NULL;
 
       dbg->ReportLiveDeviceObjects(D3D11_RLDO_DETAIL);
 

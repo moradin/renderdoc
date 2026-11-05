@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -30,6 +30,7 @@
 
 #define RESOURCE_LIST()                                                        \
   RESOURCE_DEF(add, "add.png")                                                 \
+  RESOURCE_DEF(align, "align.png")                                             \
   RESOURCE_DEF(arrow_in, "arrow_in.png")                                       \
   RESOURCE_DEF(arrow_join, "arrow_join.png")                                   \
   RESOURCE_DEF(arrow_left, "arrow_left.png")                                   \
@@ -60,6 +61,7 @@
   RESOURCE_DEF(cut, "cut.png")                                                 \
   RESOURCE_DEF(del, "del.png")                                                 \
   RESOURCE_DEF(disconnect, "disconnect.png")                                   \
+  RESOURCE_DEF(draw_vertex, "draw_vertex.png")                                 \
   RESOURCE_DEF(find, "find.png")                                               \
   RESOURCE_DEF(filter, "filter.png")                                           \
   RESOURCE_DEF(filter_reapply, "filter_reapply.png")                           \
@@ -68,6 +70,7 @@
   RESOURCE_DEF(flip_y, "flip_y.png")                                           \
   RESOURCE_DEF(folder, "folder.png")                                           \
   RESOURCE_DEF(folder_page_white, "folder_page_white.png")                     \
+  RESOURCE_DEF(help, "help.png")                                               \
   RESOURCE_DEF(hourglass, "hourglass.png")                                     \
   RESOURCE_DEF(house, "house.png")                                             \
   RESOURCE_DEF(information, "information.png")                                 \
@@ -105,7 +108,8 @@
   RESOURCE_DEF(topo_tristrip, "topologies/topo_tristrip.svg")                  \
   RESOURCE_DEF(topo_tristrip_adj, "topologies/topo_tristrip_adj.svg")          \
   RESOURCE_DEF(action, "action.png")                                           \
-  RESOURCE_DEF(action_hover, "action_hover.png")
+  RESOURCE_DEF(action_hover, "action_hover.png")                               \
+  RESOURCE_DEF(bookmark_blue, "bookmark_blue.png")
 
 struct Resource
 {
@@ -120,9 +124,15 @@ public:
   ~Resources();
 
 #undef RESOURCE_DEF
-#define RESOURCE_DEF(name, filename)                               \
-  static const Resource &name() { return resources->name##_data; } \
-  static const Resource &name##_2x() { return resources->name##_2x_data; }
+#define RESOURCE_DEF(name, filename)  \
+  static const Resource &name()       \
+  {                                   \
+    return resources->name##_data;    \
+  }                                   \
+  static const Resource &name##_2x()  \
+  {                                   \
+    return resources->name##_2x_data; \
+  }
   RESOURCE_LIST()
 
 private:
@@ -150,7 +160,10 @@ struct Pixmaps
     else                                           \
       return Resources::name##_2x().pixmap;        \
   }                                                \
-  static const QPixmap &name(QWidget *widget) { return name(widget->devicePixelRatio()); }
+  static const QPixmap &name(QWidget *widget)      \
+  {                                                \
+    return name(widget->devicePixelRatio());       \
+  }
   RESOURCE_LIST()
 };
 
@@ -158,6 +171,9 @@ struct Icons
 {
 #undef RESOURCE_DEF
 #define RESOURCE_DEF(name, filename) \
-  static const QIcon &name() { return Resources::name().icon; }
+  static const QIcon &name()         \
+  {                                  \
+    return Resources::name().icon;   \
+  }
   RESOURCE_LIST()
 };

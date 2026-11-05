@@ -1,7 +1,10 @@
-Replay Outputs
-==============
+API Reference: Replay Outputs
+=============================
 
-.. contents::
+This is the API reference for the functions, classes, and enums in the ``renderdoc`` module which represents the underlying interface that the UI is built on top of. For more high-level information and instructions on using the python API, see :doc:`../index`.
+
+.. contents:: Sections
+   :local:
 
 .. currentmodule:: renderdoc
 
@@ -30,7 +33,6 @@ Window Configuration
 .. autofunction:: renderdoc.CreateXlibWindowingData
 .. autofunction:: renderdoc.CreateXCBWindowingData
 .. autofunction:: renderdoc.CreateWaylandWindowingData
-.. autofunction:: renderdoc.CreateGgpWindowingData
 .. autofunction:: renderdoc.CreateAndroidWindowingData
 .. autofunction:: renderdoc.CreateMacOSWindowingData
 
@@ -52,16 +54,25 @@ Mesh View
 .. autoclass:: MeshDataStage
   :members:
 
+.. autoclass:: MeshletSize
+  :members:
+
+.. autoclass:: TaskGroupSize
+  :members:
+
 .. autoclass:: MeshFormat
   :members:
 
-.. autoclass:: SolidShade
+.. autoclass:: Visualisation
   :members:
 
 .. autoclass:: Camera
   :members:
 
 .. autoclass:: CameraType
+  :members:
+
+.. autoclass:: AxisMapping
   :members:
 
 .. autofunction:: renderdoc.InitCamera

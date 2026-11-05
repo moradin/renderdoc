@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,8 +34,7 @@
 #include "data/hlsl/hlsl_cbuffers.h"
 
 void D3D12DebugManager::PrepareTextureSampling(ID3D12Resource *resource, CompType typeCast,
-                                               int &resType,
-                                               rdcarray<D3D12_RESOURCE_BARRIER> &barriers)
+                                               int &resType, BarrierSet &barrierSet)
 {
   int srvOffset = 0;
 
@@ -93,8 +92,6 @@ void D3D12DebugManager::PrepareTextureSampling(ID3D12Resource *resource, CompTyp
   if(IsIntFormat(srvDesc.Format))
     srvOffset += 20;
 
-  D3D12_RESOURCE_STATES realResourceState =
-      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
   bool copy = false;
 
   D3D12_SHADER_RESOURCE_VIEW_DESC altSRVDesc = {};
@@ -102,7 +99,6 @@ void D3D12DebugManager::PrepareTextureSampling(ID3D12Resource *resource, CompTyp
   // for non-typeless depth formats, we need to copy to a typeless resource for read
   if(IsDepthFormat(srvDesc.Format) && GetTypelessFormat(srvDesc.Format) != srvDesc.Format)
   {
-    realResourceState = D3D12_RESOURCE_STATE_COPY_SOURCE;
     copy = true;
 
     switch(GetTypelessFormat(srvDesc.Format))
@@ -168,27 +164,8 @@ void D3D12DebugManager::PrepareTextureSampling(ID3D12Resource *resource, CompTyp
       altSRVDesc.Texture2DArray.PlaneSlice = 1;
   }
 
-  // transition resource to D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
-  const rdcarray<D3D12_RESOURCE_STATES> &states = m_pDevice->GetSubresourceStates(GetResID(resource));
-
-  barriers.reserve(states.size());
-  for(size_t i = 0; i < states.size(); i++)
-  {
-    D3D12_RESOURCE_BARRIER b;
-
-    // skip unneeded barriers
-    if((states[i] & realResourceState) == realResourceState)
-      continue;
-
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    b.Transition.pResource = resource;
-    b.Transition.Subresource = (UINT)i;
-    b.Transition.StateBefore = states[i];
-    b.Transition.StateAfter = realResourceState;
-
-    barriers.push_back(b);
-  }
+  barrierSet.Configure(resource, m_pDevice->GetSubresourceStates(GetResID(resource)),
+                       copy ? BarrierSet::CopySourceAccess : BarrierSet::SRVAccess);
 
   if(copy)
   {
@@ -250,13 +227,12 @@ void D3D12DebugManager::PrepareTextureSampling(ID3D12Resource *resource, CompTyp
       m_TexResource->SetName(L"m_TexResource");
     }
 
-    ID3D12GraphicsCommandList *list = m_pDevice->GetNewList();
+    ID3D12GraphicsCommandListX *list = m_pDevice->GetNewList();
     if(!list)
       return;
 
     // prepare real resource for copying
-    if(!barriers.empty())
-      list->ResourceBarrier((UINT)barriers.size(), &barriers[0]);
+    barrierSet.Apply(list);
 
     D3D12_RESOURCE_BARRIER texResourceBarrier;
     D3D12_RESOURCE_BARRIER &b = texResourceBarrier;
@@ -278,15 +254,10 @@ void D3D12DebugManager::PrepareTextureSampling(ID3D12Resource *resource, CompTyp
     std::swap(texResourceBarrier.Transition.StateBefore, texResourceBarrier.Transition.StateAfter);
     list->ResourceBarrier(1, &texResourceBarrier);
 
-    // real resource back to itself
-    for(size_t i = 0; i < barriers.size(); i++)
-      std::swap(barriers[i].Transition.StateBefore, barriers[i].Transition.StateAfter);
-
-    if(!barriers.empty())
-      list->ResourceBarrier((UINT)barriers.size(), &barriers[0]);
+    barrierSet.Unapply(list);
 
     // don't do any barriers outside in the source function
-    barriers.clear();
+    barrierSet.clear();
 
     list->Close();
 
@@ -341,7 +312,13 @@ bool D3D12Replay::RenderTextureInternal(D3D12_CPU_DESCRIPTOR_HANDLE rtv, Texture
 {
   const bool blendAlpha = (flags & eTexDisplay_BlendAlpha) != 0;
 
-  ID3D12Resource *resource = m_pDevice->GetResourceList()[cfg.resourceId];
+  ID3D12Resource *resource = NULL;
+
+  {
+    auto it = m_pDevice->GetResourceList().find(cfg.resourceId);
+    if(it != m_pDevice->GetResourceList().end())
+      resource = it->second;
+  }
 
   if(resource == NULL)
     return false;
@@ -480,7 +457,7 @@ bool D3D12Replay::RenderTextureInternal(D3D12_CPU_DESCRIPTOR_HANDLE rtv, Texture
         RDCCLAMP(cfg.subresource.slice, 0U, uint32_t(resourceDesc.DepthOrArraySize - 1)) + 0.001f);
   }
 
-  rdcarray<D3D12_RESOURCE_BARRIER> barriers;
+  BarrierSet barriers;
   int resType = 0;
   GetDebugManager()->PrepareTextureSampling(resource, cfg.typeCast, resType, barriers);
 
@@ -512,14 +489,35 @@ bool D3D12Replay::RenderTextureInternal(D3D12_CPU_DESCRIPTOR_HANDLE rtv, Texture
   ID3D12PipelineState *customPSO = NULL;
 
   D3D12_GPU_VIRTUAL_ADDRESS psCBuf = 0;
+  D3D12_GPU_VIRTUAL_ADDRESS secondCBuf =
+      GetDebugManager()->UploadConstants(&heatmapData, sizeof(heatmapData));
 
   if(cfg.customShaderId != ResourceId())
   {
     WrappedID3D12Shader *shader =
-        m_pDevice->GetResourceManager()->GetCurrentAs<WrappedID3D12Shader>(cfg.customShaderId);
+        m_pDevice->GetResourceManager()->GetResAs<WrappedID3D12Shader>(cfg.customShaderId);
 
     if(shader == NULL)
       return false;
+
+    RD_CustomShader_CBuffer_Type customCBuffer = {};
+
+    customCBuffer.TexDim.x = (uint32_t)resourceDesc.Width;
+    customCBuffer.TexDim.y = resourceDesc.Height;
+    customCBuffer.TexDim.z = resourceDesc.DepthOrArraySize;
+    customCBuffer.TexDim.w = resourceDesc.MipLevels;
+    customCBuffer.SelectedMip = cfg.subresource.mip;
+    customCBuffer.SelectedSliceFace = cfg.subresource.slice;
+    customCBuffer.SelectedSample = cfg.subresource.sample;
+    if(cfg.subresource.sample == ~0U)
+      customCBuffer.SelectedSample = -int(resourceDesc.SampleDesc.Count);
+    customCBuffer.TextureType = (uint32_t)resType;
+    customCBuffer.YUVDownsampleRate = YUVDownsampleRate;
+    customCBuffer.YUVAChannels = YUVAChannels;
+    customCBuffer.SelectedRange.x = cfg.rangeMin;
+    customCBuffer.SelectedRange.y = cfg.rangeMax;
+
+    psCBuf = GetDebugManager()->UploadConstants(&customCBuffer, sizeof(customCBuffer));
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pipeDesc = {};
     pipeDesc.pRootSignature = m_TexRender.RootSig;
@@ -543,7 +541,7 @@ bool D3D12Replay::RenderTextureInternal(D3D12_CPU_DESCRIPTOR_HANDLE rtv, Texture
     if(FAILED(hr))
       return false;
 
-    DXBC::DXBCContainer *dxbc = shader->GetDXBC();
+    const DXBC::DXBCContainer *dxbc = shader->GetDXBC();
 
     RDCASSERT(dxbc);
     RDCASSERT(dxbc->m_Type == DXBC::ShaderType::Pixel);
@@ -562,8 +560,7 @@ bool D3D12Replay::RenderTextureInternal(D3D12_CPU_DESCRIPTOR_HANDLE rtv, Texture
 
           if(var.name == "RENDERDOC_TexDim")
           {
-            if(var.type.descriptor.rows == 1 && var.type.descriptor.cols == 4 &&
-               var.type.descriptor.varType == VarType::UInt)
+            if(var.type.rows == 1 && var.type.cols == 4 && var.type.varType == VarType::UInt)
             {
               uint32_t *d = (uint32_t *)(byteData + var.offset);
 
@@ -596,8 +593,7 @@ bool D3D12Replay::RenderTextureInternal(D3D12_CPU_DESCRIPTOR_HANDLE rtv, Texture
           }
           else if(var.name == "RENDERDOC_SelectedMip")
           {
-            if(var.type.descriptor.rows == 1 && var.type.descriptor.cols == 1 &&
-               var.type.descriptor.varType == VarType::UInt)
+            if(var.type.rows == 1 && var.type.cols == 1 && var.type.varType == VarType::UInt)
             {
               uint32_t *d = (uint32_t *)(byteData + var.offset);
 
@@ -611,8 +607,7 @@ bool D3D12Replay::RenderTextureInternal(D3D12_CPU_DESCRIPTOR_HANDLE rtv, Texture
           }
           else if(var.name == "RENDERDOC_SelectedSliceFace")
           {
-            if(var.type.descriptor.rows == 1 && var.type.descriptor.cols == 1 &&
-               var.type.descriptor.varType == VarType::UInt)
+            if(var.type.rows == 1 && var.type.cols == 1 && var.type.varType == VarType::UInt)
             {
               uint32_t *d = (uint32_t *)(byteData + var.offset);
 
@@ -626,12 +621,13 @@ bool D3D12Replay::RenderTextureInternal(D3D12_CPU_DESCRIPTOR_HANDLE rtv, Texture
           }
           else if(var.name == "RENDERDOC_SelectedSample")
           {
-            if(var.type.descriptor.rows == 1 && var.type.descriptor.cols == 1 &&
-               var.type.descriptor.varType == VarType::SInt)
+            if(var.type.rows == 1 && var.type.cols == 1 && var.type.varType == VarType::SInt)
             {
               int32_t *d = (int32_t *)(byteData + var.offset);
 
               d[0] = cfg.subresource.sample;
+              if(cfg.subresource.sample == ~0U)
+                d[0] = -int(resourceDesc.SampleDesc.Count);
             }
             else
             {
@@ -641,12 +637,21 @@ bool D3D12Replay::RenderTextureInternal(D3D12_CPU_DESCRIPTOR_HANDLE rtv, Texture
           }
           else if(var.name == "RENDERDOC_TextureType")
           {
-            if(var.type.descriptor.rows == 1 && var.type.descriptor.cols == 1 &&
-               var.type.descriptor.varType == VarType::UInt)
+            if(var.type.rows == 1 && var.type.cols == 1 && var.type.varType == VarType::UInt)
             {
               uint32_t *d = (uint32_t *)(byteData + var.offset);
 
               d[0] = resType;
+            }
+            else if(var.name == "RENDERDOC_SelectedRangeMin")
+            {
+              float *d = (float *)(byteData + var.offset);
+              d[0] = cfg.rangeMin;
+            }
+            else if(var.name == "RENDERDOC_SelectedRangeMax")
+            {
+              float *d = (float *)(byteData + var.offset);
+              d[0] = cfg.rangeMax;
             }
             else
             {
@@ -660,7 +665,25 @@ bool D3D12Replay::RenderTextureInternal(D3D12_CPU_DESCRIPTOR_HANDLE rtv, Texture
           }
         }
 
-        psCBuf = GetDebugManager()->UploadConstants(cbufData, cbuf.descriptor.byteSize);
+        if(cbuf.reg == 0)
+        {
+          // with the prefix added, binding 0 should be 'reserved' for the modern cbuffer.
+          // we can still make this work, but it's unexpected
+          RDCWARN(
+              "Unexpected globals cbuffer at binding 0, expected binding 1 after prefix cbuffer");
+          psCBuf = GetDebugManager()->UploadConstants(cbufData, cbuf.descriptor.byteSize);
+        }
+        else if(cbuf.reg == 1)
+        {
+          secondCBuf = GetDebugManager()->UploadConstants(cbufData, cbuf.descriptor.byteSize);
+        }
+        else
+        {
+          RDCERR(
+              "Globals cbuffer at binding %d, unexpected and not handled - these constants will be "
+              "undefined",
+              cbuf.reg);
+        }
 
         SAFE_DELETE_ARRAY(cbufData);
       }
@@ -672,12 +695,11 @@ bool D3D12Replay::RenderTextureInternal(D3D12_CPU_DESCRIPTOR_HANDLE rtv, Texture
   }
 
   {
-    ID3D12GraphicsCommandList *list = m_pDevice->GetNewList();
+    ID3D12GraphicsCommandListX *list = m_pDevice->GetNewList();
     if(!list)
       return false;
 
-    if(!barriers.empty())
-      list->ResourceBarrier((UINT)barriers.size(), &barriers[0]);
+    barriers.Apply(list);
 
     list->OMSetRenderTargets(1, &rtv, TRUE, NULL);
 
@@ -735,8 +757,7 @@ bool D3D12Replay::RenderTextureInternal(D3D12_CPU_DESCRIPTOR_HANDLE rtv, Texture
     list->SetGraphicsRootConstantBufferView(
         0, GetDebugManager()->UploadConstants(&vertexData, sizeof(vertexData)));
     list->SetGraphicsRootConstantBufferView(1, psCBuf);
-    list->SetGraphicsRootConstantBufferView(
-        2, GetDebugManager()->UploadConstants(&heatmapData, sizeof(heatmapData)));
+    list->SetGraphicsRootConstantBufferView(2, secondCBuf);
     list->SetGraphicsRootDescriptorTable(3, GetDebugManager()->GetGPUHandle(FIRST_TEXDISPLAY_SRV));
     list->SetGraphicsRootDescriptorTable(4, GetDebugManager()->GetGPUHandle(FIRST_SAMP));
 
@@ -745,12 +766,7 @@ bool D3D12Replay::RenderTextureInternal(D3D12_CPU_DESCRIPTOR_HANDLE rtv, Texture
 
     list->DrawInstanced(4, 1, 0, 0);
 
-    // transition back to where they were
-    for(size_t i = 0; i < barriers.size(); i++)
-      std::swap(barriers[i].Transition.StateBefore, barriers[i].Transition.StateAfter);
-
-    if(!barriers.empty())
-      list->ResourceBarrier((UINT)barriers.size(), &barriers[0]);
+    barriers.Unapply(list);
 
     list->Close();
 

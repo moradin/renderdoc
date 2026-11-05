@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,11 +25,13 @@
 #include "SettingsDialog.h"
 #include <float.h>
 #include <math.h>
+#include <QFontDatabase>
 #include <QKeyEvent>
 #include <QTextEdit>
 #include <QToolButton>
 #include "Code/Interface/QRDInterface.h"
 #include "Code/QRDUtils.h"
+#include "Code/pyrenderdoc/PythonContext.h"
 #include "Styles/StyleData.h"
 #include "Widgets/OrderedListEditor.h"
 #include "Widgets/ReplayOptionsSelector.h"
@@ -59,6 +61,65 @@ SettingsDialog::SettingsDialog(ICaptureContext &ctx, QWidget *parent)
   for(int i = 0; i < StyleData::numAvailable; i++)
     ui->UIStyle->addItem(StyleData::availStyles[i].styleName);
 
+  QFontDatabase fontdb;
+
+  QStringList fontFamilies = fontdb.families();
+  fontFamilies.insert(0, tr("Default (%1)").arg(Formatter::DefaultFontFamily()));
+
+  ui->Font_Family->addItems(fontFamilies);
+
+  int curFontOption = -1;
+  for(int i = 0; i < ui->Font_Family->count(); i++)
+  {
+    if(ui->Font_Family->itemText(i) == m_Ctx.Config().Font_Family)
+    {
+      curFontOption = i;
+      break;
+    }
+  }
+
+  if(m_Ctx.Config().Font_Family.isEmpty() || curFontOption < 0)
+    curFontOption = 0;
+
+  ui->Font_Family->setCurrentIndex(curFontOption);
+
+  // remove the default again
+  fontFamilies.removeAt(0);
+
+  // remove any non-fixed width fonts
+  for(int i = 0; i < fontFamilies.count();)
+  {
+    if(!fontdb.isFixedPitch(fontFamilies[i]))
+    {
+      fontFamilies.removeAt(i);
+      // check i again
+      continue;
+    }
+
+    // move to the next
+    i++;
+  }
+
+  // re-add the default
+  fontFamilies.insert(0, tr("Default (%1)").arg(Formatter::DefaultMonoFontFamily()));
+
+  ui->Font_MonoFamily->addItems(fontFamilies);
+
+  curFontOption = -1;
+  for(int i = 0; i < ui->Font_MonoFamily->count(); i++)
+  {
+    if(ui->Font_MonoFamily->itemText(i) == m_Ctx.Config().Font_MonoFamily)
+    {
+      curFontOption = i;
+      break;
+    }
+  }
+
+  if(m_Ctx.Config().Font_MonoFamily.isEmpty() || curFontOption < 0)
+    curFontOption = 0;
+
+  ui->Font_MonoFamily->setCurrentIndex(curFontOption);
+
   ui->Font_GlobalScale->addItems({lit("50%"), lit("75%"), lit("100%"), lit("125%"), lit("150%"),
                                   lit("175%"), lit("200%"), lit("250%"), lit("300%"), lit("400%")});
 
@@ -84,6 +145,11 @@ SettingsDialog::SettingsDialog(ICaptureContext &ctx, QWidget *parent)
   for(int i = 0; i < (int)TimeUnit::Count; i++)
   {
     ui->EventBrowser_TimeUnit->addItem(UnitSuffix((TimeUnit)i));
+  }
+
+  for(int i = 0; i < (int)OffsetSizeDisplayMode::Count; i++)
+  {
+    ui->Formatter_OffsetSizeDisplayMode->addItem((ToStr((OffsetSizeDisplayMode)i)));
   }
 
   ui->pages->clearSelection();
@@ -139,6 +205,19 @@ SettingsDialog::SettingsDialog(ICaptureContext &ctx, QWidget *parent)
     if(!getPaths)
     {
       ui->chooseSearchPaths->setEnabled(false);
+    }
+  }
+
+#if !defined(Q_OS_WIN32)
+  ui->chooseIgnoresLabel->hide();
+  ui->chooseIgnores->hide();
+#endif
+
+  {
+    const SDObject *getPaths = RENDERDOC_GetConfigSetting("Win32.Callstacks.IgnoreList");
+    if(!getPaths)
+    {
+      ui->chooseIgnores->setEnabled(false);
     }
   }
 
@@ -228,12 +307,21 @@ SettingsDialog::SettingsDialog(ICaptureContext &ctx, QWidget *parent)
   ui->EventBrowser_ApplyColors->setChecked(m_Ctx.Config().EventBrowser_ApplyColors);
   ui->EventBrowser_ColorEventRow->setChecked(m_Ctx.Config().EventBrowser_ColorEventRow);
 
+  ui->Python_DebugEnabled->setChecked(m_Ctx.Config().Python_DebugEnabled);
+  ui->Python_LaunchVSCode->setChecked(m_Ctx.Config().Python_LaunchVSCode);
+  ui->Python_PromptReloadUnchanged->setChecked(m_Ctx.Config().Python_PromptReloadUnchanged);
+
+  ui->Python_DebugPyDir->setText(m_Ctx.Config().Python_DebugPyDir);
+  ui->Python_VSCodePath->setText(m_Ctx.Config().Python_VSCodePath);
+
   ui->Comments_ShowOnLoad->setChecked(m_Ctx.Config().Comments_ShowOnLoad);
 
   ui->Formatter_MinFigures->setValue(m_Ctx.Config().Formatter_MinFigures);
   ui->Formatter_MaxFigures->setValue(m_Ctx.Config().Formatter_MaxFigures);
   ui->Formatter_NegExp->setValue(m_Ctx.Config().Formatter_NegExp);
   ui->Formatter_PosExp->setValue(m_Ctx.Config().Formatter_PosExp);
+  ui->Formatter_OffsetSizeDisplayMode->setCurrentIndex(
+      (int)m_Ctx.Config().Formatter_OffsetSizeDisplayMode);
 
   if(!RENDERDOC_CanGlobalHook())
   {
@@ -270,6 +358,9 @@ SettingsDialog::~SettingsDialog()
 {
   m_Ctx.Config().DefaultReplayOptions = m_ReplayOptions->options();
   m_Ctx.Config().Save();
+
+  if(m_NeedRefresh)
+    m_Ctx.RefreshStatus();
 
   delete ui;
 }
@@ -311,6 +402,36 @@ void SettingsDialog::on_okButton_accepted()
   accept();
 }
 
+void SettingsDialog::on_Font_Family_currentIndexChanged(int index)
+{
+  if(m_Init)
+    return;
+
+  if(index == 0)
+    m_Ctx.Config().Font_Family.clear();
+  else
+    m_Ctx.Config().Font_Family = ui->Font_Family->currentText();
+
+  m_Ctx.Config().SetupFormatting();
+
+  m_Ctx.Config().Save();
+}
+
+void SettingsDialog::on_Font_MonoFamily_currentIndexChanged(int index)
+{
+  if(m_Init)
+    return;
+
+  if(index == 0)
+    m_Ctx.Config().Font_MonoFamily.clear();
+  else
+    m_Ctx.Config().Font_MonoFamily = ui->Font_MonoFamily->currentText();
+
+  m_Ctx.Config().SetupFormatting();
+
+  m_Ctx.Config().Save();
+}
+
 void SettingsDialog::on_Font_GlobalScale_currentIndexChanged(int index)
 {
   Font_GlobalScale_returnPressed();
@@ -347,6 +468,22 @@ void SettingsDialog::formatter_valueChanged(int val)
   m_Ctx.Config().SetupFormatting();
 
   m_Ctx.Config().Save();
+}
+
+void SettingsDialog::on_Formatter_OffsetSizeDisplayMode_currentIndexChanged(int index)
+{
+  if(m_Init)
+    return;
+
+  if(index < 0 || index >= (int)OffsetSizeDisplayMode::Count)
+    return;
+
+  m_Ctx.Config().Formatter_OffsetSizeDisplayMode =
+      (OffsetSizeDisplayMode)(ui->Formatter_OffsetSizeDisplayMode->currentIndex());
+
+  m_Ctx.Config().SetupFormatting();
+  m_Ctx.Config().Save();
+  m_NeedRefresh = true;
 }
 
 void SettingsDialog::on_tempDirectory_textEdited(const QString &dir)
@@ -489,7 +626,112 @@ void SettingsDialog::on_chooseSearchPaths_clicked()
   listEditor.setWindowTitle(tr("Shader debug info search paths"));
   listEditor.setWindowFlags(listEditor.windowFlags() & ~Qt::WindowContextHelpButtonHint);
 
-  OrderedListEditor list(tr("Search Path"), BrowseMode::Folder);
+  OrderedListEditor::CustomProp customProp = {
+      tr("Recursive"),
+      tr("Recursively search through all subdirectories"
+         "under this path to find matching debug files"),
+      true,
+  };
+
+  OrderedListEditor list(tr("Search Path"),
+                         OrderedItemExtras::BrowseFolder | OrderedItemExtras::Delete, customProp);
+
+  QVBoxLayout layout;
+  QDialogButtonBox okCancel;
+  okCancel.setStandardButtons(QDialogButtonBox::Cancel | QDialogButtonBox::Ok);
+  layout.addWidget(&list);
+  layout.addWidget(&okCancel);
+
+  QObject::connect(&okCancel, &QDialogButtonBox::accepted, &listEditor, &QDialog::accept);
+  QObject::connect(&okCancel, &QDialogButtonBox::rejected, &listEditor, &QDialog::reject);
+
+  listEditor.setLayout(&layout);
+  listEditor.resize(750, 500);
+
+  const SDObject *getPaths = RENDERDOC_GetConfigSetting("DXBC.Debug.SearchDirPaths");
+
+  QStringList items;
+  QList<bool> recursive;
+
+  for(const SDObject *c : *getPaths)
+  {
+    items << c->data.str;
+    recursive << true;
+  }
+
+  const SDObject *getLimitedPaths =
+      RENDERDOC_GetConfigSetting("Replay.Shader.LimitedSearchDirPaths");
+
+  for(const SDObject *c : *getLimitedPaths)
+  {
+    int idx = items.indexOf(c->data.str);
+    if(idx >= 0)
+      recursive[idx] = false;
+  }
+
+  list.setItemsAndProp(items, recursive);
+
+  int res = RDDialog::show(&listEditor);
+
+  if(res)
+  {
+    items = list.getItems();
+    recursive = list.getItemProps();
+
+    SDObject *setPaths = RENDERDOC_SetConfigSetting("DXBC.Debug.SearchDirPaths");
+
+    setPaths->DeleteChildren();
+    setPaths->ReserveChildren(items.size());
+
+    for(int i = 0; i < items.size(); i++)
+      setPaths->AddAndOwnChild(makeSDString("$el"_lit, items[i]));
+
+    SDObject *setLimitedPaths = RENDERDOC_SetConfigSetting("Replay.Shader.LimitedSearchDirPaths");
+
+    QStringList limited;
+
+    for(int i = 0; i < recursive.count() && i < items.count(); i++)
+      if(recursive[i] == false)
+        limited << items[i];
+
+    setLimitedPaths->DeleteChildren();
+    setLimitedPaths->ReserveChildren(limited.size());
+
+    for(int i = 0; i < limited.size(); i++)
+      setLimitedPaths->AddAndOwnChild(makeSDString("$el"_lit, limited[i]));
+
+    RENDERDOC_SaveConfigSettings();
+
+    if(m_Ctx.IsCaptureLoaded() && !m_Ctx.Replay().CurrentRemote().IsConnected())
+    {
+      QMessageBox::StandardButton ask = RDDialog::question(
+          this, tr("Shader Search Paths Saved"),
+          tr("The Shader Search Paths changes will automatically be applied the next time any "
+             "capture is opened.<br><br>"
+             "Would you like to reload all shader debug information in the current capture?"),
+          QMessageBox::Yes | QMessageBox::No);
+
+      if(ask == QMessageBox::Yes)
+      {
+        m_Ctx.Replay().AsyncInvoke([this](IReplayController *r) {
+          r->ReloadShaderDebugInformation();
+          GUIInvoke::call(m_Ctx.GetMainWindow()->Widget(), [this]() { m_Ctx.RefreshStatus(); });
+        });
+      }
+    }
+  }
+}
+
+void SettingsDialog::on_chooseIgnores_clicked()
+{
+  QDialog listEditor;
+
+  listEditor.setWindowTitle(tr("Ignored DLLs for callstack symbol resolution"));
+  listEditor.setWindowFlags(listEditor.windowFlags() & ~Qt::WindowContextHelpButtonHint);
+
+  OrderedListEditor list(tr("Ignored DLL"), OrderedItemExtras::Delete);
+
+  list.setAllowAddition(false);
 
   QVBoxLayout layout;
   QDialogButtonBox okCancel;
@@ -502,7 +744,7 @@ void SettingsDialog::on_chooseSearchPaths_clicked()
 
   listEditor.setLayout(&layout);
 
-  const SDObject *getPaths = RENDERDOC_GetConfigSetting("DXBC.Debug.SearchDirPaths");
+  const SDObject *getPaths = RENDERDOC_GetConfigSetting("Win32.Callstacks.IgnoreList");
 
   QStringList items;
 
@@ -517,7 +759,7 @@ void SettingsDialog::on_chooseSearchPaths_clicked()
   {
     items = list.getItems();
 
-    SDObject *setPaths = RENDERDOC_SetConfigSetting("DXBC.Debug.SearchDirPaths");
+    SDObject *setPaths = RENDERDOC_SetConfigSetting("Win32.Callstacks.IgnoreList");
 
     setPaths->DeleteChildren();
     setPaths->ReserveChildren(items.size());
@@ -559,6 +801,122 @@ void SettingsDialog::on_browseRGPPath_clicked()
   m_Ctx.Config().Save();
 }
 
+void SettingsDialog::on_Python_StubPaths_clicked()
+{
+  QDialog listEditor;
+
+  listEditor.setWindowTitle(tr("Extra python stubs generation directories"));
+  listEditor.setWindowFlags(listEditor.windowFlags() & ~Qt::WindowContextHelpButtonHint);
+
+  OrderedListEditor list(tr("Stubs Directory"),
+                         OrderedItemExtras::BrowseFolder | OrderedItemExtras::Delete);
+
+  QVBoxLayout layout;
+  QDialogButtonBox okCancel;
+  okCancel.setStandardButtons(QDialogButtonBox::Cancel | QDialogButtonBox::Ok);
+  layout.addWidget(&list);
+  layout.addWidget(&okCancel);
+
+  QObject::connect(&okCancel, &QDialogButtonBox::accepted, &listEditor, &QDialog::accept);
+  QObject::connect(&okCancel, &QDialogButtonBox::rejected, &listEditor, &QDialog::reject);
+
+  listEditor.setLayout(&layout);
+
+  QStringList items;
+  for(const rdcstr &dir : m_Ctx.Config().Python_StubDirs)
+  {
+    items.append(dir);
+  }
+
+  list.setItems(items);
+
+  int res = RDDialog::show(&listEditor);
+
+  if(res)
+  {
+    items = list.getItems();
+
+    rdcarray<rdcstr> newDirs;
+    newDirs.resize(items.size());
+    for(int i = 0; i < items.size(); i++)
+    {
+      newDirs[i] = items[i];
+    }
+
+    if(newDirs.size() > m_Ctx.Config().Python_StubDirs.size())
+      PythonContext::GenerateStubs(newDirs);
+
+    m_Ctx.Config().Python_StubDirs = newDirs;
+
+    m_Ctx.Config().Save();
+  }
+}
+
+void SettingsDialog::on_Python_DebugPyDirBrowse_clicked()
+{
+  QString dir = RDDialog::getExistingDirectory(this, tr("Choose location of debugpy module"),
+                                               m_Ctx.Config().Python_DebugPyDir);
+
+  if(!dir.isEmpty() && QDir(dir).exists() && QDir(dir).exists(lit("__init__.py")))
+  {
+    m_Ctx.Config().Python_DebugPyDir = dir;
+    ui->Python_DebugPyDir->setText(dir);
+  }
+
+  m_Ctx.Config().Save();
+}
+
+void SettingsDialog::on_Python_DebugPyDir_textEdited(const QString &dir)
+{
+  if((QDir(dir).exists() && QDir(dir).exists(lit("__init__.py"))) || dir.isEmpty())
+    m_Ctx.Config().Python_DebugPyDir = dir;
+
+  m_Ctx.Config().Save();
+}
+
+void SettingsDialog::on_Python_VSCodePathBrowse_clicked()
+{
+  QString dir = RDDialog::getExecutableFileName(this, tr("Choose location of code executable"),
+                                                m_Ctx.Config().Python_VSCodePath, lit("code"));
+
+  if(!dir.isEmpty() && QFileInfo(dir).isExecutable())
+  {
+    m_Ctx.Config().Python_VSCodePath = dir;
+    ui->Python_VSCodePath->setText(dir);
+  }
+
+  m_Ctx.Config().Save();
+}
+
+void SettingsDialog::on_Python_VSCodePath_textEdited(const QString &path)
+{
+  if(QFileInfo(path).isExecutable() || path.isEmpty())
+    m_Ctx.Config().Python_DebugPyDir = path;
+
+  m_Ctx.Config().Save();
+}
+
+void SettingsDialog::on_Python_DebugEnabled_toggled(bool checked)
+{
+  m_Ctx.Config().Python_DebugEnabled = ui->Python_DebugEnabled->isChecked();
+
+  m_Ctx.Config().Save();
+}
+
+void SettingsDialog::on_Python_LaunchVSCode_toggled(bool checked)
+{
+  m_Ctx.Config().Python_LaunchVSCode = ui->Python_LaunchVSCode->isChecked();
+
+  m_Ctx.Config().Save();
+}
+
+void SettingsDialog::on_Python_PromptReloadUnchanged_toggled(bool checked)
+{
+  m_Ctx.Config().Python_PromptReloadUnchanged = ui->Python_PromptReloadUnchanged->isChecked();
+
+  m_Ctx.Config().Save();
+}
+
 // texture viewer
 void SettingsDialog::on_TextureViewer_PerTexSettings_toggled(bool checked)
 {
@@ -583,7 +941,8 @@ void SettingsDialog::on_TextureViewer_ChooseShaderDirectories_clicked()
   listEditor.setWindowTitle(tr("Custom shaders search directories"));
   listEditor.setWindowFlags(listEditor.windowFlags() & ~Qt::WindowContextHelpButtonHint);
 
-  OrderedListEditor list(tr("Shaders Directory"), BrowseMode::Folder);
+  OrderedListEditor list(tr("Shaders Directory"),
+                         OrderedItemExtras::BrowseFolder | OrderedItemExtras::Delete);
 
   QVBoxLayout layout;
   QDialogButtonBox okCancel;
@@ -610,13 +969,16 @@ void SettingsDialog::on_TextureViewer_ChooseShaderDirectories_clicked()
   {
     items = list.getItems();
 
-    rdcarray<rdcstr> newDirs(items.size());
+    rdcarray<rdcstr> newDirs;
+    newDirs.resize(items.size());
     for(int i = 0; i < items.size(); i++)
     {
       newDirs[i] = items[i];
     }
 
     m_Ctx.Config().TextureViewer_ShaderDirs = newDirs;
+
+    m_Ctx.Config().Save();
   }
 }
 
@@ -681,7 +1043,7 @@ bool SettingsDialog::editTool(int existing, ShaderProcessingTool &tool)
   grid.addWidget(lab, 4, 0, 1, 1);
 
   QLineEdit nameEdit;
-  nameEdit.setPlaceholderText(lit("Tool Name"));
+  nameEdit.setPlaceholderText(tr("Tool Name"));
   nameEdit.setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   nameEdit.setMinimumHeight(20);
 
@@ -766,6 +1128,8 @@ bool SettingsDialog::editTool(int existing, ShaderProcessingTool &tool)
       executableEdit.setText(filename);
   });
 
+  QString customName;
+
   QObject::connect(&toolEdit, OverloadedSlot<int>::of(&QComboBox::currentIndexChanged),
                    [&](int index) {
                      if(index > 0)
@@ -775,12 +1139,22 @@ bool SettingsDialog::editTool(int existing, ShaderProcessingTool &tool)
                        // -1 because we skip ShaderEncoding::Unknown
                        inputEdit.setCurrentIndex(int(ToolInput(tool)) - 1);
                        outputEdit.setCurrentIndex(int(ToolOutput(tool)) - 1);
+
+                       // save the current custom name if it was editable, in case the user
+                       // re-selects the custom tool entry
+                       if(nameEdit.isEnabled())
+                         customName = nameEdit.text();
+                       nameEdit.setEnabled(false);
+                       nameEdit.setText(ToQStr(tool));
+
                        argsEdit.setEnabled(false);
                        inputEdit.setEnabled(false);
                        outputEdit.setEnabled(false);
                      }
                      else
                      {
+                       nameEdit.setEnabled(true);
+                       nameEdit.setText(customName);
                        argsEdit.setEnabled(true);
                        inputEdit.setEnabled(true);
                        outputEdit.setEnabled(true);
@@ -859,8 +1233,19 @@ bool SettingsDialog::editTool(int existing, ShaderProcessingTool &tool)
 
         if(tool.name == m_Ctx.Config().ShaderProcessors[i].name)
         {
+          if(tool.tool != KnownShaderTool::Unknown)
+          {
+            message = tr("The builtin tool '%1' already exists, "
+                         "please edit that entry directly if you wish to choose a custom path.")
+                          .arg(tool.name);
+          }
+          else
+          {
+            message = tr("There's already a tool named '%1', "
+                         "please select another name or edit that entry directly.")
+                          .arg(tool.name);
+          }
           invalid = true;
-          message = tr("There's already a tool named '%1', please select another.").arg(tool.name);
           break;
         }
       }
@@ -916,8 +1301,8 @@ void SettingsDialog::on_editShaderTool_clicked()
   {
     ui->shaderTools->setItem(row, 0, new QTableWidgetItem(tool.name));
     ui->shaderTools->setItem(
-        row, 1, new QTableWidgetItem(
-                    QFormatStr("%1 -> %2").arg(ToQStr(tool.input)).arg(ToQStr(tool.output))));
+        row, 1,
+        new QTableWidgetItem(QFormatStr("%1 -> %2").arg(ToQStr(tool.input)).arg(ToQStr(tool.output))));
     m_Ctx.Config().ShaderProcessors[row] = tool;
     m_Ctx.Config().Save();
   }
@@ -996,6 +1381,9 @@ void SettingsDialog::on_EventBrowser_TimeUnit_currentIndexChanged(int index)
 
   if(m_Ctx.HasEventBrowser())
     m_Ctx.GetEventBrowser()->UpdateDurationColumn();
+
+  if(m_Ctx.HasPerformanceCounterViewer())
+    m_Ctx.GetPerformanceCounterViewer()->UpdateDurationColumn();
 
   m_Ctx.Config().Save();
 }

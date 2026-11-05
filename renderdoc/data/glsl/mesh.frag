@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -46,7 +46,7 @@ void main(void)
 {
   int type = Mesh.displayFormat;
 
-  if(type == MESHDISPLAY_SECONDARY)
+  if(type == MESHDISPLAY_SECONDARY || type == MESHDISPLAY_MESHLET)
   {
     color_out = vec4(SECONDARY_NAME.xyz, 1);
   }
@@ -59,6 +59,12 @@ void main(void)
     vec3 lightDir = normalize(vec3(0, -0.3f, -1));
 
     color_out = vec4(Mesh.color.xyz * abs(dot(lightDir, NORM_NAME.xyz)), 1);
+  }
+  else if(type == MESHDISPLAY_EXPLODE)
+  {
+    vec3 lightDir = normalize(vec3(0, -0.3f, -1));
+
+    color_out = vec4(SECONDARY_NAME.xyz * abs(dot(lightDir, NORM_NAME.xyz)), 1);
   }
   else    // if(type == MESHDISPLAY_SOLID)
   {

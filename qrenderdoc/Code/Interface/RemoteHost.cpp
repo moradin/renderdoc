@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -43,7 +43,7 @@ struct RemoteHostData
   }
 
   RemoteHostData() : refcount(1) {}
-  rdcstr m_friendlyName, m_runCommand, m_lastCapturePath;
+  rdcstr m_friendlyName, m_runCommand, m_lastCapturePath, m_versionError;
   bool m_serverRunning = false, m_connected = false, m_busy = false, m_versionMismatch = false;
 };
 
@@ -122,13 +122,14 @@ void RemoteHost::CheckStatus()
   {
     QMutexLocker autolock(&m_data->mutex);
     m_data->m_serverRunning = m_data->m_versionMismatch = m_data->m_busy = false;
+    m_data->m_versionError.clear();
     return;
   }
 
   UpdateStatus(RENDERDOC_CheckRemoteServerConnection(m_hostname));
 }
 
-ReplayStatus RemoteHost::Connect(IRemoteServer **server)
+ResultDetails RemoteHost::Connect(IRemoteServer **server)
 {
   QMutexLocker autolock(&m_data->mutex);
   return RENDERDOC_CreateRemoteServerConnection(m_hostname, server);
@@ -148,32 +149,36 @@ void RemoteHost::SetShutdown()
   m_data->m_busy = false;
 }
 
-void RemoteHost::UpdateStatus(ReplayStatus status)
+void RemoteHost::UpdateStatus(ResultDetails result)
 {
   {
     QMutexLocker autolock(&m_data->mutex);
 
-    if(status == ReplayStatus::Succeeded)
+    if(result.code == ResultCode::Succeeded)
     {
       m_data->m_serverRunning = true;
       m_data->m_versionMismatch = m_data->m_busy = false;
+      m_data->m_versionError.clear();
     }
-    else if(status == ReplayStatus::NetworkRemoteBusy)
+    else if(result.code == ResultCode::NetworkRemoteBusy)
     {
       m_data->m_serverRunning = true;
       m_data->m_busy = true;
       m_data->m_versionMismatch = false;
+      m_data->m_versionError.clear();
     }
-    else if(status == ReplayStatus::NetworkVersionMismatch)
+    else if(result.code == ResultCode::NetworkVersionMismatch)
     {
       m_data->m_serverRunning = true;
       m_data->m_busy = true;
       m_data->m_versionMismatch = true;
+      m_data->m_versionError = result.Message();
     }
     else
     {
       m_data->m_serverRunning = false;
       m_data->m_versionMismatch = m_data->m_busy = false;
+      m_data->m_versionError.clear();
     }
   }
 
@@ -186,16 +191,11 @@ void RemoteHost::UpdateStatus(ReplayStatus status)
   QThread::msleep(15);
 }
 
-ReplayStatus RemoteHost::Launch()
+ResultDetails RemoteHost::Launch()
 {
-  ReplayStatus status = ReplayStatus::Succeeded;
-
   if(m_protocol)
-  {
     // this is blocking
-    status = m_protocol->StartRemoteServer(m_hostname);
-    return status;
-  }
+    return m_protocol->StartRemoteServer(m_hostname);
 
   rdcstr run = RunCommand();
 
@@ -204,7 +204,7 @@ ReplayStatus RemoteHost::Launch()
   process.waitForFinished(2000);
   process.detach();
 
-  return status;
+  return {ResultCode::Succeeded};
 }
 
 bool RemoteHost::IsServerRunning() const
@@ -229,6 +229,14 @@ bool RemoteHost::IsVersionMismatch() const
 {
   QMutexLocker autolock(&m_data->mutex);
   return m_data->m_versionMismatch;
+}
+
+rdcstr RemoteHost::VersionMismatchError() const
+{
+  QMutexLocker autolock(&m_data->mutex);
+  if(m_data->m_versionError.empty())
+    return "Version Mismatch";
+  return m_data->m_versionError;
 }
 
 rdcstr RemoteHost::FriendlyName() const

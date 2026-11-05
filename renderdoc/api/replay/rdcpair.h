@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -86,7 +86,7 @@ struct rdcpair
   bool operator==(const rdcpair<A, B> &o) const { return first == o.first && second == o.second; }
   bool operator<(const rdcpair<A, B> &o) const
   {
-    if(first != o.first)
+    if(!(first == o.first))
       return first < o.first;
     return second < o.second;
   }

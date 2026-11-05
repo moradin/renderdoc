@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,9 +34,9 @@ bool WrappedID3D12GraphicsCommandList::Serialise_AtomicCopyBufferUINT(
   ID3D12GraphicsCommandList1 *pCommandList = this;
   SERIALISE_ELEMENT(pCommandList);
   SERIALISE_ELEMENT(pDstBuffer).Important();
-  SERIALISE_ELEMENT(DstOffset);
+  SERIALISE_ELEMENT(DstOffset).OffsetOrSize();
   SERIALISE_ELEMENT(pSrcBuffer).Important();
-  SERIALISE_ELEMENT(SrcOffset);
+  SERIALISE_ELEMENT(SrcOffset).OffsetOrSize();
   SERIALISE_ELEMENT(Dependencies);
   SERIALISE_ELEMENT_ARRAY(ppDependentResources, Dependencies);
   SERIALISE_ELEMENT_ARRAY(pDependentSubresourceRanges, Dependencies);
@@ -47,11 +47,12 @@ bool WrappedID3D12GraphicsCommandList::Serialise_AtomicCopyBufferUINT(
   {
     if(GetWrapped(pCommandList)->GetReal1() == NULL)
     {
-      RDCERR("Can't replay ID3D12GraphicsCommandList1 command");
+      SET_ERROR_RESULT(m_Cmd->m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Capture requires ID3D12GraphicsCommandList1 which isn't available");
       return false;
     }
 
-    m_Cmd->m_LastCmdListID = GetResourceManager()->GetOriginalID(GetResID(pCommandList));
+    m_Cmd->m_LastCmdListID = GetResID(pCommandList);
 
     if(IsActiveReplaying(m_State))
     {
@@ -78,34 +79,30 @@ bool WrappedID3D12GraphicsCommandList::Serialise_AtomicCopyBufferUINT(
       Unwrap1(pCommandList)
           ->AtomicCopyBufferUINT(Unwrap(pDstBuffer), DstOffset, Unwrap(pSrcBuffer), SrcOffset,
                                  Dependencies, deps.data(), pDependentSubresourceRanges);
-      GetCrackedList1()->AtomicCopyBufferUINT(Unwrap(pDstBuffer), DstOffset, Unwrap(pSrcBuffer),
-                                              SrcOffset, Dependencies, deps.data(),
-                                              pDependentSubresourceRanges);
 
       {
         m_Cmd->AddEvent();
 
         ActionDescription action;
-        action.copySource = GetResourceManager()->GetOriginalID(GetResID(pSrcBuffer));
-        action.copyDestination = GetResourceManager()->GetOriginalID(GetResID(pDstBuffer));
+        action.copySource = GetResID(pSrcBuffer);
+        action.copyDestination = GetResID(pDstBuffer);
 
         action.flags |= ActionFlags::Copy;
 
         m_Cmd->AddAction(action);
 
-        D3D12ActionTreeNode &actionNode = m_Cmd->GetActionStack().back()->children.back();
+        D3D12EventNode &eventNode = m_Cmd->GetLastEventNode();
 
         if(pSrcBuffer == pDstBuffer)
         {
-          actionNode.resourceUsage.push_back(make_rdcpair(
-              GetResID(pSrcBuffer), EventUsage(actionNode.action.eventId, ResourceUsage::Copy)));
+          eventNode.resourceUsage.push_back(make_rdcpair(GetResID(pSrcBuffer), ResourceUsage::Copy));
         }
         else
         {
-          actionNode.resourceUsage.push_back(make_rdcpair(
-              GetResID(pSrcBuffer), EventUsage(actionNode.action.eventId, ResourceUsage::CopySrc)));
-          actionNode.resourceUsage.push_back(make_rdcpair(
-              GetResID(pDstBuffer), EventUsage(actionNode.action.eventId, ResourceUsage::CopyDst)));
+          eventNode.resourceUsage.push_back(
+              make_rdcpair(GetResID(pSrcBuffer), ResourceUsage::CopySrc));
+          eventNode.resourceUsage.push_back(
+              make_rdcpair(GetResID(pDstBuffer), ResourceUsage::CopyDst));
         }
       }
     }
@@ -149,9 +146,9 @@ bool WrappedID3D12GraphicsCommandList::Serialise_AtomicCopyBufferUINT64(
   ID3D12GraphicsCommandList1 *pCommandList = this;
   SERIALISE_ELEMENT(pCommandList);
   SERIALISE_ELEMENT(pDstBuffer).Important();
-  SERIALISE_ELEMENT(DstOffset);
+  SERIALISE_ELEMENT(DstOffset).OffsetOrSize();
   SERIALISE_ELEMENT(pSrcBuffer).Important();
-  SERIALISE_ELEMENT(SrcOffset);
+  SERIALISE_ELEMENT(SrcOffset).OffsetOrSize();
   SERIALISE_ELEMENT(Dependencies);
   SERIALISE_ELEMENT_ARRAY(ppDependentResources, Dependencies);
   SERIALISE_ELEMENT_ARRAY(pDependentSubresourceRanges, Dependencies);
@@ -162,11 +159,12 @@ bool WrappedID3D12GraphicsCommandList::Serialise_AtomicCopyBufferUINT64(
   {
     if(GetWrapped(pCommandList)->GetReal1() == NULL)
     {
-      RDCERR("Can't replay ID3D12GraphicsCommandList1 command");
+      SET_ERROR_RESULT(m_Cmd->m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Capture requires ID3D12GraphicsCommandList1 which isn't available");
       return false;
     }
 
-    m_Cmd->m_LastCmdListID = GetResourceManager()->GetOriginalID(GetResID(pCommandList));
+    m_Cmd->m_LastCmdListID = GetResID(pCommandList);
 
     if(IsActiveReplaying(m_State))
     {
@@ -193,34 +191,30 @@ bool WrappedID3D12GraphicsCommandList::Serialise_AtomicCopyBufferUINT64(
       Unwrap1(pCommandList)
           ->AtomicCopyBufferUINT64(Unwrap(pDstBuffer), DstOffset, Unwrap(pSrcBuffer), SrcOffset,
                                    Dependencies, deps.data(), pDependentSubresourceRanges);
-      GetCrackedList1()->AtomicCopyBufferUINT64(Unwrap(pDstBuffer), DstOffset, Unwrap(pSrcBuffer),
-                                                SrcOffset, Dependencies, deps.data(),
-                                                pDependentSubresourceRanges);
 
       {
         m_Cmd->AddEvent();
 
         ActionDescription action;
-        action.copySource = GetResourceManager()->GetOriginalID(GetResID(pSrcBuffer));
-        action.copyDestination = GetResourceManager()->GetOriginalID(GetResID(pDstBuffer));
+        action.copySource = GetResID(pSrcBuffer);
+        action.copyDestination = GetResID(pDstBuffer);
 
         action.flags |= ActionFlags::Copy;
 
         m_Cmd->AddAction(action);
 
-        D3D12ActionTreeNode &actionNode = m_Cmd->GetActionStack().back()->children.back();
+        D3D12EventNode &eventNode = m_Cmd->GetLastEventNode();
 
         if(pSrcBuffer == pDstBuffer)
         {
-          actionNode.resourceUsage.push_back(make_rdcpair(
-              GetResID(pSrcBuffer), EventUsage(actionNode.action.eventId, ResourceUsage::Copy)));
+          eventNode.resourceUsage.push_back(make_rdcpair(GetResID(pSrcBuffer), ResourceUsage::Copy));
         }
         else
         {
-          actionNode.resourceUsage.push_back(make_rdcpair(
-              GetResID(pSrcBuffer), EventUsage(actionNode.action.eventId, ResourceUsage::CopySrc)));
-          actionNode.resourceUsage.push_back(make_rdcpair(
-              GetResID(pDstBuffer), EventUsage(actionNode.action.eventId, ResourceUsage::CopyDst)));
+          eventNode.resourceUsage.push_back(
+              make_rdcpair(GetResID(pSrcBuffer), ResourceUsage::CopySrc));
+          eventNode.resourceUsage.push_back(
+              make_rdcpair(GetResID(pDstBuffer), ResourceUsage::CopyDst));
         }
       }
     }
@@ -270,17 +264,28 @@ bool WrappedID3D12GraphicsCommandList::Serialise_OMSetDepthBounds(SerialiserType
   {
     if(GetWrapped(pCommandList)->GetReal1() == NULL)
     {
-      RDCERR("Can't replay ID3D12GraphicsCommandList1 command");
+      SET_ERROR_RESULT(m_Cmd->m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Capture requires ID3D12GraphicsCommandList1 which isn't available");
       return false;
     }
 
     if(m_pDevice->GetOpts2().DepthBoundsTestSupported == 0)
     {
-      RDCERR("Can't replay OMSetDepthBounds without device support");
+      if(Min <= 0.0f && Max >= 1.0f)
+      {
+        RDCWARN(
+            "Depth bounds is not supported, but skipping no-op "
+            "OMSetDepthBounds(Min=%F, Max=%f)",
+            Min, Max);
+        return true;
+      }
+
+      SET_ERROR_RESULT(m_Cmd->m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Capture requires depth bounds support which isn't available");
       return false;
     }
 
-    m_Cmd->m_LastCmdListID = GetResourceManager()->GetOriginalID(GetResID(pCommandList));
+    m_Cmd->m_LastCmdListID = GetResID(pCommandList);
 
     bool stateUpdate = false;
 
@@ -300,7 +305,6 @@ bool WrappedID3D12GraphicsCommandList::Serialise_OMSetDepthBounds(SerialiserType
     else
     {
       Unwrap1(pCommandList)->OMSetDepthBounds(Min, Max);
-      GetCrackedList1()->OMSetDepthBounds(Min, Max);
 
       stateUpdate = true;
     }
@@ -346,7 +350,8 @@ bool WrappedID3D12GraphicsCommandList::Serialise_SetSamplePositions(
   {
     if(GetWrapped(pCommandList)->GetReal1() == NULL)
     {
-      RDCERR("Can't replay ID3D12GraphicsCommandList1 command");
+      SET_ERROR_RESULT(m_Cmd->m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Capture requires ID3D12GraphicsCommandList1 which isn't available");
       return false;
     }
 
@@ -362,13 +367,13 @@ bool WrappedID3D12GraphicsCommandList::Serialise_SetSamplePositions(
         return true;
       }
 
-      RDCERR(
-          "Can't replay SetSamplePositions with "
-          "D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_NOT_SUPPORTED");
+      SET_ERROR_RESULT(
+          m_Cmd->m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+          "Capture requires programmable sample position support which isn't available");
       return false;
     }
 
-    m_Cmd->m_LastCmdListID = GetResourceManager()->GetOriginalID(GetResID(pCommandList));
+    m_Cmd->m_LastCmdListID = GetResID(pCommandList);
 
     bool stateUpdate = false;
 
@@ -389,7 +394,6 @@ bool WrappedID3D12GraphicsCommandList::Serialise_SetSamplePositions(
     else
     {
       Unwrap1(pCommandList)->SetSamplePositions(NumSamplesPerPixel, NumPixels, pSamplePositions);
-      GetCrackedList1()->SetSamplePositions(NumSamplesPerPixel, NumPixels, pSamplePositions);
 
       stateUpdate = true;
     }
@@ -446,11 +450,12 @@ bool WrappedID3D12GraphicsCommandList::Serialise_ResolveSubresourceRegion(
   {
     if(GetWrapped(pCommandList)->GetReal1() == NULL)
     {
-      RDCERR("Can't replay ID3D12GraphicsCommandList1 command");
+      SET_ERROR_RESULT(m_Cmd->m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Capture requires ID3D12GraphicsCommandList1 which isn't available");
       return false;
     }
 
-    m_Cmd->m_LastCmdListID = GetResourceManager()->GetOriginalID(GetResID(pCommandList));
+    m_Cmd->m_LastCmdListID = GetResID(pCommandList);
 
     if(IsActiveReplaying(m_State))
     {
@@ -468,36 +473,31 @@ bool WrappedID3D12GraphicsCommandList::Serialise_ResolveSubresourceRegion(
           ->ResolveSubresourceRegion(Unwrap(pDstResource), DstSubresource, DstX, DstY,
                                      Unwrap(pSrcResource), SrcSubresource, pSrcRect, Format,
                                      ResolveMode);
-      GetCrackedList1()->ResolveSubresourceRegion(Unwrap(pDstResource), DstSubresource, DstX, DstY,
-                                                  Unwrap(pSrcResource), SrcSubresource, pSrcRect,
-                                                  Format, ResolveMode);
 
       {
         m_Cmd->AddEvent();
 
         ActionDescription action;
-        action.copySource = GetResourceManager()->GetOriginalID(GetResID(pSrcResource));
-        action.copyDestination = GetResourceManager()->GetOriginalID(GetResID(pDstResource));
+        action.copySource = GetResID(pSrcResource);
+        action.copyDestination = GetResID(pDstResource);
 
         action.flags |= ActionFlags::Resolve;
 
         m_Cmd->AddAction(action);
 
-        D3D12ActionTreeNode &actionNode = m_Cmd->GetActionStack().back()->children.back();
+        D3D12EventNode &eventNode = m_Cmd->GetLastEventNode();
 
         if(pSrcResource == pDstResource)
         {
-          actionNode.resourceUsage.push_back(make_rdcpair(
-              GetResID(pSrcResource), EventUsage(actionNode.action.eventId, ResourceUsage::Resolve)));
+          eventNode.resourceUsage.push_back(
+              make_rdcpair(GetResID(pSrcResource), ResourceUsage::Resolve));
         }
         else
         {
-          actionNode.resourceUsage.push_back(
-              make_rdcpair(GetResID(pSrcResource),
-                           EventUsage(actionNode.action.eventId, ResourceUsage::ResolveSrc)));
-          actionNode.resourceUsage.push_back(
-              make_rdcpair(GetResID(pDstResource),
-                           EventUsage(actionNode.action.eventId, ResourceUsage::ResolveDst)));
+          eventNode.resourceUsage.push_back(
+              make_rdcpair(GetResID(pSrcResource), ResourceUsage::ResolveSrc));
+          eventNode.resourceUsage.push_back(
+              make_rdcpair(GetResID(pDstResource), ResourceUsage::ResolveDst));
         }
       }
     }
@@ -542,7 +542,8 @@ bool WrappedID3D12GraphicsCommandList::Serialise_SetViewInstanceMask(SerialiserT
   {
     if(GetWrapped(pCommandList)->GetReal1() == NULL)
     {
-      RDCERR("Can't replay ID3D12GraphicsCommandList1 command");
+      SET_ERROR_RESULT(m_Cmd->m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Capture requires ID3D12GraphicsCommandList1 which isn't available");
       return false;
     }
 
@@ -554,11 +555,12 @@ bool WrappedID3D12GraphicsCommandList::Serialise_SetViewInstanceMask(SerialiserT
         return true;
       }
 
-      RDCERR("Can't replay SetViewInstanceMask with D3D12_VIEW_INSTANCING_TIER_NOT_SUPPORTED");
+      SET_ERROR_RESULT(m_Cmd->m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Capture requires view instancing support which isn't available");
       return false;
     }
 
-    m_Cmd->m_LastCmdListID = GetResourceManager()->GetOriginalID(GetResID(pCommandList));
+    m_Cmd->m_LastCmdListID = GetResID(pCommandList);
 
     bool stateUpdate = false;
 
@@ -578,7 +580,6 @@ bool WrappedID3D12GraphicsCommandList::Serialise_SetViewInstanceMask(SerialiserT
     else
     {
       Unwrap1(pCommandList)->SetViewInstanceMask(Mask);
-      GetCrackedList1()->SetViewInstanceMask(Mask);
 
       stateUpdate = true;
     }

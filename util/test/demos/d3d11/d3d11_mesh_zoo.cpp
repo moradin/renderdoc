@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -178,10 +178,20 @@ float4 main(v2f IN) : SV_Target0
 
       ctx->Draw(4, 6);
 
+      setMarker("Lines");
+
+      ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+
+      ctx->Draw(4, 6);
+
       setMarker("Stride 0");
       IASetVertexBuffer(vb, 0, 0);
 
       ctx->Draw(1, 0);
+
+      ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+      setMarker("Empty");
+      ctx->DrawInstanced(0, 0, 0, 0);
 
       Present();
     }

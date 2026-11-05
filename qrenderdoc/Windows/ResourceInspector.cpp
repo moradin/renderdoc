@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -27,12 +27,14 @@
 #include <QKeyEvent>
 #include <QMenu>
 #include "Code/Resources.h"
+#include "Widgets/AnnotationDisplay.h"
 #include "Widgets/Extended/RDHeaderView.h"
 #include "toolwindowmanager/ToolWindowManagerArea.h"
 #include "ui_ResourceInspector.h"
 
 static const int ResourceIdRole = Qt::UserRole;
 static const int FilterRole = Qt::UserRole + 1;
+static const int LastAccessSortRole = Qt::UserRole + 2;
 
 class ResourceListItemModel : public QAbstractItemModel
 {
@@ -46,6 +48,13 @@ public:
   {
     emit beginResetModel();
     emit endResetModel();
+  }
+
+  void bumpLastUse(ResourceId id) { m_LastUse[id] = ++m_LastUseIdx; }
+  void resetLastUse()
+  {
+    m_LastUseIdx = 1;
+    m_LastUse.clear();
   }
 
   QModelIndex index(int row, int column, const QModelIndex &parent = QModelIndex()) const override
@@ -88,6 +97,9 @@ public:
 
         if(role == FilterRole)
           return ToQStr(desc.type) + lit(" ") + m_Ctx.GetResourceName(desc.resourceId);
+
+        if(role == LastAccessSortRole)
+          return m_LastUse[desc.resourceId];
       }
     }
 
@@ -96,11 +108,39 @@ public:
 
 private:
   ICaptureContext &m_Ctx;
+
+  QMap<ResourceId, uint32_t> m_LastUse;
+  uint32_t m_LastUseIdx = 1;
 };
+
+bool ResourceSorterModel::lessThan(const QModelIndex &source_left, const QModelIndex &source_right) const
+{
+  if(m_Sort == SortType::Creation)
+  {
+    return source_left.data(ResourceIdRole).value<ResourceId>() <
+           source_right.data(ResourceIdRole).value<ResourceId>();
+  }
+  else if(m_Sort == SortType::LastAccess)
+  {
+    uint a = source_left.data(LastAccessSortRole).toUInt();
+    uint b = source_right.data(LastAccessSortRole).toUInt();
+
+    // if they're different, sort by access. Otherwise fall through to alphabetical
+    // we invert the reason, so that high values (recent access) are first
+    if(a != b)
+      return a > b;
+
+    return QCollatorSortFilterProxyModel::lessThan(source_left, source_right);
+  }
+
+  return QCollatorSortFilterProxyModel::lessThan(source_left, source_right);
+}
 
 ResourceInspector::ResourceInspector(ICaptureContext &ctx, QWidget *parent)
     : QFrame(parent), ui(new Ui::ResourceInspector), m_Ctx(ctx)
 {
+  m_SplitByMarker = ctx.Config().ResourceUsage_SplitByMarker;
+
   ui->setupUi(this);
 
   SetResourceNameDisplay(tr("No Resource Selected"));
@@ -113,13 +153,17 @@ ResourceInspector::ResourceInspector(ICaptureContext &ctx, QWidget *parent)
 
   m_ResourceModel = new ResourceListItemModel(this, m_Ctx);
 
-  m_FilterModel = new QCollatorSortFilterProxyModel(this);
+  m_FilterModel = new ResourceSorterModel(this);
   m_FilterModel->setSourceModel(m_ResourceModel);
   m_FilterModel->setFilterCaseSensitivity(Qt::CaseInsensitive);
   m_FilterModel->setFilterRole(FilterRole);
   m_FilterModel->sort(0);
   m_FilterModel->collator()->setNumericMode(true);
   m_FilterModel->collator()->setCaseSensitivity(Qt::CaseInsensitive);
+
+  ui->sortType->addItems(
+      {tr("Sort alphabetically"), tr("Sort by creation time"), tr("Sort by recently viewed")});
+  ui->sortType->adjustSize();
 
   ui->resourceList->setModel(m_FilterModel);
 
@@ -137,6 +181,10 @@ ResourceInspector::ResourceInspector(ICaptureContext &ctx, QWidget *parent)
   ui->relatedResources->setFont(Formatter::PreferredFont());
   ui->resourceUsage->setFont(Formatter::PreferredFont());
 
+  ui->resourceUsage->setContextMenuPolicy(Qt::CustomContextMenu);
+  QObject::connect(ui->resourceUsage, &QWidget::customContextMenuRequested, this,
+                   &ResourceInspector::resourceUsage_contextMenu);
+
   {
     RDHeaderView *header = new RDHeaderView(Qt::Horizontal, this);
     ui->relatedResources->setHeader(header);
@@ -149,8 +197,8 @@ ResourceInspector::ResourceInspector(ICaptureContext &ctx, QWidget *parent)
     RDHeaderView *header = new RDHeaderView(Qt::Horizontal, this);
     ui->resourceUsage->setHeader(header);
 
-    ui->resourceUsage->setColumns({tr("EID"), tr("Usage")});
-    header->setColumnStretchHints({-1, 1});
+    ui->resourceUsage->setColumns({tr("EID"), tr("Usage"), tr("End Marker")});
+    header->setColumnStretchHints({-1, -1, 1});
   }
 
   QObject::connect(ui->resourceList, &QListView::activated, this,
@@ -193,6 +241,8 @@ ResourceInspector::ResourceInspector(ICaptureContext &ctx, QWidget *parent)
   vertical->addWidget(ui->titleWidget);
   vertical->addWidget(ui->dockarea);
 
+  ui->resourceListFilter->setPlaceholderText(tr("Filter..."));
+
   Inspect(ResourceId());
 
   m_Ctx.AddCaptureViewer(this);
@@ -219,7 +269,8 @@ void ResourceInspector::Inspect(ResourceId id)
 
   m_Resource = id;
 
-  ui->viewContents->setVisible(m_Ctx.GetTexture(id) || m_Ctx.GetBuffer(id));
+  ui->viewContents->setVisible(m_Ctx.GetTexture(id) || m_Ctx.GetBuffer(id) ||
+                               m_Ctx.GetDescriptorStore(id));
 
   m_Entries.clear();
 
@@ -229,6 +280,11 @@ void ResourceInspector::Inspect(ResourceId id)
     m_ResourceModel->reset();
   }
 
+  m_ResourceModel->bumpLastUse(id);
+
+  m_FilterModel->invalidate();
+  m_FilterModel->sort(0);
+
   if(m_Ctx.HasResourceCustomName(id))
     ui->resetName->show();
   else
@@ -236,6 +292,7 @@ void ResourceInspector::Inspect(ResourceId id)
 
   ui->initChunks->setUpdatesEnabled(false);
   ui->resourceUsage->clear();
+  ui->resourceUsage->setEnabled(true);
 
   const SDFile &file = m_Ctx.GetStructuredFile();
   const ResourceDescription *desc = m_Ctx.GetResource(id);
@@ -246,7 +303,6 @@ void ResourceInspector::Inspect(ResourceId id)
     rdcarray<ShaderEntryPoint> entries = r->GetShaderEntryPoints(id);
 
     GUIInvoke::call(this, [this, entries, usage] {
-
       if(!entries.isEmpty())
       {
         m_Entries = entries;
@@ -255,21 +311,53 @@ void ResourceInspector::Inspect(ResourceId id)
 
       ui->resourceUsage->beginUpdate();
 
-      CombineUsageEvents(m_Ctx, usage, [this](uint32_t startEID, uint32_t endEID, ResourceUsage use) {
-        QString text;
+      if(usage.size() == 1 && usage[0].eventId == 0 && usage[0].usage == ResourceUsage::Unused)
+      {
+        ui->resourceUsage->setEnabled(false);
 
-        if(startEID == endEID)
-          text = QFormatStr("EID %1").arg(startEID);
-        else
-          text = QFormatStr("EID %1-%2").arg(startEID).arg(endEID);
+        ui->resourceUsage->addTopLevelItem(new RDTreeWidgetItem(
+            {QString(), QString(), tr("Resource usage not tracked for this type of resource")}));
+      }
+      else if(usage.empty())
+      {
+        ui->resourceUsage->addTopLevelItem(new RDTreeWidgetItem(
+            {QString(), QString(), tr("No static usage observed for this resource")}));
+      }
+      else
+      {
+        CombineUsageEvents(m_Ctx, usage, m_SplitByMarker, [this](uint32_t startEID, uint32_t endEID, ResourceUsage use) {
+          QString text;
 
-        RDTreeWidgetItem *item =
-            new RDTreeWidgetItem({text, ToQStr(use, m_Ctx.APIProps().pipelineType)});
-        item->setData(0, ResourceIdRole, QVariant(endEID));
-        item->setData(1, ResourceIdRole, QVariant(endEID));
+          if(startEID == endEID)
+            text = QFormatStr("EID %1").arg(startEID);
+          else
+            text = QFormatStr("EID %1-%2").arg(startEID).arg(endEID);
+          uint32_t eid = m_SplitByMarker ? startEID : endEID;
 
-        ui->resourceUsage->addTopLevelItem(item);
-      });
+          QString markerName(GetParentMarkerName(m_Ctx, eid));
+          bool hasParent = false;
+          QString fullMarkerPath = GetParentMarkerPath(m_Ctx, eid, hasParent);
+
+          RDTreeWidgetItem *item =
+              new RDTreeWidgetItem({text, ToQStr(use, m_Ctx.APIProps().pipelineType), markerName});
+          item->setData(0, ResourceIdRole, QVariant(endEID));
+          item->setData(1, ResourceIdRole, QVariant(endEID));
+          item->setData(2, ResourceIdRole, QVariant(endEID));
+          item->setToolTip(fullMarkerPath);
+
+          if(hasParent)
+          {
+            RDTreeWidgetItem *child = new RDTreeWidgetItem({QString(), QString(), fullMarkerPath});
+            child->setData(0, ResourceIdRole, QVariant(endEID));
+            child->setData(1, ResourceIdRole, QVariant(endEID));
+            child->setData(2, ResourceIdRole, QVariant(endEID));
+            child->setToolTip(fullMarkerPath);
+
+            item->addChild(child);
+          }
+          ui->resourceUsage->addTopLevelItem(item);
+        });
+      }
 
       ui->resourceUsage->endUpdate();
     });
@@ -278,6 +366,9 @@ void ResourceInspector::Inspect(ResourceId id)
   if(desc)
   {
     ANALYTIC_SET(UIFeatures.ResourceInspect, true);
+
+    if(m_AnnotationView)
+      m_AnnotationView->setAnnotationObject(desc->annotations);
 
     SetResourceNameDisplay(m_Ctx.GetResourceName(id));
 
@@ -327,6 +418,8 @@ void ResourceInspector::Inspect(ResourceId id)
   {
     m_Resource = ResourceId();
     SetResourceNameDisplay(tr("No Resource Selected"));
+    if(m_AnnotationView)
+      m_AnnotationView->setAnnotationObject(NULL);
   }
 
   ui->initChunks->setUpdatesEnabled(true);
@@ -392,6 +485,18 @@ void ResourceInspector::OnCaptureLoaded()
 {
   ui->renameResource->setEnabled(true);
 
+  if(m_Ctx.FrameInfo().containsAnnotations && m_AnnotationView == NULL)
+  {
+    m_AnnotationView = new AnnotationDisplay(m_Ctx, false, this);
+    m_AnnotationView->setWindowTitle(tr("Resource Annotations"));
+
+    ui->dockarea->addToolWindow(
+        m_AnnotationView,
+        ToolWindowManager::AreaReference(ToolWindowManager::BottomOf,
+                                         ui->dockarea->areaOf(ui->relatedResources), 0.5f));
+    ui->dockarea->setToolWindowProperties(m_AnnotationView, ToolWindowManager::HideCloseButton);
+  }
+
   m_ResourceModel->reset();
   m_ResourceCacheID = m_Ctx.ResourceNameCacheID();
 }
@@ -412,6 +517,9 @@ void ResourceInspector::OnCaptureClosed()
 {
   m_Resource = ResourceId();
 
+  if(m_AnnotationView)
+    m_AnnotationView->setAnnotationObject(NULL);
+
   ui->renameResource->setEnabled(false);
   ui->resetName->hide();
 
@@ -420,11 +528,13 @@ void ResourceInspector::OnCaptureClosed()
   ui->viewContents->hide();
 
   m_ResourceModel->reset();
+  m_ResourceModel->resetLastUse();
 
   m_ChunksModel->setObjects({});
   ui->initChunks->clearInternalExpansions();
   ui->relatedResources->clear();
   ui->resourceUsage->clear();
+  ui->resourceUsage->setEnabled(true);
 }
 
 void ResourceInspector::OnEventChanged(uint32_t eventId)
@@ -493,6 +603,11 @@ void ResourceInspector::on_resetName_clicked()
   Inspect(id);
 }
 
+void ResourceInspector::on_sortType_currentIndexChanged(int index)
+{
+  m_FilterModel->setSortType((ResourceSorterModel::SortType)index);
+}
+
 void ResourceInspector::on_cancelResourceListFilter_clicked()
 {
   ui->resourceListFilter->setText(QString());
@@ -506,7 +621,8 @@ void ResourceInspector::on_resourceListFilter_textChanged(const QString &text)
 void ResourceInspector::resource_doubleClicked(const QModelIndex &index)
 {
   ResourceId id = index.model()->data(index, ResourceIdRole).value<ResourceId>();
-  Inspect(id);
+  if(id != ResourceId())
+    Inspect(id);
 
   HighlightUsage();
 }
@@ -515,6 +631,7 @@ void ResourceInspector::on_viewContents_clicked()
 {
   TextureDescription *tex = m_Ctx.GetTexture(m_Resource);
   BufferDescription *buf = m_Ctx.GetBuffer(m_Resource);
+  DescriptorStoreDescription *desc = m_Ctx.GetDescriptorStore(m_Resource);
 
   if(tex)
   {
@@ -535,7 +652,24 @@ void ResourceInspector::on_viewContents_clicked()
   }
   else if(buf)
   {
-    IBufferViewer *viewer = m_Ctx.ViewBuffer(0, buf->length, buf->resourceId);
+    rdcstr format;
+
+    // Check for __rd_format annotation on this buffer
+    const ResourceDescription *resourceDesc = m_Ctx.GetResource(buf->resourceId);
+    if(resourceDesc && resourceDesc->annotations)
+    {
+      const SDObject *formatChild = resourceDesc->annotations->FindChildByKeyPath("__rd_format");
+      if(formatChild && formatChild->type.basetype == SDBasic::String)
+        format = formatChild->data.str;
+    }
+
+    IBufferViewer *viewer = m_Ctx.ViewBuffer(0, buf->length, buf->resourceId, format);
+
+    m_Ctx.AddDockWindow(viewer->Widget(), DockReference::AddTo, this);
+  }
+  else if(desc)
+  {
+    IDescriptorViewer *viewer = m_Ctx.ViewDescriptorStore(desc->resourceId);
 
     m_Ctx.AddDockWindow(viewer->Widget(), DockReference::AddTo, this);
   }
@@ -570,7 +704,46 @@ void ResourceInspector::on_viewContents_clicked()
 void ResourceInspector::on_resourceUsage_doubleClicked(const QModelIndex &index)
 {
   uint32_t eid = index.model()->data(index, ResourceIdRole).value<uint32_t>();
-  m_Ctx.SetEventID({}, eid, eid);
+  if(eid != 0)
+    m_Ctx.SetEventID({}, eid, eid);
+}
+
+void ResourceInspector::resourceUsage_SplitByMarker_toggled()
+{
+  m_SplitByMarker = !m_SplitByMarker;
+  m_Ctx.Config().ResourceUsage_SplitByMarker = m_SplitByMarker;
+  m_Ctx.Config().Save();
+
+  // force a refresh to pick up the new grouping of usage
+  ResourceId id = m_Resource;
+  m_Resource = ResourceId();
+  Inspect(id);
+  if(m_SplitByMarker)
+    ui->resourceUsage->setColumns({tr("EID"), tr("Usage"), tr("Start Marker")});
+  else
+    ui->resourceUsage->setColumns({tr("EID"), tr("Usage"), tr("End Marker")});
+}
+
+void ResourceInspector::resourceUsage_contextMenu(const QPoint &pos)
+{
+  QMenu contextMenu(this);
+  QAction copyText(tr("Copy"), this);
+  QAction splitByMarker(tr("Split By Marker"), this);
+  splitByMarker.setCheckable(true);
+  splitByMarker.setChecked(m_SplitByMarker);
+
+  RDTreeWidget *resourceUsage = ui->resourceUsage;
+  QModelIndex index = resourceUsage->indexAt(pos);
+
+  QObject::connect(&copyText, &QAction::triggered,
+                   [resourceUsage, pos, index] { resourceUsage->copyIndex(pos, index); });
+  QObject::connect(&splitByMarker, &QAction::triggered,
+                   [this] { this->resourceUsage_SplitByMarker_toggled(); });
+
+  contextMenu.addAction(&copyText);
+  contextMenu.addAction(&splitByMarker);
+
+  RDDialog::show(&contextMenu, ui->resourceUsage->viewport()->mapToGlobal(pos));
 }
 
 void ResourceInspector::enterEvent(QEvent *event)

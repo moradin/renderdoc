@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,7 +34,10 @@
 #include "data/hlsl/hlsl_cbuffers.h"
 
 static Vec2f quadPos[] = {
-    Vec2f(0.0f, 0.0f), Vec2f(1.0f, 0.0f), Vec2f(0.0f, 1.0f), Vec2f(1.0f, 1.0f),
+    Vec2f(0.0f, 0.0f),
+    Vec2f(1.0f, 0.0f),
+    Vec2f(0.0f, 1.0f),
+    Vec2f(1.0f, 1.0f),
 };
 
 // see d3d11_debug.cpp D3D11DebugManager::D3D11DebugManager for why we use this helper like this
@@ -49,8 +52,7 @@ static void InternalRef(ID3D11DeviceChild *child)
 
 D3D11TextRenderer::D3D11TextRenderer(WrappedID3D11Device *wrapper)
 {
-  if(RenderDoc::Inst().GetCrashHandler())
-    RenderDoc::Inst().GetCrashHandler()->RegisterMemoryRegion(this, sizeof(D3D11TextRenderer));
+  RenderDoc::Inst().RegisterMemoryRegion(this, sizeof(D3D11TextRenderer));
 
   m_pDevice = wrapper;
   m_pImmediateContext = m_pDevice->GetImmediateContext();
@@ -309,8 +311,7 @@ D3D11TextRenderer::~D3D11TextRenderer()
   SAFE_INTRELEASE(Layout);
   SAFE_INTRELEASE(FL9Buffer);
 
-  if(RenderDoc::Inst().GetCrashHandler())
-    RenderDoc::Inst().GetCrashHandler()->UnregisterMemoryRegion(this);
+  RenderDoc::Inst().UnregisterMemoryRegion(this);
 }
 
 void D3D11TextRenderer::SetOutputWindow(HWND w)

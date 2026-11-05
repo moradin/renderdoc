@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -56,8 +56,7 @@ static void InternalRef(ID3D11DeviceChild *child)
 
 D3D11DebugManager::D3D11DebugManager(WrappedID3D11Device *wrapper)
 {
-  if(RenderDoc::Inst().GetCrashHandler())
-    RenderDoc::Inst().GetCrashHandler()->RegisterMemoryRegion(this, sizeof(D3D11DebugManager));
+  RenderDoc::Inst().RegisterMemoryRegion(this, sizeof(D3D11DebugManager));
 
   m_pDevice = wrapper;
   m_pImmediateContext = wrapper->GetImmediateContext();
@@ -85,8 +84,7 @@ D3D11DebugManager::~D3D11DebugManager()
     m_ShaderItemCache.pop_back();
   }
 
-  if(RenderDoc::Inst().GetCrashHandler())
-    RenderDoc::Inst().GetCrashHandler()->UnregisterMemoryRegion(this);
+  RenderDoc::Inst().UnregisterMemoryRegion(this);
 }
 
 //////////////////////////////////////////////////////
@@ -405,17 +403,20 @@ void D3D11DebugManager::FillWithDiscardPattern(DiscardType type, ID3D11Resource 
         if(desc.CPUAccessFlags & D3D11_CPU_ACCESS_WRITE)
         {
           D3D11_MAPPED_SUBRESOURCE mapped = {};
-          HRESULT hr = m_pImmediateContext->Map(res, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+          D3D11_MAP mapping =
+              (desc.Usage == D3D11_USAGE_DYNAMIC) ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE;
+          HRESULT hr = m_pImmediateContext->Map(res, 0, mapping, 0, &mapped);
           m_pDevice->CheckHRESULT(hr);
 
           if(SUCCEEDED(hr))
           {
             byte *dst = (byte *)mapped.pData;
             dst += pRect[r].left;
-            for(size_t i = 0; i < size; i++)
+            size_t copyStride = sizeof(uint32_t);
+            for(size_t i = 0; i < size; i += copyStride)
             {
               memcpy(dst, &value, RDCMIN(sizeof(uint32_t), size - i));
-              dst += sizeof(uint32_t);
+              dst += copyStride;
             }
 
             m_pImmediateContext->Unmap(res, 0);
@@ -1003,6 +1004,15 @@ void D3D11Replay::GeneralMisc::Init(WrappedID3D11Device *device)
   if(FAILED(hr))
     RDCERR("Failed to create default rasterizer state HRESULT: %s", ToStr(hr).c_str());
 
+  rastDesc.DepthClipEnable = TRUE;
+
+  hr = device->CreateRasterizerState(&rastDesc, &RasterClipState);
+
+  if(FAILED(hr))
+    RDCERR("Failed to create depthclip rasterizer state HRESULT: %s", ToStr(hr).c_str());
+
+  rastDesc.DepthClipEnable = FALSE;
+
   rastDesc.ScissorEnable = TRUE;
 
   hr = device->CreateRasterizerState(&rastDesc, &RasterScissorState);
@@ -1023,6 +1033,7 @@ void D3D11Replay::GeneralMisc::Init(WrappedID3D11Device *device)
 void D3D11Replay::GeneralMisc::Release()
 {
   SAFE_RELEASE(RasterState);
+  SAFE_RELEASE(RasterClipState);
   SAFE_RELEASE(RasterScissorState);
 
   SAFE_RELEASE(FullscreenVS);
@@ -1137,6 +1148,44 @@ void D3D11Replay::OverlayRendering::Init(WrappedID3D11Device *device)
     TriangleSizePS =
         shaderCache->MakePShader(meshhlsl.c_str(), "RENDERDOC_TriangleSizePS", "ps_4_0");
   }
+  {
+    rdcstr hlsl = GetEmbeddedResource(depth_copy_hlsl);
+
+    DepthCopyPS = shaderCache->MakePShader(hlsl.c_str(), "RENDERDOC_DepthCopyPS", "ps_5_0");
+    DepthCopyArrayPS =
+        shaderCache->MakePShader(hlsl.c_str(), "RENDERDOC_DepthCopyArrayPS", "ps_5_0");
+    DepthCopyMSPS = shaderCache->MakePShader(hlsl.c_str(), "RENDERDOC_DepthCopyMSPS", "ps_5_0");
+    DepthCopyMSArrayPS =
+        shaderCache->MakePShader(hlsl.c_str(), "RENDERDOC_DepthCopyMSArrayPS", "ps_5_0");
+  }
+  {
+    D3D11_BLEND_DESC blendDesc = {};
+    blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    HRESULT hr = device->CreateBlendState(&blendDesc, &DepthBlendRTMaskZero);
+    if(FAILED(hr))
+    {
+      RDCERR("Failed to create depth overlay blend state HRESULT: %s", ToStr(hr).c_str());
+    }
+  }
+  {
+    D3D11_DEPTH_STENCIL_DESC dsDesc = {};
+    dsDesc.DepthEnable = FALSE;
+    dsDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    dsDesc.DepthFunc = D3D11_COMPARISON_ALWAYS;
+    dsDesc.StencilEnable = TRUE;
+    dsDesc.StencilReadMask = 0xff;
+    dsDesc.StencilWriteMask = 0x0;
+    dsDesc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+    dsDesc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+    dsDesc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_KEEP;
+    dsDesc.FrontFace.StencilFunc = D3D11_COMPARISON_EQUAL;
+    dsDesc.BackFace = dsDesc.FrontFace;
+    HRESULT hr = device->CreateDepthStencilState(&dsDesc, &DepthResolveDS);
+    if(FAILED(hr))
+    {
+      RDCERR("Failed to create depth resolve depth stencil state HRESULT: %s", ToStr(hr).c_str());
+    }
+  }
 }
 
 void D3D11Replay::OverlayRendering::Release()
@@ -1146,6 +1195,13 @@ void D3D11Replay::OverlayRendering::Release()
   SAFE_RELEASE(QOResolvePS);
   SAFE_RELEASE(TriangleSizeGS);
   SAFE_RELEASE(TriangleSizePS);
+  SAFE_RELEASE(DepthCopyPS);
+  SAFE_RELEASE(DepthCopyArrayPS);
+  SAFE_RELEASE(DepthCopyMSPS);
+  SAFE_RELEASE(DepthCopyMSArrayPS);
+
+  SAFE_RELEASE(DepthResolveDS);
+  SAFE_RELEASE(DepthBlendRTMaskZero);
 
   SAFE_RELEASE(Texture);
 }
@@ -1234,7 +1290,8 @@ void D3D11Replay::MeshRendering::Init(WrappedID3D11Device *device)
   {
     // these elements are just for signature matching sake, so we don't need correct offsets/slots
     D3D11_INPUT_ELEMENT_DESC inputDescSecondary[2] = {
-        {"pos", 0, DXGI_FORMAT_R32G32B32A32_FLOAT}, {"sec", 0, DXGI_FORMAT_R8G8B8A8_UNORM},
+        {"pos", 0, DXGI_FORMAT_R32G32B32A32_FLOAT},
+        {"sec", 0, DXGI_FORMAT_R8G8B8A8_UNORM},
     };
 
     rdcstr meshhlsl = GetEmbeddedResource(mesh_hlsl);
@@ -1466,6 +1523,139 @@ void D3D11Replay::PixelPicking::Release()
   SAFE_RELEASE(Texture);
   SAFE_RELEASE(RTV);
   SAFE_RELEASE(StageTexture);
+}
+
+void ShaderDebugging::Init(WrappedID3D11Device *device)
+{
+  D3D11ShaderCache *shaderCache = device->GetShaderCache();
+
+  HRESULT hr = S_OK;
+
+  rdcstr hlsl = GetEmbeddedResource(shaderdebug_hlsl);
+
+  MathCS = shaderCache->MakeCShader(hlsl.c_str(), "RENDERDOC_DebugMathOp", "cs_5_0");
+  SampleVS = shaderCache->MakeVShader(hlsl.c_str(), "RENDERDOC_DebugSampleVS", "vs_5_0");
+  SamplePS = shaderCache->MakePShader(hlsl.c_str(), "RENDERDOC_DebugSamplePS", "ps_5_0");
+
+  D3D11_BUFFER_DESC bDesc;
+
+  bDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+  bDesc.ByteWidth = 6 * sizeof(Vec4f);
+  bDesc.CPUAccessFlags = 0;
+  bDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+  bDesc.StructureByteStride = 6 * sizeof(Vec4f);
+  bDesc.Usage = D3D11_USAGE_DEFAULT;
+
+  hr = device->CreateBuffer(&bDesc, NULL, &OutBuf);
+
+  if(FAILED(hr))
+    RDCERR("Failed to create shader debugging output buffer HRESULT: %s", ToStr(hr).c_str());
+
+  bDesc.BindFlags = 0;
+  bDesc.MiscFlags = 0;
+  bDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  bDesc.Usage = D3D11_USAGE_STAGING;
+
+  hr = device->CreateBuffer(&bDesc, NULL, &OutStageBuf);
+
+  if(FAILED(hr))
+    RDCERR("Failed to create shader debugging staging buffer HRESULT: %s", ToStr(hr).c_str());
+
+  bDesc.ByteWidth = 16 * sizeof(Vec4f);
+  bDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+  bDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+  bDesc.Usage = D3D11_USAGE_DYNAMIC;
+
+  hr = device->CreateBuffer(&bDesc, NULL, &ParamBuf);
+
+  if(FAILED(hr))
+    RDCERR("Failed to create shader debugging parameter buffer HRESULT: %s", ToStr(hr).c_str());
+
+  D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+
+  uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+  uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+  uavDesc.Buffer.FirstElement = 0;
+  uavDesc.Buffer.NumElements = 1;
+  uavDesc.Buffer.Flags = 0;
+
+  if(OutBuf)
+    hr = device->CreateUnorderedAccessView(OutBuf, &uavDesc, &OutUAV);
+
+  if(FAILED(hr))
+    RDCERR("Failed to create shader debugging UAV HRESULT: %s", ToStr(hr).c_str());
+
+  D3D11_TEXTURE2D_DESC tdesc = {};
+
+  tdesc.ArraySize = 1;
+  tdesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+  tdesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+  tdesc.Width = 1;
+  tdesc.Height = 1;
+  tdesc.SampleDesc.Count = 1;
+
+  hr = device->CreateTexture2D(&tdesc, NULL, &DummyTex);
+
+  if(FAILED(hr))
+    RDCERR("Failed to create shader debugging dummy texture HRESULT: %s", ToStr(hr).c_str());
+
+  D3D11_RENDER_TARGET_VIEW_DESC rtDesc;
+
+  rtDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+  rtDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+  rtDesc.Texture2D.MipSlice = 0;
+
+  if(DummyTex)
+    hr = device->CreateRenderTargetView(DummyTex, &rtDesc, &DummyRTV);
+
+  if(FAILED(hr))
+    RDCERR("Failed to create shader debugging dummy RTV HRESULT: %s", ToStr(hr).c_str());
+
+  m_pDevice = device;
+}
+
+void ShaderDebugging::Release()
+{
+  SAFE_RELEASE(MathCS);
+  SAFE_RELEASE(SampleVS);
+  SAFE_RELEASE(SamplePS);
+  SAFE_RELEASE(ParamBuf);
+  SAFE_RELEASE(OutBuf);
+  SAFE_RELEASE(OutStageBuf);
+  SAFE_RELEASE(OutUAV);
+
+  SAFE_RELEASE(DummyTex);
+  SAFE_RELEASE(DummyRTV);
+
+  for(auto it = m_OffsetSamplePS.begin(); it != m_OffsetSamplePS.end(); ++it)
+    it->second->Release();
+}
+
+ID3D11PixelShader *ShaderDebugging::GetSamplePS(const int8_t offsets[3])
+{
+  uint32_t offsKey = offsets[0] | (offsets[1] << 8) | (offsets[2] << 16);
+  if(offsKey == 0)
+    return SamplePS;
+
+  ID3D11PixelShader *ps = m_OffsetSamplePS[offsKey];
+  if(ps)
+    return ps;
+
+  D3D11ShaderCache *shaderCache = m_pDevice->GetShaderCache();
+
+  shaderCache->SetCaching(true);
+
+  rdcstr hlsl = GetEmbeddedResource(shaderdebug_hlsl);
+
+  hlsl = StringFormat::Fmt("#define debugSampleOffsets int4(%d,%d,%d,0)\n\n%s", offsets[0],
+                           offsets[1], offsets[2], hlsl.c_str());
+
+  ps = m_OffsetSamplePS[offsKey] =
+      shaderCache->MakePShader(hlsl.c_str(), "RENDERDOC_DebugSamplePS", "ps_5_0");
+
+  shaderCache->SetCaching(false);
+
+  return ps;
 }
 
 void D3D11Replay::HistogramMinMax::Init(WrappedID3D11Device *device)

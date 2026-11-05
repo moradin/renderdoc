@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,6 +26,7 @@
 #include <QAction>
 #include <QMenu>
 #include "Code/QRDUtils.h"
+#include "Code/Resources.h"
 #include "ui_DebugMessageView.h"
 
 static const int EIDRole = Qt::UserRole + 1;
@@ -173,7 +174,12 @@ protected:
 
   bool isVisibleRow(int sourceRow) const
   {
-    const DebugMessage &msg = m_Ctx.DebugMessages()[sourceRow];
+    const rdcarray<DebugMessage> &debugMessages = m_Ctx.DebugMessages();
+
+    if(sourceRow >= debugMessages.count())
+      return false;
+
+    const DebugMessage &msg = debugMessages[sourceRow];
 
     if(m_HiddenSources.contains(msg.source))
       return false;
@@ -216,6 +222,7 @@ DebugMessageView::DebugMessageView(ICaptureContext &ctx, QWidget *parent)
   ui->messages->setMouseTracking(true);
   ui->messages->setAutoScroll(false);
 
+  ui->messages->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
   ui->messages->horizontalHeader()->setStretchLastSection(false);
 
   ui->messages->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -234,6 +241,10 @@ DebugMessageView::DebugMessageView(ICaptureContext &ctx, QWidget *parent)
 
   m_ShowHidden->setCheckable(true);
 
+  QAction *copy = new QAction(tr("&Copy"), this);
+  copy->setIcon(Icons::copy());
+  m_ContextMenu->addAction(copy);
+  m_ContextMenu->addSeparator();
   m_ContextMenu->addAction(m_ShowHidden);
   m_ContextMenu->addSeparator();
   m_ContextMenu->addAction(m_ToggleSource);
@@ -247,6 +258,7 @@ DebugMessageView::DebugMessageView(ICaptureContext &ctx, QWidget *parent)
   QObject::connect(m_ToggleCategory, &QAction::triggered, this, &DebugMessageView::messages_toggled);
   QObject::connect(m_ToggleMessageType, &QAction::triggered, this,
                    &DebugMessageView::messages_toggled);
+  QObject::connect(copy, &QAction::triggered, [this]() { ui->messages->copySelectedIndices(); });
 
   RefreshMessageList();
 

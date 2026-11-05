@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -46,13 +46,15 @@ public:
   rdcpair<int32_t, int32_t> GetDimensions();
 
   void ClearThumbnails();
-  bool AddThumbnail(WindowingData window, ResourceId texID, const Subresource &sub,
-                    CompType typeCast);
+  ResultDetails AddThumbnail(WindowingData window, ResourceId texID, const Subresource &sub,
+                             CompType typeCast);
+  bytebuf DrawThumbnail(int32_t width, int32_t height, ResourceId textureId, const Subresource &sub,
+                        CompType typeCast);
 
   void Display();
 
   ReplayOutputType GetType() { return m_Type; }
-  bool SetPixelContext(WindowingData window);
+  ResultDetails SetPixelContext(WindowingData window);
   void SetPixelContextLocation(uint32_t x, uint32_t y);
   void DisablePixelContext();
 
@@ -79,6 +81,7 @@ private:
 
   ReplayController *m_pController;
 
+  bool m_CustomDirty;
   bool m_OverlayDirty;
   bool m_ForceOverlayRefresh;
 
@@ -96,10 +99,16 @@ private:
     bool dirty;
   } m_MainOutput;
 
+  rdcpair<uint32_t, uint32_t> m_TextureDim = {0, 0};
+
   ResourceId m_OverlayResourceId;
   ResourceId m_CustomShaderResourceId;
 
   rdcarray<OutputPair> m_Thumbnails;
+  rdcarray<rdcpair<uint64_t, uint64_t>> m_ThumbnailGenerators;
+  // keep 8 generators to avoid churn, but most thumbnails should be the same size so this means
+  // during resize we don't create and destroy too many
+  static const size_t MaxThumbnailGenerators = 8;
 
   float m_ContextX;
   float m_ContextY;
@@ -129,8 +138,8 @@ public:
 
   APIProperties GetAPIProperties();
 
-  ReplayStatus CreateDevice(RDCFile *rdc, const ReplayOptions &opts);
-  ReplayStatus SetDevice(IReplayDriver *device);
+  RDResult CreateDevice(RDCFile *rdc, const ReplayOptions &opts);
+  RDResult SetDevice(IReplayDriver *device);
 
   void FileChanged();
 
@@ -140,7 +149,15 @@ public:
   const D3D12Pipe::State *GetD3D12PipelineState();
   const GLPipe::State *GetGLPipelineState();
   const VKPipe::State *GetVulkanPipelineState();
+  const D3D9Pipe::State *GetD3D9PipelineState();
   const PipeState &GetPipelineState();
+  rdcarray<Descriptor> GetDescriptors(ResourceId descriptorStore,
+                                      const rdcarray<DescriptorRange> &ranges);
+  rdcarray<SamplerDescriptor> GetSamplerDescriptors(ResourceId descriptorStore,
+                                                    const rdcarray<DescriptorRange> &ranges);
+  const rdcarray<DescriptorAccess> &GetDescriptorAccess();
+  rdcarray<DescriptorLogicalLocation> GetDescriptorLocations(ResourceId descriptorStore,
+                                                             const rdcarray<DescriptorRange> &ranges);
 
   rdcarray<rdcstr> GetDisassemblyTargets(bool withPipeline);
   rdcstr DisassembleShader(ResourceId pipeline, const ShaderReflection *refl, const rdcstr &target);
@@ -153,6 +170,7 @@ public:
   void FreeCustomShader(ResourceId id);
 
   rdcarray<ShaderEncoding> GetCustomShaderEncodings();
+  rdcarray<ShaderSourcePrefix> GetCustomShaderSourcePrefixes();
   rdcarray<ShaderEncoding> GetTargetShaderEncodings();
   rdcpair<ResourceId, rdcstr> BuildTargetShader(const rdcstr &entry, ShaderEncoding sourceEncoding,
                                                 bytebuf source,
@@ -161,6 +179,8 @@ public:
   void ReplaceResource(ResourceId from, ResourceId to);
   void RemoveReplacement(ResourceId id);
   void FreeTargetResource(ResourceId id);
+  void ClearReplayCache();
+  void ReloadShaderDebugInformation();
 
   FrameDescription GetFrameInfo();
   const SDFile &GetStructuredFile();
@@ -171,9 +191,17 @@ public:
   CounterDescription DescribeCounter(GPUCounter counterID);
   const rdcarray<TextureDescription> &GetTextures();
   const rdcarray<BufferDescription> &GetBuffers();
+  const rdcarray<DescriptorStoreDescription> &GetDescriptorStores();
   const rdcarray<ResourceDescription> &GetResources();
   rdcarray<DebugMessage> GetDebugMessages();
-  ReplayStatus GetFatalErrorStatus() { return m_FatalError; }
+  ResultDetails GetFatalErrorStatus()
+  {
+    // don't reconvert this on return every time, or we would cache many strings if this function is
+    // repeatedly called (which it is intended to be)
+    if(m_FatalError.code != m_FatalErrorResult.code)
+      m_FatalErrorResult = m_FatalError;
+    return m_FatalErrorResult;
+  }
   rdcarray<ShaderEntryPoint> GetShaderEntryPoints(ResourceId shader);
   const ShaderReflection *GetShader(ResourceId pipeline, ResourceId shader, ShaderEntryPoint entry);
 
@@ -186,9 +214,11 @@ public:
   rdcarray<PixelModification> PixelHistory(ResourceId target, uint32_t x, uint32_t y,
                                            const Subresource &sub, CompType typeCast);
   ShaderDebugTrace *DebugVertex(uint32_t vertid, uint32_t instid, uint32_t idx, uint32_t view);
-  ShaderDebugTrace *DebugPixel(uint32_t x, uint32_t y, uint32_t sample, uint32_t primitive);
+  ShaderDebugTrace *DebugPixel(uint32_t x, uint32_t y, const DebugPixelInputs &inputs);
   ShaderDebugTrace *DebugThread(const rdcfixedarray<uint32_t, 3> &groupid,
                                 const rdcfixedarray<uint32_t, 3> &threadid);
+  ShaderDebugTrace *DebugMeshThread(const rdcfixedarray<uint32_t, 3> &groupid,
+                                    const rdcfixedarray<uint32_t, 3> &threadid);
   rdcarray<ShaderDebugState> ContinueDebug(ShaderDebugger *debugger);
   void FreeTrace(ShaderDebugTrace *trace);
 
@@ -199,12 +229,12 @@ public:
   bytebuf GetBufferData(ResourceId buff, uint64_t offset, uint64_t len);
   bytebuf GetTextureData(ResourceId buff, const Subresource &sub);
 
-  bool SaveTexture(const TextureSave &saveData, const rdcstr &path);
+  ResultDetails SaveTexture(const TextureSave &saveData, const rdcstr &path);
 
   rdcarray<ShaderVariable> GetCBufferVariableContents(ResourceId pipeline, ResourceId shader,
-                                                      const rdcstr &entryPoint, uint32_t cbufslot,
-                                                      ResourceId buffer, uint64_t offset,
-                                                      uint64_t length);
+                                                      ShaderStage stage, const rdcstr &entryPoint,
+                                                      uint32_t cbufslot, ResourceId buffer,
+                                                      uint64_t offset, uint64_t length);
 
   rdcarray<WindowingSystem> GetSupportedWindowSystems();
 
@@ -222,7 +252,7 @@ public:
 
 private:
   virtual ~ReplayController();
-  ReplayStatus PostCreateInit(IReplayDriver *device, RDCFile *rdc);
+  RDResult PostCreateInit(IReplayDriver *device, RDCFile *rdc);
 
   void FetchPipelineState(uint32_t eventId);
 
@@ -242,7 +272,8 @@ private:
   int32_t m_ReplayLoopCancel = 0;
   int32_t m_ReplayLoopFinished = 0;
 
-  ReplayStatus m_FatalError = ReplayStatus::Succeeded;
+  RDResult m_FatalError = ResultCode::Succeeded;
+  ResultDetails m_FatalErrorResult = {ResultCode::Succeeded};
 
   uint32_t m_EventID;
 
@@ -252,12 +283,14 @@ private:
   D3D12Pipe::State m_D3D12PipelineState;
   GLPipe::State m_GLPipelineState;
   VKPipe::State m_VulkanPipelineState;
+  D3D9Pipe::State m_D3D9PipelineState;
   PipeState m_PipeState;
 
   rdcarray<ReplayOutput *> m_Outputs;
 
   rdcarray<ResourceDescription> m_Resources;
   rdcarray<BufferDescription> m_Buffers;
+  rdcarray<DescriptorStoreDescription> m_DescriptorStores;
   rdcarray<TextureDescription> m_Textures;
 
   IReplayDriver *m_pDevice;

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -108,7 +108,7 @@ private:
   void InitializeCmdInfo();
   void DeInitializeCmdInfo();
   void DeleteSession(uint32_t sessionId);
-  CounterDescription InternalGetCounterDescription(uint32_t internalIndex);
+  CounterDescription InternalGetCounterDescription(GpaSessionId sessionId, uint32_t internalIndex);
 
   std::map<uint32_t, CounterDescription> EnumerateCounters();
   std::map<uint32_t, CounterDescription> m_Counters;

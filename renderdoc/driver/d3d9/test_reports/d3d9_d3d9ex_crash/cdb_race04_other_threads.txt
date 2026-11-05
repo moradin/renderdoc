@@ -1,0 +1,133 @@
+
+Microsoft (R) Windows Debugger Version 10.0.22621.1778 AMD64
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+
+Loading Dump File [C:\dumps\race04_qrenderdoc.exe.17048.dmp]
+User Mini Dump File: Only registers, stack and portions of memory are available
+
+
+************* Path validation summary **************
+Response                         Time (ms)     Location
+OK                                             E:\Projects\renderdoc\x64\Development
+Deferred                                       srv*C:\symbols*https://msdl.microsoft.com/download/symbols
+Symbol search path is: E:\Projects\renderdoc\x64\Development;srv*C:\symbols*https://msdl.microsoft.com/download/symbols
+Executable search path is: 
+Windows 10 Version 26300 MP (28 procs) Free x64
+Product: WinNt, suite: SingleUserTS
+Edition build lab: 26100.1.amd64fre.ge_release.240331-1435
+Machine Name:
+Debug session time: Thu Nov  5 08:08:56.000 2026 (UTC + 1:00)
+System Uptime: 0 days 21:21:44.566
+Process Uptime: 0 days 0:00:05.000
+................................................................
+.........................
+Loading unloaded module list
+.........................
+This dump file has an exception of interest stored in it.
+The stored exception information can be accessed via .ecxr.
+(4298.b584): Access violation - code c0000005 (first/second chance not available)
+For analysis of this file, run !analyze -v
+ntdll!NtWaitForMultipleObjects+0x14:
+00007ffe`64a428a4 c3              ret
+0:014> cdb: Reading initial command '~12s; .cxr 000000c9`08efdc40; kn 12; ~13s; .cxr 000000c9`095fdc40; kn 12; ~15s; .cxr 000000c9`097fde40; kn 12; ~16s; .cxr 000000c9`09e6d940; kn 12; .cxr; ln 00007ffd`37ef2720; x renderdoc!replayInstanceTable; x renderdoc!replayDeviceTable; ?? sizeof(renderdoc!VkInstDispatchTable); q'
+ntdll!NtDelayExecution+0x14:
+00007ffe`64a423d4 c3              ret
+rax=00007ffd37ef2720 rbx=0000000000000000 rcx=000001e3e23e43e0
+rdx=0000000000000000 rsi=0000000000000000 rdi=000000c908efe9a8
+rip=0000000000000000 rsp=000000c908efe368 rbp=0000000000000000
+ r8=000000c908efe390  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000246 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei pl zr na po nc
+cs=0033  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00010246
+00000000`00000000 ??              ???
+*** WARNING: Unable to verify checksum for renderdoc.dll
+ # Child-SP          RetAddr               Call Site
+00 000000c9`08efe368 00007ffd`3654af38     0x0
+01 000000c9`08efe370 00007ffd`366a461c     renderdoc!GetPhysicalDeviceDriverProperties+0x48
+02 000000c9`08efe720 00007ffd`366aa373     renderdoc!VulkanReplay::GetInitialDriverVersion+0x24c
+03 000000c9`08efed00 00007ffd`33a40596     renderdoc!Vulkan_CreateReplayDevice+0xbe3
+04 000000c9`08eff160 00007ffd`33b6004f     renderdoc!<lambda_62b9cfd8acc8756ac4fd38425d0e04c0>::operator()+0x1f6
+05 000000c9`08effb20 00007ffd`33a451f7     renderdoc!std::invoke<<lambda_62b9cfd8acc8756ac4fd38425d0e04c0> &>+0x1f
+06 000000c9`08effb50 00007ffd`3398cbbc     renderdoc!std::_Func_impl_no_alloc<<lambda_62b9cfd8acc8756ac4fd38425d0e04c0>,void>::_Do_call+0x27
+07 000000c9`08effb80 00007ffd`33e696a0     renderdoc!std::_Func_class<void>::operator()+0x4c
+08 000000c9`08effbc0 00007ffe`62f4dda7     renderdoc!Threading::sThreadInit+0x70
+09 000000c9`08effc50 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+0a 000000c9`08effc80 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+ntdll!NtDelayExecution+0x14:
+00007ffe`64a423d4 c3              ret
+rax=00007ffd37ef2720 rbx=0000000000000000 rcx=000001e3ee6156c0
+rdx=0000000000000000 rsi=0000000000000000 rdi=000000c9095fe9b8
+rip=0000000000000000 rsp=000000c9095fe378 rbp=0000000000000000
+ r8=000000c9095fe3a0  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000246 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei pl zr na po nc
+cs=0033  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00010246
+00000000`00000000 ??              ???
+ # Child-SP          RetAddr               Call Site
+00 000000c9`095fe378 00007ffd`3654af38     0x0
+01 000000c9`095fe380 00007ffd`366a461c     renderdoc!GetPhysicalDeviceDriverProperties+0x48
+02 000000c9`095fe730 00007ffd`366aa373     renderdoc!VulkanReplay::GetInitialDriverVersion+0x24c
+03 000000c9`095fed10 00007ffd`33a40596     renderdoc!Vulkan_CreateReplayDevice+0xbe3
+04 000000c9`095ff170 00007ffd`33b6004f     renderdoc!<lambda_62b9cfd8acc8756ac4fd38425d0e04c0>::operator()+0x1f6
+05 000000c9`095ffb30 00007ffd`33a451f7     renderdoc!std::invoke<<lambda_62b9cfd8acc8756ac4fd38425d0e04c0> &>+0x1f
+06 000000c9`095ffb60 00007ffd`3398cbbc     renderdoc!std::_Func_impl_no_alloc<<lambda_62b9cfd8acc8756ac4fd38425d0e04c0>,void>::_Do_call+0x27
+07 000000c9`095ffb90 00007ffd`33e696a0     renderdoc!std::_Func_class<void>::operator()+0x4c
+08 000000c9`095ffbd0 00007ffe`62f4dda7     renderdoc!Threading::sThreadInit+0x70
+09 000000c9`095ffc60 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+0a 000000c9`095ffc90 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+ntdll!NtDelayExecution+0x14:
+00007ffe`64a423d4 c3              ret
+rax=00007ffd37ef2720 rbx=0000000000000000 rcx=000001e3ee3cdbf0
+rdx=0000000000000000 rsi=0000000000000000 rdi=000000c9097febb8
+rip=0000000000000000 rsp=000000c9097fe578 rbp=0000000000000000
+ r8=000000c9097fe5a0  r9=0000000000000000 r10=000000c9097fe694
+r11=0000000000000008 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei pl zr na po nc
+cs=0033  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00010246
+00000000`00000000 ??              ???
+ # Child-SP          RetAddr               Call Site
+00 000000c9`097fe578 00007ffd`3654af38     0x0
+01 000000c9`097fe580 00007ffd`366a461c     renderdoc!GetPhysicalDeviceDriverProperties+0x48
+02 000000c9`097fe930 00007ffd`366aa373     renderdoc!VulkanReplay::GetInitialDriverVersion+0x24c
+03 000000c9`097fef10 00007ffd`33a40596     renderdoc!Vulkan_CreateReplayDevice+0xbe3
+04 000000c9`097ff370 00007ffd`33b6004f     renderdoc!<lambda_62b9cfd8acc8756ac4fd38425d0e04c0>::operator()+0x1f6
+05 000000c9`097ffd30 00007ffd`33a451f7     renderdoc!std::invoke<<lambda_62b9cfd8acc8756ac4fd38425d0e04c0> &>+0x1f
+06 000000c9`097ffd60 00007ffd`3398cbbc     renderdoc!std::_Func_impl_no_alloc<<lambda_62b9cfd8acc8756ac4fd38425d0e04c0>,void>::_Do_call+0x27
+07 000000c9`097ffd90 00007ffd`33e696a0     renderdoc!std::_Func_class<void>::operator()+0x4c
+08 000000c9`097ffdd0 00007ffe`62f4dda7     renderdoc!Threading::sThreadInit+0x70
+09 000000c9`097ffe60 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+0a 000000c9`097ffe90 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+ntdll!NtDelayExecution+0x14:
+00007ffe`64a423d4 c3              ret
+rax=00007ffd37ef2720 rbx=0000000000000000 rcx=000001e3e1b20bc0
+rdx=0000000000000000 rsi=0000000000000000 rdi=000000c909e6e6b8
+rip=0000000000000000 rsp=000000c909e6e078 rbp=0000000000000000
+ r8=000000c909e6e0a0  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000246 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei pl zr na po nc
+cs=0033  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00010246
+00000000`00000000 ??              ???
+ # Child-SP          RetAddr               Call Site
+00 000000c9`09e6e078 00007ffd`3654af38     0x0
+01 000000c9`09e6e080 00007ffd`366a461c     renderdoc!GetPhysicalDeviceDriverProperties+0x48
+02 000000c9`09e6e430 00007ffd`366aa373     renderdoc!VulkanReplay::GetInitialDriverVersion+0x24c
+03 000000c9`09e6ea10 00007ffd`33a40596     renderdoc!Vulkan_CreateReplayDevice+0xbe3
+04 000000c9`09e6ee70 00007ffd`33b6004f     renderdoc!<lambda_62b9cfd8acc8756ac4fd38425d0e04c0>::operator()+0x1f6
+05 000000c9`09e6f830 00007ffd`33a451f7     renderdoc!std::invoke<<lambda_62b9cfd8acc8756ac4fd38425d0e04c0> &>+0x1f
+06 000000c9`09e6f860 00007ffd`3398cbbc     renderdoc!std::_Func_impl_no_alloc<<lambda_62b9cfd8acc8756ac4fd38425d0e04c0>,void>::_Do_call+0x27
+07 000000c9`09e6f890 00007ffd`33e696a0     renderdoc!std::_Func_class<void>::operator()+0x4c
+08 000000c9`09e6f8d0 00007ffe`62f4dda7     renderdoc!Threading::sThreadInit+0x70
+09 000000c9`09e6f960 00007ffe`6495ee4c     kernel32!BaseThreadInitThunk+0x17
+0a 000000c9`09e6f990 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+Resetting default scope
+(00007ffd`37ef2720)   renderdoc!replayInstanceTable   |  (00007ffd`37ef2a28)   renderdoc!replay
+Exact matches:
+    renderdoc!replayInstanceTable = struct VkInstDispatchTable
+00007ffd`37ef2720 renderdoc!replayInstanceTable = struct VkInstDispatchTable
+00007ffd`37ef1230 renderdoc!replayDeviceTable = struct VkDevDispatchTable
+unsigned int64 0x308

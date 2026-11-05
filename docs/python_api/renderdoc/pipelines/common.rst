@@ -1,11 +1,20 @@
-Common Pipeline State Abstraction
-=================================
+API Reference: Common Pipeline State Abstraction
+================================================
 
-.. contents::
+This is the API reference for the functions, classes, and enums in the ``renderdoc`` module which represents the underlying interface that the UI is built on top of. For more high-level information and instructions on using the python API, see :doc:`../../index`.
+
+.. contents:: Sections
+   :local:
 
 .. currentmodule:: renderdoc
 
 .. autoclass:: PipeState
+  :members:
+
+General
+-------
+
+.. autoclass:: renderdoc.Offset
   :members:
 
 Vertex Inputs
@@ -24,19 +33,12 @@ Vertex Inputs
 .. autofunction:: renderdoc.VertexOffset
 .. autofunction:: renderdoc.PatchList_Count
 .. autofunction:: renderdoc.PatchList_Topology
-.. autofunction:: renderdoc.SupportsRestart
 .. autofunction:: renderdoc.IsStrip
 
 Shader Resource Bindings
 ------------------------
 
-.. autoclass:: renderdoc.BoundResourceArray
-  :members:
-
-.. autoclass:: renderdoc.BoundResource
-  :members:
-
-.. autoclass:: renderdoc.BoundCBuffer
+.. autoclass:: renderdoc.UsedDescriptor
   :members:
 
 .. autoclass:: renderdoc.BindType
@@ -46,9 +48,6 @@ Shader Resource Bindings
   :members:
 
 .. autoclass:: renderdoc.TextureSwizzle4
-  :members:
-
-.. autoclass:: renderdoc.D3DBufferViewFlags
   :members:
 
 Samplers
@@ -90,6 +89,9 @@ Rasterizer
 .. autoclass:: renderdoc.CullMode
   :members:
 
+.. autoclass:: renderdoc.DepthBiasMode
+  :members:
+
 .. autoclass:: renderdoc.FillMode
   :members:
 
@@ -102,9 +104,15 @@ Rasterizer
 .. autoclass:: renderdoc.ShadingRateCombiner
   :members:
 
+.. autoclass:: renderdoc.RasterState
+  :members:
 
-Stencil
--------
+
+Depth and Stencil
+-----------------
+
+.. autoclass:: renderdoc.DepthTestState
+  :members:
 
 .. autoclass:: renderdoc.StencilFace
   :members:
@@ -142,14 +150,17 @@ Shader Messages
 .. autoclass:: renderdoc.ShaderMessageLocation
   :members:
 
+.. autoclass:: renderdoc.ShaderMeshMessageLocation
+  :members:
+
 .. autoclass:: renderdoc.ShaderVertexMessageLocation
   :members:
 
 .. autoclass:: renderdoc.ShaderPixelMessageLocation
   :members:
 
-.. autoclass:: renderdoc.ShaderComputeMessageLocation
+.. autoclass:: renderdoc.ShaderGeometryMessageLocation
   :members:
 
-
-* qrenderdoc.ShaderMessageViewer
+.. autoclass:: renderdoc.ShaderComputeMessageLocation
+  :members:

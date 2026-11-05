@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -102,6 +102,7 @@ void Camera::Update()
     Matrix4f d = Matrix4f::Translation(Vec3f(0.0f, 0.0f, dist));
 
     mat = d.Mul(r.Mul(p));
+    basis = mat.Transpose();
   }
 }
 

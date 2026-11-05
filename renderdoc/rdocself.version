@@ -1,0 +1,33 @@
+{
+        global:
+                _init;
+                _fini;
+                gl[A-Z]*;
+                egl[A-Z]*;
+                vk_icd*;
+                dlopen;
+                dlsym;
+                fork;
+                execl;
+                execlp;
+                execle;
+                execlpe;
+                execv;
+                execvp;
+                execve;
+                execvpe;
+                _exit;
+                VK_LAYER_RENDERDOC_*;
+                RENDERDOC_GetAPI;
+                RDOCSELF_AllocArrayMem;
+                RDOCSELF_FreeArrayMem;
+                RDOCSELF_NeedVulkanLayerRegistration;
+                RDOCSELF_UpdateVulkanLayerRegistration;
+                RDOCSELF_ExecuteAndInject;
+                RDOCSELF_InjectIntoProcess;
+                RDOCSELF_GetCommitHash;
+                RDOCSELF_InitialiseReplay;
+                RDOCSELF_ShutdownReplay;
+        local:
+                *;
+};

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -74,7 +74,8 @@ void main(float4 pos : SV_Position, out float4 a : SV_Target0, out float4 b : SV
         MakeTexture(DXGI_FORMAT_R32G32B32A32_FLOAT, 400, 400).RTV(),
     };
     ID3D11RenderTargetViewPtr fltRT[2] = {
-        MakeRTV(fltTex[0]), MakeRTV(fltTex[1]),
+        MakeRTV(fltTex[0]),
+        MakeRTV(fltTex[1]),
     };
 
     while(Running())
@@ -91,7 +92,8 @@ void main(float4 pos : SV_Position, out float4 a : SV_Target0, out float4 b : SV
       RSSetViewport({0.0f, 0.0f, (float)screenWidth, (float)screenHeight, 0.0f, 1.0f});
 
       ID3D11RenderTargetView *rts[] = {
-          fltRT[0], fltRT[1],
+          fltRT[0],
+          fltRT[1],
       };
       ctx->OMSetRenderTargets(2, rts, NULL);
 

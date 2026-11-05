@@ -6,14 +6,42 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>788</width>
-    <height>537</height>
+    <width>1300</width>
+    <height>837</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>Buffer Viewer</string>
   </property>
-  <widget class="RDTableView" name="vsinData">
+  <widget class="RDTreeWidget" name="fixedVars">
+   <property name="geometry">
+    <rect>
+     <x>510</x>
+     <y>150</y>
+     <width>191</width>
+     <height>71</height>
+    </rect>
+   </property>
+   <property name="editTriggers">
+    <set>QAbstractItemView::NoEditTriggers</set>
+   </property>
+   <property name="showDropIndicator" stdset="0">
+    <bool>false</bool>
+   </property>
+   <property name="selectionMode">
+    <enum>QAbstractItemView::ContiguousSelection</enum>
+   </property>
+   <property name="verticalScrollMode">
+    <enum>QAbstractItemView::ScrollPerPixel</enum>
+   </property>
+   <property name="allColumnsShowFocus">
+    <bool>true</bool>
+   </property>
+   <attribute name="headerStretchLastSection">
+    <bool>false</bool>
+   </attribute>
+  </widget>
+  <widget class="RDTableView" name="inTable">
    <property name="geometry">
     <rect>
      <x>60</x>
@@ -50,7 +78,7 @@
     <bool>false</bool>
    </attribute>
   </widget>
-  <widget class="RDTableView" name="vsoutData">
+  <widget class="RDTableView" name="out1Table">
    <property name="geometry">
     <rect>
      <x>280</x>
@@ -93,7 +121,7 @@
      <x>50</x>
      <y>220</y>
      <width>666</width>
-     <height>312</height>
+     <height>401</height>
     </rect>
    </property>
    <property name="currentIndex">
@@ -102,7 +130,7 @@
    <property name="documentMode">
     <bool>true</bool>
    </property>
-   <widget class="QWidget" name="vsinTab">
+   <widget class="QWidget" name="inTab">
     <attribute name="title">
      <string>VS In</string>
     </attribute>
@@ -279,14 +307,14 @@
             </widget>
            </item>
            <item>
-            <widget class="QLabel" name="solidShadingLabel">
+            <widget class="QLabel" name="visualisationLabel">
              <property name="text">
-              <string>Solid Shading</string>
+              <string>Visualisation</string>
              </property>
             </widget>
            </item>
            <item>
-            <widget class="QComboBox" name="solidShading"/>
+            <widget class="QComboBox" name="visualisation"/>
            </item>
            <item>
             <widget class="QToolButton" name="wireframeRender">
@@ -355,6 +383,101 @@
             </widget>
            </item>
            <item>
+            <widget class="QLabel" name="vtxExploderLabel">
+             <property name="enabled">
+              <bool>true</bool>
+             </property>
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
+             </property>
+             <property name="text">
+              <string>Exploder</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QSlider" name="vtxExploderSlider">
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Fixed" vsizetype="Preferred">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
+             </property>
+             <property name="minimumSize">
+              <size>
+               <width>90</width>
+               <height>0</height>
+              </size>
+             </property>
+             <property name="focusPolicy">
+              <enum>Qt::StrongFocus</enum>
+             </property>
+             <property name="toolTip">
+              <string>Explode vertices</string>
+             </property>
+             <property name="minimum">
+              <number>-100</number>
+             </property>
+             <property name="maximum">
+              <number>100</number>
+             </property>
+             <property name="sliderPosition">
+              <number>0</number>
+             </property>
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="exploderReset">
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
+             </property>
+             <property name="toolTip">
+              <string>Reset/zero exploder slider</string>
+             </property>
+             <property name="text">
+              <string>Reset</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="exploderScaleLabel">
+             <property name="text">
+              <string>Scale</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QDoubleSpinBox" name="exploderScale">
+             <property name="toolTip">
+              <string>Exploder scaling</string>
+             </property>
+             <property name="decimals">
+              <number>1</number>
+             </property>
+             <property name="minimum">
+              <double>0.100000000000000</double>
+             </property>
+             <property name="maximum">
+              <double>99.000000000000000</double>
+             </property>
+             <property name="singleStep">
+              <double>0.100000000000000</double>
+             </property>
+             <property name="value">
+              <double>1.000000000000000</double>
+             </property>
+            </widget>
+           </item>
+           <item>
             <spacer name="horizontalSpacer">
              <property name="orientation">
               <enum>Qt::Horizontal</enum>
@@ -371,7 +494,7 @@
          </widget>
         </item>
         <item row="1" column="0">
-         <widget class="QGroupBox" name="cameraControlsGroup">
+         <widget class="QGroupBox" name="configurationGroup">
           <property name="sizePolicy">
            <sizepolicy hsizetype="Maximum" vsizetype="Preferred">
             <horstretch>0</horstretch>
@@ -379,7 +502,7 @@
            </sizepolicy>
           </property>
           <property name="title">
-           <string>Camera Controls</string>
+           <string>Configuration</string>
           </property>
           <layout class="QGridLayout" name="gridLayout_2">
            <property name="leftMargin">
@@ -422,8 +545,8 @@
                <rect>
                 <x>0</x>
                 <y>0</y>
-                <width>181</width>
-                <height>253</height>
+                <width>257</width>
+                <height>321</height>
                </rect>
               </property>
               <property name="sizePolicy">
@@ -433,51 +556,38 @@
                </sizepolicy>
               </property>
               <layout class="QGridLayout" name="gridLayout_5">
-               <item row="6" column="0">
-                <widget class="QLabel" name="farGuessLabel">
+               <item row="11" column="0" colspan="2">
+                <widget class="Line" name="line_2">
+                 <property name="orientation">
+                  <enum>Qt::Horizontal</enum>
+                 </property>
+                </widget>
+               </item>
+               <item row="12" column="0">
+                <widget class="QLabel" name="label_3">
                  <property name="text">
-                  <string>Far Plane:</string>
+                  <string>Bounding Box:</string>
                  </property>
                 </widget>
                </item>
-               <item row="1" column="0" colspan="2">
-                <widget class="QLabel" name="guessInstructions">
+               <item row="9" column="0">
+                <widget class="QLabel" name="axisMappingLabel">
                  <property name="text">
-                  <string>Manually configure projection used by vertex pipeline.
-Enter 0.0 to use automatic/guessed value derived from data.</string>
+                  <string>Axis Mapping:</string>
                  </property>
                 </widget>
                </item>
-               <item row="4" column="1">
-                <widget class="QDoubleSpinBox" name="aspectGuess">
-                 <property name="minimum">
-                  <double>0.000000000000000</double>
-                 </property>
-                 <property name="maximum">
-                  <double>10.000000000000000</double>
-                 </property>
-                 <property name="singleStep">
-                  <double>0.010000000000000</double>
-                 </property>
-                </widget>
-               </item>
-               <item row="3" column="1">
-                <widget class="QDoubleSpinBox" name="fovGuess">
-                 <property name="minimum">
-                  <double>1.000000000000000</double>
-                 </property>
-                 <property name="maximum">
-                  <double>180.000000000000000</double>
-                 </property>
-                 <property name="value">
-                  <double>90.000000000000000</double>
-                 </property>
-                </widget>
-               </item>
-               <item row="5" column="0">
-                <widget class="QLabel" name="nearGuessLabel">
+               <item row="7" column="0" colspan="2">
+                <widget class="QLabel" name="guessDetails2">
                  <property name="text">
-                  <string>Near Plane:</string>
+                  <string>Aspect ratio Auto, Near-Far 0.01 - 1000.0</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="2" column="0" colspan="2">
+                <widget class="Line" name="line_3">
+                 <property name="orientation">
+                  <enum>Qt::Horizontal</enum>
                  </property>
                 </widget>
                </item>
@@ -488,34 +598,30 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
                  </property>
                 </widget>
                </item>
-               <item row="3" column="0">
-                <widget class="QLabel" name="fovGuessLabel">
+               <item row="12" column="1">
+                <widget class="QLabel" name="minBoundsLabel">
                  <property name="text">
-                  <string>Persp. FOV:</string>
+                  <string/>
                  </property>
                 </widget>
                </item>
-               <item row="7" column="0" colspan="2">
-                <widget class="Line" name="line_2">
-                 <property name="orientation">
-                  <enum>Qt::Horizontal</enum>
-                 </property>
-                </widget>
+               <item row="9" column="1">
+                <widget class="QComboBox" name="axisMappingCombo"/>
                </item>
-               <item row="4" column="0">
-                <widget class="QLabel" name="aspectGuessLabel">
+               <item row="6" column="0" colspan="2">
+                <widget class="QLabel" name="guessDetails1">
                  <property name="text">
-                  <string>Aspect Ratio:</string>
+                  <string>Perspective Projection, FOV 90</string>
                  </property>
                 </widget>
                </item>
-               <item row="6" column="1">
-                <widget class="QDoubleSpinBox" name="farGuess">
-                 <property name="maximum">
-                  <double>1000000.000000000000000</double>
+               <item row="10" column="1">
+                <widget class="QPushButton" name="axisMappingButton">
+                 <property name="enabled">
+                  <bool>false</bool>
                  </property>
-                 <property name="singleStep">
-                  <double>10.000000000000000</double>
+                 <property name="text">
+                  <string>Edit Custom Mapping</string>
                  </property>
                 </widget>
                </item>
@@ -544,47 +650,35 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
                  </property>
                 </widget>
                </item>
-               <item row="2" column="1">
-                <widget class="QComboBox" name="matrixType">
-                 <property name="maxVisibleItems">
-                  <number>2</number>
-                 </property>
-                 <property name="maxCount">
-                  <number>2</number>
-                 </property>
-                 <property name="insertPolicy">
-                  <enum>QComboBox::NoInsert</enum>
-                 </property>
-                 <property name="frame">
-                  <bool>true</bool>
-                 </property>
-                </widget>
-               </item>
-               <item row="8" column="1">
-                <widget class="QLabel" name="minBoundsLabel">
+               <item row="13" column="1">
+                <widget class="QLabel" name="maxBoundsLabel">
                  <property name="text">
                   <string/>
                  </property>
                 </widget>
                </item>
-               <item row="2" column="0">
-                <widget class="QLabel" name="matrixTypeLabel">
+               <item row="5" column="0" colspan="2">
+                <widget class="QLabel" name="guessLabel">
                  <property name="text">
-                  <string>Matrix Type:</string>
+                  <string>Unproject matrix used:</string>
                  </property>
                 </widget>
                </item>
-               <item row="5" column="1">
-                <widget class="QDoubleSpinBox" name="nearGuess">
-                 <property name="maximum">
-                  <double>100.000000000000000</double>
-                 </property>
-                 <property name="singleStep">
-                  <double>0.010000000000000</double>
+               <item row="8" column="0" colspan="2">
+                <widget class="QPushButton" name="guessButton">
+                 <property name="text">
+                  <string>Vertex Projection Configuration</string>
                  </property>
                 </widget>
                </item>
-               <item row="10" column="1">
+               <item row="1" column="1">
+                <widget class="QPushButton" name="camParameters">
+                 <property name="text">
+                  <string>Camera Settings &amp;&amp; Controls</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="14" column="1">
                 <spacer name="verticalSpacer">
                  <property name="orientation">
                   <enum>Qt::Vertical</enum>
@@ -596,20 +690,6 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
                   </size>
                  </property>
                 </spacer>
-               </item>
-               <item row="9" column="1">
-                <widget class="QLabel" name="maxBoundsLabel">
-                 <property name="text">
-                  <string/>
-                 </property>
-                </widget>
-               </item>
-               <item row="8" column="0">
-                <widget class="QLabel" name="label_3">
-                 <property name="text">
-                  <string>Bounding Box:</string>
-                 </property>
-                </widget>
                </item>
               </layout>
              </widget>
@@ -633,7 +713,7 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
      </item>
     </layout>
    </widget>
-   <widget class="QWidget" name="vsoutTab">
+   <widget class="QWidget" name="out1Tab">
     <attribute name="title">
      <string>VS Out</string>
     </attribute>
@@ -655,7 +735,7 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
      </property>
     </layout>
    </widget>
-   <widget class="QWidget" name="gsoutTab">
+   <widget class="QWidget" name="out2Tab">
     <attribute name="title">
      <string>GS/DS Out</string>
     </attribute>
@@ -678,7 +758,7 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
     </layout>
    </widget>
   </widget>
-  <widget class="RDTableView" name="gsoutData">
+  <widget class="RDTableView" name="out2Table">
    <property name="geometry">
     <rect>
      <x>500</x>
@@ -715,12 +795,87 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
     <bool>false</bool>
    </attribute>
   </widget>
-  <widget class="QFrame" name="meshToolbar">
+  <widget class="QWidget" name="filterStrip" native="true">
+   <property name="geometry">
+    <rect>
+     <x>700</x>
+     <y>50</y>
+     <width>223</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <layout class="QHBoxLayout" name="filterStripLayout">
+    <property name="spacing">
+     <number>3</number>
+    </property>
+    <property name="leftMargin">
+     <number>6</number>
+    </property>
+    <property name="topMargin">
+     <number>0</number>
+    </property>
+    <property name="rightMargin">
+     <number>6</number>
+    </property>
+    <property name="bottomMargin">
+     <number>2</number>
+    </property>
+    <item>
+     <widget class="QLabel" name="filterStripIcon">
+      <property name="text">
+       <string/>
+      </property>
+      <property name="pixmap">
+       <pixmap resource="../Resources/resources.qrc">:/filter.png</pixmap>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QLabel" name="filterStripLabel">
+      <property name="text">
+       <string>Filter</string>
+      </property>
+      <property name="textFormat">
+       <enum>Qt::PlainText</enum>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+      </property>
+      <property name="margin">
+       <number>0</number>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="RDLineEdit" name="filterExpression"/>
+    </item>
+    <item>
+     <widget class="QToolButton" name="filterCaseSensitive">
+      <property name="toolTip">
+       <string>Filter with case-sensitivity</string>
+      </property>
+      <property name="text">
+       <string>Aa</string>
+      </property>
+      <property name="checkable">
+       <bool>true</bool>
+      </property>
+      <property name="toolButtonStyle">
+       <enum>Qt::ToolButtonTextOnly</enum>
+      </property>
+      <property name="autoRaise">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QWidget" name="mainMeshToolbar" native="true">
    <property name="geometry">
     <rect>
      <x>0</x>
      <y>10</y>
-     <width>767</width>
+     <width>1137</width>
      <height>28</height>
     </rect>
    </property>
@@ -735,12 +890,6 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
      <width>0</width>
      <height>28</height>
     </size>
-   </property>
-   <property name="frameShape">
-    <enum>QFrame::Panel</enum>
-   </property>
-   <property name="frameShadow">
-    <enum>QFrame::Raised</enum>
    </property>
    <layout class="QHBoxLayout" name="horizontalLayout_9">
     <property name="spacing">
@@ -799,6 +948,29 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
      </widget>
     </item>
     <item>
+     <widget class="QToolButton" name="showPadding">
+      <property name="enabled">
+       <bool>true</bool>
+      </property>
+      <property name="toolTip">
+       <string>Show visible padding</string>
+      </property>
+      <property name="icon">
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/align.png</normaloff>:/align.png</iconset>
+      </property>
+      <property name="checkable">
+       <bool>true</bool>
+      </property>
+      <property name="checked">
+       <bool>false</bool>
+      </property>
+      <property name="autoRaise">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
      <widget class="QToolButton" name="syncViews">
       <property name="enabled">
        <bool>true</bool>
@@ -821,6 +993,45 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
       </property>
       <property name="toolButtonStyle">
        <enum>Qt::ToolButtonTextBesideIcon</enum>
+      </property>
+      <property name="autoRaise">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QToolButton" name="setFormat">
+      <property name="text">
+       <string>{}</string>
+      </property>
+      <property name="checkable">
+       <bool>true</bool>
+      </property>
+      <property name="toolButtonStyle">
+       <enum>Qt::ToolButtonTextOnly</enum>
+      </property>
+      <property name="autoRaise">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QToolButton" name="filterCBuffer">
+      <property name="toolTip">
+       <string>Filter constants by name</string>
+      </property>
+      <property name="text">
+       <string/>
+      </property>
+      <property name="icon">
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/filter.png</normaloff>:/filter.png</iconset>
+      </property>
+      <property name="checkable">
+       <bool>true</bool>
+      </property>
+      <property name="toolButtonStyle">
+       <enum>Qt::ToolButtonIconOnly</enum>
       </property>
       <property name="autoRaise">
        <bool>true</bool>
@@ -902,6 +1113,27 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
      </widget>
     </item>
     <item>
+     <widget class="QLabel" name="meshFilterLabel">
+      <property name="text">
+       <string>Current Range filter: None</string>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QToolButton" name="resetMeshFilterButton">
+      <property name="toolTip">
+       <string>Reset the filter showing only a subset of meshlets</string>
+      </property>
+      <property name="icon">
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/arrow_undo.png</normaloff>:/arrow_undo.png</iconset>
+      </property>
+      <property name="autoRaise">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
      <widget class="Line" name="byteRangeLine">
       <property name="orientation">
        <enum>Qt::Vertical</enum>
@@ -918,7 +1150,7 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
     <item>
      <widget class="QDoubleSpinBox" name="byteRangeStart">
       <property name="maximum">
-       <number>999123456</number>
+       <double>999123456.000000000000000</double>
       </property>
      </widget>
     </item>
@@ -932,7 +1164,7 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
     <item>
      <widget class="QDoubleSpinBox" name="byteRangeLength">
       <property name="maximum">
-       <number>999123456</number>
+       <double>999123456.000000000000000</double>
       </property>
      </widget>
     </item>
@@ -981,7 +1213,7 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
     <rect>
      <x>139</x>
      <y>160</y>
-     <width>521</width>
+     <width>361</width>
      <height>61</height>
     </rect>
    </property>
@@ -989,14 +1221,14 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
  </widget>
  <customwidgets>
   <customwidget>
-   <class>ToolWindowManager</class>
-   <extends>QWidget</extends>
-   <header>3rdparty/toolwindowmanager/ToolWindowManager.h</header>
-  </customwidget>
-  <customwidget>
    <class>CustomPaintWidget</class>
    <extends>QWidget</extends>
    <header>Widgets/CustomPaintWidget.h</header>
+  </customwidget>
+  <customwidget>
+   <class>ToolWindowManager</class>
+   <extends>QWidget</extends>
+   <header>3rdparty/toolwindowmanager/ToolWindowManager.h</header>
   </customwidget>
   <customwidget>
    <class>RDTableView</class>
@@ -1004,10 +1236,20 @@ Enter 0.0 to use automatic/guessed value derived from data.</string>
    <header>Widgets/Extended/RDTableView.h</header>
   </customwidget>
   <customwidget>
+   <class>RDTreeWidget</class>
+   <extends>QTreeView</extends>
+   <header>Widgets/Extended/RDTreeWidget.h</header>
+  </customwidget>
+  <customwidget>
    <class>BufferFormatSpecifier</class>
    <extends>QWidget</extends>
    <header>Widgets/BufferFormatSpecifier.h</header>
    <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>RDLineEdit</class>
+   <extends>QLineEdit</extends>
+   <header>Widgets/Extended/RDLineEdit.h</header>
   </customwidget>
  </customwidgets>
  <resources>

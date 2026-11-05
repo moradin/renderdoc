@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,6 +23,12 @@
  ******************************************************************************/
 
 #pragma once
+
+namespace DXBC
+{
+enum class ShaderType : uint8_t;
+enum class GlobalShaderFlags : int64_t;
+};
 
 namespace DXIL
 {
@@ -56,6 +62,8 @@ enum class ComponentType
   UNormF64,
 };
 
+VarType VarTypeForComponentType(ComponentType compType);
+
 enum class ResourceKind
 {
   Unknown = 0,
@@ -81,6 +89,124 @@ enum class ResourceKind
   SamplerComparison,
 };
 
+// different semantic enum
+enum class SigSemantic : uint8_t
+{
+  Undefined = 0,
+  VertexIndex,
+  InstanceIndex,
+  Position,
+  RTIndex,
+  ViewportIndex,
+  ClipDistance,
+  CullDistance,
+  OutputControlPointIndex,
+  DomainLocation,
+  PrimitiveIndex,
+  GSInstanceIndex,
+  MSAASampleIndex,
+  IsFrontFace,
+  MSAACoverage,
+  IsFullyCovered,
+  ColorOutput,
+  DepthOutput,
+  DepthOutputLessEqual,
+  DepthOutputGreaterEqual,
+  StencilReference,
+  DispatchThreadIndex,
+  GroupIndex,
+  GroupFlatIndex,
+  GroupThreadIndex,
+  OuterTessFactor,
+  InsideTessFactor,
+  MultiViewIndex,
+  Barycentrics,
+  PackedFragRate,
+  CullPrimitive,
+  BaseVertex,
+  BaseInstance,
+};
+
+enum class DXILResourceType : uint32_t
+{
+  Unknown,
+  Sampler,
+  CBuffer,
+  TypedSRV,
+  ByteAddressSRV,
+  StructuredSRV,
+  TypedUAV,
+  ByteAddressUAV,
+  StructuredUAV,
+  StructuredUAVWithCounter,
+};
+
+enum class SamplerKind
+{
+  Default = 0,
+  Comparison,
+  Mono,
+  Invalid,
+};
+
+enum class ShaderEntryTag
+{
+  ShaderFlags = 0,
+  Geometry = 1,
+  Domain = 2,
+  Hull = 3,
+  Compute = 4,
+  Mesh = 9,
+  Amplification = 10,
+  WaveSize = 11,
+};
+
+enum class ResField
+{
+  ID = 0,
+  VarDecl = 1,
+  Name = 2,
+  Space = 3,
+  RegBase = 4,
+  RegCount = 5,
+
+  // SRV
+  SRVShape = 6,
+  SRVSampleCount = 7,
+  SRVTags = 8,
+
+  // UAV
+  UAVShape = 6,
+  UAVGloballyCoherent = 7,
+  UAVHiddenCounter = 8,
+  UAVRasterOrder = 9,
+  UAVTags = 10,
+
+  // CBuffer
+  CBufferByteSize = 6,
+  CBufferTags = 7,
+
+  // Sampler
+  SamplerType = 6,
+  SamplerTags = 7,
+};
+
+enum class MatrixOrientation
+{
+  Undefined = 0,
+  RowMajor,
+  ColumnMajor,
+  LastEntry
+};
+
+enum class SamplerFeedbackType : uint8_t
+{
+  MinMip = 0,
+  MipRegionUsed = 1,
+  LastEntry = 2
+};
 };    // namespace DXIL
 
 DECLARE_STRINGISE_TYPE(DXIL::ComponentType);
+DECLARE_STRINGISE_TYPE(DXIL::ResourceClass);
+DECLARE_STRINGISE_TYPE(DXIL::ResourceKind);

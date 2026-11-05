@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -30,6 +30,7 @@
 #include <QPixmap>
 #include <QPointer>
 #include <QScrollBar>
+#include <QToolTip>
 #include <QTreeView>
 #include "Code/QRDUtils.h"
 
@@ -111,6 +112,8 @@ void RDHeaderView::reset()
 {
   if(m_customSizing)
     cacheSections();
+
+  QHeaderView::reset();
 }
 
 void RDHeaderView::cacheSections()
@@ -119,6 +122,9 @@ void RDHeaderView::cacheSections()
     return;
 
   QAbstractItemModel *m = this->model();
+
+  if(!m)
+    return;
 
   int oldCount = m_sections.count();
   m_sections.resize(m->columnCount());
@@ -247,7 +253,10 @@ int RDHeaderView::visualIndexAt(int position) const
 
 int RDHeaderView::logicalIndexAt(int position) const
 {
-  return visualIndexAt(position);
+  if(m_customSizing)
+    return visualIndexAt(position);
+
+  return QHeaderView::logicalIndexAt(position);
 }
 
 int RDHeaderView::count() const
@@ -570,6 +579,8 @@ void RDHeaderView::mousePressEvent(QMouseEvent *event)
       paintSection(&painter, QRect(QPoint(0, 0), m_sectionPreview->size()), idx);
       painter.end();
 
+      m_cursorPos = QCursor::pos().x();
+
       m_sectionPreview->setPixmap(preview);
 
       m_sectionPreviewOffset = mousePos - secPos;
@@ -577,6 +588,7 @@ void RDHeaderView::mousePressEvent(QMouseEvent *event)
       m_sectionPreview->move(mousePos - m_sectionPreviewOffset, 0);
       m_sectionPreview->show();
 
+      QHeaderView::mousePressEvent(event);
       return;
     }
   }
@@ -741,6 +753,8 @@ void RDHeaderView::mouseReleaseEvent(QMouseEvent *event)
     int mousePos = event->x();
     int idx = logicalIndexAt(mousePos);
 
+    m_sectionPreview->hide();
+
     if(idx >= 0)
     {
       int secSize = sectionSize(idx);
@@ -769,20 +783,16 @@ void RDHeaderView::mouseReleaseEvent(QMouseEvent *event)
           else
             moveSection(srcSection, dstSection);
         }
+
+        return;
       }
     }
-
-    m_sectionPreview->hide();
   }
 
   m_movingSection = -1;
 
   if(m_customSizing)
-  {
     m_resizeState = qMakePair(NoResize, -1);
-
-    return QAbstractItemView::mouseReleaseEvent(event);
-  }
 
   QHeaderView::mouseReleaseEvent(event);
 }
@@ -853,6 +863,28 @@ void RDHeaderView::paintEvent(QPaintEvent *e)
         QRect(accumRect.right() + 1, 0, e->rect().right() - accumRect.right(), viewport()->height());
     style()->drawControl(QStyle::CE_HeaderEmptyArea, &opt, &painter, this);
   }
+}
+
+bool RDHeaderView::viewportEvent(QEvent *e)
+{
+  if(e->type() == QEvent::ToolTip)
+  {
+    QHelpEvent *h = (QHelpEvent *)e;
+    int section = logicalIndexAt(h->pos());
+    if(section >= 0)
+    {
+      QAbstractItemModel *m = this->model();
+
+      QVariant tooltip = m->headerData(section, orientation(), Qt::ToolTipRole);
+      if(tooltip.isValid())
+      {
+        QToolTip::showText(h->globalPos(), tooltip.toString(), this);
+        return true;
+      }
+    }
+  }
+
+  return QHeaderView::viewportEvent(e);
 }
 
 void RDHeaderView::paintSection(QPainter *painter, const QRect &rect, int section) const

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,16 +33,33 @@ typedef uint8_t byte;
 
 // see renderdoc_app.h RENDERDOC_CaptureOption - make sure any changes here are reflected there, to
 // the options or to the documentation
-DOCUMENT(R"(Sets up configuration and options for optional features either at capture time or at API
+DOCUMENT(R"(
+CaptureOptions()
+CaptureOptions(other: CaptureOptions)
+
+Sets up configuration and options for optional features either at capture time or at API
 initialisation time that the user can enable or disable at will.
 )");
 struct CaptureOptions
 {
-// for convenience, don't export the constructor but allow it within the module
-// for constructing defaults
-#ifdef RENDERDOC_EXPORTS
-  CaptureOptions();
-#endif
+  DOCUMENT("");
+  CaptureOptions()
+  {
+    // since we're reading from all bytes even padding etc in EncodeAsString, memset to 0
+    memset(this, 0, sizeof(CaptureOptions));
+    allowVSync = true;
+    allowFullscreen = true;
+    apiValidation = false;
+    captureCallstacks = false;
+    captureCallstacksOnlyActions = false;
+    delayForDebugger = 0;
+    verifyBufferAccess = false;
+    hookIntoChildren = false;
+    refAllResources = false;
+    captureAllCmdLists = false;
+    debugOutputMute = true;
+    softMemoryLimit = 0;
+  }
 
   DOCUMENT(R"(Encode the current options to a string suitable for passing around between processes.
 
@@ -87,6 +104,8 @@ Default - enabled
 ``True`` - The application can enable or disable vsync at will.
 
 ``False`` - vsync is force disabled.
+
+:type: bool
 )");
   bool allowVSync;
 
@@ -97,6 +116,8 @@ Default - enabled
 ``True`` - The application can enable or disable fullscreen at will.
 
 ``False`` - fullscreen is force disabled.
+
+:type: bool
 )");
   bool allowFullscreen;
 
@@ -108,6 +129,8 @@ Default - disabled
 the capture logfile, which is matched up with events on replay.
 
 ``False`` - no API debugging is forcibly enabled.
+
+:type: bool
 )");
   bool apiValidation;
 
@@ -118,6 +141,8 @@ Default - disabled
 ``True`` - Enables capturing of callstacks.
 
 ``False`` - no callstacks are captured.
+
+:type: bool
 )");
   bool captureCallstacks;
 
@@ -129,6 +154,8 @@ Default - disabled
 ``True`` - Only captures callstacks for actions.
 
 ``False`` - Callstacks, if enabled, are captured for every event.
+
+:type: bool
 )");
   bool captureCallstacksOnlyActions;
 
@@ -138,6 +165,8 @@ creating or injecting into a process, before continuing to allow it to run.
 ``0`` indicates no delay, and the process will run immediately after injection.
 
 Default - 0 seconds
+
+:type: int
 )");
   uint32_t delayForDebugger;
 
@@ -156,6 +185,8 @@ Default - disabled
 
 ``False`` - No verification is performed, and overwriting bounds may cause crashes or corruption in
 RenderDoc.
+
+:type: bool
 )");
   bool verifyBufferAccess;
 
@@ -167,6 +198,8 @@ Default - disabled
 ``True`` - Hooks into spawned child processes.
 
 ``False`` - Child processes are not hooked by RenderDoc.
+
+:type: bool
 )");
   bool hookIntoChildren;
 
@@ -179,6 +212,8 @@ Default - disabled
 and available for inspection.
 
 ``False`` - only the resources referenced by the captured frame are included.
+
+:type: bool
 )");
   bool refAllResources;
 
@@ -197,6 +232,8 @@ capture.
 
 ``False`` - Command lists are only captured if their recording begins during
 the period when a frame capture is in progress.
+
+:type: bool
 )");
   bool captureAllCmdLists;
 
@@ -207,8 +244,25 @@ Default - enabled
 ``True`` - Mute any API debug messages from being displayed or passed through.
 
 ``False`` - API debugging is displayed as normal.
+
+:type: bool
 )");
   bool debugOutputMute;
+
+  DOCUMENT(R"(Define a soft memory limit which some APIs may aim to keep overhead under where
+possible. Anything above this limit will where possible be saved directly to disk during capture.
+This will cause increased disk space use (which may cause a capture to fail if disk space is
+exhausted) as well as slower capture times.
+
+Not all memory allocations may be deferred like this so it is not a guarantee of a memory limit.
+
+Units are in MBs, suggested values would range from 200MB to 1000MB.
+
+Default - 0 Megabytes
+
+:type: int
+)");
+  uint32_t softMemoryLimit;
 };
 
 DECLARE_REFLECTION_STRUCT(CaptureOptions);

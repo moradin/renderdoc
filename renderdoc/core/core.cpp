@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -31,6 +31,7 @@
 #include "common/threading.h"
 #include "core/settings.h"
 #include "hooks/hooks.h"
+#include "jpeg-compressor/jpge.h"
 #include "maths/formatpacking.h"
 #include "replay/replay_driver.h"
 #include "serialise/rdcfile.h"
@@ -46,8 +47,199 @@
 
 #include "replay/renderdoc_serialise.inl"
 
+extern "C" const rdcstr VulkanLayerJSONBasename = STRINGIZE(RDOC_BASE_NAME);
+
 RDOC_DEBUG_CONFIG(bool, Capture_Debug_SnapshotDiagnosticLog, false,
                   "Snapshot the diagnostic log at capture time and embed in the capture.");
+
+RDOC_CONFIG(bool, Capture_IncludeExtendedThumbnail, false,
+            "Save the thumbnail unresized and losslessly encoded during capture.");
+
+RDOC_CONFIG(bool, Replay_Debug_PrintChunkTimings, false, "Print stats of chunk processing times");
+
+RDOC_CONFIG(bool, Replay_Debug_SingleThreadedCompilation, false,
+            "Compile all shaders and PSOs single-threaded.");
+
+// this is declared centrally so it can be shared with any backend - the name is a misnomer but kept
+// for backwards compatibility reasons.
+RDOC_CONFIG(rdcarray<rdcstr>, DXBC_Debug_SearchDirPaths, {},
+            "Paths to search for separated shader debug PDBs, including all types of paths.");
+RDOC_CONFIG(rdcarray<rdcstr>, Replay_Shader_LimitedSearchDirPaths, {},
+            "Companion array to DXBC.Debug.SearchDirPaths - listing paths which should not be "
+            "searched exhaustively but only used for simple lookups.");
+
+void WriteAnnotation(SDObject *obj, RENDERDOC_AnnotationType valueType, uint32_t valueVectorWidth,
+                     RENDERDOC_AnnotationValue value)
+{
+  if(valueType == eRENDERDOC_Empty)
+  {
+    RDCERR("Invalid type of annotation to write");
+    return;
+  }
+
+  const rdcinflexiblestr types[eRENDERDOC_APIObject + 1][4] = {
+      // eRENDERDOC_Empty,
+      {""_lit, ""_lit, ""_lit, ""_lit},
+      // eRENDERDOC_Bool,
+      {"bool"_lit, "bool2"_lit, "bool3"_lit, "bool4"_lit},
+      // eRENDERDOC_Int32,
+      {"int"_lit, "int2"_lit, "int3"_lit, "int4"_lit},
+      // eRENDERDOC_UInt32,
+      {"uint"_lit, "uint2"_lit, "uint3"_lit, "uint4"_lit},
+      // eRENDERDOC_Int64,
+      {"long"_lit, "long2"_lit, "long3"_lit, "long4"_lit},
+      // eRENDERDOC_UInt64,
+      {"ulong"_lit, "ulong2"_lit, "ulong3"_lit, "ulong4"_lit},
+      // eRENDERDOC_Float,
+      {"float"_lit, "float2"_lit, "float3"_lit, "float4"_lit},
+      // eRENDERDOC_Double,
+      {"double"_lit, "double2"_lit, "double3"_lit, "double4"_lit},
+      // eRENDERDOC_String,
+      {"string"_lit, ""_lit, ""_lit, ""_lit},
+      // eRENDERDOC_APIObject,
+      {"ResourceId"_lit, ""_lit, ""_lit, ""_lit},
+  };
+
+  const uint32_t byteSize[eRENDERDOC_APIObject + 1] = {
+      // eRENDERDOC_Empty,
+      0,
+      // eRENDERDOC_Bool,
+      1,
+      // eRENDERDOC_Int32,
+      4,
+      // eRENDERDOC_UInt32,
+      4,
+      // eRENDERDOC_Int64,
+      8,
+      // eRENDERDOC_UInt64,
+      8,
+      // eRENDERDOC_Float,
+      4,
+      // eRENDERDOC_Double,
+      8,
+      // eRENDERDOC_String,
+      0,
+      // eRENDERDOC_APIObject,
+      8,
+  };
+
+  const SDBasic basetype[eRENDERDOC_APIObject + 1] = {
+      // eRENDERDOC_Empty,
+      SDBasic::Null,
+      // eRENDERDOC_Bool,
+      SDBasic::Boolean,
+      // eRENDERDOC_Int32,
+      SDBasic::SignedInteger,
+      // eRENDERDOC_UInt32,
+      SDBasic::UnsignedInteger,
+      // eRENDERDOC_Int64,
+      SDBasic::SignedInteger,
+      // eRENDERDOC_UInt64,
+      SDBasic::UnsignedInteger,
+      // eRENDERDOC_Float,
+      SDBasic::Float,
+      // eRENDERDOC_Double,
+      SDBasic::Float,
+      // eRENDERDOC_String,
+      SDBasic::String,
+      // eRENDERDOC_APIObject,
+      SDBasic::Resource,
+  };
+
+  if(valueVectorWidth > 1)
+  {
+    if(valueType == eRENDERDOC_APIObject)
+    {
+      RDCERR("Invalid vector width for API object");
+      return;
+    }
+    else if(valueType == eRENDERDOC_String)
+    {
+      RDCERR("Invalid vector width for string");
+      return;
+    }
+
+    const rdcinflexiblestr comps[] = {"1"_lit, "2"_lit, "3"_lit, "4"_lit};
+
+    obj->type.basetype = SDBasic::Struct;
+    obj->type.name = types[valueType][valueVectorWidth - 1];
+
+    RENDERDOC_AnnotationValue tmp = {};
+    for(uint32_t i = 0; i < valueVectorWidth; i++)
+    {
+      SDObject *child = obj->CreateChildByKeyPath(comps[i]);
+
+      if(byteSize[valueType] == 1)
+        memcpy(&tmp.boolean, &value.vector.boolean[i], sizeof(tmp.boolean));
+      if(byteSize[valueType] == 4)
+        memcpy(&tmp.uint32, &value.vector.uint32[i], sizeof(tmp.uint32));
+      if(byteSize[valueType] == 8)
+        memcpy(&tmp.uint64, &value.vector.uint64[i], sizeof(tmp.uint64));
+
+      WriteAnnotation(child, valueType, 0, tmp);
+      if(i == 0)
+        obj->type.byteSize = child->type.byteSize * valueVectorWidth;
+    }
+
+    return;
+  }
+
+  obj->type.name = types[valueType][0];
+  obj->type.basetype = basetype[valueType];
+  obj->type.byteSize = byteSize[valueType];
+
+  switch(valueType)
+  {
+    case eRENDERDOC_Empty:
+    case eRENDERDOC_AnnotationMax: RDCERR("Invalid annotation type"); return;
+    case eRENDERDOC_Bool:
+    {
+      obj->data.basic.b = value.boolean;
+      break;
+    }
+    case eRENDERDOC_Int32:
+    {
+      obj->data.basic.i = value.int32;
+      break;
+    }
+    case eRENDERDOC_UInt32:
+    {
+      obj->data.basic.u = value.uint32;
+      break;
+    }
+    case eRENDERDOC_Int64:
+    {
+      obj->data.basic.u = value.int64;
+      break;
+    }
+    case eRENDERDOC_UInt64:
+    {
+      obj->data.basic.u = value.uint64;
+      break;
+    }
+    case eRENDERDOC_Float:
+    {
+      obj->data.basic.d = value.float32;
+      break;
+    }
+    case eRENDERDOC_Double:
+    {
+      obj->data.basic.d = value.float64;
+      break;
+    }
+    case eRENDERDOC_String:
+    {
+      obj->type.byteSize = strlen(value.string);
+      obj->data.str = value.string;
+      break;
+    }
+    case eRENDERDOC_APIObject:
+    {
+      memcpy(&obj->data.basic.id, &value.uint64, sizeof(ResourceId));
+      break;
+    }
+  }
+}
 
 void LogReplayOptions(const ReplayOptions &opts)
 {
@@ -85,7 +277,7 @@ rdcstr DoStringise(const ResourceId &el)
   // hardcode empty/null ResourceId to both avoid special case below and fast-path a common case as
   // a string literal.
   if(num == 0)
-    return PREFIX "0";
+    return PREFIX "0"_lit;
 
   // enough for prefix and a 64-bit value in decimal
   char str[48] = {};
@@ -142,12 +334,23 @@ void DoSerialise(SerialiserType &ser, ResourceId &el)
 
 INSTANTIATE_SERIALISE_TYPE(ResourceId);
 
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, RDResult &el)
+{
+  SERIALISE_MEMBER(code);
+  SERIALISE_MEMBER(message);
+
+  SIZE_CHECK(16);
+}
+
+INSTANTIATE_SERIALISE_TYPE(RDResult);
+
 #if ENABLED(RDOC_LINUX) && ENABLED(RDOC_XLIB)
 #include <X11/Xlib.h>
 #endif
 
 // from image_viewer.cpp
-ReplayStatus IMG_CreateReplayDevice(RDCFile *rdc, IReplayDriver **driver);
+RDResult IMG_CreateReplayDevice(RDCFile *rdc, IReplayDriver **driver);
 
 template <>
 rdcstr DoStringise(const CaptureState &el)
@@ -179,6 +382,7 @@ rdcstr DoStringise(const RDCDriver &el)
     STRINGISE_ENUM_CLASS(D3D8);
     STRINGISE_ENUM_CLASS(Image);
     STRINGISE_ENUM_CLASS(Vulkan);
+    STRINGISE_ENUM_CLASS(Metal);
   }
   END_ENUM_STRINGISE();
 }
@@ -270,26 +474,63 @@ rdcstr DoStringise(const SystemChunk &el)
   END_ENUM_STRINGISE();
 }
 
-RenderDoc *RenderDoc::m_Inst = NULL;
+template <>
+rdcstr DoStringise(const RENDERDOC_AnnotationType &el)
+{
+  BEGIN_ENUM_STRINGISE(RENDERDOC_AnnotationType);
+  {
+    STRINGISE_ENUM_NAMED(eRENDERDOC_Bool, "bool");
+    STRINGISE_ENUM_NAMED(eRENDERDOC_Int32, "int32");
+    STRINGISE_ENUM_NAMED(eRENDERDOC_UInt32, "uint32");
+    STRINGISE_ENUM_NAMED(eRENDERDOC_Int64, "int64");
+    STRINGISE_ENUM_NAMED(eRENDERDOC_UInt64, "uint64");
+    STRINGISE_ENUM_NAMED(eRENDERDOC_Float, "float");
+    STRINGISE_ENUM_NAMED(eRENDERDOC_Double, "double");
+    STRINGISE_ENUM_NAMED(eRENDERDOC_String, "string");
+    STRINGISE_ENUM_NAMED(eRENDERDOC_APIObject, "object");
+  }
+  END_ENUM_STRINGISE();
+}
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, RENDERDOC_AnnotationValue &el)
+{
+  if(ser.GetStructArg() == eRENDERDOC_String)
+  {
+    SERIALISE_MEMBER(string).Hidden();
+  }
+  else
+  {
+    SERIALISE_MEMBER(vector.uint64).Hidden();
+  }
+}
+
+INSTANTIATE_SERIALISE_TYPE(RENDERDOC_AnnotationValue);
 
 RenderDoc &RenderDoc::Inst()
 {
   static RenderDoc realInst;
-  RenderDoc::m_Inst = &realInst;
   return realInst;
 }
 
 void RenderDoc::RecreateCrashHandler()
 {
+  SCOPED_WRITELOCK(m_ExHandlerLock);
+
 #if ENABLED(RDOC_CRASH_HANDLER)
 
-#if ENABLED(RDOC_WIN32)
-  // there are way too many invalid reports coming from chrome, completely disable the crash handler
-  // in that case.
   rdcstr exename;
   FileIO::GetExecutableFilename(exename);
   exename = strlower(exename);
 
+  // only create crash handler when we're not in renderdoccmd (to prevent infinite loop as
+  // the crash handler itself launches renderdoccmd)
+  if(exename.contains("renderdoccmd"))
+    return;
+
+#if ENABLED(RDOC_WIN32)
+  // there are way too many invalid reports coming from chrome, completely disable the crash handler
+  // in that case.
   if(exename.find("chrome.exe") &&
      (GetModuleHandleA("chrome_elf.dll") || GetModuleHandleA("chrome_child.dll")))
   {
@@ -321,18 +562,37 @@ void RenderDoc::RecreateCrashHandler()
 #endif
 
   m_ExHandler = new CrashHandler(m_ExHandler);
-#endif
 
-  if(m_ExHandler)
-    m_ExHandler->RegisterMemoryRegion(this, sizeof(RenderDoc));
+  m_ExHandler->RegisterMemoryRegion(this, sizeof(RenderDoc));
+#endif
 }
 
 void RenderDoc::UnloadCrashHandler()
 {
-  if(m_ExHandler)
-    m_ExHandler->UnregisterMemoryRegion(this);
+  SCOPED_WRITELOCK(m_ExHandlerLock);
+
+  if(!m_ExHandler)
+    return;
+
+  m_ExHandler->UnregisterMemoryRegion(this);
 
   SAFE_DELETE(m_ExHandler);
+}
+
+void RenderDoc::RegisterMemoryRegion(void *mem, size_t size)
+{
+  SCOPED_READLOCK(m_ExHandlerLock);
+
+  if(m_ExHandler)
+    m_ExHandler->RegisterMemoryRegion(mem, size);
+}
+
+void RenderDoc::UnregisterMemoryRegion(void *mem)
+{
+  SCOPED_READLOCK(m_ExHandlerLock);
+
+  if(m_ExHandler)
+    m_ExHandler->UnregisterMemoryRegion(mem);
 }
 
 RenderDoc::RenderDoc()
@@ -365,6 +625,8 @@ RenderDoc::RenderDoc()
 
   m_TargetControlThreadShutdown = false;
   m_ControlClientThreadShutdown = false;
+
+  ClearTrackedFiles();
 }
 
 void RenderDoc::Initialise()
@@ -447,8 +709,6 @@ void RenderDoc::Initialise()
       "Android";
 #elif ENABLED(RDOC_APPLE)
       "macOS";
-#elif ENABLED(RDOC_GGP)
-      "GGP";
 #else
       "Unknown";
 #endif
@@ -466,10 +726,13 @@ void RenderDoc::Initialise()
   RDCWARN("dlsym() hooking enabled!");
 #endif
 
-  if(m_RemoteIdent == 0)
-    RDCWARN("Couldn't open socket for target control");
-  else
-    RDCDEBUG("Listening for target control on %u", m_RemoteIdent);
+  if(!IsReplayApp())
+  {
+    if(m_RemoteIdent == 0)
+      RDCWARN("Couldn't open socket for target control");
+    else
+      RDCDEBUG("Listening for target control on %u", m_RemoteIdent);
+  }
 
   Keyboard::Init();
 
@@ -477,19 +740,9 @@ void RenderDoc::Initialise()
 
   m_ExHandler = NULL;
 
-  {
-    rdcstr curFile;
-    FileIO::GetExecutableFilename(curFile);
+  ClearTrackedFiles();
 
-    rdcstr f = strlower(curFile);
-
-    // only create crash handler when we're not in renderdoccmd.exe (to prevent infinite loop as
-    // the crash handler itself launches renderdoccmd.exe)
-    if(!f.contains("renderdoccmd.exe"))
-    {
-      RecreateCrashHandler();
-    }
-  }
+  RecreateCrashHandler();
 
   // begin printing to stdout/stderr after this point, earlier logging is debugging
   // cruft that we don't want cluttering output.
@@ -497,6 +750,13 @@ void RenderDoc::Initialise()
   // information to stdout/stderr and being piped around and processed!
   if(IsReplayApp())
     RDCLOGOUTPUT();
+
+  if(IsReplayApp())
+  {
+    for(auto it = m_EnvSetups.begin(); it != m_EnvSetups.end(); ++it)
+      (*it)();
+    m_EnvSetups.clear();
+  }
 
   ProcessConfig();
 }
@@ -508,9 +768,7 @@ RenderDoc::~RenderDoc()
     UnloadCrashHandler();
   }
 
-  for(auto it = m_ShutdownFunctions.begin(); it != m_ShutdownFunctions.end(); ++it)
-    (*it)();
-  m_ShutdownFunctions.clear();
+  ShutdownReplay();
 
   for(size_t i = 0; i < m_Captures.size(); i++)
   {
@@ -570,6 +828,14 @@ void RenderDoc::RemoveHooks()
 
 void RenderDoc::InitialiseReplay(GlobalEnvironment env, const rdcarray<rdcstr> &args)
 {
+  if(!IsReplayApp())
+  {
+    RDCERR(
+        "Initialising replay within non-replaying app. Did you properly export replay marker in "
+        "host executable or library, or are you trying to replay directly with a self-hosted "
+        "capture build?");
+  }
+
   m_GlobalEnv = env;
 
 #if ENABLED(RDOC_LINUX) && ENABLED(RDOC_XLIB)
@@ -577,16 +843,33 @@ void RenderDoc::InitialiseReplay(GlobalEnvironment env, const rdcarray<rdcstr> &
     m_GlobalEnv.xlibDisplay = XOpenDisplay(NULL);
 #endif
 
+  rdcstr exename;
+  FileIO::GetExecutableFilename(exename);
+  RDCLOG("Replay application '%s' launched", exename.c_str());
   if(!args.empty())
   {
-    RDCDEBUG("Replay application launched with parameters:");
     for(size_t i = 0; i < args.size(); i++)
-      RDCDEBUG("[%u]: %s", (uint32_t)i, args[i].c_str());
+      RDCLOG("Parameter [%u]: %s", (uint32_t)i, args[i].c_str());
   }
 
-  if(env.enumerateGPUs)
+  if(args.contains("--crash"))
+    UnloadCrashHandler();
+  else
+    RecreateCrashHandler();
+
+  // InitialiseReplay can be called again in the same process, for example by a script running
+  // inside qrenderdoc. Replay drivers are only created once the enumeration thread has been joined,
+  // and they share process-wide state (such as Vulkan's replay dispatch tables), so a second
+  // thread must not run alongside the first. The handle would also be overwritten, leaving the
+  // first thread unjoined. Wait for any previous enumeration, and keep its results if it found
+  // GPUs, since they don't change.
+  SyncAvailableGPUThread();
+
+  if(env.enumerateGPUs && m_AvailableGPUs.empty())
   {
     m_AvailableGPUThread = Threading::CreateThread([this]() {
+      rdcarray<rdcstr> driverFilePaths;
+
       for(GraphicsAPI api : {GraphicsAPI::D3D11, GraphicsAPI::D3D12, GraphicsAPI::Vulkan})
       {
         RDCDriver driverType = RDCDriver::Unknown;
@@ -597,17 +880,45 @@ void RenderDoc::InitialiseReplay(GlobalEnvironment env, const rdcarray<rdcstr> &
           case GraphicsAPI::D3D12: driverType = RDCDriver::D3D12; break;
           case GraphicsAPI::OpenGL: break;
           case GraphicsAPI::Vulkan: driverType = RDCDriver::Vulkan; break;
+          case GraphicsAPI::D3D9: driverType = RDCDriver::D3D9; break;
         }
 
         if(driverType == RDCDriver::Unknown || !HasReplayDriver(driverType))
           continue;
 
         IReplayDriver *driver = NULL;
-        ReplayStatus status = m_ReplayDriverProviders[driverType](NULL, ReplayOptions(), &driver);
+        RDResult result = m_ReplayDriverProviders[driverType](NULL, ReplayOptions(), &driver);
 
-        if(status == ReplayStatus::Succeeded)
+        if(result == ResultCode::Succeeded)
         {
           rdcarray<GPUDevice> gpus = driver->GetAvailableGPUs();
+
+#if ENABLED(RDOC_WIN32)
+          for(const char *driverDLL : {
+                  "amdvlk32.dll",     "amdvlk64.dll",     "atiadlxx.dll",    "atig6pxx.dll",
+                  "atig6txx.dll",     "atigktxx.dll",     "atiglpxx.dll",    "atimuixx.dll",
+                  "atio6axx.dll",     "atioglxx.dll",     "ControlLib.dll",  "ControlLib32.dll",
+                  "igd10iumd32.dll",  "igd10iumd64.dll",  "igd12umd32.dll",  "igd12umd64.dll",
+                  "igc32.dll",        "igc64.dll",        "igvk32.dll",      "igvk64.dll",
+                  "igxelpgicd32.dll", "igxelpgicd64.dll", "igxelpicd32.dll", "igxelpicd32.dll",
+                  "igxelpicd64.dll",  "igxelpicd64.dll",  "nvoglv32.dll",    "nvoglv64.dll",
+                  "nvwgf2um.dll",     "nvwgf2umx.dll",
+              })
+          {
+            HMODULE mod = GetModuleHandleA(driverDLL);
+
+            if(mod)
+            {
+              wchar_t curFile[512] = {0};
+              GetModuleFileNameW(mod, curFile, 511);
+
+              rdcstr path = StringFormat::Wide2UTF8(curFile);
+
+              if(!driverFilePaths.contains(path))
+                driverFilePaths.push_back(path);
+            }
+          }
+#endif
 
           for(const GPUDevice &newgpu : gpus)
           {
@@ -630,7 +941,7 @@ void RenderDoc::InitialiseReplay(GlobalEnvironment env, const rdcarray<rdcstr> &
         else
         {
           RDCWARN("Couldn't create proxy replay driver for %s: %s", ToStr(driverType).c_str(),
-                  ToStr(status).c_str());
+                  ResultDetails(result).Message().c_str());
         }
 
         if(driver)
@@ -689,7 +1000,31 @@ void RenderDoc::InitialiseReplay(GlobalEnvironment env, const rdcarray<rdcstr> &
       for(GPUDevice &dev : m_AvailableGPUs)
       {
         std::sort(dev.apis.begin(), dev.apis.end());
+
+        RDCLOG("GPU: %s - %s (driver: %s)", ToStr(dev.vendor).c_str(), dev.name.c_str(),
+               dev.driver.empty() ? "--" : dev.driver.c_str());
       }
+
+#if ENABLED(RDOC_WIN32)
+      {
+        // only print unique versions to avoid the case of loading multiple driver files and
+        // printing redundantly.
+        rdcarray<OSUtility::DLLFileVersion> versions;
+
+        for(rdcstr &path : driverFilePaths)
+        {
+          OSUtility::DLLFileVersion ret = OSUtility::GetDLLVersion(path);
+
+          if(!versions.contains(ret))
+          {
+            versions.push_back(ret);
+            RDCLOG("Driver: '%s' %u.%u.%u.%u %s", path.c_str(), ret.major, ret.minor, ret.build,
+                   ret.revision,
+                   StringFormat::sntimef(FileIO::GetModifiedTimestamp(path), "%Y-%m-%d").c_str());
+          }
+        }
+      }
+#endif
     });
   }
 }
@@ -700,63 +1035,82 @@ void RenderDoc::ShutdownReplay()
 
   // call shutdown functions early, as we only want to do these in the RenderDoc destructor if we
   // have no other choice (i.e. we're capturing).
-  for(auto it = m_ShutdownFunctions.begin(); it != m_ShutdownFunctions.end(); ++it)
+  rdcarray<ShutdownFunction> funcs;
+  {
+    SCOPED_LOCK(m_ShutdownLock);
+    funcs.swap(m_ShutdownFunctions);
+  }
+
+  for(auto it = funcs.begin(); it != funcs.end(); ++it)
     (*it)();
-  m_ShutdownFunctions.clear();
+  funcs.clear();
 }
 
 void RenderDoc::RegisterShutdownFunction(ShutdownFunction func)
 {
+  SCOPED_LOCK(m_ShutdownLock);
+
   auto it = std::lower_bound(m_ShutdownFunctions.begin(), m_ShutdownFunctions.end(), func);
   if(it == m_ShutdownFunctions.end() || *it != func)
     m_ShutdownFunctions.insert(it - m_ShutdownFunctions.begin(), func);
 }
 
-bool RenderDoc::MatchClosestWindow(void *&dev, void *&wnd)
+bool RenderDoc::MatchClosestWindow(DeviceOwnedWindow &devWnd)
 {
-  DeviceWnd dw(dev, wnd);
+  SCOPED_LOCK(m_CapturerListLock);
 
   // lower_bound and the DeviceWnd ordering (pointer compares, dev over wnd) means that if either
-  // element in dw is NULL we can go forward from this iterator and find the first wildcardMatch
+  // element in devWnd is NULL we can go forward from this iterator and find the first wildcardMatch
   // note that if dev is specified and wnd is NULL, this will actually point at the first
   // wildcardMatch already and we can use it immediately (since which window of multiple we
   // choose is undefined, so up to us). If dev is NULL there is no window ordering (since dev is
   // the primary sorting value) so we just iterate through the whole map. It should be small in
   // the majority of cases
-  auto it = m_WindowFrameCapturers.lower_bound(dw);
+  auto it = m_WindowFrameCapturers.lower_bound(devWnd);
 
   while(it != m_WindowFrameCapturers.end())
   {
-    if(it->first.wildcardMatch(dw))
+    if(it->first.wildcardMatch(devWnd))
       break;
     ++it;
   }
 
   if(it != m_WindowFrameCapturers.end())
   {
-    dev = it->first.dev;
-    wnd = it->first.wnd;
+    devWnd = it->first;
     return true;
   }
 
   return false;
 }
 
-IFrameCapturer *RenderDoc::MatchFrameCapturer(void *dev, void *wnd)
+bool RenderDoc::IsActiveWindow(DeviceOwnedWindow devWnd)
 {
-  DeviceWnd dw(dev, wnd);
+  SCOPED_LOCK(m_CapturerListLock);
+  return devWnd == m_ActiveWindow;
+}
 
+void RenderDoc::GetActiveWindow(DeviceOwnedWindow &devWnd)
+{
+  SCOPED_LOCK(m_CapturerListLock);
+  devWnd = m_ActiveWindow;
+}
+
+IFrameCapturer *RenderDoc::MatchFrameCapturer(DeviceOwnedWindow devWnd)
+{
   // try and find the closest frame capture registered, and update
-  // the values in dw to point to it precisely
-  bool exactMatch = MatchClosestWindow(dw.dev, dw.wnd);
+  // the values in devWnd to point to it precisely
+  bool exactMatch = MatchClosestWindow(devWnd);
+
+  SCOPED_LOCK(m_CapturerListLock);
 
   if(!exactMatch)
   {
     // handle off-screen rendering where there are no device/window pairs in
     // m_WindowFrameCapturers, instead we use the first matching device frame capturer
-    if(wnd == NULL)
+    if(devWnd.windowHandle == NULL)
     {
-      auto defaultit = m_DeviceFrameCapturers.find(dev);
+      auto defaultit = m_DeviceFrameCapturers.find(devWnd.device);
       if(defaultit == m_DeviceFrameCapturers.end() && !m_DeviceFrameCapturers.empty())
         defaultit = m_DeviceFrameCapturers.begin();
 
@@ -767,11 +1121,12 @@ IFrameCapturer *RenderDoc::MatchFrameCapturer(void *dev, void *wnd)
     RDCERR(
         "Couldn't find matching frame capturer for device %p window %p "
         "from %zu device frame capturers and %zu frame capturers",
-        dev, wnd, m_DeviceFrameCapturers.size(), m_WindowFrameCapturers.size());
+        devWnd.device, devWnd.windowHandle, m_DeviceFrameCapturers.size(),
+        m_WindowFrameCapturers.size());
     return NULL;
   }
 
-  auto it = m_WindowFrameCapturers.find(dw);
+  auto it = m_WindowFrameCapturers.find(devWnd);
 
   if(it == m_WindowFrameCapturers.end())
   {
@@ -782,48 +1137,55 @@ IFrameCapturer *RenderDoc::MatchFrameCapturer(void *dev, void *wnd)
   return it->second.FrameCapturer;
 }
 
-void RenderDoc::StartFrameCapture(void *dev, void *wnd)
+void RenderDoc::StartFrameCapture(DeviceOwnedWindow devWnd)
 {
-  IFrameCapturer *frameCap = MatchFrameCapturer(dev, wnd);
+  m_CaptureTitle.clear();
+  IFrameCapturer *frameCap = MatchFrameCapturer(devWnd);
   if(frameCap)
   {
-    frameCap->StartFrameCapture(dev, wnd);
+    frameCap->StartFrameCapture(devWnd);
     m_CapturesActive++;
   }
 }
 
-void RenderDoc::SetActiveWindow(void *dev, void *wnd)
+void RenderDoc::SetActiveWindow(DeviceOwnedWindow devWnd)
 {
-  DeviceWnd dw(dev, wnd);
+  SCOPED_LOCK(m_CapturerListLock);
 
-  auto it = m_WindowFrameCapturers.find(dw);
+  auto it = m_WindowFrameCapturers.find(devWnd);
   if(it == m_WindowFrameCapturers.end())
   {
-    RDCERR("Couldn't find frame capturer for device %p window %p", dev, wnd);
+    RDCERR("Couldn't find frame capturer for device %p window %p", devWnd.device,
+           devWnd.windowHandle);
     return;
   }
 
-  m_ActiveWindow = dw;
+  m_ActiveWindow = devWnd;
 }
 
-bool RenderDoc::EndFrameCapture(void *dev, void *wnd)
+void RenderDoc::SetCaptureTitle(const rdcstr &title)
 {
-  IFrameCapturer *frameCap = MatchFrameCapturer(dev, wnd);
+  m_CaptureTitle = title;
+}
+
+bool RenderDoc::EndFrameCapture(DeviceOwnedWindow devWnd)
+{
+  IFrameCapturer *frameCap = MatchFrameCapturer(devWnd);
   if(frameCap)
   {
-    bool ret = frameCap->EndFrameCapture(dev, wnd);
+    bool ret = frameCap->EndFrameCapture(devWnd);
     m_CapturesActive--;
     return ret;
   }
   return false;
 }
 
-bool RenderDoc::DiscardFrameCapture(void *dev, void *wnd)
+bool RenderDoc::DiscardFrameCapture(DeviceOwnedWindow devWnd)
 {
-  IFrameCapturer *frameCap = MatchFrameCapturer(dev, wnd);
+  IFrameCapturer *frameCap = MatchFrameCapturer(devWnd);
   if(frameCap)
   {
-    bool ret = frameCap->DiscardFrameCapture(dev, wnd);
+    bool ret = frameCap->DiscardFrameCapture(devWnd);
     m_CapturesActive--;
     return ret;
   }
@@ -832,21 +1194,28 @@ bool RenderDoc::DiscardFrameCapture(void *dev, void *wnd)
 
 bool RenderDoc::IsTargetControlConnected()
 {
-  SCOPED_LOCK(RenderDoc::Inst().m_SingleClientLock);
-  return !RenderDoc::Inst().m_SingleClientName.empty();
+  SCOPED_LOCK(m_SingleClientLock);
+  return !m_SingleClientName.empty();
 }
 
 rdcstr RenderDoc::GetTargetControlUsername()
 {
-  SCOPED_LOCK(RenderDoc::Inst().m_SingleClientLock);
-  return RenderDoc::Inst().m_SingleClientName;
+  SCOPED_LOCK(m_SingleClientLock);
+  return m_SingleClientName;
+}
+
+bool RenderDoc::ShowReplayUI()
+{
+  SCOPED_LOCK(m_SingleClientLock);
+  if(m_SingleClientName.empty())
+    return false;
+
+  m_RequestControllerShow = true;
+  return true;
 }
 
 void RenderDoc::Tick()
 {
-  static bool prev_focus = false;
-  static bool prev_cap = false;
-
   bool cur_focus = false;
   for(size_t i = 0; i < m_FocusKeys.size(); i++)
     cur_focus |= Keyboard::GetKeyState(m_FocusKeys[i]);
@@ -857,17 +1226,17 @@ void RenderDoc::Tick()
 
   m_FrameTimer.UpdateTimers();
 
-  if(!prev_focus && cur_focus)
+  if(!m_PrevFocus && cur_focus)
   {
     CycleActiveWindow();
   }
-  if(!prev_cap && cur_cap)
+  if(!m_PrevCap && cur_cap)
   {
     TriggerCapture(1);
   }
 
-  prev_focus = cur_focus;
-  prev_cap = cur_cap;
+  m_PrevFocus = cur_focus;
+  m_PrevCap = cur_cap;
 
   // check for any child threads that need to be waited on, remove them from the list
   rdcarray<Threading::ThreadHandle> waitThreads;
@@ -893,6 +1262,8 @@ void RenderDoc::Tick()
 
 void RenderDoc::CycleActiveWindow()
 {
+  SCOPED_LOCK(m_CapturerListLock);
+
   m_Cap = 0;
 
   // can only shift focus if we have multiple windows
@@ -916,21 +1287,140 @@ void RenderDoc::CycleActiveWindow()
   }
 }
 
-rdcstr RenderDoc::GetOverlayText(RDCDriver driver, uint32_t frameNumber, int flags)
+uint32_t RenderDoc::GetCapturableWindowCount()
 {
-  const bool activeWindow = (flags & eOverlay_ActiveWindow);
+  SCOPED_LOCK(m_CapturerListLock);
+  return (uint32_t)m_WindowFrameCapturers.size();
+}
+
+rdcstr RenderDoc::GetOverlayText(RDCDriver driver, DeviceOwnedWindow devWnd, uint32_t frameNumber,
+                                 int flags)
+{
+  bool activeWindow;
   const bool capturesEnabled = (flags & eOverlay_CaptureDisabled) == 0;
 
   uint32_t overlay = GetOverlayBits();
 
-  rdcstr overlayText = ToStr(driver) + ". ";
+  RDCDriver activeDriver = RDCDriver::Unknown;
+  RDCDriver curDriver = RDCDriver::Unknown;
+
+  int activeIdx = -1, curIdx = -1, idx = 0;
+  size_t numWindows;
+  {
+    SCOPED_LOCK(m_CapturerListLock);
+
+    activeWindow = (devWnd == m_ActiveWindow);
+
+    for(auto it = m_WindowFrameCapturers.begin(); it != m_WindowFrameCapturers.end(); ++it, ++idx)
+    {
+      if(it->first == m_ActiveWindow)
+      {
+        activeIdx = idx;
+        activeDriver = it->second.FrameCapturer->GetFrameCaptureDriver();
+      }
+      if(it->first == devWnd)
+      {
+        curIdx = idx;
+        curDriver = it->second.FrameCapturer->GetFrameCaptureDriver();
+      }
+    }
+
+    numWindows = m_WindowFrameCapturers.size();
+  }
+
+  if(activeDriver == RDCDriver::Unknown)
+    activeDriver = curDriver;
+
+  if(activeDriver == RDCDriver::Unknown)
+    activeDriver = driver;
+
+  // example layout:
+  //
+  // Capturing D3D11.  Frame: 1234. 33ms (30 FPS)
+  // F12, PrtScrn to capture. 3 Captures saved.
+  // Captured frame 1200.
+  //
+  // Frame number, FPS, capture list are optional. If capture list is disabled
+  // the second line still displays the keys as long as capturing is allowed.
+  // if capturing is disabled, only the first line displays.
+  //
+  // On platforms without keyboards, the keys are replaced by a remote access connection status
+  // message.
+  //
+  // with multiple windows the active window will look like:
+  //
+  // Capturing D3D11.  Window 1 active. Frame: 1234. 33ms (30 FPS)
+  // F12, PrtScrn to capture. 3 Captures saved.
+  // Captured frame 1200.
+  //
+  // Inactive windows will look like:
+  //
+  // Capturing D3D11.  Window 1 active.
+  // F11 to cycle. OpenGL window 2.
+
+  rdcstr overlayText = ToStr(activeDriver) + ".";
+
+  // pad this so it's the same length regardless of API length
+  while(overlayText.length() < 8)
+    overlayText.push_back(' ');
+
+  overlayText = "Capturing " + overlayText;
+
+  if(numWindows > 1)
+  {
+    if(activeIdx >= 0)
+      overlayText += StringFormat::Fmt(" Window %d active.", activeIdx);
+    else
+      overlayText += " No window active.";
+  }
 
   if(activeWindow)
   {
-    rdcarray<RENDERDOC_InputButton> keys = GetCaptureKeys();
+    if(overlay & eRENDERDOC_Overlay_FrameNumber)
+      overlayText += StringFormat::Fmt(" Frame: %d.", frameNumber);
 
-    if(capturesEnabled)
+    if(overlay & eRENDERDOC_Overlay_FrameRate)
     {
+      const double frameTime = m_FrameTimer.GetAvgFrameTime();
+      // max with 0.01ms so that we don't divide by zero
+      const double fps = 1000.0f / RDCMAX(0.01, frameTime);
+
+      if(frameTime < 0.0001)
+      {
+        overlayText += " --- ms (--- FPS)";
+      }
+      else
+      {
+        // only display frametime fractions if it's relevant (sub-integer frame time or FPS)
+
+        if(frameTime < 1.0)
+          overlayText += StringFormat::Fmt(" %.2lf ms", m_FrameTimer.GetAvgFrameTime());
+        else
+          overlayText += StringFormat::Fmt(" %d ms", int(m_FrameTimer.GetAvgFrameTime()));
+
+        if(fps < 1.0)
+          overlayText += StringFormat::Fmt(" (%.2lf FPS)", fps);
+        else
+          overlayText += StringFormat::Fmt(" (%d FPS)", int(fps));
+      }
+    }
+  }
+
+  overlayText += "\n";
+
+#if ENABLED(RDOC_DEVEL)
+  {
+    overlayText += StringFormat::Fmt("%llu chunks - %.2f MB\n", Chunk::NumLiveChunks(),
+                                     float(Chunk::TotalMem()) / 1024.0f / 1024.0f);
+  }
+#endif
+
+  if(capturesEnabled)
+  {
+    if(activeWindow)
+    {
+      rdcarray<RENDERDOC_InputButton> keys = GetCaptureKeys();
+
       if(Keyboard::PlatformHasKeyInput())
       {
         for(size_t i = 0; i < keys.size(); i++)
@@ -951,80 +1441,56 @@ rdcstr RenderDoc::GetOverlayText(RDCDriver driver, uint32_t frameNumber, int fla
         else
           overlayText += "No remote access connection.";
       }
-    }
 
-    if(overlay & eRENDERDOC_Overlay_FrameNumber)
-    {
-      overlayText += StringFormat::Fmt(" Frame: %d.", frameNumber);
-    }
-    if(overlay & eRENDERDOC_Overlay_FrameRate)
-    {
-      overlayText +=
-          StringFormat::Fmt(" %.2lf ms (%.2lf .. %.2lf) (%.0lf FPS)", m_FrameTimer.GetAvgFrameTime(),
-                            m_FrameTimer.GetMinFrameTime(), m_FrameTimer.GetMaxFrameTime(),
-                            // max with 0.01ms so that we don't divide by zero
-                            1000.0f / RDCMAX(0.01, m_FrameTimer.GetAvgFrameTime()));
-    }
-
-    overlayText += "\n";
-
-    if((overlay & eRENDERDOC_Overlay_CaptureList) && capturesEnabled)
-    {
-      overlayText += StringFormat::Fmt("%d Captures saved.\n", (uint32_t)m_Captures.size());
-
-      uint64_t now = Timing::GetUnixTimestamp();
-      for(size_t i = 0; i < m_Captures.size(); i++)
+      if(overlay & eRENDERDOC_Overlay_CaptureList)
       {
-        if(now - m_Captures[i].timestamp < 20)
+        overlayText += StringFormat::Fmt(" %d Captures saved.\n", (uint32_t)m_Captures.size());
+
+        uint64_t now = Timing::GetUnixTimestamp();
+        for(size_t i = 0; i < m_Captures.size(); i++)
         {
-          if(m_Captures[i].frameNumber == ~0U)
-            overlayText += "Captured user-defined capture.\n";
-          else
-            overlayText += StringFormat::Fmt("Captured frame %d.\n", m_Captures[i].frameNumber);
+          if(now - m_Captures[i].timestamp < 20)
+          {
+            if(m_Captures[i].frameNumber == ~0U)
+              overlayText += "Captured user-defined capture.\n";
+            else
+              overlayText += StringFormat::Fmt("Captured frame %d.\n", m_Captures[i].frameNumber);
+          }
         }
       }
     }
-
-#if ENABLED(RDOC_DEVEL)
-    overlayText += StringFormat::Fmt("%llu chunks - %.2f MB\n", Chunk::NumLiveChunks(),
-                                     float(Chunk::TotalMem()) / 1024.0f / 1024.0f);
-#endif
-  }
-  else if(capturesEnabled)
-  {
-    rdcarray<RENDERDOC_InputButton> keys = GetFocusKeys();
-
-    overlayText += "Inactive window.";
-
-    size_t activeIdx = 0;
-    for(auto it = m_WindowFrameCapturers.begin(); it != m_WindowFrameCapturers.end();
-        ++it, ++activeIdx)
-      if(it->first == m_ActiveWindow)
-        break;
-
-    if(activeIdx < m_WindowFrameCapturers.size())
+    else
     {
-      overlayText += StringFormat::Fmt(" Active Window: %zu of %zu.", activeIdx + 1,
-                                       m_WindowFrameCapturers.size());
-    }
+      rdcarray<RENDERDOC_InputButton> keys = GetFocusKeys();
 
-    if(Keyboard::PlatformHasKeyInput())
-    {
-      for(size_t i = 0; i < keys.size(); i++)
+      if(Keyboard::PlatformHasKeyInput())
       {
-        if(i == 0)
-          overlayText += " ";
-        else
-          overlayText += ", ";
+        for(size_t i = 0; i < keys.size(); i++)
+        {
+          if(i > 0)
+            overlayText += ", ";
 
-        overlayText += ToStr(keys[i]);
+          overlayText += ToStr(keys[i]);
+        }
+
+        if(!keys.empty())
+          overlayText += " to cycle.";
+      }
+      else
+      {
+        if(IsTargetControlConnected())
+          overlayText += "Connected by " + GetTargetControlUsername() + ".";
+        else
+          overlayText += "No remote access connection.";
       }
 
-      if(!keys.empty())
-        overlayText += " to cycle between windows";
+      if(curIdx >= 0)
+        overlayText += StringFormat::Fmt(" %s window %d.", ToStr(curDriver).c_str(), curIdx);
+      else if(curDriver != RDCDriver::Unknown)
+        overlayText += StringFormat::Fmt(" Unknown %s window.", ToStr(curDriver).c_str());
+      else
+        overlayText += " Unknown window.";
     }
-
-    overlayText += "\n";
   }
 
   return overlayText;
@@ -1149,7 +1615,7 @@ void RenderDoc::ResamplePixels(const FramePixels &in, RDCThumb &out)
 
   if(!in.is_y_flipped)
   {
-    for(uint16_t y = 0; y <= out.height / 2; y++)
+    for(uint16_t y = 0; y < out.height / 2; y++)
     {
       uint16_t flipY = (out.height - 1 - y);
       for(uint16_t x = 0; x < out.width; x++)
@@ -1172,7 +1638,7 @@ void RenderDoc::ResamplePixels(const FramePixels &in, RDCThumb &out)
   }
 }
 
-void RenderDoc::EncodePixelsPNG(const RDCThumb &in, RDCThumb &out)
+void RenderDoc::EncodeThumbPixels(const RDCThumb &in, RDCThumb &out)
 {
   if(in.width == 0 || in.height == 0)
   {
@@ -1191,13 +1657,33 @@ void RenderDoc::EncodePixelsPNG(const RDCThumb &in, RDCThumb &out)
     }
   };
 
-  WriteCallbackData callbackData;
-  stbi_write_png_to_func(&WriteCallbackData::writeData, &callbackData, in.width, in.height, 3,
-                         in.pixels.data(), 0);
-  out.width = in.width;
-  out.height = in.height;
-  out.pixels.swap(callbackData.buffer);
-  out.format = FileType::PNG;
+  if(out.format == FileType::PNG)
+  {
+    WriteCallbackData callbackData;
+    stbi_write_png_to_func(&WriteCallbackData::writeData, &callbackData, in.width, in.height, 3,
+                           in.pixels.data(), 0);
+    out.width = in.width;
+    out.height = in.height;
+    out.pixels.swap(callbackData.buffer);
+  }
+  else
+  {
+    // should be JPG if not PNG
+    RDCASSERTEQUAL(out.format, FileType::JPG);
+
+    out.width = in.width;
+    out.height = in.height;
+    out.format = FileType::JPG;
+
+    const int comp = 3;
+    int len = in.width * in.height * comp;
+    out.pixels.resize(len);
+    jpge::params p;
+    p.m_quality = 90;
+    jpge::compress_image_to_jpeg_file_in_memory(out.pixels.data(), len, in.width, in.height, comp,
+                                                in.pixels.data(), p);
+    out.pixels.resize(len);
+  }
 }
 
 RDCFile *RenderDoc::CreateRDC(RDCDriver driver, uint32_t frameNum, const FramePixels &fp)
@@ -1225,26 +1711,29 @@ RDCFile *RenderDoc::CreateRDC(RDCDriver driver, uint32_t frameNum, const FramePi
     }
   }
 
-  RDCThumb outRaw, outPng;
+  RDCThumb outRaw, outThumb;
   if(fp.data)
   {
     // point sample info into raw buffer
     ResamplePixels(fp, outRaw);
-    EncodePixelsPNG(outRaw, outPng);
+
+    if(Capture_IncludeExtendedThumbnail())
+      outThumb.format = FileType::PNG;
+    else
+      outThumb.format = FileType::JPG;
+
+    EncodeThumbPixels(outRaw, outThumb);
   }
 
-  ret->SetData(driver, ToStr(driver).c_str(), OSUtility::GetMachineIdent(), &outPng, m_TimeBase,
+  ret->SetData(driver, ToStr(driver).c_str(), OSUtility::GetMachineIdent(), &outThumb, m_TimeBase,
                m_TimeFrequency);
 
   FileIO::CreateParentDirectory(m_CurrentLogFile);
 
   ret->Create(m_CurrentLogFile.c_str());
 
-  if(ret->ErrorCode() != ContainerError::NoError)
-  {
-    RDCERR("Error creating RDC at '%s'", m_CurrentLogFile.c_str());
+  if(ret->Error() != ResultCode::Succeeded)
     SAFE_DELETE(ret);
-  }
 
   return ret;
 }
@@ -1452,7 +1941,7 @@ bool RenderDoc::HasReplaySupport(RDCDriver driverType)
   return m_ReplayDriverProviders.find(driverType) != m_ReplayDriverProviders.end();
 }
 
-ReplayStatus RenderDoc::CreateProxyReplayDriver(RDCDriver proxyDriver, IReplayDriver **driver)
+RDResult RenderDoc::CreateProxyReplayDriver(RDCDriver proxyDriver, IReplayDriver **driver)
 {
   SyncAvailableGPUThread();
 
@@ -1466,15 +1955,14 @@ ReplayStatus RenderDoc::CreateProxyReplayDriver(RDCDriver proxyDriver, IReplayDr
   if(m_ReplayDriverProviders.find(proxyDriver) != m_ReplayDriverProviders.end())
     return m_ReplayDriverProviders[proxyDriver](NULL, ReplayOptions(), driver);
 
-  RDCERR("Unsupported replay driver requested: %s", ToStr(proxyDriver).c_str());
-  return ReplayStatus::APIUnsupported;
+  RETURN_ERROR_RESULT(ResultCode::APIUnsupported, "Unsupported replay driver requested: %s",
+                      ToStr(proxyDriver).c_str());
 }
 
-ReplayStatus RenderDoc::CreateReplayDriver(RDCFile *rdc, const ReplayOptions &opts,
-                                           IReplayDriver **driver)
+RDResult RenderDoc::CreateReplayDriver(RDCFile *rdc, const ReplayOptions &opts, IReplayDriver **driver)
 {
   if(driver == NULL)
-    return ReplayStatus::InternalError;
+    return ResultCode::InvalidParameter;
 
   SyncAvailableGPUThread();
 
@@ -1484,8 +1972,8 @@ ReplayStatus RenderDoc::CreateReplayDriver(RDCFile *rdc, const ReplayOptions &op
     if(!m_ReplayDriverProviders.empty())
       return m_ReplayDriverProviders.begin()->second(NULL, opts, driver);
 
-    RDCERR("Request for proxy replay device, but no replay providers are available.");
-    return ReplayStatus::InternalError;
+    RETURN_ERROR_RESULT(ResultCode::APIUnsupported,
+                        "Request for proxy replay device, but no replay providers are available.");
   }
 
   RDCDriver driverType = rdc->GetDriver();
@@ -1498,14 +1986,13 @@ ReplayStatus RenderDoc::CreateReplayDriver(RDCFile *rdc, const ReplayOptions &op
     return m_ReplayDriverProviders[driverType](rdc, opts, driver);
 
   RDCERR("Unsupported replay driver requested: %s", ToStr(driverType).c_str());
-  return ReplayStatus::APIUnsupported;
+  return ResultCode::APIUnsupported;
 }
 
-ReplayStatus RenderDoc::CreateRemoteDriver(RDCFile *rdc, const ReplayOptions &opts,
-                                           IRemoteDriver **driver)
+RDResult RenderDoc::CreateRemoteDriver(RDCFile *rdc, const ReplayOptions &opts, IRemoteDriver **driver)
 {
   if(rdc == NULL || driver == NULL)
-    return ReplayStatus::InternalError;
+    return ResultCode::InvalidParameter;
 
   SyncAvailableGPUThread();
 
@@ -1518,18 +2005,18 @@ ReplayStatus RenderDoc::CreateRemoteDriver(RDCFile *rdc, const ReplayOptions &op
   if(m_ReplayDriverProviders.find(driverType) != m_ReplayDriverProviders.end())
   {
     IReplayDriver *dr = NULL;
-    ReplayStatus status = m_ReplayDriverProviders[driverType](rdc, opts, &dr);
+    RDResult result = m_ReplayDriverProviders[driverType](rdc, opts, &dr);
 
-    if(status == ReplayStatus::Succeeded)
+    if(result == ResultCode::Succeeded)
       *driver = (IRemoteDriver *)dr;
     else
       RDCASSERT(dr == NULL);
 
-    return status;
+    return result;
   }
 
-  RDCERR("Unsupported replay driver requested: %s", ToStr(driverType).c_str());
-  return ReplayStatus::APIUnsupported;
+  RETURN_ERROR_RESULT(ResultCode::APIUnsupported, "Unsupported replay driver requested: %s",
+                      ToStr(driverType).c_str());
 }
 
 void RenderDoc::AddActiveDriver(RDCDriver driver, bool present)
@@ -1547,7 +2034,16 @@ void RenderDoc::AddActiveDriver(RDCDriver driver, bool present)
   }
 }
 
-std::map<RDCDriver, bool> RenderDoc::GetActiveDrivers()
+void RenderDoc::SetDriverUnsupportedMessage(RDCDriver driver, rdcstr message)
+{
+  if(driver == RDCDriver::Unknown)
+    return;
+
+  SCOPED_LOCK(m_DriverLock);
+  m_APISupportMessages[driver] = message;
+}
+
+std::map<RDCDriver, RDCDriverStatus> RenderDoc::GetActiveDrivers()
 {
   std::map<RDCDriver, uint64_t> drivers;
 
@@ -1556,20 +2052,28 @@ std::map<RDCDriver, bool> RenderDoc::GetActiveDrivers()
     drivers = m_ActiveDrivers;
   }
 
-  std::map<RDCDriver, bool> ret;
+  std::map<RDCDriver, RDCDriverStatus> ret;
 
   for(auto it = drivers.begin(); it != drivers.end(); ++it)
   {
+    RDCDriverStatus &status = ret[it->first];
     // driver is presenting if the timestamp is greater than 0 and less than 10 seconds ago (gives a
     // little leeway for loading screens or something where the presentation stops temporarily).
     // we also assume that during a capture if it was presenting, then it's still capturing.
     // Otherwise a long capture would temporarily set it as not presenting.
-    bool presenting = it->second > 0;
+    status.presenting = it->second > 0;
 
-    if(presenting && !IsFrameCapturing() && it->second < Timing::GetUnixTimestamp() - 10)
-      presenting = false;
+    if(status.presenting && !IsFrameCapturing() && it->second < Timing::GetUnixTimestamp() - 10)
+      status.presenting = false;
 
-    ret[it->first] = presenting;
+    status.supported = (HasRemoteDriver(it->first) || HasReplayDriver(it->first)) &&
+                       HasActiveFrameCapturer(it->first);
+
+    if(!status.supported)
+    {
+      SCOPED_LOCK(m_DriverLock);
+      status.supportMessage = m_APISupportMessages[it->first];
+    }
   }
 
   return ret;
@@ -1608,22 +2112,23 @@ DriverInformation RenderDoc::GetDriverInformation(GraphicsAPI api)
     case GraphicsAPI::D3D12: driverType = RDCDriver::D3D12; break;
     case GraphicsAPI::OpenGL: driverType = RDCDriver::OpenGL; break;
     case GraphicsAPI::Vulkan: driverType = RDCDriver::Vulkan; break;
+    case GraphicsAPI::D3D9: driverType = RDCDriver::D3D9; break;
   }
 
   if(driverType == RDCDriver::Unknown || !HasReplayDriver(driverType))
     return ret;
 
   IReplayDriver *driver = NULL;
-  ReplayStatus status = CreateProxyReplayDriver(driverType, &driver);
+  RDResult result = CreateProxyReplayDriver(driverType, &driver);
 
-  if(status == ReplayStatus::Succeeded)
+  if(result == ResultCode::Succeeded)
   {
     ret = driver->GetDriverInfo();
   }
   else
   {
     RDCERR("Couldn't create proxy replay driver for %s: %s", ToStr(driverType).c_str(),
-           ToStr(status).c_str());
+           ResultDetails(result).Message().c_str());
   }
 
   if(driver)
@@ -1735,7 +2240,13 @@ void RenderDoc::FinishCaptureWriting(RDCFile *rdc, uint32_t frameNumber)
 
     RDCLOG("Written to disk: %s", m_CurrentLogFile.c_str());
 
-    CaptureData cap(m_CurrentLogFile, Timing::GetUnixTimestamp(), rdc->GetDriver(), frameNumber);
+    CaptureData cap;
+    cap.path = m_CurrentLogFile;
+    cap.title = m_CaptureTitle;
+    cap.timestamp = Timing::GetUnixTimestamp();
+    cap.driver = rdc->GetDriver();
+    cap.frameNumber = frameNumber;
+    m_CaptureTitle.clear();
     {
       SCOPED_LOCK(m_CaptureLock);
       m_Captures.push_back(cap);
@@ -1787,6 +2298,12 @@ void RenderDoc::AddChildThread(uint32_t pid, Threading::ThreadHandle thread)
   m_ChildThreads.push_back(make_rdcpair(pid, thread));
 }
 
+void RenderDoc::ValidateCaptures()
+{
+  SCOPED_LOCK(m_CaptureLock);
+  m_Captures.removeIf([](const CaptureData &cap) { return !FileIO::exists(cap.path); });
+}
+
 rdcarray<CaptureData> RenderDoc::GetCaptures()
 {
   SCOPED_LOCK(m_CaptureLock);
@@ -1815,6 +2332,7 @@ void RenderDoc::AddDeviceFrameCapturer(void *dev, IFrameCapturer *cap)
 
   RDCLOG("Adding %s device frame capturer for %#p", ToStr(cap->GetFrameCaptureDriver()).c_str(), dev);
 
+  SCOPED_LOCK(m_CapturerListLock);
   m_DeviceFrameCapturers[dev] = cap;
 }
 
@@ -1831,26 +2349,28 @@ void RenderDoc::RemoveDeviceFrameCapturer(void *dev)
 
   RDCLOG("Removing device frame capturer for %#p", dev);
 
+  SCOPED_LOCK(m_CapturerListLock);
   m_DeviceFrameCapturers.erase(dev);
 }
 
-void RenderDoc::AddFrameCapturer(void *dev, void *wnd, IFrameCapturer *cap)
+void RenderDoc::AddFrameCapturer(DeviceOwnedWindow devWnd, IFrameCapturer *cap)
 {
   if(IsReplayApp())
     return;
 
-  if(dev == NULL || wnd == NULL || cap == NULL)
+  if(devWnd.device == NULL || devWnd.windowHandle == NULL || cap == NULL)
   {
-    RDCERR("Invalid FrameCapturer %#p for combination: %#p / %#p", cap, dev, wnd);
+    RDCERR("Invalid FrameCapturer %#p for combination: %#p / %#p", cap, devWnd.device,
+           devWnd.windowHandle);
     return;
   }
 
-  RDCLOG("Adding %s frame capturer for %#p / %#p", ToStr(cap->GetFrameCaptureDriver()).c_str(), dev,
-         wnd);
+  RDCLOG("Adding %s frame capturer for %#p / %#p", ToStr(cap->GetFrameCaptureDriver()).c_str(),
+         devWnd.device, devWnd.windowHandle);
 
-  DeviceWnd dw(dev, wnd);
+  SCOPED_LOCK(m_CapturerListLock);
 
-  auto it = m_WindowFrameCapturers.find(dw);
+  auto it = m_WindowFrameCapturers.find(devWnd);
   if(it != m_WindowFrameCapturers.end())
   {
     if(it->second.FrameCapturer != cap)
@@ -1860,24 +2380,24 @@ void RenderDoc::AddFrameCapturer(void *dev, void *wnd, IFrameCapturer *cap)
   }
   else
   {
-    m_WindowFrameCapturers[dw].FrameCapturer = cap;
+    m_WindowFrameCapturers[devWnd].FrameCapturer = cap;
   }
 
   // the first one we see becomes the default
-  if(m_ActiveWindow == DeviceWnd())
-    m_ActiveWindow = dw;
+  if(m_ActiveWindow == DeviceOwnedWindow())
+    m_ActiveWindow = devWnd;
 }
 
-void RenderDoc::RemoveFrameCapturer(void *dev, void *wnd)
+void RenderDoc::RemoveFrameCapturer(DeviceOwnedWindow devWnd)
 {
   if(IsReplayApp())
     return;
 
-  DeviceWnd dw(dev, wnd);
+  RDCLOG("Removing frame capturer for %#p / %#p", devWnd.device, devWnd.windowHandle);
 
-  RDCLOG("Removing frame capturer for %#p / %#p", dev, wnd);
+  SCOPED_LOCK(m_CapturerListLock);
 
-  auto it = m_WindowFrameCapturers.find(dw);
+  auto it = m_WindowFrameCapturers.find(devWnd);
   if(it != m_WindowFrameCapturers.end())
   {
     it->second.RefCount--;
@@ -1886,13 +2406,13 @@ void RenderDoc::RemoveFrameCapturer(void *dev, void *wnd)
     {
       RDCLOG("Removed last refcount");
 
-      if(m_ActiveWindow == dw)
+      if(m_ActiveWindow == devWnd)
       {
         RDCLOG("Removed active window");
 
         if(m_WindowFrameCapturers.size() == 1)
         {
-          m_ActiveWindow = DeviceWnd();
+          m_ActiveWindow = DeviceOwnedWindow();
         }
         else
         {
@@ -1914,8 +2434,10 @@ void RenderDoc::RemoveFrameCapturer(void *dev, void *wnd)
   }
 }
 
-bool RenderDoc::HasActiveFrameCapturer(RDCDriver driver) const
+bool RenderDoc::HasActiveFrameCapturer(RDCDriver driver)
 {
+  SCOPED_LOCK(m_CapturerListLock);
+
   for(auto cap = m_WindowFrameCapturers.begin(); cap != m_WindowFrameCapturers.end(); cap++)
     if(cap->second.FrameCapturer->GetFrameCaptureDriver() == driver)
       return true;
@@ -1925,6 +2447,307 @@ bool RenderDoc::HasActiveFrameCapturer(RDCDriver driver) const
       return true;
 
   return false;
+}
+
+bool RenderDoc::GetTrackedFileData(const rdcstr &nickname, bytebuf &data) const
+{
+  SCOPED_READLOCK(m_TrackedFilesLock);
+  for(const TrackedFile &f : m_TrackedFiles)
+  {
+    if(f.nickname == nickname)
+    {
+      if(f.hasData)
+        data = f.data;
+      return f.hasData;
+    }
+  }
+  return false;
+}
+
+bool RenderDoc::DoesTrackedFileExist(const rdcstr &nickname) const
+{
+  SCOPED_READLOCK(m_TrackedFilesLock);
+  for(const TrackedFile &f : m_TrackedFiles)
+  {
+    if(f.nickname == nickname)
+      return true;
+  }
+  return false;
+}
+
+// return false if the nickname already exists
+bool RenderDoc::AddTrackedFileReference(const rdcstr &nickname, const rdcstr &filepath)
+{
+  SCOPED_WRITELOCK(m_TrackedFilesLock);
+  // do not allow duplicates, overwrite with latest if we add the same one
+  m_TrackedFiles.removeIf([nickname](const TrackedFile &f) { return f.nickname == nickname; });
+  m_TrackedFiles.emplace_back(nickname, filepath);
+  return true;
+}
+
+void RenderDoc::ClearTrackedFiles()
+{
+  SCOPED_WRITELOCK(m_TrackedFilesLock);
+  m_TrackedFiles.clear();
+}
+
+bool RenderDoc::HasTrackedFileData() const
+{
+  SCOPED_READLOCK(m_TrackedFilesLock);
+  return !m_TrackedFiles.empty();
+}
+
+rdcarray<rdcstr> RenderDoc::GetTrackedFileNicknames() const
+{
+  rdcarray<rdcstr> nickNames;
+  {
+    SCOPED_READLOCK(m_TrackedFilesLock);
+    for(const TrackedFile &f : m_TrackedFiles)
+      nickNames.push_back(f.nickname);
+  }
+  return nickNames;
+}
+
+RDResult RenderDoc::ReadExternalFiles(RDCFile *rdc)
+{
+  int32_t idx = rdc->SectionIndex(SectionType::EmbeddedExternalFiles);
+  if(idx < 0)
+    RETURN_WARNING_RESULT(ResultCode::DataNotAvailable, "No EmbeddedExternalFiles section");
+
+  // int32_t countFileEntries;
+  int32_t countFileEntries = 0;
+  bytebuf sectionData;
+  {
+    StreamReader *reader = rdc->ReadSection(idx);
+    sectionData.resize((size_t)reader->GetSize());
+    bool success = reader->Read(sectionData.data(), reader->GetSize());
+    delete reader;
+    if(!success)
+      sectionData.clear();
+  }
+  const uint32_t bufferSize = (uint32_t)sectionData.size();
+  uint32_t readSize = sizeof(countFileEntries);
+  uint32_t byteIndex = 0;
+  if(byteIndex + readSize > bufferSize)
+    RETURN_WARNING_RESULT(ResultCode::FileCorrupted,
+                          "EmbeddedExternalFiles section does not have valid data");
+
+  const byte *bufferPtr = sectionData.data();
+  memcpy(&countFileEntries, bufferPtr, readSize);
+  byteIndex += readSize;
+  bufferPtr += readSize;
+
+  rdcarray<TrackedFile> externalFiles;
+  externalFiles.resize(countFileEntries);
+  // FileEntry fileEntries[];
+  for(int32_t i = 0; i < countFileEntries; ++i)
+  {
+    TrackedFile &externalFile = externalFiles[i];
+    externalFile.filepath.clear();
+
+    // FileEntry:
+    // uint32_t nameSize;
+    uint32_t nameSize = 0;
+    readSize = sizeof(nameSize);
+    if(byteIndex + readSize > bufferSize)
+      RETURN_WARNING_RESULT(ResultCode::FileCorrupted,
+                            "EmbeddedExternalFiles section does not have valid data");
+    memcpy(&nameSize, bufferPtr, readSize);
+    byteIndex += readSize;
+    bufferPtr += readSize;
+
+    // char name[];
+    readSize = nameSize;
+    if(byteIndex + readSize > bufferSize)
+      RETURN_WARNING_RESULT(ResultCode::FileCorrupted,
+                            "EmbeddedExternalFiles section does not have valid data");
+    externalFile.nickname.assign((const char *)bufferPtr, readSize);
+    byteIndex += readSize;
+    bufferPtr += readSize;
+
+    // uint32_t dataSize;
+    uint32_t dataSize = 0;
+    readSize = sizeof(dataSize);
+    if(byteIndex + readSize > bufferSize)
+      RETURN_WARNING_RESULT(ResultCode::FileCorrupted,
+                            "EmbeddedExternalFiles section does not have valid data");
+    memcpy(&dataSize, bufferPtr, readSize);
+    byteIndex += readSize;
+    bufferPtr += readSize;
+
+    // byte data[];
+    readSize = dataSize;
+    if(byteIndex + readSize > bufferSize)
+      RETURN_WARNING_RESULT(ResultCode::FileCorrupted,
+                            "EmbeddedExternalFiles section does not have valid data");
+    externalFile.data.assign(bufferPtr, readSize);
+    byteIndex += readSize;
+    bufferPtr += readSize;
+  }
+  if(byteIndex != bufferSize)
+    RETURN_WARNING_RESULT(ResultCode::FileCorrupted,
+                          "EmbeddedExternalFiles section does not have valid data");
+
+  SCOPED_WRITELOCK(m_TrackedFilesLock);
+  for(const TrackedFile &f : externalFiles)
+  {
+    for(TrackedFile &file : m_TrackedFiles)
+    {
+      if(file.nickname == f.nickname)
+      {
+        file.data = f.data;
+        file.filepath.clear();
+        file.hasData = true;
+        break;
+      }
+    }
+    m_TrackedFiles.emplace_back(f.nickname, f.data);
+  }
+
+  return RDResult();
+}
+
+RDResult RenderDoc::WriteExternalFiles(RDCFile *rdc, const rdcarray<TrackedFile> &trackedFiles)
+{
+  if(!rdc)
+    RETURN_WARNING_RESULT(ResultCode::FileCorrupted,
+                          "Data missing for creation of file, set metadata first.");
+
+  RDResult rdcRes = rdc->Error();
+  if(rdcRes != ResultCode::Succeeded)
+    return rdcRes;
+
+  int32_t countFileEntries = trackedFiles.count();
+
+  bytebuf sectionData;
+
+  // int32_t countFileEntries;
+  sectionData.append((byte *)&countFileEntries, sizeof(countFileEntries));
+  // FileEntry fileEntries[];
+  for(const RenderDoc::TrackedFile &f : trackedFiles)
+  {
+    // FileEntry:
+    // uint32_t nameSize;
+    // char name[];
+    const rdcstr &name = f.nickname;
+    const uint32_t nameSize = (uint32_t)name.size();
+    sectionData.append((byte *)&nameSize, sizeof(nameSize));
+    sectionData.append((byte *)name.data(), nameSize);
+
+    // uint32_t dataSize;
+    // byte data[];
+    uint32_t dataSize = 0;
+    const byte *data = NULL;
+    bytebuf fileData;
+    if(!f.filepath.empty())
+    {
+      if(FileIO::ReadAll(f.filepath, fileData))
+      {
+        dataSize = (uint32_t)fileData.size();
+        data = fileData.data();
+      }
+      else
+      {
+        RDCWARN("Data missing for externally referenced file %s", f.filepath.c_str());
+      }
+    }
+    else
+    {
+      dataSize = (uint32_t)f.data.size();
+      data = f.data.data();
+    }
+    sectionData.append((byte *)&dataSize, sizeof(dataSize));
+    sectionData.append(data, dataSize);
+  }
+
+  SectionProperties props;
+  props.type = SectionType::EmbeddedExternalFiles;
+  props.flags = SectionFlags::ZstdCompressed;
+  props.version = 1;
+
+  StreamWriter *writer = rdc->WriteSection(props);
+  rdcRes = rdc->Error();
+  if(!writer || rdcRes != ResultCode::Succeeded)
+    return rdcRes;
+
+  writer->Write(sectionData.data(), sectionData.size());
+  writer->Finish();
+
+  delete writer;
+
+  return RDResult();
+}
+
+RDResult RenderDoc::EmbedExternalFiles(RDCFile *rdc)
+{
+  if(!rdc)
+    RETURN_WARNING_RESULT(ResultCode::FileCorrupted,
+                          "Data missing for creation of file, set metadata first.");
+
+  RDResult rdcRes = rdc->Error();
+  if(rdcRes != ResultCode::Succeeded)
+    return rdcRes;
+
+  if(rdc->SectionIndex(SectionType::EmbeddedExternalFiles) >= 0)
+    RDCWARN("Capture already has embedded external files - replacing existing section.");
+
+  SCOPED_WRITELOCK(m_TrackedFilesLock);
+  const rdcarray<RenderDoc::TrackedFile> &trackedFiles = m_TrackedFiles;
+  if(trackedFiles.empty())
+    RDCWARN("No external files to embed.");
+
+  RDCLOG("Embedding %d external files", trackedFiles.count());
+  return RenderDoc::Inst().WriteExternalFiles(rdc, trackedFiles);
+}
+
+RDResult RenderDoc::RemoveExternalFiles(RDCFile *rdc)
+{
+  if(!rdc)
+    RETURN_WARNING_RESULT(ResultCode::FileCorrupted,
+                          "Data missing for creation of file, set metadata first.");
+
+  RDResult rdcRes = rdc->Error();
+  if(rdcRes != ResultCode::Succeeded)
+    return rdcRes;
+
+  RDResult result;
+  if(rdc->SectionIndex(SectionType::EmbeddedExternalFiles) < 0)
+    RETURN_WARNING_RESULT(ResultCode::DataNotAvailable,
+                          "Capture does not have any embedded external files.");
+
+  RDCLOG("Removing embedded external files (setting count to 0)");
+  rdcarray<RenderDoc::TrackedFile> trackedFiles;
+  return RenderDoc::Inst().WriteExternalFiles(rdc, trackedFiles);
+}
+
+bool RenderDoc::HasEmbeddedFiles(RDCFile *rdc) const
+{
+  if(!rdc)
+    return false;
+
+  RDResult rdcRes = rdc->Error();
+  if(rdcRes != ResultCode::Succeeded)
+    return false;
+
+  int32_t idx = rdc->SectionIndex(SectionType::EmbeddedExternalFiles);
+  if(idx < 0)
+    return false;
+
+  int32_t countFileEntries = 0;
+  bytebuf sectionData;
+  {
+    StreamReader *reader = rdc->ReadSection(idx);
+    sectionData.resize((size_t)reader->GetSize());
+    bool success = reader->Read(sectionData.data(), reader->GetSize());
+    delete reader;
+    if(!success)
+      sectionData.clear();
+  }
+  if(sectionData.size() < sizeof(countFileEntries))
+    return false;
+
+  memcpy(&countFileEntries, sectionData.data(), sizeof(countFileEntries));
+  return countFileEntries > 0;
 }
 
 #if ENABLED(ENABLE_UNIT_TESTS)
@@ -1974,6 +2797,117 @@ TEST_CASE("Check ResourceId tostr", "[tostr]")
 
   *u.num = 0x1234567812345678ULL;
   CHECK(ToStr(*u.id) == "ResourceId::1311768465173141112");
+}
+
+TEST_CASE("Check ResamplePixels", "[core][resamplepixels]")
+{
+  RenderDoc::FramePixels sourcePixels;
+  uint32_t height = 4;
+  uint32_t width = 4;
+  uint32_t bytesPerComponent = 1;
+  uint32_t countComponents = 3;
+  uint32_t stride = bytesPerComponent * countComponents;
+  uint32_t pitch = width * stride;
+  sourcePixels.data = new byte[pitch * height];
+  sourcePixels.len = 0;
+  sourcePixels.width = width;
+  sourcePixels.pitch = width * stride;
+  sourcePixels.height = height;
+  sourcePixels.stride = stride;
+  sourcePixels.bpc = bytesPerComponent;
+  sourcePixels.buf1010102 = false;
+  sourcePixels.buf565 = false;
+  sourcePixels.buf5551 = false;
+  sourcePixels.bgra = false;
+  sourcePixels.pitch_requirement = width;
+  sourcePixels.max_width = width;
+
+  byte *source = (byte *)sourcePixels.data;
+  for(uint32_t y = 0; y < height; ++y)
+  {
+    for(uint32_t x = 0; x < width; ++x)
+    {
+      byte *src = &source[stride * x + pitch * y];
+      src[0] = (byte)(y + x);
+      src[1] = (byte)(y + x * 2);
+      src[2] = (byte)(y + x * 3);
+    }
+  }
+
+  RDCThumb thumbOutYNotFlipped;
+  sourcePixels.is_y_flipped = false;
+  RenderDoc::Inst().ResamplePixels(sourcePixels, thumbOutYNotFlipped);
+  CHECK(thumbOutYNotFlipped.width == width);
+  CHECK(thumbOutYNotFlipped.height == height);
+
+  byte *dest = (byte *)thumbOutYNotFlipped.pixels.data();
+  for(uint32_t y = 0; y < height; ++y)
+  {
+    for(uint32_t x = 0; x < width; ++x)
+    {
+      byte *src = &source[stride * x + pitch * y];
+      byte *dst = &dest[stride * x + pitch * (height - y - 1)];
+      CHECK((uint32_t)src[0] == (uint32_t)dst[0]);
+      CHECK((uint32_t)src[1] == (uint32_t)dst[1]);
+      CHECK((uint32_t)src[2] == (uint32_t)dst[2]);
+    }
+  }
+
+  RDCThumb thumbOutYFlipped;
+  sourcePixels.is_y_flipped = true;
+  RenderDoc::Inst().ResamplePixels(sourcePixels, thumbOutYFlipped);
+  CHECK(thumbOutYFlipped.width == width);
+  CHECK(thumbOutYFlipped.height == height);
+  dest = (byte *)thumbOutYFlipped.pixels.data();
+  for(uint32_t y = 0; y < height; ++y)
+  {
+    for(uint32_t x = 0; x < width; ++x)
+    {
+      byte *src = &source[stride * x + pitch * y];
+      byte *dst = &dest[stride * x + pitch * y];
+      CHECK((uint32_t)src[0] == (uint32_t)dst[0]);
+      CHECK((uint32_t)src[1] == (uint32_t)dst[1]);
+      CHECK((uint32_t)src[2] == (uint32_t)dst[2]);
+    }
+  }
+
+  RDCThumb thumbOutBGRA;
+  sourcePixels.bgra = true;
+  RenderDoc::Inst().ResamplePixels(sourcePixels, thumbOutBGRA);
+  CHECK(thumbOutBGRA.width == width);
+  CHECK(thumbOutBGRA.height == height);
+  dest = (byte *)thumbOutBGRA.pixels.data();
+  for(uint32_t y = 0; y < height; ++y)
+  {
+    for(uint32_t x = 0; x < width; ++x)
+    {
+      byte *src = &source[stride * x + pitch * y];
+      byte *dst = &dest[stride * x + pitch * y];
+      CHECK((uint32_t)src[0] == (uint32_t)dst[2]);
+      CHECK((uint32_t)src[1] == (uint32_t)dst[1]);
+      CHECK((uint32_t)src[2] == (uint32_t)dst[0]);
+    }
+  }
+
+  RDCThumb thumbOutDownsample;
+  sourcePixels.bgra = false;
+  sourcePixels.max_width = 2;
+  sourcePixels.pitch_requirement = 2;
+  RenderDoc::Inst().ResamplePixels(sourcePixels, thumbOutDownsample);
+  CHECK(thumbOutDownsample.width == 2);
+  CHECK(thumbOutDownsample.height == 2);
+  dest = (byte *)thumbOutDownsample.pixels.data();
+  for(uint32_t y = 0; y < 2; ++y)
+  {
+    for(uint32_t x = 0; x < 2; ++x)
+    {
+      byte *src = &source[stride * x * 2 + pitch * y * 2];
+      byte *dst = &dest[stride * x + pitch / 2 * y];
+      CHECK((uint32_t)src[0] == (uint32_t)dst[0]);
+      CHECK((uint32_t)src[1] == (uint32_t)dst[1]);
+      CHECK((uint32_t)src[2] == (uint32_t)dst[2]);
+    }
+  }
 }
 
 #endif

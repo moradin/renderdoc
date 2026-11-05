@@ -114,6 +114,7 @@ enum {
     NV_NAVI21_P_A0 = 40,
     NV_NAVI22_P_A0 = 50,
     NV_NAVI23_P_A0 = 60,
+    NV_NAVI24_P_A0 = 70
 };
 
 enum {
@@ -122,6 +123,11 @@ enum {
     AI_VEGA12_P_A0 = 20,
     AI_VEGA20_P_A0 = 40,
     AI_UNKNOWN     = 0xFF
+};
+
+enum
+{
+    REMBRANDT_A0 = 1
 };
 
 #ifndef _ATIID_H
@@ -149,7 +155,8 @@ enum {
 
 #define FAMILY_NV                      143
 
-#define ATI_VENDOR_ID                   0x1002
+#define FAMILY_RMB                     146
 
+#define ATI_VENDOR_ID                   0x1002
 
 #endif  // _ATIID_H

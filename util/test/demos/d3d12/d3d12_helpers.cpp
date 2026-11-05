@@ -1,26 +1,26 @@
 /******************************************************************************
-* The MIT License (MIT)
-*
-* Copyright (c) 2019-2021 Baldur Karlsson
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-* THE SOFTWARE.
-******************************************************************************/
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2018-2026 Baldur Karlsson
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ ******************************************************************************/
 
 #include "d3d12_test.h"
 
@@ -156,6 +156,32 @@ D3D12_ROOT_PARAMETER1 cbvParam(D3D12_SHADER_VISIBILITY vis, UINT space, UINT reg
   return ret;
 }
 
+D3D12_ROOT_PARAMETER1 srvParam(D3D12_SHADER_VISIBILITY vis, UINT space, UINT reg)
+{
+  D3D12_ROOT_PARAMETER1 ret;
+
+  ret.ShaderVisibility = vis;
+  ret.ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+  ret.Descriptor.RegisterSpace = space;
+  ret.Descriptor.ShaderRegister = reg;
+  ret.Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
+  return ret;
+}
+
+D3D12_ROOT_PARAMETER1 uavParam(D3D12_SHADER_VISIBILITY vis, UINT space, UINT reg)
+{
+  D3D12_ROOT_PARAMETER1 ret;
+
+  ret.ShaderVisibility = vis;
+  ret.ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+  ret.Descriptor.RegisterSpace = space;
+  ret.Descriptor.ShaderRegister = reg;
+  ret.Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
+  return ret;
+}
+
 D3D12_ROOT_PARAMETER1 constParam(D3D12_SHADER_VISIBILITY vis, UINT space, UINT reg, UINT num)
 {
   D3D12_ROOT_PARAMETER1 ret;
@@ -176,6 +202,11 @@ D3D12_ROOT_PARAMETER1 tableParam(D3D12_SHADER_VISIBILITY vis, D3D12_DESCRIPTOR_R
   // this is a super hack but avoids the need to be clumsy with allocation of these structs
   static D3D12_DESCRIPTOR_RANGE1 ranges[32] = {};
   static int rangeIdx = 0;
+
+  if(type == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+  {
+    flags &= ~D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+  }
 
   D3D12_DESCRIPTOR_RANGE1 &range = ranges[rangeIdx];
   rangeIdx = (rangeIdx + 1) % ARRAY_COUNT(ranges);
@@ -219,6 +250,8 @@ D3D12BufferCreator::D3D12BufferCreator(ID3D12DevicePtr dev, D3D12GraphicsTest *t
   m_HeapDesc.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
   m_HeapDesc.CreationNodeMask = 1;
   m_HeapDesc.VisibleNodeMask = 1;
+
+  m_InitialState = D3D12_RESOURCE_STATE_COMMON;
 }
 
 D3D12BufferCreator &D3D12BufferCreator::UAV()
@@ -227,15 +260,31 @@ D3D12BufferCreator &D3D12BufferCreator::UAV()
   return *this;
 }
 
+D3D12BufferCreator &D3D12BufferCreator::ASB()
+{
+  m_InitialState = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+  m_BufDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+  return *this;
+}
+
+D3D12BufferCreator &D3D12BufferCreator::GPUUpload()
+{
+  m_HeapDesc.Type = D3D12_HEAP_TYPE_GPU_UPLOAD;
+  m_InitialState = D3D12_RESOURCE_STATE_COMMON;
+  return *this;
+}
+
 D3D12BufferCreator &D3D12BufferCreator::Upload()
 {
   m_HeapDesc.Type = D3D12_HEAP_TYPE_UPLOAD;
+  m_InitialState = D3D12_RESOURCE_STATE_GENERIC_READ;
   return *this;
 }
 
 D3D12BufferCreator &D3D12BufferCreator::Readback()
 {
   m_HeapDesc.Type = D3D12_HEAP_TYPE_READBACK;
+  m_InitialState = D3D12_RESOURCE_STATE_COPY_DEST;
   return *this;
 }
 
@@ -251,18 +300,18 @@ D3D12BufferCreator &D3D12BufferCreator::Size(UINT size)
   return *this;
 }
 
+D3D12BufferCreator &D3D12BufferCreator::InitialState(D3D12_RESOURCE_STATES initialState)
+{
+  m_InitialState = initialState;
+  return *this;
+}
+
 D3D12BufferCreator::operator ID3D12ResourcePtr() const
 {
-  D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
-
-  if(m_HeapDesc.Type == D3D12_HEAP_TYPE_UPLOAD)
-    initialState = D3D12_RESOURCE_STATE_GENERIC_READ;
-  else if(m_HeapDesc.Type == D3D12_HEAP_TYPE_READBACK)
-    initialState = D3D12_RESOURCE_STATE_COPY_DEST;
-
   ID3D12ResourcePtr buf;
-  CHECK_HR(m_Dev->CreateCommittedResource(&m_HeapDesc, D3D12_HEAP_FLAG_NONE, &m_BufDesc, initialState,
-                                          NULL, __uuidof(ID3D12Resource), (void **)&buf));
+  CHECK_HR(m_Dev->CreateCommittedResource(&m_HeapDesc, D3D12_HEAP_FLAG_NONE, &m_BufDesc,
+                                          m_InitialState, NULL, __uuidof(ID3D12Resource),
+                                          (void **)&buf));
 
   if(m_Initdata && m_Test)
     m_Test->SetBufferData(buf, D3D12_RESOURCE_STATE_COMMON, (const byte *)m_Initdata,
@@ -298,6 +347,8 @@ D3D12TextureCreator::D3D12TextureCreator(ID3D12DevicePtr dev, DXGI_FORMAT format
   m_HeapDesc.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
   m_HeapDesc.CreationNodeMask = 1;
   m_HeapDesc.VisibleNodeMask = 1;
+
+  m_ClearVal.Format = DXGI_FORMAT_UNKNOWN;
 }
 
 D3D12TextureCreator &D3D12TextureCreator::Mips(UINT mips)
@@ -337,6 +388,12 @@ D3D12TextureCreator &D3D12TextureCreator::DSV()
   return *this;
 }
 
+D3D12TextureCreator &D3D12TextureCreator::NoSRV()
+{
+  m_TexDesc.Flags |= D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+  return *this;
+}
+
 D3D12TextureCreator &D3D12TextureCreator::Upload()
 {
   m_HeapDesc.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -368,11 +425,19 @@ D3D12TextureCreator &D3D12TextureCreator::InitialState(D3D12_RESOURCE_STATES sta
   return *this;
 }
 
+D3D12TextureCreator &D3D12TextureCreator::ClearVal(const D3D12_CLEAR_VALUE &clearVal)
+{
+  m_ClearVal = clearVal;
+  return *this;
+}
+
 D3D12TextureCreator::operator ID3D12ResourcePtr() const
 {
   ID3D12ResourcePtr tex;
-  CHECK_HR(m_Dev->CreateCommittedResource(&m_HeapDesc, m_HeapFlags, &m_TexDesc, m_InitialState,
-                                          NULL, __uuidof(ID3D12Resource), (void **)&tex));
+  CHECK_HR(m_Dev->CreateCommittedResource(
+      &m_HeapDesc, m_HeapFlags, &m_TexDesc, m_InitialState,
+      (m_ClearVal.Format == DXGI_FORMAT_UNKNOWN) ? NULL : &m_ClearVal, __uuidof(ID3D12Resource),
+      (void **)&tex));
   return tex;
 }
 
@@ -390,6 +455,12 @@ D3D12ViewCreator::D3D12ViewCreator(ID3D12DevicePtr dev, ID3D12DescriptorHeap *he
   {
     desc.cbv.BufferLocation = m_Res->GetGPUVirtualAddress();
     desc.cbv.SizeInBytes = 0;
+  }
+  else if(m_Type == ViewType::AS)
+  {
+    desc.srv.Format = DXGI_FORMAT_UNKNOWN;
+    desc.srv.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+    desc.srv.RaytracingAccelerationStructure.Location = m_Res->GetGPUVirtualAddress();
   }
   else if(dim == D3D12_RESOURCE_DIMENSION_BUFFER)
   {
@@ -527,124 +598,233 @@ void D3D12ViewCreator::SetupDescriptors(ViewType viewType, ResourceType resType)
           // &firstMip, &numMips, &firstSlice, &numSlices, &planeSlice
           {NULL, NULL, NULL, NULL, NULL},
           {
-              &desc.srv.Texture1D.MostDetailedMip, &desc.srv.Texture1D.MipLevels, NULL, NULL, NULL,
+              &desc.srv.Texture1D.MostDetailedMip,
+              &desc.srv.Texture1D.MipLevels,
+              NULL,
+              NULL,
+              NULL,
           },
           {
-              &desc.srv.Texture1DArray.MostDetailedMip, &desc.srv.Texture1DArray.MipLevels,
-              &desc.srv.Texture1DArray.FirstArraySlice, &desc.srv.Texture1DArray.ArraySize, NULL,
+              &desc.srv.Texture1DArray.MostDetailedMip,
+              &desc.srv.Texture1DArray.MipLevels,
+              &desc.srv.Texture1DArray.FirstArraySlice,
+              &desc.srv.Texture1DArray.ArraySize,
+              NULL,
           },
           {
-              &desc.srv.Texture2D.MostDetailedMip, &desc.srv.Texture2D.MipLevels, NULL, NULL,
+              &desc.srv.Texture2D.MostDetailedMip,
+              &desc.srv.Texture2D.MipLevels,
+              NULL,
+              NULL,
               &desc.srv.Texture2D.PlaneSlice,
           },
           {
-              &desc.srv.Texture2DArray.MostDetailedMip, &desc.srv.Texture2DArray.MipLevels,
-              &desc.srv.Texture2DArray.FirstArraySlice, &desc.srv.Texture2DArray.ArraySize,
+              &desc.srv.Texture2DArray.MostDetailedMip,
+              &desc.srv.Texture2DArray.MipLevels,
+              &desc.srv.Texture2DArray.FirstArraySlice,
+              &desc.srv.Texture2DArray.ArraySize,
               &desc.srv.Texture2DArray.PlaneSlice,
           },
           {
-              NULL, NULL, NULL, NULL, NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
           },
           {
-              NULL, NULL, &desc.srv.Texture2DMSArray.FirstArraySlice,
-              &desc.srv.Texture2DMSArray.ArraySize, NULL,
+              NULL,
+              NULL,
+              &desc.srv.Texture2DMSArray.FirstArraySlice,
+              &desc.srv.Texture2DMSArray.ArraySize,
+              NULL,
           },
           {
-              &desc.srv.Texture3D.MostDetailedMip, &desc.srv.Texture2D.MipLevels, NULL, NULL, NULL,
+              &desc.srv.Texture3D.MostDetailedMip,
+              &desc.srv.Texture2D.MipLevels,
+              NULL,
+              NULL,
+              NULL,
           },
       },
       // RTV
       {
           // &firstMip, &numMips, &firstSlice, &numSlices
           {
-              NULL, NULL, NULL, NULL, NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
           },
           {
-              &desc.rtv.Texture1D.MipSlice, NULL, NULL, NULL, NULL,
+              &desc.rtv.Texture1D.MipSlice,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
           },
           {
-              &desc.rtv.Texture1DArray.MipSlice, NULL, &desc.rtv.Texture1DArray.FirstArraySlice,
-              &desc.rtv.Texture1DArray.ArraySize, NULL,
+              &desc.rtv.Texture1DArray.MipSlice,
+              NULL,
+              &desc.rtv.Texture1DArray.FirstArraySlice,
+              &desc.rtv.Texture1DArray.ArraySize,
+              NULL,
           },
           {
-              &desc.rtv.Texture2D.MipSlice, NULL, NULL, NULL, &desc.rtv.Texture2D.PlaneSlice,
+              &desc.rtv.Texture2D.MipSlice,
+              NULL,
+              NULL,
+              NULL,
+              &desc.rtv.Texture2D.PlaneSlice,
           },
           {
-              &desc.rtv.Texture2DArray.MipSlice, NULL, &desc.rtv.Texture2DArray.FirstArraySlice,
-              &desc.rtv.Texture2DArray.ArraySize, &desc.rtv.Texture2DArray.PlaneSlice,
+              &desc.rtv.Texture2DArray.MipSlice,
+              NULL,
+              &desc.rtv.Texture2DArray.FirstArraySlice,
+              &desc.rtv.Texture2DArray.ArraySize,
+              &desc.rtv.Texture2DArray.PlaneSlice,
           },
           {
-              NULL, NULL, NULL, NULL, NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
           },
           {
-              NULL, NULL, &desc.rtv.Texture2DMSArray.FirstArraySlice,
-              &desc.rtv.Texture2DMSArray.ArraySize, NULL,
+              NULL,
+              NULL,
+              &desc.rtv.Texture2DMSArray.FirstArraySlice,
+              &desc.rtv.Texture2DMSArray.ArraySize,
+              NULL,
           },
           {
-              &desc.rtv.Texture3D.MipSlice, NULL, &desc.rtv.Texture3D.FirstWSlice,
-              &desc.rtv.Texture3D.WSize, NULL,
+              &desc.rtv.Texture3D.MipSlice,
+              NULL,
+              &desc.rtv.Texture3D.FirstWSlice,
+              &desc.rtv.Texture3D.WSize,
+              NULL,
           },
       },
       // DSV
       {
           // &firstMip, &numMips, &firstSlice, &numSlices
           {
-              NULL, NULL, NULL, NULL, NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
           },
           {
-              &desc.dsv.Texture1D.MipSlice, NULL, NULL, NULL, NULL,
+              &desc.dsv.Texture1D.MipSlice,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
           },
           {
-              &desc.dsv.Texture1DArray.MipSlice, NULL, &desc.dsv.Texture1DArray.FirstArraySlice,
-              &desc.dsv.Texture1DArray.ArraySize, NULL,
+              &desc.dsv.Texture1DArray.MipSlice,
+              NULL,
+              &desc.dsv.Texture1DArray.FirstArraySlice,
+              &desc.dsv.Texture1DArray.ArraySize,
+              NULL,
           },
           {
-              &desc.dsv.Texture2D.MipSlice, NULL, NULL, NULL, NULL,
+              &desc.dsv.Texture2D.MipSlice,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
           },
           {
-              &desc.dsv.Texture2DArray.MipSlice, NULL, &desc.dsv.Texture2DArray.FirstArraySlice,
-              &desc.dsv.Texture2DArray.ArraySize, NULL,
+              &desc.dsv.Texture2DArray.MipSlice,
+              NULL,
+              &desc.dsv.Texture2DArray.FirstArraySlice,
+              &desc.dsv.Texture2DArray.ArraySize,
+              NULL,
           },
           {
-              NULL, NULL, NULL, NULL, NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
           },
           {
-              NULL, NULL, &desc.dsv.Texture2DMSArray.FirstArraySlice,
-              &desc.dsv.Texture2DMSArray.ArraySize, NULL,
+              NULL,
+              NULL,
+              &desc.dsv.Texture2DMSArray.FirstArraySlice,
+              &desc.dsv.Texture2DMSArray.ArraySize,
+              NULL,
           },
           {
-              NULL, NULL, NULL, NULL, NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
           },
       },
       // UAV
       {
           // &firstMip, &numMips, &firstSlice, &numSlices
           {
-              NULL, NULL, NULL, NULL, NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
           },
           {
-              &desc.uav.Texture1D.MipSlice, NULL, NULL, NULL, NULL,
+              &desc.uav.Texture1D.MipSlice,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
           },
           {
-              &desc.uav.Texture1DArray.MipSlice, NULL, &desc.uav.Texture1DArray.FirstArraySlice,
-              &desc.uav.Texture1DArray.ArraySize, NULL,
+              &desc.uav.Texture1DArray.MipSlice,
+              NULL,
+              &desc.uav.Texture1DArray.FirstArraySlice,
+              &desc.uav.Texture1DArray.ArraySize,
+              NULL,
           },
           {
-              &desc.uav.Texture2D.MipSlice, NULL, NULL, NULL, &desc.uav.Texture2D.PlaneSlice,
+              &desc.uav.Texture2D.MipSlice,
+              NULL,
+              NULL,
+              NULL,
+              &desc.uav.Texture2D.PlaneSlice,
           },
           {
-              &desc.uav.Texture2DArray.MipSlice, NULL, &desc.uav.Texture2DArray.FirstArraySlice,
-              &desc.uav.Texture2DArray.ArraySize, &desc.uav.Texture2DArray.PlaneSlice,
+              &desc.uav.Texture2DArray.MipSlice,
+              NULL,
+              &desc.uav.Texture2DArray.FirstArraySlice,
+              &desc.uav.Texture2DArray.ArraySize,
+              &desc.uav.Texture2DArray.PlaneSlice,
           },
           {
-              NULL, NULL, NULL, NULL, NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
           },
           {
-              NULL, NULL, NULL, NULL, NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
           },
           {
-              &desc.uav.Texture3D.MipSlice, NULL, &desc.uav.Texture3D.FirstWSlice,
-              &desc.uav.Texture3D.WSize, NULL,
+              &desc.uav.Texture3D.MipSlice,
+              NULL,
+              &desc.uav.Texture3D.FirstWSlice,
+              &desc.uav.Texture3D.WSize,
+              NULL,
           },
       },
   };
@@ -675,6 +855,8 @@ D3D12ViewCreator &D3D12ViewCreator::Offset(UINT offset)
 {
   if(m_Type == ViewType::CBV)
     desc.cbv.BufferLocation += offset;
+  else if(m_Type == ViewType::AS)
+    desc.srv.RaytracingAccelerationStructure.Location += offset;
   else
     TEST_ERROR("This view & resource doesn't support SizeBytes");
   return *this;
@@ -809,9 +991,16 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12ViewCreator::CreateCPU(ID3D12DescriptorHeap *he
     cpu.ptr += increment[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV] * descriptor;
     m_Dev->CreateConstantBufferView(&desc.cbv, cpu);
   }
+  else if(m_Type == ViewType::AS)
+  {
+    desc.srv.Shader4ComponentMapping = Shader4ComponentMapping;
+
+    cpu.ptr += increment[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV] * descriptor;
+    m_Dev->CreateShaderResourceView(NULL, &desc.srv, cpu);
+  }
   else if(m_Type == ViewType::SRV)
   {
-    if(desc.uav.ViewDimension == D3D12_SRV_DIMENSION_BUFFER)
+    if(desc.srv.ViewDimension == D3D12_SRV_DIMENSION_BUFFER)
     {
       D3D12_RESOURCE_DESC bufdesc = m_Res->GetDesc();
 
@@ -914,43 +1103,129 @@ D3D12PSOCreator::D3D12PSOCreator(ID3D12DevicePtr dev) : m_Dev(dev)
 
 D3D12PSOCreator &D3D12PSOCreator::VS(ID3DBlobPtr blob)
 {
-  GraphicsDesc.VS.pShaderBytecode = blob->GetBufferPointer();
-  GraphicsDesc.VS.BytecodeLength = blob->GetBufferSize();
+  vsblob = blob;
+  if(blob)
+  {
+    GraphicsDesc.VS.pShaderBytecode = blob->GetBufferPointer();
+    GraphicsDesc.VS.BytecodeLength = blob->GetBufferSize();
+  }
+  else
+  {
+    GraphicsDesc.VS.pShaderBytecode = NULL;
+    GraphicsDesc.VS.BytecodeLength = 0;
+  }
+  return *this;
+}
+
+D3D12PSOCreator &D3D12PSOCreator::AS(ID3DBlobPtr blob)
+{
+  asblob = blob;
+  if(blob)
+  {
+    m_AS.pShaderBytecode = blob->GetBufferPointer();
+    m_AS.BytecodeLength = blob->GetBufferSize();
+  }
+  else
+  {
+    m_AS.pShaderBytecode = NULL;
+    m_AS.BytecodeLength = 0;
+  }
+  return *this;
+}
+
+D3D12PSOCreator &D3D12PSOCreator::MS(ID3DBlobPtr blob)
+{
+  msblob = blob;
+  if(blob)
+  {
+    m_MS.pShaderBytecode = blob->GetBufferPointer();
+    m_MS.BytecodeLength = blob->GetBufferSize();
+  }
+  else
+  {
+    m_MS.pShaderBytecode = NULL;
+    m_MS.BytecodeLength = 0;
+  }
   return *this;
 }
 
 D3D12PSOCreator &D3D12PSOCreator::HS(ID3DBlobPtr blob)
 {
-  GraphicsDesc.HS.pShaderBytecode = blob->GetBufferPointer();
-  GraphicsDesc.HS.BytecodeLength = blob->GetBufferSize();
+  hsblob = blob;
+  if(blob)
+  {
+    GraphicsDesc.HS.pShaderBytecode = blob->GetBufferPointer();
+    GraphicsDesc.HS.BytecodeLength = blob->GetBufferSize();
+  }
+  else
+  {
+    GraphicsDesc.HS.pShaderBytecode = NULL;
+    GraphicsDesc.HS.BytecodeLength = 0;
+  }
   return *this;
 }
 
 D3D12PSOCreator &D3D12PSOCreator::DS(ID3DBlobPtr blob)
 {
-  GraphicsDesc.DS.pShaderBytecode = blob->GetBufferPointer();
-  GraphicsDesc.DS.BytecodeLength = blob->GetBufferSize();
+  dsblob = blob;
+  if(blob)
+  {
+    GraphicsDesc.DS.pShaderBytecode = blob->GetBufferPointer();
+    GraphicsDesc.DS.BytecodeLength = blob->GetBufferSize();
+  }
+  else
+  {
+    GraphicsDesc.DS.pShaderBytecode = NULL;
+    GraphicsDesc.DS.BytecodeLength = 0;
+  }
   return *this;
 }
 
 D3D12PSOCreator &D3D12PSOCreator::GS(ID3DBlobPtr blob)
 {
-  GraphicsDesc.GS.pShaderBytecode = blob->GetBufferPointer();
-  GraphicsDesc.GS.BytecodeLength = blob->GetBufferSize();
+  gsblob = blob;
+  if(blob)
+  {
+    GraphicsDesc.GS.pShaderBytecode = blob->GetBufferPointer();
+    GraphicsDesc.GS.BytecodeLength = blob->GetBufferSize();
+  }
+  else
+  {
+    GraphicsDesc.GS.pShaderBytecode = NULL;
+    GraphicsDesc.GS.BytecodeLength = 0;
+  }
   return *this;
 }
 
 D3D12PSOCreator &D3D12PSOCreator::PS(ID3DBlobPtr blob)
 {
-  GraphicsDesc.PS.pShaderBytecode = blob->GetBufferPointer();
-  GraphicsDesc.PS.BytecodeLength = blob->GetBufferSize();
+  psblob = blob;
+  if(blob)
+  {
+    GraphicsDesc.PS.pShaderBytecode = blob->GetBufferPointer();
+    GraphicsDesc.PS.BytecodeLength = blob->GetBufferSize();
+  }
+  else
+  {
+    GraphicsDesc.PS.pShaderBytecode = NULL;
+    GraphicsDesc.PS.BytecodeLength = 0;
+  }
   return *this;
 }
 
 D3D12PSOCreator &D3D12PSOCreator::CS(ID3DBlobPtr blob)
 {
-  ComputeDesc.CS.pShaderBytecode = blob->GetBufferPointer();
-  ComputeDesc.CS.BytecodeLength = blob->GetBufferSize();
+  csblob = blob;
+  if(blob)
+  {
+    ComputeDesc.CS.pShaderBytecode = blob->GetBufferPointer();
+    ComputeDesc.CS.BytecodeLength = blob->GetBufferSize();
+  }
+  else
+  {
+    ComputeDesc.CS.pShaderBytecode = NULL;
+    ComputeDesc.CS.BytecodeLength = 0;
+  }
   return *this;
 }
 
@@ -1015,6 +1290,10 @@ D3D12PSOCreator &D3D12PSOCreator::SampleCount(UINT Samples)
 D3D12PSOCreator::operator ID3D12PipelineStatePtr() const
 {
   ID3D12PipelineStatePtr pso;
+  if((m_MS.BytecodeLength > 0) || (m_AS.BytecodeLength > 0))
+  {
+    return NULL;
+  }
   if(ComputeDesc.CS.BytecodeLength > 0)
   {
     CHECK_HR(m_Dev->CreateComputePipelineState(&ComputeDesc, __uuidof(ID3D12PipelineState),

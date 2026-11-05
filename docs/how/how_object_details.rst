@@ -41,23 +41,23 @@ In addition to opening a new view of the texture, the timeline bar will also sho
 Viewing Buffers
 ---------------
 
-More details on this section are available on the :doc:`../window/buffer_viewer` page.
+When opened either from the vertex input section the pipeline state view, or from the :guilabel:`Window` menu under :guilabel:`Mesh Viewer`, the mesh viewer opens. This will show a 3D display of the mesh represented, as well as viewing the mesh buffers at different points in the pipeline. See :doc:`../window/mesh_viewer`.
 
-When opened either from the vertex input section the pipeline state view, or from the :guilabel:`Window` menu under :guilabel:`Mesh Viewer`, the buffer viewer opens up in the mesh viewer mode. This is a specialisation of the buffer viewer which will show a 3D display of the mesh represented, as well as viewing the mesh buffers at different points in the pipeline.
-
-In the general case, buffers bound to the pipeline can be opened as a raw buffer viewer. This will open up a view of the buffer similar to the mesh viewer, but with a completely customisable buffer layout.
+Buffers bound to the pipeline can be opened as a raw buffer viewer. This will open up a view of the buffer similar to the mesh viewer, but with a customisable buffer format.
 
 By default if the buffer is bound to the pipeline with a pre-existing structure that can be reflected from the shader then this will be the default, otherwise the default layout will be 4 32bit unsigned integers per element.
 
-This layout can be customised by entering a format in a simple style that mimics defining a structure that outlines a single element in the buffer.
+This layout can be customised by entering a format in a simple style that mimics defining a structure that outlines a single element in the buffer, for more information see :doc:`../how/how_buffer_format`.
 
-.. figure:: ../imgs/Screenshots/RawBuffer.png
+More details on this section are available on the :doc:`../window/buffer_viewer` page.
+
+.. figure:: ../imgs/Screenshots/AOSBuffer.png
 
 	Custom Buffer Layout: Customising the layout of the buffer by defining a structure.
 
 .. note::
 
-	This window supports copy and paste, so simply select the entries and ctrl-c to copy to the clipboard
+	This window supports copy and paste, so simply select the entries and :kbd:`Ctrl-C` to copy to the clipboard
 
 Viewing Constant Buffers
 ------------------------
@@ -66,10 +66,10 @@ Constant buffers can be viewed by clicking on their Go Arrow |goarrow|. This wil
 
 Whenever this shader slot has a constant buffer in it, both the constant names and types as well as values will be displayed.
 
-.. figure:: ../imgs/Screenshots/CBuffer.png
+.. figure:: ../imgs/Screenshots/SOABuffer.png
 
 	Constant Buffer: An updating preview of the contents of this constant buffer.
 
 .. note::
 
-	This window supports copy and paste, so simply select the entries and ctrl-c to copy to the clipboard
+	This window supports copy and paste, so simply select the entries and :kbd:`Ctrl-C` to copy to the clipboard

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -36,11 +36,11 @@ enum class ShaderType
 rdcstr GenerateGLSLShader(const rdcstr &shader, ShaderType type, int version,
                           const rdcstr &defines = "");
 
+rdcstr InsertSnippetAfterVersion(ShaderType type, const char *source, int len, const char *snippet);
+
 // for unit tests
 struct ShaderReflection;
-struct ShaderBindpointMapping;
-enum class ShaderStage : uint32_t;
-using ReflectionMaker =
-    std::function<void(ShaderStage stage, const rdcstr &source, const rdcstr &entryPoint,
-                       ShaderReflection &refl, ShaderBindpointMapping &mapping)>;
+enum class ShaderStage : uint8_t;
+using ReflectionMaker = std::function<void(ShaderStage stage, const rdcstr &source,
+                                           const rdcstr &entryPoint, ShaderReflection &refl)>;
 void TestGLSLReflection(ShaderType testType, ReflectionMaker compile);

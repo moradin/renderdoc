@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2014-2021 Baldur Karlsson
+ * Copyright (c) 2014-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -46,7 +46,7 @@ typedef void(__cdecl *pINTERNAL_SetDebugLogFile)(const char *logfile);
   } while(0)
 #else
 // define this to something to get logging
-//#define LOGPRINT(txt) OutputDebugStringW(txt)
+// #define LOGPRINT(txt) OutputDebugStringW(txt)
 #define LOGPRINT(txt) \
   do                  \
   {                   \
@@ -151,7 +151,7 @@ void CheckHook()
   CloseHandle(datahandle);
 }
 
-DWORD CheckHookThread(LPVOID param)
+DWORD WINAPI CheckHookThread(LPVOID param)
 {
   CheckHook();
 
@@ -170,7 +170,7 @@ BOOL APIENTRY dll_entry(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpRese
 
     // create a thread so that we can perform more complex actions (DllMain must be minimal
     // in size, even this is a bit dodgy).
-    CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)&CheckHookThread, (LPVOID)hModule, 0, NULL);
+    CreateThread(NULL, 0, CheckHookThread, (LPVOID)hModule, 0, NULL);
   }
 
   return TRUE;

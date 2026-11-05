@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -31,6 +31,55 @@
 #include "d3d12_manager.h"
 #include "d3d12_resources.h"
 
+RDOC_EXTERN_CONFIG(bool, D3D12_Debug_SingleSubmitFlushing);
+
+RDOC_CONFIG(bool, D3D12_Debug_DriverASSerialisation, false,
+            "Use driver-side serialisation for saving and restoring ASs");
+
+RDOC_EXTERN_CONFIG(bool, D3D12_Debug_RT_Auditing);
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, ASBuildData::RVAWithStride &el)
+{
+  SERIALISE_MEMBER(RVA);
+  SERIALISE_MEMBER(StrideInBytes);
+}
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, ASBuildData::RVATrianglesDesc &el)
+{
+  SERIALISE_MEMBER(Transform3x4);
+  SERIALISE_MEMBER(IndexFormat);
+  SERIALISE_MEMBER(VertexFormat);
+  SERIALISE_MEMBER(IndexCount);
+  SERIALISE_MEMBER(VertexCount);
+  SERIALISE_MEMBER(IndexBuffer);
+  SERIALISE_MEMBER(VertexBuffer);
+}
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, ASBuildData::RVAAABBDesc &el)
+{
+  SERIALISE_MEMBER(AABBCount);
+  SERIALISE_MEMBER(AABBs);
+}
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, ASBuildData::RTGeometryDesc &el)
+{
+  SERIALISE_MEMBER(Type);
+  SERIALISE_MEMBER(Flags);
+
+  if(el.Type == D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES)
+  {
+    SERIALISE_MEMBER(Triangles);
+  }
+  else
+  {
+    SERIALISE_MEMBER(AABBs);
+  }
+}
+
 bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
 {
   ResourceId id = GetResID(res);
@@ -45,28 +94,122 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
     D3D12Descriptor *descs = new D3D12Descriptor[numElems];
     memcpy(descs, heap->GetDescriptors(), sizeof(D3D12Descriptor) * numElems);
 
-    SetInitialContents(heap->GetResourceID(), D3D12InitialContents(descs, numElems));
+    D3D12InitialContents initContents(descs, numElems);
+
+    if(heap->HasNames())
+      initContents.descriptorNames = heap->GetNames();
+
+    SetInitialContents(heap->GetResourceID(), initContents);
     return true;
   }
-  else if(type == Resource_Resource)
+  else if(type == Resource_QueryHeap)
   {
-    WrappedID3D12Resource *r = (WrappedID3D12Resource *)res;
-    ID3D12Pageable *pageable = r->ResidencyPageable();
+    WrappedID3D12QueryHeap *heap = (WrappedID3D12QueryHeap *)res;
+
+    D3D12_RESOURCE_DESC desc;
+
+    desc.Alignment = 0;
+    desc.DepthOrArraySize = 1;
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    desc.Format = DXGI_FORMAT_UNKNOWN;
+    desc.Height = 1;
+    desc.Width = heap->GetResolveBufferSize();
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    desc.MipLevels = 1;
+    desc.SampleDesc.Count = 1;
+    desc.SampleDesc.Quality = 0;
+
+    HRESULT hr = S_OK;
+
+    ID3D12Resource *copyDst = NULL;
+    hr = m_Device->CreateInitialStateBuffer(desc, &copyDst);
+
+    if(FAILED(hr))
+    {
+      RDResult error;
+      SET_ERROR_RESULT(error, ResultCode::OutOfMemory,
+                       "Couldn't create query heap readback buffer: HRESULT: %s", ToStr(hr).c_str());
+      m_Device->ReportFatalError(error);
+      return false;
+    }
+
+    ID3D12GraphicsCommandList *list = Unwrap(m_Device->GetInitialStateList());
+
+    heap->SaveValidQueries(list, copyDst);
+
+    if(D3D12_Debug_SingleSubmitFlushing())
+    {
+      m_Device->CloseInitialStateList();
+      m_Device->ExecuteLists(NULL, true);
+      m_Device->FlushLists(true);
+    }
+
+    D3D12InitialContents initContents(D3D12InitialContents::Copy, copyDst);
+    initContents.resourceType = Resource_QueryHeap;
+
+    SetInitialContents(GetResID(res), initContents);
+    return true;
+  }
+  else if(type == Resource_Resource || type == Resource_Heap)
+  {
+    WrappedID3D12Resource *wrappedResource = (WrappedID3D12Resource *)res;
+    ID3D12Resource *unwrappedResource = NULL;
+    ID3D12Pageable *unwrappedPageable = NULL;
 
     bool nonresident = false;
-    if(!r->IsResident())
-      nonresident = true;
+    if(type == Resource_Heap)
+    {
+      wrappedResource = NULL;
+      unwrappedResource = ((WrappedID3D12Heap *)res)->GetUnwrappedWholeMemBuffer();
+    }
+    else
+    {
+      unwrappedResource = wrappedResource->GetReal();
+      unwrappedPageable = wrappedResource->UnwrappedResidencyPageable();
 
-    D3D12_RESOURCE_DESC desc = r->GetDesc();
+      if(!wrappedResource->IsResident())
+        nonresident = true;
+    }
+
+    D3D12_RESOURCE_DESC desc = unwrappedResource->GetDesc();
 
     D3D12InitialContents initContents;
 
+    Sparse::PageTable *sparseTable = NULL;
+
+    if(wrappedResource && GetRecord(wrappedResource)->sparseTable)
+      sparseTable = new Sparse::PageTable(*GetRecord(wrappedResource)->sparseTable);
+
     if(desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
     {
+      if(type == Resource_Resource && wrappedResource->IsAccelerationStructureResource())
+      {
+        initContents = D3D12InitialContents(D3D12InitialContents::AccelerationStructure, NULL);
+        SetInitialContents(GetResID(res), initContents);
+        return true;
+      }
+
+      // if this is a sparse buffer, we don't serialise its contents so just save the sparse table itself
+      if(sparseTable)
+      {
+        initContents = D3D12InitialContents(D3D12InitialContents::SparseOnly, NULL);
+        initContents.sparseTable = sparseTable;
+
+        SetInitialContents(GetResID(res), initContents);
+        return true;
+      }
+
+      // placed buffer resources do not serialise initial contents
+      if(type == Resource_Resource && wrappedResource->GetHeap())
+      {
+        return true;
+      }
+
       D3D12_HEAP_PROPERTIES heapProps = {};
 
-      if(GetRecord(r)->sparseTable == NULL)
-        r->GetHeapProperties(&heapProps, NULL);
+      if(sparseTable == NULL)
+        unwrappedResource->GetHeapProperties(&heapProps, NULL);
 
       HRESULT hr = S_OK;
 
@@ -78,56 +221,58 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
         byte *buffer = AllocAlignedBuffer(RDCMAX(desc.Width, 64ULL));
 
         byte *bufData = NULL;
-        hr = r->GetReal()->Map(0, NULL, (void **)&bufData);
+        hr = unwrappedResource->Map(0, NULL, (void **)&bufData);
 
         if(SUCCEEDED(hr))
         {
           memcpy(buffer, bufData, size);
 
           D3D12_RANGE range = {};
-          r->GetReal()->Unmap(0, &range);
+          unwrappedResource->Unmap(0, &range);
         }
         else
         {
-          RDCERR("Couldn't map directly readback buffer: HRESULT: %s", ToStr(hr).c_str());
+          RDResult error;
+          SET_ERROR_RESULT(error, ResultCode::OutOfMemory,
+                           "Couldn't map directly readback buffer: HRESULT: %s", ToStr(hr).c_str());
+          m_Device->ReportFatalError(error);
+          return false;
         }
 
-        SetInitialContents(GetResID(r), D3D12InitialContents(buffer, size));
+        SetInitialContents(GetResID(res), D3D12InitialContents(buffer, size));
         return true;
       }
 
       const bool isUploadHeap = (heapProps.Type == D3D12_HEAP_TYPE_UPLOAD);
 
-      heapProps.Type = D3D12_HEAP_TYPE_READBACK;
-      heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-      heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-      heapProps.CreationNodeMask = 1;
-      heapProps.VisibleNodeMask = 1;
-
       desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+      desc.Alignment = 0;
 
       ID3D12Resource *copyDst = NULL;
-      hr = m_Device->GetReal()->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc,
-                                                        D3D12_RESOURCE_STATE_COPY_DEST, NULL,
-                                                        __uuidof(ID3D12Resource), (void **)&copyDst);
+      hr = m_Device->CreateInitialStateBuffer(desc, &copyDst);
 
       if(nonresident)
-        m_Device->MakeResident(1, &pageable);
+        m_Device->GetReal()->MakeResident(1, &unwrappedPageable);
 
-      const rdcarray<D3D12_RESOURCE_STATES> &states = m_Device->GetSubresourceStates(GetResID(res));
-      RDCASSERT(states.size() == 1);
+      const SubresourceStateVector empty;
+      const SubresourceStateVector &states =
+          type == Resource_Heap ? empty : m_Device->GetSubresourceStates(GetResID(res));
+      RDCASSERT(type == Resource_Heap || states.size() == 1);
 
       D3D12_RESOURCE_BARRIER barrier;
-      const bool needsTransition =
-          !isUploadHeap && ((states[0] & D3D12_RESOURCE_STATE_COPY_SOURCE) == 0);
+      // upload heap resources can't be transitioned, and any resources in the new layouts don't
+      // need to either since each submit does a big flush
+      const bool needsTransition = type == Resource_Resource && !isUploadHeap &&
+                                   states[0].IsStates() &&
+                                   (states[0].ToStates() & D3D12_RESOURCE_STATE_COPY_SOURCE) == 0;
 
       if(needsTransition)
       {
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        barrier.Transition.pResource = r->GetReal();
+        barrier.Transition.pResource = unwrappedResource;
         barrier.Transition.Subresource = (UINT)0;
-        barrier.Transition.StateBefore = states[0];
+        barrier.Transition.StateBefore = states[0].ToStates();
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
       }
 
@@ -139,11 +284,15 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
 
       if(SUCCEEDED(hr))
       {
-        list->CopyResource(copyDst, r->GetReal());
+        list->CopyResource(copyDst, unwrappedResource);
       }
       else
       {
-        RDCERR("Couldn't create readback buffer: HRESULT: %s", ToStr(hr).c_str());
+        RDResult error;
+        SET_ERROR_RESULT(error, ResultCode::OutOfMemory,
+                         "Couldn't create readback buffer: HRESULT: %s", ToStr(hr).c_str());
+        m_Device->ReportFatalError(error);
+        return false;
       }
 
       // transition back to whatever it was before
@@ -160,15 +309,13 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
         m_Device->ExecuteLists(NULL, true);
         m_Device->FlushLists();
 
-        m_Device->Evict(1, &pageable);
+        m_Device->GetReal()->Evict(1, &unwrappedPageable);
       }
-      else
+      else if(D3D12_Debug_SingleSubmitFlushing())
       {
-#if ENABLED(SINGLE_FLUSH_VALIDATE)
         m_Device->CloseInitialStateList();
         m_Device->ExecuteLists(NULL, true);
         m_Device->FlushLists(true);
-#endif
       }
 
       initContents = D3D12InitialContents(copyDst);
@@ -176,14 +323,16 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
     else
     {
       if(nonresident)
-        m_Device->MakeResident(1, &pageable);
+        m_Device->GetReal()->MakeResident(1, &unwrappedPageable);
 
       ID3D12Resource *arrayTexture = NULL;
-      D3D12_RESOURCE_STATES destState = D3D12_RESOURCE_STATE_COPY_SOURCE;
-      ID3D12Resource *unwrappedCopySource = r->GetReal();
+      BarrierSet::AccessType accessType = BarrierSet::CopySourceAccess;
+      ID3D12Resource *unwrappedCopySource = unwrappedResource;
 
       bool isDepth =
           IsDepthFormat(desc.Format) || (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;
+
+      bool isMSAA = false;
 
       if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.SampleDesc.Count > 1)
       {
@@ -211,38 +360,17 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
             __uuidof(ID3D12Resource), (void **)&arrayTexture);
         RDCASSERTEQUAL(hr, S_OK);
 
-        destState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        accessType = BarrierSet::SRVAccess;
+        isMSAA = true;
       }
 
-      ID3D12GraphicsCommandList *list = Unwrap(m_Device->GetInitialStateList());
+      ID3D12GraphicsCommandListX *list = m_Device->GetInitialStateList();
 
-      rdcarray<D3D12_RESOURCE_BARRIER> barriers;
+      BarrierSet barriers;
 
-      {
-        const rdcarray<D3D12_RESOURCE_STATES> &states = m_Device->GetSubresourceStates(GetResID(r));
-
-        barriers.reserve(states.size());
-
-        for(size_t i = 0; i < states.size(); i++)
-        {
-          if(states[i] & destState)
-            continue;
-
-          D3D12_RESOURCE_BARRIER barrier;
-          barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-          barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-          barrier.Transition.pResource = r->GetReal();
-          barrier.Transition.Subresource = (UINT)i;
-          barrier.Transition.StateBefore = states[i];
-          barrier.Transition.StateAfter = destState;
-
-          barriers.push_back(barrier);
-        }
-
-        // transition to copy dest
-        if(!barriers.empty())
-          list->ResourceBarrier((UINT)barriers.size(), &barriers[0]);
-      }
+      barriers.Configure(wrappedResource, m_Device->GetSubresourceStates(GetResID(wrappedResource)),
+                         accessType);
+      barriers.Apply(list);
 
       if(arrayTexture)
       {
@@ -253,10 +381,10 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
         m_Device->FlushLists();
 
         // expand multisamples out to array
-        m_Device->GetDebugManager()->CopyTex2DMSToArray(NULL, arrayTexture, r->GetReal());
+        m_Device->GetDebugManager()->CopyTex2DMSToArray(NULL, arrayTexture, unwrappedResource);
 
         // open the initial state list again for the remainder of the work
-        list = Unwrap(m_Device->GetInitialStateList());
+        list = m_Device->GetInitialStateList();
 
         D3D12_RESOURCE_BARRIER b = {};
         b.Transition.pResource = arrayTexture;
@@ -264,17 +392,11 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
         b.Transition.StateBefore =
             isDepth ? D3D12_RESOURCE_STATE_DEPTH_WRITE : D3D12_RESOURCE_STATE_RENDER_TARGET;
         b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-        list->ResourceBarrier(1, &b);
+        // arrayTexture is not wrapped so we need to call the unwrapped command directly
+        Unwrap(list)->ResourceBarrier(1, &b);
 
         unwrappedCopySource = arrayTexture;
       }
-
-      D3D12_HEAP_PROPERTIES heapProps;
-      heapProps.Type = D3D12_HEAP_TYPE_READBACK;
-      heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-      heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-      heapProps.CreationNodeMask = 1;
-      heapProps.VisibleNodeMask = 1;
 
       D3D12_RESOURCE_DESC bufDesc;
 
@@ -288,7 +410,7 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
       bufDesc.MipLevels = 1;
       bufDesc.SampleDesc.Count = 1;
       bufDesc.SampleDesc.Quality = 0;
-      bufDesc.Width = 1;
+      bufDesc.Width = 0;
 
       UINT numSubresources = desc.MipLevels;
       if(desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D)
@@ -305,45 +427,82 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
         numSubresources *= planes;
       }
 
-      D3D12_PLACED_SUBRESOURCE_FOOTPRINT *layouts =
-          new D3D12_PLACED_SUBRESOURCE_FOOTPRINT[numSubresources];
+      D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout = {};
 
-      m_Device->GetCopyableFootprints(&desc, 0, numSubresources, 0, layouts, NULL, NULL,
-                                      &bufDesc.Width);
+      rdcarray<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> copyLayouts;
+      rdcarray<uint32_t> subresources;
+
+      if(IsBlockFormat(desc.Format) && (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS))
+      {
+        RDCDEBUG("Removing UAV flag from BCn desc to allow GetCopyableFootprints");
+        desc.Flags &= ~D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+      }
+
+      // normalise alignment - sometimes D3D12 returns an alignment that is invalid to use
+      if(desc.Flags & D3D12_RESOURCE_FLAG_USE_TIGHT_ALIGNMENT)
+        desc.Alignment = 0;
+
+      for(UINT i = 0; i < numSubresources; i++)
+      {
+        // skip non-MSAA sparse subresources that are not mapped at all
+        if(!isMSAA && sparseTable && !sparseTable->getPageRangeMapping(i).isMapped())
+          continue;
+
+        UINT64 subSize = 0;
+        m_Device->GetCopyableFootprints(&desc, i, 1, bufDesc.Width, &layout, NULL, NULL, &subSize);
+
+        if(subSize == ~0ULL)
+        {
+          RDCERR("Failed to call GetCopyableFootprints on %s! skipping copy", ToStr(id).c_str());
+          continue;
+        }
+
+        copyLayouts.push_back(layout);
+        subresources.push_back(i);
+        bufDesc.Width += subSize;
+        bufDesc.Width = AlignUp<UINT64>(bufDesc.Width, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+      }
+
+      if(bufDesc.Width == 0)
+        bufDesc.Width = 1U;
 
       ID3D12Resource *copyDst = NULL;
-      HRESULT hr = m_Device->GetReal()->CreateCommittedResource(
-          &heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc, D3D12_RESOURCE_STATE_COPY_DEST, NULL,
-          __uuidof(ID3D12Resource), (void **)&copyDst);
+      HRESULT hr = m_Device->CreateInitialStateBuffer(bufDesc, &copyDst);
 
       if(SUCCEEDED(hr))
       {
-        for(UINT i = 0; i < numSubresources; i++)
+        for(UINT i = 0; i < copyLayouts.size(); i++)
         {
           D3D12_TEXTURE_COPY_LOCATION dst, src;
 
           src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
           src.pResource = unwrappedCopySource;
-          src.SubresourceIndex = i;
+          src.SubresourceIndex = subresources[i];
 
           dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
           dst.pResource = copyDst;
-          dst.PlacedFootprint = layouts[i];
+          dst.PlacedFootprint = copyLayouts[i];
 
-          list->CopyTextureRegion(&dst, 0, 0, 0, &src, NULL);
+          Unwrap(list)->CopyTextureRegion(&dst, 0, 0, 0, &src, NULL);
         }
       }
       else
       {
-        RDCERR("Couldn't create readback buffer: HRESULT: %s", ToStr(hr).c_str());
+        RDResult error;
+        SET_ERROR_RESULT(error, ResultCode::OutOfMemory,
+                         "Couldn't create readback buffer: HRESULT: %s", ToStr(hr).c_str());
+        m_Device->ReportFatalError(error);
+        return false;
       }
 
-      // transition back
-      for(size_t i = 0; i < barriers.size(); i++)
-        std::swap(barriers[i].Transition.StateBefore, barriers[i].Transition.StateAfter);
+      // If we're not a sparse single-sampled texture, we copy the whole resource with all
+      // subresources. (In the loop above the continue will never be hit, so we can indicate quickly
+      // here that all subresources are present without needing to have {0...n}
+      if(isMSAA || sparseTable == NULL)
+        subresources = {~0U};
 
-      if(!barriers.empty())
-        list->ResourceBarrier((UINT)barriers.size(), &barriers[0]);
+      // transition back
+      barriers.Unapply(list);
 
       if(nonresident || arrayTexture)
       {
@@ -353,29 +512,158 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
         m_Device->FlushLists();
 
         if(nonresident)
-          m_Device->Evict(1, &pageable);
+          m_Device->GetReal()->Evict(1, &unwrappedPageable);
       }
-      else
+      else if(D3D12_Debug_SingleSubmitFlushing())
       {
-#if ENABLED(SINGLE_FLUSH_VALIDATE)
         m_Device->CloseInitialStateList();
         m_Device->ExecuteLists(NULL, true);
         m_Device->FlushLists(true);
-#endif
       }
 
       SAFE_RELEASE(arrayTexture);
-      SAFE_DELETE_ARRAY(layouts);
 
       initContents = D3D12InitialContents(copyDst);
+      initContents.subresources = subresources;
     }
 
-    if(GetRecord(r)->sparseTable)
+    initContents.sparseTable = sparseTable;
+
+    SetInitialContents(GetResID(res), initContents);
+    return true;
+  }
+  else if(type == Resource_AccelerationStructure)
+  {
+    D3D12AccelerationStructure *r = (D3D12AccelerationStructure *)res;
+
+    D3D12InitialContents initContents(D3D12InitialContents::AccelerationStructure, NULL);
+    initContents.resourceType = Resource_AccelerationStructure;
+
+    if(D3D12_Debug_DriverASSerialisation())
     {
-      initContents.sparseTable = new Sparse::PageTable(*GetRecord(r)->sparseTable);
+      D3D12_GPU_VIRTUAL_ADDRESS asAddress = r->GetVirtualAddress();
+
+      D3D12_RESOURCE_DESC desc;
+
+      desc.Alignment = 0;
+      desc.DepthOrArraySize = 1;
+      desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+      desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+      desc.Format = DXGI_FORMAT_UNKNOWN;
+      desc.Height = 1;
+      desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+      desc.MipLevels = 1;
+      desc.SampleDesc.Count = 1;
+      desc.SampleDesc.Quality = 0;
+
+      ID3D12GraphicsCommandList4 *list4 = NULL;
+
+      UINT64 blasCount = 0;
+
+      // get the size
+      {
+        D3D12GpuBuffer *ASQueryBuffer = GetRTManager()->ASQueryBuffer;
+
+        list4 = Unwrap4(m_Device->GetInitialStateList());
+
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC emitDesc = {};
+        emitDesc.DestBuffer = ASQueryBuffer->Address();
+        emitDesc.InfoType = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_SERIALIZATION;
+
+        list4->EmitRaytracingAccelerationStructurePostbuildInfo(&emitDesc, 1, &asAddress);
+
+        m_Device->CloseInitialStateList();
+
+        m_Device->ExecuteLists(NULL, true);
+        m_Device->FlushLists();
+
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_SERIALIZATION_DESC *serSize =
+            (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_SERIALIZATION_DESC *)
+                ASQueryBuffer->Map();
+
+        if(!serSize)
+        {
+          RDResult error;
+          SET_ERROR_RESULT(error, ResultCode::OutOfMemory, "Couldn't map AS query buffer");
+          m_Device->ReportFatalError(error);
+          return false;
+        }
+
+        desc.Width = serSize->SerializedSizeInBytes;
+        blasCount = serSize->NumBottomLevelAccelerationStructurePointers;
+
+        ASQueryBuffer->Unmap();
+
+        // no other copies are in flight because of the above sync so we can resize this
+        GetRTManager()->ResizeSerialisationBuffer(desc.Width);
+      }
+
+      ID3D12Resource *copyDst = NULL;
+      HRESULT hr = m_Device->CreateInitialStateBuffer(desc, &copyDst);
+
+      if(FAILED(hr))
+      {
+        RDResult error;
+        SET_ERROR_RESULT(error, ResultCode::OutOfMemory,
+                         "Couldn't create serialisation buffer: HRESULT: %s", ToStr(hr).c_str());
+        m_Device->ReportFatalError(error);
+        return false;
+      }
+
+      list4 = Unwrap4(m_Device->GetInitialStateList());
+
+      if(SUCCEEDED(hr))
+      {
+        D3D12GpuBuffer *ASSerialiseBuffer = GetRTManager()->ASSerialiseBuffer;
+
+        list4->CopyRaytracingAccelerationStructure(
+            ASSerialiseBuffer->Address(), r->GetVirtualAddress(),
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_SERIALIZE);
+
+        D3D12_RESOURCE_BARRIER b = {};
+        b.Transition.pResource = ASSerialiseBuffer->Resource();
+        b.Transition.Subresource = 0;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+
+        list4->ResourceBarrier(1, &b);
+
+        list4->CopyBufferRegion(copyDst, 0, ASSerialiseBuffer->Resource(),
+                                ASSerialiseBuffer->Offset(), desc.Width);
+      }
+      else
+      {
+        RDResult error;
+        SET_ERROR_RESULT(error, ResultCode::OutOfMemory,
+                         "Couldn't create readback buffer: HRESULT: %s", ToStr(hr).c_str());
+        m_Device->ReportFatalError(error);
+        return false;
+      }
+
+      initContents.resource = copyDst;
+      copyDst->AddRef();
+
+      if(D3D12_Debug_SingleSubmitFlushing())
+      {
+        m_Device->CloseInitialStateList();
+        m_Device->ExecuteLists(NULL, true);
+        m_Device->FlushLists(true);
+      }
+    }
+    else
+    {
+      // on D3D12 ASs are created on the fly by a build, so we should always have build data.
+      if(!r->buildData)
+      {
+        RDCERR("AS with no build data");
+        return false;
+      }
+
+      initContents.buildData = r->buildData;
+      SAFE_ADDREF(r->buildData);
     }
 
-    SetInitialContents(GetResID(r), initContents);
+    SetInitialContents(r->GetResourceID(), initContents);
     return true;
   }
   else
@@ -396,11 +684,22 @@ uint64_t D3D12ResourceManager::GetSize_InitialState(ResourceId id, const D3D12In
     // add a little extra room for fixed overhead
     return 64 + data.numDescriptors * descriptorSerSize;
   }
+  else if(data.resourceType == Resource_QueryHeap)
+  {
+    ID3D12Resource *buf = (ID3D12Resource *)data.resource;
+
+    uint64_t ret = WriteSerialiser::GetChunkAlignment() + 64;
+
+    return ret + uint64_t(buf ? buf->GetDesc().Width : 0);
+  }
   else if(data.resourceType == Resource_Resource)
   {
     ID3D12Resource *buf = (ID3D12Resource *)data.resource;
 
     uint64_t ret = WriteSerialiser::GetChunkAlignment() + 64;
+
+    if(data.tag == D3D12InitialContents::AccelerationStructure)
+      return ret;
 
     if(data.sparseTable)
       ret += 16 + data.sparseTable->GetSerialiseSize();
@@ -410,6 +709,39 @@ uint64_t D3D12ResourceManager::GetSize_InitialState(ResourceId id, const D3D12In
       return ret + uint64_t(data.dataSize);
 
     return ret + uint64_t(buf ? buf->GetDesc().Width : 0);
+  }
+  else if(data.resourceType == Resource_AccelerationStructure)
+  {
+    uint64_t ret = WriteSerialiser::GetChunkAlignment();
+
+    if(D3D12_Debug_DriverASSerialisation())
+    {
+      ID3D12Resource *buf = (ID3D12Resource *)data.resource;
+
+      // driver serialisation flag
+      ret += 64;
+
+      return ret + uint64_t(buf ? buf->GetDesc().Width : 0);
+    }
+    else
+    {
+      ASBuildData *buildData = data.buildData;
+
+      // driver serialisation flag
+      // type/flags/count
+      ret += 64;
+
+      // geometries serialise size is no larger than the desc because it's all single elements with
+      // no expansion or array counts
+      ret += 64 + sizeof(D3D12_RAYTRACING_GEOMETRY_DESC) * buildData->geoms.size();
+
+      if(buildData->buffer)
+        ret += 64 + buildData->buffer->Size();
+
+      ret += 64 + buildData->diskCache.size;
+
+      return ret;
+    }
   }
   else
   {
@@ -437,8 +769,8 @@ SparseBinds::SparseBinds(const Sparse::PageTable &table)
       bind.heap = mapping.singleMapping.memory;
       bind.rangeOffset = uint32_t(mapping.singleMapping.offset / pageSize);
       bind.rangeCount = uint32_t(table.isSubresourceInMipTail(sub)
-                                     ? table.getMipTailSliceSize() / pageSize
-                                     : table.getSubresourceByteSize(sub) / pageSize);
+                                     ? (table.getMipTailSliceSize() + pageSize - 1) / pageSize
+                                     : (table.getSubresourceByteSize(sub) + pageSize - 1) / pageSize);
       bind.regionStart = {0, 0, 0, sub};
       bind.regionSize = {bind.rangeCount, FALSE, bind.rangeCount, 1, 1};
       bind.rangeFlag = D3D12_TILE_RANGE_FLAG_NONE;
@@ -450,7 +782,7 @@ SparseBinds::SparseBinds(const Sparse::PageTable &table)
     }
     else
     {
-      Sparse::Coord texelShape = table.calcSubresourcePageDim(sub);
+      Sparse::Coord32 texelShape = table.calcSubresourcePageDim32(sub);
 
       // march the pages for this subresource in linear order
       for(uint32_t page = 0; page < mapping.pages.size(); page++)
@@ -462,7 +794,8 @@ SparseBinds::SparseBinds(const Sparse::PageTable &table)
         // do simple coalescing. If the previous bind was in the same heap, one tile back, make it
         // cover this tile
         if(page > 0 && binds.back().heap == bind.heap &&
-           binds.back().rangeOffset + binds.back().rangeCount == bind.rangeOffset)
+           (binds.back().rangeOffset + binds.back().rangeCount == bind.rangeOffset ||
+            binds.back().heap == ResourceId()))
         {
           binds.back().regionSize.NumTiles++;
           binds.back().regionSize.Width++;
@@ -528,7 +861,7 @@ void SparseBinds::Apply(WrappedID3D12Device *device, ID3D12Resource *resource)
     {
       device->GetQueue()->UpdateTileMappings(
           resource, 1, &bind.regionStart, &bind.regionSize,
-          bind.heap == ResourceId() ? NULL : (ID3D12Heap *)rm->GetLiveResource(bind.heap), 1,
+          bind.heap == ResourceId() ? NULL : (ID3D12Heap *)rm->GetResource(bind.heap), 1,
           &bind.rangeFlag, &bind.rangeOffset, &bind.rangeCount, D3D12_TILE_MAPPING_FLAG_NONE);
     }
   }
@@ -555,6 +888,7 @@ bool D3D12ResourceManager::Serialise_InitialState(SerialiserType &ser, ResourceI
   {
     D3D12Descriptor *Descriptors = initial ? initial->descriptors : NULL;
     uint32_t numElems = initial ? initial->numDescriptors : 0;
+    rdcarray<rdcstr> names = initial ? initial->descriptorNames : rdcarray<rdcstr>();
 
     // there's no point in setting up a lazy array when we're structured exporting because we KNOW
     // we're going to need all the data anyway.
@@ -564,13 +898,21 @@ bool D3D12ResourceManager::Serialise_InitialState(SerialiserType &ser, ResourceI
     SERIALISE_ELEMENT_ARRAY(Descriptors, numElems);
     SERIALISE_ELEMENT(numElems).Named("NumDescriptors"_lit).Important();
 
+    if(ser.VersionAtLeast(0x13))
+    {
+      SERIALISE_ELEMENT(names).Hidden();
+    }
+
     ser.SetLazyThreshold(0);
 
     SERIALISE_CHECK_READ_ERRORS();
 
     if(IsReplayingAndReading())
     {
-      WrappedID3D12DescriptorHeap *heap = (WrappedID3D12DescriptorHeap *)GetLiveResource(id);
+      WrappedID3D12DescriptorHeap *heap = (WrappedID3D12DescriptorHeap *)GetResource(id);
+
+      if(!names.empty())
+        heap->GetNames() = names;
 
       D3D12_DESCRIPTOR_HEAP_DESC desc = heap->GetDesc();
 
@@ -594,7 +936,8 @@ bool D3D12ResourceManager::Serialise_InitialState(SerialiserType &ser, ResourceI
         return false;
       }
 
-      copyheap = new WrappedID3D12DescriptorHeap(copyheap, m_Device, desc, heap->GetNumDescriptors());
+      copyheap = new WrappedID3D12DescriptorHeap(ResourceId(), copyheap, m_Device, desc,
+                                                 heap->GetNumDescriptors());
 
       D3D12_CPU_DESCRIPTOR_HANDLE handle = copyheap->GetCPUDescriptorHandleForHeapStart();
 
@@ -602,6 +945,23 @@ bool D3D12ResourceManager::Serialise_InitialState(SerialiserType &ser, ResourceI
 
       // only iterate over the 'real' number of descriptors, not the number after we've patched
       desc.NumDescriptors = heap->GetNumDescriptors();
+
+      // to remove any ray query work, force AS descriptors to NULL
+      if(D3D12_Debug_RT_Auditing())
+      {
+        for(uint32_t i = 0; i < RDCMIN(numElems, desc.NumDescriptors); i++)
+        {
+          if(Descriptors[i].GetType() == D3D12DescriptorType::SRV)
+          {
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = Descriptors[i].GetSRV();
+            if(srvDesc.ViewDimension == D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE)
+            {
+              srvDesc.RaytracingAccelerationStructure.Location = 0;
+              Descriptors[i].Init(NULL, &srvDesc);
+            }
+          }
+        }
+      }
 
       for(uint32_t i = 0; i < RDCMIN(numElems, desc.NumDescriptors); i++)
       {
@@ -613,7 +973,7 @@ bool D3D12ResourceManager::Serialise_InitialState(SerialiserType &ser, ResourceI
       SetInitialContents(id, D3D12InitialContents(copyheap));
     }
   }
-  else if(type == Resource_Resource)
+  else if(type == Resource_Resource || type == Resource_Heap || type == Resource_QueryHeap)
   {
     byte *ResourceContents = NULL;
     uint64_t ContentsLength = 0;
@@ -624,10 +984,29 @@ bool D3D12ResourceManager::Serialise_InitialState(SerialiserType &ser, ResourceI
 
     if(IsReplayingAndReading())
     {
-      liveRes = (ID3D12Resource *)GetLiveResource(id);
+      ID3D12DeviceChild *live = GetResource(id);
+      liveRes = (ID3D12Resource *)live;
+      if(type == Resource_Heap)
+        liveRes = ((WrappedID3D12Heap *)live)->GetUnwrappedWholeMemBuffer();
+      if(type == Resource_QueryHeap)
+        liveRes = NULL;
     }
 
     SparseBinds *sparseBinds = NULL;
+    rdcarray<uint32_t> subresourcesIncluded;
+    if(initial)
+      subresourcesIncluded = initial->subresources;
+
+    // default to {~0U} if this isn't present, which means 'all subresources serialised', since an
+    // empty array is valid and means NO subresources were serialised.
+    if(ser.VersionAtLeast(0xE))
+    {
+      SERIALISE_ELEMENT(subresourcesIncluded);
+    }
+    else
+    {
+      subresourcesIncluded = {~0U};
+    }
 
     if(ser.VersionAtLeast(0xB))
     {
@@ -648,7 +1027,12 @@ bool D3D12ResourceManager::Serialise_InitialState(SerialiserType &ser, ResourceI
 
       mappedBuffer = (ID3D12Resource *)initial->resource;
 
-      if(initial->tag == D3D12InitialContents::MapDirect)
+      if(initial->tag == D3D12InitialContents::AccelerationStructure ||
+         initial->tag == D3D12InitialContents::SparseOnly)
+      {
+        mappedBuffer = NULL;
+      }
+      else if(initial->tag == D3D12InitialContents::MapDirect)
       {
         // this was a readback heap, so we did the readback in Prepare already to a buffer
         ResourceContents = initial->srcData;
@@ -678,13 +1062,37 @@ bool D3D12ResourceManager::Serialise_InitialState(SerialiserType &ser, ResourceI
     // only map on replay if we haven't encountered any errors so far
     if(IsReplayingAndReading() && !ser.IsErrored())
     {
-      D3D12_RESOURCE_DESC resDesc = liveRes->GetDesc();
-
       D3D12_HEAP_PROPERTIES heapProps = {};
-      if(!m_Device->IsSparseResource(GetResID(liveRes)))
+
+      if(type != Resource_QueryHeap && !m_Device->IsSparseResource(id))
         liveRes->GetHeapProperties(&heapProps, NULL);
 
-      if(heapProps.Type == D3D12_HEAP_TYPE_UPLOAD)
+      const bool isCPUCopyHeap =
+          type != Resource_QueryHeap && heapProps.Type == D3D12_HEAP_TYPE_CUSTOM &&
+          (heapProps.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_BACK ||
+           heapProps.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE) &&
+          heapProps.MemoryPoolPreference == D3D12_MEMORY_POOL_L0;
+
+      if(type == Resource_Resource &&
+         ((WrappedID3D12Resource *)liveRes)->IsAccelerationStructureResource())
+      {
+        mappedBuffer = NULL;
+
+        D3D12InitialContents initContents(D3D12InitialContents::AccelerationStructure, NULL);
+        SetInitialContents(id, initContents);
+      }
+      // from verison 0x14 onwards we don't serialise the contents of sparse resources
+      else if(type == Resource_Resource && sparseBinds && ser.VersionAtLeast(0x14) &&
+              ContentsLength == 0)
+      {
+        mappedBuffer = NULL;
+
+        D3D12InitialContents initContents(D3D12InitialContents::SparseOnly, NULL);
+        initContents.sparseBinds = sparseBinds;
+
+        SetInitialContents(id, initContents);
+      }
+      else if(heapProps.Type == D3D12_HEAP_TYPE_UPLOAD || isCPUCopyHeap)
       {
         // if destination is on the upload heap, it's impossible to copy via the device,
         // so we have to CPU copy. To save time and make a more optimal copy, we just keep the data
@@ -693,7 +1101,7 @@ bool D3D12ResourceManager::Serialise_InitialState(SerialiserType &ser, ResourceI
 
         D3D12InitialContents initContents(D3D12InitialContents::Copy, type);
         ResourceContents = initContents.srcData = AllocAlignedBuffer(RDCMAX(ContentsLength, 64ULL));
-        initContents.resourceType = Resource_Resource;
+        initContents.resourceType = type;
         SetInitialContents(id, initContents);
       }
       else
@@ -722,6 +1130,7 @@ bool D3D12ResourceManager::Serialise_InitialState(SerialiserType &ser, ResourceI
         HRESULT hr = m_Device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc,
                                                        D3D12_RESOURCE_STATE_GENERIC_READ, NULL,
                                                        __uuidof(ID3D12Resource), (void **)&copySrc);
+        m_Device->RemoveReplayResource(GetResID(copySrc));
 
         if(SUCCEEDED(hr))
         {
@@ -767,11 +1176,24 @@ bool D3D12ResourceManager::Serialise_InitialState(SerialiserType &ser, ResourceI
 
     if(IsReplayingAndReading() && mappedBuffer)
     {
+      // for query heaps we can't "apply" the initial contents so we have to pass the buffer over to
+      // the heap itself to own.
+      if(type == Resource_QueryHeap)
+      {
+        WrappedID3D12QueryHeap *queryHeap = (WrappedID3D12QueryHeap *)GetResource(id);
+
+        queryHeap->SetResultBuffer(mappedBuffer);
+
+        return true;
+      }
+
       D3D12InitialContents initContents(D3D12InitialContents::Copy, type);
-      initContents.resourceType = Resource_Resource;
+      initContents.resourceType = type;
       initContents.resource = mappedBuffer;
 
       initContents.sparseBinds = sparseBinds;
+
+      initContents.subresources = subresourcesIncluded;
 
       D3D12_RESOURCE_DESC resDesc = liveRes->GetDesc();
 
@@ -788,8 +1210,18 @@ bool D3D12ResourceManager::Serialise_InitialState(SerialiserType &ser, ResourceI
         else
         {
           D3D12_HEAP_PROPERTIES heapProps = {};
-          if(!m_Device->IsSparseResource(GetResID(liveRes)))
+          if(!m_Device->IsSparseResource(id))
             liveRes->GetHeapProperties(&heapProps, NULL);
+
+          // if the resource is sparse, create on default heap
+          if(sparseBinds)
+          {
+            heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+            heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+            heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+            heapProps.CreationNodeMask = 1;
+            heapProps.VisibleNodeMask = 1;
+          }
 
           ID3D12GraphicsCommandList *list = Unwrap(m_Device->GetInitialStateList());
 
@@ -927,6 +1359,422 @@ bool D3D12ResourceManager::Serialise_InitialState(SerialiserType &ser, ResourceI
         SetInitialContents(id, initContents);
     }
   }
+  else if(type == Resource_AccelerationStructure)
+  {
+    SERIALISE_ELEMENT_LOCAL(opaqueBlob, D3D12_Debug_DriverASSerialisation());
+
+    if(opaqueBlob)
+    {
+      byte *ResourceContents = NULL;
+      uint64_t ContentsLength = 0;
+      byte *dummy = NULL;
+      ID3D12Resource *mappedBuffer = NULL;
+
+      if(ser.IsWriting())
+      {
+        m_Device->ExecuteLists(NULL, true);
+        m_Device->FlushLists();
+
+        RDCASSERT(initial);
+
+        mappedBuffer = (ID3D12Resource *)initial->resource;
+
+        HRESULT hr = mappedBuffer->Map(0, NULL, (void **)&ResourceContents);
+        ContentsLength = mappedBuffer->GetDesc().Width;
+
+        if(FAILED(hr) || ResourceContents == NULL)
+        {
+          ContentsLength = 0;
+          ResourceContents = NULL;
+          mappedBuffer = NULL;
+
+          RDCERR("Failed to map buffer for readback! %s", ToStr(hr).c_str());
+          ret = false;
+        }
+      }
+
+      // serialise the size separately so we can recreate on replay
+      SERIALISE_ELEMENT(ContentsLength);
+
+      // only map on replay if we haven't encountered any errors so far
+      if(IsReplayingAndReading() && !ser.IsErrored())
+      {
+        // create an upload buffer to contain the contents
+        D3D12_HEAP_PROPERTIES heapProps = {};
+        heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+        heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+        heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+        heapProps.CreationNodeMask = 1;
+        heapProps.VisibleNodeMask = 1;
+
+        D3D12_RESOURCE_DESC desc;
+        desc.Alignment = 0;
+        desc.DepthOrArraySize = 1;
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+        desc.Format = DXGI_FORMAT_UNKNOWN;
+        desc.Height = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        desc.MipLevels = 1;
+        desc.SampleDesc.Count = 1;
+        desc.SampleDesc.Quality = 0;
+        desc.Width = RDCMAX(ContentsLength, 64ULL);
+
+        ID3D12Resource *copySrc = NULL;
+        HRESULT hr = m_Device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc,
+                                                       D3D12_RESOURCE_STATE_GENERIC_READ, NULL,
+                                                       __uuidof(ID3D12Resource), (void **)&copySrc);
+
+        if(SUCCEEDED(hr))
+        {
+          mappedBuffer = copySrc;
+
+          // map the upload buffer to serialise into
+          hr = copySrc->Map(0, NULL, (void **)&ResourceContents);
+
+          if(FAILED(hr))
+          {
+            RDCERR("Created but couldn't map upload buffer: %s", ToStr(hr).c_str());
+            ret = false;
+            SAFE_RELEASE(copySrc);
+            mappedBuffer = NULL;
+            ResourceContents = NULL;
+          }
+        }
+        else
+        {
+          RDCERR("Couldn't create upload buffer: %s", ToStr(hr).c_str());
+          ret = false;
+          mappedBuffer = NULL;
+          ResourceContents = NULL;
+        }
+
+        // need to create a dummy buffer to serialise into if anything went wrong
+        if(ResourceContents == NULL && ContentsLength > 0)
+          ResourceContents = dummy = new byte[(size_t)ContentsLength];
+      }
+
+      // not using SERIALISE_ELEMENT_ARRAY so we can deliberately avoid allocation - we serialise
+      // directly into upload memory
+      ser.Serialise("ResourceContents"_lit, ResourceContents, ContentsLength, SerialiserFlags::NoFlags)
+          .Important();
+
+      if(mappedBuffer)
+      {
+        if(IsReplayingAndReading())
+        {
+          // this is highly inefficient, but temporary. Read-back and patch the addresses of any BLASs
+          D3D12_SERIALIZED_RAYTRACING_ACCELERATION_STRUCTURE_HEADER header;
+          memcpy(&header, ResourceContents, sizeof(header));
+
+          D3D12_DRIVER_MATCHING_IDENTIFIER_STATUS status =
+              m_Device->GetReal5()->CheckDriverMatchingIdentifier(
+                  D3D12_SERIALIZED_DATA_RAYTRACING_ACCELERATION_STRUCTURE,
+                  &header.DriverMatchingIdentifier);
+          if(status != D3D12_DRIVER_MATCHING_IDENTIFIER_COMPATIBLE_WITH_DEVICE)
+          {
+            RDResult err;
+            SET_ERROR_RESULT(err, ResultCode::APIHardwareUnsupported,
+                             "Serialised AS is not compatible with current device");
+            m_Device->ReportFatalError(err);
+            return false;
+          }
+
+          UINT64 numBLAS = header.NumBottomLevelAccelerationStructurePointersAfterHeader;
+          D3D12_GPU_VIRTUAL_ADDRESS *blasAddrs =
+              (D3D12_GPU_VIRTUAL_ADDRESS *)(ResourceContents + sizeof(header));
+          for(UINT64 i = 0; i < numBLAS; i++)
+          {
+            // silently ignore NULL BLASs
+            if(blasAddrs[i] == 0)
+              continue;
+
+            ResourceId asbId;
+            UINT64 offsInASB;
+            m_Device->GetResIDFromOrigAddr(blasAddrs[i], asbId, offsInASB);
+
+            ID3D12Resource *asb = GetResAs<ID3D12Resource>(asbId);
+
+            if(asbId == ResourceId() || asb == NULL)
+            {
+              RDCWARN("BLAS referenced by TLAS is not available on replay - possibly stale TLAS");
+              blasAddrs[i] = 0;
+              continue;
+            }
+
+            blasAddrs[i] = asb->GetGPUVirtualAddress() + offsInASB;
+          }
+        }
+
+        mappedBuffer->Unmap(0, NULL);
+      }
+
+      SAFE_DELETE_ARRAY(dummy);
+
+      SERIALISE_CHECK_READ_ERRORS();
+
+      if(IsReplayingAndReading() && mappedBuffer)
+      {
+        D3D12InitialContents initContents(D3D12InitialContents::AccelerationStructure, mappedBuffer);
+        initContents.resourceType = Resource_AccelerationStructure;
+
+        if(initContents.resource)
+          SetInitialContents(id, initContents);
+      }
+    }
+    else
+    {
+      ASBuildData *buildData = NULL;
+      byte *BufferContents = NULL;
+      uint64_t ContentsLength = 0;
+      byte *tempAlloc = NULL;
+      D3D12GpuBuffer *mappedBuffer = NULL;
+
+      if(ser.IsWriting())
+      {
+        m_Device->ExecuteLists(NULL, true);
+        m_Device->FlushLists();
+
+        RDCASSERT(initial && initial->buildData);
+
+        mappedBuffer = initial->buildData->buffer;
+
+        if(mappedBuffer)
+        {
+          BufferContents = (byte *)mappedBuffer->Map();
+          ContentsLength = mappedBuffer->Size();
+
+          if(BufferContents == NULL)
+          {
+            ContentsLength = 0;
+            BufferContents = NULL;
+            mappedBuffer = NULL;
+
+            RDCERR("Failed to map builddata buffer for readback!");
+            ret = false;
+          }
+        }
+        else if(initial->buildData->diskCache.Valid())
+        {
+          ContentsLength = initial->buildData->diskCache.size;
+        }
+
+        buildData = initial->buildData;
+      }
+      else
+      {
+        buildData = new ASBuildData;
+      }
+
+      SERIALISE_ELEMENT(buildData->Type);
+      SERIALISE_ELEMENT(buildData->Flags);
+      SERIALISE_ELEMENT(buildData->NumBLAS);
+      SERIALISE_ELEMENT(buildData->geoms);
+
+      // serialise the size separately so we can recreate on replay
+      SERIALISE_ELEMENT(ContentsLength);
+
+      // only map on replay if we haven't encountered any errors so far
+      if(IsReplayingAndReading() && !ser.IsErrored() && ContentsLength > 0)
+      {
+        m_GPUBufferAllocator.Alloc(D3D12GpuBufferHeapType::UploadHeap,
+                                   D3D12GpuBufferHeapMemoryFlag::Default, ContentsLength, 256,
+                                   &buildData->buffer);
+
+        if(buildData->buffer)
+        {
+          mappedBuffer = buildData->buffer;
+
+          // for BLASs, map the upload buffer to serialise into directly.
+          // for TLASs, put it into temporary memory so that we can patch the BLAS addresses in CPU
+          // memory before upload. We expect TLASs to not be much memory - each BLAS instance is 64
+          // bytes so even 100k BLASs in a TLAS is only ~6MB
+          if(buildData->NumBLAS == 0)
+            BufferContents = (byte *)buildData->buffer->Map();
+          else
+            BufferContents = tempAlloc = new byte[(size_t)ContentsLength];
+
+          if(!BufferContents)
+          {
+            RDCERR("Created but couldn't map upload AS data buffer");
+            ret = false;
+            SAFE_RELEASE(buildData->buffer);
+            SAFE_RELEASE(buildData);
+            BufferContents = NULL;
+          }
+        }
+        else
+        {
+          RDCERR("Couldn't create upload AS data buffer");
+          ret = false;
+          BufferContents = NULL;
+          SAFE_RELEASE(buildData);
+        }
+
+        // need to create a dummy buffer to serialise into if anything went wrong
+        if(BufferContents == NULL && ContentsLength > 0)
+          BufferContents = tempAlloc = new byte[(size_t)ContentsLength];
+      }
+
+      if(buildData->diskCache.Valid() && ser.IsWriting())
+      {
+        GetRTManager()->ReadDiskCache(ser, "BufferContents"_lit, buildData->diskCache);
+      }
+      else
+      {
+        // not using SERIALISE_ELEMENT_ARRAY so we can deliberately avoid allocation - we serialise
+        // directly into already allocated memory (either directly upload memory for BLAS, or
+        // temporary memory to patch for TLASs)
+        ser.Serialise("BufferContents"_lit, BufferContents, ContentsLength, SerialiserFlags::NoFlags)
+            .Important();
+      }
+
+      if(buildData)
+      {
+        if(IsReplayingAndReading())
+        {
+          D3D12AccelerationStructure *as = (D3D12AccelerationStructure *)GetResource(id);
+
+          // if this is a TLAS, patch the addresses of any BLASs in the instance data before uploading it
+          if(buildData->NumBLAS > 0)
+          {
+            D3D12_RAYTRACING_INSTANCE_DESC *instances =
+                (D3D12_RAYTRACING_INSTANCE_DESC *)BufferContents;
+            for(UINT64 i = 0; i < buildData->NumBLAS; i++)
+            {
+              // silently ignore NULL BLASs
+              if(instances[i].AccelerationStructure == 0)
+                continue;
+
+              ResourceId blasId;
+              UINT64 blasOffs;
+              m_Device->GetResIDFromOrigAddr(instances[i].AccelerationStructure, blasId, blasOffs);
+
+              WrappedID3D12Resource *blasASB = GetResAs<WrappedID3D12Resource>(blasId);
+
+              D3D12AccelerationStructure *blasCheck = NULL;
+
+              // check and log more fine-grained if we're auditing
+              if(D3D12_Debug_RT_Auditing())
+              {
+                rdcstr invalid;
+
+                if(blasId == ResourceId() || blasASB == NULL)
+                  invalid = StringFormat::Fmt("Address references non-existant buffer");
+                else if(!blasASB->GetAccStructIfExist(blasOffs, &blasCheck))
+                  invalid = StringFormat::Fmt("No valid AS created at buffer location");
+                else if(blasCheck->Type() == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL)
+                  invalid = StringFormat::Fmt("TLAS referenced, assuming overwritten");
+
+                if(!invalid.empty())
+                {
+                  RDCWARN("%s %u: %s", ToStr(id).c_str(), i, invalid.c_str());
+                  instances[i].AccelerationStructure = 0;
+                  continue;
+                }
+              }
+
+              if(blasId == ResourceId() || blasASB == NULL ||
+                 !blasASB->GetAccStructIfExist(blasOffs, &blasCheck))
+              {
+                RDCWARN(
+                    "  %u: BLAS referenced by TLAS is not available on replay - possibly stale "
+                    "TLAS",
+                    i);
+                instances[i].AccelerationStructure = 0;
+                continue;
+              }
+
+              if(id < blasCheck->GetResourceID())
+              {
+                RDCWARN("  %u: BLAS referenced by TLAS is newer than TLAS - possibly stale TLAS", i);
+                instances[i].AccelerationStructure = 0;
+                continue;
+              }
+
+              if(blasCheck->Type() != D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL)
+              {
+                RDCWARN("  %u: BLAS is not of correct type - possibly stale TLAS", i);
+                instances[i].AccelerationStructure = 0;
+                continue;
+              }
+
+              if(D3D12_Debug_RT_Auditing())
+              {
+                RDCLOG("%s %u: remapped from %llx to %llx", ToStr(id).c_str(), i,
+                       instances[i].AccelerationStructure,
+                       blasASB->GetGPUVirtualAddress() + blasOffs);
+
+                as->children.push_back(blasCheck);
+              }
+
+              RDCASSERTEQUAL(blasCheck->GetVirtualAddress(),
+                             blasASB->GetGPUVirtualAddress() + blasOffs);
+
+              instances[i].AccelerationStructure = blasASB->GetGPUVirtualAddress() + blasOffs;
+            }
+
+            void *upload = mappedBuffer->Map();
+            if(upload)
+            {
+              memcpy(upload, BufferContents, (size_t)ContentsLength);
+            }
+            else
+            {
+              RDCERR("Created but couldn't map upload AS data buffer");
+              ret = false;
+              SAFE_RELEASE(mappedBuffer);
+              SAFE_RELEASE(buildData);
+            }
+          }
+
+          // rebase all the geometries to the new address
+          uint64_t baseVA = mappedBuffer ? mappedBuffer->Address() : 0;
+          for(ASBuildData::RTGeometryDesc &desc : buildData->geoms)
+          {
+            if(desc.Type == D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS)
+            {
+              if(desc.AABBs.AABBCount != 0)
+                desc.AABBs.AABBs.RVA += baseVA;
+              else
+                desc.AABBs.AABBs.RVA = 0;
+            }
+            else
+            {
+              if(desc.Triangles.Transform3x4 != ASBuildData::NULLVA)
+                desc.Triangles.Transform3x4 += baseVA;
+              else
+                desc.Triangles.Transform3x4 = 0;
+
+              if(desc.Triangles.IndexBuffer != ASBuildData::NULLVA)
+                desc.Triangles.IndexBuffer += baseVA;
+              else
+                desc.Triangles.IndexBuffer = 0;
+
+              // VB is always present, no need for NULL check
+              desc.Triangles.VertexBuffer.RVA += baseVA;
+            }
+          }
+        }
+
+        if(mappedBuffer)
+          mappedBuffer->Unmap();
+      }
+
+      SAFE_DELETE_ARRAY(tempAlloc);
+
+      SERIALISE_CHECK_READ_ERRORS();
+
+      if(IsReplayingAndReading() && buildData)
+      {
+        D3D12InitialContents initContents(D3D12InitialContents::AccelerationStructure, NULL);
+        initContents.resourceType = Resource_AccelerationStructure;
+        initContents.buildData = buildData;
+
+        SetInitialContents(id, initContents);
+      }
+    }
+  }
   else
   {
     RDCERR("Unexpected type needing an initial state serialised: %d", type);
@@ -943,9 +1791,9 @@ template bool D3D12ResourceManager::Serialise_InitialState(WriteSerialiser &ser,
                                                            D3D12ResourceRecord *record,
                                                            const D3D12InitialContents *initial);
 
-void D3D12ResourceManager::Create_InitialState(ResourceId id, ID3D12DeviceChild *live, bool)
+void D3D12ResourceManager::Create_InitialState(ResourceId id, ID3D12DeviceChild *res, bool)
 {
-  D3D12ResourceType type = IdentifyTypeByPtr(live);
+  D3D12ResourceType type = IdentifyTypeByPtr(res);
 
   if(type == Resource_DescriptorHeap)
   {
@@ -953,24 +1801,51 @@ void D3D12ResourceManager::Create_InitialState(ResourceId id, ID3D12DeviceChild 
     // it all entirely undefined.
     SetInitialContents(id, D3D12InitialContents((ID3D12DescriptorHeap *)NULL));
   }
-  else if(type == Resource_Resource)
+  else if(type == Resource_Resource || type == Resource_Heap)
   {
-    D3D12NOTIMP("Creating init states for resources");
+    ID3D12Resource *resource = ((ID3D12Resource *)res);
 
-    ID3D12Resource *res = ((ID3D12Resource *)live);
-
-    D3D12_RESOURCE_DESC resDesc = res->GetDesc();
+    WrappedID3D12Resource *wrappedResource = (WrappedID3D12Resource *)resource;
 
     D3D12_HEAP_PROPERTIES heapProps = {};
-    if(!m_Device->IsSparseResource(GetResID(live)))
-      res->GetHeapProperties(&heapProps, NULL);
+    D3D12_RESOURCE_DESC resDesc = {};
+    if(type == Resource_Heap)
+    {
+      wrappedResource = NULL;
+      resource = NULL;
+      resDesc = ((WrappedID3D12Heap *)res)->GetUnwrappedWholeMemBuffer()->GetDesc();
+      heapProps = ((WrappedID3D12Heap *)res)->GetDesc().Properties;
+    }
+    else if(wrappedResource->IsAccelerationStructureResource())
+    {
+      SetInitialContents(id, D3D12InitialContents(D3D12InitialContents::AccelerationStructure,
+                                                  (ID3D12Resource *)NULL));
+      return;
+    }
+    else if(wrappedResource->GetHeap())
+    {
+      // don't create initial states for placed resources
+      return;
+    }
+    else
+    {
+      resDesc = resource->GetDesc();
 
-    if(heapProps.Type == D3D12_HEAP_TYPE_UPLOAD)
+      if(!m_Device->IsSparseResource(GetResID(res)))
+        resource->GetHeapProperties(&heapProps, NULL);
+    }
+
+    const bool isCPUCopyHeap = heapProps.Type == D3D12_HEAP_TYPE_CUSTOM &&
+                               (heapProps.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_BACK ||
+                                heapProps.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE) &&
+                               heapProps.MemoryPoolPreference == D3D12_MEMORY_POOL_L0;
+
+    if(heapProps.Type == D3D12_HEAP_TYPE_UPLOAD || isCPUCopyHeap)
     {
       // if destination is on the upload heap, it's impossible to copy via the device,
       // so we have to CPU copy. To save time and make a more optimal copy, we just keep the data
       // CPU-side
-      D3D12InitialContents initContents(D3D12InitialContents::Copy, Resource_Resource);
+      D3D12InitialContents initContents(D3D12InitialContents::Copy, type);
       uint64_t size = RDCMAX(resDesc.Width, 64ULL);
       initContents.srcData = AllocAlignedBuffer(size);
       memset(initContents.srcData, 0, (size_t)size);
@@ -1006,19 +1881,29 @@ void D3D12ResourceManager::Create_InitialState(ResourceId id, ID3D12DeviceChild 
       if(FAILED(hr))
       {
         RDCERR("Couldn't create initial state copy: %s", ToStr(hr).c_str());
+        CHECK_HR(m_Device, hr);
       }
       else
       {
         D3D12InitialContents initContents(D3D12InitialContents::ForceCopy, type);
-        initContents.resourceType = Resource_Resource;
+        initContents.resourceType = type;
         initContents.resource = copy;
 
-        if(m_Device->IsSparseResource(GetResID(live)))
+        if(m_Device->IsSparseResource(GetResID(res)))
           initContents.sparseBinds = new SparseBinds(0);
 
         SetInitialContents(id, initContents);
       }
     }
+  }
+  else if(type == Resource_AccelerationStructure)
+  {
+    // don't create 'default' AS contents as it's not possible. ASs must be written before being
+    // used by definition
+  }
+  else if(type == Resource_QueryHeap)
+  {
+    // query heap initial contents are handed over on serialise, and don't need to be created
   }
   else
   {
@@ -1026,8 +1911,7 @@ void D3D12ResourceManager::Create_InitialState(ResourceId id, ID3D12DeviceChild 
   }
 }
 
-void D3D12ResourceManager::Apply_InitialState(ID3D12DeviceChild *live,
-                                              const D3D12InitialContents &data)
+void D3D12ResourceManager::Apply_InitialState(ID3D12DeviceChild *res, D3D12InitialContents &data)
 {
   if(m_Device->HasFatalError())
     return;
@@ -1036,7 +1920,7 @@ void D3D12ResourceManager::Apply_InitialState(ID3D12DeviceChild *live,
 
   if(type == Resource_DescriptorHeap)
   {
-    WrappedID3D12DescriptorHeap *dstheap = (WrappedID3D12DescriptorHeap *)live;
+    WrappedID3D12DescriptorHeap *dstheap = (WrappedID3D12DescriptorHeap *)res;
     WrappedID3D12DescriptorHeap *srcheap = (WrappedID3D12DescriptorHeap *)data.resource;
 
     if(srcheap)
@@ -1047,36 +1931,69 @@ void D3D12ResourceManager::Apply_InitialState(ID3D12DeviceChild *live,
           srcheap->GetCPUDescriptorHandleForHeapStart(), srcheap->GetDesc().Type);
     }
   }
-  else if(type == Resource_Resource)
+  else if(type == Resource_Resource || type == Resource_Heap)
   {
-    if(data.tag == D3D12InitialContents::Copy || data.tag == D3D12InitialContents::ForceCopy)
-    {
-      ID3D12Resource *copyDst = Unwrap((ID3D12Resource *)live);
+    if(data.tag == D3D12InitialContents::AccelerationStructure)
+      return;
 
-      if(!copyDst)
+    ResourceId id = GetResID(res);
+
+    if(IsActiveReplaying(m_State) && m_Device->IsReadOnlyResource(id))
+    {
+    }
+    else if(data.tag == D3D12InitialContents::SparseOnly)
+    {
+      if(IsLoading(m_State) || m_Device->GetQueue()->IsSparseUpdatedResource(GetResID(res)))
+        data.sparseBinds->Apply(m_Device, (ID3D12Resource *)res);
+
+      if(m_Device->HasFatalError())
+        return;
+    }
+    else if(data.tag == D3D12InitialContents::Copy || data.tag == D3D12InitialContents::ForceCopy)
+    {
+      ID3D12Resource *wrappedCopyDst = NULL;
+      ID3D12Resource *unwrappedCopyDst = NULL;
+
+      if(type == Resource_Heap)
       {
-        RDCERR("Missing copy destination in initial state apply (%p)", copyDst);
+        unwrappedCopyDst = ((WrappedID3D12Heap *)res)->GetUnwrappedWholeMemBuffer();
+      }
+      else
+      {
+        wrappedCopyDst = (ID3D12Resource *)res;
+        unwrappedCopyDst = Unwrap(wrappedCopyDst);
+      }
+
+      if(!unwrappedCopyDst)
+      {
+        RDCERR("Missing copy destination in initial state apply (%p)", unwrappedCopyDst);
         return;
       }
 
       D3D12_HEAP_PROPERTIES heapProps = {};
       if(data.sparseBinds)
       {
-        if(IsLoading(m_State) || m_Device->GetQueue()->IsSparseUpdatedResource(GetResID(live)))
-          data.sparseBinds->Apply(m_Device, (ID3D12Resource *)live);
+        if(IsLoading(m_State) || m_Device->GetQueue()->IsSparseUpdatedResource(GetResID(res)))
+          data.sparseBinds->Apply(m_Device, (ID3D12Resource *)res);
 
         if(m_Device->HasFatalError())
           return;
       }
       else
       {
-        copyDst->GetHeapProperties(&heapProps, NULL);
+        unwrappedCopyDst->GetHeapProperties(&heapProps, NULL);
       }
+
+      const bool isCPUCopyHeap =
+          heapProps.Type == D3D12_HEAP_TYPE_CUSTOM &&
+          (heapProps.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_BACK ||
+           heapProps.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE) &&
+          heapProps.MemoryPoolPreference == D3D12_MEMORY_POOL_L0;
 
       // if destination is on the upload heap, it's impossible to copy via the device,
       // so we have to CPU copy. We assume that we detected this case above and never uploaded a
       // device copy in the first place, and just kept the data CPU-side to source from.
-      if(heapProps.Type == D3D12_HEAP_TYPE_UPLOAD)
+      if(heapProps.Type == D3D12_HEAP_TYPE_UPLOAD || isCPUCopyHeap)
       {
         byte *src = data.srcData, *dst = NULL;
 
@@ -1088,10 +2005,12 @@ void D3D12ResourceManager::Apply_InitialState(ID3D12DeviceChild *live,
 
         HRESULT hr = S_OK;
 
-        if(copyDst->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+        D3D12_RESOURCE_DESC desc = unwrappedCopyDst->GetDesc();
+
+        if(desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
         {
-          hr = copyDst->Map(0, NULL, (void **)&dst);
-          m_Device->CheckHRESULT(hr);
+          hr = unwrappedCopyDst->Map(0, NULL, (void **)&dst);
+          CHECK_HR(m_Device, hr);
 
           if(FAILED(hr))
           {
@@ -1100,15 +2019,13 @@ void D3D12ResourceManager::Apply_InitialState(ID3D12DeviceChild *live,
           }
 
           if(src && dst)
-            memcpy(dst, src, (size_t)copyDst->GetDesc().Width);
+            memcpy(dst, src, (size_t)unwrappedCopyDst->GetDesc().Width);
 
           if(dst)
-            copyDst->Unmap(0, NULL);
+            unwrappedCopyDst->Unmap(0, NULL);
         }
         else
         {
-          D3D12_RESOURCE_DESC desc = copyDst->GetDesc();
-
           UINT numSubresources = desc.MipLevels;
           if(desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D)
             numSubresources *= desc.DepthOrArraySize;
@@ -1123,8 +2040,11 @@ void D3D12ResourceManager::Apply_InitialState(ID3D12DeviceChild *live,
 
           for(UINT i = 0; i < numSubresources; i++)
           {
-            hr = copyDst->Map(i, NULL, (void **)&dst);
-            m_Device->CheckHRESULT(hr);
+            if(desc.Layout == D3D12_TEXTURE_LAYOUT_UNKNOWN)
+              hr = unwrappedCopyDst->Map(i, NULL, NULL);
+            else
+              hr = unwrappedCopyDst->Map(i, NULL, (void **)&dst);
+            CHECK_HR(m_Device, hr);
 
             if(FAILED(hr))
             {
@@ -1137,20 +2057,38 @@ void D3D12ResourceManager::Apply_InitialState(ID3D12DeviceChild *live,
               byte *bufPtr = src + layouts[i].Offset;
               byte *texPtr = dst;
 
+              D3D12_BOX box = {};
+
+              box.right = layouts[i].Footprint.Width;
+              box.back = 1;
+
               for(UINT d = 0; d < layouts[i].Footprint.Depth; d++)
               {
+                box.top = 0;
+                box.bottom = 1;
                 for(UINT r = 0; r < numrows[i]; r++)
                 {
-                  memcpy(bufPtr, texPtr, (size_t)rowsizes[i]);
+                  if(texPtr)
+                    memcpy(bufPtr, texPtr, (size_t)rowsizes[i]);
+                  else
+                    unwrappedCopyDst->WriteToSubresource(i, &box, bufPtr, (UINT)rowsizes[i],
+                                                         (UINT)rowsizes[i]);
 
                   bufPtr += layouts[i].Footprint.RowPitch;
-                  texPtr += rowsizes[i];
+                  if(texPtr)
+                    texPtr += rowsizes[i];
+
+                  box.top++;
+                  box.bottom++;
                 }
+
+                box.front++;
+                box.back++;
               }
             }
 
             if(dst)
-              copyDst->Unmap(i, NULL);
+              unwrappedCopyDst->Unmap(i, NULL);
           }
 
           delete[] layouts;
@@ -1168,55 +2106,41 @@ void D3D12ResourceManager::Apply_InitialState(ID3D12DeviceChild *live,
           return;
         }
 
-        ID3D12GraphicsCommandList *list = Unwrap(m_Device->GetInitialStateList());
+        ID3D12GraphicsCommandListX *list = m_Device->GetInitialStateList();
 
         if(!list)
           return;
 
-        rdcarray<D3D12_RESOURCE_BARRIER> barriers;
+        BarrierSet barriers;
 
-        const rdcarray<D3D12_RESOURCE_STATES> &states =
-            m_Device->GetSubresourceStates(GetResID(live));
-
-        barriers.reserve(states.size());
-
-        for(size_t i = 0; i < states.size(); i++)
+        if(type != Resource_Heap)
         {
-          if(states[i] & D3D12_RESOURCE_STATE_COPY_DEST)
-            continue;
-
-          D3D12_RESOURCE_BARRIER barrier;
-          barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-          barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-          barrier.Transition.pResource = copyDst;
-          barrier.Transition.Subresource = (UINT)i;
-          barrier.Transition.StateBefore = states[i];
-          barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-
-          barriers.push_back(barrier);
+          barriers.Configure(wrappedCopyDst, m_Device->GetSubresourceStates(GetResID(res)),
+                             BarrierSet::CopyDestAccess);
+          barriers.Apply(list);
         }
 
-        // transition to copy dest
-        if(!barriers.empty())
-          list->ResourceBarrier((UINT)barriers.size(), &barriers[0]);
-
-        if(copyDst->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+        if(unwrappedCopyDst->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
         {
           D3D12_RESOURCE_DESC srcDesc = copySrc->GetDesc();
-          D3D12_RESOURCE_DESC dstDesc = copyDst->GetDesc();
+          D3D12_RESOURCE_DESC dstDesc = unwrappedCopyDst->GetDesc();
 
-          list->CopyBufferRegion(copyDst, 0, Unwrap(copySrc), 0,
-                                 RDCMIN(srcDesc.Width, dstDesc.Width));
+          Unwrap(list)->CopyBufferRegion(unwrappedCopyDst, 0, Unwrap(copySrc), 0,
+                                         RDCMIN(srcDesc.Width, dstDesc.Width));
         }
-        else if(copyDst->GetDesc().SampleDesc.Count > 1 || data.tag == D3D12InitialContents::ForceCopy)
+        else if(unwrappedCopyDst->GetDesc().SampleDesc.Count > 1 ||
+                data.tag == D3D12InitialContents::ForceCopy)
         {
           // MSAA texture was pre-uploaded and decoded, just copy the texture.
           // Similarly for created initial states
-          list->CopyResource(copyDst, Unwrap(copySrc));
+          Unwrap(list)->CopyResource(unwrappedCopyDst, Unwrap(copySrc));
         }
         else
         {
-          D3D12_RESOURCE_DESC desc = copyDst->GetDesc();
+          D3D12_RESOURCE_DESC desc = unwrappedCopyDst->GetDesc();
+          // normalise alignment - sometimes D3D12 returns an alignment that is invalid to use
+          if(desc.Flags & D3D12_RESOURCE_FLAG_USE_TIGHT_ALIGNMENT)
+            desc.Alignment = 0;
 
           UINT numSubresources = desc.MipLevels;
           if(desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D)
@@ -1224,7 +2148,7 @@ void D3D12ResourceManager::Apply_InitialState(ID3D12DeviceChild *live,
 
           // we only accounted for planes in version 0x6, before then we only copied the first plane
           // so the buffer won't have enough data
-          if(m_Device->GetLogVersion() >= 0x6)
+          if(m_Device->GetCaptureVersion() >= 0x6)
           {
             D3D12_FEATURE_DATA_FORMAT_INFO formatInfo = {};
             formatInfo.Format = desc.Format;
@@ -1235,46 +2159,311 @@ void D3D12ResourceManager::Apply_InitialState(ID3D12DeviceChild *live,
             numSubresources *= planes;
           }
 
-          D3D12_PLACED_SUBRESOURCE_FOOTPRINT *layouts =
-              new D3D12_PLACED_SUBRESOURCE_FOOTPRINT[numSubresources];
+          const uint32_t *nextIncludedSubresource = data.subresources.begin();
+          // if no subresources were serialised, just skip!
+          if(data.subresources.empty())
+            numSubresources = 0;
+          // if ALL subresources were serialised, serialise them all
+          else if(*nextIncludedSubresource == ~0U)
+            nextIncludedSubresource = NULL;
 
-          m_Device->GetCopyableFootprints(&desc, 0, numSubresources, 0, layouts, NULL, NULL, NULL);
+          UINT64 offset = 0;
+          UINT64 subSize = 0;
+
+          if(IsBlockFormat(desc.Format) && (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS))
+          {
+            RDCDEBUG("Removing UAV flag from BCn desc to allow GetCopyableFootprints");
+            desc.Flags &= ~D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+          }
 
           for(UINT i = 0; i < numSubresources; i++)
           {
+            // if we have a list of subresources included, only copy those
+            if(nextIncludedSubresource && *nextIncludedSubresource != i)
+              continue;
+
             D3D12_TEXTURE_COPY_LOCATION dst, src;
 
             dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-            dst.pResource = copyDst;
+            dst.pResource = unwrappedCopyDst;
             dst.SubresourceIndex = i;
 
             src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
             src.pResource = Unwrap(copySrc);
-            src.PlacedFootprint = layouts[i];
 
-            list->CopyTextureRegion(&dst, 0, 0, 0, &src, NULL);
+            m_Device->GetCopyableFootprints(&desc, i, 1, offset, &src.PlacedFootprint, NULL, NULL,
+                                            &subSize);
+
+            if(subSize == ~0ULL)
+            {
+              RDCERR("Failed to call GetCopyableFootprints on %s! skipping copy", ToStr(id).c_str());
+              continue;
+            }
+
+            Unwrap(list)->CopyTextureRegion(&dst, 0, 0, 0, &src, NULL);
+
+            offset += subSize;
+            offset = AlignUp<UINT64>(offset, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+
+            if(nextIncludedSubresource)
+            {
+              nextIncludedSubresource++;
+              // no more subresource after this one were included, even if they exist
+              if(nextIncludedSubresource >= data.subresources.end())
+                break;
+            }
           }
-
-          delete[] layouts;
         }
 
-        // transition back to whatever it was before
-        for(size_t i = 0; i < barriers.size(); i++)
-          std::swap(barriers[i].Transition.StateBefore, barriers[i].Transition.StateAfter);
+        if(type != Resource_Heap)
+        {
+          barriers.Unapply(list);
+        }
 
-        if(!barriers.empty())
-          list->ResourceBarrier((UINT)barriers.size(), &barriers[0]);
-
-#if ENABLED(SINGLE_FLUSH_VALIDATE)
-        m_Device->CloseInitialStateList();
-        m_Device->ExecuteLists(NULL, true);
-        m_Device->FlushLists(true);
-#endif
+        if(D3D12_Debug_SingleSubmitFlushing())
+        {
+          m_Device->CloseInitialStateList();
+          m_Device->ExecuteLists(NULL, true);
+          m_Device->FlushLists(true);
+        }
       }
     }
     else
     {
       RDCERR("Unexpected tag: %u", data.tag);
+    }
+  }
+  else if(type == Resource_AccelerationStructure)
+  {
+    D3D12AccelerationStructure *as = (D3D12AccelerationStructure *)res;
+
+    if(!as)
+    {
+      RDCERR("Missing AS in initial state apply");
+      return;
+    }
+
+    ASBuildData *buildData = data.buildData;
+
+    if(buildData)
+    {
+      D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc = {};
+      D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuild = {};
+
+      // if we've already cached this AS don't bother doing any work to determine a rebuild
+      if(data.cachedBuiltAS == NULL)
+      {
+        desc.Inputs.Type = buildData->Type;
+        desc.Inputs.Flags = buildData->Flags;
+        desc.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+
+        // we're not updating
+        desc.Inputs.Flags &= ~D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+
+        if(buildData->Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL)
+        {
+          desc.Inputs.NumDescs = buildData->NumBLAS;
+          desc.Inputs.InstanceDescs = buildData->buffer ? buildData->buffer->Address() : 0;
+        }
+        else
+        {
+          desc.Inputs.NumDescs = buildData->geoms.count();
+          // can be safely cast as the RVAs have been rebased to real VAs on serialise
+          desc.Inputs.pGeometryDescs = (D3D12_RAYTRACING_GEOMETRY_DESC *)buildData->geoms.data();
+        }
+
+        m_Device->GetRaytracingAccelerationStructurePrebuildInfo(&desc.Inputs, &prebuild);
+
+        if(!GetRTManager()->ASSerialiseBuffer ||
+           prebuild.ScratchDataSizeInBytes > GetRTManager()->ASSerialiseBuffer->Size())
+        {
+          if(GetRTManager()->ASSerialiseBuffer)
+          {
+            // synchronise the GPU to ensure any previous work is done before resizing
+            m_Device->GetInitialStateList();
+            m_Device->CloseInitialStateList();
+            m_Device->ExecuteLists(NULL, true);
+            m_Device->FlushLists(true);
+          }
+
+          // discourage resizes by claiming at least 4MB
+          GetRTManager()->ResizeSerialisationBuffer(
+              RDCMAX(4 * 1024 * 1024ULL, prebuild.ScratchDataSizeInBytes));
+        }
+
+        if(m_Device->HasFatalError() || GetRTManager()->ASSerialiseBuffer == NULL)
+          return;
+
+        desc.ScratchAccelerationStructureData = GetRTManager()->ASSerialiseBuffer->Address();
+      }
+
+      ID3D12GraphicsCommandListX *list = m_Device->GetInitialStateList();
+
+      if(!list)
+        return;
+
+      D3D12_RESOURCE_BARRIER barrier = {};
+      barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+
+      // don't cache TLASs, rebuild every time
+      if(buildData->Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL)
+      {
+        desc.DestAccelerationStructureData = as->GetVirtualAddress();
+
+        UINT numPostBuilds = 0;
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC postDesc = {};
+        if(GetRTManager()->PostbuildReadbackBuffer)
+        {
+          postDesc.DestBuffer = GetRTManager()->PostbuildReadbackBuffer->Address();
+          postDesc.InfoType = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_CURRENT_SIZE;
+          numPostBuilds++;
+        }
+
+        list->BuildRaytracingAccelerationStructure(&desc, numPostBuilds, &postDesc);
+
+        if(D3D12_Debug_RT_Auditing())
+        {
+          RDCLOG("Apply TLAS - Rebuilding %s to %llx", ToStr(as->GetResourceID()).c_str(),
+                 desc.DestAccelerationStructureData);
+
+          // verify that all children we intended to reference have now been built.
+          for(size_t i = 0; i < as->children.size(); i++)
+          {
+            if(!as->children[i]->seenReplayBuild)
+            {
+              RDCERR("TLAS child %u did not get built with initial contents");
+            }
+          }
+
+          if(GetRTManager()->PostbuildReadbackBuffer)
+          {
+            m_Device->CloseInitialStateList();
+            m_Device->ExecuteLists(NULL, true);
+            m_Device->FlushLists(true);
+
+            uint64_t *curSize = (uint64_t *)GetRTManager()->PostbuildReadbackBuffer->Map();
+
+            if(curSize && *curSize > as->Size())
+            {
+              RDCERR("BLAS built larger than recorded size - overlap checks will be incorrect");
+            }
+
+            GetRTManager()->PostbuildReadbackBuffer->Unmap();
+
+            list = m_Device->GetInitialStateList();
+          }
+        }
+      }
+      // if we haven't cached it, build and cache the AS then copy into place
+      else if(data.cachedBuiltAS == NULL)
+      {
+        m_GPUBufferAllocator.Alloc(D3D12GpuBufferHeapType::AccStructDefaultHeap,
+                                   D3D12GpuBufferHeapMemoryFlag::Default,
+                                   prebuild.ResultDataMaxSizeInBytes, 256, &data.cachedBuiltAS);
+
+        if(!data.cachedBuiltAS)
+          return;
+
+        ResourceId id = as->GetResourceID();
+
+        UINT numPostBuilds = 0;
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC postDesc[2] = {};
+        if(GetRTManager()->PostbuildReadbackBuffer)
+        {
+          postDesc[0].DestBuffer = GetRTManager()->PostbuildReadbackBuffer->Address();
+          postDesc[0].InfoType = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_CURRENT_SIZE;
+          numPostBuilds++;
+          postDesc[1].DestBuffer = GetRTManager()->PostbuildReadbackBuffer->Address() + 8;
+          postDesc[1].InfoType =
+              D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
+          numPostBuilds++;
+        }
+
+        desc.DestAccelerationStructureData = data.cachedBuiltAS->Address();
+        list->BuildRaytracingAccelerationStructure(&desc, numPostBuilds, postDesc);
+
+        list->ResourceBarrier(1, &barrier);
+
+        // copy to the real location
+        list->CopyRaytracingAccelerationStructure(
+            as->GetVirtualAddress(), desc.DestAccelerationStructureData,
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_CLONE);
+
+        if(D3D12_Debug_RT_Auditing())
+        {
+          RDCLOG("Apply BLAS - Caching %s to %llx then copying to %llx", ToStr(id).c_str(),
+                 desc.DestAccelerationStructureData, as->GetVirtualAddress());
+
+          if(GetRTManager()->PostbuildReadbackBuffer)
+          {
+            m_Device->CloseInitialStateList();
+            m_Device->ExecuteLists(NULL, true);
+            m_Device->FlushLists(true);
+
+            uint64_t *curSize = (uint64_t *)GetRTManager()->PostbuildReadbackBuffer->Map();
+
+            if(*curSize > as->Size())
+            {
+              RDCERR(
+                  "BLAS built is %llu which is larger than recorded size %llu (compacted size is "
+                  "%llu) - overlap checks will be incorrect",
+                  curSize[0], as->Size(), curSize[1]);
+            }
+
+            GetRTManager()->PostbuildReadbackBuffer->Unmap();
+
+            list = m_Device->GetInitialStateList();
+          }
+        }
+
+        as->seenReplayBuild = true;
+      }
+      // if we have a cached AS, just copy from it
+      else
+      {
+        // in future we might want to keep this to reference the geometry data, for now we can
+        // release this since we know the GPU has been synced since last time we applied initial
+        // contents and did the actual build
+        SAFE_RELEASE(data.buildData->buffer);
+
+        list->CopyRaytracingAccelerationStructure(
+            as->GetVirtualAddress(), data.cachedBuiltAS->Address(),
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_CLONE);
+
+        if(D3D12_Debug_RT_Auditing())
+        {
+          RDCLOG("Apply BLAS - Copying %s from %llx to %llx", ToStr(as->GetResourceID()).c_str(),
+                 data.cachedBuiltAS->Address(), as->GetVirtualAddress());
+        }
+      }
+
+      list->ResourceBarrier(1, &barrier);
+    }
+    else
+    {
+      ID3D12Resource *copySrc = (ID3D12Resource *)data.resource;
+
+      if(!copySrc)
+      {
+        RDCERR("Missing copy source in initial state apply");
+        return;
+      }
+
+      ID3D12GraphicsCommandListX *list = m_Device->GetInitialStateList();
+
+      if(!list)
+        return;
+
+      Unwrap4(list)->CopyRaytracingAccelerationStructure(
+          as->GetVirtualAddress(), copySrc->GetGPUVirtualAddress(),
+          D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_DESERIALIZE);
+    }
+
+    if(D3D12_Debug_SingleSubmitFlushing())
+    {
+      m_Device->CloseInitialStateList();
+      m_Device->ExecuteLists(NULL, true);
+      m_Device->FlushLists(true);
     }
   }
   else

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -60,6 +60,8 @@ struct MapIntercept
   D3D11_MAP MapType;
   UINT MapFlags;
 
+  CaptureState state;
+
   bool verifyWrite;
 
   void CopyFromD3D();
@@ -91,6 +93,37 @@ enum CaptureFailReason
   CaptureSucceeded = 0,
   CaptureFailed_UncappedUnmap,
   CaptureFailed_UncappedCmdlist,
+};
+
+// a fake device child to be able to register a resource without needing a wrapper
+struct D3DDescriptorStore : public ID3D11DeviceChild
+{
+private:
+  ResourceId m_ID;
+  WrappedID3D11Device *m_pDevice;
+
+public:
+  D3DDescriptorStore(WrappedID3D11Device *device);
+  virtual ~D3DDescriptorStore();
+
+  ResourceId GetResourceID() { return m_ID; }
+
+  ULONG STDMETHODCALLTYPE AddRef() { return 1; }
+  ULONG STDMETHODCALLTYPE Release() { return 1; }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) { return E_NOTIMPL; }
+  void STDMETHODCALLTYPE GetDevice(ID3D11Device **ppDevice) {}
+  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData)
+  {
+    return E_NOTIMPL;
+  }
+  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT DataSize, const void *pData)
+  {
+    return E_NOTIMPL;
+  }
+  HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID guid, const IUnknown *pData)
+  {
+    return E_NOTIMPL;
+  }
 };
 
 class WrappedID3D11DeviceContext : public ID3D11DeviceContext4
@@ -125,17 +158,7 @@ private:
   std::set<ResourceId> m_HighTrafficResources;
   std::map<MappedResource, MapIntercept> m_OpenMaps;
 
-  struct StreamOutData
-  {
-    StreamOutData() : query(NULL), running(false), numPrims(0) {}
-    ID3D11Query *query;
-    bool running;
-    uint64_t numPrims;
-  };
-
-  std::map<ResourceId, StreamOutData> m_StreamOutCounters;
-
-  std::map<ResourceId, rdcarray<EventUsage> > m_ResourceUses;
+  std::map<ResourceId, rdcarray<EventUsage>> m_ResourceUses;
 
   WrappedID3D11Device *m_pDevice;
   ID3D11DeviceContext *m_pRealContext;
@@ -155,6 +178,7 @@ private:
   std::set<rdcstr> m_StringDB;
 
   ResourceId m_CurContextId;
+  D3DDescriptorStore *m_DescriptorStore;
 
   StreamReader *m_FrameReader = NULL;
 
@@ -177,8 +201,6 @@ private:
 
     RenderDoc::Inst().AddActiveDriver(RDCDriver::D3D11, false);
   }
-
-  ResourceId m_FakeContext;
 
   bool m_DoStateVerify;
   D3D11RenderState *m_CurrentPipelineState;
@@ -205,6 +227,12 @@ private:
   rdcarray<Annotation> m_AnnotationQueue;
   Threading::CriticalSection m_AnnotLock;
 
+  // Object and command annotation support
+  Threading::CriticalSection m_AnnotationsLock;
+  std::unordered_map<ResourceId, SDObject *> m_Annotations;    // Object annotations by ResourceId
+  SDObject *m_RootAnnotation = NULL;                           // Root for event annotation state
+  rdcarray<SDObject *> m_EventAnnotations;                     // Track allocations for cleanup
+
   uint64_t m_TimeBase = 0;
   double m_TimeFrequency = 1.0f;
   SDFile *m_StructuredFile = NULL;
@@ -214,7 +242,7 @@ private:
   uint32_t m_CurEventID, m_CurActionID;
   D3D11Chunk m_LastChunk;
 
-  ReplayStatus m_FailedReplayStatus = ReplayStatus::APIReplayFailed;
+  RDResult m_FailedReplayResult = ResultCode::APIReplayFailed;
 
   ActionDescription m_ParentAction;
   std::map<ResourceId, ActionDescription> m_CmdLists;
@@ -228,6 +256,7 @@ private:
   void Serialise_DebugMessages(SerialiserType &ser);
 
   void DrainAnnotationQueue();
+  void LatchSOProperties();
 
   void AddUsage(const ActionDescription &a);
 
@@ -267,13 +296,33 @@ private:
 
   SERIALISED_ID3D11CONTEXT_MARKER_FUNCTIONS();
 
+#define SERIALISED_ID3D11CONTEXT_ANNOTATION_FUNCTIONS()                                        \
+  IMPLEMENT_FUNCTION_SERIALISED(bool, SetCommandAnnotation, rdcstr key,                        \
+                                RENDERDOC_AnnotationType valueType, uint32_t valueVectorWidth, \
+                                RENDERDOC_AnnotationValue value);
+
+  SERIALISED_ID3D11CONTEXT_ANNOTATION_FUNCTIONS();
+
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11DeviceContext);
 
   WrappedID3D11DeviceContext(WrappedID3D11Device *realDevice, ID3D11DeviceContext *context);
   virtual ~WrappedID3D11DeviceContext();
 
+  void RemoveAnnotations(ResourceId id)
+  {
+    SCOPED_LOCK(m_AnnotationsLock);
+    m_Annotations.erase(id);
+  }
+
+  void SetReplayResourceID(ResourceId id) { m_ResourceID = id; }
+
   void VerifyState();
+
+  ResourceId GetDescriptorsID()
+  {
+    return m_DescriptorStore ? m_DescriptorStore->GetResourceID() : ResourceId();
+  }
 
   void BeginFrame();
   void EndFrame();
@@ -300,6 +349,16 @@ public:
   void AttemptCapture();
   void FinishCapture();
 
+  rdcarray<SDObject *> DetachAnnotations()
+  {
+    rdcarray<SDObject *> ret;
+    ret.swap(m_EventAnnotations);
+    for(auto it = m_Annotations.begin(); it != m_Annotations.end(); ++it)
+      ret.push_back(it->second);
+    m_Annotations.clear();
+    return ret;
+  }
+
   D3D11RenderState *GetCurrentPipelineState() { return m_CurrentPipelineState; }
   ResourceId GetResourceID() { return m_ResourceID; }
   D3D11ResourceRecord *GetResourceRecord() { return m_ContextRecord; }
@@ -309,9 +368,7 @@ public:
   bool IsFL11_1();
 
   bool ProcessChunk(ReadSerialiser &ser, D3D11Chunk chunk);
-  void ReplayFakeContext(ResourceId id);
-  ReplayStatus ReplayLog(CaptureState readType, uint32_t startEventID, uint32_t endEventID,
-                         bool partial);
+  RDResult ReplayLog(CaptureState readType, uint32_t startEventID, uint32_t endEventID, bool partial);
   void SetFrameReader(StreamReader *reader) { m_FrameReader = reader; }
   void MarkResourceReferenced(ResourceId id, FrameRefType refType);
 
@@ -329,6 +386,12 @@ public:
   // internal addref/release
   void IntAddRef();
   void IntRelease();
+
+  // annotations functions in DeviceContext (immediate only)
+  uint32_t SetCommandAnnotation(const char *key, RENDERDOC_AnnotationType valueType,
+                                uint32_t valueVectorWidth, const RENDERDOC_AnnotationValue *value);
+  uint32_t SetObjectAnnotation(void *object, const char *key, RENDERDOC_AnnotationType valueType,
+                               uint32_t valueVectorWidth, const RENDERDOC_AnnotationValue *value);
 
   //////////////////////////////
   // implement IUnknown

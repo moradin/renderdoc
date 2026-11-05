@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,12 +24,27 @@
 
 #include "glsl_globals.h"
 
+#if defined(VULKAN) && defined(USE_MULTIVIEW)
+#extension GL_EXT_multiview : require
+
+layout(push_constant) uniform multiviewPush
+{
+  int targetView;
+}
+multiview;
+
+#endif
+
 IO_LOCATION(0) in float pixarea;
 
 IO_LOCATION(0) out vec4 color_out;
 
 void main(void)
 {
+#if defined(VULKAN) && defined(USE_MULTIVIEW)
+  if(gl_ViewIndex != multiview.targetView && multiview.targetView >= 0)
+    discard;
+#endif
   float area = max(pixarea, 0.001f);
   color_out = vec4(area, area, area, 1.0f);
 }

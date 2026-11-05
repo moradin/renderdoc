@@ -375,6 +375,15 @@
   ...
 }
 
+{
+  dlinitLeak
+  Memcheck:Leak
+  match-leak-kinds: reachable
+  fun:_Znwm
+  fun:__cxx_global_var_init
+  ...
+}
+
 # No shutdown function for XinitThreads, so ignore it leaking
 {
   XInitThreadsLeak
@@ -410,10 +419,39 @@
   fun:_Z15rdclog_filenamePKc
 }
 {
+  GlobalLogfileString3
+  Memcheck:Leak
+  match-leak-kinds: reachable
+  fun:malloc
+  ...
+  fun:_Z15rdclog_filenamePKc
+}
+{
+  GlobalLogfileLock
+  Memcheck:Leak
+  match-leak-kinds: reachable
+  fun:_Znwm
+  fun:_Z13rdclog_directlj7LogTypePKcS1_jS1_z
+}
+{
+  GlobalLogfileLock2
+  Memcheck:Leak
+  match-leak-kinds: reachable
+  fun:_Znwm
+  fun:_Z15rdclogprint_int7LogTypePKcS1_
+}
+{
   LoadVulkanModule
   Memcheck:Leak
   match-leak-kinds: reachable
   ...
   fun:_ZN7Process10LoadModuleEPKc
   fun:_Z25Vulkan_CreateReplayDevicePKcPP13IReplayDriver
+}
+{
+	ConfigStrings
+	Memcheck:Leak
+  match-leak-kinds: all
+  ...
+  fun:_ZN9RenderDoc13ProcessConfigEv
 }

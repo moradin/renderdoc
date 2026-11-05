@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -78,6 +78,31 @@ rdcstr Fmt(const char *format, ...)
   rdcstr ret;
   ret.resize(size);
   ::utf8printv(ret.data(), size + 1, format, args);
+
+  va_end(args);
+  va_end(args2);
+
+  return ret;
+}
+
+rdcstr Fmt(rdcliteral format, ...)
+{
+  // optimisation - if there are no format specifiers hence no arguments, preserve and return the
+  // literal
+  if(strchr(format.c_str(), '%') == NULL)
+    return format;
+
+  va_list args;
+  va_start(args, format);
+
+  va_list args2;
+  va_copy(args2, args);
+
+  int size = ::utf8printv(NULL, 0, format.c_str(), args2);
+
+  rdcstr ret;
+  ret.resize(size);
+  ::utf8printv(ret.data(), size + 1, format.c_str(), args);
 
   va_end(args);
   va_end(args2);
@@ -174,6 +199,26 @@ TEST_CASE("Test OS-specific functions", "[osspecific]")
     FileIO::GetLibraryFilename(libPath);
     CHECK_FALSE(libPath.empty());
   }
+  SECTION("OpenTransientFileHandle")
+  {
+    rdcstr filename = FileIO::GetTempFolderFilename() + "/rdcunittestfile";
+    INFO(filename);
+    FILE *f = FileIO::OpenTransientFileHandle(filename, FileIO::OverwriteBinary);
+    CHECK(f);
+
+    uint32_t magic = 0xdeadbeef;
+    FileIO::fwrite(&magic, sizeof(uint32_t), 1, f);
+
+    uint32_t readback = 0;
+    FileIO::fseek64(f, 0, SEEK_SET);
+
+    FileIO::fread(&readback, sizeof(uint32_t), 1, f);
+
+    CHECK(magic == readback);
+
+    FileIO::fclose(f);
+    CHECK_FALSE(FileIO::exists(filename));
+  }
   SECTION("Environment Variables")
   {
     rdcstr var = Process::GetEnvVariable("TMP");
@@ -216,16 +261,22 @@ TEST_CASE("Test OS-specific functions", "[osspecific]")
 
     CHECK(var == rdcstr("test_value;test_value:test_value"));
 
-    mod.value = "prepend";
+    mod.value = "prepend1";
     mod.sep = EnvSep::SemiColon;
     mod.mod = EnvMod::Prepend;
+
+    Process::RegisterEnvironmentModification(mod);
+
+    mod.value = "prepend2";
+    mod.sep = EnvSep::SemiColon;
+    mod.mod = EnvMod::Append;
 
     Process::RegisterEnvironmentModification(mod);
     Process::ApplyEnvironmentModification();
 
     var = Process::GetEnvVariable("__renderdoc__unit_test_var");
 
-    CHECK(var == rdcstr("prepend;test_value;test_value:test_value"));
+    CHECK(var == rdcstr("prepend1;test_value;test_value:test_value;prepend2"));
 
     mod.value = "reset";
     mod.sep = EnvSep::SemiColon;

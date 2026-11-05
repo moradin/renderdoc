@@ -1,10 +1,3 @@
-# Build as C++14 for the python bindings template-fu
-if (CMAKE_VERSION VERSION_LESS "3.1")
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --std=c++14")
-else ()
-    set (CMAKE_CXX_STANDARD 14)
-endif ()
-
 # include paths for qrenderdoc, the internal renderdoc API, and Python
 set(MODULE_INCLUDES
     PRIVATE ${CMAKE_SOURCE_DIR}/qrenderdoc
@@ -16,7 +9,11 @@ set(MODULE_DEFINES
     PRIVATE -DRENDERDOC_PLATFORM_LINUX)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unknown-warning-option -Wno-unused-private-field")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unknown-warning-option -Wno-unused-private-field -Wno-shadow -Wno-shorten-64-to-32")
+
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 19)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-cast-function-type")
+    endif()
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX)

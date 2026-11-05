@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -47,6 +47,11 @@ Scalar::Scalar(Iter it)
     width = decoded.width;
     signedness = false;
   }
+  else if(type == Op::TypeBool)
+  {
+    width = 32;
+    signedness = false;
+  }
   else
   {
     width = 0;
@@ -57,6 +62,11 @@ Scalar::Scalar(Iter it)
 Id OperationList::add(const rdcspv::Operation &op)
 {
   push_back(op);
+
+#if ENABLED(RDOC_DEVEL)
+  OpDecoder::ForEachID(op.AsIter(), [](rdcspv::Id id, bool) { RDCASSERT(id != rdcspv::Id()); });
+#endif
+
   return OpDecoder(op.AsIter()).result;
 }
 
@@ -75,14 +85,17 @@ void Editor::Prepare()
   // instead of Uniform + BufferBlock
   if(m_MajorVersion > 1 || m_MinorVersion >= 3)
     m_StorageBufferClass = rdcspv::StorageClass::StorageBuffer;
+  else
+    m_StorageBufferClass = rdcspv::StorageClass::Uniform;
 
   // find any empty sections and insert a nop into the stream there. We need to fixup later section
   // offsets by hand as addWords doesn't handle empty sections properly (it thinks we're inserting
   // into the later section by offset since the offsets overlap). That's why we're adding these
   // padding nops in the first place!
+  // Insert a nop at the start of the Types section to allow adding types at the start (after the nop)
   for(uint32_t s = 0; s < Section::Count; s++)
   {
-    if(m_Sections[s].startOffset == m_Sections[s].endOffset)
+    if((m_Sections[s].startOffset == m_Sections[s].endOffset) || (s == Section::Types))
     {
       m_SPIRV.insert(m_Sections[s].startOffset, OpNopWord);
       m_Sections[s].endOffset++;
@@ -147,6 +160,46 @@ Editor::~Editor()
     AddConstant(op);
   m_DeferredConstants.clear();
 
+  rdcarray<Operation> vectorTypes;
+  // Capture all existing vector types
+  // Do this before scalar types because creating a vector declaration will also add the scalar type
+  rdcarray<Id> idsToRemove;
+  for(auto it = vectorTypeToId.begin(); it != vectorTypeToId.end(); ++it)
+  {
+    Id id = it->second;
+    idsToRemove.push_back(id);
+
+    Vector type(it->first);
+    Operation op = MakeDeclaration(type);
+    op[1] = id.value();
+    vectorTypes.push_back(op);
+  }
+
+  rdcarray<Operation> scalarTypes;
+  // Capture all existing scalar types
+  for(auto it = scalarTypeToId.begin(); it != scalarTypeToId.end(); ++it)
+  {
+    Id id = it->second;
+    idsToRemove.push_back(id);
+
+    Scalar type(it->first);
+    Operation op = MakeDeclaration(type);
+    op[1] = id.value();
+    scalarTypes.push_back(op);
+  }
+
+  // Remove existing scalar and vector types
+  for(Id id : idsToRemove)
+    Remove(GetID(id));
+
+  // Add vector then scalar types to ensure that vector types are declared after scalar types
+  // scalar and vector types are added to the start of the type section
+  for(const Operation &op : vectorTypes)
+    AddType(op);
+
+  for(const Operation &op : scalarTypes)
+    AddType(op);
+
   m_ExternalSPIRV.clear();
   m_ExternalSPIRV.reserve(m_SPIRV.size());
 
@@ -181,35 +234,38 @@ Id Editor::MakeId()
 {
   uint32_t ret = m_SPIRV[3];
   m_SPIRV[3]++;
-  Processor::PreParse(m_SPIRV[3]);
+  Processor::UpdateMaxID(m_SPIRV[3]);
   return Id::fromWord(ret);
 }
 
 void Editor::DecorateStorageBufferStruct(Id id)
 {
-  // set bufferblock if needed
   if(m_StorageBufferClass == rdcspv::StorageClass::Uniform)
-    AddDecoration(rdcspv::OpDecorate(id, rdcspv::Decoration::BufferBlock));
+  {
+    if(!m_BufferBlockTypes.contains(id))
+      AddDecoration(rdcspv::OpDecorate(id, rdcspv::Decoration::BufferBlock));
+  }
   else
-    AddDecoration(rdcspv::OpDecorate(id, rdcspv::Decoration::Block));
+  {
+    if(!m_BlockTypes.contains(id))
+      AddDecoration(rdcspv::OpDecorate(id, rdcspv::Decoration::Block));
+  }
+}
+
+void Editor::InsertOperation(const Operation &op, size_t offset)
+{
+  op.insertInto(m_SPIRV, offset);
+  addWords(offset, op.size());
+  RegisterOp(Iter(m_SPIRV, offset));
 }
 
 void Editor::SetName(Id id, const rdcstr &name)
 {
   Operation op = OpName(id, name);
 
-  Iter it;
+  Iter it = End(Section::DebugNames);
 
-  // OpName/OpMemberName must be before OpModuleProcessed.
-  for(it = Begin(Section::DebugNames); it < End(Section::DebugNames); ++it)
-  {
-    if(it.opcode() == Op::ModuleProcessed)
-      break;
-  }
-
-  op.insertInto(m_SPIRV, it.offs());
-  RegisterOp(Iter(m_SPIRV, it.offs()));
-  addWords(it.offs(), op.size());
+  InsertOperation(op, it.offs());
 }
 
 void Editor::SetMemberName(Id id, uint32_t member, const rdcstr &name)
@@ -217,17 +273,13 @@ void Editor::SetMemberName(Id id, uint32_t member, const rdcstr &name)
   Operation op = OpMemberName(id, member, name);
 
   size_t offset = m_Sections[Section::DebugNames].endOffset;
-  op.insertInto(m_SPIRV, offset);
-  RegisterOp(Iter(m_SPIRV, offset));
-  addWords(offset, op.size());
+  InsertOperation(op, offset);
 }
 
 void Editor::AddDecoration(const Operation &op)
 {
   size_t offset = m_Sections[Section::Annotations].endOffset;
-  op.insertInto(m_SPIRV, offset);
-  RegisterOp(Iter(m_SPIRV, offset));
-  addWords(offset, op.size());
+  InsertOperation(op, offset);
 }
 
 void Editor::AddCapability(Capability cap)
@@ -238,9 +290,7 @@ void Editor::AddCapability(Capability cap)
 
   // insert the operation at the very start
   Operation op(Op::Capability, {(uint32_t)cap});
-  op.insertInto(m_SPIRV, FirstRealWord);
-  RegisterOp(Iter(m_SPIRV, FirstRealWord));
-  addWords(FirstRealWord, op.size());
+  InsertOperation(op, FirstRealWord);
 }
 
 bool Editor::HasCapability(Capability cap)
@@ -263,22 +313,18 @@ void Editor::AddExtension(const rdcstr &extension)
 
   // insert the extension instruction
   size_t sz = extension.size();
-  rdcarray<uint32_t> uintName((sz / 4) + 1);
+  rdcarray<uint32_t> uintName;
+  uintName.resize((sz / 4) + 1);
   memcpy(&uintName[0], extension.c_str(), sz);
 
   Operation op(Op::Extension, uintName);
-  op.insertInto(m_SPIRV, it.offs());
-  RegisterOp(it);
-  addWords(it.offs(), op.size());
+  InsertOperation(op, it.offs());
 }
 
 void Editor::AddExecutionMode(const Operation &mode)
 {
   size_t offset = m_Sections[Section::ExecutionMode].endOffset;
-
-  mode.insertInto(m_SPIRV, offset);
-  RegisterOp(Iter(m_SPIRV, offset));
-  addWords(offset, mode.size());
+  InsertOperation(mode, offset);
 }
 
 Id Editor::HasExtInst(const char *setname)
@@ -311,15 +357,14 @@ Id Editor::ImportExtInst(const char *setname)
   Id ret = MakeId();
 
   size_t sz = strlen(setname);
-  rdcarray<uint32_t> uintName((sz / 4) + 1);
+  rdcarray<uint32_t> uintName;
+  uintName.resize((sz / 4) + 1);
   memcpy(&uintName[0], setname, sz);
 
   uintName.insert(0, ret.value());
 
   Operation op(Op::ExtInstImport, uintName);
-  op.insertInto(m_SPIRV, it.offs());
-  RegisterOp(it);
-  addWords(it.offs(), op.size());
+  InsertOperation(op, it.offs());
 
   extSets[ret] = setname;
 
@@ -330,10 +375,14 @@ Id Editor::AddType(const Operation &op)
 {
   size_t offset = m_Sections[Section::Types].endOffset;
 
+  // scalar and vector types are added to the start of the type section (after the nop)
+  OpDecoder opdata(op.AsIter());
+  if(opdata.op == Op::TypeVoid || opdata.op == Op::TypeBool || opdata.op == Op::TypeInt ||
+     opdata.op == Op::TypeFloat || opdata.op == Op::TypeVector)
+    offset = m_Sections[Section::Types].startOffset + 1;
+
   Id id = Id::fromWord(op[1]);
-  op.insertInto(m_SPIRV, offset);
-  RegisterOp(Iter(m_SPIRV, offset));
-  addWords(offset, op.size());
+  InsertOperation(op, offset);
   return id;
 }
 
@@ -342,9 +391,7 @@ Id Editor::AddVariable(const Operation &op)
   size_t offset = m_Sections[Section::Variables].endOffset;
 
   Id id = Id::fromWord(op[2]);
-  op.insertInto(m_SPIRV, offset);
-  RegisterOp(Iter(m_SPIRV, offset));
-  addWords(offset, op.size());
+  InsertOperation(op, offset);
   return id;
 }
 
@@ -353,9 +400,7 @@ Id Editor::AddConstant(const Operation &op)
   size_t offset = m_Sections[Section::Constants].endOffset;
 
   Id id = Id::fromWord(op[2]);
-  op.insertInto(m_SPIRV, offset);
-  RegisterOp(Iter(m_SPIRV, offset));
-  addWords(offset, op.size());
+  InsertOperation(op, offset);
   return id;
 }
 
@@ -396,10 +441,169 @@ Iter Editor::GetEntry(Id id)
   return Iter();
 }
 
+Id Editor::FindEntryID(ShaderEntryPoint entry)
+{
+  rdcspv::Id entryID;
+  for(rdcspv::Iter it = Begin(rdcspv::Section::EntryPoints), end = End(rdcspv::Section::EntryPoints);
+      it < end; ++it)
+  {
+    rdcspv::OpEntryPoint e(it);
+    if(e.name == entry.name && MakeShaderStage(e.executionModel) == entry.stage)
+      return e.entryPoint;
+  }
+  return rdcspv::Id();
+}
+
+void Editor::AddEntryGlobals(Id entry, const rdcarray<Id> &newGlobals)
+{
+  if(!newGlobals.empty())
+  {
+    rdcspv::Iter it = GetEntry(entry);
+
+    // this copies into the helper struct
+    rdcspv::OpEntryPoint e(it);
+
+    // add our IDs
+    e.iface.append(newGlobals);
+
+    // erase the old one
+    Remove(it);
+
+    AddOperation(it, e);
+  }
+}
+
+void Editor::ChangeEntry(Id from, Id to)
+{
+  rdcspv::Iter it = GetEntry(from);
+
+  // this copies into the helper struct
+  rdcspv::OpEntryPoint e(it);
+
+  RDCASSERT(e.entryPoint == from);
+  e.entryPoint = to;
+
+  UnregisterOp(it);
+  it = e;
+  RegisterOp(it);
+
+  // update any execution modes to apply to the new function
+
+  it = rdcspv::Iter(m_SPIRV, m_Sections[Section::ExecutionMode].startOffset);
+  rdcspv::Iter end(m_SPIRV, m_Sections[Section::ExecutionMode].endOffset);
+
+  while(it && it < end)
+  {
+    if(it.opcode() == Op::ExecutionMode)
+    {
+      OpExecutionMode execMode(it);
+
+      if(execMode.entryPoint == from)
+      {
+        execMode.entryPoint = to;
+
+        UnregisterOp(it);
+        it = execMode;
+        RegisterOp(it);
+      }
+    }
+    else if(it.opcode() == Op::ExecutionModeId)
+    {
+      OpExecutionModeId execMode(it);
+
+      if(execMode.entryPoint == from)
+      {
+        execMode.entryPoint = to;
+
+        UnregisterOp(it);
+        it = execMode;
+        RegisterOp(it);
+      }
+    }
+
+    it++;
+  }
+}
+
+rdcpair<Id, Id> Editor::AddBuiltinInputLoad(OperationList &ops, ShaderStage stage, BuiltIn builtin,
+                                            Id type)
+{
+  BuiltinInputData &data = builtinInputs[builtin];
+
+  Id ptrType = DeclareType(Pointer(type, StorageClass::Input));
+
+  if(data.variable == Id())
+  {
+    const DataType &dataType = dataTypes[type];
+
+    Id var = AddVariable(OpVariable(ptrType, MakeId(), StorageClass::Input));
+    AddDecoration(OpDecorate(var, DecorationParam<Decoration::BuiltIn>(builtin)));
+
+    // Fragment shader inputs that are signed or unsigned integers, integer vectors, or any
+    // double-precision floating-point type must be decorated with Flat.
+    if(dataType.scalar().type != Op::TypeFloat && stage == ShaderStage::Pixel)
+      AddDecoration(OpDecorate(var, Decoration::Flat));
+
+    builtinInputs[builtin] = {var, ptrType, {}};
+
+    return {ops.add(OpLoad(type, MakeId(), var)), var};
+  }
+
+  Id varType = dataTypes[data.type].InnerType();
+
+  Id ret;
+
+  if(data.chain.empty())
+  {
+    ret = ops.add(OpLoad(varType, MakeId(), data.variable));
+  }
+  else
+  {
+    rdcarray<rdcspv::Id> chain;
+    for(uint32_t accessIdx : data.chain)
+      chain.push_back(AddConstantImmediate<uint32_t>(accessIdx));
+    Id subElement = ops.add(OpAccessChain(ptrType, MakeId(), data.variable, chain));
+
+    ret = ops.add(rdcspv::OpLoad(varType, MakeId(), subElement));
+  }
+
+  if(varType != type)
+    ret = ops.add(rdcspv::OpBitcast(type, MakeId(), ret));
+
+  return {ret, Id()};
+}
+
 Id Editor::DeclareStructType(const rdcarray<Id> &members)
 {
   Id typeId = MakeId();
   AddType(OpTypeStruct(typeId, members));
+  return typeId;
+}
+
+rdcspv::Id Editor::DeclareStructType(const rdcstr &name, const rdcarray<StructMember> &members)
+{
+  Id typeId = MakeId();
+
+  rdcarray<Id> memberTypes;
+
+  for(uint32_t i = 0; i < members.size(); i++)
+    memberTypes.push_back(members[i].type);
+
+  AddType(OpTypeStruct(typeId, memberTypes));
+
+  for(uint32_t i = 0; i < members.size(); i++)
+  {
+    if(!members[i].name.empty())
+      SetMemberName(typeId, i, members[i].name);
+
+    if(members[i].offset != ~0U)
+      AddDecoration(rdcspv::OpMemberDecorate(
+          typeId, i, rdcspv::DecorationParam<rdcspv::Decoration::Offset>(members[i].offset)));
+  }
+
+  if(!name.empty())
+    SetName(typeId, name);
+
   return typeId;
 }
 
@@ -414,11 +618,30 @@ Id Editor::AddOperation(Iter iter, const Operation &op)
   // update offsets
   addWords(iter.offs(), op.size());
 
+#if ENABLED(RDOC_DEVEL)
+  OpDecoder::ForEachID(iter, [](rdcspv::Id id, bool) { RDCASSERT(id != rdcspv::Id()); });
+#endif
+
   return OpDecoder(iter).result;
+}
+
+Iter Editor::AddOperations(Iter iter, const OperationList &ops)
+{
+  for(const rdcspv::Operation &op : ops)
+  {
+    AddOperation(iter, op);
+    ++iter;
+  }
+
+  return iter;
 }
 
 void Editor::RegisterOp(Iter it)
 {
+#if ENABLED(RDOC_DEVEL)
+  OpDecoder::ForEachID(it, [](rdcspv::Id id, bool) { RDCASSERT(id != rdcspv::Id()); });
+#endif
+
   Processor::RegisterOp(it);
 
   OpDecoder opdata(it);
@@ -476,6 +699,19 @@ void Editor::RegisterOp(Iter it)
       bindings[decorate.target].set = decorate.decoration.descriptorSet;
     if(decorate.decoration == Decoration::Binding)
       bindings[decorate.target].binding = decorate.decoration.binding;
+    if(decorate.decoration == Decoration::Block)
+      m_BlockTypes.push_back(decorate.target);
+    if(decorate.decoration == Decoration::BufferBlock)
+      m_BufferBlockTypes.push_back(decorate.target);
+  }
+  else if(opdata.op == Op::Constant)
+  {
+    if(dataTypes[opdata.resultType].IsU32())
+    {
+      uint32_t val = it.word(3);
+      if(m_U32Consts[val] == rdcspv::Id())
+        m_U32Consts[val] = opdata.result;
+    }
   }
 }
 
@@ -534,6 +770,55 @@ void Editor::UnregisterOp(Iter it)
       bindings[decorate.target].set = Binding().set;
     if(decorate.decoration == Decoration::Binding)
       bindings[decorate.target].binding = Binding().binding;
+    if(decorate.decoration == Decoration::Block)
+      m_BlockTypes.removeOne(decorate.target);
+    if(decorate.decoration == Decoration::BufferBlock)
+      m_BufferBlockTypes.removeOne(decorate.target);
+  }
+  else if(opdata.op == Op::Constant)
+  {
+    if(dataTypes[opdata.resultType].IsU32())
+    {
+      uint32_t val = it.word(3);
+      if(m_U32Consts[val] == opdata.result)
+        m_U32Consts[val] = rdcspv::Id();
+    }
+  }
+}
+
+void Editor::RegisterBuiltinMembers(rdcspv::Id baseId, const rdcarray<uint32_t> chainSoFar,
+                                    const DataType *type)
+{
+  uint32_t i = 0;
+  for(const DataType::Child &member : type->children)
+  {
+    if(member.decorations.flags & Decorations::HasBuiltIn)
+    {
+      rdcarray<uint32_t> chain = chainSoFar;
+      chain.push_back(i);
+      builtinInputs[member.decorations.builtIn] = {baseId, member.type, chain};
+    }
+    i++;
+  }
+}
+
+void Editor::PostParse()
+{
+  Processor::PostParse();
+
+  for(const Variable &v : globals)
+  {
+    if(v.storage == StorageClass::Input)
+    {
+      if(decorations[v.id].flags & Decorations::HasBuiltIn)
+      {
+        builtinInputs[decorations[v.id].builtIn] = {v.id, v.type, {}};
+      }
+      else
+      {
+        RegisterBuiltinMembers(v.id, {}, &dataTypes[v.type]);
+      }
+    }
   }
 }
 
@@ -626,6 +911,244 @@ Operation Editor::MakeDeclaration(const SampledImage &s)
 Operation Editor::MakeDeclaration(const FunctionType &f)
 {
   return OpTypeFunction(Id(), f.returnId, f.argumentIds);
+}
+
+void Editor::OffsetBindingsToMatchReservation(size_t numReservedBindings)
+{
+  if(!IsBinding(m_StorageMode))
+    return;
+
+  // patch all bindings up trivially to account for the extra reservation
+  for(Iter it = Begin(rdcspv::Section::Annotations), end = End(rdcspv::Section::Annotations);
+      it < end; ++it)
+  {
+    // we will use descriptor set 0 for our own purposes if we don't have a buffer address.
+    //
+    // Since bindings are arbitrary, we just increase all user bindings to make room, and we'll
+    // redeclare the descriptor set layouts and pipeline layout. This is inevitable in the case
+    // where all descriptor sets are already used. In theory we only have to do this with set 0,
+    // but that requires knowing which variables are in set 0 and it's simpler to increase all
+    // bindings.
+    if(it.opcode() == Op::Decorate)
+    {
+      OpDecorate dec(it);
+      if(dec.decoration == Decoration::Binding)
+      {
+        RDCASSERT(dec.decoration.binding < (0xffffffff - numReservedBindings));
+        dec.decoration.binding += (uint32_t)numReservedBindings;
+        it = dec;
+      }
+    }
+  }
+}
+
+StorageClass Editor::PrepareAddedBufferAccess()
+{
+  if(IsBinding(m_StorageMode))
+  {
+    return StorageBufferClass();
+  }
+  else if(IsBDA(m_StorageMode))
+  {
+    // add the extension
+    AddExtension(m_StorageMode == BufferStorageMode::EXT_bda ? "SPV_EXT_physical_storage_buffer"
+                                                             : "SPV_KHR_physical_storage_buffer");
+
+    // change the memory model to physical storage buffer 64
+    Iter it = Begin(Section::MemoryModel);
+    OpMemoryModel model(it);
+    model.addressingModel = AddressingModel::PhysicalStorageBuffer64;
+    it = model;
+
+    // add capabilities
+    AddCapability(Capability::PhysicalStorageBufferAddresses);
+
+    // for simplicity on KHR we always load from uint2 so we're compatible with the case where int64
+    // isn't supported
+    if(m_StorageMode == BufferStorageMode::EXT_bda || m_StorageMode == BufferStorageMode::KHR_bda64)
+    {
+      AddCapability(Capability::Int64);
+    }
+
+    return StorageClass::PhysicalStorageBuffer;
+  }
+  else
+  {
+    RDCERR("Added buffer access can't be used until storage mode is set");
+    return StorageClass::Invalid;
+  }
+}
+
+Id Editor::LoadBufferVariable(OperationList &ops, rdcpair<Id, Id> var)
+{
+  if(IsBinding(m_StorageMode))
+  {
+    return var.second;
+  }
+  else if(IsBDA(m_StorageMode))
+  {
+    Id ret;
+    // if we don't have the struct as a bind, we need to cast it from the pointer. In
+    // KHR_buffer_device_address we bitcast since we store it as a uint2
+    if(m_StorageMode == BufferStorageMode::KHR_bda32)
+      ret = ops.add(OpBitcast(var.first, MakeId(), var.second));
+    else
+      ret = ops.add(OpConvertUToPtr(var.first, MakeId(), var.second));
+
+    SetName(ret, "loaded_buf");
+
+    return ret;
+  }
+  else
+  {
+    RDCERR("Added buffer access can't be used until storage mode is set");
+    return Id();
+  }
+}
+
+rdcpair<Id, Id> Editor::AddBufferVariable(rdcarray<Id> &addedGlobals, Id varType, const rdcstr &name,
+                                          uint32_t binding, uint32_t specID, uint64_t fixedAddr)
+{
+  rdcpair<Id, Id> ret;
+
+  if(IsBinding(m_StorageMode))
+  {
+    StorageClass bufferClass = StorageBufferClass();
+
+    // the pointers are SSBO pointers
+    ret.first = DeclareType(Pointer(varType, bufferClass));
+
+    // add our SSBO variable, at set 0 binding 0
+    ret.second = MakeId();
+    AddVariable(OpVariable(ret.first, ret.second, bufferClass));
+    AddDecoration(OpDecorate(ret.second, DecorationParam<Decoration::DescriptorSet>(0)));
+    AddDecoration(OpDecorate(ret.second, DecorationParam<Decoration::Binding>(binding)));
+
+    if(EntryPointAllGlobals())
+      addedGlobals.push_back(ret.second);
+
+    SetName(ret.second, name);
+
+    if(GetDataType(varType).type == DataType::StructType)
+      DecorateStorageBufferStruct(varType);
+  }
+  else if(IsBDA(m_StorageMode))
+  {
+    StorageClass bufferClass = StorageClass::PhysicalStorageBuffer;
+
+    ret.first = DeclareType(Pointer(varType, bufferClass));
+
+    if(fixedAddr != 0)
+    {
+      // for simplicity on KHR we always load from uint2 so we're compatible with the case where
+      // int64 isn't supported
+      if(m_StorageMode == BufferStorageMode::KHR_bda32)
+      {
+        Id addressConstantLSB = AddConstantImmediate<uint32_t>(fixedAddr & 0xffffffffu);
+        Id addressConstantMSB = AddConstantImmediate<uint32_t>((fixedAddr >> 32) & 0xffffffffu);
+        SetName(addressConstantLSB, name + "_addressLSB");
+        SetName(addressConstantMSB, name + "_addressMSB");
+
+        Id uint2 = DeclareType(Vector(scalar<uint32_t>(), 2));
+
+        ret.second = AddConstant(
+            OpConstantComposite(uint2, MakeId(), {addressConstantLSB, addressConstantMSB}));
+      }
+      else
+      {
+        // declare the address constants and make our pointers physical storage buffer pointers
+        ret.second = AddConstantImmediate<uint64_t>(fixedAddr);
+      }
+    }
+    else
+    {
+      if(m_StorageMode == BufferStorageMode::KHR_bda32)
+      {
+        Id addressConstantLSB = AddSpecConstantImmediate<uint32_t>(0U, specID);
+        Id addressConstantMSB = AddSpecConstantImmediate<uint32_t>(0U, specID + 1);
+        SetName(addressConstantLSB, name + "_addressLSB");
+        SetName(addressConstantMSB, name + "_addressMSB");
+
+        Id uint2 = DeclareType(Vector(scalar<uint32_t>(), 2));
+
+        ret.second = AddConstant(
+            OpSpecConstantComposite(uint2, MakeId(), {addressConstantLSB, addressConstantMSB}));
+      }
+      else
+      {
+        ret.second = AddSpecConstantImmediate<uint64_t>(0ULL, specID);
+      }
+    }
+
+    SetName(ret.second, name + "_address");
+
+    // structs are block decorated
+    if(GetDataType(varType).type == DataType::StructType && !m_BlockTypes.contains(varType))
+      AddDecoration(OpDecorate(varType, Decoration::Block));
+  }
+  else
+  {
+    RDCERR("Added buffer access can't be used until storage mode is set");
+  }
+
+  return ret;
+}
+
+void Editor::FlattenSpecConstants(const rdcarray<SpecConstant> &userSpec)
+{
+  // patch all bindings up trivially to account for the extra reservation
+  for(Iter it = Begin(Section::Annotations), end = End(Section::Annotations); it < end; ++it)
+  {
+    if(it.opcode() == Op::Decorate)
+    {
+      OpDecorate dec(it);
+      if(dec.decoration == Decoration::SpecId)
+      {
+        for(const SpecConstant &s : userSpec)
+        {
+          if(s.specID == dec.decoration.specId)
+          {
+            Iter target = GetID(dec.target);
+
+            if(target.opcode() == Op::SpecConstantTrue || target.opcode() == Op::SpecConstantFalse)
+            {
+              RDCCOMPILE_ASSERT(
+                  OpConstantTrue::FixedWordSize == OpSpecConstantTrue::FixedWordSize &&
+                      OpConstantTrue::FixedWordSize == OpSpecConstantFalse::FixedWordSize &&
+                      OpConstantTrue::FixedWordSize == OpConstantFalse::FixedWordSize,
+                  "OpConstantTrue and False should be interchangeable and equal to Spec versions");
+
+              OpSpecConstantTrue orig(target);
+
+              if(s.value != 0)
+                target = OpConstantTrue(orig.resultType, orig.result);
+              else
+                target = OpConstantFalse(orig.resultType, orig.result);
+            }
+            else if(target.opcode() == Op::SpecConstant)
+            {
+              rdcarray<uint32_t> data;
+              data.assign(target.words() + 1, target.size() - 1);
+
+              // first two IDs are type and result
+              size_t constSize = data.byteSize() - 2 * sizeof(Id);
+
+              RDCASSERTEQUAL(s.dataSize, constSize);
+
+              memcpy(&data[2], &s.value, RDCMIN(s.dataSize, constSize));
+
+              target = Operation(Op::Constant, data);
+            }
+
+            break;
+          }
+        }
+
+        // remove the spec id whether we found one or not. If we didn't find one, the default should be used
+        it.nopRemove();
+      }
+    }
+  }
 }
 
 #define TYPETABLE(StructType, variable)                                \
@@ -768,6 +1291,11 @@ void main() {
       // Functions
       {0x2a4, 0x374},
   };
+
+  // By default the editor will add a nop to the start of the Types section
+  offsets[rdcspv::Section::Types][1] += 4;
+  offsets[rdcspv::Section::Functions][0] += 4;
+  offsets[rdcspv::Section::Functions][1] += 4;
 
   SECTION("Check that SPIR-V is correct with no changes")
   {

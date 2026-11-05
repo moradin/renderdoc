@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,6 +34,7 @@ class ResourcePreview;
 
 struct IReplayOutput;
 struct ICaptureContext;
+class RDLabel;
 
 class ResourcePreview : public QFrame
 {
@@ -41,11 +42,17 @@ class ResourcePreview : public QFrame
 
 public:
   explicit ResourcePreview(ICaptureContext &c, IReplayOutput *output, QWidget *parent = 0);
+  // create a manually rendered preview
+  explicit ResourcePreview(bool, QWidget *parent = 0);
+
+  void Initialise();
+
   ~ResourcePreview();
 
 signals:
   void clicked(QMouseEvent *e);
   void doubleClicked(QMouseEvent *e);
+  void resized(ResourcePreview *prev);
 
 public:
   void setSlotName(const QString &n);
@@ -55,6 +62,8 @@ public:
   void doubleClickEvent(QMouseEvent *e);
 
   WindowingData GetWidgetWindowingData();
+  QSize GetThumbSize();
+  void UpdateThumb(QSize s, const bytebuf &imgData);
 
   void setActive(bool b)
   {
@@ -68,7 +77,11 @@ public:
   void setSelected(bool sel);
 
 private:
+  virtual void resizeEvent(QResizeEvent *event);
+
   Ui::ResourcePreview *ui;
+
+  RDLabel *m_ManualThumbnail = NULL;
 
   bool m_Active;
   bool m_Selected = false;

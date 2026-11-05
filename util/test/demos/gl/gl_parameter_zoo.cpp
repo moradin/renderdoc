@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -122,6 +122,9 @@ void main()
       return 5;
     }
 
+    GLuint trashvao = MakeVAO();
+    glBindVertexArray(trashvao);
+
     GLuint vao = MakeVAO();
     glBindVertexArray(vao);
 
@@ -178,6 +181,13 @@ void main()
     }
 #endif
 
+    ActivateContext(mainWindow, NULL);
+    ActivateContext(mainWindow, mainContext, true);
+
+    GLuint mapPersTest = MakeBuffer();
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, mapPersTest);
+    glBufferStorage(GL_SHADER_STORAGE_BUFFER, 1024, 0, GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT);
+
     while(Running())
     {
       // trash the texture pack/unpack state
@@ -192,9 +202,31 @@ void main()
       glPixelStorei(GL_PACK_SKIP_ROWS, 33);
       glPixelStorei(GL_PACK_ALIGNMENT, 8);
 
+      glBindBuffer(GL_SHADER_STORAGE_BUFFER, mapPersTest);
+      glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, 1024, GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT);
+      glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+
+      for(int i = 0; i < 100; i++)
+        glGetError();
+
+      glBindProgramPipeline(0);
+
+      if(glGetError() != GL_NONE)
+      {
+        TEST_ERROR("Got an error from glBindProgramPipeline");
+      }
+
       glViewport(0, 0, GLsizei(screenWidth), GLsizei(screenHeight));
 
       glBindBuffersBase(GL_SHADER_STORAGE_BUFFER, 0, 4, NULL);
+
+      glBindVertexArray(trashvao);
+      glBindVertexBuffers(0, 4, NULL, NULL, NULL);
+      glBindTextures(0, 10, NULL);
+      glBindSamplers(0, 10, NULL);
+      glBindImageTextures(0, 4, NULL);
+
+      glBindVertexArray(vao);
 
       float col[] = {1.0f, 0.0f, 1.0f, 1.0f};
       glClearBufferfv(GL_COLOR, 0, col);

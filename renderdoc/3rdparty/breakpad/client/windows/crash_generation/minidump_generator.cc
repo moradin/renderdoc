@@ -175,9 +175,7 @@ bool HandleTraceData::CollectHandleData(
   stream_data->Reserved = 0;
   std::copy(operations_.begin(),
             operations_.end(),
-            stdext::checked_array_iterator<AVRF_HANDLE_OPERATION*>(
-                reinterpret_cast<AVRF_HANDLE_OPERATION*>(stream_data + 1),
-                operations_.size()));
+            reinterpret_cast<AVRF_HANDLE_OPERATION*>(stream_data + 1));
 
   return true;
 }

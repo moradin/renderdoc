@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -38,8 +38,8 @@ void InitReplayTables(void *vulkanModule)
 {
   replay = true;
 
-// not all functions will succeed - some need to be fetched through the below
-// InitDeviceReplayTable()
+  // not all functions will succeed - some need to be fetched through the below
+  // InitDeviceReplayTable()
 
 #undef HookInit
 #define HookInit(name) \
@@ -50,6 +50,7 @@ void InitReplayTables(void *vulkanModule)
     VkDevDispatchTable &table = replayDeviceTable;
     memset(&table, 0, sizeof(table));
     HookInit(GetDeviceProcAddr);
+    HookInit(CreateDevice);
     HookInitVulkanDevice();
   }
 
@@ -101,9 +102,30 @@ void InitInstanceExtensionTables(VkInstance instance, InstanceDeviceInfo *info)
       table->CONCAT(func, suffix) = table->func;      \
   }
 
+#undef HookInitExtensionEXTtoKHR
+#define HookInitExtensionEXTtoKHR(func)                    \
+  {                                                        \
+    if(table->CONCAT(func, EXT) == NULL)                   \
+      table->CONCAT(func, EXT) = table->CONCAT(func, KHR); \
+    if(table->CONCAT(func, KHR) == NULL)                   \
+      table->CONCAT(func, KHR) = table->CONCAT(func, EXT); \
+  }
+
+#undef HookInitPromotedExtensionEXTtoKHR
+#define HookInitPromotedExtensionEXTtoKHR(func)            \
+  {                                                        \
+    if(table->CONCAT(func, EXT) == NULL)                   \
+      table->CONCAT(func, EXT) = table->CONCAT(func, KHR); \
+    if(table->CONCAT(func, KHR) == NULL)                   \
+      table->CONCAT(func, KHR) = table->CONCAT(func, EXT); \
+    if(table->func == NULL)                                \
+      table->func = table->CONCAT(func, EXT);              \
+  }
+
   DeclExts();
 
   CheckInstanceExts();
+  CheckDeviceExts();
 
   InstanceGPA(EnumerateDeviceExtensionProperties);
   InstanceGPA(EnumerateDeviceLayerProperties);
@@ -140,6 +162,26 @@ void InitDeviceExtensionTables(VkDevice device, InstanceDeviceInfo *info)
       table->func = table->CONCAT(func, suffix);      \
     if(table->CONCAT(func, suffix) == NULL)           \
       table->CONCAT(func, suffix) = table->func;      \
+  }
+
+#undef HookInitExtensionEXTtoKHR
+#define HookInitExtensionEXTtoKHR(func)                    \
+  {                                                        \
+    if(table->CONCAT(func, EXT) == NULL)                   \
+      table->CONCAT(func, EXT) = table->CONCAT(func, KHR); \
+    if(table->CONCAT(func, KHR) == NULL)                   \
+      table->CONCAT(func, KHR) = table->CONCAT(func, EXT); \
+  }
+
+#undef HookInitPromotedExtensionEXTtoKHR
+#define HookInitPromotedExtensionEXTtoKHR(func)            \
+  {                                                        \
+    if(table->CONCAT(func, EXT) == NULL)                   \
+      table->CONCAT(func, EXT) = table->CONCAT(func, KHR); \
+    if(table->CONCAT(func, KHR) == NULL)                   \
+      table->CONCAT(func, KHR) = table->CONCAT(func, EXT); \
+    if(table->func == NULL)                                \
+      table->func = table->CONCAT(func, EXT);              \
   }
 
   DeclExts();

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -38,11 +38,12 @@
 #include <QTimer>
 #include "Code/Resources.h"
 #include "Code/pyrenderdoc/PythonContext.h"
+#include "Widgets/AnnotationDisplay.h"
 #include "Windows/APIInspector.h"
 #include "Windows/BufferViewer.h"
 #include "Windows/CommentView.h"
-#include "Windows/ConstantBufferPreviewer.h"
 #include "Windows/DebugMessageView.h"
+#include "Windows/DescriptorViewer.h"
 #include "Windows/Dialogs/CaptureDialog.h"
 #include "Windows/Dialogs/CrashDialog.h"
 #include "Windows/Dialogs/LiveCapture.h"
@@ -67,7 +68,7 @@
 
 #include "pipestate.inl"
 
-CaptureContext::CaptureContext(PersistantConfig &cfg) : m_Config(cfg)
+CaptureContext::CaptureContext(PersistentConfig &cfg) : m_Config(cfg)
 {
   RENDERDOC_PROFILEFUNCTION();
 
@@ -82,6 +83,7 @@ CaptureContext::CaptureContext(PersistantConfig &cfg) : m_Config(cfg)
   m_CurD3D12PipelineState = NULL;
   m_CurGLPipelineState = NULL;
   m_CurVulkanPipelineState = NULL;
+  m_CurD3D9PipelineState = NULL;
   m_CurPipelineState = &m_DummyPipelineState;
 
   m_Actions = &m_EmptyActions;
@@ -92,6 +94,8 @@ CaptureContext::CaptureContext(PersistantConfig &cfg) : m_Config(cfg)
 
   qApp->setApplicationVersion(QString::fromLatin1(RENDERDOC_GetVersionString()));
 
+  PythonContext::setCtxGlobal(*this);
+
   m_Icon = new QIcon();
   m_Icon->addFile(QStringLiteral(":/logo.svg"), QSize(), QIcon::Normal, QIcon::Off);
 
@@ -101,47 +105,54 @@ CaptureContext::CaptureContext(PersistantConfig &cfg) : m_Config(cfg)
 
   m_Replay.SetFatalErrorCallback([this]() {
     GUIInvoke::call(m_MainWindow, [this]() {
-      RefreshUIStatus({}, true, true);
+      ResultDetails err = GetFatalError();
 
-      ReplayStatus err = GetFatalError();
+      // if we encountered a fatal error during shutdown just ignore it, there's not much point in
+      // alerting the user and the recorded error will be gone already
+      if(!m_Replay.IsRunning())
+        return;
+
+      RefreshUIStatus({}, true, true);
 
       QString title;
       QString text;
 
-      if(err == ReplayStatus::RemoteServerConnectionLost)
+      if(err.code == ResultCode::RemoteServerConnectionLost)
       {
         QString serverName = Replay().CurrentRemote().Name();
 
         title = tr("Connection lost to %1").arg(serverName);
         text =
-            tr("Connection to %1 was lost while analysing capture.\n"
+            tr("%1.\n\n"
                "This is most commonly caused by a crash, but that can't be verified and it may be "
                "a connection issue.")
-                .arg(serverName);
+                .arg(err.Message());
       }
-      else if(err == ReplayStatus::ReplayDeviceLost)
+      else if(err.code == ResultCode::DeviceLost)
       {
         title = tr("Device Lost error");
-        text =
-            tr("The capture analysis encountered a device lost error. This may be due to an "
-               "application bug, a RenderDoc bug, or insufficient resources on the system to "
-               "analyse the capture.\n\n"
-               "It is recommended that you run your application with API validation enabled, as "
-               "API use errors can cause this kind of problem.");
+        text = tr("%1.\n\n"
+                  "This may be due to an application bug, a RenderDoc bug, or insufficient "
+                  "resources on the system to analyse the capture.\n\n"
+                  "It is recommended that you run your application with API validation enabled, as "
+                  "API usage errors can cause this kind of problem.")
+                   .arg(err.Message());
       }
-      else if(err == ReplayStatus::ReplayOutOfMemory)
+      else if(err.code == ResultCode::OutOfMemory)
       {
-        title = tr("Out of GPU memory");
-        text = tr(
-            "While analysing the capture it ran out of GPU memory. This is most likely caused by "
-            "insufficient resources on the system to analyse the capture, which is possible if "
-            "there is memory pressure from other applications or if the capture is heavyweight.");
+        title = tr("Out of memory");
+        text =
+            tr("%1.\n\n"
+               "This is most likely caused by "
+               "insufficient resources on the system to analyse the capture, which is possible if "
+               "there is memory pressure from other applications or if the capture is heavyweight.")
+                .arg(err.Message());
       }
       else
       {
         title = tr("Unrecoverable error");
         text = tr("While analysing the capture we encountered an unrecoverable error:\n\n%1")
-                   .arg(QString(ToStr(err)));
+                   .arg(err.Message());
       }
 
       text +=
@@ -151,33 +162,47 @@ CaptureContext::CaptureContext(PersistantConfig &cfg) : m_Config(cfg)
 
       bool add_report = false;
 
-      if(CrashDialog::HasCaptureReady(m_Config))
+      if(m_MainWindow->ErrorReportsAllowed())
       {
-        text += tr(
-            "If you think this may be a RenderDoc bug please click the button below to report it, "
-            "but note that this will require you to upload the capture for reproduction as "
-            "otherwise it is impossible to tell what the problem may be.");
-
-        add_report = true;
-      }
-      else
-      {
-        text += tr("The capture must be saved locally if you want to report this as a bug. ");
-
-        if(Replay().CurrentRemote().IsConnected())
+        if(CrashDialog::HasCaptureReady(m_Config))
         {
           text +=
-              tr("Before closing the capture you can save it to disk and manually report a bug. "
-                 "Please include the capture, or else it will be impossible to tell what the "
-                 "problem may be.");
+              tr("If you think this may be a RenderDoc bug please click the button below to report "
+                 "it, "
+                 "but note that this will require you to upload the capture for reproduction as "
+                 "otherwise it is impossible to tell what the problem may be.");
+
+          add_report = true;
+        }
+        else if(CrashDialog::CaptureTooLarge(m_Config))
+        {
+          text = tr("<html>%1<br><br>"
+                    "Your capture is too lage to upload as a crash report so this can't be "
+                    "automatically reported. "
+                    "Please email me at <a "
+                    "href=\"mailto:baldurk@baldurk.org?subject=RenderDoc%20Unrecoverable%20error\">"
+                    "baldurk@baldurk.org</a> with information and I can help investigate.</html>")
+                     .arg(text);
         }
         else
         {
-          text += tr("You will need to reconnect to the remote server to save the capture.");
+          text += tr("The capture must be saved locally if you want to report this as a bug. ");
+
+          if(Replay().CurrentRemote().IsConnected())
+          {
+            text +=
+                tr("Before closing the capture you can save it to disk and manually report a bug. "
+                   "Please include the capture, or else it will be impossible to tell what the "
+                   "problem may be.");
+          }
+          else
+          {
+            text += tr("You will need to reconnect to the remote server to save the capture.");
+          }
         }
       }
 
-      QMessageBox mb(QMessageBox::Critical, title, text, QMessageBox::Ok, m_MainWindow);
+      QMessageBox mb(QMessageBox::Critical, title, text.trimmed(), QMessageBox::Ok, m_MainWindow);
       mb.setDefaultButton(QMessageBox::NoButton);
       QPushButton *report = NULL;
       if(add_report)
@@ -198,7 +223,78 @@ CaptureContext::CaptureContext(PersistantConfig &cfg) : m_Config(cfg)
       dir.mkpath(dir.absolutePath());
   }
 
+  m_ExtensionWatcher = new QFileSystemWatcher({}, GetMainWindow()->Widget());
+
+  QObject::connect(m_ExtensionWatcher, &QFileSystemWatcher::directoryChanged,
+                   [this](const QString &path) { ExtensionTouched(path); });
+  QObject::connect(m_ExtensionWatcher, &QFileSystemWatcher::fileChanged,
+                   [this](const QString &path) { ExtensionTouched(path); });
+
   rdcarray<ExtensionMetadata> exts = CaptureContext::GetInstalledExtensions();
+
+  {
+    QDir sentinelSearch(ConfigFilePath(QString()));
+
+    bool questioned = false;
+
+    for(QString child : sentinelSearch.entryList(QStringList() << lit("python_load*.sentinel"),
+                                                 QDir::Files | QDir::NoDotAndDotDot))
+    {
+      QFileInfo finfo(ConfigFilePath(child));
+
+      // to avoid this being racey, we only care if we see a sentinel that's over 10 seconds old.
+      // This means if two instances are starting up and both enter this section the second one
+      // won't detect the temporary sentinel of the first as a crash
+      if(finfo.exists() && finfo.lastModified().secsTo(QDateTime::currentDateTime()) > 10)
+      {
+        QFile f(ConfigFilePath(child));
+
+        if(questioned)
+        {
+          f.remove();
+          continue;
+        }
+
+        if(f.open(QIODevice::ReadOnly | QIODevice::Text))
+        {
+          QString extNames = QString::fromUtf8(f.readAll());
+
+          QMessageBox::StandardButton res = RDDialog::question(
+              NULL, tr("Possible python crash detected"),
+              tr("A previous instance of RenderDoc crashed while loading python extensions.\n\n"
+                 "These extensions were enabled:\n%1\n"
+                 "Would you like to disable python extensions?")
+                  .arg(extNames));
+
+          questioned = true;
+
+          if(res == QMessageBox::Yes)
+          {
+            cfg.AlwaysLoad_Extensions.clear();
+            cfg.Save();
+          }
+        }
+
+        f.remove();
+      }
+    }
+  }
+
+  QString sentinelFilename =
+      ConfigFilePath(lit("python_load%1.sentinel").arg(QCoreApplication::applicationPid()));
+
+  // create a sentinel with the list of extensions we're loading
+  {
+    QFile f(sentinelFilename);
+
+    if(f.open(QIODevice::WriteOnly | QIODevice::Text))
+    {
+      QTextStream stream(&f);
+
+      for(rdcstr ext : cfg.AlwaysLoad_Extensions)
+        stream << ext << lit("\n");
+    }
+  }
 
   for(const ExtensionMetadata &e : exts)
   {
@@ -208,10 +304,18 @@ CaptureContext::CaptureContext(PersistantConfig &cfg) : m_Config(cfg)
       LoadExtension(e.package);
     }
   }
+
+  // remove our sentinel now
+  {
+    QFile f(sentinelFilename);
+    f.remove();
+  }
 }
 
 CaptureContext::~CaptureContext()
 {
+  delete m_ExtensionWatcher;
+
   delete m_QtHelper;
   RENDERDOC_UnregisterMemoryRegion(this);
   delete m_Icon;
@@ -219,7 +323,8 @@ CaptureContext::~CaptureContext()
   delete m_MainWindow;
 }
 
-void CaptureContext::Begin(QString paramFilename, QString remoteHost, uint32_t remoteIdent, bool temp)
+void CaptureContext::Begin(QString paramFilename, QString remoteHost, uint32_t remoteIdent,
+                           bool temp, QString scriptFilename)
 {
   m_MainWindow->show();
 
@@ -239,6 +344,14 @@ void CaptureContext::Begin(QString paramFilename, QString remoteHost, uint32_t r
       if(temp)
         m_MainWindow->takeCaptureOwnership();
     }
+  }
+
+  if(!scriptFilename.isEmpty())
+  {
+    ShowPythonShell();
+
+    if(GetPythonShell()->LoadScriptFromFilename(scriptFilename))
+      GetPythonShell()->RunScript();
   }
 }
 
@@ -274,7 +387,7 @@ rdcarray<ExtensionMetadata> CaptureContext::GetInstalledExtensions()
 
   for(QString extensionFolder : PythonContext::GetApplicationExtensionsPaths())
   {
-    QDirIterator it(extensionFolder, QDirIterator::Subdirectories);
+    QDirIterator it(extensionFolder, QDirIterator::Subdirectories | QDirIterator::FollowSymlinks);
 
     while(it.hasNext())
     {
@@ -309,15 +422,8 @@ rdcarray<ExtensionMetadata> CaptureContext::GetInstalledExtensions()
           ext.package = package;
           ext.filePath = fileinfo.absolutePath();
 
-          if(json.contains(lit("name")))
-          {
-            ext.name = json[lit("name")].toString();
-          }
-          else
-          {
-            qCritical() << "Extension" << package << "is corrupt, no name entry";
-            continue;
-          }
+          ext.hasChanges = m_DirtyExtensions.contains(rdcstr(package));
+          ext.failedLoad = m_FailedExtensions.contains(rdcstr(package));
 
           ext.extensionAPI = 1;
           if(json.contains(lit("extension_api")))
@@ -336,8 +442,16 @@ rdcarray<ExtensionMetadata> CaptureContext::GetInstalledExtensions()
           }
           else
           {
-            qCritical() << "Extension" << QString(ext.name) << "is corrupt, no version entry";
-            continue;
+            ext.version = lit("1.0");
+          }
+
+          if(json.contains(lit("name")))
+          {
+            ext.name = json[lit("name")].toString();
+          }
+          else
+          {
+            ext.name = package;
           }
 
           if(json.contains(lit("description")))
@@ -346,8 +460,7 @@ rdcarray<ExtensionMetadata> CaptureContext::GetInstalledExtensions()
           }
           else
           {
-            qCritical() << "Extension" << QString(ext.name) << "is corrupt, no description entry";
-            continue;
+            ext.description = tr("No description provided");
           }
 
           if(json.contains(lit("author")))
@@ -356,8 +469,7 @@ rdcarray<ExtensionMetadata> CaptureContext::GetInstalledExtensions()
           }
           else
           {
-            qCritical() << "Extension" << QString(ext.name) << "is corrupt, no author entry";
-            continue;
+            ext.author = tr("Unknown Author");
           }
 
           if(json.contains(lit("url")))
@@ -366,8 +478,7 @@ rdcarray<ExtensionMetadata> CaptureContext::GetInstalledExtensions()
           }
           else
           {
-            qCritical() << "Extension" << QString(ext.name) << "is corrupt, no URL entry";
-            continue;
+            ext.extensionURL = rdcstr();
           }
 
           if(json.contains(lit("minimum_renderdoc")))
@@ -407,8 +518,12 @@ rdcarray<ExtensionMetadata> CaptureContext::GetInstalledExtensions()
 
             if(badversion)
             {
-              qInfo() << "Extension" << QString(ext.name) << "declares minimum_renderdoc" << minVer
-                      << "so skipping";
+              if(!m_BadVerExtensions.contains(rdcstr(package)))
+              {
+                qInfo() << "Extension" << QString(ext.name) << "declares minimum_renderdoc"
+                        << minVer << "so skipping";
+                m_BadVerExtensions.push_back(rdcstr(package));
+              }
               continue;
             }
           }
@@ -422,14 +537,24 @@ rdcarray<ExtensionMetadata> CaptureContext::GetInstalledExtensions()
   return ret;
 }
 
+rdcarray<rdcstr> CaptureContext::GetLoadedExtensions()
+{
+  return m_ExtensionObjects.keys();
+}
+
 bool CaptureContext::IsExtensionLoaded(rdcstr name)
 {
   return m_ExtensionObjects.contains(name);
 }
 
-bool CaptureContext::LoadExtension(rdcstr name)
+bool CaptureContext::IsPythonDebuggerConnected()
 {
-  bool ret = false;
+  return PythonContext::IsDebuggingEnabled() && PythonContext::IsDebuggerConnected();
+}
+
+rdcstr CaptureContext::LoadExtension(rdcstr name)
+{
+  QString ret;
 
   PythonContext::ProcessExtensionWork([this, &ret, name]() {
     for(QObject *o : m_ExtensionObjects[name])
@@ -439,13 +564,22 @@ bool CaptureContext::LoadExtension(rdcstr name)
 
     ret = PythonContext::LoadExtension(*this, name);
 
-    if(ret)
+    if(ret.isEmpty())
     {
       m_ExtensionObjects[name].swap(m_PendingExtensionObjects);
+
+      m_DirtyExtensions.removeOne(name);
+      m_FailedExtensions.removeOne(name);
+
+      for(const ExtensionMetadata &e : GetInstalledExtensions())
+        if(e.package == name)
+          AddExtensionWatches(e.filePath);
     }
     else
     {
       m_ExtensionObjects.remove(name);
+      if(!m_FailedExtensions.contains(name))
+        m_FailedExtensions.push_back(name);
 
       for(QObject *o : m_PendingExtensionObjects)
         delete o;
@@ -458,6 +592,8 @@ bool CaptureContext::LoadExtension(rdcstr name)
     CleanMenu(a);
 
   m_RegisteredMenuItems.removeAll(NULL);
+
+  emit PythonContext::GetExtensionContext()->extensionsUpdated();
 
   return ret;
 }
@@ -491,7 +627,9 @@ void CaptureContext::RegisterWindowMenu(WindowMenu base, const rdcarray<rdcstr> 
     return;
   }
 
-  std::function<void()> slotcallback = [this, callback]() { callback(this, {}); };
+  std::function<void()> slotcallback = [callback]() {
+    callback(PythonContext::GetExtensionPyrenderdoc(), {});
+  };
 
   // if it's a new menu, GetBaseMenu already did the work, so skip the 0th element of submenus
   if(base == WindowMenu::NewMenu)
@@ -563,12 +701,12 @@ void CaptureContext::MenuDisplaying(ContextMenu contextMenu, QMenu *menu,
   {
     if(item->context == contextMenu || item->context == contextMenuAlt)
     {
-      AddSortedMenuItem(menu, true, item->submenus, [this, item, data]() {
+      AddSortedMenuItem(menu, true, item->submenus, [item, data]() {
         rdcarray<rdcpair<rdcstr, PyObject *>> args;
 
         PythonContext::ConvertPyArgs(data, args);
 
-        item->callback(this, args);
+        item->callback(PythonContext::GetExtensionPyrenderdoc(), args);
 
         PythonContext::FreePyArgs(args);
       });
@@ -583,12 +721,12 @@ void CaptureContext::MenuDisplaying(PanelMenu panelMenu, QMenu *menu, QWidget *e
   {
     if(item->panel == panelMenu)
     {
-      AddSortedMenuItem(menu, false, item->submenus, [this, item, data]() {
+      AddSortedMenuItem(menu, false, item->submenus, [item, data]() {
         rdcarray<rdcpair<rdcstr, PyObject *>> args;
 
         PythonContext::ConvertPyArgs(data, args);
 
-        item->callback(this, args);
+        item->callback(PythonContext::GetExtensionPyrenderdoc(), args);
 
         PythonContext::FreePyArgs(args);
       });
@@ -612,12 +750,12 @@ IMiniQtHelper &CaptureContext::GetMiniQtHelper()
 
 void CaptureContext::MessageDialog(const rdcstr &text, const rdcstr &title)
 {
-  RDDialog::information(m_MainWindow, title, text);
+  RDDialog::information(m_MainWindow, title.isEmpty() ? "Python Extension Message" : title, text);
 }
 
 void CaptureContext::ErrorDialog(const rdcstr &text, const rdcstr &title)
 {
-  RDDialog::critical(m_MainWindow, title, text);
+  RDDialog::critical(m_MainWindow, title.isEmpty() ? "Python Extension Error" : title, text);
 }
 
 DialogButton CaptureContext::QuestionDialog(const rdcstr &text, const rdcarray<DialogButton> &options,
@@ -626,22 +764,26 @@ DialogButton CaptureContext::QuestionDialog(const rdcstr &text, const rdcarray<D
   QMessageBox::StandardButtons buttons;
   for(DialogButton b : options)
     buttons |= (QMessageBox::StandardButton)b;
-  return (DialogButton)RDDialog::question(m_MainWindow, title, text, buttons);
+  return (DialogButton)RDDialog::question(
+      m_MainWindow, title.isEmpty() ? "Python Extension Prompt" : title, text, buttons);
 }
 
 rdcstr CaptureContext::OpenFileName(const rdcstr &caption, const rdcstr &dir, const rdcstr &filter)
 {
-  return RDDialog::getOpenFileName(m_MainWindow, caption, dir, filter);
+  return RDDialog::getOpenFileName(m_MainWindow, caption.isEmpty() ? "Open a file" : caption, dir,
+                                   filter);
 }
 
 rdcstr CaptureContext::OpenDirectoryName(const rdcstr &caption, const rdcstr &dir)
 {
-  return RDDialog::getExistingDirectory(m_MainWindow, caption, dir);
+  return RDDialog::getExistingDirectory(m_MainWindow,
+                                        caption.isEmpty() ? "Open a directory" : caption, dir);
 }
 
 rdcstr CaptureContext::SaveFileName(const rdcstr &caption, const rdcstr &dir, const rdcstr &filter)
 {
-  return RDDialog::getSaveFileName(m_MainWindow, caption, dir, filter);
+  return RDDialog::getSaveFileName(m_MainWindow, caption.isEmpty() ? "Save a file" : caption, dir,
+                                   filter);
 }
 
 void CaptureContext::AddSortedMenuItem(QMenu *menu, bool rootMenu, const rdcarray<rdcstr> &items,
@@ -802,6 +944,8 @@ void CaptureContext::LoadCapture(const rdcstr &captureFile, const ReplayOptions 
 
   PointerTypeRegistry::Init();
 
+  BufferInterpreter::context = this;
+
   m_LoadInProgress = true;
 
   if(local)
@@ -824,9 +968,9 @@ void CaptureContext::LoadCapture(const rdcstr &captureFile, const ReplayOptions 
   QElapsedTimer loadTimer;
   loadTimer.start();
 
-  ShowProgressDialog(m_MainWindow, tr("Loading Capture: %1").arg(QFileInfo(origFilename).fileName()),
-                     [this]() { return !m_LoadInProgress; },
-                     [this]() { return UpdateLoadProgress(); });
+  ShowProgressDialog(
+      m_MainWindow, tr("Loading Capture: %1").arg(QFileInfo(origFilename).fileName()),
+      [this]() { return !m_LoadInProgress; }, [this]() { return UpdateLoadProgress(); });
 
   if(local)
   {
@@ -915,6 +1059,7 @@ void CaptureContext::LoadCaptureThreaded(const QString &captureFile, const Repla
                                          const QString &origFilename, bool temporary, bool local)
 {
   m_CaptureFile = origFilename;
+  m_RemoteFile = captureFile;
 
   m_CaptureLocal = local;
 
@@ -926,17 +1071,15 @@ void CaptureContext::LoadCaptureThreaded(const QString &captureFile, const Repla
   // this function call will block until the capture is either loaded, or there's some failure
   m_Replay.OpenCapture(captureFile, opts, [this](float p) { m_LoadProgress = p; });
 
+  QString filename = QFileInfo(origFilename).fileName();
+
   // if the renderer isn't running, we hit a failure case so display an error message
   if(!m_Replay.IsRunning())
   {
-    QString errmsg = ToQStr(m_Replay.GetCreateStatus());
-
-    QString messageText = tr("%1\nFailed to open capture for replay: %2.\n\n"
-                             "Check diagnostic log in Help menu for more details.")
-                              .arg(captureFile)
-                              .arg(errmsg);
-
-    RDDialog::critical(NULL, tr("Error opening capture"), messageText);
+    RDDialog::critical(NULL, tr("Error opening capture"),
+                       tr("Failed to open '%1' for replay\n\n%2")
+                           .arg(filename)
+                           .arg(m_Replay.GetCreateStatus().Message()));
 
     m_LoadInProgress = false;
     return;
@@ -963,6 +1106,7 @@ void CaptureContext::LoadCaptureThreaded(const QString &captureFile, const Repla
     m_APIProps = r->GetAPIProperties();
 
     m_CustomEncodings = r->GetCustomShaderEncodings();
+    m_CustomPrefixes = r->GetCustomShaderSourcePrefixes();
     m_TargetEncodings = r->GetTargetShaderEncodings();
 
     m_PostloadProgress = 0.2f;
@@ -1028,8 +1172,6 @@ void CaptureContext::LoadCaptureThreaded(const QString &captureFile, const Repla
 
 #elif defined(RENDERDOC_PLATFORM_APPLE)
     m_CurWinSystem = WindowingSystem::MacOS;
-#elif defined(RENDERDOC_PLATFORM_GGP)
-    m_CurWinSystem = WindowingSystem::GGP;
 #endif
 
     m_StructuredFile = &r->GetStructuredFile();
@@ -1041,6 +1183,10 @@ void CaptureContext::LoadCaptureThreaded(const QString &captureFile, const Repla
     m_BufferList = r->GetBuffers();
     for(BufferDescription &b : m_BufferList)
       m_Buffers[b.resourceId] = &b;
+
+    m_DescriptorStoreList = r->GetDescriptorStores();
+    for(DescriptorStoreDescription &d : m_DescriptorStoreList)
+      m_DescriptorStores[d.resourceId] = &d;
 
     m_PostloadProgress = 0.8f;
 
@@ -1054,6 +1200,7 @@ void CaptureContext::LoadCaptureThreaded(const QString &captureFile, const Repla
     m_CurD3D12PipelineState = r->GetD3D12PipelineState();
     m_CurGLPipelineState = r->GetGLPipelineState();
     m_CurVulkanPipelineState = r->GetVulkanPipelineState();
+    m_CurD3D9PipelineState = r->GetD3D9PipelineState();
     m_CurPipelineState = &r->GetPipelineState();
 
     m_UnreadMessageCount = 0;
@@ -1061,6 +1208,9 @@ void CaptureContext::LoadCaptureThreaded(const QString &captureFile, const Repla
 
     m_PostloadProgress = 1.0f;
   });
+
+  if(m_FrameInfo.containsAnnotations)
+    ANALYTIC_SET(CaptureFeatures.CustomAnnotations, true);
 
   QThread::msleep(20);
 
@@ -1080,29 +1230,32 @@ void CaptureContext::LoadCaptureThreaded(const QString &captureFile, const Repla
             .arg(origFilename));
   }
 
-  ICaptureAccess *access = Replay().GetCaptureAccess();
-
-  if(access)
-  {
+  Replay().BlockAccessInvoke([this](ICaptureAccess *access) {
     int idx = access->FindSectionByType(SectionType::ResourceRenames);
     if(idx >= 0)
     {
       bytebuf buf = access->GetSectionContents(idx);
-      LoadRenames(QString::fromUtf8((const char *)buf.data(), buf.count()));
+      GUIInvoke::call(m_MainWindow, [this, buf]() {
+        LoadRenames(QString::fromUtf8((const char *)buf.data(), buf.count()));
+      });
     }
 
     idx = access->FindSectionByType(SectionType::Bookmarks);
     if(idx >= 0)
     {
       bytebuf buf = access->GetSectionContents(idx);
-      LoadBookmarks(QString::fromUtf8((const char *)buf.data(), buf.count()));
+      GUIInvoke::call(m_MainWindow, [this, buf]() {
+        LoadBookmarks(QString::fromUtf8((const char *)buf.data(), buf.count()));
+      });
     }
 
     idx = access->FindSectionByType(SectionType::Notes);
     if(idx >= 0)
     {
       bytebuf buf = access->GetSectionContents(idx);
-      LoadNotes(QString::fromUtf8((const char *)buf.data(), buf.count()));
+      GUIInvoke::call(m_MainWindow, [this, buf]() {
+        LoadNotes(QString::fromUtf8((const char *)buf.data(), buf.count()));
+      });
     }
 
     idx = access->FindSectionByType(SectionType::EditedShaders);
@@ -1123,7 +1276,7 @@ void CaptureContext::LoadCaptureThreaded(const QString &captureFile, const Repla
     {
       ANALYTIC_ADDUNIQ(APIs, driver);
     }
-  }
+  });
 
   m_LoadInProgress = false;
   m_CaptureLoaded = true;
@@ -1168,6 +1321,10 @@ void CaptureContext::RecompressCapture()
 
     destFilename = m_MainWindow->GetSavePath();
 
+    // the user can also cancel the save dialog after clicking yes
+    if(destFilename.isEmpty())
+      return;
+
     // if it's already local, we'll do the save as part of the recompression convert. If it's
     // remote, we need to copy it first, but we copy it to a temporary so we can do the conversion
     // to the target location
@@ -1201,6 +1358,11 @@ void CaptureContext::RecompressCapture()
   {
     // for local files we already have a handle. We'll reuse it, then re-open
     cap = m_Replay.GetCaptureFile();
+    if(!cap)
+    {
+      m_Replay.ReopenCaptureFile(m_CaptureFile);
+      cap = m_Replay.GetCaptureFile();
+    }
   }
   else
   {
@@ -1246,8 +1408,9 @@ void CaptureContext::RecompressCapture()
   th->wait(500);
   if(th->isRunning())
   {
-    ShowProgressDialog(m_MainWindow, tr("Recompressing file."), [th]() { return !th->isRunning(); },
-                       [&progress]() { return progress; });
+    ShowProgressDialog(
+        m_MainWindow, tr("Recompressing file."), [th]() { return !th->isRunning(); },
+        [&progress]() { return progress; });
   }
   th->deleteLater();
 
@@ -1324,7 +1487,9 @@ bool CaptureContext::SaveCaptureTo(const rdcstr &captureFile)
         if(capFile)
         {
           // this will overwrite
-          success = capFile->CopyFileTo(captureFile);
+          ResultDetails result = capFile->CopyFileTo(captureFile);
+          success = result.OK();
+          error = result.Message();
         }
         else
         {
@@ -1332,18 +1497,17 @@ bool CaptureContext::SaveCaptureTo(const rdcstr &captureFile)
           // prompted for overwrite)
           QFile::remove(captureFile);
           success = QFile::copy(GetCaptureFilename(), captureFile);
+          error = tr("File move failed");
         }
 
-        error = tr("Couldn't save to %1").arg(captureFile);
+        error = tr("Couldn't save to %1: %2").arg(captureFile).arg(error);
       }
     }
     else
     {
-      RDDialog::critical(
-          NULL, tr("File not found"),
-          error =
-              tr("Capture '%1' couldn't be found on disk, cannot save.").arg(GetCaptureFilename()));
+      error = tr("Capture '%1' couldn't be found on disk, cannot save.").arg(GetCaptureFilename());
       success = false;
+      RDDialog::critical(NULL, tr("File not found"), error);
     }
   }
   else
@@ -1383,6 +1547,14 @@ void CaptureContext::CloseCapture()
   if(!m_CaptureLoaded)
     return;
 
+  rdcarray<ICaptureViewer *> capviewers(m_CaptureViewers);
+
+  for(ICaptureViewer *viewer : capviewers)
+  {
+    if(viewer && m_CaptureViewers.contains(viewer))
+      viewer->OnCaptureClosed();
+  }
+
   delete m_Watcher;
   m_Watcher = NULL;
 
@@ -1394,6 +1566,7 @@ void CaptureContext::CloseCapture()
   m_CaptureTemporary = false;
 
   m_CaptureFile = QString();
+  m_RemoteFile = QString();
 
   m_APIProps = APIProperties();
   m_FrameInfo = FrameDescription();
@@ -1417,6 +1590,7 @@ void CaptureContext::CloseCapture()
   m_CurD3D12PipelineState = NULL;
   m_CurGLPipelineState = NULL;
   m_CurVulkanPipelineState = NULL;
+  m_CurD3D9PipelineState = NULL;
   m_CurPipelineState = &m_DummyPipelineState;
 
   m_StructuredFile = &m_DummySDFile;
@@ -1426,13 +1600,7 @@ void CaptureContext::CloseCapture()
 
   m_CaptureLoaded = false;
 
-  rdcarray<ICaptureViewer *> capviewers(m_CaptureViewers);
-
-  for(ICaptureViewer *viewer : capviewers)
-  {
-    if(viewer && m_CaptureViewers.contains(viewer))
-      viewer->OnCaptureClosed();
-  }
+  BufferInterpreter::context = NULL;
 
   m_Replay.CloseThread();
 }
@@ -1444,29 +1612,26 @@ bool CaptureContext::ImportCapture(const CaptureFileFormat &fmt, const rdcstr &i
 
   QString ext = fmt.extension;
 
-  ReplayStatus status = ReplayStatus::UnknownError;
-  QString message;
+  ResultDetails result;
 
   // shorten the filename after here for error messages
   QString filename = QFileInfo(importfile).fileName();
 
   float progress = 0.0f;
 
-  LambdaThread *th = new LambdaThread([rdcfile, importfile, ext, &message, &progress, &status]() {
-
+  LambdaThread *th = new LambdaThread([rdcfile, importfile, ext, &progress, &result]() {
     ICaptureFile *file = RENDERDOC_OpenCaptureFile();
 
-    status = file->OpenFile(importfile, ext.toUtf8().data(),
+    result = file->OpenFile(importfile, ext.toUtf8().data(),
                             [&progress](float p) { progress = p * 0.5f; });
 
-    if(status != ReplayStatus::Succeeded)
+    if(result.code != ResultCode::Succeeded)
     {
-      message = file->ErrorString();
       file->Shutdown();
       return;
     }
 
-    status =
+    result =
         file->Convert(rdcfile, "rdc", NULL, [&progress](float p) { progress = 0.5f + p * 0.5f; });
     file->Shutdown();
   });
@@ -1476,20 +1641,16 @@ bool CaptureContext::ImportCapture(const CaptureFileFormat &fmt, const rdcstr &i
   th->wait(500);
   if(th->isRunning())
   {
-    ShowProgressDialog(m_MainWindow, tr("Importing from %1, please wait...").arg(filename),
-                       [th]() { return !th->isRunning(); }, [&progress]() { return progress; });
+    ShowProgressDialog(
+        m_MainWindow, tr("Importing from %1, please wait...").arg(filename),
+        [th]() { return !th->isRunning(); }, [&progress]() { return progress; });
   }
   th->deleteLater();
 
-  if(status != ReplayStatus::Succeeded)
+  if(!result.OK())
   {
-    QString text = tr("Couldn't convert file '%1'\n").arg(filename);
-    if(message.isEmpty())
-      text += tr("%1").arg(ToQStr(status));
-    else
-      text += tr("%1: %2").arg(ToQStr(status)).arg(message);
-
-    RDDialog::critical(m_MainWindow, tr("Error converting capture"), text);
+    RDDialog::critical(m_MainWindow, tr("Error converting capture"),
+                       tr("Couldn't convert file '%1'\n%2").arg(filename).arg(result.Message()));
     return false;
   }
 
@@ -1505,7 +1666,7 @@ void CaptureContext::ExportCapture(const CaptureFileFormat &fmt, const rdcstr &e
 
   ICaptureFile *local = NULL;
   ICaptureFile *file = NULL;
-  ReplayStatus status = ReplayStatus::Succeeded;
+  ResultDetails result = {ResultCode::Succeeded};
 
   const SDFile *sdfile = NULL;
 
@@ -1519,21 +1680,16 @@ void CaptureContext::ExportCapture(const CaptureFileFormat &fmt, const rdcstr &e
   if(!file)
   {
     local = file = RENDERDOC_OpenCaptureFile();
-    status = file->OpenFile(m_CaptureFile, "rdc", NULL);
+    result = file->OpenFile(m_CaptureFile, "rdc", NULL);
   }
 
   QString filename = QFileInfo(m_CaptureFile).fileName();
 
-  if(status != ReplayStatus::Succeeded)
+  if(!result.OK())
   {
-    QString text = tr("Couldn't open file '%1' for export\n").arg(filename);
-    QString message = file->ErrorString();
-    if(message.isEmpty())
-      text += tr("%1").arg(ToQStr(status));
-    else
-      text += tr("%1: %2").arg(ToQStr(status)).arg(message);
-
-    RDDialog::critical(m_MainWindow, tr("Error opening file"), text);
+    RDDialog::critical(
+        m_MainWindow, tr("Error opening file"),
+        tr("Couldn't open file '%1' for export\n%2").arg(filename).arg(result.Message()));
 
     if(local)
       local->Shutdown();
@@ -1542,8 +1698,8 @@ void CaptureContext::ExportCapture(const CaptureFileFormat &fmt, const rdcstr &e
 
   float progress = 0.0f;
 
-  LambdaThread *th = new LambdaThread([file, sdfile, ext, exportfile, &progress, &status]() {
-    status = file->Convert(exportfile, ext, sdfile, [&progress](float p) { progress = p; });
+  LambdaThread *th = new LambdaThread([file, sdfile, ext, exportfile, &progress, &result]() {
+    result = file->Convert(exportfile, ext, sdfile, [&progress](float p) { progress = p; });
   });
   th->setName(lit("ExportCapture"));
   th->start();
@@ -1551,25 +1707,19 @@ void CaptureContext::ExportCapture(const CaptureFileFormat &fmt, const rdcstr &e
   th->wait(500);
   if(th->isRunning())
   {
-    ShowProgressDialog(m_MainWindow,
-                       tr("Exporting %1 to %2, please wait...").arg(filename).arg(QString(fmt.name)),
-                       [th]() { return !th->isRunning(); }, [&progress]() { return progress; });
+    ShowProgressDialog(
+        m_MainWindow, tr("Exporting %1 to %2, please wait...").arg(filename).arg(QString(fmt.name)),
+        [th]() { return !th->isRunning(); }, [&progress]() { return progress; });
   }
   th->deleteLater();
 
-  QString message = file->ErrorString();
   if(local)
     local->Shutdown();
 
-  if(status != ReplayStatus::Succeeded)
+  if(!result.OK())
   {
-    QString text = tr("Couldn't convert file '%1'\n").arg(filename);
-    if(message.isEmpty())
-      text += tr("%1").arg(ToQStr(status));
-    else
-      text += tr("%1: %2").arg(ToQStr(status)).arg(message);
-
-    RDDialog::critical(m_MainWindow, tr("Error converting capture"), text);
+    RDDialog::critical(m_MainWindow, tr("Error converting capture"),
+                       tr("Couldn't convert file '%1'\n%2").arg(filename).arg(result.Message()));
   }
 }
 
@@ -1604,6 +1754,7 @@ void CaptureContext::SetEventID(const rdcarray<ICaptureViewer *> &exclude, uint3
     m_CurD3D12PipelineState = r->GetD3D12PipelineState();
     m_CurGLPipelineState = r->GetGLPipelineState();
     m_CurVulkanPipelineState = r->GetVulkanPipelineState();
+    m_CurD3D9PipelineState = r->GetD3D9PipelineState();
     m_CurPipelineState = &r->GetPipelineState();
 
     done = true;
@@ -1693,8 +1844,9 @@ void CaptureContext::RefreshUIStatus(const rdcarray<ICaptureViewer *> &exclude,
                                      bool updateSelectedEvent, bool updateEvent)
 {
   // cache and assign pointer type IDs for any known pointer types in current shaders
-  for(ShaderStage stage : {ShaderStage::Vertex, ShaderStage::Hull, ShaderStage::Domain,
-                           ShaderStage::Geometry, ShaderStage::Pixel, ShaderStage::Compute})
+  for(ShaderStage stage :
+      {ShaderStage::Vertex, ShaderStage::Hull, ShaderStage::Domain, ShaderStage::Geometry,
+       ShaderStage::Pixel, ShaderStage::Compute, ShaderStage::Task, ShaderStage::Mesh})
   {
     const ShaderReflection *refl = m_CurPipelineState->GetShaderReflection(stage);
     if(refl)
@@ -1715,11 +1867,27 @@ void CaptureContext::RefreshUIStatus(const rdcarray<ICaptureViewer *> &exclude,
   }
 }
 
+void CaptureContext::InvokeOntoUIThread(std::function<void()> callback)
+{
+  GUIInvoke::call(GetMainWindow()->Widget(), callback);
+}
+
 void CaptureContext::AddMessages(const rdcarray<DebugMessage> &msgs)
 {
   m_UnreadMessageCount += msgs.count();
   for(const DebugMessage &msg : msgs)
     m_DebugMessages.push_back(msg);
+
+  if(m_DebugMessageView)
+  {
+    GUIInvoke::call(m_DebugMessageView, [this]() { m_DebugMessageView->RefreshMessageList(); });
+  }
+}
+
+void CaptureContext::ClearMessages()
+{
+  m_UnreadMessageCount = 0;
+  m_DebugMessages.clear();
 
   if(m_DebugMessageView)
   {
@@ -1772,6 +1940,11 @@ void CaptureContext::RemoveBookmark(uint32_t EID)
   RefreshUIStatus({}, true, true);
 }
 
+void CaptureContext::DelayedCallback(uint32_t milliseconds, std::function<void()> callback)
+{
+  QTimer::singleShot(milliseconds, callback);
+}
+
 void CaptureContext::SetModification(CaptureModifications mod)
 {
   m_CaptureMods |= mod;
@@ -1782,17 +1955,24 @@ void CaptureContext::SaveChanges()
 {
   bool success = true;
 
-  if(m_CaptureMods & CaptureModifications::Renames)
-    success &= SaveRenames();
+  if(!m_Replay.GetCaptureFile())
+  {
+    success = false;
+  }
+  else
+  {
+    if(m_CaptureMods & CaptureModifications::Renames)
+      success &= SaveRenames();
 
-  if(m_CaptureMods & CaptureModifications::Bookmarks)
-    success &= SaveBookmarks();
+    if(m_CaptureMods & CaptureModifications::Bookmarks)
+      success &= SaveBookmarks();
 
-  if(m_CaptureMods & CaptureModifications::Notes)
-    success &= SaveNotes();
+    if(m_CaptureMods & CaptureModifications::Notes)
+      success &= SaveNotes();
 
-  if(m_CaptureMods & CaptureModifications::EditedShaders)
-    success &= SaveEdits();
+    if(m_CaptureMods & CaptureModifications::EditedShaders)
+      success &= SaveEdits();
+  }
 
   if(!success)
   {
@@ -1821,7 +2001,7 @@ bool CaptureContext::SaveRenames()
   props.type = SectionType::ResourceRenames;
   props.version = 1;
 
-  return Replay().GetCaptureAccess()->WriteSection(props, json.toUtf8());
+  return Replay().GetCaptureFile()->WriteSection(props, json.toUtf8()).OK();
 }
 
 void CaptureContext::LoadRenames(const QString &data)
@@ -1873,7 +2053,7 @@ bool CaptureContext::SaveBookmarks()
   props.type = SectionType::Bookmarks;
   props.version = 1;
 
-  return Replay().GetCaptureAccess()->WriteSection(props, json.toUtf8());
+  return Replay().GetCaptureFile()->WriteSection(props, json.toUtf8()).OK();
 }
 
 void CaptureContext::LoadBookmarks(const QString &data)
@@ -1913,7 +2093,7 @@ bool CaptureContext::SaveNotes()
 
   ANALYTIC_SET(UIFeatures.CaptureComments, true);
 
-  return Replay().GetCaptureAccess()->WriteSection(props, json.toUtf8());
+  return Replay().GetCaptureFile()->WriteSection(props, json.toUtf8()).OK();
 }
 
 void CaptureContext::LoadNotes(const QString &data)
@@ -1948,7 +2128,7 @@ bool CaptureContext::SaveEdits()
   props.type = SectionType::EditedShaders;
   props.version = 1;
 
-  return Replay().GetCaptureAccess()->WriteSection(props, json.toUtf8());
+  return Replay().GetCaptureFile()->WriteSection(props, json.toUtf8()).OK();
 }
 
 void CaptureContext::LoadEdits(const QString &data)
@@ -1960,24 +2140,23 @@ void CaptureContext::LoadEdits(const QString &data)
   auto replaceSaveCallback = [this](ICaptureContext *ctx, IShaderViewer *viewer, ResourceId id,
                                     ShaderStage stage, ShaderEncoding shaderEncoding,
                                     ShaderCompileFlags flags, rdcstr entryFunc, bytebuf shaderBytes) {
-
     ApplyShaderEdit(viewer, id, stage, shaderEncoding, flags, entryFunc, shaderBytes);
   };
 
-  auto replaceCloseCallback = [this](ICaptureContext *ctx, IShaderViewer *view, ResourceId id) {
+  auto replaceRevertCallback = [this](ICaptureContext *ctx, IShaderViewer *view, ResourceId id) {
     RevertShaderEdit(view, id);
   };
 
   for(QVariant e : editors)
   {
-    ShaderViewer *edit =
-        ShaderViewer::LoadEditor(*this, e.toMap(), replaceSaveCallback, replaceCloseCallback,
-                                 [this](ShaderViewer *view, bool closed) {
-                                   SetModification(CaptureModifications::EditedShaders);
-                                   if(closed)
-                                     m_ShaderEditors.removeOne(view);
-                                 },
-                                 m_MainWindow->Widget());
+    ShaderViewer *edit = ShaderViewer::LoadEditor(
+        *this, e.toMap(), replaceSaveCallback, replaceRevertCallback,
+        [this](ShaderViewer *view, bool closed) {
+          SetModification(CaptureModifications::EditedShaders);
+          if(closed)
+            m_ShaderEditors.removeOne(view);
+        },
+        m_MainWindow->Widget());
 
     if(edit)
     {
@@ -1985,6 +2164,13 @@ void CaptureContext::LoadEdits(const QString &data)
       m_ShaderEditors.push_back(edit);
     }
   }
+}
+
+void CaptureContext::ClearReplayCache()
+{
+  m_CustomNameCachedID++;
+
+  Replay().AsyncInvoke([](IReplayController *r) { r->ClearReplayCache(); });
 }
 
 bool CaptureContext::OpenRGPProfile(const rdcstr &filename)
@@ -2058,7 +2244,7 @@ bool CaptureContext::OpenRGPProfile(const rdcstr &filename)
   return true;
 }
 
-rdcstr CaptureContext::GetResourceNameUnsuffixed(ResourceId id)
+rdcstr CaptureContext::GetResourceNameUnsuffixed(ResourceId id) const
 {
   if(id == ResourceId())
     return tr("No Resource");
@@ -2066,7 +2252,7 @@ rdcstr CaptureContext::GetResourceNameUnsuffixed(ResourceId id)
   if(m_ReplacedToOrigResources.contains(id))
     return GetResourceName(m_ReplacedToOrigResources[id]);
 
-  ResourceDescription *desc = GetResource(id);
+  const ResourceDescription *desc = GetResource(id);
 
   if(desc)
     return GetResourceNameUnsuffixed(desc);
@@ -2076,7 +2262,7 @@ rdcstr CaptureContext::GetResourceNameUnsuffixed(ResourceId id)
   return tr("Unknown Resource %1").arg(num);
 }
 
-rdcstr CaptureContext::GetResourceNameUnsuffixed(const ResourceDescription *desc)
+rdcstr CaptureContext::GetResourceNameUnsuffixed(const ResourceDescription *desc) const
 {
   if(m_CustomNames.contains(desc->resourceId))
     return m_CustomNames[desc->resourceId];
@@ -2084,7 +2270,7 @@ rdcstr CaptureContext::GetResourceNameUnsuffixed(const ResourceDescription *desc
   return desc->name;
 }
 
-rdcstr CaptureContext::GetResourceName(ResourceId id)
+rdcstr CaptureContext::GetResourceName(ResourceId id) const
 {
   rdcstr ret = GetResourceNameUnsuffixed(id);
 
@@ -2102,7 +2288,7 @@ bool CaptureContext::IsAutogeneratedName(ResourceId id)
   if(m_CustomNames.contains(id))
     return false;
 
-  ResourceDescription *desc = GetResource(id);
+  const ResourceDescription *desc = GetResource(id);
 
   if(desc)
     return desc->autogeneratedName;
@@ -2178,11 +2364,6 @@ WindowingData CaptureContext::CreateWindowingData(QWidget *window)
 
   return CreateMacOSWindowingData(view, layer);
 
-#elif defined(RENDERDOC_PLATFORM_GGP)
-
-  WindowingData ret = {WindowingSystem::GGP};
-  return ret;
-
 #else
 
 #error "Unknown platform"
@@ -2202,7 +2383,7 @@ IEventBrowser *CaptureContext::GetEventBrowser()
 
   m_EventBrowser = new EventBrowser(*this, m_MainWindow);
   m_EventBrowser->setObjectName(lit("eventBrowser"));
-  setupDockWindow(m_EventBrowser);
+  setupDockWindow(m_EventBrowser, true);
 
   return m_EventBrowser;
 }
@@ -2214,9 +2395,21 @@ IAPIInspector *CaptureContext::GetAPIInspector()
 
   m_APIInspector = new APIInspector(*this, m_MainWindow);
   m_APIInspector->setObjectName(lit("apiInspector"));
-  setupDockWindow(m_APIInspector);
+  setupDockWindow(m_APIInspector, true);
 
   return m_APIInspector;
+}
+
+IAnnotationViewer *CaptureContext::GetAnnotationViewer()
+{
+  if(m_AnnotationViewer)
+    return m_AnnotationViewer;
+
+  m_AnnotationViewer = new AnnotationDisplay(*this, true, m_MainWindow);
+  m_AnnotationViewer->setObjectName(lit("annotationViewer"));
+  setupDockWindow(m_AnnotationViewer, true);
+
+  return m_AnnotationViewer;
 }
 
 ITextureViewer *CaptureContext::GetTextureViewer()
@@ -2226,7 +2419,7 @@ ITextureViewer *CaptureContext::GetTextureViewer()
 
   m_TextureViewer = new TextureViewer(*this, m_MainWindow);
   m_TextureViewer->setObjectName(lit("textureViewer"));
-  setupDockWindow(m_TextureViewer);
+  setupDockWindow(m_TextureViewer, true);
 
   return m_TextureViewer;
 }
@@ -2238,7 +2431,7 @@ IBufferViewer *CaptureContext::GetMeshPreview()
 
   m_MeshPreview = new BufferViewer(*this, true, m_MainWindow);
   m_MeshPreview->setObjectName(lit("meshPreview"));
-  setupDockWindow(m_MeshPreview);
+  setupDockWindow(m_MeshPreview, true);
 
   return m_MeshPreview;
 }
@@ -2250,7 +2443,7 @@ IPipelineStateViewer *CaptureContext::GetPipelineViewer()
 
   m_PipelineViewer = new PipelineStateViewer(*this, m_MainWindow);
   m_PipelineViewer->setObjectName(lit("pipelineViewer"));
-  setupDockWindow(m_PipelineViewer);
+  setupDockWindow(m_PipelineViewer, true);
 
   return m_PipelineViewer;
 }
@@ -2264,11 +2457,11 @@ ICaptureDialog *CaptureContext::GetCaptureDialog()
       *this,
       [this](const QString &exe, const QString &workingDir, const QString &cmdLine,
              const rdcarray<EnvironmentModification> &env, CaptureOptions opts,
-             std::function<void(LiveCapture *)> callback) {
+             std::function<void(ICaptureConnection *)> callback) {
         return m_MainWindow->OnCaptureTrigger(exe, workingDir, cmdLine, env, opts, callback);
       },
       [this](uint32_t PID, const rdcarray<EnvironmentModification> &env, const QString &name,
-             CaptureOptions opts, std::function<void(LiveCapture *)> callback) {
+             CaptureOptions opts, std::function<void(ICaptureConnection *)> callback) {
         return m_MainWindow->OnInjectTrigger(PID, env, name, opts, callback);
       },
       m_MainWindow, m_MainWindow);
@@ -2285,7 +2478,7 @@ IDebugMessageView *CaptureContext::GetDebugMessageView()
 
   m_DebugMessageView = new DebugMessageView(*this, m_MainWindow);
   m_DebugMessageView->setObjectName(lit("debugMessageView"));
-  setupDockWindow(m_DebugMessageView);
+  setupDockWindow(m_DebugMessageView, true);
 
   return m_DebugMessageView;
 }
@@ -2297,7 +2490,7 @@ IDiagnosticLogView *CaptureContext::GetDiagnosticLogView()
 
   m_DiagnosticLogView = new LogView(*this, m_MainWindow);
   m_DiagnosticLogView->setObjectName(lit("diagnosticLogView"));
-  setupDockWindow(m_DiagnosticLogView);
+  setupDockWindow(m_DiagnosticLogView, true);
 
   return m_DiagnosticLogView;
 }
@@ -2309,7 +2502,7 @@ ICommentView *CaptureContext::GetCommentView()
 
   m_CommentView = new CommentView(*this, m_MainWindow);
   m_CommentView->setObjectName(lit("commentView"));
-  setupDockWindow(m_CommentView);
+  setupDockWindow(m_CommentView, true);
 
   return m_CommentView;
 }
@@ -2321,7 +2514,7 @@ IPerformanceCounterViewer *CaptureContext::GetPerformanceCounterViewer()
 
   m_PerformanceCounterViewer = new PerformanceCounterViewer(*this, m_MainWindow);
   m_PerformanceCounterViewer->setObjectName(lit("performanceCounterViewer"));
-  setupDockWindow(m_PerformanceCounterViewer);
+  setupDockWindow(m_PerformanceCounterViewer, true);
 
   return m_PerformanceCounterViewer;
 }
@@ -2333,7 +2526,7 @@ IStatisticsViewer *CaptureContext::GetStatisticsViewer()
 
   m_StatisticsViewer = new StatisticsViewer(*this, m_MainWindow);
   m_StatisticsViewer->setObjectName(lit("statisticsViewer"));
-  setupDockWindow(m_StatisticsViewer);
+  setupDockWindow(m_StatisticsViewer, true);
 
   return m_StatisticsViewer;
 }
@@ -2345,7 +2538,7 @@ ITimelineBar *CaptureContext::GetTimelineBar()
 
   m_TimelineBar = new TimelineBar(*this, m_MainWindow);
   m_TimelineBar->setObjectName(lit("timelineBar"));
-  setupDockWindow(m_TimelineBar);
+  setupDockWindow(m_TimelineBar, true);
 
   return m_TimelineBar;
 }
@@ -2357,7 +2550,7 @@ IPythonShell *CaptureContext::GetPythonShell()
 
   m_PythonShell = new PythonShell(*this, m_MainWindow);
   m_PythonShell->setObjectName(lit("pythonShell"));
-  setupDockWindow(m_PythonShell);
+  setupDockWindow(m_PythonShell, true);
 
   return m_PythonShell;
 }
@@ -2369,7 +2562,7 @@ IResourceInspector *CaptureContext::GetResourceInspector()
 
   m_ResourceInspector = new ResourceInspector(*this, m_MainWindow);
   m_ResourceInspector->setObjectName(lit("resourceInspector"));
-  setupDockWindow(m_ResourceInspector);
+  setupDockWindow(m_ResourceInspector, true);
 
   return m_ResourceInspector;
 }
@@ -2382,6 +2575,11 @@ void CaptureContext::ShowEventBrowser()
 void CaptureContext::ShowAPIInspector()
 {
   m_MainWindow->showAPIInspector();
+}
+
+void CaptureContext::ShowAnnotationViewer()
+{
+  m_MainWindow->showAnnotationViewer();
 }
 
 void CaptureContext::ShowTextureViewer()
@@ -2444,51 +2642,52 @@ void CaptureContext::ShowResourceInspector()
   m_MainWindow->showResourceInspector();
 }
 
-IShaderViewer *CaptureContext::EditShader(ResourceId id, ShaderStage stage,
-                                          const rdcstr &entryPoint, const rdcstrpairs &files,
+IShaderViewer *CaptureContext::EditShader(ResourceId id, ShaderStage stage, const rdcstr &entryPoint,
+                                          const rdcstrpairs &files, KnownShaderTool knownTool,
                                           ShaderEncoding shaderEncoding, ShaderCompileFlags flags,
                                           IShaderViewer::SaveCallback saveCallback,
-                                          IShaderViewer::CloseCallback closeCallback)
+                                          IShaderViewer::RevertCallback revertCallback)
 {
   ShaderViewer *viewer = NULL;
 
   if(id != ResourceId())
   {
     auto replaceSaveCallback = [this, saveCallback](
-        ICaptureContext *ctx, IShaderViewer *viewer, ResourceId id, ShaderStage stage,
-        ShaderEncoding shaderEncoding, ShaderCompileFlags flags, rdcstr entryFunc,
-        bytebuf shaderBytes) {
-
+                                   ICaptureContext *ctx, IShaderViewer *viewer, ResourceId id,
+                                   ShaderStage stage, ShaderEncoding shaderEncoding,
+                                   ShaderCompileFlags flags, rdcstr entryFunc, bytebuf shaderBytes) {
       ApplyShaderEdit(viewer, id, stage, shaderEncoding, flags, entryFunc, shaderBytes);
 
       if(saveCallback)
         saveCallback(ctx, viewer, id, stage, shaderEncoding, flags, entryFunc, shaderBytes);
     };
 
-    auto replaceCloseCallback = [this, closeCallback](ICaptureContext *ctx, IShaderViewer *view,
-                                                      ResourceId id) {
+    auto replaceRevertCallback = [this, revertCallback](ICaptureContext *ctx, IShaderViewer *view,
+                                                        ResourceId id) {
       RevertShaderEdit(view, id);
 
-      if(closeCallback)
-        closeCallback(ctx, view, id);
+      if(revertCallback)
+        revertCallback(ctx, view, id);
     };
 
-    viewer = ShaderViewer::EditShader(*this, id, stage, entryPoint, files, shaderEncoding, flags,
-                                      replaceSaveCallback, replaceCloseCallback,
-                                      [this](ShaderViewer *view, bool closed) {
-                                        SetModification(CaptureModifications::EditedShaders);
-                                        if(closed)
-                                          m_ShaderEditors.removeOne(view);
-                                      },
-                                      m_MainWindow->Widget());
+    viewer = ShaderViewer::EditShader(
+        *this, id, stage, entryPoint, files, knownTool, shaderEncoding, flags, replaceSaveCallback,
+        replaceRevertCallback,
+        [this](ShaderViewer *view, bool closed) {
+          SetModification(CaptureModifications::EditedShaders);
+          if(closed)
+            m_ShaderEditors.removeOne(view);
+        },
+        m_MainWindow->Widget());
 
     m_ShaderEditors.push_back(viewer);
     SetModification(CaptureModifications::EditedShaders);
   }
   else
   {
-    viewer = ShaderViewer::EditShader(*this, id, stage, entryPoint, files, shaderEncoding, flags,
-                                      saveCallback, closeCallback, NULL, m_MainWindow->Widget());
+    viewer =
+        ShaderViewer::EditShader(*this, id, stage, entryPoint, files, knownTool, shaderEncoding,
+                                 flags, saveCallback, revertCallback, NULL, m_MainWindow->Widget());
   }
 
   return viewer;
@@ -2537,20 +2736,25 @@ void CaptureContext::ApplyShaderEdit(IShaderViewer *viewer, ResourceId id, Shade
 
 void CaptureContext::RevertShaderEdit(IShaderViewer *viewer, ResourceId id)
 {
+  QPointer<QObject> ptr(viewer->Widget());
+
   // remove the replacement on close (we could make this more sophisticated if there
   // was a place to control replaced resources/shaders).
-  Replay().AsyncInvoke([this, id](IReplayController *r) {
+  Replay().AsyncInvoke([this, viewer, id, ptr](IReplayController *r) {
     if(IsCaptureLoaded())
       r->RemoveReplacement(id);
-    GUIInvoke::call(GetMainWindow()->Widget(), [this, id] { UnregisterReplacement(id); });
+    GUIInvoke::call(GetMainWindow()->Widget(), [this, viewer, id, ptr] {
+      UnregisterReplacement(id);
+      if(ptr)
+        viewer->ShowErrors(rdcstr());
+    });
   });
 }
 
-IShaderViewer *CaptureContext::DebugShader(const ShaderBindpointMapping *bind,
-                                           const ShaderReflection *shader, ResourceId pipeline,
+IShaderViewer *CaptureContext::DebugShader(const ShaderReflection *shader, ResourceId pipeline,
                                            ShaderDebugTrace *trace, const rdcstr &debugContext)
 {
-  return ShaderViewer::DebugShader(*this, bind, shader, pipeline, trace, debugContext,
+  return ShaderViewer::DebugShader(*this, shader, pipeline, trace, debugContext,
                                    m_MainWindow->Widget());
 }
 
@@ -2562,6 +2766,25 @@ IShaderViewer *CaptureContext::ViewShader(const ShaderReflection *shader, Resour
 IShaderMessageViewer *CaptureContext::ViewShaderMessages(ShaderStageMask stages)
 {
   return new ShaderMessageViewer(*this, stages, m_MainWindow);
+}
+
+IDescriptorViewer *CaptureContext::ViewDescriptorStore(ResourceId id)
+{
+  DescriptorViewer *viewer = new DescriptorViewer(*this, m_MainWindow);
+
+  viewer->ViewDescriptorStore(id);
+
+  return viewer;
+}
+
+IDescriptorViewer *CaptureContext::ViewDescriptors(const rdcarray<Descriptor> &descriptors,
+                                                   const rdcarray<SamplerDescriptor> &samplerDescriptors)
+{
+  DescriptorViewer *viewer = new DescriptorViewer(*this, m_MainWindow);
+
+  viewer->ViewDescriptors(descriptors, samplerDescriptors);
+
+  return viewer;
 }
 
 IBufferViewer *CaptureContext::ViewBuffer(uint64_t byteOffset, uint64_t byteSize, ResourceId id,
@@ -2584,20 +2807,23 @@ IBufferViewer *CaptureContext::ViewTextureAsBuffer(ResourceId id, const Subresou
   return viewer;
 }
 
-IConstantBufferPreviewer *CaptureContext::ViewConstantBuffer(ShaderStage stage, uint32_t slot,
-                                                             uint32_t idx)
+IBufferViewer *CaptureContext::ViewConstantBuffer(ShaderStage stage, uint32_t slot, uint32_t idx)
 {
-  ConstantBufferPreviewer *existing = ConstantBufferPreviewer::has(stage, slot, idx);
+  BufferViewer *existing = BufferViewer::HasCBufferView(stage, slot, idx);
   if(existing != NULL)
     return existing;
 
-  return new ConstantBufferPreviewer(*this, stage, slot, idx, m_MainWindow);
+  BufferViewer *viewer = new BufferViewer(*this, false, m_MainWindow);
+
+  viewer->ViewCBuffer(stage, slot, idx);
+
+  return viewer;
 }
 
 IPixelHistoryView *CaptureContext::ViewPixelHistory(ResourceId texID, uint32_t x, uint32_t y,
-                                                    const TextureDisplay &display)
+                                                    uint32_t view, const TextureDisplay &display)
 {
-  return new PixelHistoryView(*this, texID, QPoint(x, y), display, m_MainWindow);
+  return new PixelHistoryView(*this, texID, QPoint(x, y), view, display, m_MainWindow);
 }
 
 QWidget *CaptureContext::CreateBuiltinWindow(const rdcstr &objectName)
@@ -2622,6 +2848,10 @@ QWidget *CaptureContext::CreateBuiltinWindow(const rdcstr &objectName)
   {
     return GetAPIInspector()->Widget();
   }
+  else if(objectName == "annotationViewer")
+  {
+    return GetAnnotationViewer()->Widget();
+  }
   else if(objectName == "capDialog")
   {
     return GetCaptureDialog()->Widget();
@@ -2629,10 +2859,6 @@ QWidget *CaptureContext::CreateBuiltinWindow(const rdcstr &objectName)
   else if(objectName == "debugMessageView")
   {
     return GetDebugMessageView()->Widget();
-  }
-  else if(objectName == "diagnosticLogView")
-  {
-    return GetDiagnosticLogView()->Widget();
   }
   else if(objectName == "commentView")
   {
@@ -2696,9 +2922,54 @@ void CaptureContext::BuiltinWindowClosed(QWidget *window)
     qCritical() << "Unrecognised window being closed: " << window;
 }
 
-void CaptureContext::setupDockWindow(QWidget *shad)
+void CaptureContext::setupDockWindow(QWidget *shad, bool hide)
 {
   shad->setWindowIcon(*m_Icon);
+  if(hide)
+    shad->hide();
+}
+
+void CaptureContext::AddExtensionWatches(rdcstr filePath)
+{
+  QDir dir(filePath);
+
+  // ignore directories with no python files
+  QStringList pyfiles = dir.entryList(QStringList() << lit("*.py"));
+  if(pyfiles.empty())
+    return;
+
+  // don't watch the directory itself. New files will not be usable and we will already catch
+  // renames.
+  // m_ExtensionWatcher->addPath(filePath);
+  for(QString pyfile : pyfiles)
+    m_ExtensionWatcher->addPath(dir.absoluteFilePath(pyfile));
+
+  for(QString subdir : dir.entryList(QStringList(), QDir::Dirs | QDir::NoDotAndDotDot))
+    AddExtensionWatches(dir.absoluteFilePath(subdir));
+}
+
+void CaptureContext::ExtensionTouched(const QString &extensionPath)
+{
+  // find the root extension dir containing this path
+  for(const ExtensionMetadata &m : GetInstalledExtensions())
+  {
+    if(extensionPath.contains(m.filePath))
+    {
+      // remove all watched paths underneath
+      QStringList paths = m_ExtensionWatcher->directories();
+      paths.append(m_ExtensionWatcher->files());
+      for(QString path : paths)
+      {
+        if(path.contains(m.filePath))
+          m_ExtensionWatcher->removePath(path);
+      }
+
+      // mark it as 'dirty' / needing reload
+      m_DirtyExtensions.push_back(m.package);
+    }
+  }
+
+  emit PythonContext::GetExtensionContext()->extensionsUpdated();
 }
 
 void CaptureContext::RaiseDockWindow(QWidget *dockWindow)
@@ -2714,7 +2985,7 @@ void CaptureContext::AddDockWindow(QWidget *newWindow, DockReference ref, QWidge
     qCritical() << "Unexpected NULL newWindow in AddDockWindow";
     return;
   }
-  setupDockWindow(newWindow);
+  setupDockWindow(newWindow, false);
 
   if(ref == DockReference::MainToolArea)
   {
@@ -2738,31 +3009,54 @@ void CaptureContext::AddDockWindow(QWidget *newWindow, DockReference ref, QWidge
         newWindow, ToolWindowManager::AreaReference(ToolWindowManager::LastUsedArea));
     return;
   }
-
-  if(!refWindow)
+  else if(ref == DockReference::NoArea)
   {
-    qCritical() << "Unexpected NULL refWindow in AddDockWindow";
+    m_MainWindow->mainToolManager()->addToolWindow(
+        newWindow, ToolWindowManager::AreaReference(ToolWindowManager::NoArea));
+    return;
+  }
+  else if(ref == DockReference::EmptySpace)
+  {
+    m_MainWindow->mainToolManager()->addToolWindow(
+        newWindow, ToolWindowManager::AreaReference(ToolWindowManager::EmptySpace));
     return;
   }
 
   if(ref == DockReference::TransientPopupArea)
   {
-    if(qobject_cast<ConstantBufferPreviewer *>(newWindow))
+    BufferViewer *buf = qobject_cast<BufferViewer *>(newWindow);
+
+    if(buf && buf->IsCBufferView())
     {
       ToolWindowManager *manager = ToolWindowManager::managerOf(refWindow);
 
-      ConstantBufferPreviewer *cb = manager->findChild<ConstantBufferPreviewer *>();
+      if(!manager)
+        manager = m_MainWindow->mainToolManager();
+
+      BufferViewer *cb = BufferViewer::GetFirstCBufferView(buf);
       if(cb)
       {
-        manager->addToolWindow(newWindow, ToolWindowManager::AreaReference(ToolWindowManager::AddTo,
-                                                                           manager->areaOf(cb)));
+        if(manager->areaOf(buf) == NULL)
+          manager->addToolWindow(newWindow, ToolWindowManager::AreaReference(
+                                                ToolWindowManager::AddTo, manager->areaOf(cb)));
+        else
+          manager->moveToolWindow(newWindow, ToolWindowManager::AreaReference(
+                                                 ToolWindowManager::AddTo, manager->areaOf(cb)));
         return;
       }
+
+      // if we're re-adding the same cbuffer view again and it's the only one open, just leave it
+      // where it is without changing anything.
+      if(BufferViewer::GetFirstCBufferView(NULL) == buf && manager->areaOf(buf) != NULL)
+        return;
     }
 
     if(qobject_cast<PixelHistoryView *>(newWindow))
     {
       ToolWindowManager *manager = ToolWindowManager::managerOf(refWindow);
+
+      if(!manager)
+        manager = m_MainWindow->mainToolManager();
 
       PixelHistoryView *hist = manager->findChild<PixelHistoryView *>();
       if(hist)
@@ -2773,12 +3067,146 @@ void CaptureContext::AddDockWindow(QWidget *newWindow, DockReference ref, QWidge
       }
     }
 
-    ref = DockReference::RightOf;
+    ToolWindowManager *manager = m_MainWindow->mainToolManager();
+    ToolWindowManager::AreaReference main = m_MainWindow->mainToolArea();
+
+    if(main.type() == ToolWindowManager::AddTo)
+    {
+      ToolWindowManager::AreaReference areaRef(ToolWindowManager::RightOf, main.area(), percentage);
+      manager->addToolWindow(newWindow, areaRef);
+      return;
+    }
+
+    manager->addToolWindow(newWindow, main);
+    return;
+  }
+
+  if(!refWindow)
+  {
+    // expect a reference window for all other docking types
+    // try to decay down to the main window so that we place the window somewhere
+    qCritical() << "Unexpected NULL refWindow in AddDockWindow";
+
+    // AddTo doesn't have any fallback - put it in the main area.
+    if(ref == DockReference::AddTo)
+    {
+      m_MainWindow->mainToolManager()->addToolWindow(newWindow, m_MainWindow->mainToolArea());
+      return;
+    }
+
+    // if this was meant to be relative to a panel instead put it relative to the whole window
+    if(ref == DockReference::LeftOf)
+      ref = DockReference::LeftWindowSide;
+    if(ref == DockReference::RightOf)
+      ref = DockReference::RightWindowSide;
+    if(ref == DockReference::TopOf)
+      ref = DockReference::TopWindowSide;
+    if(ref == DockReference::BottomOf)
+      ref = DockReference::BottomWindowSide;
+  }
+
+  if(refWindow == m_MainWindow)
+    refWindow = NULL;
+
+  if(!refWindow)
+  {
+    // we're now placing only relative to a whole window so the particular widget we pick doesn't
+    // matter. pick something
+    if(!m_MainWindow->mainToolManager()->toolWindows().isEmpty())
+    {
+      refWindow = m_MainWindow->mainToolManager()->toolWindows()[0];
+    }
+    else
+    {
+      // if there are no tool windows at all we're panicking! just put it in empty space
+      ref = DockReference::EmptySpace;
+    }
   }
 
   ToolWindowManager *manager = ToolWindowManager::managerOf(refWindow);
 
+  if(!manager)
+    manager = m_MainWindow->mainToolManager();
+
   ToolWindowManager::AreaReference areaRef((ToolWindowManager::AreaReferenceType)ref,
                                            manager->areaOf(refWindow), percentage);
   manager->addToolWindow(newWindow, areaRef);
+}
+
+void CaptureContext::EmbedDependentFiles()
+{
+  bool done = false;
+
+  if(!Replay().SlowAsyncAccessInvoke([&done](ICaptureAccess *access) {
+       access->EmbedDependenciesIntoCapture();
+       done = true;
+     }))
+    return;
+
+  // wait a short while before displaying the progress dialog
+  for(int i = 0; !done && i < 100; i++)
+    QThread::msleep(5);
+
+  ShowProgressDialog(m_MainWindow->Widget(), tr("Please wait, working..."),
+                     [&done]() { return done; });
+
+  // Local replay
+  if(m_Replay.GetCaptureFile())
+    return;
+
+  // Remote capture : no local capture file
+  if(IsCaptureTemporary())
+    return;
+
+  // Local capture file being replayed remotely : copy back from the remote
+  if(IsCaptureLocal())
+  {
+    Replay().CopyCaptureFromRemote(m_RemoteFile, m_CaptureFile, m_MainWindow);
+
+    if(!QFile::exists(m_CaptureFile))
+    {
+      RDDialog::critical(m_MainWindow, tr("Failed to save capture"),
+                         tr("Capture couldn't be copied from remote."));
+      return;
+    }
+  }
+}
+
+void CaptureContext::RemoveDependentFiles()
+{
+  bool done = false;
+
+  if(!Replay().SlowAsyncAccessInvoke([&done](ICaptureAccess *access) {
+       access->RemoveDependenciesFromCapture();
+       done = true;
+     }))
+    return;
+
+  // wait a short while before displaying the progress dialog
+  for(int i = 0; !done && i < 100; i++)
+    QThread::msleep(5);
+
+  ShowProgressDialog(m_MainWindow->Widget(), tr("Please wait, working..."),
+                     [&done]() { return done; });
+
+  // Local replay
+  if(m_Replay.GetCaptureFile())
+    return;
+
+  // Remote capture : no local capture file
+  if(IsCaptureTemporary())
+    return;
+
+  // Local capture file being replayed remotely : copy back from the remote
+  if(IsCaptureLocal())
+  {
+    Replay().CopyCaptureFromRemote(m_RemoteFile, m_CaptureFile, m_MainWindow);
+
+    if(!QFile::exists(m_CaptureFile))
+    {
+      RDDialog::critical(m_MainWindow, tr("Failed to save capture"),
+                         tr("Capture couldn't be copied from remote."));
+      return;
+    }
+  }
 }

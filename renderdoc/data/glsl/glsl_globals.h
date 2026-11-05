@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -51,8 +51,25 @@
 // drop I/O location specifiers and bindings on GL, we don't use separate programs so I/O variables
 // can be matched by name, and we don't want to require GL_ARB_shading_language_420pack so we can't
 // specify bindings in shaders.
-#define BINDING(b) layout(std140)
+//
+// however due to obtuse GL rules, variables with identical name and declaration do NOT match if
+// only one of them has an explicit location. This is only used in custom shaders, but means we need
+// to match it as while most drivers will handle the fallback as you'd normally expect, not all do
+// and the spec doesn't require it. This does mean custom shaders won't work if they drop the
+// explicit location, but there's no feasible way to support both and explicit location has been
+// standard since this was added.
+
+#ifdef FORCE_IO_LOCATION
+
+#define IO_LOCATION(l) layout(location = l)
+
+#else
+
 #define IO_LOCATION(l)
+
+#endif
+
+#define BINDING(b) layout(std140)
 #define VERTEX_ID gl_VertexID
 #define INSTANCE_ID gl_InstanceID
 
@@ -83,6 +100,18 @@ precision highp int;
 #define CUBEMAP_FACE_NEG_Y 3
 #define CUBEMAP_FACE_POS_Z 4
 #define CUBEMAP_FACE_NEG_Z 5
+
+// used in depthms2buffer.comp to define enum-format mapping
+#define SHADER_D16_UNORM 0
+#define SHADER_D16_UNORM_S8_UINT 1
+#define SHADER_X8_D24_UNORM_PACK32 2
+#define SHADER_D24_UNORM_S8_UINT 3
+#define SHADER_D32_SFLOAT 4
+#define SHADER_D32_SFLOAT_S8_UINT 5
+#define SHADER_S8_UINT 6
+
+// divide MS<->buffer workgroups by 64
+#define MS_DISPATCH_LOCAL_SIZE 64
 
 #if !defined(__cplusplus)
 
@@ -143,10 +172,17 @@ vec3 CalcCubeCoord(vec2 uv, int face)
 
 #endif
 
+// first few match Visualisation enum
 #define MESHDISPLAY_SOLID 0x1
 #define MESHDISPLAY_FACELIT 0x2
 #define MESHDISPLAY_SECONDARY 0x3
-#define MESHDISPLAY_SECONDARY_ALPHA 0x4
+#define MESHDISPLAY_EXPLODE 0x4
+#define MESHDISPLAY_MESHLET 0x5
+
+// extra values below
+#define MESHDISPLAY_SECONDARY_ALPHA 0x6
+
+#define MAX_NUM_MESHLETS (512 * 1024)
 
 #define TEXDISPLAY_TYPEMASK 0xF
 #define TEXDISPLAY_UINT_TEX 0x10
@@ -200,3 +236,29 @@ vec3 CalcCubeCoord(vec2 uv, int face)
 #define SINT_TEX 0
 
 #endif
+
+#define SPV_OpSin 13
+#define SPV_OpCos 14
+#define SPV_OpTan 15
+#define SPV_OpAsin 16
+#define SPV_OpAcos 17
+#define SPV_OpAtan 18
+#define SPV_OpSinh 19
+#define SPV_OpCosh 20
+#define SPV_OpTanh 21
+#define SPV_OpAsinh 22
+#define SPV_OpAcosh 23
+#define SPV_OpAtanh 24
+#define SPV_OpExp 27
+#define SPV_OpLog 28
+#define SPV_OpExp2 29
+#define SPV_OpLog2 30
+#define SPV_OpSqrt 31
+#define SPV_OpInverseSqrt 32
+#define SPV_OpNormalize 69
+#define SPV_OpAtan2 25
+#define SPV_OpPow 26
+#define SPV_OpFma 50
+#define SPV_OpLength 66
+#define SPV_OpDistance 67
+#define SPV_OpRefract 72

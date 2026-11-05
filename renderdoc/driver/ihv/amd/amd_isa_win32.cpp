@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,12 +28,15 @@
 #include "core/plugins.h"
 #include "official/RGA/Common/AmdDxGsaCompile.h"
 #include "official/RGA/elf/elf32.h"
+#include "official/RGA/elf/elf64.h"
 #include "amd_isa_devices.h"
 
 #if ENABLED(RDOC_X64)
-#define DLL_NAME "atidxx64.dll"
+#define OLD_DLL_NAME "atidxx64.dll"
+#define NEW_DLL_NAME "amdxx64.dll"
 #else
-#define DLL_NAME "atidxx32.dll"
+#define OLD_DLL_NAME "atidxx32.dll"
+#define NEW_DLL_NAME "amdxx32.dll"
 #endif
 
 namespace GCNISA
@@ -42,12 +45,23 @@ extern rdcstr pluginPath;
 
 static HMODULE GetAMDModule()
 {
+  HMODULE module = NULL;
+
   // first try in the plugin locations
-  HMODULE module = LoadLibraryA(LocatePluginFile(GCNISA::pluginPath, DLL_NAME).c_str());
+  if(module == NULL)
+    module = LoadLibraryA(LocatePluginFile(GCNISA::pluginPath, NEW_DLL_NAME).c_str());
 
   // if that failed then try checking for it just in the default search path
   if(module == NULL)
-    module = LoadLibraryA(DLL_NAME);
+    module = LoadLibraryA(NEW_DLL_NAME);
+
+  // next try old dll name in the plugin locations
+  if(module == NULL)
+    module = LoadLibraryA(LocatePluginFile(GCNISA::pluginPath, OLD_DLL_NAME).c_str());
+
+  // if that failed then try checking for it just in the default search path
+  if(module == NULL)
+    module = LoadLibraryA(OLD_DLL_NAME);
 
   return module;
 }
@@ -69,14 +83,100 @@ HRESULT SafelyCompile(PfnAmdDxGsaCompileShader compileShader, AmdDxGsaCompileSha
   return ret;
 }
 
+template <typename Elf_Ehdr, typename Elf_Shdr>
+static rdcstr ParseElf(const Elf_Ehdr *elfHeader, bool amdil, const rdcstr &target)
+{
+  rdcstr ret;
+
+  const uint8_t *elf = (const uint8_t *)elfHeader;
+
+  const Elf_Shdr *strtab =
+      (const Elf_Shdr *)(elf + elfHeader->e_shoff + sizeof(Elf_Shdr) * elfHeader->e_shstrndx);
+
+  const uint8_t *strtabData = elf + strtab->sh_offset;
+
+  const AmdDxGsaCompileStats *stats = NULL;
+
+  for(int section = 1; section < elfHeader->e_shnum; section++)
+  {
+    if(section == elfHeader->e_shstrndx)
+      continue;
+
+    const Elf_Shdr *sectHeader =
+        (const Elf_Shdr *)(elf + elfHeader->e_shoff + sizeof(Elf_Shdr) * section);
+
+    const char *name = (const char *)(strtabData + sectHeader->sh_name);
+
+    const uint8_t *data = elf + sectHeader->sh_offset;
+
+    if(!strcmp(name, ".stats"))
+    {
+      stats = (const AmdDxGsaCompileStats *)data;
+    }
+    else if(amdil && !strcmp(name, ".amdil_disassembly"))
+    {
+      ret.insert(0, (const char *)data, (size_t)sectHeader->sh_size);
+      while(ret.back() == '\0')
+        ret.pop_back();
+    }
+    else if(!amdil && !strcmp(name, ".disassembly"))
+    {
+      ret.insert(0, (const char *)data, (size_t)sectHeader->sh_size);
+      while(ret.back() == '\0')
+        ret.pop_back();
+    }
+  }
+
+  if(stats && !amdil)
+  {
+    ret.insert(0, StringFormat::Fmt(
+                      R"(; -------- Statistics ---------------------
+; SGPRs: %u out of %u used
+; VGPRs: %u out of %u used
+; LDS: %u out of %u bytes used
+; %u bytes scratch space used
+; Instructions: %u ALU, %u Control Flow, %u TFETCH
+
+)",
+                      stats->numSgprsUsed, stats->availableSgprs, stats->numVgprsUsed,
+                      stats->availableVgprs, stats->usedLdsBytes, stats->availableLdsBytes,
+                      stats->usedScratchBytes, stats->numAluInst, stats->numControlFlowInst,
+                      stats->numTfetchInst));
+  }
+
+  ret.insert(0, StringFormat::Fmt("; Disassembly for %s\n\n", target.c_str()));
+
+  return ret;
+}
+
+static rdcstr ParseElf(const uint8_t *elf, bool amdil, const rdcstr &target)
+{
+  const Elf32_Ehdr *elf32Header = (const Elf32_Ehdr *)elf;
+
+  // minimal code to extract data from ELF. We assume the ELF we got back is well-formed.
+  if(IS_ELF(*elf32Header))
+  {
+    if(elf32Header->e_ident[EI_CLASS] == ELFCLASS32)
+    {
+      return ParseElf<Elf32_Ehdr, Elf32_Shdr>(elf32Header, amdil, target);
+    }
+    else if(elf32Header->e_ident[EI_CLASS] == ELFCLASS64)
+    {
+      return ParseElf<Elf64_Ehdr, Elf64_Shdr>((const Elf64_Ehdr *)elf, amdil, target);
+    }
+  }
+  return "; Invalid ELF file generated";
+}
+
 rdcstr DisassembleDXBC(const bytebuf &shaderBytes, const rdcstr &target)
 {
   HMODULE mod = GetAMDModule();
 
   if(mod == NULL)
-    return "; Error loading " DLL_NAME R"(.
+    return "; Error loading " NEW_DLL_NAME R"(.
 
-; Currently )" DLL_NAME R"( from AMD's driver package is required for GCN disassembly and it cannot be
+; Currently )" NEW_DLL_NAME
+           R"( from AMD's driver package is required for GCN disassembly and it cannot be
 ; distributed with RenderDoc.
 
 ; To see instructions on how to download and configure it on your system, go to:
@@ -115,8 +215,8 @@ rdcstr DisassembleDXBC(const bytebuf &shaderBytes, const rdcstr &target)
   bool amdil = false;
   if(target == "AMDIL")
   {
-    in.chipFamily = asicInfo[0].chipFamily;
-    in.chipRevision = asicInfo[0].chipRevision;
+    in.chipFamily = asicInfo[AMDILIndex].chipFamily;
+    in.chipRevision = asicInfo[AMDILIndex].chipRevision;
     amdil = true;
   }
 
@@ -205,75 +305,7 @@ rdcstr DisassembleDXBC(const bytebuf &shaderBytes, const rdcstr &target)
     return "; Failed to disassemble shader";
   }
 
-  const uint8_t *elf = (const uint8_t *)out.pShaderBinary;
-
-  const Elf32_Ehdr *elfHeader = (const Elf32_Ehdr *)elf;
-
-  rdcstr ret;
-
-  // minimal code to extract data from ELF. We assume the ELF we got back is well-formed.
-  if(IS_ELF(*elfHeader) && elfHeader->e_ident[EI_CLASS] == ELFCLASS32)
-  {
-    const Elf32_Shdr *strtab =
-        (const Elf32_Shdr *)(elf + elfHeader->e_shoff + sizeof(Elf32_Shdr) * elfHeader->e_shstrndx);
-
-    const uint8_t *strtabData = elf + strtab->sh_offset;
-
-    const AmdDxGsaCompileStats *stats = NULL;
-
-    for(int section = 1; section < elfHeader->e_shnum; section++)
-    {
-      if(section == elfHeader->e_shstrndx)
-        continue;
-
-      const Elf32_Shdr *sectHeader =
-          (const Elf32_Shdr *)(elf + elfHeader->e_shoff + sizeof(Elf32_Shdr) * section);
-
-      const char *name = (const char *)(strtabData + sectHeader->sh_name);
-
-      const uint8_t *data = elf + sectHeader->sh_offset;
-
-      if(!strcmp(name, ".stats"))
-      {
-        stats = (const AmdDxGsaCompileStats *)data;
-      }
-      else if(amdil && !strcmp(name, ".amdil_disassembly"))
-      {
-        ret.insert(0, (const char *)data, (size_t)sectHeader->sh_size);
-        while(ret.back() == '\0')
-          ret.pop_back();
-      }
-      else if(!amdil && !strcmp(name, ".disassembly"))
-      {
-        ret.insert(0, (const char *)data, (size_t)sectHeader->sh_size);
-        while(ret.back() == '\0')
-          ret.pop_back();
-      }
-    }
-
-    if(stats && !amdil)
-    {
-      ret.insert(0, StringFormat::Fmt(
-                        R"(; -------- Statistics ---------------------
-; SGPRs: %u out of %u used
-; VGPRs: %u out of %u used
-; LDS: %u out of %u bytes used
-; %u bytes scratch space used
-; Instructions: %u ALU, %u Control Flow, %u TFETCH
-
-)",
-                        stats->numSgprsUsed, stats->availableSgprs, stats->numVgprsUsed,
-                        stats->availableVgprs, stats->usedLdsBytes, stats->availableLdsBytes,
-                        stats->usedScratchBytes, stats->numAluInst, stats->numControlFlowInst,
-                        stats->numTfetchInst));
-    }
-
-    ret.insert(0, StringFormat::Fmt("; Disassembly for %s\n\n", target.c_str()));
-  }
-  else
-  {
-    ret = "; Invalid ELF file generated";
-  }
+  const rdcstr ret = ParseElf((const uint8_t *)out.pShaderBinary, amdil, target);
 
   freeShader(out.pShaderBinary);
 

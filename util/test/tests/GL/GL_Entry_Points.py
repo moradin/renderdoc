@@ -1,5 +1,6 @@
+from typing import List
+
 import rdtest
-import renderdoc as rd
 
 
 class GL_Entry_Points(rdtest.TestCase):
@@ -16,14 +17,13 @@ class GL_Entry_Points(rdtest.TestCase):
         }
 
         for test in expected.keys():
-            marker: rd.ActionDescription = self.find_action(test)
+            marker = self.find_action(test)
             if marker is None:
-                raise rdtest.TestFailureException('Failed to find action {}'.format(test))
-            action: rd.ActionDescription = marker.next
+                raise rdtest.TestFailureException(f'Failed to find action {test}')
+            action = marker.nextAction
 
-            calls = []
+            calls: List[str] = []
 
-            ev: rd.APIEvent
             for ev in action.events:
                 # skip any events up to and including the marker itself
                 if ev.eventId <= marker.eventId:
@@ -33,8 +33,7 @@ class GL_Entry_Points(rdtest.TestCase):
 
             for i in range(len(expected[test])):
                 if expected[test][i] != calls[i]:
-                    raise rdtest.TestFailureException('After marker {} got call {} but expected {}'
-                                                      .format(test, calls[i], expected[test][i]))
+                    raise rdtest.TestFailureException(f'After marker {test} got call {calls[i]} but expected {expected[test][i]}')
 
         rdtest.log.success("API calls are as expected")
 

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -35,7 +35,14 @@
 #include <QSharedPointer>
 #include <QSortFilterProxyModel>
 #include <QStyledItemDelegate>
+#include <QToolButton>
 #include "Code/Interface/QRDInterface.h"
+
+#if !defined(RELEASE) && !defined(__FreeBSD__)
+#define ENABLE_UNIT_TESTS 1
+#else
+#define ENABLE_UNIT_TESTS 0
+#endif
 
 class QHeaderView;
 
@@ -74,55 +81,91 @@ inline QMetaType::Type GetVariantMetatype(const QVariant &v)
   return (QMetaType::Type)v.type();
 }
 
+struct ParsedFormat
+{
+  ShaderConstant fixed, repeating;
+  PackingRules packing;
+  QMap<int, QString> errors;
+};
+
+struct StructFormatData;
+
 struct BufferFormatter
 {
+private:
   Q_DECLARE_TR_FUNCTIONS(BufferFormatter);
 
   static GraphicsAPI m_API;
 
-  static QString DeclareStruct(QList<QString> &declaredStructs, const QString &name,
-                               const rdcarray<ShaderConstant> &members, uint32_t requiredByteStride);
+  static bool CheckInvalidUnbounded(const StructFormatData &structDef,
+                                    const QMap<QString, StructFormatData *> &structelems,
+                                    QMap<int, QString> &errors);
+  static bool ContainsUnbounded(const ShaderConstant &structType,
+                                rdcpair<rdcstr, rdcstr> *found = NULL);
 
-  static uint32_t GetVarSize(const ShaderConstant &var);
+  static QString DeclareStruct(PackingRules pack, ResourceId shader,
+                               QMap<QString, bool> &declaredStructs,
+                               QMap<ShaderConstant, QString> &anonStructs, const QString &name,
+                               const rdcarray<ShaderConstant> &members, uint32_t requiredByteStride,
+                               QString innerSkippedPrefixString);
+
+  static uint32_t GetAlignment(PackingRules pack, const ShaderConstant &constant);
+  static uint32_t GetUnpaddedStructAdvance(PackingRules pack,
+                                           const rdcarray<ShaderConstant> &members);
+  static uint32_t GetVarStraddleSize(const ShaderConstant &var);
+  static uint32_t GetVarSizeAndTrail(const ShaderConstant &var);
+
+  static void EstimatePackingRules(PackingRules &pack, ResourceId shader,
+                                   const ShaderConstant &constant,
+                                   QSet<uint32_t> &pointerTypesProcessed, uint32_t knownVecAlignment);
+  static void EstimatePackingRules(PackingRules &pack, ResourceId shader,
+                                   const rdcarray<ShaderConstant> &members,
+                                   QSet<uint32_t> &pointerTypesProcessed, uint32_t knownVecAlignment);
+  static QString DeclarePacking(PackingRules pack);
+  static QString DeclareEnum(const QString &name, const rdcarray<ShaderConstant> &members,
+                             VarType baseType);
 
 public:
   BufferFormatter() = default;
 
   static void Init(GraphicsAPI api) { m_API = api; }
-  static ShaderConstant ParseFormatString(const QString &formatString, uint64_t maxLen,
-                                          bool tightPacking, QString &errors);
+  static ParsedFormat ParseFormatString(const QString &formatString, uint64_t maxLen, bool cbuffer);
+  static uint32_t GetVarAdvance(PackingRules pack, const ShaderConstant &var);
+
+  static PackingRules EstimatePackingRules(ResourceId shader, const ShaderConstantType &baseType);
+  static PackingRules EstimatePackingRules(ResourceId shader,
+                                           const rdcarray<ShaderConstant> &members);
 
   static QString GetTextureFormatString(const TextureDescription &tex);
-  static QString GetBufferFormatString(const ShaderResource &res, const ResourceFormat &viewFormat,
-                                       uint64_t &baseByteOffset);
+  static QString GetBufferFormatString(PackingRules pack, ResourceId shader,
+                                       const ShaderResource &res, const ResourceFormat &viewFormat);
 
-  static QString DeclareStruct(const QString &name, const rdcarray<ShaderConstant> &members,
-                               uint32_t requiredByteStride);
-
-  static uint32_t GetStructVarSize(const rdcarray<ShaderConstant> &members);
-
-  static QString DeclarePaddingBytes(uint32_t bytes);
+  static QString DeclareStruct(PackingRules pack, ResourceId shader, const QString &name,
+                               const rdcarray<ShaderConstant> &members, uint32_t requiredByteStride);
 };
 
-QVariantList GetVariants(ResourceFormat format, const ShaderConstantDescriptor &varDesc,
-                         const byte *&data, const byte *end);
+QVariantList GetVariants(ResourceFormat format, const ShaderConstant &var, const byte *&data,
+                         const byte *end);
 ResourceFormat GetInterpretedResourceFormat(const ShaderConstant &elem);
-void SetInterpretedResourceFormat(ShaderConstant &elem, ResourceFormatType interpretType,
-                                  CompType interpretCompType);
 ShaderVariable InterpretShaderVar(const ShaderConstant &elem, const byte *data, const byte *end);
 
-QString TypeString(const ShaderVariable &v);
+QString TypeString(const ShaderVariable &v, const ShaderConstant &c = ShaderConstant());
 QString RowString(const ShaderVariable &v, uint32_t row, VarType type = VarType::Unknown);
-QString VarString(const ShaderVariable &v);
+QString VarString(const ShaderVariable &v, const ShaderConstant &c);
 QString RowTypeString(const ShaderVariable &v);
 
 QString TypeString(const SigParameter &sig);
 QString D3DSemanticString(const SigParameter &sig);
 QString GetComponentString(byte mask);
 
+QIcon MakeSwatchIcon(QWidget *parentWidget, QColor swatchColor);
+float ConvertLinearToSRGB(float linear);
 void CombineUsageEvents(
-    ICaptureContext &ctx, const rdcarray<EventUsage> &usage,
+    ICaptureContext &ctx, const rdcarray<EventUsage> &usage, bool splitByMarker,
     std::function<void(uint32_t startEID, uint32_t endEID, ResourceUsage use)> callback);
+uint32_t GetParentMarkerEventId(ICaptureContext &ctx, uint32_t eventId);
+QString GetParentMarkerName(ICaptureContext &ctx, uint32_t eventId);
+QString GetParentMarkerPath(ICaptureContext &ctx, uint32_t eventId, bool &hasParent);
 
 class RDTreeWidgetItem;
 
@@ -139,6 +182,8 @@ public:
   static uint32_t GetTypeID(ResourceId shader, uint32_t pointerTypeId);
   static uint32_t GetTypeID(PointerVal val) { return GetTypeID(val.shader, val.pointerTypeID); }
   static uint32_t GetTypeID(const ShaderConstantType &structDef);
+  static QList<uint32_t> ResolveTypeIDsForPointerCycle(
+      QList<QPair<ShaderConstantType *, uint32_t>> structTypes);
 
   static const ShaderConstantType &GetTypeDescriptor(uint32_t typeId);
   static const ShaderConstantType &GetTypeDescriptor(ResourceId shader, uint32_t pointerTypeId)
@@ -168,10 +213,19 @@ struct GPUAddress
   uint64_t offset = 0;
 
   // cache the context once we've obtained it.
-  ICaptureContext *ctxptr = NULL;
+  const ICaptureContext *ctxptr = NULL;
 
   void cacheAddress(const QWidget *widget);
+  void cacheAddress(const ICaptureContext &ctx);
 };
+
+struct EnumInterpValue
+{
+  QString str;
+  uint64_t val;
+};
+
+Q_DECLARE_METATYPE(EnumInterpValue);
 
 ICaptureContext *getCaptureContext(const QWidget *widget);
 
@@ -222,12 +276,18 @@ void RegisterMetatypeConversions();
 
 struct Formatter
 {
-  static void setParams(const PersistantConfig &config);
+  enum FormatterFlags
+  {
+    NoFlags = 0x0,
+    OffsetSize = 0x1,
+  };
+  static void setParams(const PersistentConfig &config);
   static void setPalette(QPalette palette);
   static void shutdown();
 
   static QString Format(double f, bool hex = false);
-  static QString HumanFormat(uint64_t u);
+  static QString Format(rdhalf f, bool hex = false) { return Format((float)f, hex); }
+  static QString HumanFormat(uint64_t u, FormatterFlags flags);
   static QString Format(uint64_t u, bool hex = false)
   {
     return QFormatStr("%1").arg(u, hex ? 16 : 0, hex ? 16 : 10, QLatin1Char('0')).toUpper();
@@ -254,18 +314,38 @@ struct Formatter
     else
       return Format(u, true);
   }
+  static QString BinFormat(uint64_t u, uint32_t byteSize)
+  {
+    return QFormatStr("%1").arg(u, byteSize * 8, 2, QLatin1Char('0')).toUpper();
+  }
+  static QString BinFormat(uint64_t u) { return BinFormat(u, 8); }
+  static QString BinFormat(uint32_t u) { return BinFormat(u, 4); }
+  static QString BinFormat(uint16_t u) { return BinFormat(u, 2); }
+  static QString BinFormat(uint8_t u) { return BinFormat(u, 1); }
+  static QString BinFormat(int64_t i) { return Format(i); }
+  static QString BinFormat(int32_t i) { return Format(i); }
+  static QString BinFormat(int16_t i) { return Format(i); }
+  static QString BinFormat(int8_t i) { return Format(i); }
+  static QString BinFormat(float f) { return Format(f); }
+  static QString BinFormat(rdhalf f) { return Format(f); }
+  static QString BinFormat(double d) { return Format(d); }
+  static QString BinFormat(bool b) { return b ? lit("true") : lit("false"); }
   static QString Format(int32_t i, bool hex = false) { return QString::number(i); }
   static QString Format(int64_t i, bool hex = false) { return QString::number(i); }
   static const QFont &PreferredFont() { return *m_Font; }
   static const QFont &FixedFont() { return *m_FixedFont; }
   static const QColor DarkCheckerColor() { return m_DarkChecker; }
   static const QColor LightCheckerColor() { return m_LightChecker; }
+  static QString DefaultFontFamily() { return m_DefaultFontFamily; }
+  static QString DefaultMonoFontFamily() { return m_DefaultMonoFontFamily; }
 private:
   static int m_minFigures, m_maxFigures, m_expNegCutoff, m_expPosCutoff;
   static double m_expNegValue, m_expPosValue;
   static QFont *m_Font, *m_FixedFont;
   static float m_FontBaseSize, m_FixedFontBaseSize;
+  static QString m_DefaultFontFamily, m_DefaultMonoFontFamily;
   static QColor m_DarkChecker, m_LightChecker;
+  static OffsetSizeDisplayMode m_OffsetSizeDisplayMode;
 };
 
 bool SaveToJSON(QVariantMap &data, QIODevice &f, const char *magicIdentifier, uint32_t magicVersion);
@@ -560,6 +640,17 @@ private:
   QAbstractItemDelegate *m_delegate = NULL;
 };
 
+class FullEditorDelegate : public QStyledItemDelegate
+{
+private:
+  Q_OBJECT
+
+public:
+  FullEditorDelegate(QWidget *parent);
+  QWidget *createEditor(QWidget *parent, const QStyleOptionViewItem &option,
+                        const QModelIndex &index) const;
+};
+
 // delegate that will handle painting, hovering and clicking on rich text items.
 // owning view needs to call linkHover, and adjust its cursor and repaint as necessary.
 class RichTextViewDelegate : public ForwardingDelegate
@@ -580,6 +671,47 @@ public:
 
 private:
   QAbstractItemView *m_widget;
+};
+
+class ButtonDelegate : public QStyledItemDelegate
+{
+private:
+  Q_OBJECT
+
+  QModelIndex m_ClickedIndex;
+  QIcon m_Icon;
+  QString m_Text;
+  bool m_Centered = true;
+
+  int m_EnableRole = -1;
+  QVariant m_EnableValue;
+
+  int m_VisibleRole = -1;
+  QVariant m_VisibleValue;
+
+  QRect getButtonRect(const QRect boundsRect, const QSize sz) const;
+
+public:
+  ButtonDelegate(const QIcon &icon, QString text, QWidget *parent);
+  void paint(QPainter *painter, const QStyleOptionViewItem &option,
+             const QModelIndex &index) const override;
+  QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override;
+  bool editorEvent(QEvent *event, QAbstractItemModel *model, const QStyleOptionViewItem &option,
+                   const QModelIndex &index) override;
+
+  void setVisibleTrigger(int role, QVariant value)
+  {
+    m_VisibleRole = role;
+    m_VisibleValue = value;
+  }
+  void setEnableTrigger(int role, QVariant value)
+  {
+    m_EnableRole = role;
+    m_EnableValue = value;
+  }
+  void setCentred(bool centered) { m_Centered = centered; }
+signals:
+  void messageClicked(const QModelIndex &index);
 };
 
 class StructuredDataItemModel : public QAbstractItemModel
@@ -683,8 +815,12 @@ public:
 class QMenu;
 
 // helper for doing a manual blocking invoke of a dialog
-struct RDDialog
+class RDDialog : public QDialog
 {
+private:
+  Q_OBJECT
+
+public:
   static const QMessageBox::StandardButtons YesNoCancel;
 
   static QString DefaultBrowsePath;
@@ -761,6 +897,14 @@ struct RDDialog
                                  const QString &dir = QString(), const QString &filter = QString(),
                                  QString *selectedFilter = NULL,
                                  QFileDialog::Options options = QFileDialog::Options());
+
+signals:
+  void aboutToClose(QCloseEvent *);
+  void keyPress(QKeyEvent *e);
+
+private:
+  void closeEvent(QCloseEvent *) override;
+  void keyPressEvent(QKeyEvent *e) override;
 };
 
 class QGridLayout;
@@ -798,6 +942,8 @@ void BringToForeground(QWidget *window);
 
 bool IsDarkTheme();
 
+void TruncateStringFromEnd(QString &name);
+
 float getLuminance(const QColor &col);
 QColor contrastingColor(const QColor &col, const QColor &defaultCol);
 
@@ -805,3 +951,24 @@ void *AccessWaylandPlatformInterface(const QByteArray &resource, QWindow *window
 
 void UpdateVisibleColumns(rdcstr windowTitle, int columnCount, QHeaderView *header,
                           const QStringList &headers);
+
+class ScintillaEdit;
+
+void EnsureLineScrolled(ScintillaEdit *editor, int line);
+
+// A version of QToolButton that can also handle right clicks
+class QRClickToolButton : public QToolButton
+{
+  Q_OBJECT
+
+public:
+  explicit QRClickToolButton(QWidget *parent = 0);
+
+private slots:
+  void mousePressEvent(QMouseEvent *e);
+
+signals:
+  void rightClicked();
+
+public slots:
+};

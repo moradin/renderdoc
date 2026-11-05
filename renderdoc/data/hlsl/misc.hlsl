@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -132,4 +132,59 @@ uint4 RENDERDOC_DiscardIntPS(float4 pos : SV_Position, out float depth : SV_Dept
   depth = saturate(float(val));
 
   return val.xxxx;
+}
+
+cbuffer executepatchdata : register(b0)
+{
+  uint argCount;
+  uint bufCount;
+  uint argStride;
+  uint argpad;
+  uint4 argOffsets[32];
+};
+
+StructuredBuffer<uint> numExecutes : register(t1);
+
+cbuffer countbuffer : register(b2)
+{
+  uint maxNumExecutes;
+};
+
+struct buffermapping
+{
+  GPUAddress origBase;
+  GPUAddress origEnd;
+  GPUAddress newBase;
+  GPUAddress pad;
+};
+
+StructuredBuffer<buffermapping> buffers : register(t0);
+RWByteAddressBuffer arguments : register(u0);
+
+GPUAddress PatchAddress(GPUAddress addr)
+{
+  for(uint i = 0; i < bufCount; i++)
+  {
+    buffermapping b = buffers[i];
+
+    if(lessEqual(b.origBase, addr) && lessThan(addr, b.origEnd))
+    {
+      return add(b.newBase, sub(addr, b.origBase));
+    }
+  }
+
+  return addr;
+}
+
+[numthreads(128, 1, 1)] void RENDERDOC_ExecuteIndirectPatchCS(uint idx
+                                                              : SV_GroupIndex) {
+  if(idx < argCount)
+  {
+    for(uint i = 0; i < min(numExecutes[0], maxNumExecutes); i++)
+    {
+      uint offs = argStride * i + argOffsets[idx / 4][idx % 4];
+
+      arguments.Store2(offs, PatchAddress(arguments.Load2(offs)));
+    }
+  }
 }

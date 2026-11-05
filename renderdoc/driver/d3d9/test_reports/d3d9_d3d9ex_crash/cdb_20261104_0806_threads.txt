@@ -1,0 +1,195 @@
+
+Microsoft (R) Windows Debugger Version 10.0.22621.1778 AMD64
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+
+Loading Dump File [C:\dumps\old_20261104_0806_qrenderdoc.exe.49300.dmp]
+User Mini Dump File: Only registers, stack and portions of memory are available
+
+
+************* Path validation summary **************
+Response                         Time (ms)     Location
+OK                                             E:\Projects\renderdoc\x64\Development
+Deferred                                       srv*C:\symbols*https://msdl.microsoft.com/download/symbols
+Symbol search path is: E:\Projects\renderdoc\x64\Development;srv*C:\symbols*https://msdl.microsoft.com/download/symbols
+Executable search path is: 
+Windows 10 Version 26300 MP (28 procs) Free x64
+Product: WinNt, suite: SingleUserTS
+Edition build lab: 26100.1.amd64fre.ge_release.240331-1435
+Machine Name:
+Debug session time: Wed Nov  4 08:06:32.000 2026 (UTC + 1:00)
+System Uptime: 1 days 10:11:28.212
+Process Uptime: 0 days 0:00:07.000
+................................................................
+..................................
+Loading unloaded module list
+............................
+This dump file has an exception of interest stored in it.
+The stored exception information can be accessed via .ecxr.
+(c094.8ee4): Access violation - code c0000005 (first/second chance not available)
+For analysis of this file, run !analyze -v
+ntdll!NtWaitForMultipleObjects+0x14:
+00007ffa`7d1428a4 c3              ret
+0:004> cdb: Reading initial command '.ecxr; ~*kn 25; lmvm renderdoc; lmvm vulkan_1; q'
+rax=00007ff89cc4c560 rbx=0000000000000000 rcx=0000023e7958bf70
+rdx=0000000000000000 rsi=0000000000000000 rdi=0000005a543fec98
+rip=0000000000000000 rsp=0000005a543fe658 rbp=0000000000000000
+ r8=0000005a543fe680  r9=0000000000000000 r10=0000005a543fe774
+r11=0000000000000008 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei pl zr na po nc
+cs=0033  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00010246
+00000000`00000000 ??              ???
+
+   0  Id: c094.5f64 Suspend: 0 Teb: 0000005a`53ef0000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 0000005a`53de63d0 00007ffa`7ac840f0     ntdll!LdrResolveDelayLoadedAPI+0xc9
+01 0000005a`53de6450 00007ffa`7ac95b73     wintrust!_delayLoadHelper2+0x30
+02 0000005a`53de6490 00007ffa`7ac7d360     wintrust!_tailMerge_ext_ms_win_advapi32_safer_l1_1_0_dll+0x3f
+03 0000005a`53de6500 00007ffa`7ac7ce6b     wintrust!_CheckTrustedCodeHash+0xb4
+04 0000005a`53de6550 00007ffa`7ac6b8c5     wintrust!SoftpubCallUI+0x5b
+05 0000005a`53de6640 00007ffa`7ac6b3d5     wintrust!I_VerifyTrust+0x4a5
+06 0000005a`53de68e0 00007ff9`d67cb8d4     wintrust!WinVerifyTrust+0x45
+07 0000005a`53de6920 00007ff9`d67cc12c     nvd3dumx+0x6b8d4
+08 0000005a`53de6990 00007ff9`d67ca1df     nvd3dumx+0x6c12c
+09 0000005a`53de6bf0 00007ff9`d688e1e6     nvd3dumx+0x6a1df
+0a 0000005a`53de6c40 00007ff9`d68b4bad     nvd3dumx+0x12e1e6
+0b 0000005a`53de8c80 00007ff9`d697aed3     nvd3dumx+0x154bad
+0c 0000005a`53de8cd0 00007ffa`5837d630     nvd3dumx+0x21aed3
+0d 0000005a`53de8df0 00007ffa`5837cc4d     d3d9!CreateDeviceLHDDI+0x7ec
+0e 0000005a`53de9c50 00007ffa`58317b6a     d3d9!D3D9CreateDirectDrawObject+0x265
+0f 0000005a`53dea5f0 00007ffa`58315a1e     d3d9!FetchDirectDrawData+0xac6
+10 0000005a`53dead30 00007ffa`58314226     d3d9!InternalDirectDrawCreate+0x29a
+11 0000005a`53dead90 00007ffa`58313ccf     d3d9!CEnum::CreateDeviceImpl+0x4ca
+*** WARNING: Unable to verify timestamp for renderdoc.dll
+12 0000005a`53deaf90 00007ff8`9a2696f3     d3d9!CEnum::CreateDeviceEx+0xaf
+13 0000005a`53deb020 00000000`00000000     renderdoc+0x1ea96f3
+
+   1  Id: c094.10ca4 Suspend: 0 Teb: 0000005a`53ef2000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 0000005a`540ff6f8 00007ffa`7d004d0e     ntdll!NtWaitForWorkViaWorkerFactory+0x14
+01 0000005a`540ff700 00007ffa`7c44dda7     ntdll!TppWorkerThread+0x37e
+02 0000005a`540ffa60 00007ffa`7d05ee4c     kernel32!BaseThreadInitThunk+0x17
+03 0000005a`540ffa90 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+   2  Id: c094.70a8 Suspend: 0 Teb: 0000005a`53ef4000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 0000005a`541ff588 00007ffa`7d004d0e     ntdll!NtWaitForWorkViaWorkerFactory+0x14
+01 0000005a`541ff590 00007ffa`7c44dda7     ntdll!TppWorkerThread+0x37e
+02 0000005a`541ff8f0 00007ffa`7d05ee4c     kernel32!BaseThreadInitThunk+0x17
+03 0000005a`541ff920 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+   3  Id: c094.10140 Suspend: 0 Teb: 0000005a`53ef6000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 0000005a`542ffa18 00007ffa`7d004d0e     ntdll!NtWaitForWorkViaWorkerFactory+0x14
+01 0000005a`542ffa20 00007ffa`7c44dda7     ntdll!TppWorkerThread+0x37e
+02 0000005a`542ffd80 00007ffa`7d05ee4c     kernel32!BaseThreadInitThunk+0x17
+03 0000005a`542ffdb0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+#  4  Id: c094.8ee4 Suspend: 0 Teb: 0000005a`53ef8000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 0000005a`543fd118 00007ffa`7a1f2773     ntdll!NtWaitForMultipleObjects+0x14
+01 0000005a`543fd120 00007ffa`7a1f2641     KERNELBASE!WaitForMultipleObjectsEx+0x123
+02 0000005a`543fd410 00007ffa`7c471250     KERNELBASE!WaitForMultipleObjects+0x11
+03 0000005a`543fd450 00007ffa`7c498df5     kernel32!WerpReportFaultInternal+0x62c
+04 0000005a`543fd5d0 00007ffa`7a2df63c     kernel32!WerpReportFault+0xc5
+05 0000005a`543fd620 00007ffa`7d14a030     KERNELBASE!UnhandledExceptionFilter+0x34c
+06 0000005a`543fd710 00007ffa`7d104b93     ntdll!RtlUserThreadStart$filt$0+0x3f
+07 0000005a`543fd740 00007ffa`7d1464af     ntdll!_C_specific_handler+0x93
+08 0000005a`543fd7b0 00007ffa`7d0a4065     ntdll!RtlpExecuteHandlerForException+0xf
+09 0000005a`543fd7e0 00007ffa`7d145dee     ntdll!RtlDispatchException+0x5f5
+0a 0000005a`543fdf40 00000000`00000000     ntdll!KiUserExceptionDispatch+0x2e
+
+   5  Id: c094.555c Suspend: 0 Teb: 0000005a`53efa000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 0000005a`544ffad8 00007ffa`7a1f2773     ntdll!NtWaitForMultipleObjects+0x14
+01 0000005a`544ffae0 00007ffa`7a8ab357     KERNELBASE!WaitForMultipleObjectsEx+0x123
+02 0000005a`544ffdd0 00007ffa`7c44dda7     crypt32!ILS_WaitForThreadProc+0x37
+03 0000005a`544ffe10 00007ffa`7d05ee4c     kernel32!BaseThreadInitThunk+0x17
+04 0000005a`544ffe40 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+   6  Id: c094.f980 Suspend: 0 Teb: 0000005a`53f6c000 Unfrozen "Remote Probe"
+ # Child-SP          RetAddr               Call Site
+00 0000005a`545ff768 00007ffa`7d0b0fd4     ntdll!NtDelayExecution+0x14
+01 0000005a`545ff770 00007ffa`7a25b9c1     ntdll!RtlDelayExecution+0x34
+*** WARNING: Unable to verify timestamp for qrenderdoc.exe
+02 0000005a`545ff7a0 00007ff7`27e9136b     KERNELBASE!SleepEx+0x91
+*** WARNING: Unable to verify checksum for Qt5Core.dll
+03 0000005a`545ff830 00000000`509c3398     qrenderdoc+0xf5136b
+04 0000005a`545ff838 00000000`00000000     Qt5Core!QAbstractDeclarativeData::setWidgetParent+0x320
+
+   7  Id: c094.10b6c Suspend: 0 Teb: 0000005a`53f6e000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 0000005a`546fc048 00000000`5066e2f7     win32u!NtUserMsgWaitForMultipleObjectsEx+0x14
+01 0000005a`546fc050 00000000`50622423     Qt5Core!QEventDispatcherWin32::processEvents+0x697
+02 0000005a`546ff420 00007ff7`27e9148a     Qt5Core!QEventLoop::exec+0x1b3
+03 0000005a`546ff4a0 0000023e`7957c8f0     qrenderdoc+0xf5148a
+04 0000005a`546ff4a8 00000000`00000000     0x0000023e`7957c8f0
+
+   8  Id: c094.ef74 Suspend: 0 Teb: 0000005a`53f72000 Unfrozen "AndroidController"
+ # Child-SP          RetAddr               Call Site
+00 0000005a`547ff768 00007ffa`7d0b0fd4     ntdll!NtDelayExecution+0x14
+01 0000005a`547ff770 00007ffa`7a25b9c1     ntdll!RtlDelayExecution+0x34
+02 0000005a`547ff7a0 00007ff8`98c36f5e     KERNELBASE!SleepEx+0x91
+03 0000005a`547ff830 00000000`00000000     renderdoc+0x876f5e
+
+   9  Id: c094.1119c Suspend: 0 Teb: 0000005a`53f78000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 0000005a`54aff6b8 00007ffa`6c030006     ntdll!NtWaitForMultipleObjects+0x14
+01 0000005a`54aff6c0 00007ffa`7c44dda7     winmm!timeThread+0x76
+02 0000005a`54aff800 00007ffa`7d05ee4c     kernel32!BaseThreadInitThunk+0x17
+03 0000005a`54aff830 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+  10  Id: c094.10a14 Suspend: 0 Teb: 0000005a`53ff8000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 0000005a`54dff5b8 00007ffa`7a1f2773     ntdll!NtWaitForMultipleObjects+0x14
+01 0000005a`54dff5c0 00007ffa`7a1f2641     KERNELBASE!WaitForMultipleObjectsEx+0x123
+02 0000005a`54dff8b0 00007ff9`0b17ffe7     KERNELBASE!WaitForMultipleObjects+0x11
+03 0000005a`54dff8f0 00007ff9`0b17f548     nvoglv64!DrvPresentBuffers+0xf2b7
+04 0000005a`54dff920 00007ffa`7c44dda7     nvoglv64!DrvPresentBuffers+0xe818
+05 0000005a`54dff950 00007ffa`7d05ee4c     kernel32!BaseThreadInitThunk+0x17
+06 0000005a`54dff980 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+  11  Id: c094.afe0 Suspend: 0 Teb: 0000005a`53e04000 Unfrozen
+ # Child-SP          RetAddr               Call Site
+00 0000005a`548ff7c8 00007ffa`7d004d0e     ntdll!NtWaitForWorkViaWorkerFactory+0x14
+01 0000005a`548ff7d0 00007ffa`7c44dda7     ntdll!TppWorkerThread+0x37e
+02 0000005a`548ffb30 00007ffa`7d05ee4c     kernel32!BaseThreadInitThunk+0x17
+03 0000005a`548ffb60 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+start             end                 module name
+00007ff8`983c0000 00007ff8`9d099000   renderdoc T (no symbols)           
+    Loaded symbol image file: renderdoc.dll
+    Image path: E:\Projects\renderdoc\x64\Development\renderdoc.dll
+    Image name: renderdoc.dll
+    Timestamp:        Wed Nov  4 07:47:09 2026 (6AEAD4ED)
+    CheckSum:         00000000
+    ImageSize:        04CD9000
+    File version:     1.48.0.0
+    Product version:  1.48.0.0
+    File flags:       0 (Mask 3F)
+    File OS:          40004 NT Win32
+    File type:        2.0 Dll
+    File date:        00000000.00000000
+    Translations:     0000.04b0 0000.04e4 0409.04b0 0409.04e4
+    Information from resource tables:
+start             end                 module name
+00007ff9`0d5a0000 00007ff9`0d74a000   vulkan_1   (deferred)             
+    Mapped memory image file: C:\Windows\System32\vulkan-1.dll
+    Image path: C:\Windows\System32\vulkan-1.dll
+    Image name: vulkan-1.dll
+    Timestamp:        Fri Jan 30 18:27:29 2026 (697CEA01)
+    CheckSum:         001ABC99
+    ImageSize:        001AA000
+    File version:     1.4.341.0
+    Product version:  1.4.341.0
+    File flags:       0 (Mask 3F)
+    File OS:          0 Unknown Base
+    File type:        2.0 Dll
+    File date:        00000000.00000000
+    Translations:     0409.0000
+    Information from resource tables:
+        ProductName:      Vulkan Runtime
+        ProductVersion:   1.4.341.0
+        FileVersion:      1.4.341.0
+        FileDescription:  Vulkan Loader
+        LegalCopyright:   Copyright (C) 2015-2026

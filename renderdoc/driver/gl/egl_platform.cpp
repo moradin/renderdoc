@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -46,10 +46,10 @@ static void *GetEGLHandle()
 
   return Process::LoadModule(libEGL);
 #else
-  void *handle = Process::LoadModule("libEGL.so");
+  void *handle = Process::LoadModule("libEGL.so.1");
 
   if(!handle)
-    handle = Process::LoadModule("libEGL.so.1");
+    handle = Process::LoadModule("libEGL.so");
 
   return handle;
 #endif
@@ -58,6 +58,9 @@ static void *GetEGLHandle()
 class EGLPlatform : public GLPlatform
 {
   RDCDriver m_API = RDCDriver::OpenGLES;
+  bool m_Debug = false;
+
+  bool CanFreshBindOnDeletion() { return false; }
 
   bool MakeContextCurrent(GLWindowingData data)
   {
@@ -76,22 +79,24 @@ class EGLPlatform : public GLPlatform
     if(EGL.CreateContext)
     {
       EGLint baseAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_CONTEXT_FLAGS_KHR,
-                              EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR, EGL_NONE};
+                              m_Debug ? EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR : 0, EGL_NONE};
 
       ret.egl_ctx = EGL.CreateContext(share.egl_dpy, share.egl_cfg, share.egl_ctx, baseAttribs);
 
       if(ret.egl_ctx == EGL_NO_CONTEXT)
       {
+        EGLint err = EGL.GetError();
         EGL.QueryContext(share.egl_dpy, share.egl_ctx, eEGL_CONTEXT_CLIENT_VERSION, &baseAttribs[1]);
 
         RDCWARN(
-            "Creating cloned context failed. Trying again with queried old EGL client version: %d",
-            baseAttribs[1]);
+            "Creating cloned context failed (%x). Trying again with queried old EGL client "
+            "version: %d",
+            err, baseAttribs[1]);
 
         ret.egl_ctx = EGL.CreateContext(share.egl_dpy, share.egl_cfg, share.egl_ctx, baseAttribs);
-
+        err = EGL.GetError();
         if(ret.egl_ctx == EGL_NO_CONTEXT)
-          RDCERR("Cloned context failed again. Capture will likely fail");
+          RDCERR("Cloned context failed again (%x). Capture will likely fail", err);
       }
     }
 
@@ -206,10 +211,6 @@ class EGLPlatform : public GLPlatform
   GLWindowingData CreateWindowingData(EGLDisplay eglDisplay, EGLContext share_ctx,
                                       EGLNativeWindowType window, bool debug)
   {
-#if ENABLED(RDOC_DEVEL)
-    debug = true;
-#endif
-
     GLWindowingData ret;
     ret.egl_dpy = eglDisplay;
     ret.egl_ctx = NULL;
@@ -371,7 +372,8 @@ class EGLPlatform : public GLPlatform
   }
 
   bool PopulateForReplay() { return EGL.PopulateForReplay(); }
-  ReplayStatus InitialiseAPI(GLWindowingData &replayContext, RDCDriver api, bool debug)
+  void SetDriverType(RDCDriver api) { m_API = api; }
+  RDResult InitialiseAPI(GLWindowingData &replayContext, RDCDriver api, bool debug)
   {
     Display *xlibDisplay = RenderDoc::Inst().GetGlobalEnvironment().xlibDisplay;
     wl_display *waylandDisplay = RenderDoc::Inst().GetGlobalEnvironment().waylandDisplay;
@@ -380,6 +382,7 @@ class EGLPlatform : public GLPlatform
     RDCASSERT(api == RDCDriver::OpenGLES || api == RDCDriver::OpenGL);
 
     m_API = api;
+    m_Debug = debug;
 
     if(api == RDCDriver::OpenGLES)
       EGL.BindAPI(EGL_OPENGL_ES_API);
@@ -395,8 +398,7 @@ class EGLPlatform : public GLPlatform
     EGLDisplay eglDisplay = EGL.GetDisplay(display);
     if(!eglDisplay)
     {
-      RDCERR("Couldn't open default EGL display");
-      return ReplayStatus::APIInitFailed;
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Couldn't open default EGL display");
     }
 
     int major, minor;
@@ -406,13 +408,13 @@ class EGLPlatform : public GLPlatform
 
     if(!replayContext.ctx)
     {
-      RDCERR("Couldn't create OpenGL ES 3.x replay context - required for replay");
       DeleteReplayContext(replayContext);
       RDCEraseEl(replayContext);
-      return ReplayStatus::APIHardwareUnsupported;
+      RETURN_ERROR_RESULT(ResultCode::APIHardwareUnsupported,
+                          "Couldn't create OpenGL ES 3.x replay context - required for replay");
     }
 
-    return ReplayStatus::Succeeded;
+    return ResultCode::Succeeded;
   }
 
   void *GetReplayFunction(const char *funcname)
@@ -431,7 +433,9 @@ class EGLPlatform : public GLPlatform
 #define LIBSUFFIX ".so"
 #endif
     const char *libs[] = {
-        "libGLESv3" LIBSUFFIX, "libGLESv2" LIBSUFFIX ".2", "libGLESv2" LIBSUFFIX,
+        "libGLESv3" LIBSUFFIX,
+        "libGLESv2" LIBSUFFIX ".2",
+        "libGLESv2" LIBSUFFIX,
         "libGLESv1_CM" LIBSUFFIX,
     };
 
@@ -477,7 +481,7 @@ bool EGLDispatchTable::PopulateForReplay()
   if(!this->func)                                                                                   \
     this->func = (CONCAT(PFN_egl, func))Process::GetFunctionAddress(handle, "egl" STRINGIZE(func)); \
   if(!this->func && CheckConstParam(isext))                                                         \
-    this->func = (CONCAT(PFN_egl, func)) this->GetProcAddress("egl" STRINGIZE(func));               \
+    this->func = (CONCAT(PFN_egl, func))this->GetProcAddress("egl" STRINGIZE(func));                \
                                                                                                     \
   if(!this->func && !CheckConstParam(isext))                                                        \
   {                                                                                                 \

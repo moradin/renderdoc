@@ -1,4 +1,7 @@
+from typing import Any, Dict, Tuple
+
 import rdtest
+import struct
 import renderdoc as rd
 
 
@@ -8,63 +11,123 @@ class VK_Descriptor_Indexing(rdtest.TestCase):
     def check_capture(self):
 
         action = self.find_action("Dispatch")
-        self.check(action is not None)
-        self.controller.SetFrameEvent(action.eventId, False)
+        assert action is not None
+        self.set_event(action.eventId, False)
 
-        pipe: rd.VKState = self.controller.GetVulkanPipelineState()
+        pipe = self.controller.GetPipelineState()
+        vkpipe = self.controller.GetVulkanPipelineState()
 
-        if len(pipe.compute.descriptorSets) != 1:
-            raise rdtest.TestFailureException("Wrong number of compute sets is bound: {}, not 1"
-                                              .format(len(pipe.compute.descriptorSets)))
+        if len(vkpipe.compute.descriptorSets) != 1:
+            raise rdtest.TestFailureException(f"Wrong number of compute sets is bound: {len(vkpipe.compute.descriptorSets)}, not 1")
 
-        binding = pipe.compute.descriptorSets[0].bindings[0]
+        rw = pipe.GetReadWriteResources(rd.ShaderStage.Compute)
 
-        if binding.dynamicallyUsedCount != 1:
-            raise rdtest.TestFailureException("Compute bind 0 doesn't have the right used count {}"
-                                              .format(binding.dynamicallyUsedCount))
+        self.check_eq(len(rw), 1)
+        self.check_eq(rw[0].access.index, 0)
+        self.check_eq(rw[0].access.stage, rd.ShaderStage.Compute)
+        self.check_eq(rw[0].access.type, rd.DescriptorType.ReadWriteBuffer)
+        self.check_eq(rw[0].access.staticallyUnused, False)
+        self.check_eq(rw[0].access.arrayElement, 15)
+        self.check_eq(rw[0].access.descriptorStore,
+                      vkpipe.compute.descriptorSets[0].descriptorSetResourceId)
 
-        if not binding.binds[15].dynamicallyUsed:
-            raise rdtest.TestFailureException("Compute bind 0[15] isn't dynamically used")
+        self.check_eq(
+            len(pipe.GetReadOnlyResources(rd.ShaderStage.Compute)), 0)
+
+        rw_used = pipe.GetReadWriteResources(rd.ShaderStage.Compute, True)
+
+        # should get the same results for dynamic array indexing, the 'only used' is only for
+        # statically unused or used bindings
+        assert rw == rw_used
 
         action = self.find_action("Draw")
-        self.check(action is not None)
-        self.controller.SetFrameEvent(action.eventId, False)
+        assert action is not None
+        self.set_event(action.eventId, False)
 
-        pipe: rd.VKState = self.controller.GetVulkanPipelineState()
+        pipe = self.controller.GetPipelineState()
+        vkpipe = self.controller.GetVulkanPipelineState()
 
         # Check bindings:
-        #   - buffer 15 in bind 0 should be used
-        #   - images 19, 20, 21 in bind 1 should be used for the non-uniform index
-        #     images 49 & 59 in bind 1 should be used for the first fixed index
-        #     image 4 in bind 1 should be used for the global access from a function with no dynamic/patched parameters
-        #   - images 381 & 386 in bind 2 should be used for the second fixed index
-        bind_info = {
-            0: { 'dynamicallyUsedCount': 1, 'used': [15] },
-            1: { 'dynamicallyUsedCount': 6, 'used': [4, 19, 20, 21, 49, 59] },
-            2: { 'dynamicallyUsedCount': 2, 'used': [381, 386] },
+        #   - buffer 15 in bind 0 (the SSBO) should be use
+        #   - buffer 6 in bind 1 (the first aliased SSBO) should be used
+        #   - buffer 12 in bind 2 (the first aliased SSBO) should be used
+        #   - images 19, 20, 21 in bind 0 should be used for the non-uniform index
+        #     images 49 & 59 in bind 0 should be used for the first fixed index
+        #     image 4 in bind 0 should be used for the global access from a function with no dynamic/patched parameters
+        #   - images 381 & 386 in bind 1 should be used for the second fixed index
+        #   - image 1 in bind 2 should be used
+        bind_info: Dict[Tuple[rd.DescriptorType, int], Dict[str, Any]] = {
+            (rd.DescriptorType.ReadWriteBuffer, 0): {'loc': (0, 0), 'elems': [15]},
+            (rd.DescriptorType.ReadWriteBuffer, 1): {'loc': (0, 3), 'elems': [6]},
+            (rd.DescriptorType.ReadWriteBuffer, 2): {'loc': (0, 3), 'elems': [12]},
+            (rd.DescriptorType.ImageSampler, 0): {'loc': (0, 1), 'elems': [4, 19, 20, 21, 49, 59]},
+            (rd.DescriptorType.ImageSampler, 1): {'loc': (0, 2), 'elems': [381, 386]},
+            (rd.DescriptorType.ImageSampler, 2): {'loc': (0, 4), 'elems': [1]},
         }
 
-        if len(pipe.graphics.descriptorSets) != 1:
-            raise rdtest.TestFailureException("Wrong number of sets is bound: {}, not 1"
-                                              .format(len(pipe.graphics.descriptorSets)))
+        if len(vkpipe.graphics.descriptorSets) != 1:
+            raise rdtest.TestFailureException(f"Wrong number of sets is bound: {len(vkpipe.graphics.descriptorSets)}, not 1")
 
-        desc_set: rd.VKDescriptorSet = pipe.graphics.descriptorSets[0]
+        desc_set = vkpipe.graphics.descriptorSets[0]
 
-        binding: rd.VKDescriptorBinding
-        for bind, binding in enumerate(desc_set.bindings):
-            if binding.dynamicallyUsedCount != bind_info[bind]['dynamicallyUsedCount']:
-                raise rdtest.TestFailureException("Bind {} doesn't have the right used count. {} is not the expected count of {}"
-                                                  .format(bind, binding.dynamicallyUsedCount, bind_info[bind]['dynamicallyUsedCount']))
+        rw = pipe.GetReadWriteResources(rd.ShaderStage.Fragment)
+        ro = pipe.GetReadOnlyResources(rd.ShaderStage.Fragment)
 
-            el: rd.VKBindingElement
-            for idx, el in enumerate(binding.binds):
-                expected_used = idx in bind_info[bind]['used']
-                actually_used = el.dynamicallyUsed
+        self.check_eq(len(ro), 1+6+2)
+        self.check_eq(len(rw), 1+1+1)
 
-                if expected_used and not actually_used:
-                    raise rdtest.TestFailureException("Bind {} element {} expected to be used, but isn't.".format(bind, idx))
+        refl = pipe.GetShaderReflection(rd.ShaderStage.Fragment)
 
-                if not expected_used and actually_used:
-                    raise rdtest.TestFailureException("Bind {} element {} expected to be unused, but is.".format(bind, idx))
+        for a in ro + rw:
+            idx = (a.access.type, a.access.index)
+            if idx not in bind_info.keys():
+                raise rdtest.TestFailureException(
+                    f"Accessed bind {a.access.index} of type {a.access.type!s} doesn't exist in expected list")
+
+            if rd.IsReadOnlyDescriptor(a.access.type):
+                res = refl.readOnlyResources[a.access.index]
+            else:
+                res = refl.readWriteResources[a.access.index]
+
+            if a.access.arrayElement not in bind_info[idx]['elems']:
+                raise rdtest.TestFailureException(f"Bind {res.name} reports array element {a.access.arrayElement} as used, which shouldn't be")
+
+            if a.access.descriptorStore != desc_set.descriptorSetResourceId:
+                raise rdtest.TestFailureException(f"Access is in descriptor store {a.access.descriptorStore} but expected set 0 {desc_set}")
+
+            if (res.fixedBindSetOrSpace, res.fixedBindNumber) != bind_info[idx]['loc']:
+                raise rdtest.TestFailureException(f"Bind {res.name} expected to be {bind_info[idx]['loc']} but is {res.fixedBindSetOrSpace}, {res.fixedBindNumber}")
+
+            # On vulkan the logical bind name is set-relative bind[idx]. The fixed bind number is the bind only
+            loc = self.controller.GetDescriptorLocations(
+                a.access.descriptorStore, [rd.DescriptorRange(a.access)]
+            )[0]
+            if loc.fixedBindNumber != bind_info[idx]['loc'][1]:
+                raise rdtest.TestFailureException(f"Bind {loc.fixedBindNumber} not expected for set,bind {bind_info[idx]['loc']}")
+            if loc.logicalBindName != f"{bind_info[idx]['loc'][1]}[{a.access.arrayElement}]":
+                raise rdtest.TestFailureException(f"Bind {loc.logicalBindName} not expected for set,bind {bind_info[idx]['loc']} array element {a.access.arrayElement}")
+
+            bind_info[idx]['elems'].remove(a.access.arrayElement)
+
+        for a in rw:
+            res = refl.readWriteResources[a.access.index]
+            data = self.controller.GetBufferData(a.descriptor.resource, a.descriptor.byteOffset, a.descriptor.byteSize)
+
+            offset = 0
+            if res.name == "aliasbuf1":
+                self.check_eq(res.variableType.members[0].name, "Color")
+                self.check_eq(res.variableType.members[0].byteOffset, 0)
+                offset = res.variableType.members[0].byteOffset
+            elif res.name == "aliasbuf2":
+                self.check_eq(res.variableType.members[2].name, "Color")
+                self.check_eq(res.variableType.members[2].byteOffset, 32)
+                offset = res.variableType.members[2].byteOffset
+            else:
+                continue
+
+            col = struct.unpack_from("4f", data, offset)
+            if col[0] == 0.0 or col[1] == 0.0 or col[2] == 0.0 or col[3] == 0.0:
+                raise rdtest.TestFailureException(
+                    f"Color from aliased buffer {res.name} doesn't match expected value: {col}")
 
         rdtest.log.success("Dynamic usage is as expected")

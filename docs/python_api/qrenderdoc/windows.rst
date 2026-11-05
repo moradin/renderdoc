@@ -1,7 +1,10 @@
-Windows
-=======
+API Reference: qrenderdoc Windows
+=================================
 
-.. contents::
+This is the API reference for the functions, classes, and enums in the ``qrenderdoc`` module which represents the UI-specific interface for integrating with the UI and writing UI extensions. For more high-level information and instructions on using the python API, see :doc:`../index` and :doc:`../ui_extensions`.
+
+.. contents:: Sections
+   :local:
 
 .. currentmodule:: qrenderdoc
 
@@ -33,6 +36,18 @@ Pipeline State
 .. autoclass:: qrenderdoc.PipelineStateViewer
   :members:
 
+Descriptor Viewer
+-----------------
+
+.. autoclass:: qrenderdoc.DescriptorViewer
+  :members:
+
+Annotation Viewer
+-----------------
+
+.. autoclass:: qrenderdoc.AnnotationViewer
+  :members:
+
 Texture Viewer
 --------------
 
@@ -59,6 +74,12 @@ Capture Dialog
 --------------
 
 .. autoclass:: qrenderdoc.CaptureDialog
+  :members:
+
+.. autoclass:: qrenderdoc.CaptureConnection
+  :members:
+
+.. autoclass:: qrenderdoc.ConnectedTempCapture
   :members:
 
 Debug Messages
@@ -107,12 +128,6 @@ Shader Viewer
 -------------
 
 .. autoclass:: qrenderdoc.ShaderViewer
-  :members:
-
-Constant Buffer Previewer
--------------------------
-
-.. autoclass:: qrenderdoc.ConstantBufferPreviewer
   :members:
 
 Pixel History

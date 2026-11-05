@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -56,6 +56,8 @@ private slots:
   void on_okButton_accepted();
 
   // general
+  void on_Font_Family_currentIndexChanged(int index);
+  void on_Font_MonoFamily_currentIndexChanged(int index);
   void on_Font_GlobalScale_currentIndexChanged(int index);
   void Font_GlobalScale_returnPressed();
   void on_UIStyle_currentIndexChanged(int index);
@@ -74,9 +76,20 @@ private slots:
   // core
   void on_configEditor_clicked();
   void on_chooseSearchPaths_clicked();
+  void on_chooseIgnores_clicked();
   void on_ExternalTool_RGPIntegration_toggled(bool checked);
   void on_ExternalTool_RadeonGPUProfiler_textEdited(const QString &rgp);
   void on_browseRGPPath_clicked();
+
+  // python
+  void on_Python_StubPaths_clicked();
+  void on_Python_DebugPyDirBrowse_clicked();
+  void on_Python_DebugPyDir_textEdited(const QString &dir);
+  void on_Python_VSCodePathBrowse_clicked();
+  void on_Python_VSCodePath_textEdited(const QString &dir);
+  void on_Python_DebugEnabled_toggled(bool checked);
+  void on_Python_LaunchVSCode_toggled(bool checked);
+  void on_Python_PromptReloadUnchanged_toggled(bool checked);
 
   // texture viewer
   void on_TextureViewer_PerTexSettings_toggled(bool checked);
@@ -114,6 +127,7 @@ private slots:
 
   // manual slots
   void formatter_valueChanged(int value);
+  void on_Formatter_OffsetSizeDisplayMode_currentIndexChanged(int index);
 
   void on_analyticsDescribeLabel_linkActivated(const QString &link);
 
@@ -126,5 +140,6 @@ private:
   ReplayOptionsSelector *m_ReplayOptions;
 
   ICaptureContext &m_Ctx;
+  bool m_NeedRefresh = false;
   bool m_Init = false;
 };

@@ -1,26 +1,14 @@
-D3D12 Pipeline State
-====================
+API Reference: D3D12 Pipeline State
+====================================
 
-.. contents::
+This is the API reference for the functions, classes, and enums in the ``renderdoc`` module which represents the underlying interface that the UI is built on top of. For more high-level information and instructions on using the python API, see :doc:`../../index`.
+
+.. contents:: Sections
+   :local:
 
 .. currentmodule:: renderdoc
 
 .. autoclass:: D3D12State
-  :members:
-
-Root Signature and Bindings
----------------------------
-
-.. autoclass:: D3D12RootSignatureRange
-  :members:
-  
-.. autoclass:: D3D12ConstantBuffer
-  :members:
-
-.. autoclass:: D3D12Sampler
-  :members:
-
-.. autoclass:: D3D12View
   :members:
 
 Vertex Input
@@ -42,6 +30,21 @@ Shader
 ------
 
 .. autoclass:: D3D12Shader
+  :members:
+
+Root Signature
+--------------
+
+.. autoclass:: D3D12RootSignature
+  :members:
+
+.. autoclass:: D3D12RootParam
+  :members:
+
+.. autoclass:: D3D12RootTableRange
+  :members:
+
+.. autoclass:: D3D12StaticSampler
   :members:
 
 Stream-out
@@ -72,6 +75,12 @@ Output Merger
   :members:
 
 .. autoclass:: D3D12BlendState
+  :members:
+
+Predication
+-----------
+
+.. autoclass:: D3D12Predication
   :members:
 
 Resource States

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,15 +26,6 @@
 
 #include "core/core.h"
 #include "streamio.h"
-
-enum class ContainerError
-{
-  NoError = 0,
-  FileNotFound,
-  FileIO,
-  Corrupt,
-  UnsupportedVersion,
-};
 
 extern const char *SectionTypeNames[];
 
@@ -74,7 +65,7 @@ public:
   void Open(const rdcstr &filename);
   void Open(const bytebuf &buffer);
 
-  bool CopyFileTo(const rdcstr &filename);
+  RDResult CopyFileTo(const rdcstr &filename);
 
   // Sets the parameters of an RDCFile in memory.
   void SetData(RDCDriver driver, const rdcstr &driverName, uint64_t machineIdent,
@@ -83,8 +74,8 @@ public:
   // creates a new file with current properties, file will be overwritten if it already exists
   void Create(const rdcstr &filename);
 
-  ContainerError ErrorCode() const { return m_Error; }
-  rdcstr ErrorString() const { return m_ErrorString; }
+  bool IsUntrusted() const { return m_Untrusted; }
+  const RDResult &Error() const { return m_Error; }
   RDCDriver GetDriver() const { return m_Driver; }
   const rdcstr &GetDriverName() const { return m_DriverName; }
   uint64_t GetMachineIdent() const { return m_MachineIdent; }
@@ -120,8 +111,8 @@ private:
   double m_TimeFrequency = 1.0;
   RDCThumb m_Thumb;
 
-  ContainerError m_Error = ContainerError::NoError;
-  rdcstr m_ErrorString;
+  bool m_Untrusted = false;
+  RDResult m_Error;
 
   struct SectionLocation
   {

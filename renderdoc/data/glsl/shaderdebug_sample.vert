@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,7 +22,14 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-layout(location = 0) out vec4 uvwa;
+#include "glsl_globals.h"
+
+#ifdef VULKAN
+layout(location = 0)
+#endif
+    out vec4 v2f_uvwa;
+
+#ifdef VULKAN
 
 layout(push_constant) uniform PushData
 {
@@ -32,15 +39,32 @@ layout(push_constant) uniform PushData
 }
 push;
 
+#define in_uvwa (push.uvwa)
+#define in_ddx (push.ddx)
+#define in_ddy (push.ddy)
+
+#else
+
+uniform vec4 in_uvwa;
+uniform vec4 in_ddx;
+uniform vec4 in_ddy;
+
+#endif
+
 void main(void)
 {
+#ifdef VULKAN
   const vec4 verts[3] = vec4[3](vec4(-0.75, -0.75, 0.5, 1.0), vec4(1.25, -0.75, 0.5, 1.0),
                                 vec4(-0.75, 1.25, 0.5, 1.0));
+#else
+  const vec4 verts[3] =
+      vec4[3](vec4(-0.75, 0.75, 0.5, 1.0), vec4(1.25, 0.75, 0.5, 1.0), vec4(-0.75, -1.25, 0.5, 1.0));
+#endif
 
-  gl_Position = verts[gl_VertexIndex];
-  uvwa = push.uvwa;
-  if(gl_VertexIndex == 1)
-    uvwa.xyz += push.ddx.xyz;
-  else if(gl_VertexIndex == 2)
-    uvwa.xyz += push.ddy.xyz;
+  gl_Position = verts[VERTEX_ID];
+  v2f_uvwa = in_uvwa;
+  if(VERTEX_ID == 1)
+    v2f_uvwa.xyz += in_ddx.xyz;
+  else if(VERTEX_ID == 2)
+    v2f_uvwa.xyz += in_ddy.xyz;
 }

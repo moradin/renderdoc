@@ -1,3 +1,5 @@
+from typing import Dict, List
+
 import rdtest
 import renderdoc as rd
 
@@ -8,80 +10,76 @@ class D3D11_CBuffer_Zoo(rdtest.TestCase):
     def check_capture(self):
         action = self.find_action("Draw")
 
-        self.check(action is not None)
+        assert action is not None
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
         stage = rd.ShaderStage.Pixel
-        cbuf: rd.BoundCBuffer = pipe.GetConstantBuffer(stage, 0, 0)
+        cbuf = pipe.GetConstantBlock(stage, 0, 0).descriptor
 
         var_check = rdtest.ConstantBufferChecker(
             self.controller.GetCBufferVariableContents(pipe.GetGraphicsPipelineObject(),
-                                                       pipe.GetShader(stage),
+                                                       pipe.GetShader(stage), stage,
                                                        pipe.GetShaderEntryPoint(stage), 0,
-                                                       cbuf.resourceId, cbuf.byteOffset, cbuf.byteSize))
+                                                       cbuf.resource, cbuf.byteOffset, cbuf.byteSize))
 
-        self.check_cbuffer(var_check)
+        packed_check = rdtest.ConstantBufferChecker(
+            self.controller.GetCBufferVariableContents(pipe.GetGraphicsPipelineObject(),
+                                                       pipe.GetShader(stage), stage,
+                                                       pipe.GetShaderEntryPoint(stage), 1,
+                                                       cbuf.resource, cbuf.byteOffset, cbuf.byteSize))
+        self.check_cbuffer(var_check, packed_check)
 
         rdtest.log.success("CBuffer variables are as expected")
 
-        if self.controller.GetAPIProperties().shaderDebugging and pipe.GetShaderReflection(
-                rd.ShaderStage.Pixel).debugInfo.debuggable:
-            trace: rd.ShaderDebugTrace = self.controller.DebugPixel(int(pipe.GetViewport(0).width / 2.0),
-                                                                    int(pipe.GetViewport(0).height / 2.0),
-                                                                    rd.ReplayController.NoPreference,
-                                                                    rd.ReplayController.NoPreference)
+        x, y = self.get_view_centre()
 
-            debugVars = dict()
+        with self.debug_pixel(x, y, rd.DebugPixelInputs()) as debug:
+            debugVars: Dict[str, rd.ShaderVariable] = dict()
 
-            for base in trace.constantBlocks:
+            for base in debug.trace.constantBlocks:
                 for var in base.members:
                     debugVars[base.name + var.name] = var
 
-            cbufferVars = []
+            cbufferVars: List[rd.ShaderVariable] = []
 
-            for sourceVar in trace.sourceVars:
-                sourceVar: rd.SourceVariableMapping
-
+            for sourceVar in debug.trace.sourceVars:
                 if sourceVar.variables[0].name not in debugVars.keys():
                     continue
 
-                eval: rd.ShaderVariable = self.evaluate_source_var(sourceVar, debugVars)
+                eval = self.evaluate_source_var(sourceVar, debugVars)
                 cbufferVars.append(eval)
 
             cbufferVars = self.combine_source_vars(cbufferVars)
 
-            self.check(len(cbufferVars) == 1)
-            self.check(cbufferVars[0].name == 'consts')
-
+            assert len(cbufferVars) == 2
+            assert cbufferVars[0].name == 'consts'
+            assert cbufferVars[1].name == 'packed_consts'
             var_check = rdtest.ConstantBufferChecker(cbufferVars[0].members)
-
-            self.check_cbuffer(var_check)
+            packed_check = rdtest.ConstantBufferChecker(cbufferVars[1].members)
+            self.check_cbuffer(var_check, packed_check)
 
             rdtest.log.success("Debugged CBuffer variables are as expected")
 
-            cycles, variables = self.process_trace(trace)
+            cycles, variables = self.process_trace(debug.trace)
 
-            output = self.find_output_source_var(trace, rd.ShaderBuiltin.ColorOutput, 0)
+            output = self.find_output_source_var(debug.trace, rd.ShaderBuiltin.ColorOutput, 0)
 
             debugged = self.evaluate_source_var(output, variables)
 
-            if not rdtest.util.value_compare(debugged.value.f32v[0:4], [536.1, 537.0, 538.0, 539.0]):
+            if not rdtest.util.value_compare(debugged.value.f32v[0:4], [542.1, 543.0, 544.0, 545.0]):
                 raise rdtest.TestFailureException(
-                    "Debugged output {} did not match expected {}".format(
-                        debugged.value.f32v[0:4], [536.1, 537.0, 538.0, 539.0]))
+                    f"Debugged output {debugged.value.f32v[0:4]} did not match expected {[542.1, 543.0, 544.0, 545.0]}")
 
             rdtest.log.success("Debugged output matched as expected")
 
-            self.controller.FreeTrace(trace)
-
-        self.check_pixel_value(pipe.GetOutputTargets()[0].resourceId, 0.5, 0.5, [536.1, 537.0, 538.0, 539.0])
+        self.check_pixel_value(pipe.GetOutputTargets()[0].resource, 0.5, 0.5, [542.1, 543.0, 544.0, 545.0])
 
         rdtest.log.success("Picked value is as expected")
 
-    def check_cbuffer(self, var_check):
+    def check_cbuffer(self, var_check: rdtest.ConstantBufferChecker, packed_check: rdtest.ConstantBufferChecker):
         # For more detailed reference for the below checks, see the commented definition of the cbuffer
         # in the shader source code in the demo itself
 
@@ -442,3 +440,7 @@ class D3D11_CBuffer_Zoo(rdtest.TestCase):
         var_check.check('test').rows(1).cols(4).value([536.0, 537.0, 538.0, 539.0])
 
         var_check.done()
+
+        packed_check.check('col1z').rows(1).cols(1).value([6.0])
+        packed_check.check('col2w').rows(1).cols(1).value([11.0])
+        packed_check.done()

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -957,23 +957,36 @@ void GLRenderState::FetchState(WrappedOpenGL *driver)
     GLenum maxcount;
   } idxBufs[] = {
       {
-          AtomicCounter, ARRAY_COUNT(AtomicCounter), eGL_ATOMIC_COUNTER_BUFFER_BINDING,
-          eGL_ATOMIC_COUNTER_BUFFER_START, eGL_ATOMIC_COUNTER_BUFFER_SIZE,
+          AtomicCounter,
+          ARRAY_COUNT(AtomicCounter),
+          eGL_ATOMIC_COUNTER_BUFFER_BINDING,
+          eGL_ATOMIC_COUNTER_BUFFER_START,
+          eGL_ATOMIC_COUNTER_BUFFER_SIZE,
           eGL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS,
       },
       {
-          ShaderStorage, ARRAY_COUNT(ShaderStorage), eGL_SHADER_STORAGE_BUFFER_BINDING,
-          eGL_SHADER_STORAGE_BUFFER_START, eGL_SHADER_STORAGE_BUFFER_SIZE,
+          ShaderStorage,
+          ARRAY_COUNT(ShaderStorage),
+          eGL_SHADER_STORAGE_BUFFER_BINDING,
+          eGL_SHADER_STORAGE_BUFFER_START,
+          eGL_SHADER_STORAGE_BUFFER_SIZE,
           eGL_MAX_SHADER_STORAGE_BUFFER_BINDINGS,
       },
       {
-          TransformFeedback, ARRAY_COUNT(TransformFeedback), eGL_TRANSFORM_FEEDBACK_BUFFER_BINDING,
-          eGL_TRANSFORM_FEEDBACK_BUFFER_START, eGL_TRANSFORM_FEEDBACK_BUFFER_SIZE,
+          TransformFeedback,
+          ARRAY_COUNT(TransformFeedback),
+          eGL_TRANSFORM_FEEDBACK_BUFFER_BINDING,
+          eGL_TRANSFORM_FEEDBACK_BUFFER_START,
+          eGL_TRANSFORM_FEEDBACK_BUFFER_SIZE,
           eGL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS,
       },
       {
-          UniformBinding, ARRAY_COUNT(UniformBinding), eGL_UNIFORM_BUFFER_BINDING,
-          eGL_UNIFORM_BUFFER_START, eGL_UNIFORM_BUFFER_SIZE, eGL_MAX_UNIFORM_BUFFER_BINDINGS,
+          UniformBinding,
+          ARRAY_COUNT(UniformBinding),
+          eGL_UNIFORM_BUFFER_BINDING,
+          eGL_UNIFORM_BUFFER_START,
+          eGL_UNIFORM_BUFFER_SIZE,
+          eGL_MAX_UNIFORM_BUFFER_BINDINGS,
       },
   };
 
@@ -1423,19 +1436,27 @@ void GLRenderState::ApplyState(WrappedOpenGL *driver)
     GLenum maxcount;
   } idxBufs[] = {
       {
-          AtomicCounter, ARRAY_COUNT(AtomicCounter), eGL_ATOMIC_COUNTER_BUFFER,
+          AtomicCounter,
+          ARRAY_COUNT(AtomicCounter),
+          eGL_ATOMIC_COUNTER_BUFFER,
           eGL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS,
       },
       {
-          ShaderStorage, ARRAY_COUNT(ShaderStorage), eGL_SHADER_STORAGE_BUFFER,
+          ShaderStorage,
+          ARRAY_COUNT(ShaderStorage),
+          eGL_SHADER_STORAGE_BUFFER,
           eGL_MAX_SHADER_STORAGE_BUFFER_BINDINGS,
       },
       {
-          TransformFeedback, ARRAY_COUNT(TransformFeedback), eGL_TRANSFORM_FEEDBACK_BUFFER,
+          TransformFeedback,
+          ARRAY_COUNT(TransformFeedback),
+          eGL_TRANSFORM_FEEDBACK_BUFFER,
           eGL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS,
       },
       {
-          UniformBinding, ARRAY_COUNT(UniformBinding), eGL_UNIFORM_BUFFER,
+          UniformBinding,
+          ARRAY_COUNT(UniformBinding),
+          eGL_UNIFORM_BUFFER,
           eGL_MAX_UNIFORM_BUFFER_BINDINGS,
       },
   };

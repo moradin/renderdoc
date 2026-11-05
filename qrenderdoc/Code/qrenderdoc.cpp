@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -38,6 +38,108 @@
 #include "Windows/Dialogs/CrashDialog.h"
 #include "Windows/MainWindow.h"
 #include "version.h"
+
+#if QT_VERSION >= QT_VERSION_CHECK(5, 9, 0)
+
+#include <QOperatingSystemVersion>
+
+QString getOSVersion()
+{
+  QOperatingSystemVersion ver = QOperatingSystemVersion::current();
+
+  if(ver.type() == QOperatingSystemVersion::Windows && ver.majorVersion() >= 10)
+  {
+    int major = ver.majorVersion();
+    int build = ver.microVersion();
+    if(build >= 22000)
+      major = 11;
+
+    return QFormatStr("Windows %1 Build num %2").arg(major).arg(build);
+  }
+
+  return QSysInfo::prettyProductName();
+}
+
+#else
+
+QString getOSVersion()
+{
+  return QSysInfo::prettyProductName();
+}
+
+#endif
+
+#if ENABLE_UNIT_TESTS
+
+#define CATCH_CONFIG_RUNNER
+#define CATCH_CONFIG_NOSTDOUT
+
+#include "3rdparty/catch/catch.hpp"
+
+// since we force use of ToStr for everything and don't allow using catch's stringstream (so that
+// enums get forwarded to ToStr) we need to implement ToStr for one of Catch's structs.
+template <>
+rdcstr DoStringise(const Catch::SourceLineInfo &el)
+{
+  return QFormatStr("%1:%2").arg(QString::fromUtf8(el.file)).arg(el.line);
+}
+
+class LogOutputter : public std::stringbuf
+{
+  FILE *file;
+
+public:
+  LogOutputter(FILE *f) : file(f) {}
+  void finish()
+  {
+    std::string msg = this->str();
+    RENDERDOC_LogMessage(LogType::Comment, "EXTN", __FILE__, __LINE__, msg.c_str());
+    fputs(msg.c_str(), file);
+  }
+  virtual int sync() override
+  {
+    rdcstr str = this->str().c_str();
+    int idx = str.indexOf('\n');
+    if(idx >= 0)
+    {
+      rdcstr msg = str.substr(0, idx + 1);
+      RENDERDOC_LogMessage(LogType::Comment, "EXTN", __FILE__, __LINE__, msg);
+      fputs(msg.c_str(), file);
+      str = str.substr(idx + 1);
+      this->str("");
+      this->sputn(str.c_str(), str.size());
+    }
+    return 0;
+  }
+
+  // force a sync on every output
+  virtual std::streamsize xsputn(const char *s, std::streamsize n) override
+  {
+    std::streamsize ret = std::stringbuf::xsputn(s, n);
+    sync();
+    return ret;
+  }
+};
+
+std::ostream *catch_stream = NULL;
+
+namespace Catch
+{
+std::ostream &cout()
+{
+  return *catch_stream;
+}
+std::ostream &cerr()
+{
+  return *catch_stream;
+}
+std::ostream &clog()
+{
+  return *catch_stream;
+}
+}
+
+#endif
 
 #if defined(Q_OS_WIN32)
 extern "C" {
@@ -96,6 +198,19 @@ int main(int argc, char *argv[])
   if(IsRunningAsAdmin())
     qInfo() << "Running as administrator";
 
+#if defined(RENDERDOC_PLATFORM_LINUX) && !defined(RENDERDOC_WINDOWING_WAYLAND)
+  bool envChanged = false;
+  {
+    const char *qpa_plat = getenv("QT_QPA_PLATFORM");
+    // if not set or empty, force non-wayland to help go through backwards compatibility path on wayland.
+    if(!qpa_plat || qpa_plat[0] == 0)
+    {
+      setenv("QT_QPA_PLATFORM", "xcb", 1);
+      envChanged = true;
+    }
+  }
+#endif
+
   QGuiApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
   QGuiApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
 
@@ -107,43 +222,104 @@ int main(int argc, char *argv[])
   QApplication::setApplicationVersion(lit(FULL_VERSION_STRING));
 
 // shortcut here so we can run this with a non-GUI application
-#if !defined(RELEASE)
+#if ENABLE_UNIT_TESTS
   if(QString::fromUtf8(argv[1]) == lit("--unittest"))
   {
-    QCoreApplication application(argc, argv);
-    PythonContext::GlobalInit();
+    char **mod_argv = new char *[argc + 1];
+    char **alloc_argv = mod_argv;
+    for(int i = 0; i < argc; i++)
+      mod_argv[i] = argv[i];
+    mod_argv[argc] = 0;
 
-    bool errors = false;
+    // pop --unittest
+    argc--;
+    mod_argv++;
 
-    FILE *logOut = NULL;
+    FILE *test_logOut = NULL;
 
-    if(argc >= 3)
-      logOut = fopen(argv[2], "w");
-
-    if(logOut == NULL)
-      logOut = stdout;
-
-    fputs("Checking python binding consistency.\n", logOut);
-
-    rdcstr errorLog;
-
+    if(argc >= 2 && QString::fromUtf8(mod_argv[1]).left(4) == lit("log="))
     {
-      PythonContextHandle py;
-      errors = py.ctx().CheckInterfaces(errorLog);
+      test_logOut = fopen(mod_argv[1] + 4, "w");
+
+      // pop
+      argc--;
+      mod_argv++;
     }
 
-    if(errors)
+    mod_argv[0] = argv[0];
+
+    if(test_logOut == NULL)
+      test_logOut = stdout;
+
+    LogOutputter logbuf(test_logOut);
+    std::ostream logstream(&logbuf);
+
+    int ret = 0;
+
+    // catch tests first
     {
-      RENDERDOC_LogMessage(LogType::Error, "EXTN", __FILE__, __LINE__, errorLog);
-      fputs("Found errors in python bindings. Please fix!\n", logOut);
-      fputs(errorLog.c_str(), logOut);
-      return 1;
+      catch_stream = &logstream;
+
+      Catch::Session session;
+
+      session.configData().name = "QRenderDoc";
+      session.configData().shouldDebugBreak = Catch::isDebuggerActive();
+
+      ret = session.applyCommandLine(argc, mod_argv);
+
+      if(ret == 0)
+      {
+        int numFailed = session.run();
+
+        // Note that on unices only the lower 8 bits are usually used, clamping
+        // the return value to 255 prevents false negative when some multiple
+        // of 256 tests has failed
+        if(numFailed != 0)
+          ret = (numFailed < 0xff ? numFailed : 0xff);
+      }
     }
-    else
+
+    GlobalEnvironment env;
+    env.enumerateGPUs = false;
+    rdcarray<rdcstr> coreargs;
+    RENDERDOC_InitialiseReplay(env, coreargs);
+
     {
-      fputs("Python bindings are consistent.\n", logOut);
-      return 0;
+      QCoreApplication application(argc, mod_argv);
+      PersistentConfig cfg;
+      PythonContext::GlobalInit(cfg);
+
+      logstream << "Checking python binding consistency.\n";
+
+      rdcstr errorLog;
+      bool errors = false;
+      {
+        PythonContextHandle py;
+        errors = py.ctx().CheckInterfaces(errorLog);
+      }
+
+      if(errors)
+      {
+        logstream << errorLog;
+        qCritical() << "Found errors in python bindings. Please fix!\n";
+        ret = 1;
+      }
+      else
+      {
+        logstream << "Python bindings are consistent.\n";
+      }
+
+      PythonContext::GlobalShutdown();
     }
+
+    RENDERDOC_ShutdownReplay();
+
+    logbuf.finish();
+
+    delete[] alloc_argv;
+
+    fclose(test_logOut);
+    return ret;
   }
 #endif
 
@@ -172,6 +348,11 @@ int main(int argc, char *argv[])
                             lit("filename.py"));
   parser.addOption(python);
 
+  QCommandLineOption uiscript({lit("ui-python"), lit("ui-script"), lit("ui-py")},
+                              tr("Run a python script after opening the main UI."),
+                              lit("filename.py"));
+  parser.addOption(uiscript);
+
   // secret non-described options
   QCommandLineOption installLayer(lit("install_vulkan_layer"), QString(), lit("root_or_not"));
   hideOption(installLayer);
@@ -180,6 +361,10 @@ int main(int argc, char *argv[])
   QCommandLineOption updateFailed(lit("updatefailed"), QString(), lit("errormsg"));
   hideOption(updateFailed);
   parser.addOption(updateFailed);
+
+  QCommandLineOption updateDoneAdmin(lit("updatedone_admin"));
+  hideOption(updateDoneAdmin);
+  parser.addOption(updateDoneAdmin);
 
   QCommandLineOption updateDone(lit("updatedone"));
   hideOption(updateDone);
@@ -233,9 +418,20 @@ int main(int argc, char *argv[])
 
   if(parser.isSet(updateDone))
   {
+    qInfo() << "Finishing update as user";
     updateApplied = true;
 
+    // the renderdoccmd updater that runs us is from the old version, so older versions might be
+    // running us as admin expecting the version number to be updated.
+    // if we're not running as admin, this will immediately exit
     RENDERDOC_UpdateInstalledVersionNumber();
+  }
+
+  if(parser.isSet(updateDoneAdmin))
+  {
+    qInfo() << "Finishing update as admin";
+    RENDERDOC_UpdateInstalledVersionNumber();
+    return 0;
   }
 
   QString remoteHost;
@@ -288,6 +484,10 @@ int main(int argc, char *argv[])
   if(parser.isSet(crashReport))
     crashReportPath = parser.value(crashReport);
 
+  QString uiscriptFile;
+  if(parser.isSet(uiscript))
+    uiscriptFile = parser.value(uiscript);
+
   QStringList pyscripts = parser.values(python);
 
   // load the first filename in the positional arguments.
@@ -309,7 +509,7 @@ int main(int argc, char *argv[])
   RegisterMetatypeConversions();
 
   {
-    PersistantConfig config;
+    PersistentConfig config;
 
     {
       QString configPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -407,6 +607,11 @@ int main(int argc, char *argv[])
       RENDERDOC_InitialiseReplay(env, coreargs);
     }
 
+#if defined(RENDERDOC_PLATFORM_LINUX) && !defined(RENDERDOC_WINDOWING_WAYLAND)
+    if(envChanged)
+      unsetenv("QT_QPA_PLATFORM");
+#endif
+
     if(!crashReportPath.isEmpty())
     {
       QVariantMap json;
@@ -427,7 +632,7 @@ int main(int argc, char *argv[])
     }
     else
     {
-      PythonContext::GlobalInit();
+      PythonContext::GlobalInit(config);
 
       if(updateApplied)
       {
@@ -448,7 +653,7 @@ int main(int argc, char *argv[])
       ANALYTIC_SET(Metadata.DistributionVersion, lit(DISTRIBUTION_NAME));
 #endif
       ANALYTIC_SET(Metadata.Bitness, ((sizeof(void *) == sizeof(uint64_t)) ? 64 : 32));
-      ANALYTIC_SET(Metadata.OSVersion, QSysInfo::prettyProductName());
+      ANALYTIC_SET(Metadata.OSVersion, getOSVersion());
 
 #if RENDERDOC_STABLE_BUILD
       ANALYTIC_SET(Metadata.OfficialBuildRun, true);
@@ -466,34 +671,31 @@ int main(int argc, char *argv[])
 
         ANALYTIC_SET(UIFeatures.PythonInterop, true);
 
-        py.ctx().setGlobal("pyrenderdoc", (ICaptureContext *)&ctx);
+        QObject::connect(&py.ctx(), &PythonContext::exception,
+                         [&pythonExited](const QString &, const QString &type, const QString &value,
+                                         int, QList<QString> frames) {
+                           if(type == lit("SystemExit"))
+                           {
+                             pythonExited = true;
+                             return;
+                           }
 
-        QObject::connect(
-            &py.ctx(), &PythonContext::exception,
-            [&pythonExited](const QString &type, const QString &value, int, QList<QString> frames) {
+                           QString exString;
 
-              if(type == lit("SystemExit"))
-              {
-                pythonExited = true;
-                return;
-              }
+                           if(!frames.isEmpty())
+                           {
+                             exString += tr("Traceback (most recent call last):\n");
+                             for(const QString &f : frames)
+                               exString += QFormatStr("  %1\n").arg(f);
+                           }
 
-              QString exString;
+                           exString += QFormatStr("%1: %2\n").arg(type).arg(value);
 
-              if(!frames.isEmpty())
-              {
-                exString += tr("Traceback (most recent call last):\n");
-                for(const QString &f : frames)
-                  exString += QFormatStr("  %1\n").arg(f);
-              }
-
-              exString += QFormatStr("%1: %2\n").arg(type).arg(value);
-
-              qCritical("%s", exString.toUtf8().data());
-            });
+                           qCritical("%s", exString.toUtf8().data());
+                         });
 
         QObject::connect(&py.ctx(), &PythonContext::textOutput,
-                         [](bool isStdError, const QString &output) {
+                         [](const QString &, bool isStdError, const QString &output) {
                            if(isStdError)
                              qCritical("%s", output.toUtf8().data());
                            else
@@ -520,7 +722,7 @@ int main(int argc, char *argv[])
 
       if(!pythonExited)
       {
-        ctx.Begin(filename, remoteHost, remoteIdent, temp);
+        ctx.Begin(filename, remoteHost, remoteIdent, temp, uiscriptFile);
 
         while(ctx.isRunning())
         {

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,7 +22,9 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+#include <dlfcn.h>
 #include <elf.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <sys/ptrace.h>
 #include <sys/types.h>
@@ -45,8 +47,7 @@
 RDOC_CONFIG(bool, Linux_PtraceChildProcesses, true,
             "Use ptrace(2) to trace child processes at startup to ensure connection is made as "
             "early as possible.");
-RDOC_CONFIG(bool, Linux_Debug_PtraceLogging, false,
-            "Enable verbose debug logging of ptrace usage.");
+RDOC_CONFIG(bool, Linux_Debug_PtraceLogging, false, "Enable verbose debug logging of ptrace usage.");
 
 extern char **environ;
 
@@ -90,6 +91,7 @@ int GetIdentPort(pid_t childPid)
 {
   int ret = 0;
 
+  rdcstr pidvalidfile = StringFormat::Fmt("/proc/%d/stat", (int)childPid);
   rdcstr procfile = StringFormat::Fmt("/proc/%d/net/tcp", (int)childPid);
 
   int waitTime = INITIAL_WAIT_TIME;
@@ -97,6 +99,13 @@ int GetIdentPort(pid_t childPid)
   // try for a little while for the /proc entry to appear
   while(ret == 0 && waitTime <= MAX_WAIT_TIME)
   {
+    if(!FileIO::exists(pidvalidfile))
+    {
+      RDCWARN("Process %u is not running - did it exit during initialisation or fail to run?",
+              childPid);
+      return 0;
+    }
+
     // back-off for each retry
     usleep(waitTime);
 
@@ -218,6 +227,33 @@ static uint64_t get_nanotime()
 // the instruction pointer at all.
 #define BREAK_INST_INST_PTR_ADJUST 0
 
+#elif defined(__riscv)
+
+#define INST_PTR_REG pc
+
+// ebreak
+#define BREAK_INST 0x00100073ULL
+#define BREAK_INST_BYTES_SIZE 4
+#define BREAK_INST_INST_PTR_ADJUST 4
+
+#elif defined(__loongarch64)
+#define INST_PTR_REG csr_era
+// break instruction
+// ref: loongarch reference manual vol.1 chapter 2.2.10.2 & appendix b
+#define BREAK_INST 0x002a0000ULL
+#define BREAK_INST_BYTES_SIZE 4
+#define BREAK_INST_INST_PTR_ADJUST 4
+
+#elif defined(__powerpc64__)
+
+#define user_regs_struct pt_regs
+#define INST_PTR_REG nip
+
+// trap instruction on ppc64
+#define BREAK_INST 0x7fe00008ULL
+#define BREAK_INST_BYTES_SIZE 4
+#define BREAK_INST_INST_PTR_ADJUST 0
+
 #else
 
 #define BREAK_INST 0xccULL
@@ -287,7 +323,7 @@ static bool wait_traced_child(pid_t childPid, uint32_t timeoutMS, int &status)
   return WIFSTOPPED(status);
 }
 
-bool StopChildAtMain(pid_t childPid)
+bool StopChildAtMain(pid_t childPid, bool *exitWithNoExec)
 {
   // don't do this unless the ptrace scope is OK.
   if(!ptrace_scope_ok())
@@ -319,7 +355,7 @@ bool StopChildAtMain(pid_t childPid)
   int64_t ptraceRet = 0;
 
   // continue until exec
-  ptraceRet = ptrace(PTRACE_SETOPTIONS, childPid, NULL, PTRACE_O_TRACEEXEC);
+  ptraceRet = ptrace(PTRACE_SETOPTIONS, childPid, NULL, PTRACE_O_TRACEEXEC | PTRACE_O_TRACEEXIT);
   RDCASSERTEQUAL(ptraceRet, 0);
 
   if(Linux_Debug_PtraceLogging())
@@ -337,15 +373,33 @@ bool StopChildAtMain(pid_t childPid)
     return false;
   }
 
-  if(childStatus > 0 && (childStatus >> 8) != (SIGTRAP | (PTRACE_EVENT_EXEC << 8)))
+  int statusResult = childStatus >> 8;
+
+  if(childStatus > 0 &&
+     (statusResult == SIGCHLD || statusResult == (SIGTRAP | (PTRACE_EVENT_EXIT << 8))))
   {
-    RDCERR("Exec wait event from child PID %u was status %x, expected %x", childPid,
-           (childStatus >> 8), (SIGTRAP | (PTRACE_EVENT_EXEC << 8)));
+    if(Linux_Debug_PtraceLogging())
+      RDCLOG("Child PID %u exited while waiting for exec() 0x%x", childPid, childStatus);
+    if(exitWithNoExec)
+      *exitWithNoExec = true;
+
+    if(statusResult == SIGCHLD)
+      ptrace(PTRACE_DETACH, childPid, NULL, SIGCHLD);
+    else
+      ptrace(PTRACE_DETACH, childPid, NULL, NULL);
+    return false;
+  }
+
+  if(childStatus > 0 && statusResult != (SIGTRAP | (PTRACE_EVENT_EXEC << 8)))
+  {
+    RDCERR("Exec wait event from child PID %u was status 0x%x, expected 0x%x", childPid,
+           statusResult, (SIGTRAP | (PTRACE_EVENT_EXEC << 8)));
+
     return false;
   }
 
   if(Linux_Debug_PtraceLogging())
-    RDCLOG("Child PID %u is stopped at execve()", childPid);
+    RDCLOG("Child PID %u is stopped at execve() 0x%x", childPid, childStatus);
 
   rdcstr exepath;
   long baseVirtualPointer = 0;
@@ -366,7 +420,13 @@ bool StopChildAtMain(pid_t childPid)
     char line[512] = {0};
     if(fgets(line, 511, maps))
     {
-      if(strstr(line, "r-xp"))
+      char *sp = strchr(line, ' ');
+      if(sp == NULL)
+        continue;
+
+      sp++;
+
+      if(!strncmp(sp, "r-xp", 4))
       {
         RDCCOMPILE_ASSERT(sizeof(long) == sizeof(void *), "Expected long to be pointer sized");
         int pathOffset = 0;
@@ -432,7 +492,7 @@ bool StopChildAtMain(pid_t childPid)
     for(Elf64_Half s = 0; s < elf_header.e_shnum; s++)
     {
       Elf64_Shdr section_header;
-      size_t read = FileIO::fread(&section_header, sizeof(section_header), 1, elf);
+      read = FileIO::fread(&section_header, sizeof(section_header), 1, elf);
 
       if(read != 1)
       {
@@ -550,6 +610,9 @@ void StopAtMainInChild()
 
 void ResumeProcess(pid_t childPid, uint32_t delaySeconds)
 {
+  if(!ptrace_scope_ok())
+    return;
+
   if(childPid != 0)
   {
     // if we have a delay, see if the process is paused. If so then detach it but keep it stopped
@@ -560,6 +623,10 @@ void ResumeProcess(pid_t childPid, uint32_t delaySeconds)
 
       if(ip != 0)
       {
+        if(Linux_Debug_PtraceLogging())
+          RDCLOG("Detaching %u with SIGSTOP to allow a debugger to attach, waiting %u seconds",
+                 childPid, delaySeconds);
+
         // detach but stop, to allow a debugger to attach
         ptrace(PTRACE_DETACH, childPid, NULL, SIGSTOP);
 
@@ -612,8 +679,14 @@ void ResumeProcess(pid_t childPid, uint32_t delaySeconds)
       }
     }
 
+    if(Linux_Debug_PtraceLogging())
+      RDCLOG("Detaching immediately from %u", childPid);
+
     // try to detach and resume the process, ignoring any errors if we weren't tracing
-    ptrace(PTRACE_DETACH, childPid, NULL, NULL);
+    long ret = ptrace(PTRACE_DETACH, childPid, NULL, NULL);
+
+    if(Linux_Debug_PtraceLogging())
+      RDCLOG("Detached pid %u (%ld)", childPid, ret);
   }
 }
 
@@ -672,7 +745,8 @@ void CacheDebuggerPresent()
           split(tracermaps, lines, '\n');
 
           // remove any lines that don't reference librenderdoc.so
-          lines.removeIf([](const rdcstr &l) { return !l.contains("/librenderdoc.so"); });
+          lines.removeIf(
+              [](const rdcstr &l) { return !l.contains("/lib" STRINGIZE(RDOC_BASE_NAME) ".so"); });
           merge(lines, tracermaps, '\n');
 
           if(tracermaps.contains("r-x"))
@@ -717,9 +791,30 @@ bool OSUtility::DebuggerPresent()
   return debuggerPresent;
 }
 
+using PFN_getenv = decltype(&getenv);
+
 rdcstr Process::GetEnvVariable(const rdcstr &name)
 {
-  const char *val = getenv(name.c_str());
+  const char *val = NULL;
+  // try to bypass any hooks to ensure we don't break (looking at you bash)
+
+  static PFN_getenv dyn_getenv = NULL;
+  static bool checked = false;
+  if(!checked)
+  {
+    checked = true;
+    void *libc = dlopen("libc.so.6", RTLD_NOLOAD | RTLD_GLOBAL | RTLD_NOW);
+    if(libc)
+    {
+      dyn_getenv = (PFN_getenv)dlsym(libc, "getenv");
+    }
+  }
+
+  if(dyn_getenv)
+    val = dyn_getenv(name.c_str());
+  else
+    val = getenv(name.c_str());
+
   return val ? val : rdcstr();
 }
 

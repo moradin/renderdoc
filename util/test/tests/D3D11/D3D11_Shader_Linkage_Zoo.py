@@ -1,5 +1,4 @@
 import renderdoc as rd
-from typing import List
 import rdtest
 
 
@@ -9,39 +8,31 @@ class D3D11_Shader_Linkage_Zoo(rdtest.TestCase):
     def check_capture(self):
         failed = False
 
-        test_marker: rd.ActionDescription = self.find_action("draw")
+        test_marker = self.find_action("draw")
         while test_marker is not None:
-            action = test_marker.next
+            action = test_marker.nextAction
             event_name = test_marker.customName
-            test_marker: rd.ActionDescription = self.find_action("draw", action.eventId)
+            test_marker = self.find_action("draw", action.eventId)
 
-            self.controller.SetFrameEvent(action.eventId, False)
-            pipe: rd.PipeState = self.controller.GetPipelineState()
+            self.set_event(action.eventId, False)
+            pipe = self.controller.GetPipelineState()
 
             # Debug the shader
-            trace: rd.ShaderDebugTrace = self.controller.DebugPixel(200, 150, rd.ReplayController.NoPreference,
-                                                                    rd.ReplayController.NoPreference)
-            if trace.debugger is None:
-                failed = True
-                rdtest.log.error("Test {} could not be debugged.".format(event_name))
-                continue
+            with self.debug_pixel(200, 150, rd.DebugPixelInputs()) as debug:
+                cycles, variables = self.process_trace(debug.trace)
 
-            cycles, variables = self.process_trace(trace)
+                output = self.find_output_source_var(debug.trace, rd.ShaderBuiltin.ColorOutput, 0)
 
-            output = self.find_output_source_var(trace, rd.ShaderBuiltin.ColorOutput, 0)
+                debugged = self.evaluate_source_var(output, variables)
 
-            debugged = self.evaluate_source_var(output, variables)
+                try:
+                    self.check_pixel_value(pipe.GetOutputTargets()[0].resource, 200, 150, debugged.value.f32v[0:4])
+                except rdtest.TestFailureException as ex:
+                    failed = True
+                    rdtest.log.error(f"Test {event_name} did not match. {ex!s}")
+                    continue
 
-            try:
-                self.check_pixel_value(pipe.GetOutputTargets()[0].resourceId, 200, 150, debugged.value.f32v[0:4])
-            except rdtest.TestFailureException as ex:
-                failed = True
-                rdtest.log.error("Test {} did not match. {}".format(event_name, str(ex)))
-                continue
-            finally:
-                self.controller.FreeTrace(trace)
-
-            rdtest.log.success("Test {} matched as expected".format(event_name))
+                rdtest.log.success(f"Test {event_name} matched as expected")
 
         if failed:
             raise rdtest.TestFailureException("Some tests were not as expected")

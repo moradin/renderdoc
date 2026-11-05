@@ -1,4 +1,3 @@
-import renderdoc as rd
 import rdtest
 
 
@@ -9,76 +8,76 @@ class D3D12_RenderTarget_Binds(rdtest.TestCase):
         # find the clear
         action = self.find_action("ClearRenderTargetView")
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
         self.check_pixel_value(action.copyDestination, 0.5, 0.5, [1.0, 0.0, 1.0, 1.0])
 
-        self.check('Swapchain' in self.get_resource(action.copyDestination).name)
+        assert 'Swapchain' in self.get_resource(action.copyDestination).name
 
         rdtest.log.success("Picked value for clear is as expected")
 
-        action = action.next
+        action = action.nextAction
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
         rtvs = pipe.GetOutputTargets()
-        self.check(len(rtvs) == 2)
+        assert len(rtvs) == 2
 
-        self.check_triangle(out=rtvs[0].resourceId, back=[0.0, 1.0, 0.0, 1.0], fore=[1.0, 0.0, 0.0, 1.0])
-        self.check_triangle(out=rtvs[1].resourceId, back=[0.0, 1.0, 0.0, 1.0], fore=[0.0, 0.0, 1.0, 1.0])
-        self.check(self.get_resource(rtvs[0].resourceId).name == 'TextureA')
-        self.check(self.get_resource(rtvs[1].resourceId).name == 'TextureB')
+        self.check_triangle(out=rtvs[0].resource, back=[0.0, 1.0, 0.0, 1.0], fore=[1.0, 0.0, 0.0, 1.0])
+        self.check_triangle(out=rtvs[1].resource, back=[0.0, 1.0, 0.0, 1.0], fore=[0.0, 0.0, 1.0, 1.0])
+        assert self.get_resource(rtvs[0].resource).name == 'TextureA'
+        assert self.get_resource(rtvs[1].resource).name == 'TextureB'
 
         rdtest.log.success("RTVs at first action are as expected")
 
-        action = action.next
+        action = action.nextAction
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
         rtvs = pipe.GetOutputTargets()
-        self.check(len(rtvs) == 2)
+        assert len(rtvs) == 2
 
-        self.check_triangle(out=rtvs[0].resourceId, back=[0.0, 1.0, 0.0, 1.0], fore=[1.0, 1.0, 0.0, 1.0])
-        self.check_triangle(out=rtvs[1].resourceId, back=[0.0, 1.0, 0.0, 1.0], fore=[0.0, 1.0, 1.0, 1.0])
-        self.check(self.get_resource(rtvs[0].resourceId).name == 'TextureC')
-        self.check(self.get_resource(rtvs[1].resourceId).name == 'TextureD')
+        self.check_triangle(out=rtvs[0].resource, back=[0.0, 1.0, 0.0, 1.0], fore=[1.0, 1.0, 0.0, 1.0])
+        self.check_triangle(out=rtvs[1].resource, back=[0.0, 1.0, 0.0, 1.0], fore=[0.0, 1.0, 1.0, 1.0])
+        assert self.get_resource(rtvs[0].resource).name == 'TextureC'
+        assert self.get_resource(rtvs[1].resource).name == 'TextureD'
 
         rdtest.log.success("RTVs at second action are as expected")
 
-        action = action.next
+        action = action.nextAction
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
         rtvs = pipe.GetOutputTargets()
-        self.check(len(rtvs) == 2)
+        assert len(rtvs) == 2
 
-        self.check_triangle(out=rtvs[0].resourceId, back=[0.0, 1.0, 0.0, 1.0], fore=[1.0, 0.0, 0.0, 1.0])
-        self.check_triangle(out=rtvs[1].resourceId, back=[0.0, 1.0, 0.0, 1.0], fore=[0.0, 0.0, 1.0, 1.0])
-        self.check(self.get_resource(rtvs[0].resourceId).name == 'TextureE')
-        self.check(self.get_resource(rtvs[1].resourceId).name == 'TextureF')
+        self.check_triangle(out=rtvs[0].resource, back=[0.0, 1.0, 0.0, 1.0], fore=[1.0, 0.0, 0.0, 1.0])
+        self.check_triangle(out=rtvs[1].resource, back=[0.0, 1.0, 0.0, 1.0], fore=[0.0, 0.0, 1.0, 1.0])
+        assert self.get_resource(rtvs[0].resource).name == 'TextureE'
+        assert self.get_resource(rtvs[1].resource).name == 'TextureF'
 
         rdtest.log.success("RTVs at third action are as expected")
 
-        action = action.next
+        action = action.nextAction
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
         rtvs = pipe.GetOutputTargets()
-        self.check(len(rtvs) == 2)
+        assert len(rtvs) == 2
 
-        self.check_triangle(out=rtvs[0].resourceId, back=[0.0, 1.0, 0.0, 1.0], fore=[1.0, 1.0, 0.0, 1.0])
-        self.check_triangle(out=rtvs[1].resourceId, back=[0.0, 1.0, 0.0, 1.0], fore=[0.0, 1.0, 1.0, 1.0])
-        self.check(self.get_resource(rtvs[0].resourceId).name == 'TextureG')
-        self.check(self.get_resource(rtvs[1].resourceId).name == 'TextureH')
+        self.check_triangle(out=rtvs[0].resource, back=[0.0, 1.0, 0.0, 1.0], fore=[1.0, 1.0, 0.0, 1.0])
+        self.check_triangle(out=rtvs[1].resource, back=[0.0, 1.0, 0.0, 1.0], fore=[0.0, 1.0, 1.0, 1.0])
+        assert self.get_resource(rtvs[0].resource).name == 'TextureG'
+        assert self.get_resource(rtvs[1].resource).name == 'TextureH'
 
         rdtest.log.success("RTVs at fourth action are as expected")

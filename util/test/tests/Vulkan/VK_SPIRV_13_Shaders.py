@@ -8,15 +8,16 @@ class VK_SPIRV_13_Shaders(rdtest.TestCase):
     def check_capture(self):
         action = self.find_action("Draw")
 
-        self.check(action is not None)
+        assert action is not None
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
-        refl: rd.ShaderReflection = pipe.GetShaderReflection(rd.ShaderStage.Vertex)
+        refl = pipe.GetShaderReflection(rd.ShaderStage.Vertex)
+        assert refl is not None
 
-        disasm: str = self.controller.DisassembleShader(pipe.GetGraphicsPipelineObject(), refl, "")
+        disasm = self.controller.DisassembleShader(pipe.GetGraphicsPipelineObject(), refl, "")
 
         if (refl.inputSignature[0].varName != 'pos' or refl.inputSignature[0].compCount != 3):
             raise rdtest.TestFailureException("Vertex shader input 'pos' not reflected correctly")
@@ -33,9 +34,10 @@ class VK_SPIRV_13_Shaders(rdtest.TestCase):
         if 'vertmain' not in disasm:
             raise rdtest.TestFailureException("Vertex shader disassembly failed, entry point not found")
 
-        refl: rd.ShaderReflection = pipe.GetShaderReflection(rd.ShaderStage.Fragment)
+        refl = pipe.GetShaderReflection(rd.ShaderStage.Fragment)
+        assert refl is not None
 
-        disasm: str = self.controller.DisassembleShader(pipe.GetGraphicsPipelineObject(), refl, "")
+        disasm = self.controller.DisassembleShader(pipe.GetGraphicsPipelineObject(), refl, "")
 
         if (refl.inputSignature[0].varName != 'incol' or refl.inputSignature[0].compCount != 4):
             raise rdtest.TestFailureException("Fragment shader input 'incol' not reflected correctly")
@@ -50,7 +52,7 @@ class VK_SPIRV_13_Shaders(rdtest.TestCase):
 
         postvs_data = self.get_postvs(action, rd.MeshDataStage.VSOut, 0, action.numIndices)
 
-        postvs_ref = {
+        postvs_ref: rdtest.MeshReference = {
             0: {
                 'vtx': 0,
                 'idx': 0,
@@ -75,6 +77,6 @@ class VK_SPIRV_13_Shaders(rdtest.TestCase):
 
         rdtest.log.success("vertex output is as expected")
 
-        self.check_pixel_value(pipe.GetOutputTargets()[0].resourceId, 0.5, 0.5, [0.0, 1.0, 0.0, 1.0])
+        self.check_pixel_value(pipe.GetOutputTargets()[0].resource, 0.5, 0.5, [0.0, 1.0, 0.0, 1.0])
 
         rdtest.log.success("picked value is as expected")

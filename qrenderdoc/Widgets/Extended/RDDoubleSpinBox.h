@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -36,7 +36,9 @@ public:
 
 signals:
   void keyPress(QKeyEvent *e);
+  void focusOut(QFocusEvent *e);
 
 private:
   void keyPressEvent(QKeyEvent *e) override;
+  void focusOutEvent(QFocusEvent *e) override;
 };

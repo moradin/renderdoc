@@ -88,9 +88,6 @@
     <ClCompile Include="vk_linux.cpp">
       <Filter>OS\Posix</Filter>
     </ClCompile>
-    <ClCompile Include="vk_ggp.cpp">
-      <Filter>OS\Posix</Filter>
-    </ClCompile>
     <ClCompile Include="vk_layer_android.cpp">
       <Filter>OS\Posix</Filter>
     </ClCompile>
@@ -116,9 +113,6 @@
       <Filter>Replay</Filter>
     </ClCompile>
     <ClCompile Include="vk_rendermesh.cpp">
-      <Filter>Replay</Filter>
-    </ClCompile>
-    <ClCompile Include="vk_msaa_array_conv.cpp">
       <Filter>Replay</Filter>
     </ClCompile>
     <ClCompile Include="vk_rendertexture.cpp">
@@ -151,12 +145,21 @@
     <ClCompile Include="vk_shader_feedback.cpp">
       <Filter>Replay</Filter>
     </ClCompile>
+    <ClCompile Include="vk_msaa_buffer_conv.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="vk_acceleration_structure.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="vk_replay.h">
       <Filter>Replay</Filter>
     </ClInclude>
     <ClInclude Include="vk_debug.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
+    <ClInclude Include="vk_acceleration_structure.h">
       <Filter>Replay</Filter>
     </ClInclude>
     <ClInclude Include="vk_resources.h">
@@ -207,9 +210,6 @@
     <ClInclude Include="official\vulkan_core.h">
       <Filter>official</Filter>
     </ClInclude>
-    <ClInclude Include="official\vulkan_ggp.h">
-      <Filter>official</Filter>
-    </ClInclude>
     <ClInclude Include="official\vulkan_ios.h">
       <Filter>official</Filter>
     </ClInclude>
@@ -235,9 +235,6 @@
       <Filter>official</Filter>
     </ClInclude>
     <ClInclude Include="official\vulkan_fuchsia.h">
-      <Filter>official</Filter>
-    </ClInclude>
-    <ClInclude Include="official\vulkan_ggp.h">
       <Filter>official</Filter>
     </ClInclude>
     <ClInclude Include="official\vulkan_metal.h">

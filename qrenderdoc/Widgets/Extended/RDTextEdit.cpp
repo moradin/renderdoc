@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -126,8 +126,9 @@ void RDTextEdit::enableCompletion()
 
         // if we're in the middle of a word, move to the end of it
         QString text = toPlainText();
-        if(cur.position() > 0 && (text[cur.position() - 1].isLetterOrNumber() ||
-                                  m_WordCharacters.contains(text[cur.position() - 1])) &&
+        if(cur.position() > 0 &&
+           (text[cur.position() - 1].isLetterOrNumber() ||
+            m_WordCharacters.contains(text[cur.position() - 1])) &&
            (text[cur.position()].isLetterOrNumber() ||
             m_WordCharacters.contains(text[cur.position()])))
         {
@@ -200,9 +201,7 @@ void RDTextEdit::keyPressEvent(QKeyEvent *e)
       case Qt::Key_Enter:
       case Qt::Key_Tab:
       case Qt::Key_Backtab:
-      case Qt::Key_Escape:
-        e->ignore();
-        return;
+      case Qt::Key_Escape: e->ignore(); return;
 
       // also the completer doesn't hide itself when the cursor is moved so make sure we do that
       // ourselves
@@ -229,17 +228,20 @@ void RDTextEdit::keyPressEvent(QKeyEvent *e)
 
   bool completionShortcut = false;
 
-  // tab triggers completion
-  if(e->key() == Qt::Key_Tab)
-    completionShortcut = true;
-
-  // as does ctrl-space and ctrl-E
-  if(e->modifiers() & Qt::ControlModifier)
+  if(m_Completer && m_CompletionModel)
   {
-    if(e->key() == Qt::Key_E)
+    // tab triggers completion
+    if(e->key() == Qt::Key_Tab)
       completionShortcut = true;
-    if(e->key() == Qt::Key_Space)
-      completionShortcut = true;
+
+    // as does ctrl-space and ctrl-E
+    if(e->modifiers() & Qt::ControlModifier)
+    {
+      if(e->key() == Qt::Key_E)
+        completionShortcut = true;
+      if(e->key() == Qt::Key_Space)
+        completionShortcut = true;
+    }
   }
 
   // add ctrl-end and ctrl-home shortcuts, which aren't implemented for read-only edits

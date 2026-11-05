@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,6 +28,7 @@
 #include "driver/ihv/amd/amd_counters.h"
 #include "driver/ihv/intel/intel_counters.h"
 #include "driver/ihv/nv/nv_counters.h"
+#include "driver/ihv/nv/nv_d3d11_counters.h"
 #include "d3d11_context.h"
 #include "d3d11_debug.h"
 #include "d3d11_device.h"
@@ -61,6 +62,11 @@ rdcarray<GPUCounter> D3D11Replay::EnumerateCounters()
     ret.append(m_pNVCounters->GetPublicCounterIds());
   }
 
+  if(m_pNVPerfCounters)
+  {
+    ret.append(m_pNVPerfCounters->EnumerateCounters());
+  }
+
   if(m_pIntelCounters)
   {
     ret.append(m_pIntelCounters->GetPublicCounterIds());
@@ -86,7 +92,11 @@ CounterDescription D3D11Replay::DescribeCounter(GPUCounter counterID)
   /////NV//////
   if(IsNvidiaCounter(counterID))
   {
-    if(m_pNVCounters)
+    if(m_pNVPerfCounters && m_pNVPerfCounters->HasCounter(counterID))
+    {
+      return m_pNVPerfCounters->DescribeCounter(counterID);
+    }
+    else if(m_pNVCounters)
     {
       return m_pNVCounters->GetCounterDescription(counterID);
     }
@@ -246,7 +256,8 @@ void D3D11Replay::FillTimers(D3D11CounterContext &ctx, const ActionDescription &
     const ActionDescription &a = actionnode.children[i];
     FillTimers(ctx, actionnode.children[i]);
 
-    if(a.events.empty())
+    if(a.events.empty() ||
+       (a.flags & (ActionFlags::PushMarker | ActionFlags::SetMarker | ActionFlags::PopMarker)))
       continue;
 
     GPUTimer *timer = NULL;
@@ -290,8 +301,9 @@ void D3D11Replay::FillTimers(D3D11CounterContext &ctx, const ActionDescription &
     if(timer->occlusion)
       m_pImmediateContext->GetReal()->End(timer->occlusion);
     if(timer->stats)
+      m_pImmediateContext->GetReal()->End(timer->stats);
 
-      ctx.eventStart = a.eventId + 1;
+    ctx.eventStart = a.eventId + 1;
   }
 }
 
@@ -603,6 +615,20 @@ rdcarray<CounterResult> D3D11Replay::FetchCounters(const rdcarray<GPUCounter> &c
     if(!nvCounters.empty())
     {
       ret = FetchCountersNV(nvCounters);
+    }
+  }
+
+  if(m_pNVPerfCounters)
+  {
+    // Filter out the NvPerf counters
+    rdcarray<GPUCounter> nvPerfCounters;
+    std::copy_if(counters.begin(), counters.end(), std::back_inserter(nvPerfCounters),
+                 [=](const GPUCounter &c) { return m_pNVPerfCounters->HasCounter(c); });
+    if(!nvPerfCounters.empty())
+    {
+      rdcarray<CounterResult> results =
+          m_pNVPerfCounters->FetchCounters(nvPerfCounters, this, m_pDevice, m_pImmediateContext);
+      ret.append(results);
     }
   }
 

@@ -12,6 +12,8 @@ if [ ! -d "${REPO_ROOT}"/x64/Release ] || [ ! -d "${REPO_ROOT}"/Win32/Release ];
 	exit 1;
 fi
 
+rm -rf "${REPO_ROOT}"/package
+
 pushd "${REPO_ROOT}"
 
 # clean any old files lying around and make new structure
@@ -47,12 +49,22 @@ if [ -d plugins-win64 ]; then
 	cp -R plugins-win64/ dist/Release64/plugins
 else
 	echo "WARNING: x64 plugins missing, download and extract https://renderdoc.org/plugins.zip in root";
+
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Failed to locate plugins.";
+		exit 1;
+	fi
 fi;
 
 if [ -d plugins-win32 ]; then
 	cp -R plugins-win32/ dist/Release32/plugins
 else
 	echo "WARNING: x86 plugins missing, download and extract https://renderdoc.org/plugins.zip in root";
+
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Failed to locate plugins.";
+		exit 1;
+	fi
 fi
 
 # Delete new VS2015 incremental pdb files, these are just build artifacts
@@ -66,6 +78,11 @@ if ls build-android-* > /dev/null; then
 	find build-android-* -iname 'org.renderdoc.renderdoccmd.*.apk' -exec cp '{}' dist/Release64/plugins/android ';'
 else
 	echo "WARNING: No android builds found, expected build-android-arm32 and build-android-arm64";
+
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Failed to locate Android build.";
+		exit 1;
+	fi
 fi
 
 # Copy in android adb and patching requirements
@@ -76,13 +93,11 @@ else
 	echo "         These files must be in plugins-android/ in the root and";
 	echo "         MUST be built locally from an AOSP checkout, not from a";
 	echo "         distributed android SDK due to licensing concerns.";
-fi
 
-# Generate a debug key for signing purposes
-if [ -f "$JAVA_HOME/bin/keytool.exe" ] && [ -d dist/Release64/plugins/android ]; then
-	"$JAVA_HOME/bin/keytool.exe" -genkey -keystore dist/Release64/plugins/android/renderdoc.keystore -storepass android -alias rdocandroidkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=, OU=, O=, L=,  S=, C="
-elif [ -f "$JAVA_HOME/bin/keytool" ] && [ -d dist/Release64/plugins/android ]; then
-	"$JAVA_HOME/bin/keytool" -genkey -keystore dist/Release64/plugins/android/renderdoc.keystore -storepass android -alias rdocandroidkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=, OU=, O=, L=,  S=, C="
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Strict mode: Failed to locate Android support files.";
+		exit 1;
+	fi
 fi
 
 if [ -d dist/Release64/plugins/android ]; then
@@ -118,14 +133,78 @@ export WSLENV=$WSLENV:RENDERDOC_VERSION
 "$WIX/bin/candle.exe" -o dist/Installer32.wixobj util/installer/Installer32.wxs
 "$WIX/bin/light.exe" -ext WixUIExtension -sw1076 -loc util/installer/customtext.wxl -o dist/Installer32.msi dist/Installer32.wixobj
 
+if [[ "$STRICT" == "yes" ]]; then
+	if [ ! -f "${REPO_ROOT}"/dist/Installer32.msi ] ; then
+		echo "Failed to build 32-bit installer.";
+		exit 1;
+	fi
+fi
+
 "$WIX/bin/candle.exe" -o dist/Installer64.wixobj util/installer/Installer64.wxs
 "$WIX/bin/light.exe" -ext WixUIExtension -sw1076 -loc util/installer/customtext.wxl -o dist/Installer64.msi dist/Installer64.wixobj
+
+if [[ "$STRICT" == "yes" ]]; then
+	if [ ! -f "${REPO_ROOT}"/dist/Installer64.msi ] ; then
+		echo "Failed to build 64-bit installer.";
+		exit 1;
+	fi
+fi
 
 rm -f dist/*.wixobj dist/*.wixpdb
 
 popd # $REPO_ROOT
 
-rm -rf "${REPO_ROOT}"/package
+# make zip manifests, excluding files we know are supposed to be zip-exclusive
+
+pushd "${REPO_ROOT}"/dist/Release32
+find . -type f -exec md5sum {} \; | grep -v './LICENSE.md' | grep -v './renderdocui.exe' > "${REPO_ROOT}"/dist/manifest_zip32.txt
+popd
+
+pushd "${REPO_ROOT}"/dist/Release64
+find . -type f -exec md5sum {} \; | grep -v './LICENSE.md' | grep -v './renderdocui.exe' > "${REPO_ROOT}"/dist/manifest_zip64.txt
+popd
+
+# extract the msi files
+
+# WSL needs the path to exist to convert it in native_path
+mkdir -p "${REPO_ROOT}"/dist/msi32
+mkdir -p "${REPO_ROOT}"/dist/msi64
+
+msiexec.exe -a $(native_path "${REPO_ROOT}"/dist/Installer32.msi) -qn TARGETDIR=$(native_path "${REPO_ROOT}"/dist/msi32)
+msiexec.exe -a $(native_path "${REPO_ROOT}"/dist/Installer64.msi) -qn TARGETDIR=$(native_path "${REPO_ROOT}"/dist/msi64)
+
+# make msi manifests as above
+
+pushd "${REPO_ROOT}"/dist/msi32/PFiles/RenderDoc
+find . -type f -exec md5sum {} \; | grep -v './LICENSE.rtf' > "${REPO_ROOT}"/dist/manifest_msi32.txt
+popd
+
+pushd "${REPO_ROOT}"/dist/msi64/PFiles/RenderDoc
+find . -type f -exec md5sum {} \; | grep -v './LICENSE.rtf' > "${REPO_ROOT}"/dist/manifest_msi64.txt
+popd
+
+diff "${REPO_ROOT}"/dist/manifest_msi32.txt "${REPO_ROOT}"/dist/manifest_zip32.txt
+
+if [ $? -ne 0 ]; then
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Manifest for 32-bit msi and zip did not match."
+		exit 1;
+	else
+		echo "WARNING: Manifest for 32-bit msi and zip did not match."
+	fi
+fi
+
+diff "${REPO_ROOT}"/dist/manifest_msi64.txt "${REPO_ROOT}"/dist/manifest_zip64.txt
+
+if [ $? -ne 0 ]; then
+	if [[ "$STRICT" == "yes" ]]; then
+		echo "Manifest for 64-bit msi and zip did not match."
+		exit 1;
+	else
+		echo "WARNING: Manifest for 64-bit msi and zip did not match."
+	fi
+fi
+
 mkdir "${REPO_ROOT}"/package
 pushd "${REPO_ROOT}"/package
 
@@ -141,12 +220,12 @@ if [ -f "${REPO_ROOT}"/dist/Installer32.msi ]; then
 	cp "${REPO_ROOT}"/dist/Installer32.msi ${FILENAME}_32.msi
 	cp "${REPO_ROOT}"/dist/Installer64.msi ${FILENAME}_64.msi
 
-	gpg -o ${FILENAME}_32.msi.sig --detach-sign --armor ${FILENAME}_32.msi
-	gpg -o ${FILENAME}_64.msi.sig --detach-sign --armor ${FILENAME}_64.msi
-
 	# On windows, also sign the installers
 	"${BUILD_ROOT}"/scripts/sign.sh ${FILENAME}_32.msi
 	"${BUILD_ROOT}"/scripts/sign.sh ${FILENAME}_64.msi
+
+	gpg -o ${FILENAME}_32.msi.sig --detach-sign --armor ${FILENAME}_32.msi
+	gpg -o ${FILENAME}_64.msi.sig --detach-sign --armor ${FILENAME}_64.msi
 
 fi;
 

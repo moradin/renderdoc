@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -43,8 +43,8 @@ void DoSerialiseViaResourceId(SerialiserType &ser, Interface *&el)
 
   if(ser.IsReading())
   {
-    if(id != ResourceId() && rm && rm->HasLiveResource(id))
-      el = (Interface *)rm->GetLiveResource(id);
+    if(id != ResourceId() && rm && rm->HasResource(id))
+      el = (Interface *)rm->GetResource(id);
     else
       el = NULL;
   }
@@ -575,7 +575,15 @@ void DoSerialise(SerialiserType &ser, D3D11_RENDER_TARGET_BLEND_DESC &el)
   SERIALISE_MEMBER(SrcBlendAlpha);
   SERIALISE_MEMBER(DestBlendAlpha);
   SERIALISE_MEMBER(BlendOpAlpha);
-  SERIALISE_MEMBER_TYPED(D3D11_COLOR_WRITE_ENABLE, RenderTargetWriteMask);
+
+  // D3D11_COLOR_WRITE_ENABLE is 4 bytes but RenderTargetWriteMask is 1 byte,
+  // so we can't use SERIALISE_MEMBER_TYPED() directly - it will read padding
+  // serialising it like this will be backwards compatible (we always serialised a
+  // D3D11_COLOR_WRITE_ENABLE) but newly serialised captures will not include garbage bytes
+  D3D11_COLOR_WRITE_ENABLE mask = (D3D11_COLOR_WRITE_ENABLE)el.RenderTargetWriteMask;
+  SERIALISE_ELEMENT(mask).Named("RenderTargetWriteMask"_lit);
+  if(ser.IsReading())
+    el.RenderTargetWriteMask = mask & 0xff;
 }
 
 template <class SerialiserType>
@@ -591,7 +599,15 @@ void DoSerialise(SerialiserType &ser, D3D11_RENDER_TARGET_BLEND_DESC1 &el)
   SERIALISE_MEMBER(DestBlendAlpha);
   SERIALISE_MEMBER(BlendOpAlpha);
   SERIALISE_MEMBER(LogicOp);
-  SERIALISE_MEMBER_TYPED(D3D11_COLOR_WRITE_ENABLE, RenderTargetWriteMask);
+
+  // D3D11_COLOR_WRITE_ENABLE is 4 bytes but RenderTargetWriteMask is 1 byte,
+  // so we can't use SERIALISE_MEMBER_TYPED() directly - it will read padding
+  // serialising it like this will be backwards compatible (we always serialised a
+  // D3D11_COLOR_WRITE_ENABLE) but newly serialised captures will not include garbage bytes
+  D3D11_COLOR_WRITE_ENABLE mask = (D3D11_COLOR_WRITE_ENABLE)el.RenderTargetWriteMask;
+  SERIALISE_ELEMENT(mask).Named("RenderTargetWriteMask"_lit);
+  if(ser.IsReading())
+    el.RenderTargetWriteMask = mask & 0xff;
 }
 
 template <class SerialiserType>
@@ -737,7 +753,7 @@ void DoSerialise(SerialiserType &ser, D3D11_INPUT_ELEMENT_DESC &el)
   SERIALISE_MEMBER(SemanticIndex).Important();
   SERIALISE_MEMBER(Format).Important();
   SERIALISE_MEMBER(InputSlot);
-  SERIALISE_MEMBER(AlignedByteOffset);
+  SERIALISE_MEMBER(AlignedByteOffset).OffsetOrSize();
   SERIALISE_MEMBER(InputSlotClass);
   SERIALISE_MEMBER(InstanceDataStepRate);
 }

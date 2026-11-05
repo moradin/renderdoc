@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -36,13 +36,28 @@
 #include "common/timing.h"
 #include "os/os_specific.h"
 
+DECLARE_REFLECTION_ENUM(RENDERDOC_AnnotationType);
+DECLARE_REFLECTION_STRUCT(RENDERDOC_AnnotationValue);
+
 class Chunk;
 struct RDCThumb;
 struct ReplayOptions;
 struct SDObject;
 
+void WriteAnnotation(SDObject *obj, RENDERDOC_AnnotationType valueType, uint32_t valueVectorWidth,
+                     RENDERDOC_AnnotationValue value);
+
+struct PendingAnnotation
+{
+  uint32_t eventId;
+  rdcstr key;
+  RENDERDOC_AnnotationType valueType;
+  uint32_t valueVectorWidth;
+  RENDERDOC_AnnotationValue value;
+};
+
 // not provided by tinyexr, just do by hand
-bool is_exr_file(FILE *f);
+bool is_exr_file(const byte *headerBuffer, size_t size);
 void LogReplayOptions(const ReplayOptions &opts);
 
 enum class RDCDriver : uint32_t;
@@ -67,12 +82,49 @@ struct ICrashHandler
   virtual void UnregisterMemoryRegion(void *mem) = 0;
 };
 
+struct DeviceOwnedWindow
+{
+  DeviceOwnedWindow() : device(NULL), windowHandle(NULL) {}
+  DeviceOwnedWindow(void *dev, void *wnd) : device(dev), windowHandle(wnd) {}
+  void *device;
+  void *windowHandle;
+
+  bool operator==(const DeviceOwnedWindow &o) const
+  {
+    return device == o.device && windowHandle == o.windowHandle;
+  }
+  bool operator<(const DeviceOwnedWindow &o) const
+  {
+    if(device != o.device)
+      return device < o.device;
+    return windowHandle < o.windowHandle;
+  }
+
+  bool wildcardMatch(const DeviceOwnedWindow &o) const
+  {
+    if(device == NULL || o.device == NULL)
+      return windowHandle == NULL || o.windowHandle == NULL || windowHandle == o.windowHandle;
+
+    if(windowHandle == NULL || o.windowHandle == NULL)
+      return device == o.device;
+
+    return *this == o;
+  }
+};
+
 struct IFrameCapturer
 {
   virtual RDCDriver GetFrameCaptureDriver() = 0;
-  virtual void StartFrameCapture(void *dev, void *wnd) = 0;
-  virtual bool EndFrameCapture(void *dev, void *wnd) = 0;
-  virtual bool DiscardFrameCapture(void *dev, void *wnd) = 0;
+  virtual void StartFrameCapture(DeviceOwnedWindow devWnd) = 0;
+  virtual bool EndFrameCapture(DeviceOwnedWindow devWnd) = 0;
+  virtual bool DiscardFrameCapture(DeviceOwnedWindow devWnd) = 0;
+
+  virtual uint32_t SetObjectAnnotation(void *object, const char *key,
+                                       RENDERDOC_AnnotationType valueType, uint32_t valueVectorWidth,
+                                       const RENDERDOC_AnnotationValue *value) = 0;
+  virtual uint32_t SetCommandAnnotation(void *queueOrCommandBuffer, const char *key,
+                                        RENDERDOC_AnnotationType valueType, uint32_t valueVectorWidth,
+                                        const RENDERDOC_AnnotationValue *value) = 0;
 };
 
 struct IDeviceProtocolHandler;
@@ -189,6 +241,7 @@ enum class RDCDriver : uint32_t
   Vulkan = 8,
   OpenGLES = 9,
   D3D8 = 10,
+  Metal = 11,
   MaxBuiltin,
   Custom = 100000,
   Custom0 = Custom,
@@ -204,6 +257,20 @@ enum class RDCDriver : uint32_t
 };
 
 DECLARE_REFLECTION_ENUM(RDCDriver);
+
+struct RDCDriverStatus
+{
+  bool presenting = false;
+  bool supported = false;
+  rdcstr supportMessage;
+
+  bool operator==(const RDCDriverStatus &o) const
+  {
+    return presenting == o.presenting && supported == o.supported &&
+           supportMessage == o.supportMessage;
+  }
+  bool operator!=(const RDCDriverStatus &o) const { return !(*this == o); }
+};
 
 enum ReplayLogType
 {
@@ -228,16 +295,12 @@ ITERABLE_OPERATORS(VendorExtensions);
 
 struct CaptureData
 {
-  CaptureData() : timestamp(0), driver(RDCDriver::Unknown), frameNumber(0), retrieved(false) {}
-  CaptureData(rdcstr p, uint64_t t, RDCDriver d, uint32_t f)
-      : path(p), timestamp(t), driver(d), frameNumber(f), retrieved(false)
-  {
-  }
   rdcstr path;
-  uint64_t timestamp;
-  RDCDriver driver;
-  uint32_t frameNumber;
-  bool retrieved;
+  rdcstr title;
+  uint64_t timestamp = 0;
+  RDCDriver driver = RDCDriver::Unknown;
+  uint32_t frameNumber = 0;
+  bool retrieved = false;
 };
 
 enum class LoadProgress
@@ -255,11 +318,10 @@ ITERABLE_OPERATORS(LoadProgress);
 inline constexpr float ProgressWeight(LoadProgress section)
 {
   // values must sum to 1.0
-  return section == LoadProgress::DebugManagerInit
-             ? 0.1f
-             : section == LoadProgress::FileInitialRead
-                   ? 0.75f
-                   : section == LoadProgress::FrameEventsRead ? 0.15f : 0.0f;
+  return section == LoadProgress::DebugManagerInit  ? 0.1f
+         : section == LoadProgress::FileInitialRead ? 0.75f
+         : section == LoadProgress::FrameEventsRead ? 0.15f
+                                                    : 0.0f;
 }
 
 enum class CaptureProgress
@@ -290,17 +352,13 @@ ITERABLE_OPERATORS(CaptureProgress);
 inline constexpr float ProgressWeight(CaptureProgress section)
 {
   // values must sum to 1.0
-  return section == CaptureProgress::PrepareInitialStates
-             ? 0.25f
-             : section == CaptureProgress::AddReferencedResources
-                   ? 0.25f
-                   : section == CaptureProgress::FrameCapture
-                         ? 0.15f
-                         : section == CaptureProgress::SerialiseInitialStates
-                               ? 0.25f
-                               : section == CaptureProgress::SerialiseFrameContents
-                                     ? 0.08f
-                                     : section == CaptureProgress::FileWriting ? 0.02f : 0.0f;
+  return section == CaptureProgress::PrepareInitialStates     ? 0.25f
+         : section == CaptureProgress::AddReferencedResources ? 0.25f
+         : section == CaptureProgress::FrameCapture           ? 0.15f
+         : section == CaptureProgress::SerialiseInitialStates ? 0.25f
+         : section == CaptureProgress::SerialiseFrameContents ? 0.08f
+         : section == CaptureProgress::FileWriting            ? 0.02f
+                                                              : 0.0f;
 }
 
 // utility function to fake progress with x going from 0 to infinity, mapping to 0% to 100% in an
@@ -325,18 +383,17 @@ inline constexpr float FakeProgress(uint32_t x, uint32_t maxX)
   return 1.0f - (1.0f / (x * (4.0f / float(maxX)) + 1));
 }
 
-typedef ReplayStatus (*RemoteDriverProvider)(RDCFile *rdc, const ReplayOptions &opts,
-                                             IRemoteDriver **driver);
-typedef ReplayStatus (*ReplayDriverProvider)(RDCFile *rdc, const ReplayOptions &opts,
-                                             IReplayDriver **driver);
+typedef RDResult (*RemoteDriverProvider)(RDCFile *rdc, const ReplayOptions &opts,
+                                         IRemoteDriver **driver);
+typedef RDResult (*ReplayDriverProvider)(RDCFile *rdc, const ReplayOptions &opts,
+                                         IReplayDriver **driver);
 
-typedef void (*StructuredProcessor)(RDCFile *rdc, SDFile &structData);
+typedef RDResult (*StructuredProcessor)(RDCFile *rdc, SDFile &structData);
 
-typedef ReplayStatus (*CaptureImporter)(const rdcstr &filename, StreamReader &reader, RDCFile *rdc,
-                                        SDFile &structData, RENDERDOC_ProgressCallback progress);
-typedef ReplayStatus (*CaptureExporter)(const rdcstr &filename, const RDCFile &rdc,
-                                        const SDFile &structData,
-                                        RENDERDOC_ProgressCallback progress);
+typedef RDResult (*CaptureImporter)(const rdcstr &filename, StreamReader &reader, RDCFile *rdc,
+                                    SDFile &structData, RENDERDOC_ProgressCallback progress);
+typedef RDResult (*CaptureExporter)(const rdcstr &filename, const RDCFile &rdc,
+                                    const SDFile &structData, RENDERDOC_ProgressCallback progress);
 typedef IDeviceProtocolHandler *(*ProtocolHandler)();
 
 typedef bool (*VulkanLayerCheck)(VulkanLayerFlags &flags, rdcarray<rdcstr> &myJSONs,
@@ -344,6 +401,7 @@ typedef bool (*VulkanLayerCheck)(VulkanLayerFlags &flags, rdcarray<rdcstr> &myJS
 typedef void (*VulkanLayerInstall)(bool systemLevel);
 
 typedef void (*ShutdownFunction)();
+typedef void (*EnvSetupFunction)();
 
 // this class mediates everything and owns any 'global' resources such as the crash handler.
 //
@@ -440,9 +498,10 @@ public:
   const CaptureOptions &GetCaptureOptions() const { return m_Options; }
   void RecreateCrashHandler();
   void UnloadCrashHandler();
-  ICrashHandler *GetCrashHandler() const { return m_ExHandler; }
+  void RegisterMemoryRegion(void *mem, size_t size);
+  void UnregisterMemoryRegion(void *mem);
   void ResamplePixels(const FramePixels &in, RDCThumb &out);
-  void EncodePixelsPNG(const RDCThumb &in, RDCThumb &out);
+  void EncodeThumbPixels(const RDCThumb &in, RDCThumb &out);
   RDCFile *CreateRDC(RDCDriver driver, uint32_t frameNum, const FramePixels &fp);
   void FinishCaptureWriting(RDCFile *rdc, uint32_t frameNumber);
 
@@ -452,6 +511,7 @@ public:
   void CompleteChildThread(uint32_t pid);
   void AddChildThread(uint32_t pid, Threading::ThreadHandle thread);
 
+  void ValidateCaptures();
   rdcarray<CaptureData> GetCaptures();
 
   void MarkCaptureRetrieved(uint32_t idx);
@@ -476,6 +536,8 @@ public:
 
   rdcarray<CaptureFileFormat> GetCaptureFileFormats();
   rdcarray<GPUDevice> GetAvailableGPUs();
+
+  void AddEnvSetup(EnvSetupFunction envSetup) { m_EnvSetups.push_back(envSetup); }
 
   void SetVulkanLayerCheck(VulkanLayerCheck callback) { m_VulkanCheck = callback; }
   void SetVulkanLayerInstall(VulkanLayerInstall callback) { m_VulkanInstall = callback; }
@@ -502,9 +564,9 @@ public:
   void SetDarkCheckerboardColor(const FloatVector &col) { m_DarkChecker = col; }
   bool IsDarkTheme() { return m_DarkTheme; }
   void SetDarkTheme(bool dark) { m_DarkTheme = dark; }
-  ReplayStatus CreateProxyReplayDriver(RDCDriver proxyDriver, IReplayDriver **driver);
-  ReplayStatus CreateReplayDriver(RDCFile *rdc, const ReplayOptions &opts, IReplayDriver **driver);
-  ReplayStatus CreateRemoteDriver(RDCFile *rdc, const ReplayOptions &opts, IRemoteDriver **driver);
+  RDResult CreateProxyReplayDriver(RDCDriver proxyDriver, IReplayDriver **driver);
+  RDResult CreateReplayDriver(RDCFile *rdc, const ReplayOptions &opts, IReplayDriver **driver);
+  RDResult CreateRemoteDriver(RDCFile *rdc, const ReplayOptions &opts, IRemoteDriver **driver);
 
   bool HasReplaySupport(RDCDriver driverType);
 
@@ -515,42 +577,39 @@ public:
   bool HasRemoteDriver(RDCDriver driver) const;
 
   void AddActiveDriver(RDCDriver driver, bool present);
-  std::map<RDCDriver, bool> GetActiveDrivers();
+  void SetDriverUnsupportedMessage(RDCDriver driver, rdcstr message);
+  std::map<RDCDriver, RDCDriverStatus> GetActiveDrivers();
 
   uint32_t GetTargetControlIdent() const { return m_RemoteIdent; }
   bool IsTargetControlConnected();
   rdcstr GetTargetControlUsername();
 
+  bool ShowReplayUI();
+
   void Tick();
 
-  void AddFrameCapturer(void *dev, void *wnd, IFrameCapturer *cap);
-  void RemoveFrameCapturer(void *dev, void *wnd);
-  bool HasActiveFrameCapturer(RDCDriver driver) const;
+  void AddFrameCapturer(DeviceOwnedWindow devWnd, IFrameCapturer *cap);
+  void RemoveFrameCapturer(DeviceOwnedWindow devWnd);
+  bool HasActiveFrameCapturer(RDCDriver driver);
 
   // add window-less frame capturers for use via users capturing
   // manually through the renderdoc API with NULL device/window handles
   void AddDeviceFrameCapturer(void *dev, IFrameCapturer *cap);
   void RemoveDeviceFrameCapturer(void *dev);
 
-  void StartFrameCapture(void *dev, void *wnd);
+  IFrameCapturer *MatchFrameCapturer(DeviceOwnedWindow devWnd);
+
+  void StartFrameCapture(DeviceOwnedWindow devWnd);
   bool IsFrameCapturing() { return m_CapturesActive > 0; }
-  void SetActiveWindow(void *dev, void *wnd);
-  bool EndFrameCapture(void *dev, void *wnd);
-  bool DiscardFrameCapture(void *dev, void *wnd);
+  void SetActiveWindow(DeviceOwnedWindow devWnd);
+  void SetCaptureTitle(const rdcstr &title);
+  bool EndFrameCapture(DeviceOwnedWindow devWnd);
+  bool DiscardFrameCapture(DeviceOwnedWindow devWnd);
 
-  bool MatchClosestWindow(void *&dev, void *&wnd);
+  bool MatchClosestWindow(DeviceOwnedWindow &devWnd);
 
-  bool IsActiveWindow(void *dev, void *wnd)
-  {
-    return dev == m_ActiveWindow.dev && wnd == m_ActiveWindow.wnd;
-  }
-
-  void GetActiveWindow(void *&dev, void *&wnd)
-  {
-    dev = m_ActiveWindow.dev;
-    wnd = m_ActiveWindow.wnd;
-  }
-
+  bool IsActiveWindow(DeviceOwnedWindow devWnd);
+  void GetActiveWindow(DeviceOwnedWindow &devWnd);
   void TriggerCapture(uint32_t numFrames) { m_Cap = numFrames; }
   uint32_t GetOverlayBits() { return m_Overlay; }
   void MaskOverlayBits(uint32_t And, uint32_t Or) { m_Overlay = (m_Overlay & And) | Or; }
@@ -574,25 +633,56 @@ public:
 
   enum
   {
-    eOverlay_ActiveWindow = 0x1,
-    eOverlay_CaptureDisabled = 0x2,
+    eOverlay_CaptureDisabled = 0x1,
   };
 
-  rdcstr GetOverlayText(RDCDriver driver, uint32_t frameNumber, int flags);
+  rdcstr GetOverlayText(RDCDriver driver, DeviceOwnedWindow devWnd, uint32_t frameNumber, int flags);
 
   void CycleActiveWindow();
-  uint32_t GetCapturableWindowCount() { return (uint32_t)m_WindowFrameCapturers.size(); }
+  uint32_t GetCapturableWindowCount();
+
+  bool GetTrackedFileData(const rdcstr &nickname, bytebuf &data) const;
+  bool AddTrackedFileReference(const rdcstr &nickname, const rdcstr &filepath);
+  void ClearTrackedFiles();
+  bool HasTrackedFileData() const;
+  rdcarray<rdcstr> GetTrackedFileNicknames() const;
+
+  RDResult EmbedExternalFiles(RDCFile *rdc);
+  RDResult RemoveExternalFiles(RDCFile *rdc);
+  bool HasEmbeddedFiles(RDCFile *rdc) const;
+  RDResult ReadExternalFiles(RDCFile *rdc);
+
 private:
   RenderDoc();
   ~RenderDoc();
 
-  void SyncAvailableGPUThread();
+  struct TrackedFile
+  {
+    TrackedFile() = default;
+    TrackedFile(const rdcstr &name, const rdcstr &path)
+        : nickname(name), filepath(path), hasData(false)
+    {
+    }
+    TrackedFile(const rdcstr &name, const bytebuf &contents)
+        : nickname(name), data(contents), hasData(true)
+    {
+    }
+    rdcstr nickname;
+    rdcstr filepath;
+    bytebuf data;
+    bool hasData;
+  };
 
-  static RenderDoc *m_Inst;
+  void SyncAvailableGPUThread();
+  RDResult WriteExternalFiles(RDCFile *rdc, const rdcarray<TrackedFile> &trackedFiles);
+  bool DoesTrackedFileExist(const rdcstr &nickname) const;
 
   bool m_Replay;
 
   uint32_t m_Cap;
+
+  bool m_PrevFocus = false;
+  bool m_PrevCap = false;
 
   rdcarray<RENDERDOC_InputButton> m_FocusKeys;
   rdcarray<RENDERDOC_InputButton> m_CaptureKeys;
@@ -607,6 +697,7 @@ private:
 
   rdcstr m_Target;
   rdcstr m_CaptureFileTemplate;
+  rdcstr m_CaptureTitle;
   rdcstr m_CurrentLogFile;
   CaptureOptions m_Options;
   uint32_t m_Overlay;
@@ -619,6 +710,7 @@ private:
   int32_t m_MarkerIndentLevel;
   Threading::CriticalSection m_DriverLock;
   std::map<RDCDriver, uint64_t> m_ActiveDrivers;
+  std::map<RDCDriver, rdcstr> m_APISupportMessages;
 
   Threading::ThreadHandle m_AvailableGPUThread = 0;
   rdcarray<GPUDevice> m_AvailableGPUs;
@@ -646,7 +738,9 @@ private:
   VulkanLayerCheck m_VulkanCheck;
   VulkanLayerInstall m_VulkanInstall;
 
+  Threading::CriticalSection m_ShutdownLock;
   rdcarray<ShutdownFunction> m_ShutdownFunctions;
+  rdcarray<EnvSetupFunction> m_EnvSetups;
 
   struct FrameCap
   {
@@ -655,44 +749,16 @@ private:
     int RefCount;
   };
 
-  struct DeviceWnd
-  {
-    DeviceWnd() : dev(NULL), wnd(NULL) {}
-    DeviceWnd(void *d, void *w) : dev(d), wnd(w) {}
-    void *dev;
-    void *wnd;
-
-    bool operator==(const DeviceWnd &o) const { return dev == o.dev && wnd == o.wnd; }
-    bool operator<(const DeviceWnd &o) const
-    {
-      if(dev != o.dev)
-        return dev < o.dev;
-      return wnd < o.wnd;
-    }
-
-    bool wildcardMatch(const DeviceWnd &o) const
-    {
-      if(dev == NULL || o.dev == NULL)
-        return wnd == NULL || o.wnd == NULL || wnd == o.wnd;
-
-      if(wnd == NULL || o.wnd == NULL)
-        return dev == o.dev;
-
-      return *this == o;
-    }
-  };
-
   FloatVector m_LightChecker = FloatVector(0.81f, 0.81f, 0.81f, 1.0f);
   FloatVector m_DarkChecker = FloatVector(0.57f, 0.57f, 0.57f, 1.0f);
   bool m_DarkTheme = false;
 
   int m_CapturesActive;
 
-  std::map<DeviceWnd, FrameCap> m_WindowFrameCapturers;
-  DeviceWnd m_ActiveWindow;
+  Threading::CriticalSection m_CapturerListLock;
+  std::map<DeviceOwnedWindow, FrameCap> m_WindowFrameCapturers;
+  DeviceOwnedWindow m_ActiveWindow;
   std::map<void *, IFrameCapturer *> m_DeviceFrameCapturers;
-
-  IFrameCapturer *MatchFrameCapturer(void *dev, void *wnd);
 
   bool m_VendorExts[arraydim<VendorExtensions>()] = {};
 
@@ -700,6 +766,7 @@ private:
   volatile bool m_ControlClientThreadShutdown;
   Threading::CriticalSection m_SingleClientLock;
   rdcstr m_SingleClientName;
+  bool m_RequestControllerShow = false;
 
   uint64_t m_TimeBase;
   double m_TimeFrequency;
@@ -708,6 +775,10 @@ private:
   static void TargetControlClientThread(uint32_t version, Network::Socket *client);
 
   ICrashHandler *m_ExHandler;
+  Threading::RWLock m_ExHandlerLock;
+
+  mutable Threading::RWLock m_TrackedFilesLock;
+  rdcarray<TrackedFile> m_TrackedFiles;
 
   void ProcessConfig();
 

@@ -1,9 +1,9 @@
 Features
 ========
 
-This page documents the current feature set of RenderDoc. This gives an overview of what RenderDoc is capable of, and where it is in its development. You might also be interested in the :doc:`../behind_scenes/planned_features`.
+This page documents the current feature set of RenderDoc. This gives an overview of what RenderDoc is capable of, and where it is in its development.
 
-Currently RenderDoc supports Vulkan, D3D11, D3D12, OpenGL, and OpenGL ES on Windows, Linux, Android, Stadia, and Nintendo Switch :sup:`TM`. The UI runs in Qt and will work on any desktop platform.
+Currently RenderDoc supports Vulkan, D3D11, D3D12, OpenGL, and OpenGL ES on Windows, Linux, Android, and Nintendo Switch :sup:`TM`. The UI runs in Qt and will work on any desktop platform.
 
 RenderDoc can also double as an image viewer in a simplistic fashion, separate to its functionality as a debugger. Drag in or open any of a variety of image file formats and RenderDoc will display them as if they were the only texture in a capture. This way it can be used as a simple e.g. dds viewer, with support for all sorts of formats, encodings and things typical image viewers don't tend to handle like mips, cubemaps and arrays.
 
@@ -50,11 +50,12 @@ Current Common Feature set
     * Currently set RT/textures thumbnail strip - updates as you move through the frame. Follows the currently selected pipeline slot as it changes, rather than remaining on the given texture.
     * Tabbed view for locking a view of a particular resource over time.
     * Pixel value picking.
-    * Save (in theory) any type of texture and format to various formats, dds as well as regular png/jpg.
-    * Several debug overlays for render targets - Wireframe, Depth pass/fail, Stencil pass/fail, Clipping (below black/above white points), NaN/-ve/INF highlight, quad overdraw, triangle size.
+    * Save (in theory) any type of texture and format to various formats, ``dds`` as well as regular ``png``/``jpg``.
+    * Several debug overlays for render targets - Wireframe, Depth pass/fail, Stencil pass/fail, Clipping (below black/above white points), NaN/negative/INF highlight, quad overdraw, triangle size.
 
 * Custom visualisation shader support - e.g. decode custom packed formats or gbuffers.
 * Hot shader editing and replacement.
+* Pixel history support to determine the set of changes of a given pixel.
 * Auto-range fitting to min/max values in texture data, and histogram display.
 * Simple per-action timings and tabular view of GPU counter data.
 * Python scripting console with full documented API, giving complete access to RenderDoc internals, core data structures, and the Qt UI itself.
@@ -72,22 +73,22 @@ D3D11
 
 * Support for D3D11 up to D3D11.4, Windows Vista and above. Where hardware support isn't available for feature level 11, WARP will be used.
 * Debug marker support comes from any available D3D interface (ID3DUserDefinedAnnotation, D3DPERF\_ functions, etc)
-* Pixel history view.
 * Vertex, Pixel and Compute shader debugging.
 * Detailed statistics on API call usage throughout the frame.
 
 D3D12
 -----
 
-* Support for D3D12 up to D3D12.3, Windows 10 only.
+* Support for D3D12 up to D3D12.9, Windows 10 and above, and D3D12On7 on Windows 7.
 * Debug marker uses the SetMarker/BeginEvent/EndEvent functions on the command list or queue.
-* Vertex, Pixel and Compute shader debugging for DXBC/fxc shaders.
+* Vertex, Pixel and Compute shader debugging.
 
 Vulkan
 ------
 
-* Support for Vulkan 1.2 on Windows, Linux, Android, and Stadia.
+* Support for Vulkan 1.4 on Windows, Linux, and Android.
 * Event markers and object naming both come from ``VK_EXT_debug_utils`` or deprecated ``VK_EXT_debug_marker``.
+* Vertex, Pixel, Mesh, and Compute shader debugging.
 
 Captures have a very limited amount of portability between machines. Many hardware-specific feature uses are baked into captures, and portability depends on how similar the capture and replay hardware are, whether these feature uses can map the same in both cases. Captures are however completely portable between different OSes with sufficiently comparable hardware.
 
@@ -98,7 +99,3 @@ OpenGL & OpenGL ES
 * Support for OpenGL ES 2.0 - 3.2 on Linux, Windows, and Android.
 * Tree hierarchy of events defined by any of the standard or vendor-specific extensions, and ``KHR_debug`` object labels used for object naming.
 
-See Also
---------
-
-* :doc:`../behind_scenes/planned_features`

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -36,10 +36,21 @@
 #include "vk_hookset_defs.h"
 #include "vk_resources.h"
 
-// this should be in the vulkan definition header
+extern "C" const rdcstr VulkanLayerJSONBasename;
+
+// this was removed from the vulkan definition header
+#undef VK_LAYER_EXPORT
+#define VK_LAYER_EXPORT
 #if ENABLED(RDOC_WIN32)
+
 #undef VK_LAYER_EXPORT
 #define VK_LAYER_EXPORT extern "C" __declspec(dllexport)
+
+#elif ENABLED(RDOC_LINUX) || ENABLED(RDOC_ANDROID) || ENABLED(RDOC_APPLE)
+
+#undef VK_LAYER_EXPORT
+#define VK_LAYER_EXPORT __attribute__((visibility("default")))
+
 #endif
 
 #if ENABLED(RDOC_ANDROID)
@@ -100,9 +111,19 @@ class VulkanHook : LibraryHook
 
     // we don't register any library or function hooks because we use the layer system
 
-    // we assume the implicit layer is registered - the UI will prompt the user about installing it.
-    Process::RegisterEnvironmentModification(
-        EnvironmentModification(EnvMod::Set, EnvSep::NoSep, RENDERDOC_VULKAN_LAYER_VAR, "1"));
+    // support self-hosted capture by checking our filename and tweaking the env var we set
+    if(VulkanLayerJSONBasename != "renderdoc")
+    {
+      Process::RegisterEnvironmentModification(EnvironmentModification(
+          EnvMod::Set, EnvSep::NoSep,
+          "ENABLE_VULKAN_" + strupper(VulkanLayerJSONBasename) + "_CAPTURE", "1"));
+    }
+    else
+    {
+      // we assume the implicit layer is registered - the UI will prompt the user about installing it.
+      Process::RegisterEnvironmentModification(
+          EnvironmentModification(EnvMod::Set, EnvSep::NoSep, RENDERDOC_VULKAN_LAYER_VAR, "1"));
+    }
 
     // RTSS layer is buggy, disable it to avoid bug reports that are caused by it
     Process::RegisterEnvironmentModification(
@@ -116,6 +137,20 @@ class VulkanHook : LibraryHook
     Process::RegisterEnvironmentModification(
         EnvironmentModification(EnvMod::Set, EnvSep::NoSep, "DISABLE_VULKAN_OW_OBS_CAPTURE", "1"));
 
+    // buggy program AgaueEye which also doesn't have a proper layer configuration. As a result
+    // this is likely to have side-effects but probably also on other buggy layers that duplicate
+    // sample code without even changing the layer json
+    Process::RegisterEnvironmentModification(
+        EnvironmentModification(EnvMod::Set, EnvSep::NoSep, "DISABLE_SAMPLE_LAYER", "1"));
+
+    // buggy overlay gamepp
+    Process::RegisterEnvironmentModification(
+        EnvironmentModification(EnvMod::Set, EnvSep::NoSep, "DISABLE_GAMEPP_LAYER", "1"));
+
+    // buggy wegame cross overlay
+    Process::RegisterEnvironmentModification(EnvironmentModification(
+        EnvMod::Set, EnvSep::NoSep, "DISABLE_VK_LAYER_TENCENT_wegame_cross_overlay_1", "1"));
+
     // mesa device select layer crashes when it calls GPDP2 inside vkCreateInstance, which fails on
     // the current loader.
     Process::RegisterEnvironmentModification(
@@ -127,18 +162,20 @@ class VulkanHook : LibraryHook
     Process::RegisterEnvironmentModification(EnvironmentModification(
         EnvMod::Set, EnvSep::NoSep, "VK_LAYER_bandicam_helper_DEBUG_1", "1"));
 
-#if ENABLED(RDOC_WIN32)
-    // on windows support self-hosted capture by checking our filename and tweaking the env var we
-    // set
-    rdcstr module_name;
-    FileIO::GetLibraryFilename(module_name);
-    module_name = strupper(strip_extension(get_basename(module_name)));
-    if(module_name != "RENDERDOC")
-    {
-      Process::RegisterEnvironmentModification(EnvironmentModification(
-          EnvMod::Set, EnvSep::NoSep, "ENABLE_VULKAN_" + module_name + "_CAPTURE", "1"));
-    }
-#endif
+    Process::RegisterEnvironmentModification(
+        EnvironmentModification(EnvMod::Set, EnvSep::NoSep, "DISABLE_VK_LAYER_reshade_1", "1"));
+
+    Process::RegisterEnvironmentModification(
+        EnvironmentModification(EnvMod::Set, EnvSep::NoSep, "DISABLE_VK_LAYER_GPUOpen_GRS", "1"));
+
+    Process::RegisterEnvironmentModification(
+        EnvironmentModification(EnvMod::Set, EnvSep::NoSep, "DISABLE_LAYER_NV_PRESENT_1", "1"));
+
+    // fpsmon not only has a buggy layer but it also picks an absurdly generic disable environment
+    // variable :(. Hopefully no other program picks this, or if it does then it's probably not a
+    // bad thing to disable too
+    Process::RegisterEnvironmentModification(
+        EnvironmentModification(EnvMod::Set, EnvSep::NoSep, "DISABLE_LAYER", "1"));
 
     // check options to set further variables, and apply
     OptionsUpdated();
@@ -179,8 +216,11 @@ VulkanHook VulkanHook::vkhooks;
 // RenderDoc Intercepts, these must all be entry points with a dispatchable object
 // as the first parameter
 
-#define HookDefine1(ret, function, t1, p1) \
-  VKAPI_ATTR ret VKAPI_CALL CONCAT(hooked_, function)(t1 p1) { return CoreDisp(p1)->function(p1); }
+#define HookDefine1(ret, function, t1, p1)                   \
+  VKAPI_ATTR ret VKAPI_CALL CONCAT(hooked_, function)(t1 p1) \
+  {                                                          \
+    return CoreDisp(p1)->function(p1);                       \
+  }
 #define HookDefine2(ret, function, t1, p1, t2, p2)                  \
   VKAPI_ATTR ret VKAPI_CALL CONCAT(hooked_, function)(t1 p1, t2 p2) \
   {                                                                 \
@@ -246,20 +286,19 @@ DefineHooks();
 // to create and destroy the core WrappedVulkan object
 
 VKAPI_ATTR VkResult VKAPI_CALL hooked_vkCreateInstance(const VkInstanceCreateInfo *pCreateInfo,
-                                                       const VkAllocationCallbacks *pAllocator,
+                                                       const VkAllocationCallbacks *,
                                                        VkInstance *pInstance)
 {
   KeepLayerAlive();
 
   WrappedVulkan *core = new WrappedVulkan();
-  return core->vkCreateInstance(pCreateInfo, pAllocator, pInstance);
+  return core->vkCreateInstance(pCreateInfo, NULL, pInstance);
 }
 
-VKAPI_ATTR void VKAPI_CALL hooked_vkDestroyInstance(VkInstance instance,
-                                                    const VkAllocationCallbacks *pAllocator)
+VKAPI_ATTR void VKAPI_CALL hooked_vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks *)
 {
   WrappedVulkan *core = CoreDisp(instance);
-  core->vkDestroyInstance(instance, pAllocator);
+  core->vkDestroyInstance(instance, NULL);
   delete core;
 }
 
@@ -308,7 +347,8 @@ VK_LAYER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL VK_LAYER_RENDERDOC_CaptureEnumera
       return VK_INCOMPLETE;
 
     const VkLayerProperties layerProperties = {
-        RENDERDOC_VULKAN_LAYER_NAME, VK_API_VERSION_1_0,
+        RENDERDOC_VULKAN_LAYER_NAME,
+        VK_API_VERSION_1_0,
         VK_MAKE_VERSION(RENDERDOC_VERSION_MAJOR, RENDERDOC_VERSION_MINOR, 0),
         "Debugging capture layer for RenderDoc",
     };
@@ -371,13 +411,19 @@ VK_LAYER_RENDERDOC_CaptureEnumerateInstanceExtensionProperties(
 
 // for promoted extensions, we return the function pointer for either name as an alias.
 #undef HookInitPromotedExtension
-#define HookInitPromotedExtension(cond, function, suffix)             \
-  if(!strcmp(pName, STRINGIZE(CONCAT(vk, function))) ||               \
-     !strcmp(pName, STRINGIZE(CONCAT(vk, CONCAT(function, suffix))))) \
-  {                                                                   \
-    if(cond)                                                          \
-      return (PFN_vkVoidFunction)&CONCAT(hooked_vk, function);        \
+#define HookInitPromotedExtension(cond, function, suffix)                     \
+  if(!strcmp(pName, STRINGIZE(CONCAT(vk, function))) ||                       \
+             !strcmp(pName, STRINGIZE(CONCAT(vk, CONCAT(function, suffix))))) \
+  {                                                                           \
+    if(cond)                                                                  \
+      return (PFN_vkVoidFunction)&CONCAT(hooked_vk, function);                \
   }
+
+#undef HookInitExtensionEXTtoKHR
+#define HookInitExtensionEXTtoKHR(func) (void)0;
+
+#undef HookInitPromotedExtensionEXTtoKHR
+#define HookInitPromotedExtensionEXTtoKHR(func) (void)0;
 
 // proc addr routines
 
@@ -411,9 +457,8 @@ VK_LAYER_RENDERDOC_CaptureGetDeviceProcAddr(VkDevice device, const char *pName)
     HookInitVulkanInstanceExts();
   }
 
-  if(GetDeviceDispatchTable(device)->GetDeviceProcAddr == NULL)
-    return NULL;
-  return GetDeviceDispatchTable(device)->GetDeviceProcAddr(Unwrap(device), pName);
+  // unknown or not-enabled functions must return NULL
+  return NULL;
 }
 
 VK_LAYER_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
@@ -422,12 +467,21 @@ VK_LAYER_RENDERDOC_Capture_layerGetPhysicalDeviceProcAddr(VkInstance instance, c
 VK_LAYER_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 VK_LAYER_RENDERDOC_CaptureGetInstanceProcAddr(VkInstance instance, const char *pName)
 {
+  // if name is NULL undefined is returned, let's return NULL
+  if(pName == NULL)
+    return NULL;
+
+  // a NULL instance can return vkGetInstanceProcAddr or a global function, handle that here
+
   if(!strcmp("vkGetInstanceProcAddr", pName))
     return (PFN_vkVoidFunction)&VK_LAYER_RENDERDOC_CaptureGetInstanceProcAddr;
   if(!strcmp("vkEnumerateInstanceExtensionProperties", pName))
     return (PFN_vkVoidFunction)&VK_LAYER_RENDERDOC_CaptureEnumerateInstanceExtensionProperties;
   if(!strcmp("vk_layerGetPhysicalDeviceProcAddr", pName))
     return (PFN_vkVoidFunction)&VK_LAYER_RENDERDOC_Capture_layerGetPhysicalDeviceProcAddr;
+
+  // don't implement vkEnumerateInstanceLayerProperties or vkEnumerateInstanceVersion, the loader
+  // will do that
 
   HookInit(CreateInstance);
 
@@ -444,6 +498,9 @@ VK_LAYER_RENDERDOC_CaptureGetInstanceProcAddr(VkInstance instance, const char *p
     return (PFN_vkVoidFunction)&hooked_vkCreateDevice;
   if(!strcmp("vkDestroyDevice", pName))
     return (PFN_vkVoidFunction)&hooked_vkDestroyDevice;
+
+  // we should only return a function pointer for functions that are either from a supported core
+  // version, an enabled instance extension or an _available_ device extension
 
   HookInitVulkanInstance();
 
@@ -464,7 +521,7 @@ VK_LAYER_RENDERDOC_CaptureGetInstanceProcAddr(VkInstance instance, const char *p
 
   HookInitVulkanInstanceExts();
 
-// GetInstanceProcAddr must also unconditionally return all device functions
+  // GetInstanceProcAddr must also unconditionally return all device functions
 
 #undef HookInitExtension
 #define HookInitExtension(cond, function)             \
@@ -472,10 +529,16 @@ VK_LAYER_RENDERDOC_CaptureGetInstanceProcAddr(VkInstance instance, const char *p
     return (PFN_vkVoidFunction)&CONCAT(hooked_vk, function);
 
 #undef HookInitPromotedExtension
-#define HookInitPromotedExtension(cond, function, suffix)             \
-  if(!strcmp(pName, STRINGIZE(CONCAT(vk, function))) ||               \
-     !strcmp(pName, STRINGIZE(CONCAT(vk, CONCAT(function, suffix))))) \
+#define HookInitPromotedExtension(cond, function, suffix)                     \
+  if(!strcmp(pName, STRINGIZE(CONCAT(vk, function))) ||                       \
+             !strcmp(pName, STRINGIZE(CONCAT(vk, CONCAT(function, suffix))))) \
     return (PFN_vkVoidFunction)&CONCAT(hooked_vk, function);
+
+#undef HookInitExtensionEXTtoKHR
+#define HookInitExtensionEXTtoKHR(func) (void)0;
+
+#undef HookInitPromotedExtensionEXTtoKHR
+#define HookInitPromotedExtensionEXTtoKHR(func) (void)0;
 
   HookInitVulkanDevice();
 
@@ -483,16 +546,17 @@ VK_LAYER_RENDERDOC_CaptureGetInstanceProcAddr(VkInstance instance, const char *p
 
   HookInitVulkanInstanceExts_PhysDev();
 
-  if(GetInstanceDispatchTable(instance)->GetInstanceProcAddr == NULL)
-    return NULL;
-  return GetInstanceDispatchTable(instance)->GetInstanceProcAddr(Unwrap(instance), pName);
+  // all other functions must return NULL so that GIPA can be used with NULL checks sensibly for
+  // missing functionality
+
+  return NULL;
 }
 
 VK_LAYER_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 VK_LAYER_RENDERDOC_Capture_layerGetPhysicalDeviceProcAddr(VkInstance instance, const char *pName)
 {
   // GetPhysicalDeviceProcAddr acts like GetInstanceProcAddr but it returns NULL for any functions
-  // which aren't physical device functions
+  // which are known but aren't physical device functions
   if(!strcmp("vkGetInstanceProcAddr", pName))
     return NULL;
   if(!strcmp("vk_layerGetPhysicalDeviceProcAddr", pName))
@@ -549,10 +613,16 @@ VK_LAYER_RENDERDOC_Capture_layerGetPhysicalDeviceProcAddr(VkInstance instance, c
     return NULL;
 
 #undef HookInitPromotedExtension
-#define HookInitPromotedExtension(cond, function, suffix)             \
-  if(!strcmp(pName, STRINGIZE(CONCAT(vk, function))) ||               \
-     !strcmp(pName, STRINGIZE(CONCAT(vk, CONCAT(function, suffix))))) \
+#define HookInitPromotedExtension(cond, function, suffix)                     \
+  if(!strcmp(pName, STRINGIZE(CONCAT(vk, function))) ||                       \
+             !strcmp(pName, STRINGIZE(CONCAT(vk, CONCAT(function, suffix))))) \
     return NULL;
+
+#undef HookInitExtensionEXTtoKHR
+#define HookInitExtensionEXTtoKHR(func) (void)0;
+
+#undef HookInitPromotedExtensionEXTtoKHR
+#define HookInitPromotedExtensionEXTtoKHR(func) (void)0;
 
   HookInitVulkanInstanceExts();
   HookInitVulkanDeviceExts();
@@ -563,14 +633,14 @@ VK_LAYER_RENDERDOC_Capture_layerGetPhysicalDeviceProcAddr(VkInstance instance, c
   if(GetInstanceDispatchTable(instance)->GetInstanceProcAddr == NULL)
     return NULL;
 
-  PFN_vkGetInstanceProcAddr GPDA =
+  PFN_vkGetInstanceProcAddr GPDPA =
       (PFN_vkGetInstanceProcAddr)GetInstanceDispatchTable(instance)->GetInstanceProcAddr(
           Unwrap(instance), "vk_layerGetPhysicalDeviceProcAddr");
 
-  if(GPDA == NULL)
+  if(GPDPA == NULL)
     return NULL;
 
-  return GPDA(Unwrap(instance), pName);
+  return GPDPA(Unwrap(instance), pName);
 }
 
 // layer interface negotation (new interface)

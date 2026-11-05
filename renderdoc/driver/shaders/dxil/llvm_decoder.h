@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -68,10 +68,10 @@ public:
 
 private:
   BitReader b;
+  size_t abbrevSize;
 
   void ReadBlockContents(BlockOrRecord &block);
   const AbbrevDesc &getAbbrev(uint32_t blockId, uint32_t abbrevID);
-  size_t abbrevSize() const;
   uint64_t decodeAbbrevParam(const AbbrevParam &param);
 
   rdcarray<BlockContext *> blockStack;

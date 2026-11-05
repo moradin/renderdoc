@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -27,6 +27,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "api/replay/data_types.h"
 #include "half_convert.h"
 #include "vec.h"
 
@@ -182,3 +183,6 @@ FloatVector DecodeFormattedComponents(const ResourceFormat &fmt, const byte *dat
                                       bool *success = NULL);
 void EncodeFormattedComponents(const ResourceFormat &fmt, FloatVector v, byte *data,
                                bool *success = NULL);
+
+void DecodePixelData(const ResourceFormat &srcFmt, const byte *data, PixelValue &out,
+                     bool *success = NULL);

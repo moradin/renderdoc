@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,6 +34,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+extern "C" const rdcstr VulkanLayerJSONBasename;
+
 bool VulkanReplay::IsOutputWindowVisible(uint64_t id)
 {
   if(id == 0 || m_OutputWindows.find(id) == m_OutputWindows.end())
@@ -57,8 +59,7 @@ void WrappedVulkan::AddRequiredExtensions(bool instance, rdcarray<rdcstr> &exten
 
 #if(defined(VK_USE_PLATFORM_ANDROID_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) ||  \
     defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XLIB_KHR) || \
-    defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT) ||  \
-    defined(VK_USE_PLATFORM_GGP))
+    defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT))
 
 #undef EXPECT_WSI
 #define EXPECT_WSI 1
@@ -147,18 +148,6 @@ void WrappedVulkan::AddRequiredExtensions(bool instance, rdcarray<rdcstr> &exten
       extensionList.push_back(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
 #endif
 
-#if defined(VK_USE_PLATFORM_GGP)
-    // must be supported
-    RDCASSERT(supportedExtensions.find(VK_GGP_STREAM_DESCRIPTOR_SURFACE_EXTENSION_NAME) !=
-              supportedExtensions.end());
-
-    m_SupportedWindowSystems.push_back(WindowingSystem::GGP);
-
-    // don't add duplicates, application will have added this but just be sure
-    if(!extensionList.contains(VK_GGP_STREAM_DESCRIPTOR_SURFACE_EXTENSION_NAME))
-      extensionList.push_back(VK_GGP_STREAM_DESCRIPTOR_SURFACE_EXTENSION_NAME);
-#endif
-
 #if EXPECT_WSI
     // we must have VK_KHR_surface to support WSI at all
     if(supportedExtensions.find(VK_KHR_SURFACE_EXTENSION_NAME) == supportedExtensions.end())
@@ -187,7 +176,7 @@ void WrappedVulkan::AddRequiredExtensions(bool instance, rdcarray<rdcstr> &exten
 #elif defined(VK_USE_PLATFORM_METAL_EXT)
               VK_EXT_METAL_SURFACE_EXTENSION_NAME
 #endif
-              );
+      );
 #endif
 
 #if defined(VK_USE_PLATFORM_ANDROID_KHR)
@@ -208,11 +197,6 @@ void WrappedVulkan::AddRequiredExtensions(bool instance, rdcarray<rdcstr> &exten
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
       RDCWARN("XLib Output requires the '%s' extension to be present",
               VK_KHR_XLIB_SURFACE_EXTENSION_NAME);
-#endif
-
-#if defined(VK_USE_PLATFORM_GGP)
-      RDCWARN("GGP Output requires the '%s' extension to be present",
-              VK_GGP_STREAM_DESCRIPTOR_SURFACE_EXTENSION_NAME);
 #endif
     }
 
@@ -269,7 +253,7 @@ static rdcstr GenerateJSON(const rdcstr &sopath)
   while(idx >= 0)
   {
     json = json.substr(0, idx) + STRINGIZE(RENDERDOC_VERSION_MAJOR) +
-           json.substr(idx + sizeof(majorString) - 1);
+                                           json.substr(idx + sizeof(majorString) - 1);
 
     idx = json.find(majorString);
   }
@@ -280,7 +264,7 @@ static rdcstr GenerateJSON(const rdcstr &sopath)
   while(idx >= 0)
   {
     json = json.substr(0, idx) + STRINGIZE(RENDERDOC_VERSION_MINOR) +
-           json.substr(idx + sizeof(minorString) - 1);
+                                           json.substr(idx + sizeof(minorString) - 1);
 
     idx = json.find(minorString);
   }
@@ -290,10 +274,21 @@ static rdcstr GenerateJSON(const rdcstr &sopath)
   idx = json.find(enableVarString);
   while(idx >= 0)
   {
-    json = json.substr(0, idx) + STRINGIZE(ENABLE_VULKAN_RENDERDOC_CAPTURE) +
+    json = json.substr(0, idx) + "ENABLE_VULKAN_" + strupper(VulkanLayerJSONBasename) + "_CAPTURE" +
            json.substr(idx + sizeof(enableVarString) - 1);
 
     idx = json.find(enableVarString);
+  }
+
+  const char layerNameString[] = "@VULKAN_LAYER_NAME@";
+
+  idx = json.find(layerNameString);
+  while(idx >= 0)
+  {
+    json = json.substr(0, idx) + "VK_LAYER_" + strupper(VulkanLayerJSONBasename) + "_Capture" +
+           json.substr(idx + sizeof(layerNameString) - 1);
+
+    idx = json.find(layerNameString);
   }
 
   return json;
@@ -363,19 +358,21 @@ ITERABLE_OPERATORS(LayerPath);
 
 rdcstr LayerRegistrationPath(LayerPath path)
 {
+  const rdcstr json_filename =
+      VulkanLayerJSONBasename + "_capture" STRINGIZE(RENDERDOC_VULKAN_JSON_SUFFIX) ".json";
+
   switch(path)
   {
-    case LayerPath::usr: return "/usr/share/vulkan/implicit_layer.d/renderdoc_capture.json";
-    case LayerPath::etc: return "/etc/vulkan/implicit_layer.d/renderdoc_capture.json";
+    case LayerPath::usr: return "/usr/share/vulkan/implicit_layer.d/" + json_filename;
+    case LayerPath::etc: return "/etc/vulkan/implicit_layer.d/" + json_filename;
     case LayerPath::home:
     {
-      const char *xdg = getenv("XDG_DATA_HOME");
-      if(xdg && FileIO::exists(xdg))
-        return rdcstr(xdg) + "/vulkan/implicit_layer.d/renderdoc_capture.json";
+      rdcstr xdg = Process::GetEnvVariable("XDG_DATA_HOME");
+      if(!xdg.empty() && FileIO::exists(xdg))
+        return xdg + "/vulkan/implicit_layer.d/" + json_filename;
 
-      const char *home_path = getenv("HOME");
-      return rdcstr(home_path != NULL ? home_path : "") +
-             "/.local/share/vulkan/implicit_layer.d/renderdoc_capture.json";
+      rdcstr home_path = Process::GetEnvVariable("HOME");
+      return home_path + "/.local/share/vulkan/implicit_layer.d/" + json_filename;
     }
     default: break;
   }

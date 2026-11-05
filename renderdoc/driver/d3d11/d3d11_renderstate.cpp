@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -107,7 +107,7 @@ void D3D11RenderState::ReleaseRefs()
     IntRelease(IA.VBs[i]);
 
   Shader *stages[] = {&VS, &HS, &DS, &GS, &PS, &CS};
-  for(int s = 0; s < 6; s++)
+  for(int s = 0; s < ARRAY_COUNT(stages); s++)
   {
     Shader *sh = stages[s];
 
@@ -176,7 +176,7 @@ void D3D11RenderState::MarkReferenced(WrappedID3D11DeviceContext *ctx, bool init
                                 initial ? eFrameRef_None : eFrameRef_Read);
 
   const Shader *stages[] = {&VS, &HS, &DS, &GS, &PS, &CS};
-  for(int s = 0; s < 6; s++)
+  for(int s = 0; s < ARRAY_COUNT(stages); s++)
   {
     const Shader *sh = stages[s];
 
@@ -285,7 +285,7 @@ void D3D11RenderState::AddRefs()
     IntAddRef(IA.VBs[i]);
 
   Shader *stages[] = {&VS, &HS, &DS, &GS, &PS, &CS};
-  for(int s = 0; s < 6; s++)
+  for(int s = 0; s < ARRAY_COUNT(stages); s++)
   {
     Shader *sh = stages[s];
 
@@ -606,7 +606,7 @@ void D3D11RenderState::UnbindRangeForRead(const ResourceRange &range)
 
   // const char *names[] = { "VS", "DS", "HS", "GS", "PS", "CS" };
   Shader *stages[] = {&VS, &HS, &DS, &GS, &PS, &CS};
-  for(int s = 0; s < 6; s++)
+  for(int s = 0; s < ARRAY_COUNT(stages); s++)
   {
     Shader *sh = stages[s];
 
@@ -1053,7 +1053,7 @@ bool D3D11RenderState::Shader::Used_CB(uint32_t slot) const
   if(shad == NULL)
     return false;
 
-  DXBC::DXBCContainer *dxbc = shad->GetDXBC();
+  const DXBC::DXBCContainer *dxbc = shad->GetDXBC();
 
   // have to assume it's used if there's no DXBC
   if(dxbc == NULL)
@@ -1076,7 +1076,7 @@ bool D3D11RenderState::Shader::Used_SRV(uint32_t slot) const
   if(shad == NULL)
     return false;
 
-  DXBC::DXBCContainer *dxbc = shad->GetDXBC();
+  const DXBC::DXBCContainer *dxbc = shad->GetDXBC();
 
   // have to assume it's used if there's no DXBC
   if(dxbc == NULL)
@@ -1096,7 +1096,7 @@ bool D3D11RenderState::Shader::Used_UAV(uint32_t slot) const
   if(shad == NULL)
     return false;
 
-  DXBC::DXBCContainer *dxbc = shad->GetDXBC();
+  const DXBC::DXBCContainer *dxbc = shad->GetDXBC();
 
   // have to assume it's used if there's no DXBC
   if(dxbc == NULL)
@@ -1263,11 +1263,11 @@ void DoSerialise(SerialiserType &ser, D3D11RenderState::InputAssembler &el)
   SERIALISE_MEMBER(Layout);
   SERIALISE_MEMBER(Topo);
   SERIALISE_MEMBER(VBs);
-  SERIALISE_MEMBER(Strides);
-  SERIALISE_MEMBER(Offsets);
+  SERIALISE_MEMBER(Strides).OffsetOrSize();
+  SERIALISE_MEMBER(Offsets).OffsetOrSize();
   SERIALISE_MEMBER(IndexBuffer);
   SERIALISE_MEMBER(IndexFormat);
-  SERIALISE_MEMBER(IndexOffset);
+  SERIALISE_MEMBER(IndexOffset).OffsetOrSize();
 }
 
 template <class SerialiserType>
@@ -1287,7 +1287,7 @@ template <class SerialiserType>
 void DoSerialise(SerialiserType &ser, D3D11RenderState::StreamOut &el)
 {
   SERIALISE_MEMBER(Buffers);
-  SERIALISE_MEMBER(Offsets);
+  SERIALISE_MEMBER(Offsets).OffsetOrSize();
 }
 
 template <class SerialiserType>

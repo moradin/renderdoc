@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,7 +34,6 @@ class CaptureDialog;
 }
 
 class QStandardItemModel;
-class LiveCapture;
 class MainWindow;
 class RDLabel;
 
@@ -45,10 +44,10 @@ class CaptureDialog : public QFrame, public ICaptureDialog
 public:
   typedef std::function<void(const QString &exe, const QString &workingDir, const QString &cmdLine,
                              const rdcarray<EnvironmentModification> &env, CaptureOptions opts,
-                             std::function<void(LiveCapture *)> callback)>
+                             std::function<void(ICaptureConnection *)> callback)>
       OnCaptureMethod;
   typedef std::function<void(uint32_t PID, const rdcarray<EnvironmentModification> &env, const QString &name,
-                             CaptureOptions opts, std::function<void(LiveCapture *)> callback)>
+                             CaptureOptions opts, std::function<void(ICaptureConnection *)> callback)>
       OnInjectMethod;
 
   explicit CaptureDialog(ICaptureContext &ctx, OnCaptureMethod captureCallback,
@@ -60,15 +59,20 @@ public:
   bool IsInjectMode() override { return m_Inject; }
   void SetInjectMode(bool inject) override;
 
-  void SetExecutableFilename(const rdcstr &filename) override;
+  void SetExecutableFilename(const rdcstr &filename) override
+  {
+    SetExecutableFilename(filename, false);
+  }
+
   void SetWorkingDirectory(const rdcstr &dir) override;
   void SetCommandLine(const rdcstr &cmd) override;
+  QString GetCommandLine();
   void SetEnvironmentModifications(const rdcarray<EnvironmentModification> &modifications) override;
 
   void SetSettings(CaptureSettings settings) override;
   CaptureSettings Settings() override;
 
-  void TriggerCapture() override;
+  ICaptureConnection *Launch() override;
 
   void LoadSettings(const rdcstr &filename) override;
   void SaveSettings(const rdcstr &filename) override;
@@ -106,6 +110,8 @@ private slots:
   void lineEdit_keyPress(QKeyEvent *);
 
 private:
+  void SetExecutableFilename(const rdcstr &filename, bool remoteSelection);
+
   Ui::CaptureDialog *ui;
   ICaptureContext &m_Ctx;
   MainWindow *m_Main;

@@ -1,12 +1,13 @@
+from __future__ import annotations
 import struct
-from typing import List
-import renderdoc
-
-# Alias for convenience - we need to import as-is so types don't get confused
-rd = renderdoc
+from typing import Dict, List, Tuple, Union
+import renderdoc as rd
+from . import util
 
 
-def open_capture(filename="", cap: rd.CaptureFile=None, opts: rd.ReplayOptions=None):
+def open_capture(
+    filename="", opts: rd.ReplayOptions | None = None
+):
     """
     Opens a capture file and begins a replay.
 
@@ -20,46 +21,50 @@ def open_capture(filename="", cap: rd.CaptureFile=None, opts: rd.ReplayOptions=N
     if opts is None:
         opts = rd.ReplayOptions()
 
-    # Open a capture file handle
-    own_cap = False
+    cap = None
     api = "Unknown"
 
-    if cap is None:
-        own_cap = True
-
+    result = None
+    controller = None
+    if util.get_remote_server() is None:
         cap = rd.OpenCaptureFile()
 
         # Open a particular file
-        status = cap.OpenFile(filename, '', None)
+        result = cap.OpenFile(filename, '', None)
 
         # Make sure the file opened successfully
-        if status != rd.ReplayStatus.Succeeded:
+        if not result:
             cap.Shutdown()
-            raise RuntimeError("Couldn't open '{}': {}".format(filename, str(status)))
+            raise RuntimeError(f"Couldn't open '{filename}': {result!s}")
 
         api = cap.DriverName()
 
         # Make sure we can replay
         if not cap.LocalReplaySupport():
             cap.Shutdown()
-            raise RuntimeError("{} capture cannot be replayed".format(api))
+            raise RuntimeError(f"{api} capture cannot be replayed")
 
-    status, controller = cap.OpenCapture(opts, None)
+        result, controller = cap.OpenCapture(opts, None)
+    else:
+        if not cap is None:
+            raise ValueError(f"Cannot call analyse.open_capture() with capture handle for remote {util.get_remote_server().remote}")
 
-    if own_cap:
-        cap.Shutdown()
+        result, controller = util.get_remote_server().OpenCapture(rd.RemoteServer.NoPreference,
+                                                                  filename, opts, None)
+        if result:
+            api = util.get_remote_server().remote.DriverName()
 
-    if status != rd.ReplayStatus.Succeeded:
-        raise RuntimeError("Couldn't initialise replay for {}: {}".format(api, str(rd.ReplayStatus(status))))
+    if not result:
+        raise RuntimeError(f"Couldn't initialise replay for {api}: {result!s}")
 
-    return controller
+    return cap, controller
 
 
-def fetch_indices(controller: rd.ReplayController, action: rd.ActionDescription, mesh: rd.MeshFormat, index_offset: int, first_index: int, num_indices: int):
+def fetch_indices(controller: rd.ReplayController, action: rd.ActionDescription, mesh: rd.MeshFormat, index_offset: int, first_index: int, num_indices: int) -> List[int | None]:
 
     pipe = controller.GetPipelineState()
-    restart_idx = pipe.GetStripRestartIndex() & ((1 << (mesh.indexByteStride*8)) - 1)
-    restart_enabled = pipe.IsStripRestartEnabled() and rd.IsStrip(pipe.GetPrimitiveTopology())
+    restart_idx = pipe.GetRestartIndex() & ((1 << (mesh.indexByteStride*8)) - 1)
+    restart_enabled = pipe.IsRestartEnabled()
 
     # If we have an index buffer
     if mesh.indexResourceId != rd.ResourceId.Null():
@@ -94,7 +99,7 @@ def fetch_indices(controller: rd.ReplayController, action: rd.ActionDescription,
         index_fmt = '=' + str(min([avail_indices, num_indices])) + index_fmt
 
         # Unpack all the indices
-        indices = struct.unpack_from(index_fmt, ibdata)
+        indices: Tuple[int,...] = struct.unpack_from(index_fmt, ibdata)
 
         extra = []
         if avail_indices < num_indices:
@@ -104,7 +109,7 @@ def fetch_indices(controller: rd.ReplayController, action: rd.ActionDescription,
         return [i if restart_enabled and i == restart_idx else i + mesh.baseVertex for i in indices] + extra
     else:
         # With no index buffer, just generate a range
-        return tuple(range(first_index, first_index + num_indices))
+        return list(range(first_index, first_index + num_indices))
 
 
 class MeshAttribute:
@@ -113,11 +118,11 @@ class MeshAttribute:
 
 
 def get_vsin_attrs(controller: rd.ReplayController, vertexOffset: int, index_mesh: rd.MeshFormat):
-    pipe: rd.PipeState = controller.GetPipelineState()
-    inputs: List[rd.VertexInputAttribute] = pipe.GetVertexInputs()
+    pipe = controller.GetPipelineState()
+    inputs = pipe.GetVertexInputs()
 
     attrs: List[MeshAttribute] = []
-    vbs: List[rd.BoundVBuffer] = pipe.GetVBuffers()
+    vbs = pipe.GetVBuffers()
 
     for a in inputs:
         if not a.used:
@@ -145,10 +150,14 @@ def get_vsin_attrs(controller: rd.ReplayController, vertexOffset: int, index_mes
 
 
 def get_postvs_attrs(controller: rd.ReplayController, mesh: rd.MeshFormat, data_stage: rd.MeshDataStage):
-    pipe: rd.PipeState = controller.GetPipelineState()
+    pipe = controller.GetPipelineState()
 
     if data_stage == rd.MeshDataStage.VSOut:
         shader = pipe.GetShaderReflection(rd.ShaderStage.Vertex)
+    elif data_stage == rd.MeshDataStage.TaskOut:
+        raise RuntimeError("Use get_postts_attrs to get TaskOut attributes!")
+    elif data_stage == rd.MeshDataStage.MeshOut:
+        shader = pipe.GetShaderReflection(rd.ShaderStage.Mesh)
     else:
         shader = pipe.GetShaderReflection(rd.ShaderStage.Geometry)
         if shader is None:
@@ -161,9 +170,20 @@ def get_postvs_attrs(controller: rd.ReplayController, mesh: rd.MeshFormat, data_
         attr = MeshAttribute()
         attr.mesh = rd.MeshFormat(mesh)
 
+        if pipe.GetRasterizedStream() >= 0:
+            if sig.stream != pipe.GetRasterizedStream():
+                continue
+        else:
+            if sig.stream != 0:
+                continue
+
+        # Ignore meshlet output indecies (they are not in postvs)
+        if sig.systemValue == rd.ShaderBuiltin.OutputIndices:
+            continue
+
         # Construct a resource format for this element
         attr.mesh.format = rd.ResourceFormat()
-        attr.mesh.format.compByteWidth = 8 if sig.varType == rd.VarType.Double else 4
+        attr.mesh.format.compByteWidth = rd.VarTypeByteSize(sig.varType)
         attr.mesh.format.compCount = sig.compCount
         attr.mesh.format.compType = rd.VarTypeCompType(sig.varType)
         attr.mesh.format.type = rd.ResourceFormatType.Regular
@@ -204,7 +224,6 @@ def get_postvs_attrs(controller: rd.ReplayController, mesh: rd.MeshFormat, data_
         accum_offset += elem_size * fmt.compCount
 
     return attrs
-
 
 # Unpack a tuple of the given format, from the data
 def unpack_data(fmt: rd.ResourceFormat, data: bytes, data_offset: int):
@@ -254,12 +273,15 @@ def unpack_data(fmt: rd.ResourceFormat, data: bytes, data_offset: int):
 
     return value
 
+MeshElementData = Dict[str, Union[util.ScalarOrVectorValue, None]]
+MeshData = List[MeshElementData]
+MeshReference = Dict[int, MeshElementData]
 
-def decode_mesh_data(controller: rd.ReplayController, indices: List[int], display_indices: List[int],
+def decode_mesh_data(controller: rd.ReplayController, indices: List[int | None], display_indices: List[int | None],
                      attrs: List[MeshAttribute], instance: int = 0, indexOffset: int = 0):
-    ret = []
+    ret: MeshData = []
 
-    buffer_ranges = {}
+    buffer_ranges: Dict[rd.ResourceId, Tuple[int,int]] = {}
     for attr in attrs:
         begin = attr.mesh.vertexByteOffset
         end = min(begin + attr.mesh.vertexByteSize, 0xffffffffffffffff)
@@ -276,18 +298,18 @@ def decode_mesh_data(controller: rd.ReplayController, indices: List[int], displa
 
         buffer_ranges[attr.mesh.vertexResourceId] = (begin, end)
 
-    buffer_data = {}
+    buffer_data: Dict[rd.ResourceId, bytes] = {}
     for buf, buf_range in buffer_ranges.items():
         buffer_data[buf] = controller.GetBufferData(buf, buf_range[0], buf_range[1] - buf_range[0])
 
     # Calculate the strip restart index for this index width
     striprestart_index = None
-    if controller.GetPipelineState().IsStripRestartEnabled() and attrs[0].mesh.indexResourceId != rd.ResourceId.Null():
-        striprestart_index = (controller.GetPipelineState().GetStripRestartIndex() &
+    if controller.GetPipelineState().IsRestartEnabled() and attrs[0].mesh.indexResourceId != rd.ResourceId.Null():
+        striprestart_index = (controller.GetPipelineState().GetRestartIndex() &
                               ((1 << (attrs[0].mesh.indexByteStride*8)) - 1))
 
     for i,idx in enumerate(indices):
-        vertex = {'vtx': i, 'idx': display_indices[i]}
+        vertex: MeshElementData = {'vtx': i, 'idx': display_indices[i]}
 
         if striprestart_index is None or idx != striprestart_index:
             for attr in attrs:
@@ -308,3 +330,116 @@ def decode_mesh_data(controller: rd.ReplayController, indices: List[int], displa
         ret.append(vertex)
 
     return ret
+
+def str_vartype(t: rd.VarType):
+    if t == rd.VarType.Bool:
+        return "Bool"
+    elif t == rd.VarType.ConstantBlock:
+        return "ConstantBlock"
+    elif t == rd.VarType.Double:
+        return "Double"
+    elif t == rd.VarType.Enum:
+        return "Enum"
+    elif t == rd.VarType.Float:
+        return "Float"
+    elif t == rd.VarType.GPUPointer:
+        return "GPUPointer"
+    elif t == rd.VarType.Half:
+        return "Half"
+    elif t == rd.VarType.ReadOnlyResource:
+        return "ReadOnlyResource"
+    elif t == rd.VarType.ReadWriteResource:
+        return "ReadWriteResource"
+    elif t == rd.VarType.Sampler:
+        return "Sampler"
+    elif t == rd.VarType.SByte:
+        return "SByte"
+    elif t == rd.VarType.SInt:
+        return "SInt"
+    elif t == rd.VarType.SLong:
+        return "SLong"
+    elif t == rd.VarType.SShort:
+        return "SShort"
+    elif t == rd.VarType.Struct:
+        return "Struct"
+    elif t == rd.VarType.UByte:
+        return "UByte"
+    elif t == rd.VarType.UInt:
+        return "UInt"
+    elif t == rd.VarType.ULong:
+        return "ULong"
+    elif t == rd.VarType.Unknown:
+        return "Unknown"
+    elif t == rd.VarType.UShort:
+        return "UShort"
+    return "???"
+
+def shadervariable_equal(a: rd.ShaderVariable, b : rd.ShaderVariable) -> Tuple[bool, str]:
+    difference = ""
+    if a.rows != b.rows:
+        difference = f"Rows differ: {a.rows} != {b.rows}"
+        return (False, difference)
+    if a.columns != b.columns:
+        difference = f"Columns differ: {a.columns} != {b.columns}"
+        return (False, difference)
+    if a.name != b.name:
+        difference = f"Names differ: {a.name} != {b.name}"
+        return (False, difference)
+    if a.type != b.type:
+        difference = f"Types differ: {str_vartype(a.type)} != {str_vartype(b.type)}"
+        return (False, difference)
+    if a.flags != b.flags:
+        difference = f"Flags differ: {a.flags} != {b.flags}"
+        return (False, difference)
+    if len(a.members) != len(b.members):
+        difference = f"Member count differs: {len(a.members)} != {len(b.members)}"
+        return (False, difference)
+
+    for i in range(a.rows * a.columns):
+        if a.type == rd.VarType.UByte or a.type == rd.VarType.SByte:
+            if a.value.u8v[i] != b.value.u8v[i]:
+                return (False, f"Values differ at index {i}: {a.value.u8v[i]} != {b.value.u8v[i]}")
+        elif a.type == rd.VarType.Half or a.type == rd.VarType.UShort or a.type == rd.VarType.SShort:
+            if a.value.u16v[i] != b.value.u16v[i]:
+                return (False, f"Values differ at index {i}: {a.value.u16v[i]} != {b.value.u16v[i]}")
+        elif a.type == rd.VarType.Float or a.type == rd.VarType.UInt or a.type == rd.VarType.SInt or a.type == rd.VarType.Bool or a.type == rd.VarType.Enum:
+            if a.value.u32v[i] != b.value.u32v[i]:
+                return (False, f"Values differ at index {i}: {a.value.u32v[i]} != {b.value.u32v[i]}")
+        elif a.type == rd.VarType.Double or a.type == rd.VarType.ULong or a.type == rd.VarType.SLong or a.type == rd.VarType.GPUPointer:
+            if a.value.u64v[i] != b.value.u64v[i]:
+                return (False, f"Values differ at index {i}: {a.value.u64v[i]} != {b.value.u64v[i]}")
+        else:
+            if a.value.u64v[i] != b.value.u64v[i]:
+                return (False, f"Values differ at index {i}: {a.value.u64v[i]} != {b.value.u64v[i]}")
+
+    for m in range(len(a.members)):
+        (ret, diff) = shadervariable_equal(a.members[m], b.members[m])
+        if not ret:
+            difference = f"Member[{m}] differs {diff}"
+            return (False, difference)
+
+    return (True, "")
+
+def get_event_parameters_text(chunk: rd.SDObject) -> str:
+    parameters = ""
+    if chunk.type.basetype == rd.SDBasic.SignedInteger:
+        parameters += str(chunk.AsInt())
+    elif chunk.type.basetype == rd.SDBasic.UnsignedInteger:
+        parameters += str(chunk.AsInt())
+    elif chunk.type.basetype == rd.SDBasic.Float:
+        parameters += str(chunk.AsFloat())
+    elif chunk.type.basetype == rd.SDBasic.String:
+        parameters += chunk.AsString()
+
+    onlyImportant = (chunk.type.flags & rd.SDTypeFlags.ImportantChildren != 0)
+    first = True
+    for i in range(chunk.NumChildren()):
+        child = chunk.GetChild(i)
+        assert child is not None # always true because i is in range
+        if not onlyImportant or child.type.flags & rd.SDTypeFlags.Important != 0:
+            if not first:
+                parameters += ", "
+            parameters += get_event_parameters_text(child)
+            first = False
+
+    return parameters

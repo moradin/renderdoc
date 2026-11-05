@@ -118,7 +118,7 @@ f.write('''
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2018-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -259,12 +259,7 @@ template = '''
   CONCAT(function, _hooktype) CONCAT(unsupported_real_, function) = NULL; \\
   ret HOOK_CC CONCAT(function, _renderdoc_hooked)({argdecl}) \\
   {{ \\
-    static bool hit = false; \\
-    if(hit == false) \\
-    {{ \\
-      RDCERR("Function " STRINGIZE(function) " not supported - capture may be broken"); \\
-      hit = true; \\
-    }} \\
+    glhook.UseUnusedSupportedFunction(STRINGIZE(function)); \\
     if(!CONCAT(unsupported_real_, function)) \\
       CONCAT(unsupported_real_, function) = \\
           (CONCAT(function, _hooktype))glhook.GetUnsupportedFunction(STRINGIZE(function)); \\

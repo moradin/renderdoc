@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -29,11 +29,21 @@
 #include "gl_common.h"
 
 size_t GetCompressedByteSize(GLsizei w, GLsizei h, GLsizei d, GLenum internalformat);
-rdcpair<uint32_t, uint32_t> GetCompressedBlockSize(GLenum internalformat);
+rdcfixedarray<uint32_t, 3> GetCompressedBlockSize(GLenum internalformat);
 size_t GetByteSize(GLsizei w, GLsizei h, GLsizei d, GLenum format, GLenum type);
 GLenum GetBaseFormat(GLenum internalFormat);
 GLenum GetDataType(GLenum internalFormat);
 void GetFramebufferMipAndLayer(GLuint framebuffer, GLenum attachment, GLint *mip, GLint *layer);
+
+inline void GetFramebufferMipAndLayer(GLuint framebuffer, GLenum attachment, uint8_t *mip,
+                                      uint16_t *layer)
+{
+  GLint outMip = 0, outLayer = 0;
+  GetFramebufferMipAndLayer(framebuffer, attachment, &outMip, &outLayer);
+  *mip = outMip & 0xff;
+  *layer = outLayer & 0xff;
+}
+
 void GetTextureSwizzle(GLuint tex, GLenum target, GLenum *swizzleRGBA);
 void SetTextureSwizzle(GLuint tex, GLenum target, const GLenum *swizzleRGBA);
 
@@ -61,7 +71,7 @@ GLenum GetViewCastedFormat(GLenum internalFormat, CompType typeCast);
 bool IsCubeFace(GLenum target);
 GLint CubeTargetIndex(GLenum face);
 GLenum TextureBinding(GLenum target);
-GLenum TextureTarget(GLenum target);
+GLenum TextureTarget(GLenum binding);
 bool IsProxyTarget(GLenum target);
 
 GLenum BufferBinding(GLenum target);
@@ -92,7 +102,8 @@ DECLARE_REFLECTION_ENUM(GLNamespace);
 enum GLSpecialResource
 {
   eSpecialResDevice = 0,
-  eSpecialResContext = 0,
+  eSpecialResContext = 1,
+  eSpecialResDescriptorStorage = 2,
 };
 
 enum NullInitialiser
@@ -251,9 +262,7 @@ struct GLResourceRecord : public ResourceRecord
 #if ENABLED(RDOC_DEVEL)
     if(target == eGL_NONE)
       return;    // target == GL_NONE means ARB_dsa, target was omitted
-    if(datatype == eGL_NONE)
-      datatype = TextureBinding(target);
-    else
+    if(datatype != eGL_NONE)
       RDCASSERT(datatype == TextureBinding(target));
 #endif
   }

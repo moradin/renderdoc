@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -82,6 +82,14 @@ float4 main() : SV_Target0
     ID3DBlobPtr vsblob = Compile(vertex, "main", "vs_5_0");
     ID3DBlobPtr psblob = Compile(pixel, "main", "ps_5_0");
 
+    bool supportSM60 = (m_HighestShaderModel >= D3D_SHADER_MODEL_6_0) && m_DXILSupport;
+    bool supportSM66 = (m_HighestShaderModel >= D3D_SHADER_MODEL_6_6) && m_DXILSupport;
+
+    ID3DBlobPtr vs_6_0_blob = supportSM60 ? Compile(vertex, "main", "vs_6_0") : NULL;
+    ID3DBlobPtr ps_6_0_blob = supportSM60 ? Compile(pixel, "main", "ps_6_0") : NULL;
+    ID3DBlobPtr vs_6_6_blob = supportSM66 ? Compile(vertex, "main", "vs_6_6") : NULL;
+    ID3DBlobPtr ps_6_6_blob = supportSM66 ? Compile(pixel, "main", "ps_6_6") : NULL;
+
     const DefaultA2V OffsetTri[] = {
         {Vec3f(7.7f, 0.0f, 0.0f), Vec4f(0.0f, 0.0f, 0.0f, 1.0f), Vec2f(0.0f, 0.0f)},
         {Vec3f(7.7f, 0.0f, 0.0f), Vec4f(0.0f, 0.0f, 0.0f, 1.0f), Vec2f(0.0f, 0.0f)},
@@ -116,6 +124,24 @@ float4 main() : SV_Target0
 
     ID3D12PipelineStatePtr pso = MakePSO().RootSig(sig).InputLayout().VS(vsblob).PS(psblob).RTVs(
         {DXGI_FORMAT_R32G32B32A32_FLOAT});
+
+    ID3D12PipelineStatePtr sm_6_0_pso = NULL;
+    if(vs_6_0_blob && ps_6_0_blob)
+      sm_6_0_pso = MakePSO()
+                       .RootSig(sig)
+                       .InputLayout()
+                       .VS(vs_6_0_blob)
+                       .PS(ps_6_0_blob)
+                       .RTVs({DXGI_FORMAT_R32G32B32A32_FLOAT});
+
+    ID3D12PipelineStatePtr sm_6_6_pso = NULL;
+    if(vs_6_6_blob && ps_6_6_blob)
+      sm_6_6_pso = MakePSO()
+                       .RootSig(sig)
+                       .InputLayout()
+                       .VS(vs_6_6_blob)
+                       .PS(ps_6_6_blob)
+                       .RTVs({DXGI_FORMAT_R32G32B32A32_FLOAT});
 
     ResourceBarrier(vb, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
     ResourceBarrier(ib, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_INDEX_BUFFER);
@@ -172,7 +198,22 @@ float4 main() : SV_Target0
 
       OMSetRenderTargets(cmd, {offrtv}, {});
 
+      setMarker(cmd, "SM5");
       cmd->DrawIndexedInstanced(6, 1, 0, 0, 0);
+
+      if(sm_6_0_pso)
+      {
+        cmd->SetPipelineState(sm_6_0_pso);
+        setMarker(cmd, "SM6.0");
+        cmd->DrawIndexedInstanced(6, 1, 0, 0, 0);
+      }
+
+      if(sm_6_6_pso)
+      {
+        cmd->SetPipelineState(sm_6_6_pso);
+        setMarker(cmd, "SM6.6");
+        cmd->DrawIndexedInstanced(6, 1, 0, 0, 0);
+      }
 
       ResourceBarrier(cmd, rtvtex, D3D12_RESOURCE_STATE_RENDER_TARGET,
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);

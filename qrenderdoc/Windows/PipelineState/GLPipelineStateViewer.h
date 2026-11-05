@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,10 +34,18 @@ class GLPipelineStateViewer;
 
 class QXmlStreamWriter;
 
+class ComputeDebugSelector;
 class RDLabel;
 class RDTreeWidget;
 class RDTreeWidgetItem;
 class PipelineStateViewer;
+
+enum class GLReadWriteType
+{
+  Atomic,
+  SSBO,
+  Image,
+};
 
 class GLPipelineStateViewer : public QFrame, public ICaptureViewer
 {
@@ -76,29 +84,41 @@ private slots:
   void ubo_itemActivated(RDTreeWidgetItem *item, int column);
   void vertex_leave(QEvent *e);
 
+  void on_computeDebugSelector_clicked();
+  void computeDebugSelector_beginDebug(const rdcfixedarray<uint32_t, 3> &group,
+                                       const rdcfixedarray<uint32_t, 3> &thread);
+
 private:
   Ui::GLPipelineStateViewer *ui;
   ICaptureContext &m_Ctx;
   PipelineStateViewer &m_Common;
-
-  enum class GLReadWriteType
-  {
-    Atomic,
-    SSBO,
-    Image,
-  };
+  ComputeDebugSelector *m_ComputeDebugSelector;
 
   QString MakeGenericValueString(uint32_t compCount, CompType compType,
                                  const GLPipe::VertexAttribute &val);
   GLReadWriteType GetGLReadWriteType(ShaderResource res);
 
-  void setShaderState(const GLPipe::Shader &stage, RDLabel *shader, RDTreeWidget *tex,
-                      RDTreeWidget *samp, RDTreeWidget *ubo, RDTreeWidget *sub, RDTreeWidget *rw);
-  void clearShaderState(RDLabel *shader, RDTreeWidget *tex, RDTreeWidget *samp, RDTreeWidget *ubo,
-                        RDTreeWidget *sub, RDTreeWidget *rw);
+  void setShaderState(const GLPipe::Shader &stage, RDLabel *pipeline, RDLabel *program,
+                      RDLabel *shader, RDTreeWidget *sub);
+
+  void addUBORow(const Descriptor &descriptor, uint32_t reg, uint32_t index,
+                 const ConstantBlock *shaderBind, bool usedSlot, RDTreeWidget *ubos);
+  void addImageSamplerRow(const Descriptor &descriptor, const SamplerDescriptor &samplerDescriptor,
+                          uint32_t reg, const ShaderResource *shaderTex,
+                          const ShaderSampler *shaderSamp, bool usedSlot,
+                          const GLPipe::TextureCompleteness *texCompleteness,
+                          RDTreeWidgetItem *textures, RDTreeWidgetItem *samplers);
+  void addReadWriteRow(const Descriptor &descriptor, uint32_t reg, uint32_t index,
+                       const ShaderResource *shaderBind, bool usedSlot,
+                       const GLPipe::TextureCompleteness *texCompleteness,
+                       RDTreeWidgetItem *readwrites);
+
+  void clearShaderState(RDLabel *pipeline, RDLabel *program, RDLabel *shader, RDTreeWidget *tex,
+                        RDTreeWidget *samp, RDTreeWidget *ubo, RDTreeWidget *sub, RDTreeWidget *rw);
   void setState();
   void clearState();
 
+  bool isInactiveRow(RDTreeWidgetItem *node);
   void setInactiveRow(RDTreeWidgetItem *node);
   void setEmptyRow(RDTreeWidgetItem *node);
   void highlightIABind(int slot);
@@ -110,13 +130,17 @@ private:
 
   void setViewDetails(RDTreeWidgetItem *node, TextureDescription *tex, uint32_t firstMip,
                       uint32_t numMips, uint32_t firstSlice, uint32_t numSlices,
-                      const rdcstr &completeStatus = rdcstr());
+                      const GLPipe::TextureCompleteness *texCompleteness = NULL);
 
   void exportHTML(QXmlStreamWriter &xml, const GLPipe::VertexInput &vtx);
   void exportHTML(QXmlStreamWriter &xml, const GLPipe::Shader &sh);
   void exportHTML(QXmlStreamWriter &xml, const GLPipe::Feedback &xfb);
   void exportHTML(QXmlStreamWriter &xml, const GLPipe::Rasterizer &rs);
   void exportHTML(QXmlStreamWriter &xml, const GLPipe::FrameBuffer &fb);
+
+  rdcarray<DescriptorLogicalLocation> m_Locations;
+  rdcarray<Descriptor> m_Descriptors;
+  rdcarray<SamplerDescriptor> m_SamplerDescriptors;
 
   // keep track of the VB nodes (we want to be able to highlight them easily on hover)
   QList<RDTreeWidgetItem *> m_VBNodes;

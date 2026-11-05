@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -49,13 +49,12 @@ bool CheckConstParam(bool t)
   return t;
 }
 
-bool CheckReplayContext()
+RDResult CheckReplayContext()
 {
-#define REQUIRE_FUNC(func)                            \
-  if(!GL.func)                                        \
-  {                                                   \
-    RDCERR("Missing core function " STRINGIZE(func)); \
-    return false;                                     \
+#define REQUIRE_FUNC(func)                                                                    \
+  if(!GL.func)                                                                                \
+  {                                                                                           \
+    RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Missing core function " STRINGIZE(func)); \
   }
 
   REQUIRE_FUNC(glGetString);
@@ -88,10 +87,10 @@ bool CheckReplayContext()
   if(!extensionString.empty())
     RDCLOG("%s", extensionString.c_str());
 
-  return true;
+  return ResultCode::Succeeded;
 }
 
-bool ValidateFunctionPointers()
+RDResult ValidateFunctionPointers()
 {
   PFNGLGETSTRINGPROC *ptrs = (PFNGLGETSTRINGPROC *)&GL;
   size_t num = sizeof(GL) / sizeof(PFNGLGETSTRINGPROC);
@@ -114,16 +113,16 @@ bool ValidateFunctionPointers()
   // process.
   // Other functions that are only called to deserialise are checked for presence separately
 
-  bool ret = true;
+  RDResult result;
 
 #define CHECK_PRESENT(func)                                                            \
   if(!GL.func)                                                                         \
   {                                                                                    \
-    RDCERR(                                                                            \
+    SET_ERROR_RESULT(                                                                  \
+        result, ResultCode::APIHardwareUnsupported,                                    \
         "Missing function %s, required for replay. RenderDoc requires a 3.2 context, " \
         "and a handful of extensions, see the Documentation.",                         \
         STRINGIZE(func));                                                              \
-    ret = false;                                                                       \
   }
 
   // these functions should all be present as part of a 3.2 context plus the extensions we require,
@@ -332,7 +331,7 @@ bool ValidateFunctionPointers()
   // only called when such a call is serialised from the logfile, and
   // so they are checked for validity separately.
 
-  return ret;
+  return result;
 }
 
 static void CheckExtFromString(const char *ext)
@@ -407,19 +406,26 @@ void GetContextVersion(bool &ctxGLES, int &ctxVersion)
   }
 }
 
-void FetchEnabledExtensions()
+bool FetchEnabledExtensions()
 {
-  RDCEraseEl(HasExt);
-
   int ctxVersion = 0;
   bool ctxGLES = false;
   GetContextVersion(ctxGLES, ctxVersion);
 
+  if((ctxGLES && ctxVersion < 20) || (!ctxGLES && ctxVersion < 30))
+  {
+    RDCLOG("Not acting on unsupported GL context %s %d.%d", IsGLES ? "OpenGL ES" : "OpenGL",
+           (ctxVersion / 10), (ctxVersion % 10));
+    return false;
+  }
+
+  RDCLOG("Refreshing extension status based on %s %d.%d", IsGLES ? "OpenGL ES" : "OpenGL",
+         (ctxVersion / 10), (ctxVersion % 10));
+
   GLCoreVersion = RDCMAX(GLCoreVersion, ctxVersion);
   IsGLES = ctxGLES;
 
-  RDCLOG("Checking enabled extensions, running as %s %d.%d", IsGLES ? "OpenGL ES" : "OpenGL",
-         (ctxVersion / 10), (ctxVersion % 10));
+  RDCEraseEl(HasExt);
 
   // only use glGetStringi on 3.0 contexts and above (ES and GL), even if we have the function
   // pointer
@@ -462,21 +468,53 @@ void FetchEnabledExtensions()
     RDCERR("GL implementation has ARB_compute_shader but is not at least 4.2. Disabling compute.");
     HasExt[ARB_compute_shader] = false;
   }
+
+  return true;
 }
 
 void DoVendorChecks(GLPlatform &platform, GLWindowingData context)
 {
-  const char *vendor = "";
-  const char *renderer = "";
-  const char *version = "";
+  enum DetectedVendor
+  {
+    Vendor_None = 0,
+    // zink doesn't have any specific cehcks but we treat it as a dedicated vendor to prevent it
+    // being detected as other vendors when it matches their strings
+    Vendor_Zink,
+    Vendor_Intel,
+    Vendor_Qualcomm,
+    Vendor_Count,
+  } detectedVendor = Vendor_None;
+
+  const char *detectedVendorNames[Vendor_Count] = {
+      "None",
+      "Zink",
+      "Intel",
+      "Qualcomm",
+  };
 
   if(GL.glGetString)
   {
-    vendor = (const char *)GL.glGetString(eGL_VENDOR);
-    renderer = (const char *)GL.glGetString(eGL_RENDERER);
-    version = (const char *)GL.glGetString(eGL_VERSION);
+    const char *vendor = (const char *)GL.glGetString(eGL_VENDOR);
+    const char *renderer = (const char *)GL.glGetString(eGL_RENDERER);
+    const char *version = (const char *)GL.glGetString(eGL_VERSION);
+
+    if(strstr(vendor, "Zink") || strstr(vendor, "zink") || strstr(renderer, "Zink") ||
+       strstr(renderer, "zink"))
+    {
+      detectedVendor = Vendor_Zink;
+    }
+    else if(!strcmp(vendor, "Intel") || !strcmp(vendor, "intel") || !strcmp(vendor, "INTEL"))
+    {
+      detectedVendor = Vendor_Intel;
+    }
+    else if(strstr(vendor, "Qualcomm") || strstr(vendor, "Adreno") ||
+            strstr(renderer, "Qualcomm") || strstr(renderer, "Adreno"))
+    {
+      detectedVendor = Vendor_Qualcomm;
+    }
 
     RDCLOG("Vendor checks for %u (%s / %s / %s)", GLCoreVersion, vendor, renderer, version);
+    RDCLOG("Detected vendor: %s", detectedVendorNames[detectedVendor]);
   }
 
   //////////////////////////////////////////////////////////
@@ -543,7 +581,7 @@ void DoVendorChecks(GLPlatform &platform, GLWindowingData context)
   // Intel seems to completely break everything if we even run this check, so we just
   // skip this check and assume the hack is enabled.
 
-  if(!strcmp(vendor, "Intel") || !strcmp(vendor, "intel") || !strcmp(vendor, "INTEL"))
+  if(detectedVendor == Vendor_Intel)
   {
     RDCWARN("Using super hack-on-a-hack to avoid glCopyImageSubData tests on intel.");
     VendorCheck[VendorCheck_AMD_copy_compressed_tinymips] = true;
@@ -773,10 +811,11 @@ void DoVendorChecks(GLPlatform &platform, GLWindowingData context)
   // Qualcomm's implementation of glCopyImageSubData is buggy on some drivers and can cause GPU
   // crashes or corrupted data. We force the initial state copies to happen via our emulation which
   // uses framebuffer blits.
-  if(strstr(vendor, "Qualcomm") || strstr(vendor, "Adreno") || strstr(renderer, "Qualcomm") ||
-     strstr(renderer, "Adreno"))
+  if(detectedVendor == Vendor_Qualcomm)
   {
     bool broken = true;
+
+    const char *version = (const char *)GL.glGetString(eGL_VERSION);
 
     // the bug should be fixed in version 325 and above
     const char *qualcommver = strstr(version, "V@");
@@ -802,6 +841,9 @@ void DoVendorChecks(GLPlatform &platform, GLWindowingData context)
       RDCWARN("Detected Qualcomm driver version %u, Using hack to avoid glCopyImageSubData", ver);
       VendorCheck[VendorCheck_Qualcomm_avoid_glCopyImageSubData] = true;
     }
+
+    RDCWARN("Enabling Qualcomm driver hack to avoid reading cubemap mip faces directly", ver);
+    VendorCheck[VendorCheck_Qualcomm_emulate_cube_reads] = true;
   }
 
   if(IsGLES)
@@ -878,6 +920,9 @@ void GLPushPopState::Push(bool modern)
 
     if(HasExt[EXT_transform_feedback])
       enableBits[6] = GL.glIsEnabled(eGL_RASTERIZER_DISCARD) != 0;
+
+    if(HasExt[EXT_depth_bounds_test])
+      enableBits[8] = GL.glIsEnabled(eGL_DEPTH_BOUNDS_TEST_EXT) != 0;
   }
   else
   {
@@ -929,6 +974,16 @@ void GLPushPopState::Push(bool modern)
   else
   {
     GL.glGetBooleanv(eGL_COLOR_WRITEMASK, ColorMask);
+  }
+
+  if(modern && HasExt[EXT_depth_bounds_test])
+  {
+    GL.glGetDoublev(eGL_DEPTH_BOUNDS_EXT, bounds);
+  }
+  else
+  {
+    bounds[0] = 0.0;
+    bounds[1] = 1.0;
   }
 
   if(!VendorCheck[VendorCheck_AMD_polygon_mode_query] && !IsGLES)
@@ -1049,6 +1104,14 @@ void GLPushPopState::Pop(bool modern)
       else
         GL.glDisable(eGL_RASTERIZER_DISCARD);
     }
+
+    if(HasExt[EXT_depth_bounds_test])
+    {
+      if(enableBits[8])
+        GL.glEnable(eGL_DEPTH_BOUNDS_TEST_EXT);
+      else
+        GL.glDisable(eGL_DEPTH_BOUNDS_TEST_EXT);
+    }
   }
   else
   {
@@ -1095,6 +1158,11 @@ void GLPushPopState::Pop(bool modern)
   else
   {
     GL.glColorMask(ColorMask[0], ColorMask[1], ColorMask[2], ColorMask[3]);
+  }
+
+  if(modern && HasExt[EXT_depth_bounds_test])
+  {
+    GL.glDepthBoundsEXT(bounds[0], bounds[1]);
   }
 
   if(!IsGLES)
@@ -1196,6 +1264,10 @@ bool GLInitParams::IsSupportedVersion(uint64_t ver)
 
   // 0x22 -> 0x23 - Add missing serialisation of maxAniso in texture initial contents.
   if(ver == 0x22)
+    return true;
+
+  // 0x23 -> 0x24 - added serialised annotations
+  if(ver == 0x23)
     return true;
 
   return false;
@@ -1519,79 +1591,131 @@ GLuint GetBoundVertexBuffer(GLuint i)
   return buffer;
 }
 
-void SafeBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0,
-                         GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)
+struct SafeClearBlitState
 {
-  bool scissorEnabled = false;
+  SafeClearBlitState()
+  {
+    // only viewport 0's scissor should be used for blits, but Intel seems to require all scissors
+    // to be disabled. Since it's only a bit more work to disable them all, we push/pop all of them
+    GL.glGetIntegerv(eGL_MAX_VIEWPORTS, &maxViews);
+
+    // fetch current state
+    {
+      if(HasExt[ARB_viewport_array])
+      {
+        for(GLint v = 0; v < maxViews; v++)
+          scissorEnabled[v] = GL.glIsEnabledi(eGL_SCISSOR_TEST, v) != 0;
+      }
+      else
+      {
+        scissorEnabled[0] = GL.glIsEnabled(eGL_SCISSOR_TEST) != 0;
+      }
+
+      if(HasExt[EXT_draw_buffers2] || HasExt[ARB_draw_buffers_blend])
+        GL.glGetBooleani_v(eGL_COLOR_WRITEMASK, 0, ColorMask);
+      else
+        GL.glGetBooleanv(eGL_COLOR_WRITEMASK, ColorMask);
+
+      GL.glGetBooleanv(eGL_DEPTH_WRITEMASK, &DepthMask);
+
+      GL.glGetIntegerv(eGL_STENCIL_WRITEMASK, &StencilMask);
+      GL.glGetIntegerv(eGL_STENCIL_BACK_WRITEMASK, &StencilBackMask);
+    }
+
+    GL.glGetFloatv(eGL_COLOR_CLEAR_VALUE, ClearColor);
+    GL.glGetFloatv(eGL_DEPTH_CLEAR_VALUE, &ClearDepth);
+    GL.glGetIntegerv(eGL_STENCIL_CLEAR_VALUE, &ClearStencil);
+
+    // apply safe state
+    {
+      if(HasExt[ARB_viewport_array])
+      {
+        for(GLint v = 0; v < maxViews; v++)
+          GL.glDisablei(eGL_SCISSOR_TEST, v);
+      }
+      else
+      {
+        GL.glDisable(eGL_SCISSOR_TEST);
+      }
+
+      if(HasExt[EXT_draw_buffers2] || HasExt[ARB_draw_buffers_blend])
+        GL.glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+      else
+        GL.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+      GL.glDepthMask(GL_TRUE);
+
+      GL.glStencilMaskSeparate(eGL_FRONT, 0xff);
+      GL.glStencilMaskSeparate(eGL_BACK, 0xff);
+    }
+  }
+
+  ~SafeClearBlitState()
+  {
+    // restore original state
+    {
+      if(HasExt[ARB_viewport_array])
+      {
+        for(GLint v = 0; v < maxViews; v++)
+        {
+          if(scissorEnabled[v])
+            GL.glEnablei(eGL_SCISSOR_TEST, v);
+          else
+            GL.glDisablei(eGL_SCISSOR_TEST, v);
+        }
+      }
+      else
+      {
+        if(scissorEnabled[0])
+          GL.glEnable(eGL_SCISSOR_TEST);
+        else
+          GL.glDisable(eGL_SCISSOR_TEST);
+      }
+
+      if(HasExt[EXT_draw_buffers2] || HasExt[ARB_draw_buffers_blend])
+        GL.glColorMaski(0, ColorMask[0], ColorMask[1], ColorMask[2], ColorMask[3]);
+      else
+        GL.glColorMask(ColorMask[0], ColorMask[1], ColorMask[2], ColorMask[3]);
+
+      GL.glDepthMask(DepthMask);
+
+      GL.glStencilMaskSeparate(eGL_FRONT, StencilMask);
+      GL.glStencilMaskSeparate(eGL_BACK, StencilBackMask);
+    }
+
+    GL.glClearColor(ClearColor[0], ClearColor[1], ClearColor[2], ClearColor[3]);
+    GL.glClearDepthf(ClearDepth);
+    GL.glClearStencil(ClearStencil);
+  }
+
+  bool scissorEnabled[16] = {};
   GLboolean ColorMask[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
   GLboolean DepthMask = GL_TRUE;
   GLint StencilMask = 0xff, StencilBackMask = 0xff;
 
-  // fetch current state
-  {
-    if(HasExt[ARB_viewport_array])
-      scissorEnabled = GL.glIsEnabledi(eGL_SCISSOR_TEST, 0) != 0;
-    else
-      scissorEnabled = GL.glIsEnabled(eGL_SCISSOR_TEST) != 0;
+  GLfloat ClearColor[4] = {};
+  GLfloat ClearDepth = 1.0f;
+  GLint ClearStencil = 0;
 
-    if(HasExt[EXT_draw_buffers2] || HasExt[ARB_draw_buffers_blend])
-      GL.glGetBooleani_v(eGL_COLOR_WRITEMASK, 0, ColorMask);
-    else
-      GL.glGetBooleanv(eGL_COLOR_WRITEMASK, ColorMask);
+  GLint maxViews = 0;
+};
 
-    GL.glGetBooleanv(eGL_DEPTH_WRITEMASK, &DepthMask);
-
-    GL.glGetIntegerv(eGL_STENCIL_WRITEMASK, &StencilMask);
-    GL.glGetIntegerv(eGL_STENCIL_BACK_WRITEMASK, &StencilBackMask);
-  }
-
-  // apply safe state
-  {
-    if(HasExt[ARB_viewport_array])
-      GL.glDisablei(eGL_SCISSOR_TEST, 0);
-    else
-      GL.glDisable(eGL_SCISSOR_TEST);
-
-    if(HasExt[EXT_draw_buffers2] || HasExt[ARB_draw_buffers_blend])
-      GL.glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    else
-      GL.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-
-    GL.glDepthMask(GL_TRUE);
-
-    GL.glStencilMaskSeparate(eGL_FRONT, 0xff);
-    GL.glStencilMaskSeparate(eGL_BACK, 0xff);
-  }
+void SafeBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0,
+                         GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)
+{
+  SafeClearBlitState safe;
 
   GL.glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
+}
 
-  // restore original state
-  {
-    if(HasExt[ARB_viewport_array])
-    {
-      if(scissorEnabled)
-        GL.glEnablei(eGL_SCISSOR_TEST, 0);
-      else
-        GL.glDisablei(eGL_SCISSOR_TEST, 0);
-    }
-    else
-    {
-      if(scissorEnabled)
-        GL.glEnable(eGL_SCISSOR_TEST);
-      else
-        GL.glDisable(eGL_SCISSOR_TEST);
-    }
+void SafeClearFramebuffer(GLbitfield clearMask, GLfloat rgba[4], GLfloat depth, GLint stencil)
+{
+  SafeClearBlitState safe;
 
-    if(HasExt[EXT_draw_buffers2] || HasExt[ARB_draw_buffers_blend])
-      GL.glColorMaski(0, ColorMask[0], ColorMask[1], ColorMask[2], ColorMask[3]);
-    else
-      GL.glColorMask(ColorMask[0], ColorMask[1], ColorMask[2], ColorMask[3]);
-
-    GL.glDepthMask(DepthMask);
-
-    GL.glStencilMaskSeparate(eGL_FRONT, StencilMask);
-    GL.glStencilMaskSeparate(eGL_BACK, StencilBackMask);
-  }
+  GL.glClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+  GL.glClearDepthf(0.0f);
+  GL.glClearStencil(0);
+  GL.glClear(clearMask);
 }
 
 BufferCategory MakeBufferCategory(GLenum bufferTarget)
@@ -1635,23 +1759,44 @@ TextureFilter MakeFilter(GLenum minf, GLenum magf, float maxAniso)
   }
   else
   {
-    if(minf == eGL_NEAREST || minf == eGL_LINEAR)
+    switch(minf)
     {
-      ret.minify = (minf == eGL_LINEAR) ? FilterMode::Linear : FilterMode::Point;
-      ret.mip = FilterMode::NoFilter;
-    }
-    else if(minf == eGL_NEAREST_MIPMAP_LINEAR || minf == eGL_LINEAR_MIPMAP_LINEAR)
-    {
-      ret.minify = (minf == eGL_LINEAR_MIPMAP_LINEAR) ? FilterMode::Linear : FilterMode::Point;
-      ret.mip = FilterMode::Linear;
-    }
-    else if(minf == eGL_NEAREST_MIPMAP_NEAREST || minf == eGL_LINEAR_MIPMAP_NEAREST)
-    {
-      ret.minify = (minf == eGL_LINEAR_MIPMAP_NEAREST) ? FilterMode::Linear : FilterMode::Point;
-      ret.mip = FilterMode::Point;
+      case eGL_NEAREST:
+      case eGL_NEAREST_MIPMAP_LINEAR:
+      case eGL_NEAREST_MIPMAP_NEAREST:
+      default: ret.minify = FilterMode::Point; break;
+
+      case eGL_LINEAR:
+      case eGL_LINEAR_MIPMAP_LINEAR:
+      case eGL_LINEAR_MIPMAP_NEAREST: ret.minify = FilterMode::Linear; break;
+
+      case eGL_CUBIC_IMG:
+      case eGL_CUBIC_MIPMAP_LINEAR_IMG:
+      case eGL_CUBIC_MIPMAP_NEAREST_IMG: ret.minify = FilterMode::Cubic; break;
     }
 
-    ret.magnify = (magf == eGL_LINEAR) ? FilterMode::Linear : FilterMode::Point;
+    switch(minf)
+    {
+      case eGL_NEAREST:
+      case eGL_LINEAR:
+      case eGL_CUBIC_IMG:
+      default: ret.mip = FilterMode::NoFilter; break;
+
+      case eGL_NEAREST_MIPMAP_LINEAR:
+      case eGL_LINEAR_MIPMAP_LINEAR:
+      case eGL_CUBIC_MIPMAP_LINEAR_IMG: ret.mip = FilterMode::Linear; break;
+
+      case eGL_NEAREST_MIPMAP_NEAREST:
+      case eGL_LINEAR_MIPMAP_NEAREST:
+      case eGL_CUBIC_MIPMAP_NEAREST_IMG: ret.mip = FilterMode::Point; break;
+    }
+
+    switch(magf)
+    {
+      default: ret.magnify = FilterMode::Point; break;
+      case eGL_LINEAR: ret.magnify = FilterMode::Linear; break;
+      case eGL_CUBIC_IMG: ret.magnify = FilterMode::Cubic; break;
+    }
   }
 
   return ret;
@@ -1845,36 +1990,24 @@ ResourceFormat MakeResourceFormat(GLenum target, GLenum fmt)
       case eGL_COMPRESSED_RGB_S3TC_DXT1_EXT:
       case eGL_COMPRESSED_SRGB_S3TC_DXT1_EXT: ret.compCount = 3; break;
       case eGL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
-      case eGL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT:
-        ret.compCount = 4;
-        break;
+      case eGL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT: ret.compCount = 4; break;
 
       // BC2
       case eGL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
-      case eGL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT:
-        ret.compCount = 4;
-        break;
+      case eGL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT: ret.compCount = 4; break;
 
       // BC3
       case eGL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
-      case eGL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT:
-        ret.compCount = 4;
-        break;
+      case eGL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT: ret.compCount = 4; break;
       // BC4
       case eGL_COMPRESSED_RED_RGTC1:
-      case eGL_COMPRESSED_SIGNED_RED_RGTC1:
-        ret.compCount = 1;
-        break;
+      case eGL_COMPRESSED_SIGNED_RED_RGTC1: ret.compCount = 1; break;
       // BC5
       case eGL_COMPRESSED_RG_RGTC2:
-      case eGL_COMPRESSED_SIGNED_RG_RGTC2:
-        ret.compCount = 2;
-        break;
+      case eGL_COMPRESSED_SIGNED_RG_RGTC2: ret.compCount = 2; break;
       // BC6
       case eGL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT_ARB:
-      case eGL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT_ARB:
-        ret.compCount = 3;
-        break;
+      case eGL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT_ARB: ret.compCount = 3; break;
       // BC7
       case eGL_COMPRESSED_RGBA_BPTC_UNORM_ARB:
       case eGL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM_ARB: ret.compCount = 4; break;
@@ -1911,6 +2044,16 @@ ResourceFormat MakeResourceFormat(GLenum target, GLenum fmt)
       case eGL_COMPRESSED_RGBA_ASTC_10x10_KHR:
       case eGL_COMPRESSED_RGBA_ASTC_12x10_KHR:
       case eGL_COMPRESSED_RGBA_ASTC_12x12_KHR:
+      case eGL_COMPRESSED_RGBA_ASTC_3x3x3_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_4x3x3_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_4x4x3_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_4x4x4_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_5x4x4_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_5x5x4_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_5x5x5_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_6x5x5_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_6x6x5_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_6x6x6_OES:
       case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR:
       case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR:
       case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR:
@@ -1924,7 +2067,17 @@ ResourceFormat MakeResourceFormat(GLenum target, GLenum fmt)
       case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x8_KHR:
       case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR:
       case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR:
-      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR: ret.compCount = 4; break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_3x3x3_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x3x3_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x3_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x4_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4x4_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x4_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x5_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5x5_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x5_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x6_OES: ret.compCount = 4; break;
 
       default: break;
     }
@@ -1940,7 +2093,31 @@ ResourceFormat MakeResourceFormat(GLenum target, GLenum fmt)
       case eGL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM_ARB:
       case eGL_COMPRESSED_SRGB8_ETC2:
       case eGL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2:
-      case eGL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC: ret.compType = CompType::UNormSRGB; break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x5_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x6_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x5_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x6_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x8_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_3x3x3_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x3x3_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x3_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x4_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4x4_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x4_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x5_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5x5_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x5_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x6_OES: ret.compType = CompType::UNormSRGB; break;
       default: break;
     }
 
@@ -1962,39 +2139,25 @@ ResourceFormat MakeResourceFormat(GLenum target, GLenum fmt)
       case eGL_COMPRESSED_RGB_S3TC_DXT1_EXT:
       case eGL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
       case eGL_COMPRESSED_SRGB_S3TC_DXT1_EXT:
-      case eGL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT:
-        ret.type = ResourceFormatType::BC1;
-        break;
+      case eGL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT: ret.type = ResourceFormatType::BC1; break;
       // BC2
       case eGL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
-      case eGL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT:
-        ret.type = ResourceFormatType::BC2;
-        break;
+      case eGL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT: ret.type = ResourceFormatType::BC2; break;
       // BC3
       case eGL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
-      case eGL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT:
-        ret.type = ResourceFormatType::BC3;
-        break;
+      case eGL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT: ret.type = ResourceFormatType::BC3; break;
       // BC4
       case eGL_COMPRESSED_RED_RGTC1:
-      case eGL_COMPRESSED_SIGNED_RED_RGTC1:
-        ret.type = ResourceFormatType::BC4;
-        break;
+      case eGL_COMPRESSED_SIGNED_RED_RGTC1: ret.type = ResourceFormatType::BC4; break;
       // BC5
       case eGL_COMPRESSED_RG_RGTC2:
-      case eGL_COMPRESSED_SIGNED_RG_RGTC2:
-        ret.type = ResourceFormatType::BC5;
-        break;
+      case eGL_COMPRESSED_SIGNED_RG_RGTC2: ret.type = ResourceFormatType::BC5; break;
       // BC6
       case eGL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT_ARB:
-      case eGL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT_ARB:
-        ret.type = ResourceFormatType::BC6;
-        break;
+      case eGL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT_ARB: ret.type = ResourceFormatType::BC6; break;
       // BC7
       case eGL_COMPRESSED_RGBA_BPTC_UNORM_ARB:
-      case eGL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM_ARB:
-        ret.type = ResourceFormatType::BC7;
-        break;
+      case eGL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM_ARB: ret.type = ResourceFormatType::BC7; break;
       // ETC1
       case eGL_ETC1_RGB8_OES:    // handle it as ETC2
       // ETC2
@@ -2010,9 +2173,7 @@ ResourceFormat MakeResourceFormat(GLenum target, GLenum fmt)
       case eGL_COMPRESSED_R11_EAC:
       case eGL_COMPRESSED_SIGNED_R11_EAC:
       case eGL_COMPRESSED_RG11_EAC:
-      case eGL_COMPRESSED_SIGNED_RG11_EAC:
-        ret.type = ResourceFormatType::EAC;
-        break;
+      case eGL_COMPRESSED_SIGNED_RG11_EAC: ret.type = ResourceFormatType::EAC; break;
       // ASTC
       case eGL_COMPRESSED_RGBA_ASTC_4x4_KHR:
       case eGL_COMPRESSED_RGBA_ASTC_5x4_KHR:
@@ -2028,6 +2189,16 @@ ResourceFormat MakeResourceFormat(GLenum target, GLenum fmt)
       case eGL_COMPRESSED_RGBA_ASTC_10x10_KHR:
       case eGL_COMPRESSED_RGBA_ASTC_12x10_KHR:
       case eGL_COMPRESSED_RGBA_ASTC_12x12_KHR:
+      case eGL_COMPRESSED_RGBA_ASTC_3x3x3_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_4x3x3_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_4x4x3_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_4x4x4_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_5x4x4_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_5x5x4_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_5x5x5_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_6x5x5_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_6x6x5_OES:
+      case eGL_COMPRESSED_RGBA_ASTC_6x6x6_OES:
       case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR:
       case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR:
       case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR:
@@ -2042,14 +2213,88 @@ ResourceFormat MakeResourceFormat(GLenum target, GLenum fmt)
       case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR:
       case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR:
       case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR:
-        ret.type = ResourceFormatType::ASTC;
-        break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_3x3x3_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x3x3_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x3_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x4_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4x4_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x4_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x5_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5x5_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x5_OES:
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x6_OES: ret.type = ResourceFormatType::ASTC; break;
       // PVRTC
       case eGL_COMPRESSED_SRGB_PVRTC_2BPPV1_EXT:
+        ret.type = ResourceFormatType::PVRTC;
+        ret.SetPVRTC(1, 2);
+        break;
       case eGL_COMPRESSED_SRGB_PVRTC_4BPPV1_EXT:
+        ret.type = ResourceFormatType::PVRTC;
+        ret.SetPVRTC(1, 4);
+        break;
       case eGL_COMPRESSED_SRGB_ALPHA_PVRTC_2BPPV1_EXT:
-      case eGL_COMPRESSED_SRGB_ALPHA_PVRTC_4BPPV1_EXT: ret.type = ResourceFormatType::PVRTC; break;
+        ret.type = ResourceFormatType::PVRTC;
+        ret.SetPVRTC(1, 2);
+        break;
+      case eGL_COMPRESSED_SRGB_ALPHA_PVRTC_4BPPV1_EXT:
+        ret.type = ResourceFormatType::PVRTC;
+        ret.SetPVRTC(1, 4);
+        break;
       default: RDCERR("Unexpected compressed format %#x", fmt); break;
+    }
+
+    // set ASTC shape
+    switch(fmt)
+    {
+      case eGL_COMPRESSED_RGBA_ASTC_4x4_KHR: ret.SetASTC2D({4, 4}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_5x4_KHR: ret.SetASTC2D({5, 4}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_5x5_KHR: ret.SetASTC2D({5, 5}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_6x5_KHR: ret.SetASTC2D({6, 5}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_6x6_KHR: ret.SetASTC2D({6, 6}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_8x5_KHR: ret.SetASTC2D({8, 5}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_8x6_KHR: ret.SetASTC2D({8, 6}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_8x8_KHR: ret.SetASTC2D({8, 8}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_10x5_KHR: ret.SetASTC2D({10, 5}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_10x6_KHR: ret.SetASTC2D({10, 6}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_10x8_KHR: ret.SetASTC2D({10, 8}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_10x10_KHR: ret.SetASTC2D({10, 10}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_12x10_KHR: ret.SetASTC2D({12, 10}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_12x12_KHR: ret.SetASTC2D({12, 12}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_3x3x3_OES: ret.SetASTC3D({3, 3, 3}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_4x3x3_OES: ret.SetASTC3D({4, 3, 3}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_4x4x3_OES: ret.SetASTC3D({4, 4, 3}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_4x4x4_OES: ret.SetASTC3D({4, 4, 4}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_5x4x4_OES: ret.SetASTC3D({5, 4, 4}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_5x5x4_OES: ret.SetASTC3D({5, 5, 4}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_5x5x5_OES: ret.SetASTC3D({5, 5, 5}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_6x5x5_OES: ret.SetASTC3D({6, 5, 5}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_6x6x5_OES: ret.SetASTC3D({6, 6, 5}); break;
+      case eGL_COMPRESSED_RGBA_ASTC_6x6x6_OES: ret.SetASTC3D({6, 6, 6}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR: ret.SetASTC2D({4, 4}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR: ret.SetASTC2D({5, 4}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR: ret.SetASTC2D({5, 5}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5_KHR: ret.SetASTC2D({6, 5}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR: ret.SetASTC2D({6, 6}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x5_KHR: ret.SetASTC2D({8, 5}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x6_KHR: ret.SetASTC2D({8, 6}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR: ret.SetASTC2D({8, 8}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x5_KHR: ret.SetASTC2D({10, 5}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x6_KHR: ret.SetASTC2D({10, 6}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x8_KHR: ret.SetASTC2D({10, 8}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR: ret.SetASTC2D({10, 10}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR: ret.SetASTC2D({12, 10}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR: ret.SetASTC2D({12, 12}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_3x3x3_OES: ret.SetASTC3D({3, 3, 3}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x3x3_OES: ret.SetASTC3D({4, 3, 3}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x3_OES: ret.SetASTC3D({4, 4, 3}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x4_OES: ret.SetASTC3D({4, 4, 4}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4x4_OES: ret.SetASTC3D({5, 4, 4}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x4_OES: ret.SetASTC3D({5, 5, 4}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x5_OES: ret.SetASTC3D({5, 5, 5}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5x5_OES: ret.SetASTC3D({6, 5, 5}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x5_OES: ret.SetASTC3D({6, 6, 5}); break;
+      case eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x6_OES: ret.SetASTC3D({6, 6, 6}); break;
+      default: break;
     }
 
     return ret;
@@ -2165,7 +2410,14 @@ ResourceFormat MakeResourceFormat(GLenum target, GLenum fmt)
         case eGL_SIGNED_NORMALIZED: ret.compType = CompType::SNorm; break;
         case eGL_FLOAT: ret.compType = CompType::Float; break;
         case eGL_INT: ret.compType = CompType::SInt; break;
-        default: RDCERR("Unexpected texture type");
+        default:
+        {
+          RDCERR("Unexpected texture type");
+          if(ret.compByteWidth == 1)
+            ret.compType = CompType::UNorm;
+          else
+            ret.compType = CompType::Float;
+        }
       }
     }
     else
@@ -2322,11 +2574,136 @@ GLenum MakeGLFormat(ResourceFormat fmt)
       case ResourceFormatType::D32S8: ret = eGL_DEPTH32F_STENCIL8; break;
       case ResourceFormatType::D16S8: return eGL_NONE;
       case ResourceFormatType::ASTC:
-        RDCWARN("ASTC can't be decoded unambiguously");
+        if(fmt.ASTCDimension() == 2)
+        {
+          rdcpair<uint32_t, uint32_t> shape = fmt.ASTC2DBlock();
+          if(fmt.compType == CompType::UNorm)
+          {
+            if(shape.first == 4 && shape.second == 4)
+              return eGL_COMPRESSED_RGBA_ASTC_4x4_KHR;
+            if(shape.first == 5 && shape.second == 4)
+              return eGL_COMPRESSED_RGBA_ASTC_5x4_KHR;
+            if(shape.first == 5 && shape.second == 5)
+              return eGL_COMPRESSED_RGBA_ASTC_5x5_KHR;
+            if(shape.first == 6 && shape.second == 5)
+              return eGL_COMPRESSED_RGBA_ASTC_6x5_KHR;
+            if(shape.first == 6 && shape.second == 6)
+              return eGL_COMPRESSED_RGBA_ASTC_6x6_KHR;
+            if(shape.first == 8 && shape.second == 5)
+              return eGL_COMPRESSED_RGBA_ASTC_8x5_KHR;
+            if(shape.first == 8 && shape.second == 6)
+              return eGL_COMPRESSED_RGBA_ASTC_8x6_KHR;
+            if(shape.first == 8 && shape.second == 8)
+              return eGL_COMPRESSED_RGBA_ASTC_8x8_KHR;
+            if(shape.first == 10 && shape.second == 5)
+              return eGL_COMPRESSED_RGBA_ASTC_10x5_KHR;
+            if(shape.first == 10 && shape.second == 6)
+              return eGL_COMPRESSED_RGBA_ASTC_10x6_KHR;
+            if(shape.first == 10 && shape.second == 8)
+              return eGL_COMPRESSED_RGBA_ASTC_10x8_KHR;
+            if(shape.first == 10 && shape.second == 10)
+              return eGL_COMPRESSED_RGBA_ASTC_10x10_KHR;
+            if(shape.first == 12 && shape.second == 10)
+              return eGL_COMPRESSED_RGBA_ASTC_12x10_KHR;
+            if(shape.first == 12 && shape.second == 12)
+              return eGL_COMPRESSED_RGBA_ASTC_12x12_KHR;
+          }
+          else
+          {
+            if(shape.first == 4 && shape.second == 4)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR;
+            if(shape.first == 5 && shape.second == 4)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR;
+            if(shape.first == 5 && shape.second == 5)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR;
+            if(shape.first == 6 && shape.second == 5)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5_KHR;
+            if(shape.first == 6 && shape.second == 6)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR;
+            if(shape.first == 8 && shape.second == 5)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x5_KHR;
+            if(shape.first == 8 && shape.second == 6)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x6_KHR;
+            if(shape.first == 8 && shape.second == 8)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR;
+            if(shape.first == 10 && shape.second == 5)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x5_KHR;
+            if(shape.first == 10 && shape.second == 6)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x6_KHR;
+            if(shape.first == 10 && shape.second == 8)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x8_KHR;
+            if(shape.first == 10 && shape.second == 10)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR;
+            if(shape.first == 12 && shape.second == 10)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR;
+            if(shape.first == 12 && shape.second == 12)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR;
+          }
+        }
+        else
+        {
+          rdcfixedarray<uint32_t, 3> shape = fmt.ASTC3DBlock();
+          if(fmt.compType == CompType::UNorm)
+          {
+            if(shape[0] == 3 && shape[1] == 3 && shape[2] == 3)
+              return eGL_COMPRESSED_RGBA_ASTC_3x3x3_OES;
+            if(shape[0] == 4 && shape[1] == 3 && shape[2] == 3)
+              return eGL_COMPRESSED_RGBA_ASTC_4x3x3_OES;
+            if(shape[0] == 4 && shape[1] == 4 && shape[2] == 3)
+              return eGL_COMPRESSED_RGBA_ASTC_4x4x3_OES;
+            if(shape[0] == 4 && shape[1] == 4 && shape[2] == 4)
+              return eGL_COMPRESSED_RGBA_ASTC_4x4x4_OES;
+            if(shape[0] == 5 && shape[1] == 4 && shape[2] == 4)
+              return eGL_COMPRESSED_RGBA_ASTC_5x4x4_OES;
+            if(shape[0] == 5 && shape[1] == 5 && shape[2] == 4)
+              return eGL_COMPRESSED_RGBA_ASTC_5x5x4_OES;
+            if(shape[0] == 5 && shape[1] == 5 && shape[2] == 5)
+              return eGL_COMPRESSED_RGBA_ASTC_5x5x5_OES;
+            if(shape[0] == 6 && shape[1] == 5 && shape[2] == 5)
+              return eGL_COMPRESSED_RGBA_ASTC_6x5x5_OES;
+            if(shape[0] == 6 && shape[1] == 6 && shape[2] == 5)
+              return eGL_COMPRESSED_RGBA_ASTC_6x6x5_OES;
+            if(shape[0] == 6 && shape[1] == 6 && shape[2] == 6)
+              return eGL_COMPRESSED_RGBA_ASTC_6x6x6_OES;
+          }
+          else
+          {
+            if(shape[0] == 3 && shape[1] == 3 && shape[2] == 3)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_3x3x3_OES;
+            if(shape[0] == 4 && shape[1] == 3 && shape[2] == 3)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x3x3_OES;
+            if(shape[0] == 4 && shape[1] == 4 && shape[2] == 3)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x3_OES;
+            if(shape[0] == 4 && shape[1] == 4 && shape[2] == 4)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x4_OES;
+            if(shape[0] == 5 && shape[1] == 4 && shape[2] == 4)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4x4_OES;
+            if(shape[0] == 5 && shape[1] == 5 && shape[2] == 4)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x4_OES;
+            if(shape[0] == 5 && shape[1] == 5 && shape[2] == 5)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x5_OES;
+            if(shape[0] == 6 && shape[1] == 5 && shape[2] == 5)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5x5_OES;
+            if(shape[0] == 6 && shape[1] == 6 && shape[2] == 5)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x5_OES;
+            if(shape[0] == 6 && shape[1] == 6 && shape[2] == 6)
+              return eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x6_OES;
+          }
+        }
         return eGL_NONE;
       case ResourceFormatType::PVRTC:
-        RDCWARN("PVRTC can't be decoded unambiguously");
-        return eGL_NONE;
+        if(fmt.PVRTCBpp() == 2)
+        {
+          if(fmt.compCount == 3)
+            return eGL_COMPRESSED_SRGB_PVRTC_2BPPV1_EXT;
+          return eGL_COMPRESSED_SRGB_ALPHA_PVRTC_2BPPV1_EXT;
+        }
+        else
+        {
+          if(fmt.compCount == 3)
+            return eGL_COMPRESSED_SRGB_PVRTC_4BPPV1_EXT;
+          return eGL_COMPRESSED_SRGB_ALPHA_PVRTC_4BPPV1_EXT;
+        }
       case ResourceFormatType::S8: ret = eGL_STENCIL_INDEX8; break;
       case ResourceFormatType::A8: ret = eGL_ALPHA8_EXT; break;
       case ResourceFormatType::Undefined: return eGL_NONE;
@@ -2765,6 +3142,26 @@ TEST_CASE("GL formats", "[format][gl]")
       eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR,
       eGL_COMPRESSED_RGBA_ASTC_12x12_KHR,
       eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR,
+      eGL_COMPRESSED_RGBA_ASTC_3x3x3_OES,
+      eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_3x3x3_OES,
+      eGL_COMPRESSED_RGBA_ASTC_4x3x3_OES,
+      eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x3x3_OES,
+      eGL_COMPRESSED_RGBA_ASTC_4x4x3_OES,
+      eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x3_OES,
+      eGL_COMPRESSED_RGBA_ASTC_4x4x4_OES,
+      eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x4_OES,
+      eGL_COMPRESSED_RGBA_ASTC_5x4x4_OES,
+      eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4x4_OES,
+      eGL_COMPRESSED_RGBA_ASTC_5x5x4_OES,
+      eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x4_OES,
+      eGL_COMPRESSED_RGBA_ASTC_5x5x5_OES,
+      eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x5_OES,
+      eGL_COMPRESSED_RGBA_ASTC_6x5x5_OES,
+      eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5x5_OES,
+      eGL_COMPRESSED_RGBA_ASTC_6x6x5_OES,
+      eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x5_OES,
+      eGL_COMPRESSED_RGBA_ASTC_6x6x6_OES,
+      eGL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x6_OES,
       eGL_COMPRESSED_SRGB_PVRTC_2BPPV1_EXT,
       eGL_COMPRESSED_SRGB_PVRTC_4BPPV1_EXT,
       eGL_COMPRESSED_SRGB_ALPHA_PVRTC_2BPPV1_EXT,
@@ -2798,10 +3195,6 @@ TEST_CASE("GL formats", "[format][gl]")
         continue;
 
       ResourceFormat fmt = MakeResourceFormat(eGL_TEXTURE_2D, f);
-
-      // we don't support ASTC/PVRTC formats currently
-      if(fmt.type == ResourceFormatType::ASTC || fmt.type == ResourceFormatType::PVRTC)
-        continue;
 
       GLenum glf = MakeGLFormat(fmt);
 

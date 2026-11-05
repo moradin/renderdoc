@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -42,6 +42,7 @@ DXGI_FORMAT GetTypelessFormat(DXGI_FORMAT f);
 DXGI_FORMAT GetTypedFormat(DXGI_FORMAT f);
 DXGI_FORMAT GetTypedFormat(DXGI_FORMAT f, CompType hint);
 DXGI_FORMAT GetDepthTypedFormat(DXGI_FORMAT f);
+DXGI_FORMAT GetDepthSRVFormat(DXGI_FORMAT f, UINT planeSlice);
 DXGI_FORMAT GetFloatTypedFormat(DXGI_FORMAT f);
 DXGI_FORMAT GetUnormTypedFormat(DXGI_FORMAT f);
 DXGI_FORMAT GetSnormTypedFormat(DXGI_FORMAT f);
@@ -73,7 +74,7 @@ void WarnUnknownGUID(const char *name, REFIID riid);
 
 struct ReplayOptions;
 
-rdcstr GetDriverVersion(DXGI_ADAPTER_DESC &desc);
+rdcstr GetDriverVersion(DXGI_ADAPTER_DESC &desc, LARGE_INTEGER adapterQueryVersion);
 void ChooseBestMatchingAdapter(GraphicsAPI api, IDXGIFactory *factory,
                                const DXGI_ADAPTER_DESC &AdapterDesc, const ReplayOptions &opts,
                                bool *useWarp, IDXGIAdapter **adapter);

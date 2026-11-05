@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -44,18 +44,17 @@ void UseXcbConnection(xcb_connection_t *conn);
 
 VkResult WrappedVulkan::vkCreateXcbSurfaceKHR(VkInstance instance,
                                               const VkXcbSurfaceCreateInfoKHR *pCreateInfo,
-                                              const VkAllocationCallbacks *pAllocator,
-                                              VkSurfaceKHR *pSurface)
+                                              const VkAllocationCallbacks *, VkSurfaceKHR *pSurface)
 {
   // should not come in here at all on replay
   RDCASSERT(IsCaptureMode(m_State));
 
   VkResult ret =
-      ObjDisp(instance)->CreateXcbSurfaceKHR(Unwrap(instance), pCreateInfo, pAllocator, pSurface);
+      ObjDisp(instance)->CreateXcbSurfaceKHR(Unwrap(instance), pCreateInfo, NULL, pSurface);
 
   if(ret == VK_SUCCESS)
   {
-    GetResourceManager()->WrapResource(Unwrap(instance), *pSurface);
+    GetResourceManager()->WrapResource(ResourceId(), Unwrap(instance), *pSurface);
 
     WrappedVkSurfaceKHR *wrapped = GetWrapped(*pSurface);
 
@@ -86,18 +85,18 @@ VkBool32 WrappedVulkan::vkGetPhysicalDeviceWaylandPresentationSupportKHR(
 
 VkResult WrappedVulkan::vkCreateWaylandSurfaceKHR(VkInstance instance,
                                                   const VkWaylandSurfaceCreateInfoKHR *pCreateInfo,
-                                                  const VkAllocationCallbacks *pAllocator,
+                                                  const VkAllocationCallbacks *,
                                                   VkSurfaceKHR *pSurface)
 {
   // should not come in here at all on replay
   RDCASSERT(IsCaptureMode(m_State));
 
-  VkResult ret = ObjDisp(instance)->CreateWaylandSurfaceKHR(Unwrap(instance), pCreateInfo,
-                                                            pAllocator, pSurface);
+  VkResult ret =
+      ObjDisp(instance)->CreateWaylandSurfaceKHR(Unwrap(instance), pCreateInfo, NULL, pSurface);
 
   if(ret == VK_SUCCESS)
   {
-    GetResourceManager()->WrapResource(Unwrap(instance), *pSurface);
+    GetResourceManager()->WrapResource(ResourceId(), Unwrap(instance), *pSurface);
 
     WrappedVkSurfaceKHR *wrapped = GetWrapped(*pSurface);
 
@@ -129,18 +128,17 @@ void UseXlibDisplay(Display *dpy);
 
 VkResult WrappedVulkan::vkCreateXlibSurfaceKHR(VkInstance instance,
                                                const VkXlibSurfaceCreateInfoKHR *pCreateInfo,
-                                               const VkAllocationCallbacks *pAllocator,
-                                               VkSurfaceKHR *pSurface)
+                                               const VkAllocationCallbacks *, VkSurfaceKHR *pSurface)
 {
   // should not come in here at all on replay
   RDCASSERT(IsCaptureMode(m_State));
 
   VkResult ret =
-      ObjDisp(instance)->CreateXlibSurfaceKHR(Unwrap(instance), pCreateInfo, pAllocator, pSurface);
+      ObjDisp(instance)->CreateXlibSurfaceKHR(Unwrap(instance), pCreateInfo, NULL, pSurface);
 
   if(ret == VK_SUCCESS)
   {
-    GetResourceManager()->WrapResource(Unwrap(instance), *pSurface);
+    GetResourceManager()->WrapResource(ResourceId(), Unwrap(instance), *pSurface);
 
     WrappedVkSurfaceKHR *wrapped = GetWrapped(*pSurface);
 
@@ -215,7 +213,7 @@ void VulkanReplay::OutputWindow::CreateSurface(WrappedVulkan *driver, VkInstance
     createInfo.window = xlib.window;
 
     VkResult vkr = ObjDisp(inst)->CreateXlibSurfaceKHR(Unwrap(inst), &createInfo, NULL, &surface);
-    driver->CheckVkResult(vkr);
+    CHECK_VKR(driver, vkr);
 
     return;
   }
@@ -233,7 +231,7 @@ void VulkanReplay::OutputWindow::CreateSurface(WrappedVulkan *driver, VkInstance
     createInfo.window = xcb.window;
 
     VkResult vkr = ObjDisp(inst)->CreateXcbSurfaceKHR(Unwrap(inst), &createInfo, NULL, &surface);
-    driver->CheckVkResult(vkr);
+    CHECK_VKR(driver, vkr);
 
     return;
   }
@@ -251,7 +249,7 @@ void VulkanReplay::OutputWindow::CreateSurface(WrappedVulkan *driver, VkInstance
     createInfo.surface = wayland.window;
 
     VkResult vkr = ObjDisp(inst)->CreateWaylandSurfaceKHR(Unwrap(inst), &createInfo, NULL, &surface);
-    driver->CheckVkResult(vkr);
+    CHECK_VKR(driver, vkr);
 
     return;
   }

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -27,6 +27,82 @@
 RD_TEST(VK_Mesh_Zoo, VulkanGraphicsTest)
 {
   static constexpr const char *Description = "Draws some primitives for testing the mesh view.";
+
+  std::string xfbvert = R"EOSHADER(
+#version 460 core
+
+void main()
+{
+	gl_Position = vec4(0,0,0,0);
+}
+
+)EOSHADER";
+
+  std::string xfbgeom = R"EOSHADER(
+#version 450 core
+
+layout(points, invocations = 1) in;
+layout(points, max_vertices = 8) out;
+
+layout(location = 0, stream = 0, xfb_buffer = 0, xfb_stride = 32, xfb_offset = 0) out vec2 uv0;
+layout(location = 1, stream = 0, xfb_buffer = 0, xfb_stride = 32, xfb_offset = 8) out vec3 fakepos;
+layout(location = 2, stream = 0, xfb_buffer = 0, xfb_stride = 32, xfb_offset = 20) out vec3 extra;
+layout(location = 3, stream = 1, xfb_buffer = 1, xfb_stride = 8, xfb_offset = 0) out float a;
+layout(location = 4, stream = 1, xfb_buffer = 1, xfb_stride = 8, xfb_offset = 4) out float b;
+
+layout(stream = 2, xfb_buffer = 2, xfb_stride = 24, xfb_offset = 0) out gl_PerVertex {
+    vec4 gl_Position;
+};
+layout(location = 5, stream = 2, xfb_buffer = 2, xfb_stride = 24, xfb_offset = 16) out vec2 uv1;
+
+void main()
+{
+  uv0 = vec2(1,2);
+  fakepos = vec3(3,4,5);
+  extra = vec3(6,7,8);
+	EmitStreamVertex(0);
+	EndStreamPrimitive(0);
+	
+	a = 9;b = 10;
+	EmitStreamVertex(1);
+	EndStreamPrimitive(1);
+	
+	a = 11;b = 12;
+	EmitStreamVertex(1);
+	EndStreamPrimitive(1);
+
+  gl_Position = vec4(0.8, 0.8, 0.0, 1.0);
+  uv1 = vec2(0.5, 0.5);
+	EmitStreamVertex(2);
+	EndStreamPrimitive(2);
+  gl_Position = vec4(0.8, 0.9, 0.0, 1.0);
+  uv1 = vec2(0.6, 0.6);
+	EmitStreamVertex(2);
+	EndStreamPrimitive(2);
+  gl_Position = vec4(0.9, 0.8, 0.0, 1.0);
+  uv1 = vec2(0.7, 0.7);
+	EmitStreamVertex(2);
+	EndStreamPrimitive(2);
+  gl_Position = vec4(0.9, 0.9, 0.0, 1.0);
+  uv1 = vec2(0.8, 0.8);
+	EmitStreamVertex(2);
+	EndStreamPrimitive(2);
+}
+
+
+)EOSHADER";
+
+  std::string xfbpixel = R"EOSHADER(
+#version 460 core
+
+layout(location = 0, index = 0) out vec4 Color;
+
+void main()
+{
+	Color = vec4(0, 1, 1, 1);
+}
+
+)EOSHADER";
 
   std::string vertex = R"EOSHADER(
 #version 460 core
@@ -93,9 +169,44 @@ void main()
 
 )EOSHADER";
 
+  bool useXfbStreamPipe = false;
+
+  void Prepare(int argc, char **argv)
+  {
+    optDevExts.push_back(VK_KHR_MAINTENANCE1_EXTENSION_NAME);
+    optDevExts.push_back(VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
+
+    optFeatures.geometryShader = VK_TRUE;
+
+    VulkanGraphicsTest::Prepare(argc, argv);
+
+    if(!Avail.empty())
+      return;
+
+    static VkPhysicalDeviceTransformFeedbackFeaturesEXT xfb = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT,
+    };
+
+    if(hasExt(VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME))
+    {
+      VkPhysicalDeviceTransformFeedbackPropertiesEXT xfbProp = {
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT,
+      };
+      getPhysFeatures2(&xfb);
+      getPhysProperties2(&xfbProp);
+
+      useXfbStreamPipe = xfb.transformFeedback && xfb.geometryStreams &&
+                         xfbProp.maxTransformFeedbackStreams >= 3 &&
+                         xfbProp.transformFeedbackRasterizationStreamSelect;
+
+      devInfoNext = &xfb;
+    }
+  }
+
   int main()
   {
     optDevExts.push_back(VK_KHR_MAINTENANCE1_EXTENSION_NAME);
+    optDevExts.push_back(VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
 
     // initialise, create window, create context, etc
     if(!Init())
@@ -125,11 +236,12 @@ void main()
     };
 
     // create depth-stencil image
-    AllocatedImage depthimg(this, vkh::ImageCreateInfo(mainWindow->scissor.extent.width,
-                                                       mainWindow->scissor.extent.height, 0,
-                                                       VK_FORMAT_D32_SFLOAT_S8_UINT,
-                                                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT),
-                            VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
+    AllocatedImage depthimg(
+        this,
+        vkh::ImageCreateInfo(mainWindow->scissor.extent.width, mainWindow->scissor.extent.height, 0,
+                             VK_FORMAT_D32_SFLOAT_S8_UINT,
+                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT),
+        VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
 
     VkImageView dsvview = createImageView(vkh::ImageViewCreateInfo(
         depthimg.image, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_D32_SFLOAT_S8_UINT, {},
@@ -159,17 +271,15 @@ void main()
           renderPass, {mainWindow->GetView(i), dsvview}, mainWindow->scissor.extent));
 
     VkPipelineLayout layout = createPipelineLayout(vkh::PipelineLayoutCreateInfo(
-        {},
-        {
-            vkh::PushConstantRange(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                                   sizeof(Vec4f) * 2),
-        }));
+        {}, {
+                vkh::PushConstantRange(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                       sizeof(Vec4f) * 2),
+            }));
 
     VkPipelineLayout layout2 = createPipelineLayout(vkh::PipelineLayoutCreateInfo(
-        {},
-        {
-            vkh::PushConstantRange(VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Vec4f) * 2),
-        }));
+        {}, {
+                vkh::PushConstantRange(VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Vec4f) * 2),
+            }));
 
     vkh::GraphicsPipelineCreateInfo pipeCreateInfo;
 
@@ -178,7 +288,8 @@ void main()
 
     pipeCreateInfo.vertexInputState.vertexBindingDescriptions = {vkh::vertexBind(0, DefaultA2V)};
     pipeCreateInfo.vertexInputState.vertexAttributeDescriptions = {
-        vkh::vertexAttr(0, 0, DefaultA2V, pos), vkh::vertexAttr(1, 0, DefaultA2V, col),
+        vkh::vertexAttr(0, 0, DefaultA2V, pos),
+        vkh::vertexAttr(1, 0, DefaultA2V, col),
         vkh::vertexAttr(2, 0, DefaultA2V, uv),
     };
 
@@ -215,11 +326,46 @@ void main()
 
     VkPipeline pointspipe = createGraphicsPipeline(pipeCreateInfo);
 
+    pipeCreateInfo.inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+
+    VkPipeline linespipe = createGraphicsPipeline(pipeCreateInfo);
+
     pipeCreateInfo.vertexInputState.vertexBindingDescriptions = {{0, 0, VK_VERTEX_INPUT_RATE_VERTEX}};
 
     pipeCreateInfo.layout = layout2;
 
     VkPipeline stride0pipe = createGraphicsPipeline(pipeCreateInfo);
+
+    VkPipeline xfbpipe = VK_NULL_HANDLE;
+
+    VkPipelineRasterizationStateStreamCreateInfoEXT rastInfo = {
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_STREAM_CREATE_INFO_EXT,
+        NULL,
+        0,
+        2,
+    };
+
+    VkBufferUsageFlags xfbUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+    if(useXfbStreamPipe)
+    {
+      pipeCreateInfo.inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+      pipeCreateInfo.rasterizationState.pNext = &rastInfo;
+
+      pipeCreateInfo.stages = {
+          CompileShaderModule(xfbvert, ShaderLang::glsl, ShaderStage::vert),
+          CompileShaderModule(xfbgeom, ShaderLang::glsl, ShaderStage::geom),
+          CompileShaderModule(xfbpixel, ShaderLang::glsl, ShaderStage::frag),
+      };
+
+      xfbpipe = createGraphicsPipeline(pipeCreateInfo);
+
+      xfbUsage |= VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT;
+      xfbUsage |= VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT;
+    }
+
+    AllocatedBuffer xfbBuf(this, vkh::BufferCreateInfo(4096, xfbUsage),
+                           VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_GPU_ONLY}));
 
     AllocatedBuffer vb(this,
                        vkh::BufferCreateInfo(sizeof(test), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
@@ -234,8 +380,9 @@ void main()
     };
 
     AllocatedBuffer cb(
-        this, vkh::BufferCreateInfo(sizeof(cbufferdata), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                                                             VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        this,
+        vkh::BufferCreateInfo(sizeof(cbufferdata), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                                       VK_BUFFER_USAGE_TRANSFER_DST_BIT),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
 
     cb.upload(cbufferdata);
@@ -254,8 +401,9 @@ void main()
                            vkh::ImageSubresourceRange());
 
       vkCmdBeginRenderPass(
-          cmd, vkh::RenderPassBeginInfo(renderPass, fbs[mainWindow->imgIndex], mainWindow->scissor,
-                                        {{}, vkh::ClearValue(1.0f, 0)}),
+          cmd,
+          vkh::RenderPassBeginInfo(renderPass, fbs[mainWindow->imgIndex], mainWindow->scissor,
+                                   {{}, vkh::ClearValue(1.0f, 0)}),
           VK_SUBPASS_CONTENTS_INLINE);
 
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
@@ -294,6 +442,12 @@ void main()
 
       vkCmdDraw(cmd, 4, 1, 6, 0);
 
+      setMarker(cmd, "Lines");
+
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, linespipe);
+
+      vkCmdDraw(cmd, 4, 1, 6, 0);
+
       setMarker(cmd, "Stride 0");
 
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, stride0pipe);
@@ -301,6 +455,35 @@ void main()
                          &cbufferdata);
 
       vkCmdDraw(cmd, 1, 1, 0, 0);
+
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+      setMarker(cmd, "Empty");
+      vkCmdDraw(cmd, 0, 0, 0, 0);
+
+      if(xfbpipe != VK_NULL_HANDLE)
+      {
+        VkBuffer bufs[3] = {
+            xfbBuf.buffer,
+            xfbBuf.buffer,
+            xfbBuf.buffer,
+        };
+        VkDeviceSize offs[3] = {
+            0,
+            1024,
+            2048,
+        };
+
+        vkCmdBindTransformFeedbackBuffersEXT(cmd, 0, 3, bufs, offs, NULL);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, xfbpipe);
+        setMarker(cmd, "XFB");
+
+        vkCmdBeginTransformFeedbackEXT(cmd, 0, 3, NULL, NULL);
+        vkCmdDraw(cmd, 1, 1, 0, 0);
+        vkCmdEndTransformFeedbackEXT(cmd, 0, 3, NULL, NULL);
+
+        setMarker(cmd, "XFB After");
+      }
 
       vkCmdEndRenderPass(cmd);
 

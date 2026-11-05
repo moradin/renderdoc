@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,6 +24,7 @@
 
 #include "vk_common.h"
 #include "vk_core.h"
+#include "vk_debug.h"
 #include "vk_manager.h"
 #include "vk_resources.h"
 
@@ -102,6 +103,11 @@ void VkMarkerRegion::End(VkCommandBuffer cmd)
   ObjDisp(cmd)->CmdEndDebugUtilsLabelEXT(Unwrap(cmd));
 }
 
+VkDevice VkMarkerRegion::GetDev()
+{
+  return vk->GetDev();
+}
+
 void VkMarkerRegion::Begin(const rdcstr &marker, VkQueue q)
 {
   if(q == VK_NULL_HANDLE)
@@ -160,27 +166,41 @@ void VkMarkerRegion::End(VkQueue q)
 }
 
 template <>
-void NameVulkanObject(VkImage obj, const rdcstr &name)
+VkObjectType objType<VkSampler>()
 {
-  if(!VkMarkerRegion::vk)
-    return;
-
-  VkDevice dev = VkMarkerRegion::vk->GetDev();
-
-  if(!ObjDisp(dev)->SetDebugUtilsObjectNameEXT)
-    return;
-
-  VkDebugUtilsObjectNameInfoEXT info = {};
-  info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
-  info.objectType = VK_OBJECT_TYPE_IMAGE;
-  info.objectHandle = NON_DISP_TO_UINT64(Unwrap(obj));
-  info.pObjectName = name.c_str();
-  ObjDisp(dev)->SetDebugUtilsObjectNameEXT(Unwrap(dev), &info);
+  return VK_OBJECT_TYPE_SAMPLER;
+}
+template <>
+VkObjectType objType<VkBuffer>()
+{
+  return VK_OBJECT_TYPE_BUFFER;
+}
+template <>
+VkObjectType objType<VkDeviceMemory>()
+{
+  return VK_OBJECT_TYPE_DEVICE_MEMORY;
+}
+template <>
+VkObjectType objType<VkImage>()
+{
+  return VK_OBJECT_TYPE_IMAGE;
+}
+template <>
+VkObjectType objType<VkImageView>()
+{
+  return VK_OBJECT_TYPE_IMAGE_VIEW;
+}
+template <>
+VkObjectType objType<VkFramebuffer>()
+{
+  return VK_OBJECT_TYPE_FRAMEBUFFER;
 }
 
 void GPUBuffer::Create(WrappedVulkan *driver, VkDevice dev, VkDeviceSize size, uint32_t ringSize,
                        uint32_t flags)
 {
+  RDCASSERT(size > 0 && ringSize > 0, size, ringSize);
+
   m_pDriver = driver;
   device = dev;
   createFlags = flags;
@@ -199,7 +219,7 @@ void GPUBuffer::Create(WrappedVulkan *driver, VkDevice dev, VkDeviceSize size, u
   ringCount = ringSize;
 
   VkBufferCreateInfo bufInfo = {
-      VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, totalsize, 0,
+      VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, driver->DefaultBufferCreateFlags(), totalsize, 0,
   };
 
   bufInfo.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -225,11 +245,13 @@ void GPUBuffer::Create(WrappedVulkan *driver, VkDevice dev, VkDeviceSize size, u
   if(flags & eGPUBufferAddressable)
     bufInfo.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
-  VkResult vkr = driver->vkCreateBuffer(dev, &bufInfo, NULL, &buf);
-  driver->CheckVkResult(vkr);
+  VkResult vkr = ObjDisp(dev)->CreateBuffer(Unwrap(dev), &bufInfo, NULL, &buf);
+  CHECK_VKR(driver, vkr);
+
+  NameUnwrappedVulkanObject(buf, "Unnamed GPUBuffer");
 
   VkMemoryRequirements mrq = {};
-  driver->vkGetBufferMemoryRequirements(dev, buf, &mrq);
+  ObjDisp(dev)->GetBufferMemoryRequirements(Unwrap(dev), buf, &mrq);
 
   VkMemoryAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mrq.size, 0};
 
@@ -249,19 +271,41 @@ void GPUBuffer::Create(WrappedVulkan *driver, VkDevice dev, VkDeviceSize size, u
     memFlags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
   }
 
-  vkr = driver->vkAllocateMemory(dev, &allocInfo, NULL, &mem);
-  driver->CheckVkResult(vkr);
+  if((driver->DefaultBufferCreateFlags() &
+      VK_BUFFER_CREATE_DESCRIPTOR_BUFFER_CAPTURE_REPLAY_BIT_EXT) != 0)
+  {
+    allocInfo.pNext = &memFlags;
+    memFlags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT |
+                     VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT;
+  }
+
+  vkr = ObjDisp(dev)->AllocateMemory(Unwrap(dev), &allocInfo, NULL, &mem);
+  CHECK_VKR(driver, vkr);
 
   if(vkr != VK_SUCCESS)
     return;
 
-  vkr = driver->vkBindBufferMemory(dev, buf, mem, 0);
-  driver->CheckVkResult(vkr);
+  vkr = ObjDisp(dev)->BindBufferMemory(Unwrap(dev), buf, mem, 0);
+  CHECK_VKR(driver, vkr);
+
+  if(useBufferAddressKHR && (flags & eGPUBufferAddressable))
+  {
+    RDCCOMPILE_ASSERT(VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO ==
+                          VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_EXT,
+                      "KHR and EXT buffer_device_address should be interchangeable here.");
+    VkBufferDeviceAddressInfo getAddressInfo = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, NULL,
+                                                buf};
+
+    if(useBufferAddressKHR)
+      addr = ObjDisp(dev)->GetBufferDeviceAddress(Unwrap(dev), &getAddressInfo);
+    else
+      addr = ObjDisp(dev)->GetBufferDeviceAddressEXT(Unwrap(dev), &getAddressInfo);
+  }
 }
 
 void GPUBuffer::FillDescriptor(VkDescriptorBufferInfo &desc)
 {
-  desc.buffer = Unwrap(buf);
+  desc.buffer = buf;
   desc.offset = 0;
   desc.range = sz;
 }
@@ -270,9 +314,15 @@ void GPUBuffer::Destroy()
 {
   if(device != VK_NULL_HANDLE)
   {
-    m_pDriver->vkDestroyBuffer(device, buf, NULL);
-    m_pDriver->vkFreeMemory(device, mem, NULL);
+    ObjDisp(device)->DestroyBuffer(Unwrap(device), buf, NULL);
+    ObjDisp(device)->FreeMemory(Unwrap(device), mem, NULL);
   }
+  addr = 0;
+}
+
+void GPUBuffer::Name(const rdcstr &str)
+{
+  NameUnwrappedVulkanObject(buf, str);
 }
 
 void *GPUBuffer::Map(uint32_t *bindoffset, VkDeviceSize usedsize)
@@ -299,9 +349,21 @@ void *GPUBuffer::Map(uint32_t *bindoffset, VkDeviceSize usedsize)
 
   mapoffset = offset;
 
+  if(mem == VK_NULL_HANDLE)
+  {
+    RDCERR("Manually reporting failed memory map with no memory");
+    CHECK_VKR(m_pDriver, VK_ERROR_MEMORY_MAP_FAILED);
+  }
+
   void *ptr = NULL;
-  VkResult vkr = m_pDriver->vkMapMemory(device, mem, offset, size, 0, (void **)&ptr);
-  m_pDriver->CheckVkResult(vkr);
+  VkResult vkr = ObjDisp(device)->MapMemory(Unwrap(device), mem, offset, size, 0, (void **)&ptr);
+  CHECK_VKR(m_pDriver, vkr);
+
+  if(!ptr)
+  {
+    RDCERR("Manually reporting failed memory map");
+    CHECK_VKR(m_pDriver, VK_ERROR_MEMORY_MAP_FAILED);
+  }
 
   if(createFlags & eGPUBufferReadback)
   {
@@ -309,8 +371,8 @@ void *GPUBuffer::Map(uint32_t *bindoffset, VkDeviceSize usedsize)
         VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, NULL, mem, offset, size,
     };
 
-    vkr = m_pDriver->vkInvalidateMappedMemoryRanges(device, 1, &range);
-    m_pDriver->CheckVkResult(vkr);
+    vkr = ObjDisp(device)->InvalidateMappedMemoryRanges(Unwrap(device), 1, &range);
+    CHECK_VKR(m_pDriver, vkr);
   }
 
   return ptr;
@@ -335,16 +397,68 @@ void GPUBuffer::Unmap()
         VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, NULL, mem, mapoffset, VK_WHOLE_SIZE,
     };
 
-    VkResult vkr = m_pDriver->vkFlushMappedMemoryRanges(device, 1, &range);
-    m_pDriver->CheckVkResult(vkr);
+    VkResult vkr = ObjDisp(device)->FlushMappedMemoryRanges(Unwrap(device), 1, &range);
+    CHECK_VKR(m_pDriver, vkr);
   }
 
-  m_pDriver->vkUnmapMemory(device, mem);
+  ObjDisp(device)->UnmapMemory(Unwrap(device), mem);
+}
+
+void GPUBuffer::WriteDescriptor(VkDescriptorSet unwrappedDescSet, uint32_t destBinding,
+                                uint32_t destArrayElement)
+{
+  // vkUpdateDescriptorSet desc set to point to buffer
+  VkDescriptorBufferInfo desc = {0};
+
+  FillDescriptor(desc);
+
+  VkWriteDescriptorSet write = {
+      VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+      NULL,
+      unwrappedDescSet,
+      destBinding,
+      destArrayElement,
+      1,
+      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+      NULL,
+      &desc,
+      NULL,
+  };
+
+  ObjDisp(device)->UpdateDescriptorSets(Unwrap(device), 1, &write, 0, NULL);
 }
 
 bool VkInitParams::IsSupportedVersion(uint64_t ver)
 {
   if(ver == CurrentVersion)
+    return true;
+
+  // 0x19 -> 0x20 - converted serialised page table to be 64-bit
+  if(ver == 0x19)
+    return true;
+
+  // 0x18 -> 0x19 - added serialised annotations
+  if(ver == 0x18)
+    return true;
+
+  // 0x17 -> 0x18 - added IDs generated at capture time for inline shaders
+  if(ver == 0x17)
+    return true;
+
+  // 0x16 -> 0x17 - added indication of reserved descriptors and descriptor buffer support for swapchains
+  if(ver == 0x16)
+    return true;
+
+  // 0x15 -> 0x16 - added support for acceleration structures
+  if(ver == 0x15)
+    return true;
+
+  // 0x14 -> 0x15 - added support for mutable descriptors
+  if(ver == 0x14)
+    return true;
+
+  // 0x13 -> 0x14 - added missing VkCommandBufferInheritanceRenderingInfo::flags
+  if(ver == 0x13)
     return true;
 
   // 0x12 -> 0x13 - added full sparse resource support
@@ -387,6 +501,13 @@ bool VkInitParams::IsSupportedVersion(uint64_t ver)
   return false;
 }
 
+void SanitiseDescriptorBufferImageLayout(VkImageLayout &layout)
+{
+  // for descriptor buffers we intercept swapchain images so we have to remap present layouts to general
+  if(layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR || layout == VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR)
+    layout = VK_IMAGE_LAYOUT_GENERAL;
+}
+
 void SanitiseReplayImageLayout(VkImageLayout &layout)
 {
   // we don't replay with present layouts since we don't create actual swapchains. So change any
@@ -405,10 +526,14 @@ void SanitiseOldImageLayout(VkImageLayout &layout)
   // we can't transition to PREINITIALIZED, so instead use GENERAL. This allows host access so we
   // can still replay maps of the image's memory. In theory we can still transition from
   // PREINITIALIZED on replay, but consider that we need to be able to reset layouts and suddenly we
-  // have a problem transitioning from PREINITIALIZED more than once - so for that reason we
-  // instantly promote any images that are PREINITIALIZED to GENERAL at the start of the frame
-  // capture, and from then on treat it as the same
+  // have a problem transitioning from PREINITIALIZED more than once.
+  // We lose the PREINITIALIZED layout when initial contents are first applied, and from then on
+  // play pretend and leave it in GENERAL.
   if(layout == VK_IMAGE_LAYOUT_PREINITIALIZED)
+    layout = VK_IMAGE_LAYOUT_GENERAL;
+
+  // same applies to ZERO_INITIALIZED
+  if(layout == VK_IMAGE_LAYOUT_ZERO_INITIALIZED_EXT)
     layout = VK_IMAGE_LAYOUT_GENERAL;
 }
 
@@ -518,6 +643,14 @@ int StageIndex(VkShaderStageFlagBits stageFlag)
     case VK_SHADER_STAGE_GEOMETRY_BIT: return 3;
     case VK_SHADER_STAGE_FRAGMENT_BIT: return 4;
     case VK_SHADER_STAGE_COMPUTE_BIT: return 5;
+    case VK_SHADER_STAGE_TASK_BIT_EXT: return 6;
+    case VK_SHADER_STAGE_MESH_BIT_EXT: return 7;
+    case VK_SHADER_STAGE_RAYGEN_BIT_KHR: return 8;
+    case VK_SHADER_STAGE_INTERSECTION_BIT_KHR: return 9;
+    case VK_SHADER_STAGE_ANY_HIT_BIT_KHR: return 10;
+    case VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR: return 11;
+    case VK_SHADER_STAGE_MISS_BIT_KHR: return 12;
+    case VK_SHADER_STAGE_CALLABLE_BIT_KHR: return 13;
     default: RDCERR("Unrecognised/not single flag %x", stageFlag); break;
   }
 
@@ -533,7 +666,17 @@ VkShaderStageFlags ShaderMaskFromIndex(size_t index)
       VK_SHADER_STAGE_GEOMETRY_BIT,
       VK_SHADER_STAGE_FRAGMENT_BIT,
       VK_SHADER_STAGE_COMPUTE_BIT,
+      VK_SHADER_STAGE_TASK_BIT_EXT,
+      VK_SHADER_STAGE_MESH_BIT_EXT,
+      VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+      VK_SHADER_STAGE_INTERSECTION_BIT_KHR,
+      VK_SHADER_STAGE_ANY_HIT_BIT_KHR,
+      VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+      VK_SHADER_STAGE_MISS_BIT_KHR,
+      VK_SHADER_STAGE_CALLABLE_BIT_KHR,
   };
+
+  RDCCOMPILE_ASSERT(ARRAY_COUNT(mask) == NumShaderStages, "Array is out of date");
 
   if(index < ARRAY_COUNT(mask))
     return mask[index];
@@ -546,31 +689,55 @@ VkShaderStageFlags ShaderMaskFromIndex(size_t index)
 void DoPipelineBarrier(VkCommandBuffer cmd, size_t count, const VkImageMemoryBarrier *barriers)
 {
   RDCASSERT(cmd != VK_NULL_HANDLE);
-  ObjDisp(cmd)->CmdPipelineBarrier(Unwrap(cmd), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0,
-                                   NULL,                          // global memory barriers
-                                   0, NULL,                       // buffer memory barriers
-                                   (uint32_t)count, barriers);    // image memory barriers
+  ObjDisp(cmd)->CmdPipelineBarrier(
+      Unwrap(cmd), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 0,
+      NULL,                          // global memory barriers
+      0, NULL,                       // buffer memory barriers
+      (uint32_t)count, barriers);    // image memory barriers
 }
 
 void DoPipelineBarrier(VkCommandBuffer cmd, size_t count, const VkBufferMemoryBarrier *barriers)
 {
   RDCASSERT(cmd != VK_NULL_HANDLE);
-  ObjDisp(cmd)->CmdPipelineBarrier(Unwrap(cmd), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0,
-                                   NULL,                         // global memory barriers
-                                   (uint32_t)count, barriers,    // buffer memory barriers
-                                   0, NULL);                     // image memory barriers
+  ObjDisp(cmd)->CmdPipelineBarrier(
+      Unwrap(cmd), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 0,
+      NULL,                         // global memory barriers
+      (uint32_t)count, barriers,    // buffer memory barriers
+      0, NULL);                     // image memory barriers
 }
 
 void DoPipelineBarrier(VkCommandBuffer cmd, size_t count, const VkMemoryBarrier *barriers)
 {
   RDCASSERT(cmd != VK_NULL_HANDLE);
-  ObjDisp(cmd)->CmdPipelineBarrier(Unwrap(cmd), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, (uint32_t)count,
-                                   barriers,    // global memory barriers
-                                   0, NULL,     // buffer memory barriers
-                                   0, NULL);    // image memory barriers
+  ObjDisp(cmd)->CmdPipelineBarrier(
+      Unwrap(cmd), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, (uint32_t)count,
+      barriers,    // global memory barriers
+      0, NULL,     // buffer memory barriers
+      0, NULL);    // image memory barriers
+}
+
+VkDescriptorType MakeVkDescriptorType(DescriptorType type, bool inputAttachment)
+{
+  switch(type)
+  {
+    case DescriptorType::Unknown: return VK_DESCRIPTOR_TYPE_MAX_ENUM;
+    case DescriptorType::Buffer: return VK_DESCRIPTOR_TYPE_MAX_ENUM;
+    case DescriptorType::ConstantBuffer: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    case DescriptorType::Sampler: return VK_DESCRIPTOR_TYPE_SAMPLER;
+    case DescriptorType::ImageSampler: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    case DescriptorType::Image:
+      return inputAttachment ? VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    case DescriptorType::TypedBuffer: return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+    case DescriptorType::ReadWriteImage: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    case DescriptorType::ReadWriteTypedBuffer: return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+    case DescriptorType::ReadWriteBuffer: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    case DescriptorType::AccelerationStructure:
+      return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+  }
+  return VK_DESCRIPTOR_TYPE_MAX_ENUM;
 }
 
 Topology MakePrimitiveTopology(VkPrimitiveTopology Topo, uint32_t patchControlPoints)
@@ -848,12 +1015,37 @@ rdcstr HumanDriverName(VkDriverId driverId)
 {
   switch(driverId)
   {
-    case VK_DRIVER_ID_AMD_PROPRIETARY: return "AMD Propriertary";
+    case VK_DRIVER_ID_AMD_PROPRIETARY: return "AMD Proprietary";
     case VK_DRIVER_ID_AMD_OPEN_SOURCE: return "AMD Open-source";
     case VK_DRIVER_ID_MESA_RADV: return "AMD RADV";
-    case VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS: return "Intel Propriertary";
+    case VK_DRIVER_ID_NVIDIA_PROPRIETARY: return "NVIDIA Proprietary";
+    case VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS: return "Intel Proprietary";
     case VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA: return "Intel Open-source";
-    default: break;
+    case VK_DRIVER_ID_IMAGINATION_PROPRIETARY: return "Imagination Proprietary";
+    case VK_DRIVER_ID_QUALCOMM_PROPRIETARY: return "Qualcomm Proprietary";
+    case VK_DRIVER_ID_ARM_PROPRIETARY: return "Arm Proprietary";
+    case VK_DRIVER_ID_GOOGLE_SWIFTSHADER: return "Swiftshader";
+    case VK_DRIVER_ID_GGP_PROPRIETARY: return "GGP Proprietary";
+    case VK_DRIVER_ID_BROADCOM_PROPRIETARY: return "Broadcom Proprietary";
+    case VK_DRIVER_ID_MESA_LLVMPIPE: return "Mesa LLVMPipe";
+    case VK_DRIVER_ID_MOLTENVK: return "MoltenVK";
+    case VK_DRIVER_ID_COREAVI_PROPRIETARY: return "Coreavi Proprietary";
+    case VK_DRIVER_ID_JUICE_PROPRIETARY: return "Juice Proprietary";
+    case VK_DRIVER_ID_VERISILICON_PROPRIETARY: return "Verisilicon Proprietary";
+    case VK_DRIVER_ID_MESA_TURNIP: return "Mesa Turnip";
+    case VK_DRIVER_ID_MESA_V3DV: return "Mesa V3DV";
+    case VK_DRIVER_ID_MESA_PANVK: return "Mesa Panvk";
+    case VK_DRIVER_ID_SAMSUNG_PROPRIETARY: return "Samsung Proprietary";
+    case VK_DRIVER_ID_MESA_VENUS: return "Mesa Venus";
+    case VK_DRIVER_ID_MESA_DOZEN: return "Mesa Dozen";
+    case VK_DRIVER_ID_MESA_NVK: return "Mesa NVK";
+    case VK_DRIVER_ID_IMAGINATION_OPEN_SOURCE_MESA: return "Imagination Open-source";
+    case VK_DRIVER_ID_MESA_HONEYKRISP: return "Mesa Honeykrisp";
+    case VK_DRIVER_ID_VULKAN_SC_EMULATION_ON_VULKAN: return "Vulkan SC Emulation on Vulkan";
+    case VK_DRIVER_ID_MESA_KOSMICKRISP: return "Mesa Kosmickrisp";
+    case VK_DRIVER_ID_MESA_GFXSTREAM: return "Mesa gfxstream";
+    case VK_DRIVER_ID_APE_SOFT: return "Ape Vulkan ICD";
+    case VK_DRIVER_ID_MAX_ENUM: break;
   }
 
   return "";
@@ -874,11 +1066,173 @@ void DoSerialise(SerialiserType &ser, VkInitParams &el)
   SERIALISE_MEMBER(Layers);
   SERIALISE_MEMBER(Extensions).Important();
   SERIALISE_MEMBER(InstanceID).TypedAs("VkInstance"_lit);
+  if(ser.VersionAtLeast(0x17))
+    SERIALISE_MEMBER(DescriptorsReserved);
+  else
+    SERIALISE_MEMBER_EMPTY(DescriptorsReserved);
 }
 
 INSTANTIATE_SERIALISE_TYPE(VkInitParams);
 
-VkDriverInfo::VkDriverInfo(const VkPhysicalDeviceProperties &physProps, bool active)
+void OpaqueDataForSerialising::fill(VkDevice wrappedDevice, VkSampler wrappedSampler,
+                                    VkPhysicalDeviceDescriptorBufferPropertiesEXT &props)
+{
+  VkSamplerCaptureDescriptorDataInfoEXT getInfo = {
+      VK_STRUCTURE_TYPE_SAMPLER_CAPTURE_DESCRIPTOR_DATA_INFO_EXT,
+      NULL,
+      Unwrap(wrappedSampler),
+  };
+
+  sz = props.samplerCaptureReplayDescriptorDataSize;
+
+  VkResult opaqueQuery =
+      ObjDisp(wrappedDevice)
+          ->GetSamplerOpaqueCaptureDescriptorDataEXT(Unwrap(wrappedDevice), &getInfo, data);
+  if(opaqueQuery != VK_SUCCESS)
+    RDCERR("Couldn't get opaque capture/replay data: %s", ToStr(opaqueQuery).c_str());
+}
+
+void OpaqueDataForSerialising::fill(VkDevice wrappedDevice, VkBuffer wrappedBuffer,
+                                    VkPhysicalDeviceDescriptorBufferPropertiesEXT &props)
+{
+  VkBufferCaptureDescriptorDataInfoEXT getInfo = {
+      VK_STRUCTURE_TYPE_BUFFER_CAPTURE_DESCRIPTOR_DATA_INFO_EXT,
+      NULL,
+      Unwrap(wrappedBuffer),
+  };
+
+  sz = props.bufferCaptureReplayDescriptorDataSize;
+
+  VkResult opaqueQuery =
+      ObjDisp(wrappedDevice)
+          ->GetBufferOpaqueCaptureDescriptorDataEXT(Unwrap(wrappedDevice), &getInfo, data);
+  if(opaqueQuery != VK_SUCCESS)
+    RDCERR("Couldn't get opaque capture/replay data: %s", ToStr(opaqueQuery).c_str());
+}
+
+void OpaqueDataForSerialising::fillUnwrapped(VkDevice wrappedDevice, VkImage unwrappedImage,
+                                             VkPhysicalDeviceDescriptorBufferPropertiesEXT &props)
+{
+  VkImageCaptureDescriptorDataInfoEXT getInfo = {
+      VK_STRUCTURE_TYPE_IMAGE_CAPTURE_DESCRIPTOR_DATA_INFO_EXT,
+      NULL,
+      unwrappedImage,
+  };
+
+  sz = props.imageCaptureReplayDescriptorDataSize;
+
+  VkResult opaqueQuery =
+      ObjDisp(wrappedDevice)
+          ->GetImageOpaqueCaptureDescriptorDataEXT(Unwrap(wrappedDevice), &getInfo, data);
+  if(opaqueQuery != VK_SUCCESS)
+    RDCERR("Couldn't get opaque capture/replay data: %s", ToStr(opaqueQuery).c_str());
+}
+
+void OpaqueDataForSerialising::fill(VkDevice wrappedDevice, VkImage wrappedImage,
+                                    VkPhysicalDeviceDescriptorBufferPropertiesEXT &props)
+{
+  VkImageCaptureDescriptorDataInfoEXT getInfo = {
+      VK_STRUCTURE_TYPE_IMAGE_CAPTURE_DESCRIPTOR_DATA_INFO_EXT,
+      NULL,
+      Unwrap(wrappedImage),
+  };
+
+  sz = props.imageCaptureReplayDescriptorDataSize;
+
+  VkResult opaqueQuery =
+      ObjDisp(wrappedDevice)
+          ->GetImageOpaqueCaptureDescriptorDataEXT(Unwrap(wrappedDevice), &getInfo, data);
+  if(opaqueQuery != VK_SUCCESS)
+    RDCERR("Couldn't get opaque capture/replay data: %s", ToStr(opaqueQuery).c_str());
+}
+
+void OpaqueDataForSerialising::fill(VkDevice wrappedDevice, VkImageView wrappedView,
+                                    VkPhysicalDeviceDescriptorBufferPropertiesEXT &props)
+{
+  VkImageViewCaptureDescriptorDataInfoEXT getInfo = {
+      VK_STRUCTURE_TYPE_IMAGE_VIEW_CAPTURE_DESCRIPTOR_DATA_INFO_EXT,
+      NULL,
+      Unwrap(wrappedView),
+  };
+
+  sz = props.imageViewCaptureReplayDescriptorDataSize;
+
+  VkResult opaqueQuery =
+      ObjDisp(wrappedDevice)
+          ->GetImageViewOpaqueCaptureDescriptorDataEXT(Unwrap(wrappedDevice), &getInfo, data);
+  if(opaqueQuery != VK_SUCCESS)
+    RDCERR("Couldn't get opaque capture/replay data: %s", ToStr(opaqueQuery).c_str());
+}
+
+void OpaqueDataForSerialising::fill(VkDevice wrappedDevice, VkAccelerationStructureKHR wrappedAS,
+                                    VkPhysicalDeviceDescriptorBufferPropertiesEXT &props)
+{
+  VkAccelerationStructureCaptureDescriptorDataInfoEXT getInfo = {
+      VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CAPTURE_DESCRIPTOR_DATA_INFO_EXT,
+      NULL,
+      Unwrap(wrappedAS),
+  };
+
+  sz = props.accelerationStructureCaptureReplayDescriptorDataSize;
+
+  VkResult opaqueQuery = ObjDisp(wrappedDevice)
+                             ->GetAccelerationStructureOpaqueCaptureDescriptorDataEXT(
+                                 Unwrap(wrappedDevice), &getInfo, data);
+  if(opaqueQuery != VK_SUCCESS)
+    RDCERR("Couldn't get opaque capture/replay data: %s", ToStr(opaqueQuery).c_str());
+}
+
+void OpaqueDataForSerialising::addForSerialising(VkBaseInStructure *serialisedCreateInfo)
+{
+  VkOpaqueCaptureDescriptorDataCreateInfoEXT *existing =
+      (VkOpaqueCaptureDescriptorDataCreateInfoEXT *)FindNextStruct(
+          serialisedCreateInfo, VK_STRUCTURE_TYPE_OPAQUE_CAPTURE_DESCRIPTOR_DATA_CREATE_INFO_EXT);
+
+  if(existing)
+  {
+    RDCASSERT(memcmp(data, existing->opaqueCaptureDescriptorData, sz) == 0);
+  }
+  else
+  {
+    pNext = serialisedCreateInfo->pNext;
+    serialisedCreateInfo->pNext = (VkBaseInStructure *)this;
+  }
+}
+
+void GetPhysicalDeviceDriverProperties(VkInstDispatchTable *instDispatchTable,
+                                       VkPhysicalDevice unwrappedPhysicalDevice,
+                                       VkPhysicalDeviceDriverProperties &driverProps)
+{
+  uint32_t count = 0;
+  instDispatchTable->EnumerateDeviceExtensionProperties(unwrappedPhysicalDevice, NULL, &count, NULL);
+
+  VkExtensionProperties *props = new VkExtensionProperties[count];
+  instDispatchTable->EnumerateDeviceExtensionProperties(unwrappedPhysicalDevice, NULL, &count, props);
+
+  RDCEraseEl(driverProps);
+  driverProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+
+  for(uint32_t e = 0; e < count; e++)
+  {
+    // GPDP2 must be available if the driver properties extension is, and we always enable it if
+    // available, so we can unconditionally query here
+    if(!strcmp(props[e].extensionName, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME))
+    {
+      VkPhysicalDeviceProperties2 physProps2 = {
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+      };
+
+      physProps2.pNext = &driverProps;
+      instDispatchTable->GetPhysicalDeviceProperties2(unwrappedPhysicalDevice, &physProps2);
+      break;
+    }
+  }
+
+  SAFE_DELETE_ARRAY(props);
+}
+
+VkDriverInfo::VkDriverInfo(const VkPhysicalDeviceProperties &physProps,
+                           const VkPhysicalDeviceDriverProperties &origDriverProps, bool active)
 {
   m_Vendor = GPUVendorFromPCIVendor(physProps.vendorID);
 
@@ -894,18 +1248,63 @@ VkDriverInfo::VkDriverInfo(const VkPhysicalDeviceProperties &physProps, bool act
   if(physProps.vendorID == VK_VENDOR_ID_MESA)
     m_Vendor = GPUVendor::Software;
 
-  m_Major = VK_VERSION_MAJOR(physProps.driverVersion);
-  m_Minor = VK_VERSION_MINOR(physProps.driverVersion);
-  m_Patch = VK_VERSION_PATCH(physProps.driverVersion);
+  // take a copy so we can patch the driverID
+  VkPhysicalDeviceDriverProperties driverProps = origDriverProps;
 
+  switch(driverProps.driverID)
+  {
+    case VK_DRIVER_ID_GOOGLE_SWIFTSHADER:
+    case VK_DRIVER_ID_MESA_LLVMPIPE: m_Vendor = GPUVendor::Software; break;
+    case VK_DRIVER_ID_MOLTENVK: metalBackend = true;
+    default: break;
+  }
+
+// true by definition
 #if ENABLED(RDOC_APPLE)
   metalBackend = true;
 #endif
 
-  // nvidia uses its own version packing:
+  // guess driver by OS & vendor, if we don't have a driver ID. This is mostly for cases where only
+  // the proprietary driver exists
+  if(driverProps.driverID == 0)
+  {
+    RDCWARN("Estimating driver based on OS & vendor ID - may be inaccurate");
+    switch(m_Vendor)
+    {
+#if ENABLED(RDOC_WIN32)
+      case GPUVendor::AMD:
+      case GPUVendor::Samsung: driverProps.driverID = VK_DRIVER_ID_AMD_PROPRIETARY; break;
+#elif ENABLED(RDOC_LINUX)
+      // this could be radv, but we expect radv to provide the driverID
+      case GPUVendor::AMD:
+      case GPUVendor::Samsung: driverProps.driverID = VK_DRIVER_ID_AMD_OPEN_SOURCE; break;
+#endif
+
+#if ENABLED(RDOC_WIN32)
+      case GPUVendor::Intel: driverProps.driverID = VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS; break;
+#elif ENABLED(RDOC_LINUX)
+      case GPUVendor::Intel: driverProps.driverID = VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA; break;
+#endif
+
+      case GPUVendor::nVidia: driverProps.driverID = VK_DRIVER_ID_NVIDIA_PROPRIETARY; break;
+      case GPUVendor::Qualcomm: driverProps.driverID = VK_DRIVER_ID_QUALCOMM_PROPRIETARY; break;
+      case GPUVendor::ARM: driverProps.driverID = VK_DRIVER_ID_ARM_PROPRIETARY; break;
+      case GPUVendor::Imagination:
+        driverProps.driverID = VK_DRIVER_ID_IMAGINATION_PROPRIETARY;
+        break;
+      case GPUVendor::Broadcom: driverProps.driverID = VK_DRIVER_ID_BROADCOM_PROPRIETARY; break;
+      default: break;
+    }
+  }
+
+  m_Major = VK_VERSION_MAJOR(physProps.driverVersion);
+  m_Minor = VK_VERSION_MINOR(physProps.driverVersion);
+  m_Patch = VK_VERSION_PATCH(physProps.driverVersion);
+
+  // nvidia proprietary uses its own version packing:
   //   10 |  8  |        8       |       6
   // major|minor|secondary_branch|tertiary_branch
-  if(m_Vendor == GPUVendor::nVidia)
+  if(driverProps.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
   {
     m_Major = ((uint32_t)(physProps.driverVersion) >> (8 + 8 + 6)) & 0x3ff;
     m_Minor = ((uint32_t)(physProps.driverVersion) >> (8 + 6)) & 0x0ff;
@@ -916,19 +1315,17 @@ VkDriverInfo::VkDriverInfo(const VkPhysicalDeviceProperties &physProps, bool act
     m_Patch = (secondary << 8) | tertiary;
   }
 
-#if ENABLED(RDOC_WIN32)
-  // Ditto for Intel on windows
+  // Ditto for Intel proprietary
   //  18  | 14
   // major|minor
-  if(m_Vendor == GPUVendor::Intel)
+  if(driverProps.driverID == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS)
   {
-    m_Major = ((uint32_t)(physProps.driverVersion) >> 14) & 0xffffc;
+    m_Major = ((uint32_t)(physProps.driverVersion) >> 14) & 0x3fff;
     m_Minor = (uint32_t)(physProps.driverVersion) & 0x3fff;
     m_Patch = 0;
   }
-#endif
 
-  if(m_Vendor == GPUVendor::nVidia)
+  if(driverProps.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
   {
     // drivers before 372.54 did not handle a glslang bugfix about separated samplers,
     // and disabling texelFetch works as a workaround.
@@ -939,13 +1336,51 @@ VkDriverInfo::VkDriverInfo(const VkPhysicalDeviceProperties &physProps, bool act
         RDCLOG("Enabling NV texel fetch workaround - update to a newer driver for fix");
       texelFetchBrokenDriver = true;
     }
+
+    // this isn't exactly when the root problem started happening, but it is when it started
+    // happening in a way that was easy to notice. In this version NV applied a optimisation
+    // to not re-set static pipeline state when a renderpass was begun, which was previously
+    // hiding the issue by conservatively re-setting the state.
+    // This was likely fixed much earlier than version 591, but it wasn't checked before then (and
+    // the workaround is very cheap)
+    if(Major() > 532 && Major() < 591)
+    {
+      if(active)
+        RDCLOG(
+            "Enabling NV workaround for static pipeline force-bind to preserve state - update to a "
+            "newer driver for fix");
+      nvidiaStaticPipelineRebindStates = true;
+    }
+
+#if ENABLED(RDOC_WIN32)
+    // this is fixed in a windows version but we can't easily query that, but there is a
+    // driver-based workaround. Before this version we apply the workaround ourselves
+    if(Major() < 591)
+    {
+      if(active)
+        RDCLOG(
+            "Enabling NV workaround for unaligned BDA memory capture/replay - update to a "
+            "newer driver for fix");
+      nvidiaUnalignedBDAIssue = true;
+    }
+#endif
+
+    // this was found in the initial implementation, if mesh output is fetched and a user descriptor
+    // set has no vertex bindings at all (and they're not also compute bindings) then a descriptor
+    // set layout devoid of any compute bindings being bound causes problems. To fix this we set one
+    // binding visible to all stages in every descriptor set layout.
+    if(Major() < 591)
+    {
+      if(active)
+        RDCLOG(
+            "Enabling NV workaround for descriptor buffers to preserve compute bindings - update "
+            "to a newer driver for fix");
+      nvidiaDescriptorBufferExtraBinding = true;
+    }
   }
 
-// only check this on windows. This is a bit of a hack, as really we want to check if we're
-// using the AMD official driver, but there's not a great other way to distinguish it from
-// the RADV open source driver.
-#if ENABLED(RDOC_WIN32)
-  if(m_Vendor == GPUVendor::AMD)
+  if(driverProps.driverID == VK_DRIVER_ID_AMD_PROPRIETARY ||
+     driverProps.driverID == VK_DRIVER_ID_AMD_OPEN_SOURCE)
   {
     // for AMD the bugfix version isn't clear as version numbering wasn't strong for a while, but
     // any driver that reports a version of >= 1.0.0 is fine, as previous versions all reported
@@ -983,11 +1418,8 @@ VkDriverInfo::VkDriverInfo(const VkPhysicalDeviceProperties &physProps, bool act
       bdaBrokenDriver = true;
     }
   }
-#endif
 
-// Intel windows workarounds
-#if ENABLED(RDOC_WIN32)
-  if(m_Vendor == GPUVendor::Intel)
+  if(driverProps.driverID == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS)
   {
     // buffer device address doesn't work well on older drivers, even using it internally we get
     // VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS thrown when creating multiple buffers, even though we
@@ -1000,100 +1432,196 @@ VkDriverInfo::VkDriverInfo(const VkPhysicalDeviceProperties &physProps, bool act
         RDCLOG("Disabling buffer_device_address on Intel - update to a newer driver for fix");
       bdaBrokenDriver = true;
     }
-  }
-#endif
 
-  if(m_Vendor == GPUVendor::Qualcomm)
+    // Currently unfixed at the time of writing, Intel's drivers require manually inserted
+    // side-effects for occlusion queries to function properly if there are no other effects from a
+    // pixel shader.
+    // Only affects windows drivers, linux drivers are unaffected.
+    intelBrokenOcclusionQueries = true;
+  }
+
+  if(driverProps.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY)
   {
     if(active)
       RDCLOG("Enabling Qualcomm driver workarounds");
 
     // not fixed yet that I know of, or unknown driver with fixes
-    qualcommLeakingUBOOffsets = true;
     qualcommDrefNon2DCompileCrash = true;
     qualcommLineWidthCrash = true;
-    bdaBrokenDriver = true;
+    qualcommBrokenOpaqueCaptureAddress = true;
+
+    // KHR_buffer_device_address has been tested on 622 (Quest2)
+    // UBO dynamic offset leak has been fixed in early 2020, 622 tested.
+    if(physProps.driverVersion < VK_MAKE_VERSION(512, 622, 0))
+    {
+      bdaBrokenDriver = true;
+      qualcommLeakingUBOOffsets = true;
+    }
+  }
+
+  if(driverProps.driverID == VK_DRIVER_ID_ARM_PROPRIETARY)
+  {
+    if(Major() >= 36 && Major() < 43)
+    {
+      if(active)
+        RDCLOG(
+            "Using host acceleration structure deserialisation commands on Mali - update to a "
+            "newer driver for fix");
+      maliBrokenASDeviceSerialisation = true;
+    }
   }
 }
 
-FrameRefType GetRefType(VkDescriptorType descType)
+FrameRefType GetRefType(DescriptorSlotType descType)
 {
   switch(descType)
   {
-    case VK_DESCRIPTOR_TYPE_SAMPLER:
-    case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-    case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT:
-    case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-    case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: return eFrameRef_Read;
-    case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-    case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: return eFrameRef_ReadBeforeWrite;
+    case DescriptorSlotType::Unwritten:
+    case DescriptorSlotType::Sampler:
+    case DescriptorSlotType::CombinedImageSampler:
+    case DescriptorSlotType::SampledImage:
+    case DescriptorSlotType::UniformTexelBuffer:
+    case DescriptorSlotType::UniformBuffer:
+    case DescriptorSlotType::UniformBufferDynamic:
+    case DescriptorSlotType::InputAttachment:
+    case DescriptorSlotType::InlineBlock:
+    case DescriptorSlotType::AccelerationStructure: return eFrameRef_Read;
+    case DescriptorSlotType::StorageImage:
+    case DescriptorSlotType::StorageTexelBuffer:
+    case DescriptorSlotType::StorageBuffer:
+    case DescriptorSlotType::StorageBufferDynamic: return eFrameRef_ReadBeforeWrite;
     default: RDCERR("Unexpected descriptor type");
   }
 
   return eFrameRef_Read;
 }
 
-bool IsValid(bool allowNULLDescriptors, const VkWriteDescriptorSet &write, uint32_t arrayElement)
+void DescriptorSetSlot::SetBuffer(VkDescriptorType writeType, const VkDescriptorBufferInfo &bufInfo)
 {
-  if(write.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT)
-    return true;
-
-  // this makes assumptions that only hold within the context of Serialise_InitialState below,
-  // specifically that if pTexelBufferView/pBufferInfo is set then we are using them. In the general
-  // case they can be garbage and we must ignore them based on the descriptorType
-
-  if(write.pTexelBufferView)
-    return allowNULLDescriptors ? true : write.pTexelBufferView[arrayElement] != VK_NULL_HANDLE;
-
-  if(write.pBufferInfo)
-    return allowNULLDescriptors ? true : write.pBufferInfo[arrayElement].buffer != VK_NULL_HANDLE;
-
-  if(write.pImageInfo)
-  {
-    // only these two types need samplers
-    bool needSampler = (write.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER ||
-                        write.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-
-    // but all types that aren't just a sampler need an image
-    bool needImage = (write.descriptorType != VK_DESCRIPTOR_TYPE_SAMPLER);
-
-    if(allowNULLDescriptors)
-      needImage = false;
-
-    if(needSampler && write.pImageInfo[arrayElement].sampler == VK_NULL_HANDLE)
-      return false;
-
-    if(needImage && write.pImageInfo[arrayElement].imageView == VK_NULL_HANDLE)
-      return false;
-
-    return true;
-  }
-
-  RDCERR("Encountered VkWriteDescriptorSet with no data!");
-
-  return false;
-}
-
-void DescriptorSetSlotBufferInfo::SetFrom(const VkDescriptorBufferInfo &bufInfo)
-{
-  buffer = GetResID(bufInfo.buffer);
+  type = convert(writeType);
+  resource = GetResID(bufInfo.buffer);
   offset = bufInfo.offset;
   range = bufInfo.range;
+  if(bufInfo.range > VK_WHOLE_SIZE)
+    RDCWARN("Unrepresentable buffer range size: %llx", bufInfo.range);
 }
 
-void DescriptorSetSlotImageInfo::SetFrom(const VkDescriptorImageInfo &imInfo, bool setSampler,
-                                         bool setImageView)
+void DescriptorSetSlot::SetImage(VkDescriptorType writeType, const VkDescriptorImageInfo &imInfo,
+                                 bool useSampler)
 {
-  if(setSampler)
+  type = convert(writeType);
+  if(useSampler &&
+     (type == DescriptorSlotType::CombinedImageSampler || type == DescriptorSlotType::Sampler))
     sampler = GetResID(imInfo.sampler);
-  if(setImageView)
-    imageView = GetResID(imInfo.imageView);
-  imageLayout = imInfo.imageLayout;
+  if(type != DescriptorSlotType::Sampler)
+    resource = GetResID(imInfo.imageView);
+  imageLayoutOrFormat = convert(imInfo.imageLayout);
+}
+
+void DescriptorSetSlot::SetTexelBuffer(VkDescriptorType writeType, ResourceId id)
+{
+  type = convert(writeType);
+  resource = id;
+  imageLayoutOrFormat = DescriptorSlotImageLayout::Undefined;
+}
+
+void DescriptorSetSlot::SetAccelerationStructure(VkDescriptorType writeType,
+                                                 VkAccelerationStructureKHR accelerationStructure)
+{
+  type = convert(writeType);
+  resource = GetResID(accelerationStructure);
+}
+
+void DescriptorSetSlot::SetSampler(ResourceId samplerId)
+{
+  type = DescriptorSlotType::Sampler;
+  sampler = samplerId;
+}
+
+void DescriptorSetSlot::SetImageSampler(VkDescriptorType descType, ResourceId imageView,
+                                        ResourceId samplerId, VkImageLayout layout)
+{
+  type = convert(descType);
+  resource = imageView;
+  sampler = samplerId;
+  imageLayoutOrFormat = convert(layout);
+}
+
+void DescriptorSetSlot::SetBuffer(VkDescriptorType descType, ResourceId buffer,
+                                  uint64_t startOffset, uint64_t size, VkFormat format)
+{
+  type = convert(descType);
+  resource = buffer;
+  offset = startOffset;
+  range = size;
+  imageLayoutOrFormat = DescriptorSlotImageLayout(format & 0xff);
+  RDCASSERT(uint32_t(format) < 0xff, format);
+}
+
+void DescriptorSetSlot::SetDescriptor(WrappedVulkan *driver, const VkDescriptorGetInfoEXT &desc)
+{
+  type = convert(desc.type);
+  switch(desc.type)
+  {
+    case VK_DESCRIPTOR_TYPE_SAMPLER:
+    {
+      sampler = desc.data.pSampler ? GetResID(*desc.data.pSampler) : ResourceId();
+      break;
+    }
+    case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      // ignore the sampler part
+    case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+    case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+    {
+      // sampled/storage/input attachment are identical in the union. Since the type forms part of
+      // our this logic can be done in common
+      if(desc.data.pCombinedImageSampler)
+      {
+        resource = GetResID(desc.data.pCombinedImageSampler->imageView);
+        sampler = GetResID(desc.data.pCombinedImageSampler->sampler);
+        imageLayoutOrFormat = convert(desc.data.pCombinedImageSampler->imageLayout);
+      }
+      break;
+    }
+    case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+    case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+    {
+      // uniform/storage are identical in the union. Since the type forms part of our this
+      // logic can be done in common
+      if(desc.data.pUniformBuffer)
+      {
+        ResourceId id;
+        driver->GetResIDFromAddr(desc.data.pUniformBuffer->address, resource, offset);
+        range = desc.data.pUniformBuffer->range;
+        // we only expect texel buffers with the simple formats that come from vulkan base which are less than 256
+        imageLayoutOrFormat = DescriptorSlotImageLayout(desc.data.pUniformTexelBuffer->format & 0xff);
+        RDCASSERT(uint32_t(desc.data.pUniformTexelBuffer->format) < 0xff,
+                  desc.data.pUniformTexelBuffer->format);
+      }
+      break;
+    }
+    case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+    {
+      if(desc.data.accelerationStructure)
+        resource = driver->GetASFromAddr(desc.data.accelerationStructure);
+      break;
+    }
+    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+    case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
+    case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV:
+    case VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM:
+    case VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM:
+    case VK_DESCRIPTOR_TYPE_MUTABLE_EXT:
+    case VK_DESCRIPTOR_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_NV:
+    case VK_DESCRIPTOR_TYPE_TENSOR_ARM:
+    case VK_DESCRIPTOR_TYPE_MAX_ENUM:
+      RDCERR("Invalid descriptor type passed to vkGetDescriptorEXT");
+      break;
+  }
 }
 
 void AddBindFrameRef(DescriptorBindRefs &refs, ResourceId id, FrameRefType ref)
@@ -1142,17 +1670,37 @@ void AddMemFrameRef(DescriptorBindRefs &refs, ResourceId mem, VkDeviceSize offse
   p = ComposeFrameRefsDisjoint(p, maxRef);
 }
 
-void DescriptorSetSlot::AccumulateBindRefs(DescriptorBindRefs &refs, VulkanResourceManager *rm,
-                                           FrameRefType ref) const
+void DescriptorSetSlot::AccumulateBindRefs(DescriptorBindRefs &refs, VulkanResourceManager *rm) const
 {
-  VkResourceRecord *bufView = NULL, *imgView = NULL, *buffer = NULL;
+  RDCCOMPILE_ASSERT(uint64_t(DescriptorSlotImageLayout::Count) <= 0xff,
+                    "DescriptorSlotImageLayout is no longer 8-bit");
+  RDCCOMPILE_ASSERT(uint64_t(DescriptorSlotType::Count) <= 0xff,
+                    "DescriptorSlotType is no longer 8-bit");
+  RDCCOMPILE_ASSERT(sizeof(DescriptorSetSlot) == 32, "DescriptorSetSlot is no longer 32 bytes");
+  RDCCOMPILE_ASSERT(offsetof(DescriptorSetSlot, offset) == 8,
+                    "DescriptorSetSlot first uint64_t bitpacking isn't working as expected");
 
-  if(texelBufferView != ResourceId())
-    bufView = rm->GetResourceRecord(texelBufferView);
-  if(imageInfo.imageView != ResourceId())
-    imgView = rm->GetResourceRecord(imageInfo.imageView);
-  if(bufferInfo.buffer != ResourceId())
-    buffer = rm->GetResourceRecord(bufferInfo.buffer);
+  VkResourceRecord *bufView = NULL, *imgView = NULL, *buffer = NULL, *accStruct = NULL;
+
+  switch(type)
+  {
+    case DescriptorSlotType::UniformTexelBuffer:
+    case DescriptorSlotType::StorageTexelBuffer: bufView = rm->GetResourceRecord(resource); break;
+    case DescriptorSlotType::StorageBuffer:
+    case DescriptorSlotType::StorageBufferDynamic:
+    case DescriptorSlotType::UniformBuffer:
+    case DescriptorSlotType::UniformBufferDynamic: buffer = rm->GetResourceRecord(resource); break;
+    case DescriptorSlotType::CombinedImageSampler:
+    case DescriptorSlotType::SampledImage:
+    case DescriptorSlotType::StorageImage:
+    case DescriptorSlotType::InputAttachment: imgView = rm->GetResourceRecord(resource); break;
+    case DescriptorSlotType::AccelerationStructure:
+      accStruct = rm->GetResourceRecord(resource);
+      break;
+    default: break;
+  }
+
+  FrameRefType ref = GetRefType(type);
 
   if(bufView)
   {
@@ -1170,13 +1718,13 @@ void DescriptorSetSlot::AccumulateBindRefs(DescriptorBindRefs &refs, VulkanResou
   {
     AddImgFrameRef(refs, imgView, ref);
   }
-  if(imageInfo.sampler != ResourceId())
+  if(sampler != ResourceId())
   {
-    AddBindFrameRef(refs, imageInfo.sampler, eFrameRef_Read);
+    AddBindFrameRef(refs, sampler, eFrameRef_Read);
   }
   if(buffer)
   {
-    AddBindFrameRef(refs, bufferInfo.buffer, eFrameRef_Read);
+    AddBindFrameRef(refs, resource, eFrameRef_Read);
     if(buffer->resInfo && buffer->resInfo->IsSparse())
       refs.sparseRefs.insert(buffer);
     if(buffer->baseResource != ResourceId())
@@ -1184,6 +1732,143 @@ void DescriptorSetSlot::AccumulateBindRefs(DescriptorBindRefs &refs, VulkanResou
     if(buffer->storable)
       refs.storableRefs.insert(buffer);
   }
+  if(accStruct)
+  {
+    AddBindFrameRef(refs, resource, eFrameRef_Read);
+  }
+}
+
+uint32_t DescriptorDataSize(const VkPhysicalDeviceDescriptorBufferPropertiesEXT &descSizes,
+                            VkDescriptorType type)
+{
+  size_t ret = 0;
+
+  switch(type)
+  {
+    case VK_DESCRIPTOR_TYPE_SAMPLER: ret = descSizes.samplerDescriptorSize; break;
+    case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      ret = descSizes.combinedImageSamplerDescriptorSize;
+      break;
+    case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: ret = descSizes.inputAttachmentDescriptorSize; break;
+    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE: ret = descSizes.sampledImageDescriptorSize; break;
+    case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: ret = descSizes.storageImageDescriptorSize; break;
+    case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+      ret = descSizes.uniformTexelBufferDescriptorSize;
+      break;
+    case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+      ret = descSizes.storageTexelBufferDescriptorSize;
+      break;
+    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER: ret = descSizes.uniformBufferDescriptorSize; break;
+    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: ret = descSizes.storageBufferDescriptorSize; break;
+    case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+      ret = descSizes.accelerationStructureDescriptorSize;
+      break;
+    default: break;
+  }
+
+  return (uint32_t)ret;
+}
+
+void DynamicRenderingLocalRead::Init(const VkBaseInStructure *infoStruct)
+{
+  const VkRenderingAttachmentLocationInfo *attachmentLocationInfo =
+      (const VkRenderingAttachmentLocationInfo *)FindNextStruct(
+          infoStruct, VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO);
+  if(attachmentLocationInfo != NULL)
+  {
+    UpdateLocations(*attachmentLocationInfo);
+  }
+
+  const VkRenderingInputAttachmentIndexInfo *inputAttachmentIndexInfo =
+      (const VkRenderingInputAttachmentIndexInfo *)FindNextStruct(
+          infoStruct, VK_STRUCTURE_TYPE_RENDERING_INPUT_ATTACHMENT_INDEX_INFO);
+  if(inputAttachmentIndexInfo != NULL)
+  {
+    UpdateInputIndices(*inputAttachmentIndexInfo);
+  }
+}
+
+void DynamicRenderingLocalRead::UpdateLocations(
+    const VkRenderingAttachmentLocationInfo &attachmentLocationInfo)
+{
+  // If NULL is given, an identity mapping is assumed.  This is indicated by an empty
+  // array.  This works out because not providing VkRenderingAttachmentLocationInfo has the
+  // same meaning.
+  if(attachmentLocationInfo.pColorAttachmentLocations == NULL)
+  {
+    colorAttachmentLocations.clear();
+  }
+  else
+  {
+    colorAttachmentLocations.assign(attachmentLocationInfo.pColorAttachmentLocations,
+                                    attachmentLocationInfo.colorAttachmentCount);
+  }
+}
+
+void DynamicRenderingLocalRead::UpdateInputIndices(
+    const VkRenderingInputAttachmentIndexInfo &inputAttachmentIndexInfo)
+{
+  // If NULL is given, an identity mapping is assumed.  This is indicated by an empty
+  // array.  This works out because not providing VkRenderingInputAttachmentIndexInfo has the
+  // same meaning.
+  if(inputAttachmentIndexInfo.pColorAttachmentInputIndices == NULL)
+  {
+    colorAttachmentInputIndices.clear();
+  }
+  else
+  {
+    colorAttachmentInputIndices.assign(inputAttachmentIndexInfo.pColorAttachmentInputIndices,
+                                       inputAttachmentIndexInfo.colorAttachmentCount);
+  }
+  isDepthInputAttachmentIndexImplicit = inputAttachmentIndexInfo.pDepthInputAttachmentIndex == NULL;
+  isStencilInputAttachmentIndexImplicit =
+      inputAttachmentIndexInfo.pStencilInputAttachmentIndex == NULL;
+  if(!isDepthInputAttachmentIndexImplicit)
+  {
+    depthInputAttachmentIndex = *inputAttachmentIndexInfo.pDepthInputAttachmentIndex;
+  }
+  if(!isStencilInputAttachmentIndexImplicit)
+  {
+    stencilInputAttachmentIndex = *inputAttachmentIndexInfo.pStencilInputAttachmentIndex;
+  }
+}
+
+void DynamicRenderingLocalRead::CopyLocations(const DynamicRenderingLocalRead &from)
+{
+  colorAttachmentLocations = from.colorAttachmentLocations;
+}
+
+void DynamicRenderingLocalRead::CopyInputIndices(const DynamicRenderingLocalRead &from)
+{
+  colorAttachmentInputIndices = from.colorAttachmentInputIndices;
+  isDepthInputAttachmentIndexImplicit = from.isDepthInputAttachmentIndexImplicit;
+  isStencilInputAttachmentIndexImplicit = from.isStencilInputAttachmentIndexImplicit;
+  depthInputAttachmentIndex = from.depthInputAttachmentIndex;
+  stencilInputAttachmentIndex = from.stencilInputAttachmentIndex;
+}
+
+void DynamicRenderingLocalRead::SetLocations(VkCommandBuffer cmd)
+{
+  VkRenderingAttachmentLocationInfo attachmentLocations = {};
+  attachmentLocations.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO;
+  attachmentLocations.colorAttachmentCount = colorAttachmentLocations.count();
+  attachmentLocations.pColorAttachmentLocations = colorAttachmentLocations.data();
+
+  ObjDisp(cmd)->CmdSetRenderingAttachmentLocations(Unwrap(cmd), &attachmentLocations);
+}
+
+void DynamicRenderingLocalRead::SetInputIndices(VkCommandBuffer cmd)
+{
+  VkRenderingInputAttachmentIndexInfo inputIndices = {};
+  inputIndices.sType = VK_STRUCTURE_TYPE_RENDERING_INPUT_ATTACHMENT_INDEX_INFO;
+  inputIndices.colorAttachmentCount = colorAttachmentInputIndices.count();
+  inputIndices.pColorAttachmentInputIndices = colorAttachmentInputIndices.data();
+  inputIndices.pDepthInputAttachmentIndex =
+      isDepthInputAttachmentIndexImplicit ? NULL : &depthInputAttachmentIndex;
+  inputIndices.pStencilInputAttachmentIndex =
+      isStencilInputAttachmentIndexImplicit ? NULL : &stencilInputAttachmentIndex;
+
+  ObjDisp(cmd)->CmdSetRenderingInputAttachmentIndices(Unwrap(cmd), &inputIndices);
 }
 
 #if ENABLED(ENABLE_UNIT_TESTS)
@@ -1196,6 +1881,10 @@ void DescriptorSetSlot::AccumulateBindRefs(DescriptorBindRefs &refs, VulkanResou
 bool operator==(const VkImageMemoryBarrier &a, const VkImageMemoryBarrier &b)
 {
   return memcmp(&a, &b, sizeof(VkImageMemoryBarrier)) == 0;
+}
+bool operator<(const VkImageMemoryBarrier &a, const VkImageMemoryBarrier &b)
+{
+  return memcmp(&a, &b, sizeof(VkImageMemoryBarrier)) < 0;
 }
 
 TEST_CASE("Validate CombineDepthStencilLayouts works", "[vulkan]")
@@ -1321,12 +2010,12 @@ TEST_CASE("Validate CombineDepthStencilLayouts works", "[vulkan]")
 
     // could merge, but different layouts
     b.image = imga;
-    b.oldLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL_KHR;
+    b.oldLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
     b.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 2, 0, 1};
     barriers.push_back(b);
 
     b.image = imgb;
-    b.oldLayout = VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL_KHR;
+    b.oldLayout = VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL;
     b.subresourceRange = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 2, 0, 1};
     barriers.push_back(b);
 
@@ -1338,12 +2027,12 @@ TEST_CASE("Validate CombineDepthStencilLayouts works", "[vulkan]")
     barriers.clear();
 
     b.image = imga;
-    b.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL_KHR;
+    b.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
     b.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 2, 0, 1};
     barriers.push_back(b);
 
     b.image = imgb;
-    b.newLayout = VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL_KHR;
+    b.newLayout = VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL;
     b.subresourceRange = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 2, 0, 1};
     barriers.push_back(b);
 

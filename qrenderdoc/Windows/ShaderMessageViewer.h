@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2021 Baldur Karlsson
+ * Copyright (c) 2021-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,29 +28,12 @@
 #include <QStyledItemDelegate>
 #include "Code/Interface/QRDInterface.h"
 
+class ButtonDelegate;
+
 namespace Ui
 {
 class ShaderMessageViewer;
 }
-
-class ButtonDelegate : public QStyledItemDelegate
-{
-private:
-  Q_OBJECT
-
-  QModelIndex m_ClickedIndex;
-  QIcon m_Icon;
-
-public:
-  ButtonDelegate(const QIcon &icon, QWidget *parent);
-  void paint(QPainter *painter, const QStyleOptionViewItem &option,
-             const QModelIndex &index) const override;
-  QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override;
-  bool editorEvent(QEvent *event, QAbstractItemModel *model, const QStyleOptionViewItem &option,
-                   const QModelIndex &index) override;
-signals:
-  void messageClicked(const QModelIndex &index);
-};
 
 class ShaderMessageViewer : public QFrame, public IShaderMessageViewer, public ICaptureViewer
 {
@@ -88,11 +71,14 @@ private:
 
   bool m_Multiview = false, m_Multisampled = false;
 
+  int m_ResourceCacheID = -1;
+
   GraphicsAPI m_API;
   uint32_t m_EID;
   const ActionDescription *m_Action;
   rdcarray<ShaderMessage> m_Messages;
 
-  ResourceId m_OrigShaders[6];
-  ResourceId m_ReplacedShaders[6];
+  ShaderStage m_LayoutStage;
+  ResourceId m_OrigShaders[NumShaderStages];
+  ResourceId m_ReplacedShaders[NumShaderStages];
 };

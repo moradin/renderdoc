@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -35,7 +35,7 @@
 
 // we need to use the most-derived native interface all over the place. To make things easier when
 // new versions come out we typedef it here when we don't need the specific interface
-using ID3D12GraphicsCommandListX = ID3D12GraphicsCommandList6;
+using ID3D12GraphicsCommandListX = ID3D12GraphicsCommandList10;
 
 // replay only class for handling marker regions
 struct D3D12MarkerRegion
@@ -56,11 +56,23 @@ struct D3D12MarkerRegion
   ID3D12CommandQueue *queue = NULL;
 };
 
-bool EnableD3D12DebugLayer(PFN_D3D12_GET_DEBUG_INTERFACE getDebugInterface = NULL);
+struct D3D12DevConfiguration
+{
+  ID3D12SDKConfiguration1 *sdkconfig = NULL;
+  ID3D12DeviceFactory *devfactory = NULL;
+  ID3D12DeviceConfiguration *devconfig = NULL;
+  ID3D12Debug *debug = NULL;
+  ID3D12DeviceRemovedExtendedDataSettings *dred = NULL;
+};
+
+bool EnableD3D12DebugLayer(D3D12DevConfiguration *devConfig,
+                           PFN_D3D12_GET_DEBUG_INTERFACE getDebugInterface);
+bool EnableDRED(D3D12DevConfiguration *devConfig, PFN_D3D12_GET_DEBUG_INTERFACE getDebugInterface);
 HRESULT EnumAdapterByLuid(IDXGIFactory1 *factory, LUID luid, IDXGIAdapter **pAdapter);
 
-void D3D12_PrepareReplaySDKVersion(UINT SDKVersion, bytebuf d3d12core, bytebuf d3d12sdklayers,
-                                   HMODULE d3d12lib);
+D3D12DevConfiguration *D3D12_PrepareReplaySDKVersion(bool untrustedCapture, UINT SDKVersion,
+                                                     bytebuf d3d12core, bytebuf d3d12sdklayers,
+                                                     HMODULE d3d12lib);
 void D3D12_CleanupReplaySDK();
 
 inline void SetObjName(ID3D12Object *obj, const rdcstr &utf8name)
@@ -72,10 +84,12 @@ inline void SetObjName(ID3D12Object *obj, const rdcstr &utf8name)
 #define PIX_EVENT_UNICODE_VERSION 0
 #define PIX_EVENT_ANSI_VERSION 1
 #define PIX_EVENT_PIX3BLOB_VERSION 2
+#define PIX_EVENT_PIX3BLOB_V2_VERSION 6345127
 
-rdcstr PIX3DecodeEventString(const UINT64 *pData);
+rdcstr PIX3DecodeEventString(const UINT64 *pData, UINT64 &color);
+rdcstr PIX3DecodeEventStringV2(const UINT64 *pData, UINT Size, UINT64 &color);
 
-inline rdcstr DecodeMarkerString(UINT Metadata, const void *pData, UINT Size)
+inline rdcstr DecodeMarkerString(UINT Metadata, const void *pData, UINT Size, UINT64 &color)
 {
   rdcstr MarkerText = "";
 
@@ -87,6 +101,7 @@ inline rdcstr DecodeMarkerString(UINT Metadata, const void *pData, UINT Size)
     MarkerText = StringFormat::Wide2UTF8(rdcwstr(w, Size / sizeof(wchar_t)));
     if(!MarkerText.empty() && (MarkerText.back() == ' ' || MarkerText.back() == 0))
       MarkerText.pop_back();
+    color = 0;
   }
   else if(Metadata == PIX_EVENT_ANSI_VERSION)
   {
@@ -94,18 +109,28 @@ inline rdcstr DecodeMarkerString(UINT Metadata, const void *pData, UINT Size)
     MarkerText = rdcstr(c, Size);
     if(!MarkerText.empty() && (MarkerText.back() == ' ' || MarkerText.back() == 0))
       MarkerText.pop_back();
+    color = 0;
   }
   else if(Metadata == PIX_EVENT_PIX3BLOB_VERSION)
   {
-    MarkerText = PIX3DecodeEventString((UINT64 *)pData);
+    MarkerText = PIX3DecodeEventString((UINT64 *)pData, color);
+  }
+  else if(Metadata == PIX_EVENT_PIX3BLOB_V2_VERSION)
+  {
+    MarkerText = PIX3DecodeEventStringV2((UINT64 *)pData, Size, color);
   }
   else
   {
     RDCERR("Unexpected/unsupported Metadata value %u in marker text", Metadata);
+    return "<UnknownMarkerType>";
   }
 
   return MarkerText;
 }
+
+#define CHECK_HR(device, hr_or_expr) device->CheckHRESULT(__FILE__, __LINE__, hr_or_expr)
+
+FloatVector DecodePIXColor(UINT64 Color);
 
 TextureType MakeTextureDim(D3D12_SRV_DIMENSION dim);
 TextureType MakeTextureDim(D3D12_RTV_DIMENSION dim);
@@ -114,12 +139,100 @@ TextureType MakeTextureDim(D3D12_UAV_DIMENSION dim);
 AddressMode MakeAddressMode(D3D12_TEXTURE_ADDRESS_MODE addr);
 CompareFunction MakeCompareFunc(D3D12_COMPARISON_FUNC func);
 TextureFilter MakeFilter(D3D12_FILTER filter);
-D3DBufferViewFlags MakeBufferFlags(D3D12_BUFFER_SRV_FLAGS flags);
-D3DBufferViewFlags MakeBufferFlags(D3D12_BUFFER_UAV_FLAGS flags);
+DescriptorFlags MakeDescriptorFlags(D3D12_BUFFER_SRV_FLAGS flags);
+DescriptorFlags MakeDescriptorFlags(D3D12_BUFFER_UAV_FLAGS flags);
 LogicOperation MakeLogicOp(D3D12_LOGIC_OP op);
 BlendMultiplier MakeBlendMultiplier(D3D12_BLEND blend, bool alpha);
 BlendOperation MakeBlendOp(D3D12_BLEND_OP op);
 StencilOperation MakeStencilOp(D3D12_STENCIL_OP op);
+
+uint32_t ArgumentTypeByteSize(const D3D12_INDIRECT_ARGUMENT_DESC &arg);
+
+// wrapper around D3D12_RESOURCE_STATES and D3D12_BARRIER_LAYOUT to handle resources that could be
+// in either and varying support
+struct D3D12ResourceLayout
+{
+  D3D12ResourceLayout() : value(0)
+  {
+    RDCCOMPILE_ASSERT(sizeof(*this) == sizeof(D3D12_BARRIER_LAYOUT),
+                      "Layout/state wrapper is wrongly sized");
+    RDCCOMPILE_ASSERT(sizeof(*this) == sizeof(D3D12_RESOURCE_STATES),
+                      "Layout/state wrapper is wrongly sized");
+  }
+  static D3D12ResourceLayout FromStates(D3D12_RESOURCE_STATES s)
+  {
+    return D3D12ResourceLayout((uint32_t)s);
+  }
+  static D3D12ResourceLayout FromLayout(D3D12_BARRIER_LAYOUT s)
+  {
+    return D3D12ResourceLayout(uint32_t(s) | LayoutBit);
+  }
+  bool IsLayout() const { return (value & LayoutBit) != 0; }
+  bool IsStates() const { return (value & LayoutBit) == 0; }
+  D3D12_RESOURCE_STATES ToStates() const { return D3D12_RESOURCE_STATES(value & ~LayoutBit); }
+  D3D12_BARRIER_LAYOUT ToLayout() const
+  {
+    if(value == D3D12_BARRIER_LAYOUT_UNDEFINED)
+      return D3D12_BARRIER_LAYOUT_UNDEFINED;
+    return D3D12_BARRIER_LAYOUT(value & ~LayoutBit);
+  }
+  bool operator==(const D3D12ResourceLayout &o) const { return value == o.value; }
+  bool operator!=(const D3D12ResourceLayout &o) const { return !(*this == o); }
+private:
+  explicit D3D12ResourceLayout(uint32_t v) : value(v) {}
+  // layouts are an enum so this bit should hopefully never be used. Note that LAYOUT_UNDEFINED is
+  // ~0U and annoyingly it has to be specified for buffers (instead of D3D12_BARRIER_LAYOUT_COMMON)
+  // so we need to special-case it.
+  // states are a bitmask but they only use just over 6 hex digits so far, and we assume they won't
+  // be extended (or not by much).
+  // We set the bit for layouts and not for states so that we can serialise this
+  // backwards-compatibly and replace any serialised D3D12_RESOURCE_STATES and have them appear as
+  // the correct enum.
+  static constexpr uint32_t LayoutBit = 0x80000000U;
+  uint32_t value;
+};
+
+typedef rdcarray<D3D12ResourceLayout> SubresourceStateVector;
+
+struct BarrierSet
+{
+  enum AccessType
+  {
+    SRVAccess,
+    CopySourceAccess,
+    CopyDestAccess,
+    ResolveSourceAccess,
+  };
+
+  // set up the barriers to barrier this resource a given type of access
+  void Configure(ID3D12Resource *res, const SubresourceStateVector &states, AccessType access);
+
+  // apply the barrier set onto this list
+  void Apply(ID3D12GraphicsCommandListX *list);
+
+  // unapply the barrier set - used for when we are barrier'ing a resource, doing some work, then
+  // barrier'ing it back to the original state
+  void Unapply(ID3D12GraphicsCommandListX *list);
+
+  void clear()
+  {
+    barriers.clear();
+    newBarriers.clear();
+    newToOldBarriers.clear();
+  }
+  bool empty() const { return barriers.empty() && newBarriers.empty(); }
+  void swap(BarrierSet &other)
+  {
+    barriers.swap(other.barriers);
+    newBarriers.swap(other.newBarriers);
+  }
+
+  rdcarray<D3D12_RESOURCE_BARRIER> barriers;
+  rdcarray<D3D12_TEXTURE_BARRIER> newBarriers;
+  // these are used specifically when we need to record a transition from a new layout to an old
+  // state. Because we execute barriers before newBarriers we can do the other way without this
+  rdcarray<D3D12_RESOURCE_BARRIER> newToOldBarriers;
+};
 
 // similar to RDCUNIMPLEMENTED but for things that are hit often so we don't want to fire the
 // debugbreak.
@@ -133,17 +246,26 @@ StencilOperation MakeStencilOp(D3D12_STENCIL_OP op);
     }                                                   \
   }
 
-// uncomment this to cause every internal ExecuteCommandLists to immediately call
-// FlushLists(), and to only submit one command list at once to narrow
-// down the cause of device lost errors
-#define SINGLE_FLUSH_VALIDATE OPTION_OFF
-
 // uncomment this to get verbose debugging about when/where/why partial command
 // buffer replay is happening
 #define VERBOSE_PARTIAL_REPLAY OPTION_OFF
 
+D3D12_DEPTH_STENCIL_DESC2 Upconvert(const D3D12_DEPTH_STENCIL_DESC1 &desc);
+D3D12_RASTERIZER_DESC2 Upconvert(const D3D12_RASTERIZER_DESC &desc);
+D3D12_SAMPLER_DESC2 ConvertStaticSampler(const D3D12_STATIC_SAMPLER_DESC1 &samp);
+
 ShaderStageMask ConvertVisibility(D3D12_SHADER_VISIBILITY ShaderVisibility);
 UINT GetNumSubresources(ID3D12Device *dev, const D3D12_RESOURCE_DESC *desc);
+inline UINT GetNumSubresources(ID3D12Device *dev, const D3D12_RESOURCE_DESC1 *desc)
+{
+  // D3D12_RESOURCE_DESC is the same as the start of D3D12_RESOURCE_DESC1
+  D3D12_RESOURCE_DESC desc0;
+  memcpy(&desc0, desc, sizeof(desc0));
+  return GetNumSubresources(dev, &desc0);
+}
+
+UINT D3D12CalcSubresource(UINT MipSlice, UINT ArraySlice, UINT PlaneSlice, UINT MipLevels,
+                          UINT ArraySize);
 
 class WrappedID3D12Device;
 
@@ -234,6 +356,116 @@ public:
   }
 };
 
+class WrappedID3D12DeviceConfiguration : public ID3D12DeviceConfiguration1
+{
+private:
+  ID3D12DeviceConfiguration *m_pReal = NULL;
+  ID3D12DeviceConfiguration1 *m_pReal1 = NULL;
+  IUnknown *wrappedParent = NULL;
+public:
+  WrappedID3D12DeviceConfiguration(IUnknown *real, IUnknown *wrapped)
+  {
+    wrappedParent = wrapped;
+
+    if(real)
+    {
+      HRESULT hr = real->QueryInterface(__uuidof(ID3D12DeviceConfiguration), (void **)&m_pReal);
+      if(SUCCEEDED(hr))
+      {
+        real->QueryInterface(__uuidof(ID3D12DeviceConfiguration1), (void **)&m_pReal1);
+      }
+      else
+      {
+        SAFE_RELEASE(m_pReal);
+      }
+    }
+  }
+
+  ~WrappedID3D12DeviceConfiguration()
+  {
+    SAFE_RELEASE(m_pReal);
+    SAFE_RELEASE(m_pReal1);
+  }
+
+  bool IsValid() { return m_pReal != NULL; }
+  bool IsValid1() { return m_pReal1 != NULL; }
+
+  //////////////////////////////
+  // Implement IUnknown
+  ULONG STDMETHODCALLTYPE AddRef() { return wrappedParent->AddRef(); }
+  ULONG STDMETHODCALLTYPE Release() { return wrappedParent->Release(); }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject)
+  {
+    if(riid == __uuidof(IUnknown))
+    {
+      *ppvObject = (IUnknown *)this;
+      AddRef();
+      return S_OK;
+    }
+    if(riid == __uuidof(ID3D12DeviceConfiguration) && m_pReal)
+    {
+      *ppvObject = (ID3D12DeviceConfiguration *)this;
+      AddRef();
+      return S_OK;
+    }
+    if(riid == __uuidof(ID3D12DeviceConfiguration1) && m_pReal1)
+    {
+      *ppvObject = (ID3D12DeviceConfiguration1 *)this;
+      AddRef();
+      return S_OK;
+    }
+
+    return wrappedParent->QueryInterface(riid, ppvObject);
+  }
+
+  //////////////////////////////
+  // Implement ID3D12DeviceConfiguration
+#if defined(_MSC_VER) || !defined(_WIN32)
+  virtual D3D12_DEVICE_CONFIGURATION_DESC STDMETHODCALLTYPE GetDesc(void)
+  {
+    return m_pReal->GetDesc();
+  }
+#else
+  virtual D3D12_DEVICE_CONFIGURATION_DESC *STDMETHODCALLTYPE
+  GetDesc(D3D12_DEVICE_CONFIGURATION_DESC *RetVal)
+  {
+    return m_pReal->GetDesc(RetVal);
+  }
+#endif
+
+  virtual HRESULT STDMETHODCALLTYPE GetEnabledExperimentalFeatures(_Out_writes_(NumGuids)
+                                                                       GUID *pGuids,
+                                                                   UINT NumGuids)
+  {
+    return m_pReal->GetEnabledExperimentalFeatures(pGuids, NumGuids);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE SerializeVersionedRootSignature(
+      _In_ const D3D12_VERSIONED_ROOT_SIGNATURE_DESC *pDesc, _COM_Outptr_ ID3DBlob **ppResult,
+      _Always_(_Outptr_opt_result_maybenull_) ID3DBlob **ppError)
+  {
+    return m_pReal->SerializeVersionedRootSignature(pDesc, ppResult, ppError);
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE
+  CreateVersionedRootSignatureDeserializer(_In_reads_bytes_(Size) const void *pBlob, SIZE_T Size,
+                                           REFIID riid, _COM_Outptr_ void **ppvDeserializer)
+  {
+    return m_pReal->CreateVersionedRootSignatureDeserializer(pBlob, Size, riid, ppvDeserializer);
+  }
+
+  //////////////////////////////
+  // Implement ID3D12DeviceConfiguration1
+
+  virtual HRESULT STDMETHODCALLTYPE CreateVersionedRootSignatureDeserializerFromSubobjectInLibrary(
+      _In_reads_bytes_(Size) const void *pLibraryBlob, SIZE_T Size,
+      LPCWSTR RootSignatureSubobjectName, REFIID riid, _COM_Outptr_ void **ppvDeserializer)
+  {
+    return m_pReal1->CreateVersionedRootSignatureDeserializerFromSubobjectInLibrary(
+        pLibraryBlob, Size, RootSignatureSubobjectName, riid, ppvDeserializer);
+  }
+};
+
 struct D3D12RootSignatureParameter : D3D12_ROOT_PARAMETER1
 {
   D3D12RootSignatureParameter()
@@ -307,7 +539,6 @@ struct D3D12RootSignatureParameter : D3D12_ROOT_PARAMETER1
     ShaderVisibility = param.ShaderVisibility;
 
     // copy the POD ones first
-    Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE;
     Descriptor.RegisterSpace = param.Descriptor.RegisterSpace;
     Descriptor.ShaderRegister = param.Descriptor.ShaderRegister;
     Constants = param.Constants;
@@ -321,8 +552,10 @@ struct D3D12RootSignatureParameter : D3D12_ROOT_PARAMETER1
         ranges[i].NumDescriptors = param.DescriptorTable.pDescriptorRanges[i].NumDescriptors;
         ranges[i].BaseShaderRegister = param.DescriptorTable.pDescriptorRanges[i].BaseShaderRegister;
         ranges[i].RegisterSpace = param.DescriptorTable.pDescriptorRanges[i].RegisterSpace;
-        ranges[i].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE |
-                          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+        ranges[i].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
+        // samplers can't have volatile data
+        if(ranges[i].RangeType != D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+          ranges[i].Flags |= D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
         ranges[i].OffsetInDescriptorsFromTableStart =
             param.DescriptorTable.pDescriptorRanges[i].OffsetInDescriptorsFromTableStart;
 
@@ -338,6 +571,8 @@ struct D3D12RootSignatureParameter : D3D12_ROOT_PARAMETER1
     }
     else
     {
+      // apply default flags here
+      Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE;
       numSpaces = RDCMAX(numSpaces, Descriptor.RegisterSpace + 1);
     }
   }
@@ -354,7 +589,7 @@ struct D3D12RootSignature
 
   D3D12_ROOT_SIGNATURE_FLAGS Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
   rdcarray<D3D12RootSignatureParameter> Parameters;
-  rdcarray<D3D12_STATIC_SAMPLER_DESC> StaticSamplers;
+  rdcarray<D3D12_STATIC_SAMPLER_DESC1> StaticSamplers;
 };
 
 DECLARE_REFLECTION_STRUCT(D3D12RootSignature);
@@ -362,8 +597,9 @@ DECLARE_REFLECTION_STRUCT(D3D12RootSignature);
 struct D3D12CommandSignature
 {
   bool graphics = true;
-  UINT numActions = 0;
+  bool raytraced = false;
   UINT ByteStride = 0;
+  UINT PackedByteSize = 0;
   rdcarray<D3D12_INDIRECT_ARGUMENT_DESC> arguments;
 };
 
@@ -397,28 +633,33 @@ struct D3D12CommandSignature
 // directly as-if it were the original type, then on replay load up the resource if available.
 // Really this is only one type of serialisation, but we declare a couple of overloads to account
 // for resources being accessed through different interfaces in different functions
-#define SERIALISE_D3D_INTERFACES()                 \
-  SERIALISE_INTERFACE(ID3D12Object);               \
-  SERIALISE_INTERFACE(ID3D12DeviceChild);          \
-  SERIALISE_INTERFACE(ID3D12Pageable);             \
-  SERIALISE_INTERFACE(ID3D12CommandList);          \
-  SERIALISE_INTERFACE(ID3D12GraphicsCommandList);  \
-  SERIALISE_INTERFACE(ID3D12GraphicsCommandList1); \
-  SERIALISE_INTERFACE(ID3D12GraphicsCommandList2); \
-  SERIALISE_INTERFACE(ID3D12GraphicsCommandList3); \
-  SERIALISE_INTERFACE(ID3D12GraphicsCommandList4); \
-  SERIALISE_INTERFACE(ID3D12GraphicsCommandList5); \
-  SERIALISE_INTERFACE(ID3D12GraphicsCommandList6); \
-  SERIALISE_INTERFACE(ID3D12RootSignature);        \
-  SERIALISE_INTERFACE(ID3D12Resource);             \
-  SERIALISE_INTERFACE(ID3D12QueryHeap);            \
-  SERIALISE_INTERFACE(ID3D12PipelineState);        \
-  SERIALISE_INTERFACE(ID3D12Heap);                 \
-  SERIALISE_INTERFACE(ID3D12Fence);                \
-  SERIALISE_INTERFACE(ID3D12DescriptorHeap);       \
-  SERIALISE_INTERFACE(ID3D12CommandSignature);     \
-  SERIALISE_INTERFACE(ID3D12CommandQueue);         \
-  SERIALISE_INTERFACE(ID3D12CommandAllocator);
+#define SERIALISE_D3D_INTERFACES()                  \
+  SERIALISE_INTERFACE(ID3D12Object);                \
+  SERIALISE_INTERFACE(ID3D12DeviceChild);           \
+  SERIALISE_INTERFACE(ID3D12Pageable);              \
+  SERIALISE_INTERFACE(ID3D12CommandList);           \
+  SERIALISE_INTERFACE(ID3D12GraphicsCommandList);   \
+  SERIALISE_INTERFACE(ID3D12GraphicsCommandList1);  \
+  SERIALISE_INTERFACE(ID3D12GraphicsCommandList2);  \
+  SERIALISE_INTERFACE(ID3D12GraphicsCommandList3);  \
+  SERIALISE_INTERFACE(ID3D12GraphicsCommandList4);  \
+  SERIALISE_INTERFACE(ID3D12GraphicsCommandList5);  \
+  SERIALISE_INTERFACE(ID3D12GraphicsCommandList6);  \
+  SERIALISE_INTERFACE(ID3D12GraphicsCommandList7);  \
+  SERIALISE_INTERFACE(ID3D12GraphicsCommandList8);  \
+  SERIALISE_INTERFACE(ID3D12GraphicsCommandList9);  \
+  SERIALISE_INTERFACE(ID3D12GraphicsCommandList10); \
+  SERIALISE_INTERFACE(ID3D12RootSignature);         \
+  SERIALISE_INTERFACE(ID3D12Resource);              \
+  SERIALISE_INTERFACE(ID3D12QueryHeap);             \
+  SERIALISE_INTERFACE(ID3D12PipelineState);         \
+  SERIALISE_INTERFACE(ID3D12Heap);                  \
+  SERIALISE_INTERFACE(ID3D12Fence);                 \
+  SERIALISE_INTERFACE(ID3D12DescriptorHeap);        \
+  SERIALISE_INTERFACE(ID3D12CommandSignature);      \
+  SERIALISE_INTERFACE(ID3D12CommandQueue);          \
+  SERIALISE_INTERFACE(ID3D12CommandAllocator);      \
+  SERIALISE_INTERFACE(ID3D12StateObject);
 
 #define SERIALISE_INTERFACE(iface) DECLARE_REFLECTION_STRUCT(iface *)
 
@@ -427,12 +668,37 @@ SERIALISE_D3D_INTERFACES();
 // a thin utility wrapper around a UINT64, that serialises a BufferLocation as an Id + Offset.
 struct D3D12BufferLocation
 {
+  D3D12BufferLocation() : Location(0) {}
   D3D12BufferLocation(UINT64 l) : Location(l) {}
   operator UINT64() const { return Location; }
   UINT64 Location;
 };
 
+// thin utility aliases of a ResourceId so that we know we're serialising an AS - distinct from
+// buffer locations above to ensure it's mapped naturally. We have dest/src as different types with
+// a common root because dest tries to draw from sideband data for its Id and source doesn't - this
+// distinction is needed since e.g. the build desc serialises two AS locations and we need to tell
+// which one should pull from sideband.
+struct D3D12ASLocation
+{
+  D3D12ASLocation() : Location(0) {}
+  D3D12ASLocation(UINT64 l) : Location(l) {}
+  operator UINT64() const { return Location; }
+  UINT64 Location;
+};
+
+struct D3D12SrcASLocation : public D3D12ASLocation
+{
+};
+
+struct D3D12DestASLocation : public D3D12ASLocation
+{
+  static const uint64_t SidebandGUID = 0x3FD533B58697ULL;
+};
+
 DECLARE_REFLECTION_STRUCT(D3D12BufferLocation);
+DECLARE_REFLECTION_STRUCT(D3D12SrcASLocation);
+DECLARE_REFLECTION_STRUCT(D3D12DestASLocation);
 
 DECLARE_REFLECTION_STRUCT(D3D12_CPU_DESCRIPTOR_HANDLE);
 DECLARE_REFLECTION_STRUCT(D3D12_GPU_DESCRIPTOR_HANDLE);
@@ -441,6 +707,17 @@ inline bool operator==(const D3D12_CPU_DESCRIPTOR_HANDLE &l, const D3D12_CPU_DES
 {
   return l.ptr == r.ptr;
 }
+
+struct D3D12_UNWRAPPED_STATE_OBJECT_DESC : public D3D12_STATE_OBJECT_DESC
+{
+  D3D12_UNWRAPPED_STATE_OBJECT_DESC(const D3D12_STATE_OBJECT_DESC &wrappedDesc);
+
+private:
+  rdcarray<D3D12_STATE_SUBOBJECT> subobjects;
+  rdcarray<D3D12_GLOBAL_ROOT_SIGNATURE> unwrappedRootsigObjs;
+  rdcarray<D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION> rebasedAssocs;
+  rdcarray<D3D12_EXISTING_COLLECTION_DESC> unwrappedCollObjs;
+};
 
 // expanded version of D3D12_GRAPHICS_PIPELINE_STATE_DESC / D3D12_COMPUTE_PIPELINE_STATE_DESC with
 // all subobjects. No enums suitable to make this a stream though.
@@ -459,18 +736,28 @@ struct D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC
 
   bool errored = false;
 
+  ID3D12RootSignature *GetRootSigIfPresent() const { return pRootSignature; }
+  ID3D12RootSignature *GetOrCreateRootSig(WrappedID3D12Device *dev);
+  const D3D12_SERIALIZED_ROOT_SIGNATURE_DESC &GetRootSigBlob() const { return RootSigBlob; }
+  void SetRootSig(ID3D12RootSignature *sig)
+  {
+    RootSigBlob = {};
+    pRootSignature = sig;
+  }
+
   // graphics properties
-  ID3D12RootSignature *pRootSignature = NULL;
   D3D12_SHADER_BYTECODE VS = {};
   D3D12_SHADER_BYTECODE PS = {};
   D3D12_SHADER_BYTECODE DS = {};
   D3D12_SHADER_BYTECODE HS = {};
   D3D12_SHADER_BYTECODE GS = {};
+  D3D12_SHADER_BYTECODE AS = {};
+  D3D12_SHADER_BYTECODE MS = {};
   D3D12_STREAM_OUTPUT_DESC StreamOutput = {};
   D3D12_BLEND_DESC BlendState = {};
   UINT SampleMask = 0;
-  D3D12_RASTERIZER_DESC RasterizerState = {};
-  D3D12_DEPTH_STENCIL_DESC1 DepthStencilState = {};
+  D3D12_RASTERIZER_DESC2 RasterizerState = {};
+  D3D12_DEPTH_STENCIL_DESC2 DepthStencilState = {};
   D3D12_INPUT_LAYOUT_DESC InputLayout = {};
   D3D12_INDEX_BUFFER_STRIP_CUT_VALUE IBStripCutValue;
   D3D12_PRIMITIVE_TOPOLOGY_TYPE PrimitiveTopologyType;
@@ -484,13 +771,21 @@ struct D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC
 
   // unique compute properties (many are duplicated above)
   D3D12_SHADER_BYTECODE CS = {};
+
+  // governed by accessors so we can hide the ugly blob method
+private:
+  ID3D12RootSignature *pRootSignature = NULL;
+  D3D12_SERIALIZED_ROOT_SIGNATURE_DESC RootSigBlob = {};
+
+  template <typename SerialiserType>
+  friend void DoSerialise(SerialiserType &ser, D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC &el);
 };
 
 DECLARE_REFLECTION_STRUCT(D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC);
 
 // subobject headers have to be aligned to pointer boundaries
 #define SUBOBJECT_HEADER(subobj)                                               \
-  D3D12_PIPELINE_STATE_SUBOBJECT_TYPE alignas(void *) CONCAT(header, subobj) = \
+  alignas(void *) D3D12_PIPELINE_STATE_SUBOBJECT_TYPE CONCAT(header, subobj) = \
       CONCAT(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_, subobj);
 
 // similar to D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC but a packed version that can be passed
@@ -517,23 +812,39 @@ public:
     if(m_ComputeStreamData.CS.BytecodeLength > 0)
     {
       m_StreamDesc.pPipelineStateSubobjectStream = &m_ComputeStreamData;
-      m_StreamDesc.SizeInBytes = sizeof(m_ComputeStreamData);
+      m_StreamDesc.SizeInBytes =
+          offsetof(ComputeStreamData, VariableVersionedData) + m_VariableVersionedDataLength;
       return &m_StreamDesc;
     }
     else
     {
       m_StreamDesc.pPipelineStateSubobjectStream = &m_GraphicsStreamData;
-      m_StreamDesc.SizeInBytes = sizeof(m_GraphicsStreamData);
+      m_StreamDesc.SizeInBytes =
+          offsetof(GraphicsStreamData, VariableVersionedData) + m_VariableVersionedDataLength;
       return &m_StreamDesc;
     }
   }
 
+  size_t GetStageCount() { return 8; }
+  D3D12_SHADER_BYTECODE &GetStage(size_t i)
+  {
+    D3D12_SHADER_BYTECODE *stages[] = {
+        &m_GraphicsStreamData.VS,
+        &m_GraphicsStreamData.HS,
+        &m_GraphicsStreamData.DS,
+        &m_GraphicsStreamData.GS,
+        &m_GraphicsStreamData.PS,
+        &m_ComputeStreamData.CS,
+        &AS,
+        &MS,
+    };
+    return *stages[i];
+  }
+
 private:
-  struct
+  struct GraphicsStreamData
   {
     // graphics properties
-    SUBOBJECT_HEADER(ROOT_SIGNATURE);
-    ID3D12RootSignature *pRootSignature = NULL;
     SUBOBJECT_HEADER(INPUT_LAYOUT);
     D3D12_INPUT_LAYOUT_DESC InputLayout = {};
     SUBOBJECT_HEADER(VS);
@@ -552,8 +863,6 @@ private:
     D3D12_CACHED_PIPELINE_STATE CachedPSO = {};
     SUBOBJECT_HEADER(VIEW_INSTANCING);
     D3D12_VIEW_INSTANCING_DESC ViewInstancing = {};
-    SUBOBJECT_HEADER(RASTERIZER);
-    D3D12_RASTERIZER_DESC RasterizerState = {};
     SUBOBJECT_HEADER(RENDER_TARGET_FORMATS);
     D3D12_RT_FORMAT_ARRAY RTVFormats = {};
     SUBOBJECT_HEADER(DEPTH_STENCIL_FORMAT);
@@ -568,25 +877,39 @@ private:
     UINT SampleMask = 0;
     SUBOBJECT_HEADER(FLAGS);
     D3D12_PIPELINE_STATE_FLAGS Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
-    SUBOBJECT_HEADER(DEPTH_STENCIL1);
-    D3D12_DEPTH_STENCIL_DESC1 DepthStencilState = {};
-#if ENABLED(RDOC_X64)
-    UINT pad0;
-#endif
     SUBOBJECT_HEADER(BLEND);
     D3D12_BLEND_DESC BlendState = {};
 #if ENABLED(RDOC_X64)
-    UINT pad1;
+    UINT pad0;
 #endif
     SUBOBJECT_HEADER(SAMPLE_DESC);
     DXGI_SAMPLE_DESC SampleDesc = {};
+#if ENABLED(RDOC_X64)
+    UINT pad1;
+#endif
+    // since data must be tightly packed, the final structs that are versioned and may not be
+    // supported are pushed in here
+    alignas(void *) byte VariableVersionedData[
+        // depth-stencil is versioned for separate stencil masks
+        sizeof(D3D12_DEPTH_STENCIL_DESC2) + sizeof(void *) +
+        // rasterization is versioned for line raster mode
+        sizeof(D3D12_RASTERIZER_DESC2) + sizeof(void *) +
+        // AS ...
+        sizeof(D3D12_SHADER_BYTECODE) + sizeof(void *) +
+        // ... and MS are optional
+        sizeof(D3D12_SHADER_BYTECODE) + sizeof(void *) +
+        // root signature could come in pointer or blob form
+        sizeof(D3D12_SERIALIZED_ROOT_SIGNATURE_DESC) + sizeof(void *)];
   } m_GraphicsStreamData;
 
-  struct
+  D3D12_SHADER_BYTECODE AS = {};
+  D3D12_SHADER_BYTECODE MS = {};
+
+  size_t m_VariableVersionedDataLength;
+
+  struct ComputeStreamData
   {
     // compute properties
-    SUBOBJECT_HEADER(ROOT_SIGNATURE);
-    ID3D12RootSignature *pRootSignature = NULL;
     SUBOBJECT_HEADER(CS);
     D3D12_SHADER_BYTECODE CS = {};
     SUBOBJECT_HEADER(NODE_MASK);
@@ -595,9 +918,15 @@ private:
     D3D12_CACHED_PIPELINE_STATE CachedPSO = {};
     SUBOBJECT_HEADER(FLAGS);
     D3D12_PIPELINE_STATE_FLAGS Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+    alignas(void *) byte VariableVersionedData[
+        // root signature could come in pointer or blob form
+        sizeof(D3D12_SERIALIZED_ROOT_SIGNATURE_DESC) + sizeof(void *)];
   } m_ComputeStreamData;
 
   D3D12_PIPELINE_STATE_STREAM_DESC m_StreamDesc;
+
+private:
+  ID3D12RootSignature **m_RootSigToUnwrap;
 };
 
 #undef SUBOBJECT_HEADER
@@ -649,6 +978,7 @@ DECLARE_REFLECTION_ENUM(D3D12_COLOR_WRITE_ENABLE);
 DECLARE_REFLECTION_ENUM(D3D12_DEPTH_WRITE_MASK);
 DECLARE_REFLECTION_ENUM(D3D12_VIEW_INSTANCING_FLAGS);
 DECLARE_REFLECTION_ENUM(D3D12_RESOLVE_MODE);
+DECLARE_REFLECTION_ENUM(D3D12_LINE_RASTERIZATION_MODE);
 DECLARE_REFLECTION_ENUM(D3D12_WRITEBUFFERIMMEDIATE_MODE);
 DECLARE_REFLECTION_ENUM(D3D12_COMMAND_LIST_FLAGS);
 DECLARE_REFLECTION_ENUM(D3D12_RENDER_PASS_FLAGS);
@@ -659,6 +989,7 @@ DECLARE_REFLECTION_ENUM(D3D12_SHADING_RATE_COMBINER);
 DECLARE_REFLECTION_ENUM(D3D12_ROOT_SIGNATURE_FLAGS);
 DECLARE_REFLECTION_ENUM(D3D12_ROOT_PARAMETER_TYPE);
 DECLARE_REFLECTION_ENUM(D3D12_ROOT_DESCRIPTOR_FLAGS);
+DECLARE_REFLECTION_ENUM(D3D12_SAMPLER_FLAGS);
 DECLARE_REFLECTION_ENUM(D3D12_SHADER_VISIBILITY);
 DECLARE_REFLECTION_ENUM(D3D12_STATIC_BORDER_COLOR);
 DECLARE_REFLECTION_ENUM(D3D12_DESCRIPTOR_RANGE_TYPE);
@@ -666,6 +997,25 @@ DECLARE_REFLECTION_ENUM(D3D12_DESCRIPTOR_RANGE_FLAGS);
 DECLARE_REFLECTION_ENUM(D3D12_TILE_COPY_FLAGS);
 DECLARE_REFLECTION_ENUM(D3D12_TILE_RANGE_FLAGS);
 DECLARE_REFLECTION_ENUM(D3D12_TILE_MAPPING_FLAGS);
+DECLARE_REFLECTION_ENUM(D3D12_BARRIER_ACCESS);
+DECLARE_REFLECTION_ENUM(D3D12_BARRIER_SYNC);
+DECLARE_REFLECTION_ENUM(D3D12_BARRIER_LAYOUT);
+DECLARE_REFLECTION_ENUM(D3D12_BARRIER_TYPE);
+DECLARE_REFLECTION_ENUM(D3D12_TEXTURE_BARRIER_FLAGS);
+DECLARE_REFLECTION_ENUM(D3D12_RAYTRACING_GEOMETRY_TYPE);
+DECLARE_REFLECTION_ENUM(D3D12_RAYTRACING_GEOMETRY_FLAGS);
+DECLARE_REFLECTION_ENUM(D3D12_ELEMENTS_LAYOUT);
+DECLARE_REFLECTION_ENUM(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE);
+DECLARE_REFLECTION_ENUM(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS);
+DECLARE_REFLECTION_ENUM(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TYPE);
+DECLARE_REFLECTION_ENUM(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE);
+DECLARE_REFLECTION_ENUM(D3D12_STATE_OBJECT_TYPE);
+DECLARE_REFLECTION_ENUM(D3D12_STATE_SUBOBJECT_TYPE);
+DECLARE_REFLECTION_ENUM(D3D12_STATE_OBJECT_FLAGS);
+DECLARE_REFLECTION_ENUM(D3D12_EXPORT_FLAGS);
+DECLARE_REFLECTION_ENUM(D3D12_HIT_GROUP_TYPE);
+DECLARE_REFLECTION_ENUM(D3D12_RAYTRACING_PIPELINE_FLAGS);
+DECLARE_REFLECTION_ENUM(D3D12_QUERY_HEAP_FLAGS);
 
 DECLARE_REFLECTION_STRUCT(D3D12_RESOURCE_DESC);
 DECLARE_REFLECTION_STRUCT(D3D12_COMMAND_QUEUE_DESC);
@@ -673,8 +1023,13 @@ DECLARE_REFLECTION_STRUCT(D3D12_SHADER_BYTECODE);
 DECLARE_REFLECTION_STRUCT(D3D12_SO_DECLARATION_ENTRY);
 DECLARE_REFLECTION_STRUCT(D3D12_STREAM_OUTPUT_DESC);
 DECLARE_REFLECTION_STRUCT(D3D12_RASTERIZER_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_RASTERIZER_DESC1);
+DECLARE_REFLECTION_STRUCT(D3D12_RASTERIZER_DESC2);
 DECLARE_REFLECTION_STRUCT(D3D12_DEPTH_STENCILOP_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_DEPTH_STENCILOP_DESC1);
 DECLARE_REFLECTION_STRUCT(D3D12_DEPTH_STENCIL_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_DEPTH_STENCIL_DESC1);
+DECLARE_REFLECTION_STRUCT(D3D12_DEPTH_STENCIL_DESC2);
 DECLARE_REFLECTION_STRUCT(D3D12_INPUT_ELEMENT_DESC);
 DECLARE_REFLECTION_STRUCT(D3D12_INPUT_LAYOUT_DESC);
 DECLARE_REFLECTION_STRUCT(D3D12_RENDER_TARGET_BLEND_DESC);
@@ -696,6 +1051,7 @@ DECLARE_REFLECTION_STRUCT(D3D12_INDIRECT_ARGUMENT_DESC);
 DECLARE_REFLECTION_STRUCT(D3D12_COMMAND_SIGNATURE_DESC);
 DECLARE_REFLECTION_STRUCT(D3D12_QUERY_HEAP_DESC);
 DECLARE_REFLECTION_STRUCT(D3D12_SAMPLER_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_SAMPLER_DESC2);
 DECLARE_REFLECTION_STRUCT(D3D12_CONSTANT_BUFFER_VIEW_DESC);
 DECLARE_REFLECTION_STRUCT(D3D12_BUFFER_SRV);
 DECLARE_REFLECTION_STRUCT(D3D12_TEX1D_SRV);
@@ -707,6 +1063,7 @@ DECLARE_REFLECTION_STRUCT(D3D12_TEX2DMS_ARRAY_SRV);
 DECLARE_REFLECTION_STRUCT(D3D12_TEXCUBE_SRV);
 DECLARE_REFLECTION_STRUCT(D3D12_TEXCUBE_ARRAY_SRV);
 DECLARE_REFLECTION_STRUCT(D3D12_TEX3D_SRV);
+DECLARE_REFLECTION_STRUCT(D3D12_BUFFER_SRV_BYTE_OFFSET);
 DECLARE_REFLECTION_STRUCT(D3D12_SHADER_RESOURCE_VIEW_DESC);
 DECLARE_REFLECTION_STRUCT(D3D12_BUFFER_RTV);
 DECLARE_REFLECTION_STRUCT(D3D12_TEX1D_RTV);
@@ -729,7 +1086,10 @@ DECLARE_REFLECTION_STRUCT(D3D12_TEX1D_UAV);
 DECLARE_REFLECTION_STRUCT(D3D12_TEX1D_ARRAY_UAV);
 DECLARE_REFLECTION_STRUCT(D3D12_TEX2D_UAV);
 DECLARE_REFLECTION_STRUCT(D3D12_TEX2D_ARRAY_UAV);
+DECLARE_REFLECTION_STRUCT(D3D12_TEX2DMS_UAV);
+DECLARE_REFLECTION_STRUCT(D3D12_TEX2DMS_ARRAY_UAV);
 DECLARE_REFLECTION_STRUCT(D3D12_TEX3D_UAV);
+DECLARE_REFLECTION_STRUCT(D3D12_BUFFER_UAV_BYTE_OFFSET);
 DECLARE_REFLECTION_STRUCT(D3D12_UNORDERED_ACCESS_VIEW_DESC);
 DECLARE_REFLECTION_STRUCT(D3D12_DEPTH_STENCIL_VALUE);
 DECLARE_REFLECTION_STRUCT(D3D12_CLEAR_VALUE);
@@ -744,7 +1104,6 @@ DECLARE_REFLECTION_STRUCT(D3D12_RECT);
 DECLARE_REFLECTION_STRUCT(D3D12_BOX);
 DECLARE_REFLECTION_STRUCT(D3D12_VIEWPORT);
 DECLARE_REFLECTION_STRUCT(D3D12_RT_FORMAT_ARRAY);
-DECLARE_REFLECTION_STRUCT(D3D12_DEPTH_STENCIL_DESC1);
 DECLARE_REFLECTION_STRUCT(D3D12_VIEW_INSTANCE_LOCATION);
 DECLARE_REFLECTION_STRUCT(D3D12_VIEW_INSTANCING_DESC);
 DECLARE_REFLECTION_STRUCT(D3D12_SAMPLE_POSITION);
@@ -754,6 +1113,7 @@ DECLARE_REFLECTION_STRUCT(D3D12_WRITEBUFFERIMMEDIATE_PARAMETER);
 DECLARE_REFLECTION_STRUCT(D3D12_DRAW_ARGUMENTS);
 DECLARE_REFLECTION_STRUCT(D3D12_DRAW_INDEXED_ARGUMENTS);
 DECLARE_REFLECTION_STRUCT(D3D12_DISPATCH_ARGUMENTS);
+DECLARE_REFLECTION_STRUCT(D3D12_DISPATCH_MESH_ARGUMENTS);
 DECLARE_REFLECTION_STRUCT(D3D12_RENDER_PASS_BEGINNING_ACCESS_CLEAR_PARAMETERS);
 DECLARE_REFLECTION_STRUCT(D3D12_RENDER_PASS_BEGINNING_ACCESS);
 DECLARE_REFLECTION_STRUCT(D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_SUBRESOURCE_PARAMETERS);
@@ -762,12 +1122,50 @@ DECLARE_REFLECTION_STRUCT(D3D12_RENDER_PASS_ENDING_ACCESS);
 DECLARE_REFLECTION_STRUCT(D3D12_RENDER_PASS_RENDER_TARGET_DESC);
 DECLARE_REFLECTION_STRUCT(D3D12_RENDER_PASS_DEPTH_STENCIL_DESC);
 DECLARE_REFLECTION_STRUCT(D3D12_STATIC_SAMPLER_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_STATIC_SAMPLER_DESC1);
 DECLARE_REFLECTION_STRUCT(D3D12_DESCRIPTOR_RANGE1);
 DECLARE_REFLECTION_STRUCT(D3D12_ROOT_DESCRIPTOR_TABLE1);
 DECLARE_REFLECTION_STRUCT(D3D12_ROOT_CONSTANTS);
 DECLARE_REFLECTION_STRUCT(D3D12_ROOT_DESCRIPTOR1);
 DECLARE_REFLECTION_STRUCT(D3D12_RESOURCE_DESC1);
 DECLARE_REFLECTION_STRUCT(D3D12_MIP_REGION);
+DECLARE_REFLECTION_STRUCT(D3D12_BARRIER_SUBRESOURCE_RANGE);
+DECLARE_REFLECTION_STRUCT(D3D12_BUFFER_BARRIER);
+DECLARE_REFLECTION_STRUCT(D3D12_TEXTURE_BARRIER);
+DECLARE_REFLECTION_STRUCT(D3D12_GLOBAL_BARRIER);
+DECLARE_REFLECTION_STRUCT(D3D12_BARRIER_GROUP);
+DECLARE_REFLECTION_STRUCT(D3D12ResourceLayout);
+DECLARE_REFLECTION_STRUCT(D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS);
+DECLARE_REFLECTION_STRUCT(D3D12_RAYTRACING_GEOMETRY_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_RAYTRACING_GEOMETRY_AABBS_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO);
+DECLARE_REFLECTION_STRUCT(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE);
+DECLARE_REFLECTION_STRUCT(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_SERIALIZATION_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV);
+DECLARE_REFLECTION_STRUCT(D3D12_STATE_OBJECT_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_STATE_SUBOBJECT);
+DECLARE_REFLECTION_STRUCT(D3D12_STATE_OBJECT_CONFIG);
+DECLARE_REFLECTION_STRUCT(D3D12_GLOBAL_ROOT_SIGNATURE);
+DECLARE_REFLECTION_STRUCT(D3D12_LOCAL_ROOT_SIGNATURE);
+DECLARE_REFLECTION_STRUCT(D3D12_GLOBAL_SERIALIZED_ROOT_SIGNATURE);
+DECLARE_REFLECTION_STRUCT(D3D12_LOCAL_SERIALIZED_ROOT_SIGNATURE);
+DECLARE_REFLECTION_STRUCT(D3D12_NODE_MASK);
+DECLARE_REFLECTION_STRUCT(D3D12_DXIL_LIBRARY_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_EXISTING_COLLECTION_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION);
+DECLARE_REFLECTION_STRUCT(D3D12_DXIL_SUBOBJECT_TO_EXPORTS_ASSOCIATION);
+DECLARE_REFLECTION_STRUCT(D3D12_RAYTRACING_SHADER_CONFIG);
+DECLARE_REFLECTION_STRUCT(D3D12_RAYTRACING_PIPELINE_CONFIG);
+DECLARE_REFLECTION_STRUCT(D3D12_HIT_GROUP_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_RAYTRACING_PIPELINE_CONFIG1);
+DECLARE_REFLECTION_STRUCT(D3D12_EXPORT_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_GPU_VIRTUAL_ADDRESS_RANGE);
+DECLARE_REFLECTION_STRUCT(D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE);
+DECLARE_REFLECTION_STRUCT(D3D12_DISPATCH_RAYS_DESC);
+DECLARE_REFLECTION_STRUCT(D3D12_SERIALIZED_ROOT_SIGNATURE_DESC);
 
 DECLARE_DESERIALISE_TYPE(D3D12_DISCARD_REGION);
 DECLARE_DESERIALISE_TYPE(D3D12_GRAPHICS_PIPELINE_STATE_DESC);
@@ -776,6 +1174,15 @@ DECLARE_DESERIALISE_TYPE(D3D12_COMMAND_SIGNATURE_DESC);
 DECLARE_DESERIALISE_TYPE(D3D12_EXPANDED_PIPELINE_STATE_STREAM_DESC);
 DECLARE_DESERIALISE_TYPE(D3D12_RENDER_PASS_RENDER_TARGET_DESC);
 DECLARE_DESERIALISE_TYPE(D3D12_RENDER_PASS_DEPTH_STENCIL_DESC);
+DECLARE_DESERIALISE_TYPE(D3D12_BARRIER_GROUP);
+DECLARE_DESERIALISE_TYPE(D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC);
+DECLARE_DESERIALISE_TYPE(D3D12_STATE_OBJECT_DESC);
+DECLARE_DESERIALISE_TYPE(D3D12_DXIL_LIBRARY_DESC);
+DECLARE_DESERIALISE_TYPE(D3D12_EXISTING_COLLECTION_DESC);
+DECLARE_DESERIALISE_TYPE(D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION);
+DECLARE_DESERIALISE_TYPE(D3D12_DXIL_SUBOBJECT_TO_EXPORTS_ASSOCIATION);
+DECLARE_DESERIALISE_TYPE(D3D12_HIT_GROUP_DESC);
+DECLARE_DESERIALISE_TYPE(D3D12_EXPORT_DESC);
 
 enum class D3D12Chunk : uint32_t
 {
@@ -892,5 +1299,38 @@ enum class D3D12Chunk : uint32_t
   Device_CreateCommittedResource2,
   Device_CreatePlacedResource1,
   Device_CreateCommandQueue1,
+  CoherentMapWrite,
+  Device_CreateSampler2,
+  Device_CreateCommittedResource3,
+  Device_CreatePlacedResource2,
+  Device_CreateReservedResource1,
+  Device_CreateReservedResource2,
+  List_OMSetFrontAndBackStencilRef,
+  List_RSSetDepthBias,
+  List_IASetIndexBufferStripCutValue,
+  List_Barrier,
+  List_DispatchMesh,
+  Device_CreateStateObject,
+  Device_AddToStateObject,
+  List_BuildRaytracingAccelerationStructure,
+  List_CopyRaytracingAccelerationStructure,
+  List_EmitRaytracingAccelerationStructurePostbuildInfo,
+  List_DispatchRays,
+  List_SetPipelineState1,
+  CreateAS,
+  StateObject_SetPipelineStackSize,
+  Device_CreateHeapFromAddress1,
+  Device_CreateRootSignatureFromSubobjectInLibrary,
+  List_SetProgram,
+  List_DispatchGraph,
+  SetQueueAnnotation,
+  SetCommandAnnotation,
+  Device_TryCreateShaderResourceView,
+  Device_TryCreateUnorderedAccessView,
+  Device_TryCreateConstantBufferView,
+  Device_TryCreateSampler2,
+  Device_TryCreateRenderTargetView,
+  Device_TryCreateDepthStencilView,
+  Device_CreateQueryHeap1,
   Max,
 };

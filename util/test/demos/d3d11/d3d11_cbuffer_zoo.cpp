@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -286,9 +286,15 @@ cbuffer consts : register(b0)
   float4 test;                            // {536, 537, 538, 539}
 };
 
+cbuffer packed_consts : register(b1)
+{
+  float col1z : packoffset(c1.z); // 4+2
+  float col2w : packoffset(c2.w); // 8+3
+};
+
 float4 main() : SV_Target0
 {
-	return test + float4(0.1f, 0.0f, 0.0f, 0.0f);
+	return test + col1z + float4(0.1f, 0.0f, 0.0f, 0.0f);
 }
 
 )EOSHADER";
@@ -312,8 +318,13 @@ float4 main() : SV_Target0
     for(int i = 0; i < 512; i++)
       cbufferdata[i] = Vec4f(float(i * 4 + 0), float(i * 4 + 1), float(i * 4 + 2), float(i * 4 + 3));
 
+    float packed_consts[12];
+    for(int i = 0; i < 12; i++)
+      packed_consts[i] = (float)i;
+
     ID3D11BufferPtr vb = MakeBuffer().Vertex().Data(DefaultTri);
     ID3D11BufferPtr cb = MakeBuffer().Constant().Data(cbufferdata);
+    ID3D11BufferPtr cb1 = MakeBuffer().Constant().Data(packed_consts);
 
     ID3D11Texture2DPtr fltTex =
         MakeTexture(DXGI_FORMAT_R32G32B32A32_FLOAT, screenWidth, screenHeight).RTV().SRV();
@@ -331,6 +342,7 @@ float4 main() : SV_Target0
       ctx->PSSetShader(ps, NULL, 0);
 
       ctx->PSSetConstantBuffers(0, 1, &cb.GetInterfacePtr());
+      ctx->PSSetConstantBuffers(1, 1, &cb1.GetInterfacePtr());
 
       RSSetViewport({0.0f, 0.0f, (float)screenWidth, (float)screenHeight, 0.0f, 1.0f});
 

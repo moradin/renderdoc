@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -41,6 +41,7 @@ typedef HDC(WINAPI *PFN_wglGetCurrentDC)();
 
 // wgl extensions
 typedef PFNWGLCREATECONTEXTATTRIBSARBPROC PFN_wglCreateContextAttribsARB;
+typedef PFNWGLMAKECONTEXTCURRENTARBPROC PFN_wglMakeContextCurrentARB;
 typedef PFNWGLGETPIXELFORMATATTRIBIVARBPROC PFN_wglGetPixelFormatAttribivARB;
 typedef PFNWGLGETEXTENSIONSSTRINGEXTPROC PFN_wglGetExtensionsStringEXT;
 typedef PFNWGLGETEXTENSIONSSTRINGARBPROC PFN_wglGetExtensionsStringARB;
@@ -75,6 +76,7 @@ typedef LONG(WINAPI *PFN_ChangeDisplaySettingsExW)(LPCWSTR, DEVMODEW *, HWND, DW
   FUNC("opengl32.dll", wglSwapLayerBuffers);    \
   FUNC("opengl32.dll", wglSwapMultipleBuffers); \
   FUNC("", wglCreateContextAttribsARB);         \
+  FUNC("", wglMakeContextCurrentARB);           \
   FUNC("gdi32.dll", SwapBuffers);               \
   FUNC("user32.dll", ChangeDisplaySettingsA);   \
   FUNC("user32.dll", ChangeDisplaySettingsW);   \

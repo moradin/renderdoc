@@ -12,6 +12,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 #pragma warning(disable: 4996)
 
@@ -897,7 +898,6 @@ bool jpeg_encoder::process_scanline(const void* pScanline)
 }
 
 // Higher level wrappers/examples (optional).
-#include <stdio.h>
 
 class cfile_stream : public output_stream
 {

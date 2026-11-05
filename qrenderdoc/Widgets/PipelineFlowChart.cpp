@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -38,10 +38,21 @@ PipelineFlowChart::~PipelineFlowChart()
 
 void PipelineFlowChart::setStages(const QStringList &abbrevs, const QStringList &names)
 {
+  int prev = -1;
+  QString prevAbbrev;
+
+  if(!m_StageNames.empty() && names.count() != m_StageNames.count())
+  {
+    prev = m_SelectedStage;
+    prevAbbrev = m_StageAbbrevs[prev];
+  }
+
   m_StageNames = names;
   m_StageAbbrevs = abbrevs;
   m_StageFlows.reserve(m_StageNames.count());
+  m_StageFlows.clear();
   m_StagesEnabled.reserve(m_StageNames.count());
+  m_StagesEnabled.clear();
   for(int i = 0; i < m_StageNames.count(); i++)
   {
     m_StageFlows.push_back(true);
@@ -49,6 +60,41 @@ void PipelineFlowChart::setStages(const QStringList &abbrevs, const QStringList 
   }
 
   update();
+
+  if(prev >= 0)
+  {
+    int exact = m_StageAbbrevs.indexOf(prevAbbrev);
+
+    if(exact >= 0)
+    {
+      setSelectedStage(exact);
+    }
+    else
+    {
+      // this is most likely a change between mesh/vertex pipeline, default to either the mesh
+      // shader or vertex shader if we can find it. Fortunately those names are identical
+      int vert = m_StageNames.indexOf(tr("Vertex Shader"));
+      int mesh = m_StageNames.indexOf(tr("Mesh Shader"));
+
+      if(vert >= 0)
+      {
+        setSelectedStage(vert);
+      }
+      else if(mesh >= 0)
+      {
+        setSelectedStage(mesh);
+      }
+      else
+      {
+        qWarning() << "Couldn't find default stage when names changed";
+        setSelectedStage(selectedStage());
+      }
+    }
+  }
+  else
+  {
+    setSelectedStage(selectedStage());
+  }
 }
 
 void PipelineFlowChart::setStageName(int index, const QString &abbrev, const QString &name)

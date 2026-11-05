@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,6 +29,10 @@
 #extension GL_ARB_derivative_control : enable
 #extension GL_ARB_shader_image_load_store : require
 #extension GL_ARB_gpu_shader5 : require
+#endif
+
+#if defined(VULKAN) && defined(USE_MULTIVIEW)
+#extension GL_EXT_multiview : require
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////////////////
@@ -71,7 +75,12 @@ void main()
   // Count the live pixels, minus 1 (zero indexing)
   uint pixelCount = c0 + c1 + c2 + c3 - 1u;
 
-  ivec3 quad = ivec3(gl_FragCoord.xy * 0.5, pixelCount);
+  uint arrayIndex = pixelCount;
+#if defined(VULKAN) && defined(USE_MULTIVIEW)
+  arrayIndex += 4 * gl_ViewIndex;
+#endif
+
+  ivec3 quad = ivec3(gl_FragCoord.xy * 0.5, arrayIndex);
   imageAtomicAdd(overdrawImage, quad, 1);
 }
 

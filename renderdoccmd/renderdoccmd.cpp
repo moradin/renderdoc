@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -174,6 +174,163 @@ struct HelpCommand : public Command
   }
 };
 
+struct CaptureCommand : public Command
+{
+private:
+  std::string executable;
+  std::string workingDir;
+  std::string cmdLine;
+  std::string logFile;
+  bool wait_for_exit = false;
+
+public:
+  CaptureCommand() : Command() {}
+  virtual void AddOptions(cmdline::parser &parser)
+  {
+    parser.set_footer("<executable> [program arguments]");
+    parser.stop_at_rest(true);
+  }
+  virtual const char *Description() { return "Launches the given executable to capture."; }
+  virtual bool IsInternalOnly() { return false; }
+  virtual bool IsCaptureCommand() { return true; }
+  virtual bool Parse(cmdline::parser &parser, GlobalEnvironment &)
+  {
+    std::vector<std::string> rest = parser.rest();
+
+    parser.set_rest({});
+
+    if(rest.empty())
+    {
+      std::cerr << "Error: capture command requires an executable to launch." << std::endl
+                << std::endl
+                << parser.usage();
+      return 0;
+    }
+
+    executable = rest[0];
+    workingDir = parser.get<std::string>("working-dir");
+    logFile = parser.get<std::string>("capture-file");
+
+    for(size_t i = 1; i < rest.size(); i++)
+    {
+      if(!cmdLine.empty())
+        cmdLine += ' ';
+
+      cmdLine += EscapeArgument(rest[i]);
+    }
+
+    wait_for_exit = parser.exist("wait-for-exit");
+
+    return true;
+  }
+
+  virtual int Execute(const CaptureOptions &opts)
+  {
+    std::cout << "Launching '" << executable << "'";
+
+    if(!cmdLine.empty())
+      std::cout << " with params: " << cmdLine;
+
+    std::cout << std::endl;
+
+    rdcarray<EnvironmentModification> env;
+
+    ExecuteResult res = RENDERDOC_ExecuteAndInject(
+        conv(executable), conv(workingDir), conv(cmdLine), env, conv(logFile), opts, wait_for_exit);
+
+    if(res.result.code != ResultCode::Succeeded)
+    {
+      std::cerr << "Failed to create & inject: " << res.result.Message() << std::endl;
+      return (int)res.result.code;
+    }
+
+    if(wait_for_exit)
+    {
+      std::cerr << "'" << executable << "' finished executing." << std::endl;
+      res.ident = 0;
+    }
+    else
+    {
+      std::cerr << "Launched as ID " << res.ident << std::endl;
+    }
+
+    return res.ident;
+  }
+
+  std::string EscapeArgument(const std::string &arg)
+  {
+    // nothing to escape or quote
+    if(arg.find_first_of(" \t\r\n\"") == std::string::npos)
+      return arg;
+
+    // return arg in quotes, with any quotation marks escaped
+    std::string ret = arg;
+
+    size_t i = ret.find('\"');
+    while(i != std::string::npos)
+    {
+      ret.insert(ret.begin() + i, '\\');
+
+      i = ret.find('\"', i + 2);
+    }
+
+    return '"' + ret + '"';
+  }
+};
+
+struct InjectCommand : public Command
+{
+private:
+  uint32_t PID = 0;
+  std::string captureFile;
+  bool wait_for_exit = false;
+
+public:
+  InjectCommand() : Command() {}
+  virtual void AddOptions(cmdline::parser &parser)
+  {
+    parser.add<uint32_t>("PID", 0, "The process ID of the process to inject.", true);
+  }
+  virtual const char *Description() { return "Injects RenderDoc into a given running process."; }
+  virtual bool IsInternalOnly() { return false; }
+  virtual bool IsCaptureCommand() { return true; }
+  virtual bool Parse(cmdline::parser &parser, GlobalEnvironment &)
+  {
+    PID = parser.get<uint32_t>("PID");
+    captureFile = parser.get<std::string>("capture-file");
+    wait_for_exit = parser.exist("wait-for-exit");
+    return true;
+  }
+  virtual int Execute(const CaptureOptions &opts)
+  {
+    std::cout << "Injecting into PID " << PID << std::endl;
+
+    rdcarray<EnvironmentModification> env;
+
+    ExecuteResult res = RENDERDOC_InjectIntoProcess(PID, env, conv(captureFile), opts, wait_for_exit);
+
+    if(res.result.code != ResultCode::Succeeded)
+    {
+      std::cerr << "Failed to inject: " << res.result.Message() << std::endl;
+      return (int)res.result.code;
+    }
+
+    if(wait_for_exit)
+    {
+      std::cerr << PID << " finished executing." << std::endl;
+      res.ident = 0;
+    }
+    else
+    {
+      std::cerr << "Launched as ID " << res.ident << std::endl;
+    }
+
+    return res.ident;
+  }
+};
+
+#if !defined(RDOC_SELFCAPTURE_LIMITEDAPI)
+
 struct ThumbCommand : public Command
 {
 private:
@@ -259,14 +416,14 @@ public:
     bytebuf buf;
 
     ICaptureFile *file = RENDERDOC_OpenCaptureFile();
-    ReplayStatus st = file->OpenFile(conv(infile), "rdc", NULL);
-    if(st == ReplayStatus::Succeeded)
+    ResultDetails st = file->OpenFile(conv(infile), "rdc", NULL);
+    if(st.OK())
     {
       buf = file->GetThumbnail(type, maxsize).data;
     }
     else
     {
-      std::cerr << "Couldn't open '" << infile << "': " << ToStr(st) << std::endl;
+      std::cerr << "Couldn't open '" << infile << "': " << st.Message() << std::endl;
     }
     file->Shutdown();
 
@@ -295,167 +452,13 @@ public:
   }
 };
 
-struct CaptureCommand : public Command
-{
-private:
-  std::string executable;
-  std::string workingDir;
-  std::string cmdLine;
-  std::string logFile;
-  bool wait_for_exit = false;
-
-public:
-  CaptureCommand() : Command() {}
-  virtual void AddOptions(cmdline::parser &parser)
-  {
-    parser.set_footer("<executable> [program arguments]");
-    parser.stop_at_rest(true);
-  }
-  virtual const char *Description() { return "Launches the given executable to capture."; }
-  virtual bool IsInternalOnly() { return false; }
-  virtual bool IsCaptureCommand() { return true; }
-  virtual bool Parse(cmdline::parser &parser, GlobalEnvironment &)
-  {
-    std::vector<std::string> rest = parser.rest();
-
-    parser.set_rest({});
-
-    if(rest.empty())
-    {
-      std::cerr << "Error: capture command requires an executable to launch." << std::endl
-                << std::endl
-                << parser.usage();
-      return 0;
-    }
-
-    executable = rest[0];
-    workingDir = parser.get<std::string>("working-dir");
-    logFile = parser.get<std::string>("capture-file");
-
-    for(size_t i = 1; i < rest.size(); i++)
-    {
-      if(!cmdLine.empty())
-        cmdLine += ' ';
-
-      cmdLine += EscapeArgument(rest[i]);
-    }
-
-    wait_for_exit = parser.exist("wait-for-exit");
-
-    return true;
-  }
-
-  virtual int Execute(const CaptureOptions &opts)
-  {
-    std::cout << "Launching '" << executable << "'";
-
-    if(!cmdLine.empty())
-      std::cout << " with params: " << cmdLine;
-
-    std::cout << std::endl;
-
-    rdcarray<EnvironmentModification> env;
-
-    ExecuteResult res = RENDERDOC_ExecuteAndInject(
-        conv(executable), conv(workingDir), conv(cmdLine), env, conv(logFile), opts, wait_for_exit);
-
-    if(res.status != ReplayStatus::Succeeded)
-    {
-      std::cerr << "Failed to create & inject: " << ToStr(res.status) << std::endl;
-      return (int)res.status;
-    }
-
-    if(wait_for_exit)
-    {
-      std::cerr << "'" << executable << "' finished executing." << std::endl;
-      res.ident = 0;
-    }
-    else
-    {
-      std::cerr << "Launched as ID " << res.ident << std::endl;
-    }
-
-    return res.ident;
-  }
-
-  std::string EscapeArgument(const std::string &arg)
-  {
-    // nothing to escape or quote
-    if(arg.find_first_of(" \t\r\n\"") == std::string::npos)
-      return arg;
-
-    // return arg in quotes, with any quotation marks escaped
-    std::string ret = arg;
-
-    size_t i = ret.find('\"');
-    while(i != std::string::npos)
-    {
-      ret.insert(ret.begin() + i, '\\');
-
-      i = ret.find('\"', i + 2);
-    }
-
-    return '"' + ret + '"';
-  }
-};
-
-struct InjectCommand : public Command
-{
-private:
-  uint32_t PID = 0;
-  std::string captureFile;
-  bool wait_for_exit = false;
-
-public:
-  InjectCommand() : Command() {}
-  virtual void AddOptions(cmdline::parser &parser)
-  {
-    parser.add<uint32_t>("PID", 0, "The process ID of the process to inject.", true);
-  }
-  virtual const char *Description() { return "Injects RenderDoc into a given running process."; }
-  virtual bool IsInternalOnly() { return false; }
-  virtual bool IsCaptureCommand() { return true; }
-  virtual bool Parse(cmdline::parser &parser, GlobalEnvironment &)
-  {
-    PID = parser.get<uint32_t>("PID");
-    captureFile = parser.get<std::string>("capture-file");
-    wait_for_exit = parser.exist("wait-for-exit");
-    return true;
-  }
-  virtual int Execute(const CaptureOptions &opts)
-  {
-    std::cout << "Injecting into PID " << PID << std::endl;
-
-    rdcarray<EnvironmentModification> env;
-
-    ExecuteResult res = RENDERDOC_InjectIntoProcess(PID, env, conv(captureFile), opts, wait_for_exit);
-
-    if(res.status != ReplayStatus::Succeeded)
-    {
-      std::cerr << "Failed to inject: " << ToStr(res.status) << std::endl;
-      return (int)res.status;
-    }
-
-    if(wait_for_exit)
-    {
-      std::cerr << PID << " finished executing." << std::endl;
-      res.ident = 0;
-    }
-    else
-    {
-      std::cerr << "Launched as ID " << res.ident << std::endl;
-    }
-
-    return res.ident;
-  }
-};
-
 struct RemoteServerCommand : public Command
 {
 private:
   std::string host;
   bool daemon = false;
   bool preview = false;
+  uint16_t port = 0;
 
 public:
   RemoteServerCommand() : Command() {}
@@ -465,6 +468,9 @@ public:
     parser.add<std::string>(
         "host", 'h', "The interface to listen on. By default listens on all interfaces", false, "");
     parser.add("preview", 'v', "Display a preview window when a replay is active.");
+    parser.add<uint32_t>(
+        "port", 'p',
+        "The port to listen on. Default is 0, which listens on RenderDoc's default port.", false, 0);
   }
   virtual const char *Description()
   {
@@ -478,12 +484,15 @@ public:
     host = parser.get<std::string>("host");
     daemon = parser.exist("daemon");
     preview = parser.exist("preview");
+    port = parser.get<uint32_t>("port") & 0xffff;
     return true;
   }
   virtual int Execute(const CaptureOptions &)
   {
-    std::cerr << "Spawning a replay host listening on " << (host.empty() ? "*" : host) << "..."
-              << std::endl;
+    std::cerr << "Spawning a replay host listening on " << (host.empty() ? "*" : host);
+    if(port != 0)
+      std::cerr << ":" << port;
+    std::cerr << "..." << std::endl;
 
     if(daemon)
     {
@@ -504,7 +513,8 @@ public:
     if(DisplayRemoteServerPreview(false, {}).system != WindowingSystem::Unknown)
       previewWindow = &DisplayRemoteServerPreview;
 
-    RENDERDOC_BecomeRemoteServer(conv(host), []() { return killSignal; }, previewWindow);
+    RENDERDOC_BecomeRemoteServer(
+        conv(host), port, []() { return killSignal; }, previewWindow);
 
     std::cerr << std::endl << "Cleaning up from replay hosting." << std::endl;
 
@@ -573,12 +583,12 @@ public:
       std::cout << "Replaying '" << filename << "' on " << remote_host << "." << std::endl;
 
       IRemoteServer *remote = NULL;
-      ReplayStatus status = RENDERDOC_CreateRemoteServerConnection(conv(remote_host), &remote);
+      ResultDetails result = RENDERDOC_CreateRemoteServerConnection(conv(remote_host), &remote);
 
-      if(remote == NULL || status != ReplayStatus::Succeeded)
+      if(remote == NULL || result.code != ResultCode::Succeeded)
       {
-        std::cerr << "Error: " << ToStr(status) << " - Couldn't connect to " << remote_host << "."
-                  << std::endl;
+        std::cerr << "Error: " << result.Message() << " - Couldn't connect to " << remote_host
+                  << "." << std::endl;
         std::cerr << "       Have you run renderdoccmd remoteserver on '" << remote_host << "'?"
                   << std::endl;
         return 1;
@@ -589,9 +599,9 @@ public:
       rdcstr remotePath = remote->CopyCaptureToRemote(conv(filename), NULL);
 
       IReplayController *renderer = NULL;
-      rdctie(status, renderer) = remote->OpenCapture(~0U, remotePath, ReplayOptions(), NULL);
+      rdctie(result, renderer) = remote->OpenCapture(~0U, remotePath, ReplayOptions(), NULL);
 
-      if(status == ReplayStatus::Succeeded)
+      if(result.OK())
       {
         DisplayRendererPreview(renderer, width, height, loops);
 
@@ -599,7 +609,8 @@ public:
       }
       else
       {
-        std::cerr << "Couldn't load and replay '" << filename << "': " << ToStr(status) << std::endl;
+        std::cerr << "Couldn't load and replay '" << filename << "': " << result.Message()
+                  << std::endl;
       }
 
       remote->ShutdownConnection();
@@ -610,19 +621,21 @@ public:
 
       ICaptureFile *file = RENDERDOC_OpenCaptureFile();
 
-      if(file->OpenFile(conv(filename), "rdc", NULL) != ReplayStatus::Succeeded)
+      ResultDetails res = file->OpenFile(conv(filename), "rdc", NULL);
+
+      if(res.code != ResultCode::Succeeded)
       {
-        std::cerr << "Couldn't load '" << filename << "'." << std::endl;
+        std::cerr << "Couldn't load '" << filename << "': " << res.Message() << std::endl;
         return 1;
       }
 
       IReplayController *renderer = NULL;
-      ReplayStatus status = ReplayStatus::InternalError;
-      rdctie(status, renderer) = file->OpenCapture(ReplayOptions(), NULL);
+      ResultDetails result = {};
+      rdctie(result, renderer) = file->OpenCapture(ReplayOptions(), NULL);
 
       file->Shutdown();
 
-      if(status == ReplayStatus::Succeeded)
+      if(result.OK())
       {
         DisplayRendererPreview(renderer, width, height, loops);
 
@@ -630,7 +643,8 @@ public:
       }
       else
       {
-        std::cerr << "Couldn't load and replay '" << filename << "': " << ToStr(status) << std::endl;
+        std::cerr << "Couldn't load and replay '" << filename << "': " << result.Message()
+                  << std::endl;
         return 1;
       }
     }
@@ -797,21 +811,21 @@ public:
 
     ICaptureFile *file = RENDERDOC_OpenCaptureFile();
 
-    ReplayStatus st = file->OpenFile(conv(infile), conv(infmt), NULL);
+    ResultDetails st = file->OpenFile(conv(infile), conv(infmt), NULL);
 
-    if(st != ReplayStatus::Succeeded)
+    if(st.code != ResultCode::Succeeded)
     {
-      std::cerr << "Couldn't load '" << infile << "' as '" << infmt << "': " << ToStr(st)
+      std::cerr << "Couldn't load '" << infile << "' as '" << infmt << "': " << st.Message()
                 << std::endl;
       return 1;
     }
 
     st = file->Convert(conv(outfile), conv(outfmt), NULL, NULL);
 
-    if(st != ReplayStatus::Succeeded)
+    if(st.code != ResultCode::Succeeded)
     {
       std::cerr << "Couldn't convert '" << infile << "' to '" << outfile << "' as '" << outfmt
-                << "': " << ToStr(st) << std::endl;
+                << "': " << st.Message() << std::endl;
       return 1;
     }
 
@@ -832,7 +846,7 @@ public:
   virtual void AddOptions(cmdline::parser &parser)
   {
     parser.set_footer(
-#if PYTHON_VERSION_MINOR > 0
+#if PYTHON_AVAILABLE == 1
         "<unit|functional>"
 #else
         "<unit>"
@@ -862,10 +876,10 @@ public:
     rest.erase(rest.begin());
 
     if(mode != "unit"
-#if PYTHON_VERSION_MINOR > 0
+#if PYTHON_AVAILABLE == 1
        && mode != "functional"
 #endif
-       )
+    )
     {
       std::cerr << "Unsupported test frame work '" << mode << "'" << std::endl << std::endl;
       std::cerr << parser.usage() << std::endl;
@@ -884,9 +898,9 @@ public:
   {
     if(mode == "unit")
       return RENDERDOC_RunUnitTests("renderdoccmd test unit", args);
-#if PYTHON_VERSION_MINOR > 0
+#if PYTHON_AVAILABLE == 1
     else if(mode == "functional")
-      return RENDERDOC_RunFunctionalTests(PYTHON_VERSION_MINOR, args);
+      return RENDERDOC_RunFunctionalTests(args);
 #endif
 
     std::cerr << "Unsupported test frame work '" << mode << "'" << std::endl << std::endl;
@@ -1007,10 +1021,10 @@ public:
 
     ExecuteResult result = RENDERDOC_InjectIntoProcess(pid, env, conv(capfile), cmdopts, false);
 
-    if(result.status == ReplayStatus::Succeeded)
+    if(result.result.OK())
       return result.ident;
 
-    return (int)result.status;
+    return (int)result.result.code;
   }
 };
 
@@ -1032,10 +1046,12 @@ public:
   {
     parser.set_footer("<capture.rdc>");
     parser.add<std::string>("section", 's', "The embedded section name.");
-    parser.add<std::string>("file", 'f', m_Extract ? "The file to write the section contents to."
-                                                   : "The file to read the section contents from.");
-    parser.add("no-clobber", 'n', m_Extract ? "Don't overwrite the file if it already exists."
-                                            : "Don't overwrite the section if it already exists.");
+    parser.add<std::string>("file", 'f',
+                            m_Extract ? "The file to write the section contents to."
+                                      : "The file to read the section contents from.");
+    parser.add("no-clobber", 'n',
+               m_Extract ? "Don't overwrite the file if it already exists."
+                         : "Don't overwrite the section if it already exists.");
 
     if(!m_Extract)
     {
@@ -1102,12 +1118,12 @@ public:
 
     ICaptureFile *capfile = RENDERDOC_OpenCaptureFile();
 
-    ReplayStatus status = capfile->OpenFile(conv(rdc), "", NULL);
+    ResultDetails result = capfile->OpenFile(conv(rdc), "", NULL);
 
-    if(status != ReplayStatus::Succeeded)
+    if(result.code != ResultCode::Succeeded)
     {
       capfile->Shutdown();
-      std::cerr << "Couldn't load '" << rdc << "': " << ToStr(status) << std::endl;
+      std::cerr << "Couldn't load '" << rdc << "': " << result.Message() << std::endl;
       return 1;
     }
 
@@ -1202,7 +1218,7 @@ public:
       bytebuf blob;
 
       fseek(f, 0, SEEK_END);
-      int len = ftell(f);
+      long len = ftell(f);
       fseek(f, 0, SEEK_SET);
 
       if(len < 0)
@@ -1247,6 +1263,8 @@ public:
   }
 };
 
+#endif    // !defined(RDOC_SELFCAPTURE_LIMITEDAPI)
+
 struct VulkanRegisterCommand : public Command
 {
 private:
@@ -1269,8 +1287,7 @@ public:
     parser.add("register", '\0', "Register RenderDoc's vulkan layer");
     parser.add("user", '\0',
                "Install layer registration at user-local level instead of system-wide");
-    parser.add("system", '\0',
-               "Install layer registration system-wide (requires admin privileges)");
+    parser.add("system", '\0', "Install layer registration system-wide (requires admin privileges)");
   }
   virtual const char *Description() { return "Vulkan layer registration needs attention"; }
   virtual bool IsInternalOnly()
@@ -1544,9 +1561,12 @@ int renderdoccmd(GlobalEnvironment &env, std::vector<std::string> &argv)
     add_alias("/?", "help");
 
     // add platform agnostic commands
-    add_command("thumb", new ThumbCommand());
+
     add_command("capture", new CaptureCommand());
     add_command("inject", new InjectCommand());
+
+#if !defined(RDOC_SELFCAPTURE_LIMITEDAPI)
+    add_command("thumb", new ThumbCommand());
     add_command("remoteserver", new RemoteServerCommand());
     add_command("replay", new ReplayCommand());
     add_command("capaltbit", new CapAltBitCommand());
@@ -1554,6 +1574,7 @@ int renderdoccmd(GlobalEnvironment &env, std::vector<std::string> &argv)
     add_command("convert", new ConvertCommand());
     add_command("embed", new EmbeddedSectionCommand(false));
     add_command("extract", new EmbeddedSectionCommand(true));
+#endif    // !defined(RDOC_SELFCAPTURE_LIMITEDAPI)
 
     if(argv.size() <= 1)
     {
@@ -1628,12 +1649,14 @@ int renderdoccmd(GlobalEnvironment &env, std::vector<std::string> &argv)
               "Capturing Option: Include all live resources, not just those used by a frame.");
       cmd.add("opt-capture-all-cmd-lists", 0,
               "Capturing Option: In D3D11, record all command lists from application start.");
+      cmd.add<int>("opt-soft-memory-limit", 0,
+                   "Capturing Option: Specify a soft memory limit to try to respect.", false, 0,
+                   cmdline::range(0, 10000));
     }
 
     cmd.parse_check(argv, true);
 
     CaptureOptions opts;
-    RENDERDOC_GetDefaultCaptureOptions(&opts);
 
     if(it->second->IsCaptureCommand())
     {
@@ -1659,6 +1682,7 @@ int renderdoccmd(GlobalEnvironment &env, std::vector<std::string> &argv)
         opts.captureAllCmdLists = true;
 
       opts.delayForDebugger = (uint32_t)cmd.get<int>("opt-delay-for-debugger");
+      opts.softMemoryLimit = (uint32_t)cmd.get<int>("opt-soft-memory-limit");
     }
 
     if(!it->second->HandlesUsageManually() && cmd.exist("help"))
@@ -1674,7 +1698,11 @@ int renderdoccmd(GlobalEnvironment &env, std::vector<std::string> &argv)
       return 1;
     }
 
-    RENDERDOC_InitialiseReplay(env, convertArgs(cmd.rest()));
+    rdcarray<rdcstr> args = convertArgs(cmd.rest());
+
+    args.append(it->second->ReplayArgs());
+
+    RENDERDOC_InitialiseReplay(env, args);
 
     int ret = it->second->Execute(opts);
 

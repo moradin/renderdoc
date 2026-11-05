@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -353,8 +353,16 @@ HOOK_EXPORT Bool glXMakeCurrent_renderdoc_hooked(Display *dpy, GLXDrawable drawa
 {
   if(RenderDoc::Inst().IsReplayApp())
   {
-    if(!GLX.glXMakeCurrent)
+    if(!GLX.glXMakeCurrent || !GLX.glXGetProcAddress)
       GLX.PopulateForReplay();
+
+    // populate GL function pointers now in case linked functions are called
+    if(GLX.glXGetProcAddress)
+    {
+      GL.PopulateWithCallback([](const char *funcName) -> void * {
+        return (void *)GLX.glXGetProcAddress((const GLubyte *)funcName);
+      });
+    }
 
     return GLX.glXMakeCurrent(dpy, drawable, ctx);
   }
@@ -374,12 +382,13 @@ HOOK_EXPORT Bool glXMakeCurrent_renderdoc_hooked(Display *dpy, GLXDrawable drawa
     {
       glxhook.contexts.insert(ctx);
 
-      FetchEnabledExtensions();
-
-      // see gl_emulated.cpp
-      GL.EmulateUnsupportedFunctions();
-      GL.EmulateRequiredExtensions();
-      GL.DriverForEmulation(&glxhook.driver);
+      if(FetchEnabledExtensions())
+      {
+        // see gl_emulated.cpp
+        GL.EmulateUnsupportedFunctions();
+        GL.EmulateRequiredExtensions();
+        GL.DriverForEmulation(&glxhook.driver);
+      }
     }
 
     GLWindowingData data;
@@ -406,9 +415,9 @@ HOOK_EXPORT Bool glXMakeCurrent_renderdoc_hooked(Display *dpy, GLXDrawable drawa
         data.cfg = NULL;
     }
 
-    glxhook.driver.ActivateContext(data);
-
     glxhook.UpdateWindowSize(data, dpy, drawable);
+
+    glxhook.driver.ActivateContext(data);
 
     if(config)
       XFree(config);
@@ -424,8 +433,16 @@ HOOK_EXPORT Bool glXMakeContextCurrent_renderdoc_hooked(Display *dpy, GLXDrawabl
 {
   if(RenderDoc::Inst().IsReplayApp())
   {
-    if(!GLX.glXMakeContextCurrent)
+    if(!GLX.glXMakeContextCurrent || !GLX.glXGetProcAddress)
       GLX.PopulateForReplay();
+
+    // populate GL function pointers now in case linked functions are called
+    if(GLX.glXGetProcAddress)
+    {
+      GL.PopulateWithCallback([](const char *funcName) -> void * {
+        return (void *)GLX.glXGetProcAddress((const GLubyte *)funcName);
+      });
+    }
 
     return GLX.glXMakeContextCurrent(dpy, draw, read, ctx);
   }
@@ -445,12 +462,13 @@ HOOK_EXPORT Bool glXMakeContextCurrent_renderdoc_hooked(Display *dpy, GLXDrawabl
     {
       glxhook.contexts.insert(ctx);
 
-      FetchEnabledExtensions();
-
-      // see gl_emulated.cpp
-      GL.EmulateUnsupportedFunctions();
-      GL.EmulateRequiredExtensions();
-      GL.DriverForEmulation(&glxhook.driver);
+      if(FetchEnabledExtensions())
+      {
+        // see gl_emulated.cpp
+        GL.EmulateUnsupportedFunctions();
+        GL.EmulateRequiredExtensions();
+        GL.DriverForEmulation(&glxhook.driver);
+      }
     }
 
     GLWindowingData data;
@@ -476,9 +494,9 @@ HOOK_EXPORT Bool glXMakeContextCurrent_renderdoc_hooked(Display *dpy, GLXDrawabl
         data.cfg = NULL;
     }
 
-    glxhook.driver.ActivateContext(data);
-
     glxhook.UpdateWindowSize(data, dpy, draw);
+
+    glxhook.driver.ActivateContext(data);
 
     if(config)
       XFree(config);
@@ -740,7 +758,7 @@ GLX_PASSTHRU_4(GLXWindow, glXCreateWindow, Display *, dpy, GLXFBConfig, config, 
                const int *, attrib_list);
 GLX_PASSTHRU_2(void, glXDestroyWindow, Display *, dpy, GLXWindow, window);
 
-static void GLXHooked(void *handle)
+static void GLXHooked(void *handle, const char *)
 {
   RDCDEBUG("GLX library hooked");
 

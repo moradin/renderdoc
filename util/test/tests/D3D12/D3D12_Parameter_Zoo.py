@@ -1,5 +1,3 @@
-import struct
-import math
 import renderdoc as rd
 import rdtest
 
@@ -9,22 +7,22 @@ class D3D12_Parameter_Zoo(rdtest.TestCase):
 
     def check_capture(self):
         action = self.find_action("Color Draw")
+        assert action is not None
 
-        self.check(action is not None)
+        action = action.nextAction
+        assert action is not None
 
-        action = action.next
+        self.set_event(action.eventId, False)
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        pipe = self.controller.GetPipelineState()
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
-
-        self.check_pixel_value(pipe.GetOutputTargets()[0].resourceId, 0.5, 0.5, [0.0, 1.0, 0.0, 1.0])
+        self.check_pixel_value(pipe.GetOutputTargets()[0].resource, 0.5, 0.5, [0.0, 1.0, 0.0, 1.0])
 
         rdtest.log.success("Captured loaded with color as expected")
 
         postvs_data = self.get_postvs(action, rd.MeshDataStage.VSOut, 0, action.numIndices)
 
-        postvs_ref = {
+        postvs_ref: rdtest.MeshReference = {
             0: {
                 'vtx': 0,
                 'idx': 0,
@@ -54,10 +52,11 @@ class D3D12_Parameter_Zoo(rdtest.TestCase):
 
         tex = rd.TextureDisplay()
         tex.overlay = rd.DebugOverlay.Drawcall
-        tex.resourceId = pipe.GetOutputTargets()[0].resourceId
+        tex.resourceId = pipe.GetOutputTargets()[0].resource
 
-        out: rd.ReplayOutput = self.controller.CreateOutput(rd.CreateHeadlessWindowingData(100, 100),
-                                                            rd.ReplayOutputType.Texture)
+        out = self.controller.CreateOutput(
+            rd.CreateHeadlessWindowingData(100, 100), rd.ReplayOutputType.Texture
+        )
 
         out.SetTextureDisplay(tex)
 
@@ -72,4 +71,57 @@ class D3D12_Parameter_Zoo(rdtest.TestCase):
 
         out.Shutdown()
 
+        res = self.get_resource_by_name("Sampler Heap")
+
+        sdfile = self.controller.GetStructuredFile()
+
+        chunk = sdfile.chunks[res.initialisationChunks[-1]]
+
+        desc1234 = chunk.GetChild(2).GetChild(1234).GetChild(3)
+
+        rdtest.log.comment('desc1234: ' + desc1234.name)
+
+        # filter
+        assert desc1234.GetChild(0).AsString() == 'D3D12_FILTER_ANISOTROPIC'
+        assert desc1234.GetChild(0).AsInt() == 0x55
+
+        # wrapping
+        assert desc1234.GetChild(1).AsString() == 'D3D12_TEXTURE_ADDRESS_MODE_BORDER'
+        assert desc1234.GetChild(1).AsInt() == 4
+
+        # MaxAnisotropy
+        assert desc1234.GetChild(1).AsInt() == 4
+
+        # MinLod
+        assert desc1234.GetChild(8).AsFloat() == 1.5
+
         rdtest.log.success("Overlay color is as expected")
+
+        action = self.find_action("No Sig Draw")
+        action = action.nextAction
+
+        self.set_event(action.eventId, False)
+
+        pipe = self.controller.GetPipelineState()
+
+        self.check_pixel_value(pipe.GetOutputTargets()[0].resource, 0.5, 0.5, [0.0, 1.0, 0.0, 1.0])
+
+        rdtest.log.success("No sig draw worked as expected")
+
+        action = self.find_action("No Sig Dispatch")
+        action = action.nextAction
+
+        self.set_event(action.eventId, False)
+
+        # nothing to actually check here
+
+        action = self.find_action("Temp heap Draw")
+        action = action.nextAction
+
+        self.set_event(action.eventId, False)
+
+        pipe = self.controller.GetPipelineState()
+
+        self.check_pixel_value(pipe.GetOutputTargets()[0].resource, 0.5, 0.5, [0.0, 1.0, 0.0, 1.0])
+
+        rdtest.log.success("Temp heap worked as expected")

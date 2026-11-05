@@ -10,7 +10,7 @@ It can be useful when tracking down problems to have an idea of where each API c
 
 .. warning::
 
-	On Windows the callstack gathering uses ``dbghelp.dll``. If you're using this dll for some other debugging functionality in your app it is highly recommended that you disable it, otherwise it can conflict and break RenderDoc's callstack capture.
+	On Windows the callstack gathering uses ``dbghelp.dll``. If you're using this DLL for some other debugging functionality in your app it is highly recommended that you disable it, otherwise it can conflict and break RenderDoc's callstack capture.
 
 .. note::
 
@@ -40,12 +40,12 @@ To resolve the symbols referenced in the capture, go to the :guilabel:`Tools` me
 
 The resolving symbols process may take some time the first few instances you use it, as it may have to download symbols from the Microsoft symbol server. Each module that is loaded in the application at the time of capture will be saved and its symbols searched for.
 
-By default a symbol server will be used, as well as a few default locations such as the location indicated in the PE metadata (i.e. the original build location). If a pdb cannot be found you will be prompted for the location of the pdb, and this new location will then be remembered for subsequent pdbs.
+By default a symbol server will be used, as well as a few default locations such as the location indicated in the PE metadata (i.e. the original build location). If a PDB cannot be found you will be prompted for the location of the PDB, and this new location will then be remembered for subsequent PDBs.
 
 .. figure:: ../imgs/Screenshots/NeedPDB.png
 
 	PDB locate prompt: Prompt to locate a PDB that cannot be found.
 
-If a PDB cannot be located then you have the option of permanently ignoring that PDB. This can be useful for third party libraries for which no PDB will ever be available. If you don't ignore the PDB you will be prompted to locate it the next time you open a capture that references it.
+If a PDB cannot be located then you have the option of permanently ignoring that PDB. This can be useful for third party libraries for which no PDB will ever be available. If you don't ignore the PDB you will be prompted to locate it the next time you open a capture that references it. The list of ignored PDBs is given in the settings window in the UI, where you can remove a PDB from it.
 
 Once the symbols have been successfully resolved the callstack section of the API inspector will contain any callstack that was collected for the given action or API call. You can select and copy any levels and paste them elsewhere if you wish.

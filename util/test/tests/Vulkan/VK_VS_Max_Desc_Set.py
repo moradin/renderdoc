@@ -9,17 +9,17 @@ class VK_VS_Max_Desc_Set(rdtest.TestCase):
 
         action = self.find_action("Draw")
 
-        self.check(action is not None)
+        assert action is not None
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
         # We only need to check the color output for the first vertex - if we got that, the test succeeded.
         # We're not testing VS out fetch in general here, just that it works when there's no spare descriptor set
         postvs_data = self.get_postvs(action, rd.MeshDataStage.VSOut, 0, 1)
 
-        postvs_ref = {
+        postvs_ref: rdtest.MeshReference = {
             0: {
                 'vtx': 0,
                 'idx': 0,

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -147,6 +147,7 @@ UINT GetByteSize(int Width, int Height, int Depth, DXGI_FORMAT Format, int mip)
       ret *= 1;
       break;
     case DXGI_FORMAT_B4G4R4A4_UNORM:
+    case DXGI_FORMAT_A4B4G4R4_UNORM:
       ret *= 2;    // 4 channels, half a byte each
       break;
     /*
@@ -660,6 +661,61 @@ DXGI_FORMAT GetDepthTypedFormat(DXGI_FORMAT f)
   return f;
 }
 
+DXGI_FORMAT GetDepthSRVFormat(DXGI_FORMAT f, UINT planeSlice)
+{
+  // The view format rules for planar depth/stencil formats are outlined here:
+  // https://microsoft.github.io/DirectX-Specs/d3d/PlanarDepthStencilDDISpec.html
+  if(planeSlice == 0)
+  {
+    switch(f)
+    {
+      // Depth only, 32 bit float depth
+      case DXGI_FORMAT_D32_FLOAT:
+      case DXGI_FORMAT_R32_FLOAT:
+      case DXGI_FORMAT_R32_TYPELESS: return DXGI_FORMAT_R32_FLOAT;
+
+      // Depth/stencil, 32 bit float depth
+      case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+      case DXGI_FORMAT_R32G8X24_TYPELESS:
+      case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+      case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT: return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+
+      // Depth/stencil, 24 bit unorm depth
+      case DXGI_FORMAT_D24_UNORM_S8_UINT:
+      case DXGI_FORMAT_R24G8_TYPELESS:
+      case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:
+      case DXGI_FORMAT_X24_TYPELESS_G8_UINT: return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+
+      // Depth only, 16 bit unorm depth
+      case DXGI_FORMAT_D16_UNORM:
+      case DXGI_FORMAT_R16_UNORM: return DXGI_FORMAT_R16_UNORM;
+
+      default: break;
+    }
+  }
+  else if(planeSlice == 1)
+  {
+    switch(f)
+    {
+      // Depth/stencil, 8 bit uint stencil
+      case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+      case DXGI_FORMAT_R32G8X24_TYPELESS:
+      case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+      case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT: return DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;
+
+      // Depth/stencil, 8 bit uint stencil
+      case DXGI_FORMAT_D24_UNORM_S8_UINT:
+      case DXGI_FORMAT_R24G8_TYPELESS:
+      case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:
+      case DXGI_FORMAT_X24_TYPELESS_G8_UINT: return DXGI_FORMAT_X24_TYPELESS_G8_UINT;
+
+      default: break;
+    }
+  }
+
+  return f;
+}
+
 DXGI_FORMAT GetNonSRGBFormat(DXGI_FORMAT f)
 {
   switch(f)
@@ -1055,8 +1111,7 @@ DXGI_FORMAT GetTypedFormat(DXGI_FORMAT f)
 
     case DXGI_FORMAT_R16G16_TYPELESS: return DXGI_FORMAT_R16G16_FLOAT;
 
-    case DXGI_FORMAT_R32_TYPELESS:
-      return DXGI_FORMAT_R32_FLOAT;
+    case DXGI_FORMAT_R32_TYPELESS: return DXGI_FORMAT_R32_FLOAT;
 
     // maybe not valid casts?
     case DXGI_FORMAT_R24G8_TYPELESS: return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
@@ -1095,7 +1150,7 @@ DXGI_FORMAT GetTypedFormat(DXGI_FORMAT f, CompType typeCast)
 {
   switch(f)
   {
-    // these formats have multiple typed formats - use the hint to decide which to use
+      // these formats have multiple typed formats - use the hint to decide which to use
 
     case DXGI_FORMAT_R8_TYPELESS:
     {
@@ -1328,8 +1383,7 @@ DXGI_FORMAT GetTypelessFormat(DXGI_FORMAT f)
     case DXGI_FORMAT_D32_FLOAT:    // maybe not valid cast?
     case DXGI_FORMAT_R32_FLOAT:
     case DXGI_FORMAT_R32_UINT:
-    case DXGI_FORMAT_R32_SINT:
-      return DXGI_FORMAT_R32_TYPELESS;
+    case DXGI_FORMAT_R32_SINT: return DXGI_FORMAT_R32_TYPELESS;
 
     // maybe not valid casts?
     case DXGI_FORMAT_R24G8_TYPELESS:
@@ -1420,7 +1474,8 @@ DXGI_FORMAT GetTypelessFormat(DXGI_FORMAT f)
     case DXGI_FORMAT_P208:
     case DXGI_FORMAT_V208:
     case DXGI_FORMAT_V408:
-    case DXGI_FORMAT_B4G4R4A4_UNORM: return f;
+    case DXGI_FORMAT_B4G4R4A4_UNORM:
+    case DXGI_FORMAT_A4B4G4R4_UNORM: return f;
 
     case DXGI_FORMAT_UNKNOWN: return DXGI_FORMAT_UNKNOWN;
 
@@ -1565,8 +1620,7 @@ D3D_PRIMITIVE_TOPOLOGY MakeD3DPrimitiveTopology(Topology Topo)
 {
   switch(Topo)
   {
-    case Topology::LineLoop:
-    case Topology::TriangleFan: RDCWARN("Unsupported primitive topology on D3D: %x", Topo); break;
+    case Topology::LineLoop: RDCWARN("Unsupported primitive topology on D3D: %x", Topo); break;
     default:
     case Topology::Unknown: return D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
     case Topology::PointList: return D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
@@ -1574,6 +1628,7 @@ D3D_PRIMITIVE_TOPOLOGY MakeD3DPrimitiveTopology(Topology Topo)
     case Topology::LineStrip: return D3D_PRIMITIVE_TOPOLOGY_LINESTRIP;
     case Topology::TriangleList: return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     case Topology::TriangleStrip: return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+    case Topology::TriangleFan: return D3D_PRIMITIVE_TOPOLOGY_TRIANGLEFAN;
     case Topology::LineList_Adj: return D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ;
     case Topology::LineStrip_Adj: return D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ;
     case Topology::TriangleList_Adj: return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ;
@@ -1778,7 +1833,7 @@ static uint32_t HexToInt(char hex)
   return 0;
 }
 
-rdcstr GetDriverVersion(DXGI_ADAPTER_DESC &desc)
+rdcstr GetDriverVersion(DXGI_ADAPTER_DESC &desc, LARGE_INTEGER adapterQueryVersion)
 {
   rdcstr device = StringFormat::Wide2UTF8(rdcwstr(desc.Description));
 
@@ -1808,10 +1863,6 @@ rdcstr GetDriverVersion(DXGI_ADAPTER_DESC &desc)
       SetupDiDestroyDeviceInfoList(devs);
       return device;
     }
-
-    // if we got a version, and didn't have one yet, set it
-    if(driverVersion.empty())
-      driverVersion = version;
 
     rdcstr pciid = GetDeviceProperty(devs, &data, &DEVPKEY_Device_MatchingDeviceId);
 
@@ -1851,6 +1902,13 @@ rdcstr GetDriverVersion(DXGI_ADAPTER_DESC &desc)
     RDCEraseEl(data);
     data.cbSize = sizeof(data);
     idx++;
+  }
+
+  if(driverVersion.empty())
+  {
+    driverVersion = StringFormat::Fmt(
+        "%u.%u.%u.%u", adapterQueryVersion.HighPart >> 16, adapterQueryVersion.HighPart & 0xffff,
+        adapterQueryVersion.LowPart >> 16, adapterQueryVersion.LowPart & 0xffff);
   }
 
   SetupDiDestroyDeviceInfoList(devs);
@@ -2050,6 +2108,7 @@ Topology MakePrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY Topo)
     case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP: return Topology::LineStrip;
     case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST: return Topology::TriangleList;
     case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP: return Topology::TriangleStrip;
+    case D3D_PRIMITIVE_TOPOLOGY_TRIANGLEFAN: return Topology::TriangleFan;
     case D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ: return Topology::LineList_Adj;
     case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ: return Topology::LineStrip_Adj;
     case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ: return Topology::TriangleList_Adj;
@@ -2133,10 +2192,10 @@ DXGI_FORMAT MakeDXGIFormat(ResourceFormat fmt)
         break;
       case ResourceFormatType::R9G9B9E5: ret = DXGI_FORMAT_R9G9B9E5_SHAREDEXP; break;
       case ResourceFormatType::R4G4B4A4:
-        // only support bgra order
-        if(!fmt.BGRAOrder())
-          return DXGI_FORMAT_UNKNOWN;
-        ret = DXGI_FORMAT_B4G4R4A4_UNORM;
+        if(fmt.BGRAOrder())
+          ret = DXGI_FORMAT_B4G4R4A4_UNORM;
+        else
+          ret = DXGI_FORMAT_A4B4G4R4_UNORM;
         break;
       case ResourceFormatType::D24S8: ret = DXGI_FORMAT_R24G8_TYPELESS; break;
       case ResourceFormatType::D32S8: ret = DXGI_FORMAT_R32G8X24_TYPELESS; break;
@@ -2392,7 +2451,8 @@ ResourceFormat MakeResourceFormat(DXGI_FORMAT fmt)
     case DXGI_FORMAT_R8G8B8A8_UINT:
     case DXGI_FORMAT_R8G8B8A8_SNORM:
     case DXGI_FORMAT_R8G8B8A8_SINT:
-    case DXGI_FORMAT_B4G4R4A4_UNORM: ret.compCount = 4; break;
+    case DXGI_FORMAT_B4G4R4A4_UNORM:
+    case DXGI_FORMAT_A4B4G4R4_UNORM: ret.compCount = 4; break;
     case DXGI_FORMAT_R32G32B32_TYPELESS:
     case DXGI_FORMAT_R32G32B32_FLOAT:
     case DXGI_FORMAT_R32G32B32_UINT:
@@ -2664,6 +2724,7 @@ ResourceFormat MakeResourceFormat(DXGI_FORMAT fmt)
     case DXGI_FORMAT_R8G8_B8G8_UNORM:
     case DXGI_FORMAT_G8R8_G8B8_UNORM:
     case DXGI_FORMAT_B4G4R4A4_UNORM:
+    case DXGI_FORMAT_A4B4G4R4_UNORM:
     case DXGI_FORMAT_B5G6R5_UNORM:
     case DXGI_FORMAT_B5G5R5A1_UNORM:
     case DXGI_FORMAT_B8G8R8A8_UNORM:
@@ -2852,9 +2913,7 @@ ResourceFormat MakeResourceFormat(DXGI_FORMAT fmt)
       break;
 
     case DXGI_FORMAT_B4G4R4A4_UNORM:
-      ret.type = ResourceFormatType::R4G4B4A4;
-      ret.SetBGRAOrder(true);
-      break;
+    case DXGI_FORMAT_A4B4G4R4_UNORM: ret.type = ResourceFormatType::R4G4B4A4; break;
 
     case DXGI_FORMAT_UNKNOWN: ret.type = ResourceFormatType::Undefined; break;
 
@@ -2959,19 +3018,23 @@ INSTANTIATE_SERIALISE_TYPE(DXGI_ADAPTER_DESC);
 TEST_CASE("DXGI formats", "[format][d3d]")
 {
   // must be updated by hand
-  DXGI_FORMAT maxFormat = DXGI_FORMAT_V408;
+  DXGI_FORMAT maxFormat = DXGI_FORMAT_A4B4G4R4_UNORM;
 
   // we want to skip formats that we deliberately don't represent or handle.
   auto isUnsupportedFormat = [](DXGI_FORMAT f) {
-    // gap in DXGI_FORMAT enum
+    // gaps in DXGI_FORMAT enum
     if(f > DXGI_FORMAT_B4G4R4A4_UNORM && f < DXGI_FORMAT_P208)
+      return true;
+    if(f > DXGI_FORMAT_V408 && f < DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE)
       return true;
     return (f == DXGI_FORMAT_R1_UNORM || f == DXGI_FORMAT_R8G8_B8G8_UNORM ||
             f == DXGI_FORMAT_G8R8_G8B8_UNORM || f == DXGI_FORMAT_B8G8R8X8_TYPELESS ||
             f == DXGI_FORMAT_B8G8R8X8_UNORM || f == DXGI_FORMAT_B8G8R8X8_UNORM_SRGB ||
             f == DXGI_FORMAT_NV11 || f == DXGI_FORMAT_AI44 || f == DXGI_FORMAT_IA44 ||
             f == DXGI_FORMAT_P8 || f == DXGI_FORMAT_A8P8 || f == DXGI_FORMAT_P208 ||
-            f == DXGI_FORMAT_V208 || f == DXGI_FORMAT_V408 || f == DXGI_FORMAT_420_OPAQUE);
+            f == DXGI_FORMAT_V208 || f == DXGI_FORMAT_V408 || f == DXGI_FORMAT_420_OPAQUE ||
+            f == DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE ||
+            f == DXGI_FORMAT_SAMPLER_FEEDBACK_MIP_REGION_USED_OPAQUE);
   };
 
   SECTION("Only DXGI_FORMAT_UNKNOWN is ResourceFormatType::Undefined")
@@ -3234,8 +3297,16 @@ TEST_CASE("DXGI formats", "[format][d3d]")
 
     int i = 0;
     for(DXGI_FORMAT f : {
-            DXGI_FORMAT_AYUV, DXGI_FORMAT_Y410, DXGI_FORMAT_Y416, DXGI_FORMAT_NV12, DXGI_FORMAT_P010,
-            DXGI_FORMAT_P016, DXGI_FORMAT_YUY2, DXGI_FORMAT_Y210, DXGI_FORMAT_Y216, DXGI_FORMAT_P208,
+            DXGI_FORMAT_AYUV,
+            DXGI_FORMAT_Y410,
+            DXGI_FORMAT_Y416,
+            DXGI_FORMAT_NV12,
+            DXGI_FORMAT_P010,
+            DXGI_FORMAT_P016,
+            DXGI_FORMAT_YUY2,
+            DXGI_FORMAT_Y210,
+            DXGI_FORMAT_Y216,
+            DXGI_FORMAT_P208,
         })
     {
       if(isUnsupportedFormat(f))

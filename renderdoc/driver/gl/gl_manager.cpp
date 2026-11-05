@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -30,6 +30,28 @@
 GLResourceManager::GLResourceManager(CaptureState &state, WrappedOpenGL *driver)
     : ResourceManager(state), m_Driver(driver), m_SyncName(1)
 {
+}
+
+void GLResourceManager::UnregisterResource(GLResource res)
+{
+  auto it = m_Resources.find(res);
+  if(it != m_Resources.end())
+  {
+    ResourceId id = it->second.first;
+    m_Names.erase(id);
+
+    ReleaseResource(id);
+    m_Resources.erase(res);
+
+    auto fboit = m_FBOAttachmentsCache.find(id);
+    if(fboit != m_FBOAttachmentsCache.end())
+    {
+      delete fboit->second;
+      m_FBOAttachmentsCache.erase(fboit);
+    }
+
+    m_Driver->RemoveAnnotations(id);
+  }
 }
 
 bool GLResourceManager::IsResourceTrackedForPersistency(const GLResource &res)
@@ -67,7 +89,7 @@ void GLResourceManager::MarkFBOReferenced(GLResource res, FrameRefType ref)
   if(res.name == 0)
     return;
 
-  rdcpair<ResourceId, GLResourceRecord *> &it = m_CurrentResources[res];
+  rdcpair<ResourceId, GLResourceRecord *> &it = m_Resources[res];
 
   MarkResourceFrameReferenced(it.first, ref);
 
@@ -194,7 +216,7 @@ void GLResourceManager::SetInternalResource(GLResource res)
 
 bool GLResourceManager::ResourceTypeRelease(GLResource res)
 {
-  if(HasCurrentResource(res))
+  if(HasResource(res))
     UnregisterResource(res);
 
   if(res.name)

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -46,7 +46,7 @@ CustomPaintWidgetInternal::~CustomPaintWidgetInternal()
 
 CustomPaintWidget::CustomPaintWidget(QWidget *parent) : QWidget(parent)
 {
-  m_Tag = QFormatStr("custompaint%1").arg((uintptr_t) this);
+  m_Tag = QFormatStr("custompaint%1").arg((uintptr_t)this);
 
   setAttribute(Qt::WA_OpaquePaintEvent);
 
@@ -97,7 +97,7 @@ void CustomPaintWidget::OnSelectedEventChanged(uint32_t eventId)
 void CustomPaintWidget::OnEventChanged(uint32_t eventId)
 {
   // if we've encountered a fatal error recreate the widget and take over painting
-  if(m_Rendering && m_Ctx && m_Ctx->GetFatalError() != ReplayStatus::Succeeded)
+  if(m_Rendering && m_Ctx && !m_Ctx->GetFatalError().OK())
   {
     RecreateInternalWidget();
     update();
@@ -136,8 +136,7 @@ void CustomPaintWidget::RecreateInternalWidget()
   }
 
   // if no capture is loaded, or we've encountered a fatal error, we're not rendering anymore.
-  m_Rendering = m_Rendering && m_Ctx && m_Ctx->IsCaptureLoaded() &&
-                m_Ctx->GetFatalError() == ReplayStatus::Succeeded;
+  m_Rendering = m_Rendering && m_Ctx && m_Ctx->IsCaptureLoaded() && m_Ctx->GetFatalError().OK();
 
   // we need to recreate the widget if it's not matching out rendering state.
   if(m_Internal == NULL || m_Rendering != m_Internal->IsRendering())
@@ -199,6 +198,11 @@ void CustomPaintWidget::paintInternal(QPaintEvent *e)
 void CustomPaintWidgetInternal::mousePressEvent(QMouseEvent *e)
 {
   emit m_Custom.clicked(e);
+}
+
+void CustomPaintWidgetInternal::mouseReleaseEvent(QMouseEvent *e)
+{
+  emit m_Custom.unclicked(e);
 }
 
 void CustomPaintWidgetInternal::mouseDoubleClickEvent(QMouseEvent *event)

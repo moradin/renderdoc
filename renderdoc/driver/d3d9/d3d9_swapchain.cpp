@@ -1,159 +1,201 @@
+/******************************************************************************
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2019-2026 Baldur Karlsson
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ ******************************************************************************/
+
 #include "d3d9_swapchain.h"
+#include "d3d9_device.h"
 
-#include "serialise/serialiser.h"
-#include "../dxgi/dxgi_common.h"
-
-WrappedD3DSwapChain9::WrappedD3DSwapChain9(IDirect3DSwapChain9 *swapChain,
-                                           WrappedD3DDevice9 *device, UINT index, bool implicit)
-    : m_RefCounter(1),
-      m_SoftRefCounter(0),
-      m_Implicit(implicit),
-      m_SwapChain(swapChain),
-      m_Device(device),
-      m_Index(index)
+WrappedD3DSwapChain9::WrappedD3DSwapChain9(IDirect3DSwapChain9 *real, WrappedD3DDevice9 *device,
+                                           bool implicit)
+    : WrappedD3D9DeviceChild(real, device, NULL,
+                             implicit ? RealOwnership::None : RealOwnership::WhileExternal),
+      m_Implicit(implicit)
 {
-  m_SwapChain->QueryInterface(__uuidof(IDirect3DSwapChain9Ex), (void **)&m_SwapChainEx);
-  m_Device->SoftRef();
-  m_Device->InternalRef();    // swapchains are never set as resources
+  UpdateRealEx();
 }
 
-HRESULT __stdcall WrappedD3DSwapChain9::QueryInterface(REFIID riid, void **ppvObj)
+WrappedD3DSwapChain9::~WrappedD3DSwapChain9()
 {
-  if(riid == __uuidof(IDirect3DSwapChain9))
-  {
-    HRESULT hr = m_SwapChain->QueryInterface(riid, ppvObj);
+  for(WrappedD3DSurface9 *s : m_BackBuffers)
+    DestroyChild(s);
+  for(WrappedD3DSurface9 *s : m_StaleBackBuffers)
+    DestroyChild(s);
+}
 
-    if(SUCCEEDED(hr))
-    {
-      AddRef();
-      m_SwapChain->Release();
-      *ppvObj = this;
-      return S_OK;
-    }
-    else
-    {
-      *ppvObj = NULL;
-      return hr;
-    }
-  }
-  else if(riid == __uuidof(IDirect3DSwapChain9Ex))
+void WrappedD3DSwapChain9::UpdateRealEx()
+{
+  m_pRealEx = NULL;
+  if(SUCCEEDED(m_pReal->QueryInterface(__uuidof(IDirect3DSwapChain9Ex), (void **)&m_pRealEx)) &&
+     m_pRealEx)
   {
-    HRESULT hr = m_SwapChain->QueryInterface(riid, ppvObj);
-
-    if(SUCCEEDED(hr))
-    {
-      AddRef();
-      m_SwapChain->Release();
-      *ppvObj = this;
-      return S_OK;
-    }
-    else
-    {
-      *ppvObj = NULL;
-      return hr;
-    }
+    // the Ex interface is the same object, we don't need a second reference
+    m_pRealEx->Release();
   }
   else
   {
-    WarnUnknownGUID("IDirect3DSwapChain", riid);
+    m_pRealEx = NULL;
   }
-
-  return m_SwapChain->QueryInterface(riid, ppvObj);
 }
 
-ULONG __stdcall WrappedD3DSwapChain9::AddRef()
+HRESULT WrappedD3DSwapChain9::QueryInterface(REFIID riid, void **ppvObject)
 {
-  unsigned int ref = m_RefCounter.SoftRef(m_Device);
-  return m_Implicit ? ref - 1 : ref;
-}
+  if(ppvObject == NULL)
+    return E_POINTER;
 
-ULONG __stdcall WrappedD3DSwapChain9::Release()
-{
-  ULONG ref = m_RefCounter.SoftRelease(m_Device);
-  if(ref == 0)
+  if(riid == __uuidof(IUnknown) || riid == __uuidof(IDirect3DSwapChain9) ||
+     (riid == __uuidof(IDirect3DSwapChain9Ex) && m_pRealEx != NULL))
   {
-    m_Device->RemoveSwapchain(m_Index);
-    m_Device->SoftRelease();
-
-    m_SwapChainEx->Release();
-
-    UINT refCount = m_SwapChain->Release();
-    RDCASSERT(refCount == 0);
-    delete this;
+    *ppvObject = (IDirect3DSwapChain9Ex *)this;
+    AddRef();
+    return S_OK;
   }
-  return m_Implicit ? ref - 1 : ref;
+
+  if(riid != __uuidof(IDirect3DSwapChain9Ex))
+    WarnUnknownGUID("IDirect3DSwapChain9", riid);
+
+  *ppvObject = NULL;
+  return E_NOINTERFACE;
 }
 
-HRESULT __stdcall WrappedD3DSwapChain9::Present(CONST RECT *pSourceRect, CONST RECT *pDestRect,
-                                                HWND hDestWindowOverride,
-                                                CONST RGNDATA *pDirtyRegion, DWORD dwFlags)
+WrappedD3DSurface9 *WrappedD3DSwapChain9::GetBackBufferWrapper(UINT iBackBuffer)
 {
-  m_Device->RenderOverlay(hDestWindowOverride);
-  return m_SwapChain->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
-}
+  SCOPED_LOCK(m_pDevice->D3DLock());
 
-HRESULT __stdcall WrappedD3DSwapChain9::GetFrontBufferData(IDirect3DSurface9 *pDestSurface)
-{
-  return m_SwapChain->GetFrontBufferData(pDestSurface);
-}
+  IDirect3DSurface9 *real = NULL;
+  HRESULT hr = m_pReal->GetBackBuffer(iBackBuffer, D3DBACKBUFFER_TYPE_MONO, &real);
+  if(FAILED(hr) || real == NULL)
+    return NULL;
 
-HRESULT __stdcall WrappedD3DSwapChain9::GetBackBuffer(UINT iBackBuffer, D3DBACKBUFFER_TYPE Type,
-                                                      IDirect3DSurface9 **ppBackBuffer)
-{
-	//IDirect3DSurface9* surface;
-	HRESULT res = m_SwapChain->GetBackBuffer(iBackBuffer, Type, ppBackBuffer);
-	if(res == S_OK)
-	{
+  // the swapchain owns its back buffers
+  real->Release();
 
-	}
+  if(iBackBuffer >= m_BackBuffers.size())
+    m_BackBuffers.resize(iBackBuffer + 1);
 
-	return res;
-}
+  WrappedD3DSurface9 *&wrapped = m_BackBuffers[iBackBuffer];
 
-HRESULT __stdcall WrappedD3DSwapChain9::GetRasterStatus(D3DRASTER_STATUS *pRasterStatus)
-{
-  return m_SwapChain->GetRasterStatus(pRasterStatus);
-}
-
-HRESULT __stdcall WrappedD3DSwapChain9::GetDisplayMode(D3DDISPLAYMODE *pMode)
-{
-  return m_SwapChain->GetDisplayMode(pMode);
-}
-
-HRESULT __stdcall WrappedD3DSwapChain9::GetDevice(IDirect3DDevice9 **ppDevice)
-{
-  IDirect3DDevice9 *device;
-  HRESULT res = m_SwapChain->GetDevice(&device);
-  if(res == S_OK)
+  if(wrapped && wrapped->GetReal() != real)
   {
-    // transfer the refcount to the wrapper
-    m_Device->AddRef();
-    device->Release();
-    *ppDevice = m_Device;
+    // shouldn't happen outside of Reset, which is handled in OnDeviceReset
+    RDCWARN("Back buffer %u of swapchain changed unexpectedly", iBackBuffer);
+    m_StaleBackBuffers.push_back(wrapped);
+    wrapped = NULL;
   }
-  return res;
+
+  if(wrapped == NULL)
+  {
+    wrapped = new WrappedD3DSurface9(real, m_pDevice, this);
+    m_pDevice->RecordBackBuffer(this, iBackBuffer, wrapped);
+  }
+
+  return wrapped;
 }
 
-HRESULT __stdcall WrappedD3DSwapChain9::GetPresentParameters(D3DPRESENT_PARAMETERS *pPresentationParameters)
+void WrappedD3DSwapChain9::OnDeviceReset(IDirect3DSwapChain9 *newReal)
 {
-  return m_SwapChain->GetPresentParameters(pPresentationParameters);
+  SCOPED_LOCK(m_pDevice->D3DLock());
+
+  if(newReal && newReal != m_pReal)
+  {
+    ReplaceReal((IDirect3DSwapChain9Ex *)this, newReal);
+    m_pReal = newReal;
+    UpdateRealEx();
+  }
+
+  D3DPRESENT_PARAMETERS params = {};
+  m_pReal->GetPresentParameters(&params);
+  const UINT numBuffers = RDCMAX(params.BackBufferCount, 1U);
+
+  for(UINT i = 0; i < m_BackBuffers.size(); i++)
+  {
+    WrappedD3DSurface9 *wrapped = m_BackBuffers[i];
+    if(wrapped == NULL)
+      continue;
+
+    // Reset recreates the back buffers, so the old wrapper is replaced even when the new real
+    // surface has the same address: a new surface can be allocated where the old one was, and
+    // keeping the wrapper would keep the old surface's ID and creation record (its size and format
+    // from before the reset). The next GetBackBufferWrapper wraps the new one.
+    // If nothing references the old wrapper we can free it, otherwise keep it around (it's dead,
+    // but the application may still release it).
+    if(wrapped->GetExtRefCount() == 0 && wrapped->GetIntRefCount() == 0)
+    {
+      DestroyChild(wrapped);
+    }
+    else
+    {
+      RDCWARN("Back buffer %u still referenced across Reset", i);
+      m_StaleBackBuffers.push_back(wrapped);
+    }
+
+    m_BackBuffers[i] = NULL;
+  }
+
+  if(m_BackBuffers.size() > numBuffers)
+    m_BackBuffers.resize(numBuffers);
 }
 
-HRESULT __stdcall WrappedD3DSwapChain9::GetLastPresentCount(UINT *pLastPresentCount)
+HRESULT WrappedD3DSwapChain9::Present(CONST RECT *pSourceRect, CONST RECT *pDestRect,
+                                      HWND hDestWindowOverride, CONST RGNDATA *pDirtyRegion,
+                                      DWORD dwFlags)
 {
-  RDCASSERT(m_SwapChainEx != NULL);
-  return m_SwapChainEx->GetLastPresentCount(pLastPresentCount);
+  m_pDevice->OnSwapChainPresent(this, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion,
+                                dwFlags);
+  m_pDevice->HandlePresent(m_pReal, hDestWindowOverride);
+  return m_pReal->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
 }
 
-HRESULT __stdcall WrappedD3DSwapChain9::GetPresentStats(D3DPRESENTSTATS *pPresentationStatistics)
+HRESULT WrappedD3DSwapChain9::GetFrontBufferData(IDirect3DSurface9 *pDestSurface)
 {
-  RDCASSERT(m_SwapChainEx != NULL);
-  return m_SwapChainEx->GetPresentStats(pPresentationStatistics);
+  m_pDevice->PrepareForWrite(pDestSurface);
+  HRESULT hr = m_pReal->GetFrontBufferData(Unwrap(pDestSurface));
+  if(SUCCEEDED(hr))
+    m_pDevice->OnSwapChainGetFrontBufferData(this, pDestSurface);
+  return hr;
 }
 
-HRESULT __stdcall WrappedD3DSwapChain9::GetDisplayModeEx(D3DDISPLAYMODEEX *pMode,
-                                                         D3DDISPLAYROTATION *pRotation)
+HRESULT WrappedD3DSwapChain9::GetBackBuffer(UINT iBackBuffer, D3DBACKBUFFER_TYPE Type,
+                                            IDirect3DSurface9 **ppBackBuffer)
 {
-  RDCASSERT(m_SwapChainEx != NULL);
-  return m_SwapChainEx->GetDisplayModeEx(pMode, pRotation);
+  if(ppBackBuffer == NULL)
+    return D3DERR_INVALIDCALL;
+
+  *ppBackBuffer = NULL;
+
+  // only mono back buffers exist in D3D9, let the runtime reject anything else
+  if(Type != D3DBACKBUFFER_TYPE_MONO)
+  {
+    IDirect3DSurface9 *real = NULL;
+    HRESULT hr = m_pReal->GetBackBuffer(iBackBuffer, Type, &real);
+    SAFE_RELEASE(real);
+    return FAILED(hr) ? hr : D3DERR_INVALIDCALL;
+  }
+
+  WrappedD3DSurface9 *wrapped = GetBackBufferWrapper(iBackBuffer);
+  if(wrapped == NULL)
+    return D3DERR_INVALIDCALL;
+
+  wrapped->AddRef();
+  *ppBackBuffer = wrapped;
+  return S_OK;
 }

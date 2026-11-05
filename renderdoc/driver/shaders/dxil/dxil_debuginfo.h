@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -363,7 +363,7 @@ struct DIFile : public DIBase
   const Metadata *file;
   const Metadata *dir;
 
-  virtual rdcstr toString() const;
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
 };
 
 struct DICompileUnit : public DIBase
@@ -404,7 +404,7 @@ struct DICompileUnit : public DIBase
   const Metadata *globals;
   const Metadata *imports;
 
-  virtual rdcstr toString() const;
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
 };
 
 struct DIBasicType : public DIBase
@@ -427,7 +427,7 @@ struct DIBasicType : public DIBase
   uint64_t alignInBits;
   DW_ENCODING encoding;
 
-  virtual rdcstr toString() const;
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
 };
 
 struct DIDerivedType : public DIBase
@@ -463,7 +463,7 @@ struct DIDerivedType : public DIBase
   DIFlags flags;
   const Metadata *extra;
 
-  virtual rdcstr toString() const;
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
 };
 
 struct DICompositeType : public DIBase
@@ -502,7 +502,17 @@ struct DICompositeType : public DIBase
   const Metadata *elements;
   const Metadata *templateParams;
 
-  virtual rdcstr toString() const;
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
+};
+
+struct DIEnum : public DIBase
+{
+  static const DIBase::Type DIType = DIBase::Enum;
+  DIEnum(int64_t value, const rdcstr *name) : DIBase(DIType), value(value), name(name) {}
+  int64_t value;
+  const rdcstr *name;
+
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
 };
 
 struct DITemplateTypeParameter : public DIBase
@@ -515,7 +525,7 @@ struct DITemplateTypeParameter : public DIBase
   const rdcstr *name;
   const Metadata *type;
 
-  virtual rdcstr toString() const;
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
 };
 
 struct DITemplateValueParameter : public DIBase
@@ -531,7 +541,7 @@ struct DITemplateValueParameter : public DIBase
   const Metadata *type;
   const Metadata *value;
 
-  virtual rdcstr toString() const;
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
 };
 
 struct DISubprogram : public DIBase
@@ -590,7 +600,7 @@ struct DISubprogram : public DIBase
       function->id = ID;
   }
 
-  virtual rdcstr toString() const;
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
 };
 
 struct DISubroutineType : public DIBase
@@ -599,7 +609,7 @@ struct DISubroutineType : public DIBase
   DISubroutineType(const Metadata *types) : DIBase(DIType), types(types) {}
   const Metadata *types;
 
-  virtual rdcstr toString() const;
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
 };
 
 struct DIGlobalVariable : public DIBase
@@ -607,7 +617,7 @@ struct DIGlobalVariable : public DIBase
   static const DIBase::Type DIType = DIBase::GlobalVariable;
   DIGlobalVariable(const Metadata *scope, const rdcstr *name, const rdcstr *linkageName,
                    const Metadata *file, uint64_t line, const Metadata *type, bool isLocal,
-                   bool isDefinition, const Metadata *variable, const Metadata *staticData)
+                   bool isDefinition, const Metadata *variable, const Metadata *declaration)
       : DIBase(DIType),
         scope(scope),
         name(name),
@@ -618,7 +628,7 @@ struct DIGlobalVariable : public DIBase
         isLocal(isLocal),
         isDefinition(isDefinition),
         variable(variable),
-        staticData(staticData)
+        declaration(declaration)
   {
   }
 
@@ -631,17 +641,16 @@ struct DIGlobalVariable : public DIBase
   bool isLocal;
   bool isDefinition;
   const Metadata *variable;
-  const Metadata *staticData;
+  const Metadata *declaration;
 
-  virtual rdcstr toString() const;
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
 };
 
 struct DILocalVariable : public DIBase
 {
   static const DIBase::Type DIType = DIBase::LocalVariable;
   DILocalVariable(DW_TAG tag, const Metadata *scope, const rdcstr *name, const Metadata *file,
-                  uint64_t line, const Metadata *type, uint64_t arg, DIFlags flags,
-                  uint64_t alignInBits)
+                  uint64_t line, const Metadata *type, uint64_t arg, DIFlags flags)
       : DIBase(DIType),
         tag(tag),
         scope(scope),
@@ -650,8 +659,7 @@ struct DILocalVariable : public DIBase
         line(line),
         type(type),
         arg(arg),
-        flags(flags),
-        alignInBits(alignInBits)
+        flags(flags)
   {
   }
 
@@ -665,7 +673,7 @@ struct DILocalVariable : public DIBase
   DIFlags flags;
   uint64_t alignInBits;
 
-  virtual rdcstr toString() const;
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
 };
 
 struct DIExpression : public DIBase
@@ -683,7 +691,7 @@ struct DIExpression : public DIBase
     } bit_piece;
   } evaluated;
 
-  virtual rdcstr toString() const;
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
 };
 
 struct DILexicalBlock : public DIBase
@@ -699,23 +707,72 @@ struct DILexicalBlock : public DIBase
   uint64_t line;
   uint64_t column;
 
-  virtual rdcstr toString() const;
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
+};
+
+struct DILexicalBlockFile : public DIBase
+{
+  static const DIBase::Type DIType = DIBase::LexicalBlockFile;
+  DILexicalBlockFile(const Metadata *scope, const Metadata *file, uint64_t discriminator)
+      : DIBase(DIType), scope(scope), file(file), discriminator(discriminator)
+  {
+  }
+
+  const Metadata *scope;
+  const Metadata *file;
+  uint64_t discriminator;
+
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
 };
 
 struct DISubrange : public DIBase
 {
   static const DIBase::Type DIType = DIBase::Subrange;
-  DISubrange(uint64_t count, int64_t lowerBound)
+  DISubrange(int64_t count, int64_t lowerBound)
       : DIBase(DIType), count(count), lowerBound(lowerBound)
   {
   }
 
-  uint64_t count;
+  int64_t count;
   int64_t lowerBound;
 
-  virtual rdcstr toString() const;
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
 };
 
+struct DINamespace : public DIBase
+{
+  static const DIBase::Type DIType = DIBase::Namespace;
+  DINamespace(const Metadata *scope, const Metadata *file, const rdcstr *name, uint64_t line)
+      : DIBase(DIType), scope(scope), file(file), name(name), line(line)
+  {
+  }
+
+  const Metadata *scope;
+  const Metadata *file;
+  const rdcstr *name;
+  uint64_t line;
+
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
+};
+
+struct DIImportedEntity : public DIBase
+{
+  static const DIBase::Type DIType = DIBase::ImportedEntity;
+  DIImportedEntity(DW_TAG tag, const Metadata *scope, const Metadata *entity, uint64_t line,
+                   const rdcstr *name)
+      : DIBase(DIType), tag(tag), scope(scope), entity(entity), line(line), name(name)
+  {
+  }
+
+  DW_TAG tag;
+  const Metadata *scope;
+  const Metadata *entity;
+  uint64_t line;
+  const rdcstr *name;
+
+  virtual rdcstr toString(bool dxcStyleFormatting) const;
+};
 };    // namespace DXIL
 
 DECLARE_REFLECTION_ENUM(DXIL::DW_LANG);
+DECLARE_STRINGISE_TYPE(DXIL::DW_OP);

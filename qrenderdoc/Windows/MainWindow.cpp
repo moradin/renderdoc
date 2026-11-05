@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -39,8 +39,10 @@
 #include <QToolTip>
 #include "Code/QRDUtils.h"
 #include "Code/Resources.h"
+#include "Code/pyrenderdoc/PythonContext.h"
 #include "Widgets/Extended/RDLabel.h"
 #include "Widgets/Extended/RDMenu.h"
+#include "Widgets/Extended/RDToolButton.h"
 #include "Widgets/ReplayOptionsSelector.h"
 #include "Windows/Dialogs/AboutDialog.h"
 #include "Windows/Dialogs/CaptureDialog.h"
@@ -130,6 +132,8 @@ MainWindow::MainWindow(ICaptureContext &ctx) : QMainWindow(NULL), ui(new Ui::Mai
   qApp->installEventFilter(this);
 
   setAcceptDrops(true);
+
+  QObject::connect(ui->menu_Tools, &QMenu::aboutToShow, this, &MainWindow::updateToolsMenuOptions);
 
   QObject::connect(ui->action_Load_Default_Layout, &QAction::triggered, this,
                    &MainWindow::loadLayout_triggered);
@@ -222,10 +226,106 @@ MainWindow::MainWindow(ICaptureContext &ctx) : QMainWindow(NULL), ui(new Ui::Mai
   QObject::connect(statusIcon, &RDLabel::doubleClicked, this, &MainWindow::statusDoubleClicked);
   QObject::connect(statusText, &RDLabel::doubleClicked, this, &MainWindow::statusDoubleClicked);
 
+  extensionStatus = new RDToolButton(this);
+  extensionStatus->setAutoRaise(true);
+  extensionStatus->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  ui->statusBar->addWidget(extensionStatus);
+
+  extensionStatus->setIcon(Icons::plugin());
+  extensionStatus->setVisible(false);
+
+  extensionReload = new RDToolButton(this);
+  extensionReload->setAutoRaise(true);
+  extensionReload->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  ui->statusBar->addWidget(extensionReload);
+
+  extensionReload->setIcon(Icons::update());
+  extensionReload->setText(tr("Reload changed extensions"));
+  extensionReload->setVisible(false);
+
+  QObject::connect(extensionStatus, &RDToolButton::clicked, this,
+                   &MainWindow::on_action_Manage_Extensions_triggered);
+  QObject::connect(extensionReload, &RDToolButton::clicked, [this]() {
+    rdcarray<ExtensionMetadata> exts = m_Ctx.Extensions().GetInstalledExtensions();
+    for(const ExtensionMetadata &m : exts)
+      if(m.hasChanges || m.failedLoad)
+        m_Ctx.Extensions().LoadExtension(m.package);
+  });
+  QObject::connect(PythonContext::GetExtensionContext(), &PythonContext::extensionLoaded, this,
+                   &MainWindow::PythonStatusBarUpdate);
+  QObject::connect(PythonContext::GetExtensionContext(), &PythonContext::extensionsUpdated, this,
+                   &MainWindow::PythonStatusBarUpdate);
+
+  QTimer *pyStatusTimer = new QTimer(this);
+  QObject::connect(pyStatusTimer, &QTimer::timeout, [this]() {
+    // regularly check if a python debugger has connected or disconnected,
+    // and update the status bar
+    bool pyDebug = PythonContext::IsDebuggerConnected();
+    if(pyDebug != m_CurPyDebug)
+    {
+      PythonStatusBarUpdate();
+      m_CurPyDebug = pyDebug;
+    }
+  });
+
+  pyStatusTimer->setSingleShot(false);
+  pyStatusTimer->setInterval(500);
+  pyStatusTimer->start();
+
   QObject::connect(&m_MessageTick, &QTimer::timeout, this, &MainWindow::messageCheck);
   m_MessageTick.setSingleShot(false);
   m_MessageTick.setInterval(175);
   m_MessageTick.start();
+
+  QTimer *vkconfigCheckTimer = new QTimer(this);
+  QObject::connect(vkconfigCheckTimer, &QTimer::timeout, [vkconfigCheckTimer]() {
+    QString homePath = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
+
+    // for some reason these paths have changed a lot so we have to check them all :(
+    const QString basePaths[] = {
+#if defined(Q_OS_WIN32)
+      lit("/AppData/Local/LunarG/vkconfig/override/"),
+      lit("/AppData/Local/LunarG/vulkan/"),
+#else
+      lit("/.local/share/vulkan/implicit_layer.d/"),
+      lit("/.local/share/vulkan/loader_settings.d/"),
+#endif
+    };
+
+    const QString filenames[] = {
+        lit("VkLayerOverride.json"),
+        lit("VkLayer_Override.json"),
+        lit("VkLayer_override.json"),
+        lit("vk_loader_settings.json"),
+    };
+
+    for(const QString &path : basePaths)
+    {
+      for(const QString &fn : filenames)
+      {
+        QFileInfo vkconfigcheck(homePath + path + fn);
+
+        if(vkconfigcheck.exists() && vkconfigcheck.isFile())
+        {
+          RDDialog::warning(
+              NULL, tr("vkconfig detected - possible incompatibility"),
+              tr("Configuration from 'vkconfig' tool detected.\n\n"
+                 "This program has caused problems in the past and it is \n"
+                 "strongly recommended that you disable it while using RenderDoc.\n\n"
+                 "If this program is not active check the path below for any leftover files:\n\n%1")
+                  .arg(vkconfigcheck.absoluteFilePath()));
+
+          qInfo() << "vkconfig detected and warned";
+          vkconfigCheckTimer->stop();
+          return;
+        }
+      }
+    }
+  });
+
+  vkconfigCheckTimer->setSingleShot(false);
+  vkconfigCheckTimer->setInterval(2500);
+  vkconfigCheckTimer->start();
 
   m_RemoteProbeSemaphore.release();
   m_RemoteProbe = new LambdaThread([this]() {
@@ -239,6 +339,9 @@ MainWindow::MainWindow(ICaptureContext &ctx) : QMainWindow(NULL), ui(new Ui::Mai
     {
       // do a remoteProbe immediately to populate the device list on startup.
       remoteProbe();
+
+      // allow any early-init replay host switches now that we've populated the device list
+      m_RemoteInitialProbeReady.release();
 
       // do several small sleeps so we can respond quicker when we need to shut down
       for(int i = 0; i < 50; i++)
@@ -275,6 +378,7 @@ MainWindow::MainWindow(ICaptureContext &ctx) : QMainWindow(NULL), ui(new Ui::Mai
     delete m_NetWorker;
   });
   m_NetManagerThread->moveObjectToThread(m_NetWorker);
+  m_NetManagerThread->selfDelete(true);
   m_NetManagerThread->start();
   m_NetManagerThread->thread()->setPriority(QThread::LowPriority);
 
@@ -392,9 +496,16 @@ MainWindow::MainWindow(ICaptureContext &ctx) : QMainWindow(NULL), ui(new Ui::Mai
   ui->action_Resolve_Symbols->setText(tr("Resolve Symbols"));
 
   ui->action_Recompress_Capture->setEnabled(false);
+  ui->action_EmbedExternalFiles->setEnabled(false);
+  ui->action_RemoveExternalFiles->setEnabled(false);
 
 #if defined(Q_OS_WIN32)
-  if(GetModuleHandleA("rdocself.dll"))
+#define SELF_HOST_NAME "rdocself.dll"
+#else
+#define SELF_HOST_NAME "librdocself.so"
+#endif
+
+  if(RENDERDOC_CanSelfHostedCapture(SELF_HOST_NAME))
   {
     QAction *begin = new QAction(tr("Start Self-hosted Capture"), this);
     QAction *end = new QAction(tr("End Self-hosted Capture"), this);
@@ -404,21 +515,20 @@ MainWindow::MainWindow(ICaptureContext &ctx) : QMainWindow(NULL), ui(new Ui::Mai
       begin->setEnabled(false);
       end->setEnabled(true);
 
-      RENDERDOC_StartSelfHostCapture("rdocself.dll");
+      RENDERDOC_StartSelfHostCapture(SELF_HOST_NAME);
     });
 
     QObject::connect(end, &QAction::triggered, [begin, end]() {
       begin->setEnabled(true);
       end->setEnabled(false);
 
-      RENDERDOC_EndSelfHostCapture("rdocself.dll");
+      RENDERDOC_EndSelfHostCapture(SELF_HOST_NAME);
     });
 
     ui->menu_Tools->addSeparator();
     ui->menu_Tools->addAction(begin);
     ui->menu_Tools->addAction(end);
   }
-#endif
 
   m_Ctx.AddCaptureViewer(this);
 
@@ -499,7 +609,6 @@ MainWindow::~MainWindow()
 {
   // close the network manager thread
   m_NetManagerThread->thread()->quit();
-  m_NetManagerThread->deleteLater();
 
   m_Ctx.Replay().DisconnectFromRemoteServer();
 
@@ -618,6 +727,8 @@ void MainWindow::captureModified()
   // enabled if this capture was a temporary one
   if(m_Ctx.IsCaptureLoaded())
     ui->action_Save_Capture_Inplace->setEnabled(true);
+
+  updateToolsMenuOptions();
 }
 
 void MainWindow::LoadFromFilename(const QString &filename, bool temporary)
@@ -628,6 +739,11 @@ void MainWindow::LoadFromFilename(const QString &filename, bool temporary)
   if(ext == lit("rdc"))
   {
     LoadCapture(filename, m_Ctx.Config().DefaultReplayOptions, temporary, true);
+  }
+  else if(ext == lit("py"))
+  {
+    m_Ctx.ShowPythonShell();
+    m_Ctx.GetPythonShell()->LoadScriptFromFilename(filename);
   }
   else if(ext == lit("cap"))
   {
@@ -647,13 +763,14 @@ void MainWindow::LoadFromFilename(const QString &filename, bool temporary)
 void MainWindow::OnCaptureTrigger(const QString &exe, const QString &workingDir,
                                   const QString &cmdLine,
                                   const rdcarray<EnvironmentModification> &env, CaptureOptions opts,
-                                  std::function<void(LiveCapture *)> callback)
+                                  std::function<void(ICaptureConnection *)> callback)
 {
   if(!PromptCloseCapture())
     return;
 
-  LambdaThread *th = new LambdaThread([this, exe, workingDir, cmdLine, env, opts, callback]() {
+  ExecuteResult ret = {};
 
+  LambdaThread *th = new LambdaThread([this, exe, workingDir, cmdLine, env, opts, callback, &ret]() {
     if(isUnshareableDeviceInUse())
     {
       RDDialog::warning(this, tr("RenderDoc is already capturing an app on this device"),
@@ -665,45 +782,7 @@ void MainWindow::OnCaptureTrigger(const QString &exe, const QString &workingDir,
 
     QString capturefile = m_Ctx.TempCaptureFilename(QFileInfo(exe).baseName());
 
-    ExecuteResult ret =
-        m_Ctx.Replay().ExecuteAndInject(exe, workingDir, cmdLine, env, capturefile, opts);
-
-    GUIInvoke::call(this, [this, exe, ret, callback]() {
-
-      if(ret.status == ReplayStatus::JDWPFailure)
-      {
-        RDDialog::critical(
-            this, tr("Error connecting to debugger"),
-            tr("<html>Error launching %1 for capture.\n\n"
-               "Something went wrong connecting to the debugger on the Android device.\n\n"
-               "This can happen if the package is not "
-               "marked as debuggable, if the intent arguments are badly specified, "
-               "or if another android tool such as Android Studio "
-               "is interfering with the debug connection.\n\n"
-               "Close <b>all</b> instances of Android Studio or other Android programs "
-               "and try again.</html>")
-                .arg(exe));
-        return;
-      }
-
-      if(ret.status != ReplayStatus::Succeeded)
-      {
-        RDDialog::critical(this, tr("Error kicking capture"),
-                           tr("Error launching %1 for capture.\n\n%2. Check the diagnostic log in "
-                              "the help menu for more details")
-                               .arg(exe)
-                               .arg(ToQStr(ret.status)));
-        return;
-      }
-
-      LiveCapture *live = new LiveCapture(
-          m_Ctx,
-          m_Ctx.Replay().CurrentRemote().IsValid() ? m_Ctx.Replay().CurrentRemote().Hostname() : "",
-          m_Ctx.Replay().CurrentRemote().IsValid() ? m_Ctx.Replay().CurrentRemote().Name() : "",
-          ret.ident, this, this);
-      ShowLiveCapture(live);
-      callback(live);
-    });
+    ret = m_Ctx.Replay().ExecuteAndInject(exe, workingDir, cmdLine, env, capturefile, opts);
   });
   th->setName(lit("ExecuteAndInject"));
   th->start();
@@ -716,52 +795,53 @@ void MainWindow::OnCaptureTrigger(const QString &exe, const QString &workingDir,
                        [th]() { return !th->isRunning(); });
   }
   th->deleteLater();
+
+  if(ret.result.code == ResultCode::JDWPFailure)
+  {
+    RDDialog::critical(
+        this, tr("Error connecting to debugger"),
+        tr("<html>Error launching %1 for capture.\n\n"
+           "Something went wrong connecting to the debugger on the Android device.\n\n"
+           "This can happen if the package is not marked as debuggable, the device is not "
+           "configured to allow app debugging, if the intent arguments are badly specified, or "
+           "if another android tool such as Android Studio is interfering with the debug "
+           "connection.\n\n"
+           "Close <b>all</b> instances of Android Studio or other Android programs "
+           "and try again.</html>")
+            .arg(exe));
+    return;
+  }
+
+  if(ret.result.code != ResultCode::Succeeded)
+  {
+    RDDialog::critical(
+        this, tr("Error launching capture"),
+        tr("Error launching %1 for capture.\n\n%2").arg(exe).arg(ret.result.Message()));
+    return;
+  }
+
+  LiveCapture *live = new LiveCapture(
+      m_Ctx,
+      m_Ctx.Replay().CurrentRemote().IsValid() ? m_Ctx.Replay().CurrentRemote().Hostname() : "",
+      m_Ctx.Replay().CurrentRemote().IsValid() ? m_Ctx.Replay().CurrentRemote().Name() : "",
+      ret.ident, this, this);
+  ShowLiveCapture(live);
+  callback(live);
 }
 
 void MainWindow::OnInjectTrigger(uint32_t PID, const rdcarray<EnvironmentModification> &env,
                                  const QString &name, CaptureOptions opts,
-                                 std::function<void(LiveCapture *)> callback)
+                                 std::function<void(ICaptureConnection *)> callback)
 {
   if(!PromptCloseCapture())
     return;
 
-  LambdaThread *th = new LambdaThread([this, PID, env, name, opts, callback]() {
+  ExecuteResult ret = {};
+
+  LambdaThread *th = new LambdaThread([this, PID, env, name, opts, callback, &ret]() {
     QString capturefile = m_Ctx.TempCaptureFilename(name);
 
-    ExecuteResult ret = RENDERDOC_InjectIntoProcess(PID, env, capturefile, opts, false);
-
-    GUIInvoke::call(this, [this, PID, ret, callback]() {
-
-      if(ret.status == ReplayStatus::JDWPFailure)
-      {
-        RDDialog::critical(
-            this, tr("Error connecting to debugger"),
-            tr("<html>Error injecting into process %1 for capture.\n\n"
-               "Something went wrong connecting to the debugger on the Android device.\n\n"
-               "This can happen if the package is not "
-               "marked as debuggable, or if another android tool such as Android Studio "
-               "is interfering with the debug connection.\n\n"
-               "Close <b>all</b> instances of Android Studio or other Android programs "
-               "and try again.</html>")
-                .arg(PID));
-        return;
-      }
-
-      if(ret.status != ReplayStatus::Succeeded)
-      {
-        RDDialog::critical(
-            this, tr("Error kicking capture"),
-            tr("Error injecting into process %1 for capture.\n\n%2. Check the diagnostic log in "
-               "the help menu for more details")
-                .arg(PID)
-                .arg(ToQStr(ret.status)));
-        return;
-      }
-
-      LiveCapture *live = new LiveCapture(m_Ctx, QString(), QString(), ret.ident, this, this);
-      ShowLiveCapture(live);
-      callback(live);
-    });
+    ret = RENDERDOC_InjectIntoProcess(PID, env, capturefile, opts, false);
   });
   th->start();
   // wait a few ms before popping up a progress bar
@@ -772,6 +852,18 @@ void MainWindow::OnInjectTrigger(uint32_t PID, const rdcarray<EnvironmentModific
                        [th]() { return !th->isRunning(); });
   }
   th->deleteLater();
+
+  if(ret.result.code != ResultCode::Succeeded)
+  {
+    RDDialog::critical(
+        this, tr("Error injecting into process"),
+        tr("Error injecting into process %1 for capture.\n\n%2").arg(PID).arg(ret.result.Message()));
+    return;
+  }
+
+  LiveCapture *live = new LiveCapture(m_Ctx, QString(), QString(), ret.ident, this, this);
+  ShowLiveCapture(live);
+  callback(live);
 }
 
 void MainWindow::LoadCapture(const QString &filename, const ReplayOptions &opts, bool temporary,
@@ -792,18 +884,12 @@ void MainWindow::LoadCapture(const QString &filename, const ReplayOptions &opts,
     {
       ICaptureFile *file = RENDERDOC_OpenCaptureFile();
 
-      ReplayStatus status = file->OpenFile(filename, "rdc", NULL);
+      ResultDetails result = file->OpenFile(filename, "rdc", NULL);
 
-      if(status != ReplayStatus::Succeeded)
+      if(!result.OK())
       {
-        QString text = tr("Couldn't open file '%1'\n").arg(filename);
-        QString message = file->ErrorString();
-        if(message.isEmpty())
-          text += tr("%1").arg(ToQStr(status));
-        else
-          text += tr("%1: %2").arg(ToQStr(status)).arg(message);
-
-        RDDialog::critical(this, tr("Error opening capture"), text);
+        RDDialog::critical(this, tr("Error opening capture"),
+                           tr("Couldn't open file '%1'\n%2").arg(filename).arg(result.Message()));
 
         file->Shutdown();
         return;
@@ -1004,25 +1090,30 @@ bool MainWindow::PromptSaveCaptureAs()
   QString saveFilename = GetSavePath();
 
   if(!saveFilename.isEmpty())
-  {
-    QString origFilename = m_Ctx.GetCaptureFilename();
-
-    bool success = m_Ctx.SaveCaptureTo(saveFilename);
-
-    if(!success)
-      return false;
-
-    AddRecentFile(m_Ctx.Config().RecentCaptureFiles, saveFilename);
-    PopulateRecentCaptureFiles();
-    SetTitle(saveFilename);
-
-    for(LiveCapture *live : m_LiveCaptures)
-      live->fileSaved(origFilename, saveFilename);
-
-    return true;
-  }
+    return SaveCurrentCapture(saveFilename);
 
   return false;
+}
+
+bool MainWindow::SaveCurrentCapture(QString saveFilename)
+{
+  QString origFilename = m_Ctx.GetCaptureFilename();
+
+  bool success = m_Ctx.SaveCaptureTo(saveFilename);
+
+  if(!success)
+    return false;
+
+  AddRecentFile(m_Ctx.Config().RecentCaptureFiles, saveFilename);
+  PopulateRecentCaptureFiles();
+  SetTitle(saveFilename);
+
+  for(LiveCapture *live : m_LiveCaptures)
+    live->fileSaved(origFilename, saveFilename);
+
+  ui->action_Save_Capture_Inplace->setEnabled(false);
+
+  return true;
 }
 
 void MainWindow::exportCapture(const CaptureFileFormat &fmt)
@@ -1127,7 +1218,7 @@ bool MainWindow::PromptCloseCapture()
     }
   }
 
-  CloseCapture();
+  m_Ctx.CloseCapture();
 
   if(!deletepath.isEmpty())
   {
@@ -1138,31 +1229,11 @@ bool MainWindow::PromptCloseCapture()
   return true;
 }
 
-void MainWindow::CloseCapture()
-{
-  QString path = m_Ctx.GetCaptureFilename();
-  bool local = m_Ctx.IsCaptureLocal();
-  bool temp = m_Ctx.IsCaptureTemporary();
-
-  m_Ctx.CloseCapture();
-
-  if(m_OwnTempCapture && temp)
-  {
-    m_Ctx.Replay().DeleteCapture(path, local);
-    RemoveRecentCapture(path);
-    m_OwnTempCapture = false;
-  }
-
-  ui->action_Save_Capture_Inplace->setEnabled(false);
-  ui->action_Save_Capture_As->setEnabled(false);
-  ui->menu_Export_As->setEnabled(false);
-}
-
 void MainWindow::SetTitle(const QString &filename)
 {
   QString prefix;
 
-  if(m_Ctx.IsCaptureLoaded())
+  if(m_Ctx.IsCaptureLoaded() && !filename.isEmpty())
   {
     prefix = QFileInfo(filename).fileName();
     if(m_Ctx.APIProps().degraded)
@@ -1275,6 +1346,46 @@ void MainWindow::ClearRecentCaptureSettings()
 {
   m_Ctx.Config().RecentCaptureSettings.clear();
   PopulateRecentCaptureSettings();
+}
+
+void MainWindow::PythonStatusBarUpdate()
+{
+  int num = m_Ctx.Extensions().GetLoadedExtensions().count();
+
+  if(num > 0 || PythonContext::IsDebuggerConnected())
+  {
+    // extensions can't be unloaded so we can just unconditionally show this now
+    extensionStatus->setVisible(true);
+
+    QString text = tr("%n extension(s) active", NULL, num);
+
+    rdcarray<ExtensionMetadata> exts = m_Ctx.Extensions().GetInstalledExtensions();
+
+    bool reloadVisible = false;
+    for(const ExtensionMetadata &m : exts)
+    {
+      if(m.hasChanges)
+      {
+        text += tr(" (changed on disk)");
+        reloadVisible = true;
+        break;
+      }
+    }
+    for(const ExtensionMetadata &m : exts)
+    {
+      if(m.failedLoad)
+      {
+        text += tr(" (some failed to load)");
+        reloadVisible = true;
+        break;
+      }
+    }
+    extensionReload->setVisible(reloadVisible);
+
+    if(PythonContext::IsDebuggerConnected())
+      text += tr(": Python debugger connected");
+    extensionStatus->setText(text);
+  }
 }
 
 void MainWindow::networkRequestFailed(QUrl url, QString error)
@@ -1637,6 +1748,15 @@ ToolWindowManager::AreaReference MainWindow::leftToolArea()
   return ToolWindowManager::AreaReference(ToolWindowManager::LastUsedArea);
 }
 
+void MainWindow::BringToFront()
+{
+  // un-minimise if necessary
+  setWindowState(windowState() & ~Qt::WindowMinimized);
+  show();
+  raise();
+  activateWindow();
+}
+
 void MainWindow::LoadInitialLayout()
 {
   bool loaded = LoadLayout(0);
@@ -1687,6 +1807,11 @@ void MainWindow::LoadInitialLayout()
         ToolWindowManager::AreaReference(ToolWindowManager::TopWindowSide,
                                          ui->toolWindowManager->areaOf(textureViewer), 0.2f));
   }
+}
+
+bool MainWindow::ErrorReportsAllowed()
+{
+  return ui->action_Send_Error_Report->isEnabled();
 }
 
 void MainWindow::RemoveRecentCapture(const QString &filename)
@@ -1904,7 +2029,7 @@ void MainWindow::FillRemotesMenu(QMenu *menu, bool includeLocalhost)
     if(host.IsConnected())
       action->setText(tr("%1 (Connected)").arg(host.Name()));
     else if(host.IsServerRunning() && host.IsVersionMismatch())
-      action->setText(tr("%1 (Bad Version)").arg(host.Name()));
+      action->setText(tr("%1 (%2)").arg(host.Name(), host.VersionMismatchError()));
     else if(host.IsServerRunning() && host.IsBusy())
       action->setText(tr("%1 (Busy)").arg(host.Name()));
     else if(host.IsServerRunning())
@@ -1940,34 +2065,43 @@ void MainWindow::FillRemotesMenu(QMenu *menu, bool includeLocalhost)
 
 void MainWindow::setRemoteHost(int hostIdx)
 {
+  if(!PromptCloseCapture())
+    return;
+
+  // we only want to block once before the initial remoteProbe has happened. After that once we can
+  // acquire once, we re-release so the next one can happen
+  m_RemoteInitialProbeReady.acquire();
+  m_RemoteInitialProbeReady.release();
+
   rdcarray<RemoteHost> hosts = m_Ctx.Config().GetRemoteHosts();
 
   RemoteHost host;
   if(hostIdx >= 0 && hostIdx < hosts.count())
     host = hosts[hostIdx];
 
-  for(LiveCapture *live : m_LiveCaptures)
+  bool noToAll = false;
+
+  QList<LiveCapture *> liveCaptures = m_LiveCaptures;
+
+  int unsavedCaps = 0;
+  for(LiveCapture *live : liveCaptures)
+    unsavedCaps += live->unsavedCaptureCount();
+
+  for(LiveCapture *live : liveCaptures)
   {
     // allow live captures to this host to stay open, that way
     // we can connect to a live capture, then switch into that
     // context
-    if(host.IsValid() && live->hostname() == host.Hostname())
+    if(host.IsValid() && live->Hostname() == host.Hostname())
       continue;
 
-    if(!live->checkAllowClose())
-      return;
-  }
-
-  if(!PromptCloseCapture())
-    return;
-
-  for(LiveCapture *live : m_LiveCaptures)
-  {
-    // allow live captures to this host to stay open, that way
-    // we can connect to a live capture, then switch into that
-    // context
-    if(host.IsValid() && live->hostname() == host.Hostname())
-      continue;
+    // if the user previously selected 'no to all' in the save prompts below, apply that to all
+    // subsequent live captures by skipping the check and unconditionally cleaning all captures
+    if(!noToAll)
+    {
+      if(!live->checkAllowClose(unsavedCaps, noToAll))
+        return;
+    }
 
     live->cleanItems();
     live->close();
@@ -2003,7 +2137,7 @@ void MainWindow::setRemoteHost(int hostIdx)
 
     statusText->setText(tr("Checking remote server status..."));
 
-    LambdaThread *th = new LambdaThread([ this, h = host ]() {
+    LambdaThread *th = new LambdaThread([this, h = host]() {
       // make a mutable copy and see if the server is up
       RemoteHost host = h;
       host.CheckStatus();
@@ -2041,7 +2175,6 @@ void MainWindow::setRemoteHost(int hostIdx)
       if(host.Protocol() && host.IsVersionMismatch())
       {
         GUIInvoke::blockcall(this, [this, &host]() {
-
           QMessageBox::StandardButton res =
               RDDialog::question(this, tr("Unsupported version"),
                                  tr("Remote server on %1 has an incompatible version.\n"
@@ -2078,10 +2211,10 @@ void MainWindow::setRemoteHost(int hostIdx)
           statusProgress->setMaximum(0);
         });
 
-        ReplayStatus launchStatus = host.Launch();
-        if(launchStatus != ReplayStatus::Succeeded)
+        ResultDetails launchResult = host.Launch();
+        if(!launchResult.OK())
         {
-          showLaunchError(launchStatus);
+          showLaunchError(launchResult);
         }
 
         // check if it's running now
@@ -2090,27 +2223,26 @@ void MainWindow::setRemoteHost(int hostIdx)
         GUIInvoke::call(this, [this]() { statusProgress->setVisible(false); });
       }
 
-      ReplayStatus status = ReplayStatus::Succeeded;
+      ResultDetails result = {ResultCode::Succeeded};
 
       if(host.IsServerRunning() && !host.IsBusy())
       {
-        status = m_Ctx.Replay().ConnectToRemoteServer(host);
+        result = m_Ctx.Replay().ConnectToRemoteServer(host);
       }
 
-      GUIInvoke::call(this, [this, host, status]() {
+      GUIInvoke::call(this, [this, host, result]() {
         contextChooser->setIcon(host.IsServerRunning() && !host.IsBusy() ? Icons::connect()
                                                                          : Icons::disconnect());
 
-        if(status != ReplayStatus::Succeeded)
+        if(!result.OK())
         {
           contextChooser->setIcon(Icons::cross());
           contextChooser->setText(tr("Replay Context: %1").arg(tr("Local")));
-          statusText->setText(tr("Connection failed: %1").arg(ToQStr(status)));
+          statusText->setText(tr("Connection failed: %1").arg(result.Message()));
         }
         else if(host.IsVersionMismatch())
         {
-          statusText->setText(
-              tr("Remote server is not running RenderDoc %1").arg(lit(FULL_VERSION_STRING)));
+          statusText->setText(host.VersionMismatchError());
         }
         else if(host.IsBusy())
         {
@@ -2179,19 +2311,33 @@ void MainWindow::OnCaptureLoaded()
 
   statusProgress->setVisible(false);
 
-  ui->action_Recompress_Capture->setEnabled(true);
+  // don't allow capture recompress on opened images
+  QString driver;
+  m_Ctx.Replay().BlockAccessInvoke(
+      [&driver](ICaptureAccess *access) { driver = access->DriverName(); });
+  bool is_image = driver == lit("Image");
+  ui->action_Recompress_Capture->setEnabled(!is_image);
+
+  updateToolsMenuOptions();
 
   ui->action_Start_Replay_Loop->setEnabled(true);
-  ui->action_Open_RGP_Profile->setEnabled(
-      m_Ctx.Replay().GetCaptureAccess()->FindSectionByType(SectionType::AMDRGPProfile) >= 0);
+
+  ui->action_Open_RGP_Profile->setEnabled(false);
   ui->action_Create_RGP_Profile->setEnabled(m_Ctx.APIProps().rgpCapture && m_Ctx.IsCaptureLocal());
+  m_Ctx.Replay().AsyncAccessInvoke([this](ICaptureAccess *access) {
+    bool hasAMDGRPPorfile = (access->FindSectionByType(SectionType::AMDRGPProfile) >= 0);
+
+    GUIInvoke::call(this, [this, hasAMDGRPPorfile]() {
+      ui->action_Open_RGP_Profile->setEnabled(hasAMDGRPPorfile);
+    });
+  });
 
   setCaptureHasErrors(!m_Ctx.DebugMessages().empty());
 
   ui->action_Resolve_Symbols->setEnabled(false);
 
-  m_Ctx.Replay().AsyncInvoke([this](IReplayController *) {
-    bool hasResolver = m_Ctx.Replay().GetCaptureAccess()->HasCallstacks();
+  m_Ctx.Replay().AsyncAccessInvoke([this](ICaptureAccess *access) {
+    bool hasResolver = access->HasCallstacks();
 
     GUIInvoke::call(this, [this, hasResolver]() {
       ui->action_Resolve_Symbols->setEnabled(hasResolver);
@@ -2206,10 +2352,29 @@ void MainWindow::OnCaptureLoaded()
 
   if(m_Ctx.HasEventBrowser())
     ToolWindowManager::raiseToolWindow(m_Ctx.GetEventBrowser()->Widget());
+
+  // the first time we load a capture with annotations, show/bring the annotation viewer to the
+  // front. After that, if the user hides it we won't show it again.
+  if(!m_Ctx.Config().Annotations_HasAutoShown && m_Ctx.FrameInfo().containsAnnotations)
+  {
+    m_Ctx.ShowAnnotationViewer();
+    m_Ctx.Config().Annotations_HasAutoShown = true;
+    ToolWindowManager::raiseToolWindow(m_Ctx.GetAnnotationViewer()->Widget());
+  }
 }
 
 void MainWindow::OnCaptureClosed()
 {
+  if(m_OwnTempCapture && m_Ctx.IsCaptureTemporary())
+  {
+    QString path = m_Ctx.GetCaptureFilename();
+
+    m_Ctx.Replay().DeleteCapture(path, m_Ctx.IsCaptureLocal());
+    RemoveRecentCapture(path);
+  }
+
+  m_OwnTempCapture = false;
+
   ui->action_Save_Capture_Inplace->setEnabled(false);
   ui->action_Save_Capture_As->setEnabled(false);
   ui->action_Close_Capture->setEnabled(false);
@@ -2229,8 +2394,10 @@ void MainWindow::OnCaptureClosed()
   ui->action_Resolve_Symbols->setText(tr("Resolve Symbols"));
 
   ui->action_Recompress_Capture->setEnabled(false);
+  ui->action_EmbedExternalFiles->setEnabled(false);
+  ui->action_RemoveExternalFiles->setEnabled(false);
 
-  SetTitle();
+  SetTitle(QString());
 
   // if the remote sever disconnected during capture replay, resort back to a 'disconnected' state
   if(m_Ctx.Replay().CurrentRemote().IsValid() && !m_Ctx.Replay().CurrentRemote().IsServerRunning())
@@ -2433,6 +2600,38 @@ void MainWindow::on_action_API_Inspector_triggered()
   }
 }
 
+void MainWindow::on_action_Annotation_Viewer_triggered()
+{
+  QWidget *annotViewer = m_Ctx.GetAnnotationViewer()->Widget();
+
+  if(ui->toolWindowManager->toolWindows().contains(annotViewer))
+  {
+    ToolWindowManager::raiseToolWindow(annotViewer);
+  }
+  else
+  {
+    if(m_Ctx.HasAPIInspector() &&
+       ui->toolWindowManager->toolWindows().contains(m_Ctx.GetAPIInspector()->Widget()))
+    {
+      ToolWindowManager::AreaReference ref(
+          ToolWindowManager::AddTo, ui->toolWindowManager->areaOf(m_Ctx.GetAPIInspector()->Widget()));
+      ui->toolWindowManager->addToolWindow(annotViewer, ref);
+    }
+    else if(m_Ctx.HasEventBrowser() &&
+            ui->toolWindowManager->toolWindows().contains(m_Ctx.GetEventBrowser()->Widget()))
+    {
+      ToolWindowManager::AreaReference ref(
+          ToolWindowManager::BottomOf,
+          ui->toolWindowManager->areaOf(m_Ctx.GetEventBrowser()->Widget()));
+      ui->toolWindowManager->addToolWindow(annotViewer, ref);
+    }
+    else
+    {
+      ui->toolWindowManager->addToolWindow(annotViewer, leftToolArea());
+    }
+  }
+}
+
 void MainWindow::on_action_Event_Browser_triggered()
 {
   QWidget *eventBrowser = m_Ctx.GetEventBrowser()->Widget();
@@ -2543,7 +2742,21 @@ void MainWindow::on_action_Resolve_Symbols_triggered()
 {
   ANALYTIC_SET(UIFeatures.CallstackResolve, true);
 
-  if(!m_Ctx.Replay().GetCaptureAccess())
+  float progress = 0.0f;
+  bool finished = false;
+
+  if(!m_Ctx.Replay().SlowAsyncAccessInvoke([this, &progress, &finished](ICaptureAccess *access) {
+       ResultDetails success = access->InitResolver(true, [&progress](float p) { progress = p; });
+
+       if(!success.OK())
+       {
+         RDDialog::critical(
+             this, tr("Error loading symbols"),
+             tr("Couldn't load symbols for callstack resolution.\n\n%1").arg(success.Message()));
+       }
+
+       finished = true;
+     }))
   {
     RDDialog::critical(
         this, tr("Not Available"),
@@ -2551,26 +2764,9 @@ void MainWindow::on_action_Resolve_Symbols_triggered()
     return;
   }
 
-  float progress = 0.0f;
-  bool finished = false;
-
-  m_Ctx.Replay().AsyncInvoke([this, &progress, &finished](IReplayController *) {
-    bool success = m_Ctx.Replay().GetCaptureAccess()->InitResolver(
-        true, [&progress](float p) { progress = p; });
-
-    if(!success)
-    {
-      RDDialog::critical(
-          this, tr("Error loading symbols"),
-          tr("Couldn't load symbols for callstack resolution.\n\nCheck diagnostic log in "
-             "Help menu for more details."));
-    }
-
-    finished = true;
-  });
-
-  ShowProgressDialog(this, tr("Resolving symbols, please wait..."),
-                     [&finished]() { return finished; }, [&progress]() { return progress; });
+  ShowProgressDialog(
+      this, tr("Resolving symbols, please wait..."), [&finished]() { return finished; },
+      [&progress]() { return progress; });
 
   if(m_Ctx.HasAPIInspector())
     m_Ctx.GetAPIInspector()->Refresh();
@@ -2581,12 +2777,22 @@ void MainWindow::on_action_Recompress_Capture_triggered()
   m_Ctx.RecompressCapture();
 }
 
+void MainWindow::on_action_EmbedExternalFiles_triggered()
+{
+  m_Ctx.EmbedDependentFiles();
+}
+
+void MainWindow::on_action_RemoveExternalFiles_triggered()
+{
+  m_Ctx.RemoveDependentFiles();
+}
+
 void MainWindow::on_action_Start_Replay_Loop_triggered()
 {
   if(!m_Ctx.IsCaptureLoaded())
     return;
 
-  QDialog popup;
+  RDDialog popup;
   popup.setWindowFlags(popup.windowFlags() & ~Qt::WindowContextHelpButtonHint);
   popup.setWindowIcon(windowIcon());
 
@@ -2641,14 +2847,20 @@ void MainWindow::on_action_Start_Replay_Loop_triggered()
   else
   {
     popup.resize(100, 100);
-    popup.setWindowTitle(tr("Looping replay of %1 Displaying %2")
-                             .arg(m_Ctx.GetCaptureFilename())
-                             .arg(tr("nothing")));
+    popup.setWindowTitle(
+        tr("Looping replay of %1 Displaying %2").arg(m_Ctx.GetCaptureFilename()).arg(tr("nothing")));
   }
 
   WindowingData winData = m_Ctx.CreateWindowingData(&popup);
 
   m_Ctx.Replay().AsyncInvoke([winData, id](IReplayController *r) { r->ReplayLoop(winData, id); });
+
+  QObject::connect(&popup, &RDDialog::aboutToClose,
+                   [this](QCloseEvent *) { m_Ctx.Replay().CancelReplayLoop(); });
+  QObject::connect(&popup, &RDDialog::keyPress, [this](QKeyEvent *e) {
+    if(e->matches(QKeySequence::Cancel))
+      m_Ctx.Replay().CancelReplayLoop();
+  });
 
   RDDialog::show(&popup);
 
@@ -2660,26 +2872,33 @@ void MainWindow::on_action_Open_RGP_Profile_triggered()
   if(!m_Ctx.IsCaptureLoaded())
     return;
 
-  int idx = m_Ctx.Replay().GetCaptureAccess()->FindSectionByType(SectionType::AMDRGPProfile);
+  QString path;
+  m_Ctx.Replay().BlockAccessInvoke([&path](ICaptureAccess *access) {
+    int idx = access->FindSectionByType(SectionType::AMDRGPProfile);
 
-  if(idx < 0)
+    if(idx < 0)
+      return;
+
+    path = QDir::temp().absoluteFilePath(lit("renderdoc_extracted.rgp"));
+
+    QFile f(path);
+    if(f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    {
+      bytebuf buf = access->GetSectionContents(idx);
+
+      f.write((const char *)buf.data(), (qint64)buf.size());
+      f.flush();
+    }
+    else
+    {
+      qCritical() << "Couldn't open temporary file " << path << " for write";
+      path = QString();
+      return;
+    }
+  });
+
+  if(path.isEmpty())
     return;
-
-  QString path = QDir::temp().absoluteFilePath(lit("renderdoc_extracted.rgp"));
-
-  QFile f(path);
-  if(f.open(QIODevice::WriteOnly | QIODevice::Truncate))
-  {
-    bytebuf buf = m_Ctx.Replay().GetCaptureAccess()->GetSectionContents(idx);
-
-    f.write((const char *)buf.data(), (qint64)buf.size());
-    f.flush();
-  }
-  else
-  {
-    qCritical() << "Couldn't open temporary file " << path << " for write";
-    return;
-  }
 
   m_Ctx.OpenRGPProfile(path);
 }
@@ -2689,15 +2908,20 @@ void MainWindow::on_action_Create_RGP_Profile_triggered()
   if(!m_Ctx.IsCaptureLoaded())
     return;
 
-  if(m_Ctx.Replay().GetCaptureAccess()->FindSectionByType(SectionType::AMDRGPProfile) >= 0)
-  {
-    QMessageBox::StandardButton res = RDDialog::question(
-        this, tr("Existing RGP profile"), tr("Capture already contains an RGP profile. Overwrite?"),
-        QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+  bool abort = false;
 
-    if(res != QMessageBox::Yes)
-      return;
-  }
+  m_Ctx.Replay().BlockAccessInvoke([this, &abort](ICaptureAccess *access) {
+    if(access->FindSectionByType(SectionType::AMDRGPProfile) >= 0)
+    {
+      QMessageBox::StandardButton res =
+          RDDialog::question(this, tr("Existing RGP profile"),
+                             tr("Capture already contains an RGP profile. Overwrite?"),
+                             QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+
+      if(res != QMessageBox::Yes)
+        abort = true;
+    }
+  });
 
   QDialog popup;
   popup.setWindowFlags(popup.windowFlags() & ~Qt::WindowContextHelpButtonHint);
@@ -2735,7 +2959,8 @@ void MainWindow::on_action_Create_RGP_Profile_triggered()
       props.version = 1;
       props.flags = SectionFlags::ZstdCompressed;
 
-      m_Ctx.Replay().GetCaptureAccess()->WriteSection(props, buf);
+      m_Ctx.Replay().BlockAccessInvoke(
+          [props, &buf](ICaptureAccess *access) { access->WriteSection(props, buf); });
 
       ui->action_Open_RGP_Profile->setEnabled(true);
     }
@@ -2813,16 +3038,6 @@ void MainWindow::on_action_Show_Tips_triggered()
   RDDialog::show(&tipsDialog);
 }
 
-void MainWindow::on_action_View_Diagnostic_Log_File_triggered()
-{
-  QWidget *logView = m_Ctx.GetDiagnosticLogView()->Widget();
-
-  if(ui->toolWindowManager->toolWindows().contains(logView))
-    ToolWindowManager::raiseToolWindow(logView);
-  else
-    ui->toolWindowManager->addToolWindow(logView, mainToolArea());
-}
-
 void MainWindow::on_action_Counter_Viewer_triggered()
 {
   QWidget *performanceCounterViewer = m_Ctx.GetPerformanceCounterViewer()->Widget();
@@ -2850,6 +3065,9 @@ void MainWindow::on_action_Send_Error_Report_triggered()
 
 void MainWindow::sendErrorReport(bool forceCaptureInclusion)
 {
+  if(!ErrorReportsAllowed())
+    return;
+
   rdcstr report;
   RENDERDOC_CreateBugReport(RENDERDOC_GetLogFile(), "", report);
 
@@ -2897,8 +3115,7 @@ void MainWindow::on_action_Check_for_Updates_triggered()
       }
       case UpdateResult::Latest:
       {
-        RDDialog::information(this, tr("Latest version"),
-                              tr("You are running the latest version."));
+        RDDialog::information(this, tr("Latest version"), tr("You are running the latest version."));
         break;
       }
       case UpdateResult::Upgrade:
@@ -2908,6 +3125,16 @@ void MainWindow::on_action_Check_for_Updates_triggered()
       }
     }
   });
+}
+
+void MainWindow::showDiagnosticLogView()
+{
+  QWidget *logView = m_Ctx.GetDiagnosticLogView()->Widget();
+
+  if(ui->toolWindowManager->toolWindows().contains(logView))
+    ToolWindowManager::raiseToolWindow(logView);
+  else
+    ui->toolWindowManager->addToolWindow(logView, mainToolArea());
 }
 
 void MainWindow::updateAvailable_triggered()
@@ -2930,17 +3157,21 @@ void MainWindow::loadLayout_triggered()
   LoadSaveLayout(qobject_cast<QAction *>(QObject::sender()), false);
 }
 
+void MainWindow::updateToolsMenuOptions()
+{
+  m_Ctx.Replay().AsyncAccessInvoke([this](ICaptureAccess *access) {
+    bool hasEmbeddedDependencies = access->HasEmbeddedDependencies();
+    bool hasPendingDependencies = access->HasPendingDependencies();
+
+    GUIInvoke::call(this, [this, hasEmbeddedDependencies, hasPendingDependencies]() {
+      ui->action_EmbedExternalFiles->setEnabled(!hasEmbeddedDependencies && hasPendingDependencies);
+      ui->action_RemoveExternalFiles->setEnabled(hasEmbeddedDependencies);
+    });
+  });
+}
+
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-  for(LiveCapture *live : m_LiveCaptures)
-  {
-    if(!live->checkAllowClose())
-    {
-      event->ignore();
-      return;
-    }
-  }
-
   if(RENDERDOC_IsGlobalHookActive())
   {
     RDDialog::critical(this, tr("Global hook active"),
@@ -2955,10 +3186,48 @@ void MainWindow::closeEvent(QCloseEvent *event)
     return;
   }
 
-  for(LiveCapture *live : m_LiveCaptures)
+  bool noToAll = false;
+
+  QList<QPointer<LiveCapture>> liveCaptures;
+
+  int unsavedCaps = 0;
+  for(QPointer<LiveCapture> live : m_LiveCaptures)
   {
+    unsavedCaps += live->unsavedCaptureCount();
+    liveCaptures.append(live);
+  }
+
+  for(QPointer<LiveCapture> live : liveCaptures)
+  {
+    // The live capture could be deleted during this loop via the save capture modal message box
+    // message pump of an earlier live capture
+    if(live.isNull())
+      continue;
+
+    // if the user previously selected 'no to all' in the save prompts below, apply that to all
+    // subsequent live captures by skipping the check and unconditionally cleaning all captures
+    if(!noToAll)
+    {
+      if(!live->checkAllowClose(unsavedCaps, noToAll))
+      {
+        event->ignore();
+        return;
+      }
+    }
+
     live->cleanItems();
     delete live;
+  }
+
+  if(m_Ctx.HasPythonShell())
+  {
+    IPythonShell *shell = m_Ctx.GetPythonShell();
+
+    if(!shell->CheckUnsavedChanges())
+    {
+      event->ignore();
+      return;
+    }
   }
 
   SaveLayout(0);
@@ -3065,6 +3334,7 @@ bool MainWindow::restoreState(QVariantMap &state)
 
 bool MainWindow::SaveLayout(int layout)
 {
+  qInfo() << "SaveLayout " << layout;
   QString path = GetLayoutPath(layout);
 
   QVariantMap state = saveState();
@@ -3080,6 +3350,7 @@ bool MainWindow::SaveLayout(int layout)
 
 bool MainWindow::LoadLayout(int layout)
 {
+  qInfo() << "LoadLayout " << layout;
   QString path = GetLayoutPath(layout);
 
   QFile f(path);
@@ -3092,7 +3363,20 @@ bool MainWindow::LoadLayout(int layout)
     if(!success)
       return false;
 
-    return restoreState(state);
+    if(restoreState(state))
+    {
+      // Close any windows which have now become orphaned
+      foreach(QWidget *toolWindow, ui->toolWindowManager->toolWindows())
+      {
+        if(ui->toolWindowManager->areaOf(toolWindow) == NULL)
+        {
+          qInfo() << "Manually closing orphaned window " << toolWindow->objectName();
+          ui->toolWindowManager->forceCloseToolWindow(toolWindow);
+        }
+      }
+      return true;
+    }
+    return false;
   }
 
   qInfo() << "Couldn't load layout from " << path << " " << f.errorString();
@@ -3100,40 +3384,43 @@ bool MainWindow::LoadLayout(int layout)
   return false;
 }
 
-void MainWindow::showLaunchError(ReplayStatus status)
+void MainWindow::showLaunchError(ResultDetails result)
 {
   QString message;
-  switch(status)
+  switch(result.code)
   {
-    case ReplayStatus::AndroidGrantPermissionsFailed:
+    case ResultCode::AndroidGrantPermissionsFailed:
       message =
-          tr("Failed to automatically grant Android permissions to installed server.\n\n"
+          tr("%1.\n\n"
              "Please manually allow the RenderDocCmd program storage permissions on your device "
-             "to ensure correct functionality.");
+             "to ensure correct functionality.")
+              .arg(result.Message());
       break;
-    case ReplayStatus::AndroidABINotFound:
-      message =
-          tr("Couldn't determine supported ABIs for your device, please check device connection "
-             "and status.");
+    case ResultCode::AndroidABINotFound:
+      message = tr("%1.\n\nPlease check device connection and result.").arg(result.Message());
       break;
-    case ReplayStatus::AndroidAPKFolderNotFound:
-      message = tr("Couldn't find APK folder, please check that your installation is complete.");
+    case ResultCode::AndroidAPKFolderNotFound: message = result.Message(); break;
+    case ResultCode::AndroidAPKInstallFailed:
+      message = tr("%1.\n\nPlease check that your device is connected and accessible to "
+                   "adb, and that installing APKs over USB is allowed.")
+                    .arg(result.Message());
       break;
-    case ReplayStatus::AndroidAPKInstallFailed:
-      message =
-          tr("Couldn't install APK, please check that your device is connected and accessible to "
-             "adb, and that installing APKs over USB is allowed.");
-      break;
-    case ReplayStatus::AndroidAPKVerifyFailed:
+    case ResultCode::AndroidAPKVerifyFailed:
       message =
           tr("Couldn't correctly verify installed APK version.\n\n"
-             "Please check your installation is not corrupted, or if this is a custom build check "
-             "that all ABIs are built at the same version as this program.");
+             "Please check your installation is not corrupted."
+#if !RENDERDOC_OFFICIAL_BUILD
+             " Or if this is a custom build check that all ABIs are built at the same version as "
+             "this program."
+#endif
+          );
       break;
-    default: message = tr("Unexpected error: %1.").arg(ToQStr(status)); break;
+    default:
+      message = tr("Error encountered launching RenderDoc remote server: %1.").arg(result.Message());
+      break;
   }
   GUIInvoke::call(this, [this, message]() {
-    RDDialog::warning(this, tr("Problems installing RenderDoc server"), message);
+    RDDialog::warning(this, tr("Problems launching RenderDoc remote server"), message);
   });
 }
 

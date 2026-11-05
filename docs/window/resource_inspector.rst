@@ -25,6 +25,15 @@ Some resources such as textures and buffers have information available about whe
 
 In this list, each entry lists an EID range and a type of usage.
 
+Annotations
+-----------
+
+Resources can optionally have deep structured annotations provided by the application via the :doc:`../in_application_api`. For annotations applied to objects, they are displayed here under the key paths provided.
+
+For more information on the annotation system in general see the :doc:`annotation_viewer`.
+
+This view is hidden if there are no annotations in the capture.
+
 Resource Initialisation Parameters
 ----------------------------------
 

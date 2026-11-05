@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -95,8 +95,8 @@ v2f main(vertin IN, uint vid : SV_VertexID)
   OUT.pos = float4(IN.pos, 1.0f);
 )EOSHADER";
 
-    float counterFloat = 0.0f;
-    uint32_t counterUInt = 0;
+    float counterFloat = 1.5f;
+    uint32_t counterUInt = 3;
     for(size_t i = 0; i < outputs.size(); ++i)
     {
       uint32_t count = std::max(1U, outputs[i].arraySize);
@@ -113,7 +113,8 @@ v2f main(vertin IN, uint vid : SV_VertexID)
         {
           if(k != 0)
             vs += ", ";
-          vs += std::to_string(outputs[i].type == VarType::Float ? counterFloat++ : counterUInt++);
+          vs += outputs[i].type == VarType::Float ? std::to_string(counterFloat++)
+                                                  : std::to_string(counterUInt++);
         }
         vs += ");\n";
       }
@@ -169,10 +170,10 @@ float4 main(v2f IN) : SV_Target0
   }
 
   ID3D12PipelineStatePtr BuildPSO(ID3D12RootSignaturePtr rootSig,
-                                  const std::vector<ShaderLinkageEntry> &elements)
+                                  const std::vector<ShaderLinkageEntry> &elements, bool sm6)
   {
-    ID3DBlobPtr vsblob = Compile(BuildVS(elements), "main", "vs_5_0");
-    ID3DBlobPtr psblob = Compile(BuildPS(elements), "main", "ps_5_0");
+    ID3DBlobPtr vsblob = Compile(BuildVS(elements), "main", sm6 ? "vs_6_0" : "vs_5_0");
+    ID3DBlobPtr psblob = Compile(BuildPS(elements), "main", sm6 ? "ps_6_0" : "ps_5_0");
     ID3D12PipelineStatePtr pso = MakePSO().RootSig(rootSig).InputLayout().VS(vsblob).PS(psblob).RTVs(
         {DXGI_FORMAT_R32G32B32A32_FLOAT});
     return pso;
@@ -194,101 +195,222 @@ float4 main(v2f IN) : SV_Target0
     ID3D12RootSignaturePtr sig = MakeSig({});
 
     std::vector<ID3D12PipelineStatePtr> psos;
+    int countSMs = m_DXILSupport ? 2 : 1;
+    for(int i = 0; i < countSMs; ++i)
+    {
+      bool sm6 = (i == 1);
+      // No additional semantics
+      psos.push_back(BuildPSO(sig, {}, sm6));
 
-    // No additional semantics
-    psos.push_back(BuildPSO(sig, {}));
+      // A single semantic of various types, interpolation modes, and components
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 0, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{true, VarType::Float, 1, 0, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 4, 0, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 4, 0, "TEXCOORD0", false}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 1, 0, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 4, 0, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 4, 0, "TEXCOORD0", false}}, sm6));
+      psos.push_back(BuildPSO(sig, {{true, VarType::UInt, 4, 0, "TEXCOORD0", true}}, sm6));
 
-    // A single semantic of various types, interpolation modes, and components
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 0, "TEXCOORD0", true}}));
-    psos.push_back(BuildPSO(sig, {{true, VarType::Float, 1, 0, "TEXCOORD0", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 4, 0, "TEXCOORD0", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 4, 0, "TEXCOORD0", false}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 1, 0, "TEXCOORD0", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 4, 0, "TEXCOORD0", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 4, 0, "TEXCOORD0", false}}));
-    psos.push_back(BuildPSO(sig, {{true, VarType::UInt, 4, 0, "TEXCOORD0", true}}));
+      // test semantics with indices that don't start from 0
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 0, "TEXCOORD1", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{true, VarType::Float, 1, 0, "TEXCOORD1", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 1, 0, "TEXCOORD1", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 4, 0, "TEXCOORD1", true}}, sm6));
 
-    // A single semantic with various array sizes
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 1, "TEXCOORD0", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 2, "TEXCOORD0", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 5, "TEXCOORD0", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 1, 1, "TEXCOORD0", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 1, 2, "TEXCOORD0", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 1, 5, "TEXCOORD0", true}}));
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 0, "TEXCOORD2", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{true, VarType::Float, 1, 0, "TEXCOORD2", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 1, 0, "TEXCOORD2", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 4, 0, "TEXCOORD2", true}}, sm6));
 
-    // Multiple semantics that pack together
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 2, 0, "TEXCOORD0", true},
-                                  {false, VarType::Float, 2, 0, "TEXCOORD1", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 2, 0, "TEXCOORD0", true},
-                                  {false, VarType::UInt, 2, 0, "TEXCOORD1", true}}));
-    psos.push_back(BuildPSO(sig, {{true, VarType::Float, 2, 0, "TEXCOORD0", true},
-                                  {true, VarType::Float, 2, 0, "TEXCOORD1", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 3, 0, "TEXCOORD0", true},
-                                  {false, VarType::Float, 1, 0, "TEXCOORD1", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 0, "TEXCOORD0", true},
-                                  {false, VarType::Float, 3, 0, "TEXCOORD1", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 0, "TEXCOORD0", true},
-                                  {false, VarType::Float, 2, 0, "TEXCOORD1", true},
-                                  {false, VarType::Float, 1, 0, "TEXCOORD2", true}}));
-    // These pack into v1.x, v2.xy, and v1.y
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 0, "TEXCOORD0", true},
-                                  {false, VarType::UInt, 2, 0, "TEXCOORD1", true},
-                                  {false, VarType::Float, 1, 0, "TEXCOORD2", true}}));
+      // A single semantic with various array sizes
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 1, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 2, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 5, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 1, 1, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 1, 2, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 1, 5, "TEXCOORD0", true}}, sm6));
 
-    // Multiple semantics that don't pack together
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 3, 0, "TEXCOORD0", true},
-                                  {false, VarType::Float, 2, 0, "TEXCOORD1", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 2, 0, "TEXCOORD0", true},
-                                  {false, VarType::Float, 3, 0, "TEXCOORD1", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 4, 0, "TEXCOORD0", true},
-                                  {false, VarType::Float, 1, 0, "TEXCOORD1", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 0, "TEXCOORD0", true},
-                                  {false, VarType::Float, 4, 0, "TEXCOORD1", true}}));
+      // One array with 2 or 3 components
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 2, 5, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 3, 5, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 4, 5, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 2, 5, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 3, 5, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 4, 5, "TEXCOORD0", true}}, sm6));
 
-    // Multiple semantics that will pack together "out of order" thanks to FXC's rules
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 2, 0, "TEXCOORD0", true},
-                                  {false, VarType::Float, 3, 0, "TEXCOORD1", true},
-                                  {false, VarType::Float, 2, 0, "TEXCOORD2", true}}));
+      // One array with 2 or 3 components
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 2, 1, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 3, 1, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 4, 1, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 2, 1, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 3, 1, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 4, 1, "TEXCOORD0", true}}, sm6));
 
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 2, 1, "TEXCOORD0", true},
-                                  {false, VarType::Float, 2, 1, "TEXCOORD1", true},
-                                  {false, VarType::Float, 3, 2, "TEXCOORD2", true},
-                                  {false, VarType::Float, 2, 0, "TEXCOORD4", true}}));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 2, 5, "TEXCOORD0", true},
+                               {false, VarType::Float, 2, 0, "OTHER", true}},
+                              sm6));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::UInt, 2, 5, "TEXCOORD0", true},
+                               {false, VarType::UInt, 2, 0, "OTHER", true}},
+                              sm6));
 
-    // Semantics that don't pack together due to being arrays
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 2, "TEXCOORD0", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 2, 1, "TEXCOORD0", true},
-                                  {false, VarType::Float, 2, 1, "TEXCOORD1", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 2, 1, "TEXCOORD0", true},
-                                  {false, VarType::Float, 2, 0, "TEXCOORD1", true}}));
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 2, 0, "TEXCOORD0", true},
-                                  {false, VarType::Float, 2, 1, "TEXCOORD1", true}}));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 2, 1, "TEXCOORD0", true},
+                               {false, VarType::Float, 2, 0, "OTHER", true}},
+                              sm6));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::UInt, 2, 1, "TEXCOORD0", true},
+                               {false, VarType::UInt, 2, 0, "OTHER", true}},
+                              sm6));
 
-    // Tests focusing on different interpolation modes
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 2, 0, "TEXCOORD0", true},
-                                  {true, VarType::Float, 2, 0, "TEXCOORD1", true}}));
-    // These semantics are placed in v1.x and v1.y since they share interpolation modes and types
-    // (all int semantics are nointerpolation). Test that they don't get placed in v1.x and v2.x
-    psos.push_back(BuildPSO(sig, {{false, VarType::UInt, 1, 0, "TEXCOORD0", true},
-                                  {true, VarType::UInt, 1, 0, "TEXCOORD1", true}}));
-    // These semantics are placed in v1.x and v2.x since their interpolation modes differ. Test that
-    // they don't turn into an array[2] which would result in an erroneous interpolation mode for
-    // one semantic or the other
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 0, "TEXCOORD0", true},
-                                  {false, VarType::UInt, 1, 0, "TEXCOORD1", true}}));
-    // These semantics are placed in v1.x and v1.y despite having different types since the
-    // interpolation mode is the same. Test that they don't turn into an array[2] which would place
-    // them in the wrong registers
-    psos.push_back(BuildPSO(sig, {{true, VarType::Float, 1, 0, "TEXCOORD0", true},
-                                  {false, VarType::UInt, 1, 0, "TEXCOORD1", true}}));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 2, 1, "A", true},
+                               {false, VarType::Float, 2, 0, "B", true},
+                               {false, VarType::Float, 3, 1, "C", true},
+                               {false, VarType::Float, 1, 0, "D", true}},
+                              sm6));
 
-    // Bespoke tests for broken scenarios discovered through bug reports:
+      psos.back()->SetName(L"foo");
 
-    // These semantics live in v1.xy, v2.x, and v3.xyz due to each being an array. If any of them
-    // are not treated as an array[1], they will incorrectly pack together with a previous semantic
-    psos.push_back(BuildPSO(sig, {{false, VarType::Float, 2, 1, "TEXCOORD0", true},
-                                  {false, VarType::Float, 1, 1, "TEXCOORD1", false},
-                                  {false, VarType::Float, 3, 1, "TEXCOORD2", true}}));
+      // Multiple semantics that pack together
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 2, 0, "TEXCOORD0", true},
+                               {false, VarType::Float, 2, 0, "TEXCOORD1", true}},
+                              sm6));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::UInt, 2, 0, "TEXCOORD0", true},
+                               {false, VarType::UInt, 2, 0, "TEXCOORD1", true}},
+                              sm6));
+      psos.push_back(BuildPSO(sig,
+                              {{true, VarType::Float, 2, 0, "TEXCOORD0", true},
+                               {true, VarType::Float, 2, 0, "TEXCOORD1", true}},
+                              sm6));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 3, 0, "TEXCOORD0", true},
+                               {false, VarType::Float, 1, 0, "TEXCOORD1", true}},
+                              sm6));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 1, 0, "TEXCOORD0", true},
+                               {false, VarType::Float, 3, 0, "TEXCOORD1", true}},
+                              sm6));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 1, 0, "TEXCOORD0", true},
+                               {false, VarType::Float, 2, 0, "TEXCOORD1", true},
+                               {false, VarType::Float, 1, 0, "TEXCOORD2", true}},
+                              sm6));
+      // These pack into v1.x, v2.xy, and v1.y
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 1, 0, "TEXCOORD0", true},
+                               {false, VarType::UInt, 2, 0, "TEXCOORD1", true},
+                               {false, VarType::Float, 1, 0, "TEXCOORD2", true}},
+                              sm6));
+
+      // Multiple semantics that don't pack together
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 3, 0, "TEXCOORD0", true},
+                               {false, VarType::Float, 2, 0, "TEXCOORD1", true}},
+                              sm6));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 2, 0, "TEXCOORD0", true},
+                               {false, VarType::Float, 3, 0, "TEXCOORD1", true}},
+                              sm6));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 4, 0, "TEXCOORD0", true},
+                               {false, VarType::Float, 1, 0, "TEXCOORD1", true}},
+                              sm6));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 1, 0, "TEXCOORD0", true},
+                               {false, VarType::Float, 4, 0, "TEXCOORD1", true}},
+                              sm6));
+
+      // Multiple semantics that will pack together "out of order" thanks to FXC's rules
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 2, 0, "TEXCOORD0", true},
+                               {false, VarType::Float, 3, 0, "TEXCOORD1", true},
+                               {false, VarType::Float, 2, 0, "TEXCOORD2", true}},
+                              sm6));
+
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 2, 1, "TEXCOORD0", true},
+                               {false, VarType::Float, 2, 1, "TEXCOORD1", true},
+                               {false, VarType::Float, 3, 2, "TEXCOORD2", true},
+                               {false, VarType::Float, 2, 0, "TEXCOORD4", true}},
+                              sm6));
+
+      // Semantics that don't pack together due to being arrays
+      psos.push_back(BuildPSO(sig, {{false, VarType::Float, 1, 2, "TEXCOORD0", true}}, sm6));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 2, 1, "TEXCOORD0", true},
+                               {false, VarType::Float, 2, 1, "TEXCOORD1", true}},
+                              sm6));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 2, 1, "TEXCOORD0", true},
+                               {false, VarType::Float, 2, 0, "TEXCOORD1", true}},
+                              sm6));
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 2, 0, "TEXCOORD0", true},
+                               {false, VarType::Float, 2, 1, "TEXCOORD1", true}},
+                              sm6));
+
+      // Tests focusing on different interpolation modes
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 2, 0, "TEXCOORD0", true},
+                               {true, VarType::Float, 2, 0, "TEXCOORD1", true}},
+                              sm6));
+      // These semantics are placed in v1.x and v1.y since they share interpolation modes and types
+      // (all int semantics are nointerpolation). Test that they don't get placed in v1.x and v2.x
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::UInt, 1, 0, "TEXCOORD0", true},
+                               {true, VarType::UInt, 1, 0, "TEXCOORD1", true}},
+                              sm6));
+      // These semantics are placed in v1.x and v2.x since their interpolation modes differ. Test
+      // that they don't turn into an array[2] which would result in an erroneous interpolation mode
+      // for one semantic or the other
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 1, 0, "TEXCOORD0", true},
+                               {false, VarType::UInt, 1, 0, "TEXCOORD1", true}},
+                              sm6));
+      // These semantics are placed in v1.x and v1.y despite having different types since the
+      // interpolation mode is the same. Test that they don't turn into an array[2] which would
+      // place them in the wrong registers
+      psos.push_back(BuildPSO(sig,
+                              {{true, VarType::Float, 1, 0, "TEXCOORD0", true},
+                               {false, VarType::UInt, 1, 0, "TEXCOORD1", true}},
+                              sm6));
+
+      // Packing float with a float3
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 1, 0, "TEXCOORD0", true},
+                               {true, VarType::UInt, 1, 0, "TEXCOORD1", true},
+                               {false, VarType::Float, 3, 0, "COLOR0", true}},
+                              sm6));
+
+      // Packing float with a float3[1]
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 1, 0, "TEXCOORD0", true},
+                               {true, VarType::UInt, 1, 0, "TEXCOORD1", true},
+                               {false, VarType::Float, 3, 1, "COLOR0", true}},
+                              sm6));
+
+      // Not packing float with a float3[2]
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 1, 0, "TEXCOORD0", true},
+                               {true, VarType::UInt, 1, 0, "TEXCOORD1", true},
+                               {false, VarType::Float, 3, 2, "COLOR0", true}},
+                              sm6));
+
+      // Bespoke tests for broken scenarios discovered through bug reports:
+
+      // These semantics live in v1.xy, v2.x, and v3.xyz due to each being an array. If any of them
+      // are not treated as an array[1], they will incorrectly pack together with a previous semantic
+      psos.push_back(BuildPSO(sig,
+                              {{false, VarType::Float, 2, 1, "TEXCOORD0", true},
+                               {false, VarType::Float, 1, 1, "TEXCOORD1", false},
+                               {false, VarType::Float, 3, 1, "TEXCOORD2", true}},
+                              sm6));
+    }
 
     while(Running())
     {

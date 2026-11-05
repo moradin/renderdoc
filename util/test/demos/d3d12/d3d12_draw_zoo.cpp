@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -87,6 +87,14 @@ float4 main(v2f IN) : SV_Target0
     ID3DBlobPtr vsblob = Compile(common + vertex, "main", "vs_5_0");
     ID3DBlobPtr psblob = Compile(common + pixel, "main", "ps_5_0");
 
+    bool supportSM60 = (m_HighestShaderModel >= D3D_SHADER_MODEL_6_0) && m_DXILSupport;
+    bool supportSM66 = (m_HighestShaderModel >= D3D_SHADER_MODEL_6_6) && m_DXILSupport;
+
+    ID3DBlobPtr vs_6_0_blob = supportSM60 ? Compile(common + vertex, "main", "vs_6_0") : NULL;
+    ID3DBlobPtr ps_6_0_blob = supportSM60 ? Compile(common + pixel, "main", "ps_6_0") : NULL;
+    ID3DBlobPtr vs_6_6_blob = supportSM66 ? Compile(common + vertex, "main", "vs_6_6") : NULL;
+    ID3DBlobPtr ps_6_6_blob = supportSM66 ? Compile(common + pixel, "main", "ps_6_6") : NULL;
+
     D3D12_INPUT_CLASSIFICATION perVertex = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
 
     std::vector<D3D12_INPUT_ELEMENT_DESC> layoutdesc = {
@@ -97,25 +105,65 @@ float4 main(v2f IN) : SV_Target0
 
     ID3D12RootSignaturePtr sig = MakeSig({});
 
-    ID3D12PipelineStatePtr pso = MakePSO()
-                                     .RootSig(sig)
-                                     .InputLayout(layoutdesc)
-                                     .StripRestart(D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF)
-                                     .VS(vsblob)
-                                     .PS(psblob)
-                                     .RTVs({DXGI_FORMAT_R32G32B32A32_FLOAT});
+    ID3D12PipelineStatePtr psos[3];
+    size_t countPSOs = 0;
+    psos[countPSOs++] = MakePSO()
+                            .RootSig(sig)
+                            .InputLayout(layoutdesc)
+                            .StripRestart(D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF)
+                            .VS(vsblob)
+                            .PS(psblob)
+                            .RTVs({DXGI_FORMAT_R32G32B32A32_FLOAT});
+
+    if(vs_6_0_blob && ps_6_0_blob)
+      psos[countPSOs++] = MakePSO()
+                              .RootSig(sig)
+                              .InputLayout()
+                              .StripRestart(D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF)
+                              .VS(vs_6_0_blob)
+                              .PS(ps_6_0_blob)
+                              .RTVs({DXGI_FORMAT_R32G32B32A32_FLOAT});
+
+    if(vs_6_6_blob && ps_6_6_blob)
+      psos[countPSOs++] = MakePSO()
+                              .RootSig(sig)
+                              .InputLayout()
+                              .StripRestart(D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF)
+                              .VS(vs_6_6_blob)
+                              .PS(ps_6_6_blob)
+                              .RTVs({DXGI_FORMAT_R32G32B32A32_FLOAT});
 
     layoutdesc[1].AlignedByteOffset = 0;
     layoutdesc[1].InputSlot = 1;
     layoutdesc[1].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA;
     layoutdesc[1].InstanceDataStepRate = 1;
 
-    ID3D12PipelineStatePtr instpso = MakePSO()
-                                         .RootSig(sig)
-                                         .InputLayout(layoutdesc)
-                                         .VS(vsblob)
-                                         .PS(psblob)
-                                         .RTVs({DXGI_FORMAT_R32G32B32A32_FLOAT});
+    size_t countInstPSOs = 0;
+    ID3D12PipelineStatePtr instpsos[3];
+    instpsos[countInstPSOs++] = MakePSO()
+                                    .RootSig(sig)
+                                    .InputLayout(layoutdesc)
+                                    .VS(vsblob)
+                                    .PS(psblob)
+                                    .RTVs({DXGI_FORMAT_R32G32B32A32_FLOAT});
+
+    if(vs_6_0_blob && ps_6_0_blob)
+      instpsos[countInstPSOs++] = MakePSO()
+                                      .RootSig(sig)
+                                      .InputLayout(layoutdesc)
+                                      .VS(vs_6_0_blob)
+                                      .PS(ps_6_0_blob)
+                                      .RTVs({DXGI_FORMAT_R32G32B32A32_FLOAT});
+
+    if(vs_6_6_blob && ps_6_6_blob)
+      instpsos[countInstPSOs++] = MakePSO()
+                                      .RootSig(sig)
+                                      .InputLayout(layoutdesc)
+                                      .VS(vs_6_6_blob)
+                                      .PS(ps_6_6_blob)
+                                      .RTVs({DXGI_FORMAT_R32G32B32A32_FLOAT});
+
+    TEST_ASSERT(countPSOs == countInstPSOs, "Mismatched number of PSOs");
 
     DefaultA2V triangle[] = {
         // 0
@@ -219,8 +267,9 @@ float4 main(v2f IN) : SV_Target0
       vbData[i].col.y = float(i) / 200.0f;
     }
 
-    ID3D12ResourcePtr vb =
-        MakeBuffer().Data(vbData).Size(UINT((vbData.size() + 100) * sizeof(DefaultA2V)));
+    vbData.resize(vbData.size() + 100);
+
+    ID3D12ResourcePtr vb = MakeBuffer().Data(vbData).Size(UINT(vbData.size() * sizeof(DefaultA2V)));
 
     Vec4f instData[256] = {};
     for(int i = 0; i < ARRAY_COUNT(instData); i++)
@@ -237,7 +286,7 @@ float4 main(v2f IN) : SV_Target0
       instData[14] = Vec4f(0.5f, 0.9f, 0.1f, 0.5f);
     }
 
-    ID3D12ResourcePtr instvb = MakeBuffer().Data(instData).Size(4096);
+    ID3D12ResourcePtr instvb = MakeBuffer().Data(instData).Size(8192);
 
     std::vector<uint16_t> idxData;
     idxData.resize(2048);
@@ -318,194 +367,198 @@ float4 main(v2f IN) : SV_Target0
 
       ClearRenderTargetView(cmd, bbrtv, {0.2f, 0.2f, 0.2f, 1.0f});
 
-      ClearRenderTargetView(cmd, offrtv, {0.2f, 0.2f, 0.2f, 1.0f});
+      const char *markers[] = {"SM5.0", "SM6.0", "SM6.6"};
+      for(size_t i = 0; i < countPSOs; ++i)
+      {
+        ClearRenderTargetView(cmd, offrtv, {0.2f, 0.2f, 0.2f, 1.0f});
 
-      cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-      cmd->SetGraphicsRootSignature(sig);
+        cmd->SetGraphicsRootSignature(sig);
 
-      D3D12_VIEWPORT view = {0.0f, 0.0f, 48.0f, 48.0f, 0.0f, 1.0f};
+        D3D12_VIEWPORT view = {0.0f, 0.0f, 48.0f, 48.0f, 0.0f, 1.0f};
+        RSSetViewport(cmd, view);
+        RSSetScissorRect(cmd, {0, 0, screenWidth, screenHeight});
 
-      RSSetViewport(cmd, view);
-      RSSetScissorRect(cmd, {0, 0, screenWidth, screenHeight});
+        setMarker(cmd, markers[i]);
 
-      D3D12_VERTEX_BUFFER_VIEW vbs[2] = {};
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress();
-      vbs[0].SizeInBytes = 4096;
-      vbs[0].StrideInBytes = sizeof(DefaultA2V);
-      vbs[1].BufferLocation = instvb->GetGPUVirtualAddress();
-      vbs[1].StrideInBytes = sizeof(Vec4f);
-      vbs[1].SizeInBytes = 4096;
+        cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-      D3D12_INDEX_BUFFER_VIEW ibv = {};
-      ibv.BufferLocation = ib->GetGPUVirtualAddress();
-      ibv.Format = DXGI_FORMAT_R16_UINT;
-      ibv.SizeInBytes = 1024;
+        D3D12_VERTEX_BUFFER_VIEW vbs[2] = {};
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress();
+        vbs[0].SizeInBytes = 4096;
+        vbs[0].StrideInBytes = sizeof(DefaultA2V);
+        vbs[1].BufferLocation = instvb->GetGPUVirtualAddress();
+        vbs[1].StrideInBytes = sizeof(Vec4f);
+        vbs[1].SizeInBytes = 4096;
 
-      cmd->SetPipelineState(pso);
+        D3D12_INDEX_BUFFER_VIEW ibv = {};
+        ibv.BufferLocation = ib->GetGPUVirtualAddress();
+        ibv.Format = DXGI_FORMAT_R16_UINT;
+        ibv.SizeInBytes = 1024;
 
-      setMarker(cmd, "Test Begin");
+        cmd->SetPipelineState(psos[i]);
 
-      ///////////////////////////////////////////////////
-      // non-indexed, non-instanced
+        ///////////////////////////////////////////////////
+        // non-indexed, non-instanced
 
-      // basic test
-      RSSetViewport(cmd, view);
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->DrawInstanced(3, 1, 0, 0);
-      view.TopLeftX += view.Width;
+        // basic test
+        RSSetViewport(cmd, view);
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->DrawInstanced(3, 1, 0, 0);
+        view.TopLeftX += view.Width;
 
-      // test with vertex offset
-      RSSetViewport(cmd, view);
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->DrawInstanced(3, 1, 5, 0);
-      view.TopLeftX += view.Width;
+        // test with vertex offset
+        RSSetViewport(cmd, view);
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->DrawInstanced(3, 1, 5, 0);
+        view.TopLeftX += view.Width;
 
-      // test with vertex offset and vbuffer offset
-      RSSetViewport(cmd, view);
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 5 * sizeof(DefaultA2V);
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->DrawInstanced(3, 1, 8, 0);
-      view.TopLeftX += view.Width;
+        // test with vertex offset and vbuffer offset
+        RSSetViewport(cmd, view);
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 5 * sizeof(DefaultA2V);
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->DrawInstanced(3, 1, 8, 0);
+        view.TopLeftX += view.Width;
 
-      // adjust to next row
-      view.TopLeftX = 0.0f;
-      view.TopLeftY += view.Height;
+        // adjust to next row
+        view.TopLeftX = 0.0f;
+        view.TopLeftY += view.Height;
 
-      ///////////////////////////////////////////////////
-      // indexed, non-instanced
+        ///////////////////////////////////////////////////
+        // indexed, non-instanced
 
-      ibv.BufferLocation = ib->GetGPUVirtualAddress();
+        ibv.BufferLocation = ib->GetGPUVirtualAddress();
 
-      // basic test
-      RSSetViewport(cmd, view);
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->IASetIndexBuffer(&ibv);
-      cmd->DrawIndexedInstanced(3, 1, 0, 0, 0);
-      view.TopLeftX += view.Width;
+        // basic test
+        RSSetViewport(cmd, view);
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->IASetIndexBuffer(&ibv);
+        cmd->DrawIndexedInstanced(3, 1, 0, 0, 0);
+        view.TopLeftX += view.Width;
 
-      // test with first index
-      RSSetViewport(cmd, view);
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->IASetIndexBuffer(&ibv);
-      cmd->DrawIndexedInstanced(3, 1, 5, 0, 0);
-      view.TopLeftX += view.Width;
+        // test with first index
+        RSSetViewport(cmd, view);
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->IASetIndexBuffer(&ibv);
+        cmd->DrawIndexedInstanced(3, 1, 5, 0, 0);
+        view.TopLeftX += view.Width;
 
-      // test with first index and vertex offset
-      RSSetViewport(cmd, view);
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->IASetIndexBuffer(&ibv);
-      cmd->DrawIndexedInstanced(3, 1, 13, -50, 0);
-      view.TopLeftX += view.Width;
+        // test with first index and vertex offset
+        RSSetViewport(cmd, view);
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->IASetIndexBuffer(&ibv);
+        cmd->DrawIndexedInstanced(3, 1, 13, -50, 0);
+        view.TopLeftX += view.Width;
 
-      // test with first index and vertex offset and vbuffer offset
-      RSSetViewport(cmd, view);
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 10 * sizeof(DefaultA2V);
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->IASetIndexBuffer(&ibv);
-      cmd->DrawIndexedInstanced(3, 1, 23, -100, 0);
-      view.TopLeftX += view.Width;
+        // test with first index and vertex offset and vbuffer offset
+        RSSetViewport(cmd, view);
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 10 * sizeof(DefaultA2V);
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->IASetIndexBuffer(&ibv);
+        cmd->DrawIndexedInstanced(3, 1, 23, -100, 0);
+        view.TopLeftX += view.Width;
 
-      // test with first index and vertex offset and vbuffer offset and ibuffer offset
-      RSSetViewport(cmd, view);
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 19 * sizeof(DefaultA2V);
-      ibv.BufferLocation = ib->GetGPUVirtualAddress() + 14 * sizeof(uint16_t);
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->IASetIndexBuffer(&ibv);
-      cmd->DrawIndexedInstanced(3, 1, 23, -100, 0);
-      view.TopLeftX += view.Width;
+        // test with first index and vertex offset and vbuffer offset and ibuffer offset
+        RSSetViewport(cmd, view);
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 19 * sizeof(DefaultA2V);
+        ibv.BufferLocation = ib->GetGPUVirtualAddress() + 14 * sizeof(uint16_t);
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->IASetIndexBuffer(&ibv);
+        cmd->DrawIndexedInstanced(3, 1, 23, -100, 0);
+        view.TopLeftX += view.Width;
 
-      cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 
-      // indexed strip with primitive restart
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress();
-      ibv.BufferLocation = ib->GetGPUVirtualAddress();
-      RSSetViewport(cmd, view);
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->IASetIndexBuffer(&ibv);
-      cmd->DrawIndexedInstanced(12, 1, 42, 0, 0);
-      view.TopLeftX += view.Width;
+        // indexed strip with primitive restart
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress();
+        ibv.BufferLocation = ib->GetGPUVirtualAddress();
+        RSSetViewport(cmd, view);
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->IASetIndexBuffer(&ibv);
+        cmd->DrawIndexedInstanced(12, 1, 42, 0, 0);
+        view.TopLeftX += view.Width;
 
-      // indexed strip with primitive restart and vertex offset
-      RSSetViewport(cmd, view);
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->IASetIndexBuffer(&ibv);
-      cmd->DrawIndexedInstanced(12, 1, 54, -100, 0);
-      view.TopLeftX += view.Width;
+        // indexed strip with primitive restart and vertex offset
+        RSSetViewport(cmd, view);
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->IASetIndexBuffer(&ibv);
+        cmd->DrawIndexedInstanced(12, 1, 54, -100, 0);
+        view.TopLeftX += view.Width;
 
-      // adjust to next row
-      view.TopLeftX = 0.0f;
-      view.TopLeftY += view.Height;
+        // adjust to next row
+        view.TopLeftX = 0.0f;
+        view.TopLeftY += view.Height;
 
-      cmd->SetPipelineState(instpso);
-      cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        cmd->SetPipelineState(instpsos[i]);
+        cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-      ///////////////////////////////////////////////////
-      // non-indexed, instanced
+        ///////////////////////////////////////////////////
+        // non-indexed, instanced
 
-      // basic test
-      RSSetViewport(cmd, view);
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
-      vbs[1].BufferLocation = instvb->GetGPUVirtualAddress() + 0;
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->DrawInstanced(3, 2, 0, 0);
-      view.TopLeftX += view.Width;
+        // basic test
+        RSSetViewport(cmd, view);
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
+        vbs[1].BufferLocation = instvb->GetGPUVirtualAddress() + 0;
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->DrawInstanced(3, 2, 0, 0);
+        view.TopLeftX += view.Width;
 
-      // basic test with first instance
-      RSSetViewport(cmd, view);
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 5 * sizeof(DefaultA2V);
-      vbs[1].BufferLocation = instvb->GetGPUVirtualAddress() + 0;
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->DrawInstanced(3, 2, 0, 5);
-      view.TopLeftX += view.Width;
+        // basic test with first instance
+        RSSetViewport(cmd, view);
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 5 * sizeof(DefaultA2V);
+        vbs[1].BufferLocation = instvb->GetGPUVirtualAddress() + 0;
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->DrawInstanced(3, 2, 0, 5);
+        view.TopLeftX += view.Width;
 
-      // basic test with first instance and instance buffer offset
-      RSSetViewport(cmd, view);
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 13 * sizeof(DefaultA2V);
-      vbs[1].BufferLocation = instvb->GetGPUVirtualAddress() + 8 * sizeof(Vec4f);
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->DrawInstanced(3, 2, 0, 5);
-      view.TopLeftX += view.Width;
+        // basic test with first instance and instance buffer offset
+        RSSetViewport(cmd, view);
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 13 * sizeof(DefaultA2V);
+        vbs[1].BufferLocation = instvb->GetGPUVirtualAddress() + 8 * sizeof(Vec4f);
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->DrawInstanced(3, 2, 0, 5);
+        view.TopLeftX += view.Width;
 
-      // adjust to next row
-      view.TopLeftX = 0.0f;
-      view.TopLeftY += view.Height;
+        // adjust to next row
+        view.TopLeftX = 0.0f;
+        view.TopLeftY += view.Height;
 
-      ///////////////////////////////////////////////////
-      // indexed, instanced
+        ///////////////////////////////////////////////////
+        // indexed, instanced
 
-      ibv.BufferLocation = ib->GetGPUVirtualAddress();
+        ibv.BufferLocation = ib->GetGPUVirtualAddress();
 
-      // basic test
-      RSSetViewport(cmd, view);
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
-      vbs[1].BufferLocation = instvb->GetGPUVirtualAddress() + 0;
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->IASetIndexBuffer(&ibv);
-      cmd->DrawIndexedInstanced(3, 2, 5, 0, 0);
-      view.TopLeftX += view.Width;
+        // basic test
+        RSSetViewport(cmd, view);
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
+        vbs[1].BufferLocation = instvb->GetGPUVirtualAddress() + 0;
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->IASetIndexBuffer(&ibv);
+        cmd->DrawIndexedInstanced(3, 2, 5, 0, 0);
+        view.TopLeftX += view.Width;
 
-      // basic test with first instance
-      RSSetViewport(cmd, view);
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
-      vbs[1].BufferLocation = instvb->GetGPUVirtualAddress() + 0;
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->IASetIndexBuffer(&ibv);
-      cmd->DrawIndexedInstanced(3, 2, 13, -50, 5);
-      view.TopLeftX += view.Width;
+        // basic test with first instance
+        RSSetViewport(cmd, view);
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
+        vbs[1].BufferLocation = instvb->GetGPUVirtualAddress() + 0;
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->IASetIndexBuffer(&ibv);
+        cmd->DrawIndexedInstanced(3, 2, 13, -50, 5);
+        view.TopLeftX += view.Width;
 
-      // basic test with first instance and instance buffer offset
-      RSSetViewport(cmd, view);
-      vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
-      vbs[1].BufferLocation = instvb->GetGPUVirtualAddress() + 8 * sizeof(Vec4f);
-      cmd->IASetVertexBuffers(0, 2, vbs);
-      cmd->IASetIndexBuffer(&ibv);
-      cmd->DrawIndexedInstanced(3, 2, 23, -80, 5);
-      view.TopLeftX += view.Width;
+        // basic test with first instance and instance buffer offset
+        RSSetViewport(cmd, view);
+        vbs[0].BufferLocation = vb->GetGPUVirtualAddress() + 0;
+        vbs[1].BufferLocation = instvb->GetGPUVirtualAddress() + 8 * sizeof(Vec4f);
+        cmd->IASetVertexBuffers(0, 2, vbs);
+        cmd->IASetIndexBuffer(&ibv);
+        cmd->DrawIndexedInstanced(3, 2, 23, -80, 5);
+        view.TopLeftX += view.Width;
+      }
 
       ResourceBarrier(cmd, rtvtex, D3D12_RESOURCE_STATE_RENDER_TARGET,
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);

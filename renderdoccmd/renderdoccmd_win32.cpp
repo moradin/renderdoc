@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -33,6 +33,8 @@
 #include "resource.h"
 
 #include <Psapi.h>
+#include <shldisp.h>
+#include <shlobj.h>
 #include <tlhelp32.h>
 
 static std::string conv(const std::wstring &str)
@@ -243,16 +245,22 @@ struct UpgradeCommand : public Command
 {
 private:
   std::wstring wide_path;
+  bool dryrun = false;
 
 public:
   UpgradeCommand() {}
-  virtual void AddOptions(cmdline::parser &parser) { parser.add<std::string>("path", 0, ""); }
+  virtual void AddOptions(cmdline::parser &parser)
+  {
+    parser.add<std::string>("path", 0, "");
+    parser.add("dryrun", '\0', "");
+  }
   virtual const char *Description() { return "Internal use only!"; }
   virtual bool IsInternalOnly() { return true; }
   virtual bool IsCaptureCommand() { return false; }
   virtual bool Parse(cmdline::parser &parser, GlobalEnvironment &)
   {
     wide_path = conv(parser.get<std::string>("path"));
+    dryrun = parser.exist("dryrun");
     return true;
   }
 
@@ -260,6 +268,8 @@ public:
   {
     if(wide_path.back() != '\\' && wide_path.back() != '/')
       wide_path += L'\\';
+
+    CoInitialize(NULL);
 
     // Wait for UI to exit
     Sleep(3000);
@@ -272,7 +282,11 @@ public:
 
     mz_bool b = mz_zip_reader_init_file(&zip, "./update.zip", 0);
 
-    if(b)
+    if(dryrun)
+    {
+      successful = true;
+    }
+    else if(b)
     {
       mz_uint numfiles = mz_zip_reader_get_num_files(&zip);
 
@@ -417,12 +431,12 @@ public:
       failReason = L"\"Failed to open update .zip file - possibly corrupted.\"";
     }
 
-    // run original UI exe and tell it an update succeeded
+    // run original UI exe (as admin still) and tell it an update succeeded so that it can do any last updates
     std::wstring cmdline = L"\"";
     cmdline += wide_path;
     cmdline += L"/qrenderdoc.exe\" ";
     if(successful)
-      cmdline += L"--updatedone";
+      cmdline += L"--updatedone_admin";
     else
       cmdline += L"--updatefailed " + failReason;
 
@@ -434,6 +448,95 @@ public:
 
     PROCESS_INFORMATION pi;
     STARTUPINFOW si;
+    ZeroMemory(&pi, sizeof(pi));
+    ZeroMemory(&si, sizeof(si));
+
+    CreateProcessW(NULL, paramsAlloc, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+
+    if(pi.dwProcessId != 0)
+    {
+      CloseHandle(pi.hProcess);
+      CloseHandle(pi.hThread);
+    }
+
+    // try to launch the UI as a regular user again
+
+    // from https://devblogs.microsoft.com/oldnewthing/?p=2643
+    // Old New Thing "How can I launch an unelevated process from my elevated process and vice
+    // versa?" November 18th, 2013 for when that blog link inevitably breaks
+
+    // we deliberately don't try to release any of these objects - they will just leak as we're
+    // going to exit in a moment either way
+
+    IShellWindows *shellWindows = NULL;
+    if(SUCCEEDED(CoCreateInstance(CLSID_ShellWindows, NULL, CLSCTX_ALL, IID_IShellWindows,
+                                  (void **)&shellWindows)))
+    {
+      // documentation for FindWindowSW says location must be VT_VARIANT | VT_BYREF but this is what
+      // the examples do and it works
+      VARIANT location = {};
+      location.vt = VT_I4;
+      location.lVal = CSIDL_DESKTOP;
+
+      VARIANT empty = {};
+      long hwnd = 0;
+
+      IDispatch *spdisp = NULL;
+      if(SUCCEEDED(shellWindows->FindWindowSW(&location, &empty, SWC_DESKTOP, &hwnd,
+                                              SWFO_NEEDDISPATCH, &spdisp)))
+      {
+        // go through the chain of interfaces to get explorer's dispatch helper
+        IServiceProvider *querier = NULL;
+        IShellBrowser *spBrowser = NULL;
+        IShellView *spView = NULL;
+        IShellView *spsv = NULL;
+        IDispatch *spdispView = NULL;
+        IShellFolderViewDual *spFolderView = NULL;
+        IDispatch *spdispShell = NULL;
+        IShellDispatch2 *dispatcher = NULL;
+        if(SUCCEEDED(spdisp->QueryInterface(__uuidof(IServiceProvider), (void **)&querier)) &&
+           SUCCEEDED(querier->QueryService(SID_STopLevelBrowser, __uuidof(IShellBrowser),
+                                           (void **)&spBrowser)) &&
+           SUCCEEDED(spBrowser->QueryActiveShellView(&spView)) &&
+           SUCCEEDED(spView->QueryInterface(__uuidof(IShellView), (void **)&spsv)) &&
+           SUCCEEDED(spsv->GetItemObject(SVGIO_BACKGROUND, __uuidof(IDispatch), (void **)&spdispView)) &&
+           SUCCEEDED(spdispView->QueryInterface(__uuidof(IShellFolderViewDual),
+                                                (void **)&spFolderView)) &&
+           SUCCEEDED(spFolderView->get_Application(&spdispShell)) &&
+           SUCCEEDED(spdispShell->QueryInterface(__uuidof(IShellDispatch2), (void **)&dispatcher)))
+        {
+          VARIANT show = {};
+          show.vt = VT_I4;
+          show.lVal = SW_SHOWNORMAL;
+
+          std::wstring qrenderdoc = wide_path + L"/qrenderdoc.exe";
+
+          BSTR path = SysAllocStringLen(qrenderdoc.c_str(), (UINT)qrenderdoc.size());
+          memcpy(path, qrenderdoc.c_str(), qrenderdoc.size());
+
+          VARIANT param = {};
+          param.vt = VT_BSTR;
+          param.bstrVal = SysAllocString(L"--updatedone");
+
+          // return value unclear, we just assume if we got this far that it works.
+          dispatcher->ShellExecute(path, param, empty, empty, show);
+
+          SysFreeString(param.bstrVal);
+          SysFreeString(path);
+
+          return 0;
+        }
+      }
+    }
+
+    // if the de-elevation failed, we will just launch as admin
+
+    cmdline = L"\"";
+    cmdline += wide_path;
+    cmdline += L"/qrenderdoc.exe\" --updatedone";
+    ZeroMemory(paramsAlloc, sizeof(wchar_t) * 512);
+    wcscpy_s(paramsAlloc, 511, cmdline.c_str());
+
     ZeroMemory(&pi, sizeof(pi));
     ZeroMemory(&si, sizeof(si));
 
@@ -468,6 +571,7 @@ public:
     pipe = conv(parser.get<std::string>("pipe"));
     return true;
   }
+  virtual rdcarray<rdcstr> ReplayArgs() { return {"--crash"}; }
   virtual int Execute(const CaptureOptions &)
   {
     CrashGenerationServer *crashServer = NULL;

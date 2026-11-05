@@ -1,27 +1,29 @@
-/*****************************************************************************\
-|*                                                                             *|
-|* Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.                *|
-|*                                                                             *|
-|* Permission is hereby granted, free of charge, to any person obtaining a     *|
-|* copy of this software and associated documentation files (the "Software"),  *|
-|* to deal in the Software without restriction, including without limitation   *|
-|* the rights to use, copy, modify, merge, publish, distribute, sublicense,    *|
-|* and/or sell copies of the Software, and to permit persons to whom the       *|
-|* Software is furnished to do so, subject to the following conditions:        *|
-|*                                                                             *|
-|* The above copyright notice and this permission notice shall be included in  *|
-|* all copies or substantial portions of the Software.                         *|
-|*                                                                             *|
-|* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR  *|
-|* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,    *|
-|* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL    *|
-|* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER  *|
-|* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING     *| 
-|* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER         *|
-|* DEALINGS IN THE SOFTWARE.                                                   *|
-|*                                                                             *|
-|*                                                                             *|
-\*****************************************************************************/
+/*********************************************************************************************************\
+|*                                                                                                        *|
+|* SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.  *|
+|* SPDX-License-Identifier: MIT                                                                           *|
+|*                                                                                                        *|
+|* Permission is hereby granted, free of charge, to any person obtaining a                                *|
+|* copy of this software and associated documentation files (the "Software"),                             *|
+|* to deal in the Software without restriction, including without limitation                              *|
+|* the rights to use, copy, modify, merge, publish, distribute, sublicense,                               *|
+|* and/or sell copies of the Software, and to permit persons to whom the                                  *|
+|* Software is furnished to do so, subject to the following conditions:                                   *|
+|*                                                                                                        *|
+|* The above copyright notice and this permission notice shall be included in                             *|
+|* all copies or substantial portions of the Software.                                                    *|
+|*                                                                                                        *|
+|* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR                             *|
+|* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,                               *|
+|* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL                               *|
+|* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER                             *|
+|* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING                                *|
+|* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER                                    *|
+|* DEALINGS IN THE SOFTWARE.                                                                              *|
+|*                                                                                                        *|
+|*                                                                                                        *|
+\*********************************************************************************************************/
+
 #ifndef _NVAPI_INTERFACE_H
 #define _NVAPI_INTERFACE_H
 
@@ -38,6 +40,7 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_GetDisplayDriverVersion", 0xf951a4d1 },
     { "NvAPI_SYS_GetDriverAndBranchVersion", 0x2926aaad },
     { "NvAPI_GPU_GetMemoryInfo", 0x07f9b368 },
+    { "NvAPI_GPU_GetMemoryInfoEx", 0xc0599498 },
     { "NvAPI_OGL_ExpertModeSet", 0x3805ef7a },
     { "NvAPI_OGL_ExpertModeGet", 0x22ed9516 },
     { "NvAPI_OGL_ExpertModeDefaultsSet", 0xb47a657e },
@@ -50,6 +53,8 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_GetLogicalGPUFromDisplay", 0xee1370cf },
     { "NvAPI_GetLogicalGPUFromPhysicalGPU", 0xadd604d1 },
     { "NvAPI_GetPhysicalGPUsFromLogicalGPU", 0xaea3fa32 },
+    { "NvAPI_GetPhysicalGPUFromGPUID", 0x5380ad1a },
+    { "NvAPI_GetGPUIDfromPhysicalGPU", 0x6533ea3e },
     { "NvAPI_GPU_GetShaderSubPipeCount", 0x0be17923 },
     { "NvAPI_GPU_GetGpuCoreCount", 0xc7026a87 },
     { "NvAPI_GPU_GetAllOutputs", 0x7d554f8e },
@@ -81,11 +86,14 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_GPU_GetVirtualFrameBufferSize", 0x5a04b644 },
     { "NvAPI_GPU_GetQuadroStatus", 0xe332fa47 },
     { "NvAPI_GPU_GetBoardInfo", 0x22d54523 },
+    { "NvAPI_GPU_GetRamBusWidth", 0x7975c581 },
+    { "NvAPI_GPU_GetArchInfo", 0xd8265d24 },
     { "NvAPI_I2CRead", 0x2fde12c5 },
     { "NvAPI_I2CWrite", 0xe812eb07 },
     { "NvAPI_GPU_WorkstationFeatureSetup", 0x6c1f3fe4 },
     { "NvAPI_GPU_WorkstationFeatureQuery", 0x004537df },
     { "NvAPI_GPU_GetHDCPSupportStatus", 0xf089eef5 },
+    { "NvAPI_GPU_CudaEnumComputeCapableGpus", 0x5786cc6e },
     { "NvAPI_GPU_GetTachReading", 0x5f608315 },
     { "NvAPI_GPU_GetECCStatusInfo", 0xca1ddaf3 },
     { "NvAPI_GPU_GetECCErrorInfo", 0xc71f85a6 },
@@ -101,7 +109,15 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_GPU_GetScanoutCompositionParameter", 0x58fe51e6 },
     { "NvAPI_GPU_GetScanoutConfiguration", 0x6a9f5b63 },
     { "NvAPI_GPU_GetScanoutConfigurationEx", 0xe2e1e6f0 },
+    { "NvAPI_GPU_GetAdapterIdFromPhysicalGpu", 0x0ff07fde },
+    { "NvAPI_GPU_GetVirtualizationInfo", 0x44e022a9 },
     { "NvAPI_GPU_GetLogicalGpuInfo", 0x842b066e },
+    { "NvAPI_GPU_GetLicensableFeatures", 0x3fc596aa },
+    { "NvAPI_GPU_NVLINK_GetCaps", 0xbef1119d },
+    { "NvAPI_GPU_NVLINK_GetStatus", 0xc72a38e3 },
+    { "NvAPI_GPU_GetGPUInfo", 0xafd1b02c },
+    { "NvAPI_GPU_GetVRReadyData", 0x81d629c5 },
+    { "NvAPI_GPU_GetGspFeatures", 0x581c4391 },
     { "NvAPI_GPU_GetPerfDecreaseInfo", 0x7f7f4600 },
     { "NvAPI_GPU_GetPstatesInfoEx", 0x843c0256 },
     { "NvAPI_GPU_GetPstates20", 0x6ff81213 },
@@ -118,6 +134,8 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_GPU_ClientIllumZonesGetInfo", 0x4b81241b },
     { "NvAPI_GPU_ClientIllumZonesGetControl", 0x3dbf5764 },
     { "NvAPI_GPU_ClientIllumZonesSetControl", 0x197d065e },
+    { "NvAPI_Event_RegisterCallback", 0xe6dbea69 },
+    { "NvAPI_Event_UnregisterCallback", 0xde1f9b45 },
     { "NvAPI_EnumNvidiaDisplayHandle", 0x9abdd40d },
     { "NvAPI_EnumNvidiaUnAttachedDisplayHandle", 0x20de9260 },
     { "NvAPI_CreateDisplayFromUnAttachedDisplay", 0x63f9799e },
@@ -137,6 +155,14 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_Disp_ColorControl", 0x92f9d80d },
     { "NvAPI_Disp_GetHdrCapabilities", 0x84f2a8df },
     { "NvAPI_Disp_HdrColorControl", 0x351da224 },
+    { "NvAPI_Disp_SetSourceColorSpace", 0x473b6caf },
+    { "NvAPI_Disp_GetSourceColorSpace", 0xceedc85b },
+    { "NvAPI_Disp_SetSourceHdrMetadata", 0x905eb63b },
+    { "NvAPI_Disp_GetSourceHdrMetadata", 0x0d3f52da },
+    { "NvAPI_Disp_SetOutputMode", 0x98e7661a },
+    { "NvAPI_Disp_GetOutputMode", 0x81fed88d },
+    { "NvAPI_Disp_SetHdrToneMapping", 0xdd6da362 },
+    { "NvAPI_Disp_GetHdrToneMapping", 0xfbd36e71 },
     { "NvAPI_DISP_GetTiming", 0x175167e9 },
     { "NvAPI_DISP_GetMonitorCapabilities", 0x3b05c7e1 },
     { "NvAPI_DISP_GetMonitorColorCapabilities", 0x6ae4cfb5 },
@@ -152,6 +178,21 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_DISP_GetGDIPrimaryDisplayId", 0x1e9d8a31 },
     { "NvAPI_DISP_GetDisplayConfig", 0x11abccf8 },
     { "NvAPI_DISP_SetDisplayConfig", 0x5d8cf8de },
+    { "NvAPI_DISP_GetEdidData", 0x436ced76 },
+    { "NvAPI_DISP_GetAdaptiveSyncData", 0xb73d1ee9 },
+    { "NvAPI_DISP_SetAdaptiveSyncData", 0x3eebba1d },
+    { "NvAPI_DISP_GetVirtualRefreshRateData", 0x8c00429a },
+    { "NvAPI_DISP_SetVirtualRefreshRateData", 0x5abbe6a3 },
+    { "NvAPI_DISP_SetPreferredStereoDisplay", 0xc9d0e25f },
+    { "NvAPI_DISP_GetPreferredStereoDisplay", 0x1f6b4666 },
+    { "NvAPI_DISP_GetNvManagedDedicatedDisplays", 0xdbdf0cb2 },
+    { "NvAPI_DISP_AcquireDedicatedDisplay", 0x47c917ba },
+    { "NvAPI_DISP_ReleaseDedicatedDisplay", 0x1247825f },
+    { "NvAPI_DISP_GetNvManagedDedicatedDisplayMetadata", 0xd645d80c },
+    { "NvAPI_DISP_SetNvManagedDedicatedDisplayMetadata", 0x3d8b129a },
+    { "NvAPI_Disp_GetDisplayIdInfo", 0xbae8aa5e },
+    { "NvAPI_Disp_GetDisplayIdsFromTarget", 0xe7e5f89e },
+    { "NvAPI_Disp_GetVRRInfo", 0xdf8fda57 },
     { "NvAPI_Mosaic_GetSupportedTopoInfo", 0xfdb63c81 },
     { "NvAPI_Mosaic_GetTopoGroup", 0xcb89381d },
     { "NvAPI_Mosaic_GetOverlapLimits", 0x989685f0 },
@@ -200,6 +241,7 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_D3D11_BeginUAVOverlapEx", 0xba08208a },
     { "NvAPI_D3D11_BeginUAVOverlap", 0x65b93ca8 },
     { "NvAPI_D3D11_EndUAVOverlap", 0x2216a357 },
+    { "NvAPI_D3D11_GetResourceHandle", 0x09d52986 },
     { "NvAPI_D3D_SetFPSIndicatorState", 0xa776e8db },
     { "NvAPI_D3D9_Present", 0x05650beb },
     { "NvAPI_D3D9_QueryFrameCount", 0x9083e53a },
@@ -208,6 +250,7 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_D3D9_QuerySwapGroup", 0xeba4d232 },
     { "NvAPI_D3D9_JoinSwapGroup", 0x7d44bb54 },
     { "NvAPI_D3D9_BindSwapBarrier", 0x9c39c246 },
+    { "NvAPI_D3D_SetVerticalSyncMode", 0x5526cfd1 },
     { "NvAPI_D3D1x_Present", 0x03b845a1 },
     { "NvAPI_D3D1x_QueryFrameCount", 0x9152e055 },
     { "NvAPI_D3D1x_ResetFrameCount", 0xfbbb031a },
@@ -215,6 +258,14 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_D3D1x_QuerySwapGroup", 0x407f67aa },
     { "NvAPI_D3D1x_JoinSwapGroup", 0x14610cd7 },
     { "NvAPI_D3D1x_BindSwapBarrier", 0x9de8c729 },
+    { "NvAPI_D3D12_QueryPresentBarrierSupport", 0xa15faef7 },
+    { "NvAPI_D3D12_CreatePresentBarrierClient", 0x4d815de9 },
+    { "NvAPI_D3D12_RegisterPresentBarrierResources", 0xd53c9ef0 },
+    { "NvAPI_DestroyPresentBarrierClient", 0x3c5c351b },
+    { "NvAPI_JoinPresentBarrier", 0x17f6bf82 },
+    { "NvAPI_LeavePresentBarrier", 0xc3ec5a7f },
+    { "NvAPI_QueryPresentBarrierFrameStatistics", 0x61b844a1 },
+    { "NvAPI_D3D12_CreateDDisplayPresentBarrierClient", 0xb5a21987 },
     { "NvAPI_D3D11_CreateRasterizerState", 0xdb8d28af },
     { "NvAPI_D3D_ConfigureAnsel", 0x341c6c7f },
     { "NvAPI_D3D11_CreateTiledTexture2DArray", 0x7886981a },
@@ -241,10 +292,14 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_D3D12_SetDepthBoundsTestValues", 0xb9333fe9 },
     { "NvAPI_D3D12_CreateReservedResource", 0x2c85f101 },
     { "NvAPI_D3D12_CreateHeap", 0x5cb397cf },
+    { "NvAPI_D3D12_CreateHeap2", 0x924be9d6 },
+    { "NvAPI_D3D12_QueryCpuVisibleVidmem", 0x26322bc3 },
     { "NvAPI_D3D12_ReservedResourceGetDesc", 0x9aa2aabb },
     { "NvAPI_D3D12_UpdateTileMappings", 0xc6017a7d },
     { "NvAPI_D3D12_CopyTileMappings", 0x47f78194 },
     { "NvAPI_D3D12_ResourceAliasingBarrier", 0xb942bab7 },
+    { "NvAPI_D3D12_CaptureUAVInfo", 0x6e5ea9db },
+    { "NvAPI_D3D11_GetResourceGPUVirtualAddressEx", 0xaf6d14da },
     { "NvAPI_D3D11_EnumerateMetaCommands", 0xc7453ba8 },
     { "NvAPI_D3D11_CreateMetaCommand", 0xf505fba0 },
     { "NvAPI_D3D11_InitializeMetaCommand", 0xaec629e9 },
@@ -253,7 +308,11 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_D3D12_CreateMetaCommand", 0xeb29634b },
     { "NvAPI_D3D12_InitializeMetaCommand", 0xa4125399 },
     { "NvAPI_D3D12_ExecuteMetaCommand", 0xde24fc3d },
+    { "NvAPI_D3D12_CreateCommittedResource", 0x027e98ae },
+    { "NvAPI_D3D12_GetCopyableFootprints", 0xf6305eb5 },
+    { "NvAPI_D3D12_CopyTextureRegion", 0x82b91b25 },
     { "NvAPI_D3D12_IsNvShaderExtnOpCodeSupported", 0x3dfacec8 },
+    { "NvAPI_D3D12_GetOptimalThreadCountForMesh", 0xb43995cb },
     { "NvAPI_D3D_IsGSyncCapable", 0x9c1eed78 },
     { "NvAPI_D3D_IsGSyncActive", 0xe942b0ff },
     { "NvAPI_D3D1x_DisableShaderDiskCache", 0xd0cbca7d },
@@ -276,10 +335,12 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_D3D11_MultiDrawInstancedIndirect", 0xd4e26bbf },
     { "NvAPI_D3D11_MultiDrawIndexedInstancedIndirect", 0x59e890f9 },
     { "NvAPI_D3D_ImplicitSLIControl", 0x2aede111 },
+    { "NvAPI_D3D12_GetNeedsAppFPBlendClamping", 0x6ef4d2d1 },
     { "NvAPI_D3D12_UseDriverHeapPriorities", 0xf0d978a8 },
     { "NvAPI_D3D12_Mosaic_GetCompanionAllocations", 0xa46022c7 },
     { "NvAPI_D3D12_Mosaic_GetViewportAndGpuPartitions", 0xb092b818 },
     { "NvAPI_D3D1x_GetGraphicsCapabilities", 0x52b1499a },
+    { "NvAPI_D3D12_GetGraphicsCapabilities", 0x01e87354 },
     { "NvAPI_D3D11_RSSetExclusiveScissorRects", 0xae4d73ef },
     { "NvAPI_D3D11_RSSetViewportsPixelShadingRates", 0x34f7938f },
     { "NvAPI_D3D11_CreateShadingRateResourceView", 0x99ca2dff },
@@ -290,6 +351,66 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_D3D_InitializeNvGazeHandler", 0x5b3b7479 },
     { "NvAPI_D3D_InitializeSMPAssist", 0x42763d0c },
     { "NvAPI_D3D_QuerySMPAssistSupport", 0xc57921de },
+    { "NvAPI_D3D_GetSleepStatus", 0xaef96ca1 },
+    { "NvAPI_D3D_SetSleepMode", 0xac1ca9e0 },
+    { "NvAPI_D3D_Sleep", 0x852cd1d2 },
+    { "NvAPI_D3D_SetReflexSync", 0xb9f6faff },
+    { "NvAPI_D3D_GetLatency", 0x1a587f9c },
+    { "NvAPI_D3D_SetLatencyMarker", 0xd9984c05 },
+    { "NvAPI_D3D12_SetAsyncFrameMarker", 0x13c98f73 },
+    { "NvAPI_D3D12_NotifyOutOfBandCommandQueue", 0x03d6e8cb },
+    { "NvAPI_D3D12_SetCreateCommandQueueLowLatencyHint", 0x548c224f },
+    { "NvAPI_D3D12_CreateCubinComputeShaderExV2", 0x299f5fdc },
+    { "NvAPI_D3D12_CreateCubinComputeShader", 0x2a2c79e8 },
+    { "NvAPI_D3D12_CreateCubinComputeShaderEx", 0x3151211b },
+    { "NvAPI_D3D12_CreateCubinComputeShaderWithName", 0x1dc7261f },
+    { "NvAPI_D3D12_LaunchCubinShader", 0x5c52bb86 },
+    { "NvAPI_D3D12_DestroyCubinComputeShader", 0x7fb785ba },
+    { "NvAPI_D3D12_GetCudaMergedTextureSamplerObject", 0x329fe6e0 },
+    { "NvAPI_D3D12_GetCudaIndependentDescriptorObject", 0x0ddac234 },
+    { "NvAPI_D3D12_GetCudaTextureObject", 0x80403fc9 },
+    { "NvAPI_D3D12_GetCudaSurfaceObject", 0x48f5b2ee },
+    { "NvAPI_D3D12_IsFatbinPTXSupported", 0x70c07832 },
+    { "NvAPI_D3D12_CreateCuModule", 0xad1a677d },
+    { "NvAPI_D3D12_EnumFunctionsInModule", 0x7ab88d88 },
+    { "NvAPI_D3D12_CreateCuFunction", 0xe2436e22 },
+    { "NvAPI_D3D12_LaunchCuKernelChain", 0x24973538 },
+    { "NvAPI_D3D12_LaunchCuKernelChainEx", 0x846a9bf0 },
+    { "NvAPI_D3D12_DestroyCuModule", 0x41c65285 },
+    { "NvAPI_D3D12_DestroyCuFunction", 0xdf295ea6 },
+    { "NvAPI_D3D11_CreateCubinComputeShader", 0x0ed98181 },
+    { "NvAPI_D3D11_CreateCubinComputeShaderEx", 0x32c2a0f6 },
+    { "NvAPI_D3D11_CreateCubinComputeShaderWithName", 0xb672be19 },
+    { "NvAPI_D3D11_LaunchCubinShader", 0x427e236d },
+    { "NvAPI_D3D11_DestroyCubinComputeShader", 0x01682c86 },
+    { "NvAPI_D3D11_IsFatbinPTXSupported", 0x6086bd93 },
+    { "NvAPI_D3D11_CreateUnorderedAccessView", 0x74a497a1 },
+    { "NvAPI_D3D11_CreateShaderResourceView", 0x65cb431e },
+    { "NvAPI_D3D11_CreateSamplerState", 0x89eca416 },
+    { "NvAPI_D3D11_GetCudaTextureObject", 0x9006fa68 },
+    { "NvAPI_D3D11_GetResourceGPUVirtualAddress", 0x1819b423 },
+    { "NvAPI_D3D12_GetRaytracingCaps", 0x85a6c2a0 },
+    { "NvAPI_D3D12_EnableRaytracingValidation", 0x1de5991b },
+    { "NvAPI_D3D12_RegisterRaytracingValidationMessageCallback", 0x8554eb38 },
+    { "NvAPI_D3D12_UnregisterRaytracingValidationMessageCallback", 0x26975da6 },
+    { "NvAPI_D3D12_FlushRaytracingValidationMessages", 0xb8fb1fcb },
+    { "NvAPI_D3D12_GetRaytracingDisplacementMicromapArrayPrebuildInfo", 0xfa99b6de },
+    { "NvAPI_D3D12_GetRaytracingOpacityMicromapArrayPrebuildInfo", 0x4726d180 },
+    { "NvAPI_D3D12_SetCreatePipelineStateOptions", 0x5c607a27 },
+    { "NvAPI_D3D12_CheckDriverMatchingIdentifierEx", 0xafb237d4 },
+    { "NvAPI_D3D12_GetRaytracingAccelerationStructurePrebuildInfoEx", 0x8d025b77 },
+    { "NvAPI_D3D12_BuildRaytracingOpacityMicromapArray", 0x814f8d11 },
+    { "NvAPI_D3D12_RelocateRaytracingOpacityMicromapArray", 0x0425c538 },
+    { "NvAPI_D3D12_BuildRaytracingDisplacementMicromapArray", 0x066f569d },
+    { "NvAPI_D3D12_RelocateRaytracingDisplacementMicromapArray", 0x1c142308 },
+    { "NvAPI_D3D12_EmitRaytracingDisplacementMicromapArrayPostbuildInfo", 0x68b9a790 },
+    { "NvAPI_D3D12_EmitRaytracingOpacityMicromapArrayPostbuildInfo", 0x1d9a39b6 },
+    { "NvAPI_D3D12_BuildRaytracingAccelerationStructureEx", 0xe24ead45 },
+    { "NvAPI_D3D12_QueryWorkstationFeatureProperties", 0xa92ea23a },
+    { "NvAPI_D3D12_CreateCommittedRDMABuffer", 0xe78dcb44 },
+    { "NvAPI_DirectD3D12GraphicsCommandList_Create", 0x74a4e712 },
+    { "NvAPI_DirectD3D12GraphicsCommandList_Release", 0x99da3dde },
+    { "NvAPI_DirectD3D12GraphicsCommandList_Reset", 0x999c26d8 },
     { "NvAPI_VIO_GetCapabilities", 0x1dc91303 },
     { "NvAPI_VIO_Open", 0x44ee4841 },
     { "NvAPI_VIO_Close", 0xd01bd237 },
@@ -390,6 +511,10 @@ struct NVAPI_INTERFACE_TABLE nvapi_interface_table[] =
     { "NvAPI_SYS_GetDisplayIdFromGpuAndOutputId", 0x08f2bab4 },
     { "NvAPI_SYS_GetGpuAndOutputIdFromDisplayId", 0x112ba1a5 },
     { "NvAPI_SYS_GetPhysicalGpuFromDisplayId", 0x9ea74659 },
+    { "NvAPI_SYS_GetDisplayDriverInfo", 0x721faceb },
+    { "NvAPI_SYS_GetPhysicalGPUs", 0xd3b24d2d },
+    { "NvAPI_SYS_GetLogicalGPUs", 0xccfffc10 },
+    { "NvAPI_GPU_ClientRegisterForUtilizationSampleUpdates", 0xadeeaf67 },
 };
 
 #endif // _NVAPI_INTERFACE_H

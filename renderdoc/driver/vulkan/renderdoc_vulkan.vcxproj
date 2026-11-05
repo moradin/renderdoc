@@ -30,7 +30,6 @@
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v140</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
     <WholeProgramOptimization>true</WholeProgramOptimization>
@@ -39,12 +38,9 @@
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
+  <Import Project="$(SolutionDir)\util\WindowsSDKFix.props" />
   <PropertyGroup>
     <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
-    <ExecutablePath>$(ExecutablePath)</ExecutablePath>
-    <IncludePath>$(SolutionDir)\breakpad;$(IncludePath)</IncludePath>
-    <LibraryPath>$(LibraryPath)</LibraryPath>
-    <ExcludePath>$(ExcludePath)</ExcludePath>
     <TargetName>driver_$(ProjectName)</TargetName>
   </PropertyGroup>
   <PropertyGroup>
@@ -109,9 +105,9 @@
     <ClCompile Include="vk_apple.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="vk_msaa_buffer_conv.cpp" />
     <ClCompile Include="vk_shader_feedback.cpp" />
     <ClCompile Include="vk_image_states.cpp" />
-    <ClCompile Include="vk_msaa_array_conv.cpp" />
     <ClCompile Include="vk_next_chains.cpp" />
     <ClCompile Include="vk_outputwindow.cpp" />
     <ClCompile Include="vk_overlay.cpp" />
@@ -151,10 +147,8 @@
     <ClCompile Include="vk_android.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </ClCompile>
-    <ClCompile Include="vk_ggp.cpp">
-      <ExcludedFromBuild>true</ExcludedFromBuild>
-    </ClCompile>
     <ClCompile Include="vk_resources.cpp" />
+    <ClCompile Include="vk_acceleration_structure.cpp" />
     <ClCompile Include="wrappers\vk_cmd_funcs.cpp" />
     <ClCompile Include="wrappers\vk_dynamic_funcs.cpp" />
     <ClCompile Include="wrappers\vk_descriptor_funcs.cpp" />
@@ -175,7 +169,6 @@
     <ClInclude Include="official\vulkan_android.h" />
     <ClInclude Include="official\vulkan_core.h" />
     <ClInclude Include="official\vulkan_fuchsia.h" />
-    <ClInclude Include="official\vulkan_ggp.h" />
     <ClInclude Include="official\vulkan_ios.h" />
     <ClInclude Include="official\vulkan_macos.h" />
     <ClInclude Include="official\vulkan_metal.h" />
@@ -186,6 +179,7 @@
     <ClInclude Include="official\vulkan_xlib.h" />
     <ClInclude Include="official\vulkan_xlib_xrandr.h" />
     <ClInclude Include="precompiled.h" />
+    <ClInclude Include="vk_acceleration_structure.h" />
     <ClInclude Include="vk_common.h" />
     <ClInclude Include="vk_core.h" />
     <ClInclude Include="vk_debug.h" />

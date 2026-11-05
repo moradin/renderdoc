@@ -17,12 +17,26 @@
 #define RESOURCE_quadoverdraw_hlsl  110
 #define RESOURCE_texremap_hlsl      111
 #define RESOURCE_fixedcol_hlsl      112
+#define RESOURCE_shaderdebug_hlsl   118
+#define RESOURCE_d3d12_pixelhistory_hlsl  119
+#define RESOURCE_depth_copy_hlsl    120
+#define RESOURCE_raytracing_hlsl    121
+#define RESOURCE_hlsl_quadswizzle_hlsl   131
 
 #define RESOURCE_fixedcol_0_dxbc    113
 #define RESOURCE_fixedcol_1_dxbc    114
 #define RESOURCE_fixedcol_2_dxbc    115
 #define RESOURCE_fixedcol_3_dxbc    116
 #define RESOURCE_quadwrite_dxbc     117
+#define RESOURCE_pixelhistory_primitiveid_dxbc 122
+#define RESOURCE_pixelhistory_fixedcol_0_dxbc  123
+#define RESOURCE_pixelhistory_fixedcol_1_dxbc  124
+#define RESOURCE_pixelhistory_fixedcol_2_dxbc  125
+#define RESOURCE_pixelhistory_fixedcol_3_dxbc  126
+#define RESOURCE_pixelhistory_fixedcol_4_dxbc  127
+#define RESOURCE_pixelhistory_fixedcol_5_dxbc  128
+#define RESOURCE_pixelhistory_fixedcol_6_dxbc  129
+#define RESOURCE_pixelhistory_fixedcol_7_dxbc  130
 
 #define RESOURCE_sourcecodepro_ttf  301
 
@@ -60,6 +74,14 @@
 #define RESOURCE_glsl_pixelhistory_primid_frag       444
 #define RESOURCE_glsl_shaderdebug_sample_vert        445
 #define RESOURCE_glsl_discard_frag                   446
+#define RESOURCE_glsl_vk_ms2buffer_comp              447
+#define RESOURCE_glsl_vk_depthms2buffer_comp         448
+#define RESOURCE_glsl_vk_buffer2ms_comp              449
+#define RESOURCE_glsl_vk_depthbuf2ms_frag		     450
+#define RESOURCE_glsl_depth_copy_frag                451
+#define RESOURCE_glsl_depth_copyms_frag              452
+#define RESOURCE_glsl_debug_math_comp                453
+#define RESOURCE_glsl_debug_sample_frag              454
 
 // Next default values for new objects
 // 

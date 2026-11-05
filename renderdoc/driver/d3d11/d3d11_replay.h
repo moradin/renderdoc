@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -38,6 +38,7 @@ class WrappedID3D11DeviceContext;
 
 class AMDCounters;
 class NVCounters;
+class NVD3D11Counters;
 class IntelCounters;
 struct D3D11CounterContext;
 
@@ -71,6 +72,8 @@ struct D3D11PostVSData
 
     float nearPlane = 0.0f;
     float farPlane = 0.0f;
+
+    rdcstr status;
   } vsin, vsout, gsout;
 
   const StageData &GetStage(MeshDataStage type)
@@ -79,8 +82,16 @@ struct D3D11PostVSData
       return vsout;
     else if(type == MeshDataStage::GSOut)
       return gsout;
-    else
-      RDCERR("Unexpected mesh data stage!");
+
+    if(type == MeshDataStage::Count)
+    {
+      if(gsout.buf)
+        return gsout;
+
+      return vsout;
+    }
+
+    RDCERR("Unexpected mesh data stage!");
 
     return vsin;
   }
@@ -93,6 +104,30 @@ enum TexDisplayFlags
   eTexDisplay_RemapFloat = 0x2,
   eTexDisplay_RemapUInt = 0x4,
   eTexDisplay_RemapSInt = 0x8,
+};
+
+struct ShaderDebugging
+{
+  void Init(WrappedID3D11Device *device);
+  void Release();
+
+  ID3D11PixelShader *GetSamplePS(const int8_t offsets[3]);
+
+  ID3D11ComputeShader *MathCS = NULL;
+  ID3D11Buffer *ParamBuf = NULL;
+  ID3D11Buffer *OutBuf = NULL;
+  ID3D11Buffer *OutStageBuf = NULL;
+  ID3D11UnorderedAccessView *OutUAV = NULL;
+
+  ID3D11VertexShader *SampleVS = NULL;
+  ID3D11PixelShader *SamplePS = NULL;
+  ID3D11Texture2D *DummyTex = NULL;
+  ID3D11RenderTargetView *DummyRTV = NULL;
+
+private:
+  WrappedID3D11Device *m_pDevice;
+
+  std::map<uint32_t, ID3D11PixelShader *> m_OffsetSamplePS;
 };
 
 class D3D11Replay : public IReplayDriver
@@ -109,10 +144,13 @@ public:
   bool IsRemoteProxy() { return m_Proxy; }
   void Shutdown();
 
-  ReplayStatus FatalErrorCheck();
+  RDResult FatalErrorCheck();
   IReplayDriver *MakeDummyDriver();
 
-  void CreateResources(IDXGIFactory *factory);
+  void InitReplayOnDevice(IDXGIFactory *factory);
+
+  void CreateResources();
+
   void DestroyResources();
 
   DriverInformation GetDriverInfo() { return m_DriverInfo; }
@@ -121,6 +159,8 @@ public:
 
   ResourceDescription &GetResourceDesc(ResourceId id);
   rdcarray<ResourceDescription> GetResources();
+
+  rdcarray<DescriptorStoreDescription> GetDescriptorStores() { return {}; }
 
   rdcarray<BufferDescription> GetBuffers();
   BufferDescription GetBuffer(ResourceId id);
@@ -141,15 +181,23 @@ public:
   FrameRecord &WriteFrameRecord() { return m_FrameRecord; }
   FrameRecord GetFrameRecord() { return m_FrameRecord; }
   void SetPipelineStates(D3D11Pipe::State *d3d11, D3D12Pipe::State *d3d12, GLPipe::State *gl,
-                         VKPipe::State *vk)
+                         VKPipe::State *vk, D3D9Pipe::State *d3d9)
   {
     m_D3D11PipelineState = d3d11;
   }
+  ShaderDebugging &GetShaderDebuggingData() { return m_ShaderDebug; }
   void SavePipelineState(uint32_t eventId);
+  rdcarray<Descriptor> GetDescriptors(ResourceId descriptorStore,
+                                      const rdcarray<DescriptorRange> &ranges);
+  rdcarray<SamplerDescriptor> GetSamplerDescriptors(ResourceId descriptorStore,
+                                                    const rdcarray<DescriptorRange> &ranges);
+  rdcarray<DescriptorAccess> GetDescriptorAccess(uint32_t eventId);
+  rdcarray<DescriptorLogicalLocation> GetDescriptorLocations(ResourceId descriptorStore,
+                                                             const rdcarray<DescriptorRange> &ranges);
   void FreeTargetResource(ResourceId id);
   void FreeCustomShader(ResourceId id);
 
-  ReplayStatus ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers);
+  RDResult ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers);
   void ReplayLog(uint32_t endEventID, ReplayLogType replayType);
   SDFile *GetStructuredFile();
 
@@ -167,7 +215,6 @@ public:
   void DestroyOutputWindow(uint64_t id);
   bool CheckResizeOutputWindow(uint64_t id);
   void GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h);
-  void SetOutputWindowDimensions(uint64_t id, int32_t w, int32_t h);
   void GetOutputWindowData(uint64_t id, bytebuf &retData);
   void ClearOutputWindowColor(uint64_t id, FloatVector col);
   void ClearOutputWindowDepth(uint64_t id, float depth, uint8_t stencil);
@@ -177,8 +224,6 @@ public:
 
   void InitPostVSBuffers(uint32_t eventId);
   void InitPostVSBuffers(const rdcarray<uint32_t> &passEvents);
-
-  ResourceId GetLiveID(ResourceId id);
 
   void PickPixel(ResourceId texture, uint32_t x, uint32_t y, const Subresource &sub,
                  CompType typeCast, float pixel[4]);
@@ -199,6 +244,7 @@ public:
   {
     return {ShaderEncoding::DXBC, ShaderEncoding::HLSL};
   }
+  rdcarray<ShaderSourcePrefix> GetCustomShaderSourcePrefixes();
   rdcarray<ShaderEncoding> GetTargetShaderEncodings()
   {
     return {ShaderEncoding::DXBC, ShaderEncoding::HLSL};
@@ -208,6 +254,8 @@ public:
                          rdcstr &errors);
   void ReplaceResource(ResourceId from, ResourceId to);
   void RemoveReplacement(ResourceId id);
+  void ClearReplayCache();
+  void ReloadShaderDebugInformation();
 
   rdcarray<GPUCounter> EnumerateCounters();
   CounterDescription DescribeCounter(GPUCounter counterID);
@@ -230,18 +278,20 @@ public:
 
   void RenderHighlightBox(float w, float h, float scale);
 
-  void FillCBufferVariables(ResourceId pipeline, ResourceId shader, rdcstr entryPoint,
-                            uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
+  void FillCBufferVariables(ResourceId pipeline, ResourceId shader, ShaderStage stage,
+                            rdcstr entryPoint, uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
                             const bytebuf &data);
 
   rdcarray<PixelModification> PixelHistory(rdcarray<EventUsage> events, ResourceId target, uint32_t x,
                                            uint32_t y, const Subresource &sub, CompType typeCast);
   ShaderDebugTrace *DebugVertex(uint32_t eventId, uint32_t vertid, uint32_t instid, uint32_t idx,
                                 uint32_t view);
-  ShaderDebugTrace *DebugPixel(uint32_t eventId, uint32_t x, uint32_t y, uint32_t sample,
-                               uint32_t primitive);
+  ShaderDebugTrace *DebugPixel(uint32_t eventId, uint32_t x, uint32_t y,
+                               const DebugPixelInputs &inputs);
   ShaderDebugTrace *DebugThread(uint32_t eventId, const rdcfixedarray<uint32_t, 3> &groupid,
                                 const rdcfixedarray<uint32_t, 3> &threadid);
+  ShaderDebugTrace *DebugMeshThread(uint32_t eventId, const rdcfixedarray<uint32_t, 3> &groupid,
+                                    const rdcfixedarray<uint32_t, 3> &threadid);
   rdcarray<ShaderDebugState> ContinueDebug(ShaderDebugger *debugger);
   void FreeDebugger(ShaderDebugger *debugger);
 
@@ -255,8 +305,7 @@ public:
   void BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &source, const rdcstr &entry,
                          const ShaderCompileFlags &compileFlags, ShaderStage type, ResourceId &id,
                          rdcstr &errors);
-  ResourceId ApplyCustomShader(ResourceId shader, ResourceId texid, const Subresource &sub,
-                               CompType typeCast);
+  ResourceId ApplyCustomShader(TextureDisplay &display);
 
   RenderOutputSubresource GetRenderOutputSubresource(ResourceId id);
   bool IsRenderOutput(ResourceId id) { return GetRenderOutputSubresource(id).mip != ~0U; }
@@ -332,6 +381,7 @@ private:
 
   AMDCounters *m_pAMDCounters = NULL;
   NVCounters *m_pNVCounters = NULL;
+  NVD3D11Counters *m_pNVPerfCounters = NULL;
   IntelCounters *m_pIntelCounters = NULL;
 
   WrappedID3D11Device *m_pDevice = NULL;
@@ -367,6 +417,7 @@ private:
     void Release();
 
     ID3D11RasterizerState *RasterState = NULL;
+    ID3D11RasterizerState *RasterClipState = NULL;
     ID3D11RasterizerState *RasterScissorState = NULL;
 
     ID3D11VertexShader *FullscreenVS = NULL;
@@ -396,8 +447,13 @@ private:
     ID3D11PixelShader *QuadOverdrawPS = NULL;
     ID3D11PixelShader *QOResolvePS = NULL;
     ID3D11PixelShader *TriangleSizePS = NULL;
+    ID3D11PixelShader *DepthCopyPS = NULL;
+    ID3D11PixelShader *DepthCopyArrayPS = NULL;
+    ID3D11PixelShader *DepthCopyMSPS = NULL;
+    ID3D11PixelShader *DepthCopyMSArrayPS = NULL;
     ID3D11GeometryShader *TriangleSizeGS = NULL;
-
+    ID3D11BlendState *DepthBlendRTMaskZero = NULL;
+    ID3D11DepthStencilState *DepthResolveDS = NULL;
     ID3D11Texture2D *Texture = NULL;
     ResourceId resourceId;
   } m_Overlay;
@@ -458,6 +514,8 @@ private:
     ID3D11Texture2D *StageTexture = NULL;
   } m_PixelPick;
 
+  ShaderDebugging m_ShaderDebug;
+
   struct HistogramMinMax
   {
     void Init(WrappedID3D11Device *device);
@@ -494,4 +552,7 @@ private:
   FrameRecord m_FrameRecord;
 
   D3D11Pipe::State *m_D3D11PipelineState = NULL;
+
+  // save the clean replay-time render state OM to check against
+  D3D11RenderState::OutputMerger m_RenderStateOM;
 };

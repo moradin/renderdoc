@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -49,7 +49,7 @@ struct VKMeshDisplayPipelines
   uint32_t secondaryStridePadding = 0;
 };
 
-struct CopyPixelParams;
+struct VkCopyPixelParams;
 
 struct PixelHistoryResources;
 
@@ -62,22 +62,39 @@ public:
   ~VulkanDebugManager();
 
   void GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, bytebuf &ret);
+  void GetBufferData(VkBuffer unwrappedBuf, uint64_t bufsize, uint64_t readOffset, uint64_t readLen,
+                     bytebuf &ret);
+  void GetBufferData(GPUBuffer &buf, uint64_t readOffset, uint64_t readLen, bytebuf &ret)
+  {
+    GetBufferData(buf.UnwrappedBuffer(), buf.TotalSize(), readOffset, readLen, ret);
+  }
 
-  void CopyTex2DMSToArray(VkImage destArray, VkImage srcMS, VkExtent3D extent, uint32_t layers,
-                          uint32_t samples, VkFormat fmt);
-  void CopyArrayToTex2DMS(VkImage destMS, VkImage srcArray, VkExtent3D extent, uint32_t layers,
-                          uint32_t samples, VkFormat fmt);
+  void CopyTex2DMSToBuffer(VkCommandBuffer cmd, VkBuffer destBuffer, VkImage srcMS,
+                           VkExtent3D extent, uint32_t baseSlice, uint32_t numSlices,
+                           uint32_t baseSample, uint32_t numSamples, VkFormat fmt);
+
+  void CopyBufferToTex2DMS(VkCommandBuffer cmd, VkImage destMS, VkBuffer srcBuffer,
+                           VkExtent3D extent, uint32_t numSlices, uint32_t numSamples, VkFormat fmt);
 
   void FillWithDiscardPattern(VkCommandBuffer cmd, DiscardType type, VkImage image,
                               VkImageLayout curLayout, VkImageSubresourceRange discardRange,
                               VkRect2D discardRect);
+  void FillWithDiscardPatternOnHost(VkDevice device, DiscardType type, VkImage image,
+                                    VkImageLayout curLayout, VkImageSubresourceRange discardRange,
+                                    VkRect2D discardRect);
 
-  void InitReadbackBuffer(VkDeviceSize sz);
-  byte *GetReadbackPtr() { return m_ReadbackPtr; }
-  VkBuffer GetReadbackBuffer() { return m_ReadbackWindow.buf; }
-  VkDeviceMemory GetReadbackMemory() { return m_ReadbackWindow.mem; }
+  struct ReadbackWindow
+  {
+    VkBuffer unwrappedBuffer;
+    VkDeviceMemory unwrappedMemory;
+    byte *ptr;
+  };
+
+  ReadbackWindow LockReadbackBuffer(VkDeviceSize sz);
+  void UnlockReadbackBuffer();
   VkPipelineCache GetPipelineCache() { return m_PipelineCache; }
   VkPipeline GetCustomPipeline() { return m_Custom.TexPipeline; }
+  VkPipeline GetDummyPipeline() { return m_DummyPipeline; }
   VkImage GetCustomTexture() { return m_Custom.TexImg; }
   VkFramebuffer GetCustomFramebuffer() { return m_Custom.TexFB; }
   VkRenderPass GetCustomRenderpass() { return m_Custom.TexRP; }
@@ -88,59 +105,71 @@ public:
                                                    const MeshFormat &primary,
                                                    const MeshFormat &secondary);
 
-  void PatchOutputLocation(VkShaderModule &mod, BuiltinShader shaderType, uint32_t framebufferIndex);
   void PatchFixedColShader(VkShaderModule &mod, float col[4]);
+  void PatchFixedColShaderObject(VkShaderEXT &shad, float col[4]);
   void PatchLineStripIndexBuffer(const ActionDescription *action, GPUBuffer &indexBuffer,
                                  uint32_t &indexCount);
 
   bool PixelHistorySetupResources(PixelHistoryResources &resources, VkImage targetImage,
                                   VkExtent3D extent, VkFormat format, VkSampleCountFlagBits samples,
                                   const Subresource &sub, uint32_t numEvents);
+  bool PixelHistorySetupPerFragResources(PixelHistoryResources &resources, uint32_t numEvents,
+                                         uint32_t numFragments);
   bool PixelHistoryDestroyResources(const PixelHistoryResources &resources);
 
-  void PixelHistoryCopyPixel(VkCommandBuffer cmd, CopyPixelParams &p, size_t offset);
+  void PixelHistoryCopyPixel(VkCommandBuffer cmd, VkCopyPixelParams &p, size_t offset);
 
   VkImageLayout GetImageLayout(ResourceId image, VkImageAspectFlagBits aspect, uint32_t mip,
                                uint32_t slice);
 
+  const VulkanCreationInfo::Buffer &GetBufferInfo(ResourceId img) const;
   const VulkanCreationInfo::Image &GetImageInfo(ResourceId img) const;
   const VulkanCreationInfo::ImageView &GetImageViewInfo(ResourceId imgView) const;
   const VulkanCreationInfo::Pipeline &GetPipelineInfo(ResourceId pipe) const;
+  const VulkanCreationInfo::ShaderObject &GetShaderObjectInfo(ResourceId shader) const;
   const VulkanCreationInfo::ShaderModule &GetShaderInfo(ResourceId shader) const;
   const VulkanCreationInfo::Framebuffer &GetFramebufferInfo(ResourceId fb) const;
   const VulkanCreationInfo::RenderPass &GetRenderPassInfo(ResourceId rp) const;
   const VulkanCreationInfo::PipelineLayout &GetPipelineLayoutInfo(ResourceId pp) const;
+  const VulkanCreationInfo::AccelerationStructure &GetAccelerationStructureInfo(ResourceId as) const;
   const DescSetLayout &GetDescSetLayout(ResourceId dsl) const;
   const WrappedVulkan::DescriptorSetInfo &GetDescSetInfo(ResourceId ds) const;
 
 private:
-  void CheckVkResult(VkResult vkr) { return m_pDriver->CheckVkResult(vkr); }
   // GetBufferData
   GPUBuffer m_ReadbackWindow;
   byte *m_ReadbackPtr = NULL;
+  Threading::CriticalSection m_ReadbackLock;
 
   // CacheMeshDisplayPipelines
   std::map<uint64_t, VKMeshDisplayPipelines> m_CachedMeshPipelines;
 
-  // CopyArrayToTex2DMS & CopyTex2DMSToArray
-  VkDescriptorPool m_ArrayMSDescriptorPool;
-  VkDescriptorSetLayout m_ArrayMSDescSetLayout = VK_NULL_HANDLE;
-  VkPipelineLayout m_ArrayMSPipeLayout = VK_NULL_HANDLE;
-  // 8 descriptor sets allows for 4x MSAA with 2 array slices, common for VR targets
-  VkDescriptorSet m_ArrayMSDescSet[8] = {};
-  VkPipeline m_Array2MSPipe = VK_NULL_HANDLE;
-  VkPipeline m_MS2ArrayPipe = VK_NULL_HANDLE;
-  VkSampler m_ArrayMSSampler = VK_NULL_HANDLE;
+  // CopyBufferToTex2DMS
+  VkDescriptorSetLayout m_BufferMSDescSetLayout = VK_NULL_HANDLE;
+  VkPipelineLayout m_BufferMSPipeLayout = VK_NULL_HANDLE;
+  static const uint32_t BufferMSDescriptorPoolSize = 64;
+  rdcarray<VkDescriptorPool> m_BufferMSDescriptorPools;
+  rdcarray<VkDescriptorSet> m_FreeBufferMSDescriptorSets;
+  rdcarray<VkDescriptorSet> m_UsedBufferMSDescriptorSets;
+  VkDescriptorSet GetBufferMSDescSet();
+  void ResetBufferMSDescriptorPools();
+  VkPipeline m_Buffer2MSPipe = VK_NULL_HANDLE;
+  VkPipeline m_MS2BufferPipe = VK_NULL_HANDLE;
+  VkPipeline m_DepthMS2BufferPipe = VK_NULL_HANDLE;
 
-  // [0] = non-MSAA, [1] = MSAA
-  VkDeviceMemory m_DummyStencilMemory = VK_NULL_HANDLE;
-  VkImage m_DummyStencilImage[2] = {VK_NULL_HANDLE};
-  VkImageView m_DummyStencilView[2] = {VK_NULL_HANDLE};
+  // MSAA dummy images
+  VkDeviceMemory m_UnwrappedDummyMemory = VK_NULL_HANDLE;
+  VkImage m_UnwrappedDummyDepthImage = {VK_NULL_HANDLE};
+  VkImageView m_UnwrappedDummyDepthView = {VK_NULL_HANDLE};
+  VkImage m_UnwrappedDummyStencilImage = {VK_NULL_HANDLE};
+  VkImageView m_UnwrappedDummyStencilView = {VK_NULL_HANDLE};
 
-  // one per depth/stencil output format
-  VkPipeline m_DepthMS2ArrayPipe[6] = {VK_NULL_HANDLE};
+  // dummy pipeline
+  VkPipelineLayout m_DummyPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline m_DummyPipeline = VK_NULL_HANDLE;
+
   // one per depth/stencil output format, per sample count
-  VkPipeline m_DepthArray2MSPipe[6][4] = {{VK_NULL_HANDLE}};
+  VkPipeline m_DepthArray2MSPipe[7][4] = {{VK_NULL_HANDLE}};
 
   VkPipelineCache m_PipelineCache = VK_NULL_HANDLE;
 
@@ -159,10 +188,13 @@ private:
     VkPipeline TexPipeline = VK_NULL_HANDLE;
   } m_Custom;
 
-  void CopyDepthTex2DMSToArray(VkImage destArray, VkImage srcMS, VkExtent3D extent, uint32_t layers,
-                               uint32_t samples, VkFormat fmt);
-  void CopyDepthArrayToTex2DMS(VkImage destMS, VkImage srcArray, VkExtent3D extent, uint32_t layers,
-                               uint32_t samples, VkFormat fmt);
+  void CopyDepthTex2DMSToBuffer(VkCommandBuffer cmd, VkBuffer destBuffer, VkImage srcMS,
+                                VkExtent3D extent, uint32_t baseSlice, uint32_t numSlices,
+                                uint32_t baseSample, uint32_t numSamples, VkFormat fmt);
+
+  void CopyDepthBufferToTex2DMS(VkCommandBuffer cmd, VkImage destMS, VkBuffer srcBuffer,
+                                VkExtent3D extent, uint32_t numSlices, uint32_t numSamples,
+                                VkFormat fmt);
 
   WrappedVulkan *m_pDriver = NULL;
 
@@ -170,7 +202,7 @@ private:
 
   struct DiscardPassData
   {
-    VkPipeline pso = VK_NULL_HANDLE;
+    VkPipeline pso[3] = {};
     VkRenderPass rp = VK_NULL_HANDLE;
   };
 
@@ -188,4 +220,5 @@ private:
   VkDescriptorSet m_DiscardSet[(size_t)DiscardType::Count] = {};
   GPUBuffer m_DiscardCB[(size_t)DiscardType::Count];
   std::map<rdcpair<VkFormat, DiscardType>, VkBuffer> m_DiscardPatterns;
+  std::map<rdcpair<VkFormat, DiscardType>, GPUBuffer> m_DiscardStage;
 };

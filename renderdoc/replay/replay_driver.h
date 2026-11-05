@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -101,7 +101,11 @@ struct GetTextureDataParams
 
 DECLARE_REFLECTION_STRUCT(GetTextureDataParams);
 
-CompType BaseRemapType(CompType typeCast);
+CompType BaseRemapType(RemapTexture remap, CompType typeCast);
+inline CompType BaseRemapType(const GetTextureDataParams &params)
+{
+  return BaseRemapType(params.remap, params.typeCast);
+}
 
 class RDCFile;
 
@@ -136,6 +140,8 @@ public:
 
   virtual rdcarray<ResourceDescription> GetResources() = 0;
 
+  virtual rdcarray<DescriptorStoreDescription> GetDescriptorStores() = 0;
+
   virtual rdcarray<BufferDescription> GetBuffers() = 0;
   virtual BufferDescription GetBuffer(ResourceId id) = 0;
 
@@ -145,8 +151,8 @@ public:
   virtual rdcarray<DebugMessage> GetDebugMessages() = 0;
 
   virtual rdcarray<ShaderEntryPoint> GetShaderEntryPoints(ResourceId shader) = 0;
-  virtual ShaderReflection *GetShader(ResourceId pipeline, ResourceId shader,
-                                      ShaderEntryPoint entry) = 0;
+  virtual const ShaderReflection *GetShader(ResourceId pipeline, ResourceId shader,
+                                            ShaderEntryPoint entry) = 0;
 
   virtual rdcarray<rdcstr> GetDisassemblyTargets(bool withPipeline) = 0;
   virtual rdcstr DisassembleShader(ResourceId pipeline, const ShaderReflection *refl,
@@ -155,12 +161,20 @@ public:
   virtual rdcarray<EventUsage> GetUsage(ResourceId id) = 0;
 
   virtual void SetPipelineStates(D3D11Pipe::State *d3d11, D3D12Pipe::State *d3d12,
-                                 GLPipe::State *gl, VKPipe::State *vk) = 0;
+                                 GLPipe::State *gl, VKPipe::State *vk, D3D9Pipe::State *d3d9) = 0;
   virtual void SavePipelineState(uint32_t eventId) = 0;
+
+  virtual rdcarray<Descriptor> GetDescriptors(ResourceId descriptorStore,
+                                              const rdcarray<DescriptorRange> &ranges) = 0;
+  virtual rdcarray<SamplerDescriptor> GetSamplerDescriptors(
+      ResourceId descriptorStore, const rdcarray<DescriptorRange> &ranges) = 0;
+  virtual rdcarray<DescriptorAccess> GetDescriptorAccess(uint32_t eventId) = 0;
+  virtual rdcarray<DescriptorLogicalLocation> GetDescriptorLocations(
+      ResourceId descriptorStore, const rdcarray<DescriptorRange> &ranges) = 0;
 
   virtual FrameRecord GetFrameRecord() = 0;
 
-  virtual ReplayStatus ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers) = 0;
+  virtual RDResult ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers) = 0;
   virtual void ReplayLog(uint32_t endEventID, ReplayLogType replayType) = 0;
   virtual SDFile *GetStructuredFile() = 0;
 
@@ -169,10 +183,22 @@ public:
   virtual void InitPostVSBuffers(uint32_t eventId) = 0;
   virtual void InitPostVSBuffers(const rdcarray<uint32_t> &passEvents) = 0;
 
-  virtual ResourceId GetLiveID(ResourceId id) = 0;
-
   virtual MeshFormat GetPostVSBuffers(uint32_t eventId, uint32_t instID, uint32_t viewID,
                                       MeshDataStage stage) = 0;
+
+  // this is a helper/batch query for the above, that's only necessary because Android is a shit
+  // platform and its proxying has significant per-call overhead. This is overridden in the proxy,
+  // but otherwise will call to this default implementation
+  virtual rdcarray<MeshFormat> GetBatchPostVSBuffers(uint32_t eventId,
+                                                     const rdcarray<uint32_t> &instIDs,
+                                                     uint32_t viewID, MeshDataStage stage)
+  {
+    rdcarray<MeshFormat> ret;
+    ret.reserve(instIDs.size());
+    for(uint32_t instID : instIDs)
+      ret.push_back(GetPostVSBuffers(eventId, instID, viewID, stage));
+    return ret;
+  }
 
   virtual void GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, bytebuf &retData) = 0;
   virtual void GetTextureData(ResourceId tex, const Subresource &sub,
@@ -185,24 +211,29 @@ public:
   virtual void ReplaceResource(ResourceId from, ResourceId to) = 0;
   virtual void RemoveReplacement(ResourceId id) = 0;
   virtual void FreeTargetResource(ResourceId id) = 0;
+  virtual void ClearReplayCache() = 0;
+  virtual void ReloadShaderDebugInformation() = 0;
 
   virtual rdcarray<GPUCounter> EnumerateCounters() = 0;
   virtual CounterDescription DescribeCounter(GPUCounter counterID) = 0;
   virtual rdcarray<CounterResult> FetchCounters(const rdcarray<GPUCounter> &counterID) = 0;
 
-  virtual void FillCBufferVariables(ResourceId pipeline, ResourceId shader, rdcstr entryPoint,
-                                    uint32_t cbufSlot, rdcarray<ShaderVariable> &outvars,
-                                    const bytebuf &data) = 0;
+  virtual void FillCBufferVariables(ResourceId pipeline, ResourceId shader, ShaderStage stage,
+                                    rdcstr entryPoint, uint32_t cbufSlot,
+                                    rdcarray<ShaderVariable> &outvars, const bytebuf &data) = 0;
 
   virtual rdcarray<PixelModification> PixelHistory(rdcarray<EventUsage> events, ResourceId target,
                                                    uint32_t x, uint32_t y, const Subresource &sub,
                                                    CompType typeCast) = 0;
   virtual ShaderDebugTrace *DebugVertex(uint32_t eventId, uint32_t vertid, uint32_t instid,
                                         uint32_t idx, uint32_t view) = 0;
-  virtual ShaderDebugTrace *DebugPixel(uint32_t eventId, uint32_t x, uint32_t y, uint32_t sample,
-                                       uint32_t primitive) = 0;
+  virtual ShaderDebugTrace *DebugPixel(uint32_t eventId, uint32_t x, uint32_t y,
+                                       const DebugPixelInputs &inputs) = 0;
   virtual ShaderDebugTrace *DebugThread(uint32_t eventId, const rdcfixedarray<uint32_t, 3> &groupid,
                                         const rdcfixedarray<uint32_t, 3> &threadid) = 0;
+  virtual ShaderDebugTrace *DebugMeshThread(uint32_t eventId,
+                                            const rdcfixedarray<uint32_t, 3> &groupid,
+                                            const rdcfixedarray<uint32_t, 3> &threadid) = 0;
   virtual rdcarray<ShaderDebugState> ContinueDebug(ShaderDebugger *debugger) = 0;
   virtual void FreeDebugger(ShaderDebugger *debugger) = 0;
 
@@ -212,7 +243,7 @@ public:
   virtual bool IsRenderOutput(ResourceId id) = 0;
 
   virtual void FileChanged() = 0;
-  virtual ReplayStatus FatalErrorCheck() = 0;
+  virtual RDResult FatalErrorCheck() = 0;
 
   virtual bool NeedRemapForFetch(const ResourceFormat &format) = 0;
 
@@ -235,7 +266,6 @@ public:
   virtual uint64_t MakeOutputWindow(WindowingData window, bool depth) = 0;
   virtual void DestroyOutputWindow(uint64_t id) = 0;
   virtual bool CheckResizeOutputWindow(uint64_t id) = 0;
-  virtual void SetOutputWindowDimensions(uint64_t id, int32_t w, int32_t h) = 0;
   virtual void GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h) = 0;
   virtual void GetOutputWindowData(uint64_t id, bytebuf &retData) = 0;
   virtual void ClearOutputWindowColor(uint64_t id, FloatVector col) = 0;
@@ -269,8 +299,8 @@ public:
                                  const rdcstr &entry, const ShaderCompileFlags &compileFlags,
                                  ShaderStage type, ResourceId &id, rdcstr &errors) = 0;
   virtual rdcarray<ShaderEncoding> GetCustomShaderEncodings() = 0;
-  virtual ResourceId ApplyCustomShader(ResourceId shader, ResourceId texid, const Subresource &sub,
-                                       CompType typeCast) = 0;
+  virtual rdcarray<ShaderSourcePrefix> GetCustomShaderSourcePrefixes() = 0;
+  virtual ResourceId ApplyCustomShader(TextureDisplay &display) = 0;
   virtual void FreeCustomShader(ResourceId id) = 0;
 
   virtual void RenderCheckerboard(FloatVector dark, FloatVector light) = 0;
@@ -312,11 +342,12 @@ void PatchTriangleFanRestartIndexBufer(rdcarray<uint32_t> &patchedIndices, uint3
 
 uint64_t CalcMeshOutputSize(uint64_t curSize, uint64_t requiredOutput);
 
-void StandardFillCBufferVariable(ResourceId shader, const ShaderConstantDescriptor &desc,
+void StandardFillCBufferVariable(ResourceId shader, const ShaderConstantType &desc,
                                  uint32_t dataOffset, const bytebuf &data, ShaderVariable &outvar,
                                  uint32_t matStride);
 void StandardFillCBufferVariables(ResourceId shader, const rdcarray<ShaderConstant> &invars,
                                   rdcarray<ShaderVariable> &outvars, const bytebuf &data);
+void PreprocessLineDirectives(rdcarray<ShaderSourceFile> &sourceFiles);
 
 // simple cache for when we need buffer data for highlighting
 // vertices, typical use will be lots of vertices in the same
@@ -347,6 +378,7 @@ struct HighlightCache
 };
 
 extern const Vec4f colorRamp[22];
+extern const uint32_t uniqueColors[48];
 
 enum class DiscardType : int
 {
@@ -364,3 +396,5 @@ static constexpr uint32_t DiscardPatternHeight = 8;
 // returns a pattern to fill the texture with
 bytebuf GetDiscardPattern(DiscardType type, const ResourceFormat &fmt, uint32_t rowPitch = 1,
                           bool invert = false);
+
+void DeriveNearFar(Vec4f pos, Vec4f pos0, float &nearp, float &farp, bool &found);

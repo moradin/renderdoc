@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,6 +24,9 @@
 
 #include "../vk_core.h"
 #include "../vk_rendertext.h"
+#include "core/settings.h"
+
+RDOC_EXTERN_CONFIG(bool, Vulkan_Debug_VerboseCommandRecording);
 
 ///////////////////////////////////////////////////////////////////////////////////////
 // WSI extension
@@ -128,18 +131,17 @@ VkResult WrappedVulkan::vkGetSwapchainCounterEXT(VkDevice device, VkSwapchainKHR
 
 VkResult WrappedVulkan::vkRegisterDeviceEventEXT(VkDevice device,
                                                  const VkDeviceEventInfoEXT *pDeviceEventInfo,
-                                                 const VkAllocationCallbacks *pAllocator,
-                                                 VkFence *pFence)
+                                                 const VkAllocationCallbacks *, VkFence *pFence)
 {
   // for now we emulate this on replay as just a regular fence create, since we don't faithfully
   // replay sync events anyway.
   VkResult ret;
   SERIALISE_TIME_CALL(ret = ObjDisp(device)->RegisterDeviceEventEXT(
-                          Unwrap(device), pDeviceEventInfo, pAllocator, pFence));
+                          Unwrap(device), pDeviceEventInfo, NULL, pFence));
 
   if(ret == VK_SUCCESS)
   {
-    ResourceId id = GetResourceManager()->WrapResource(Unwrap(device), *pFence);
+    ResourceId id = GetResourceManager()->WrapResource(ResourceId(), Unwrap(device), *pFence);
 
     if(IsCaptureMode(m_State))
     {
@@ -149,7 +151,9 @@ VkResult WrappedVulkan::vkRegisterDeviceEventEXT(VkDevice device,
         CACHE_THREAD_SERIALISER();
 
         VkFenceCreateInfo createInfo = {
-            VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT,
+            VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            NULL,
+            VK_FENCE_CREATE_SIGNALED_BIT,
         };
 
         SCOPED_SERIALISE_CHUNK(VulkanChunk::vkRegisterDeviceEventEXT);
@@ -161,10 +165,6 @@ VkResult WrappedVulkan::vkRegisterDeviceEventEXT(VkDevice device,
       VkResourceRecord *record = GetResourceManager()->AddResourceRecord(*pFence);
       record->AddChunk(chunk);
     }
-    else
-    {
-      GetResourceManager()->AddLiveResource(id, *pFence);
-    }
   }
 
   return ret;
@@ -172,18 +172,17 @@ VkResult WrappedVulkan::vkRegisterDeviceEventEXT(VkDevice device,
 
 VkResult WrappedVulkan::vkRegisterDisplayEventEXT(VkDevice device, VkDisplayKHR display,
                                                   const VkDisplayEventInfoEXT *pDisplayEventInfo,
-                                                  const VkAllocationCallbacks *pAllocator,
-                                                  VkFence *pFence)
+                                                  const VkAllocationCallbacks *, VkFence *pFence)
 {
   // for now we emulate this on replay as just a regular fence create, since we don't faithfully
   // replay sync events anyway.
   VkResult ret;
   SERIALISE_TIME_CALL(ret = ObjDisp(device)->RegisterDisplayEventEXT(
-                          Unwrap(device), display, pDisplayEventInfo, pAllocator, pFence));
+                          Unwrap(device), display, pDisplayEventInfo, NULL, pFence));
 
   if(ret == VK_SUCCESS)
   {
-    ResourceId id = GetResourceManager()->WrapResource(Unwrap(device), *pFence);
+    ResourceId id = GetResourceManager()->WrapResource(ResourceId(), Unwrap(device), *pFence);
 
     if(IsCaptureMode(m_State))
     {
@@ -193,7 +192,9 @@ VkResult WrappedVulkan::vkRegisterDisplayEventEXT(VkDevice device, VkDisplayKHR 
         CACHE_THREAD_SERIALISER();
 
         VkFenceCreateInfo createInfo = {
-            VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT,
+            VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            NULL,
+            VK_FENCE_CREATE_SIGNALED_BIT,
         };
 
         SCOPED_SERIALISE_CHUNK(VulkanChunk::vkRegisterDisplayEventEXT);
@@ -204,10 +205,6 @@ VkResult WrappedVulkan::vkRegisterDisplayEventEXT(VkDevice device, VkDisplayKHR 
 
       VkResourceRecord *record = GetResourceManager()->AddResourceRecord(*pFence);
       record->AddChunk(chunk);
-    }
-    else
-    {
-      GetResourceManager()->AddLiveResource(id, *pFence);
     }
   }
 
@@ -228,12 +225,24 @@ bool WrappedVulkan::Serialise_vkGetSwapchainImagesKHR(SerialiserType &ser, VkDev
 
   if(IsReplayingAndReading())
   {
-    // use original ID because we don't create a live version of the swapchain
     SwapchainInfo &swapInfo = m_CreationInfo.m_SwapChain[Swapchain];
+
+    GetResourceManager()->WrapResource(SwapchainImage, Unwrap(device),
+                                       swapInfo.images[SwapchainImageIndex].userSwapImage);
+
+    m_CreationInfo.m_Names[GetResID(swapInfo.images[SwapchainImageIndex].userSwapImage)] =
+        StringFormat::Fmt("Presentable Image %u", SwapchainImageIndex);
+
+    {
+      LockedImageStateRef state =
+          InsertImageState(swapInfo.images[SwapchainImageIndex].userSwapImage,
+                           GetResID(swapInfo.images[SwapchainImageIndex].userSwapImage),
+                           ImageInfo(swapInfo.imageInfo), eFrameRef_Unknown);
+      state->isMemoryBound = true;
+    }
 
     RDCASSERT(SwapchainImageIndex < swapInfo.images.size(), SwapchainImageIndex,
               swapInfo.images.size());
-    GetResourceManager()->AddLiveResource(SwapchainImage, swapInfo.images[SwapchainImageIndex].im);
 
     AddResource(SwapchainImage, ResourceType::SwapchainImage, "Swapchain Image");
     DerivedResource(device, SwapchainImage);
@@ -243,7 +252,7 @@ bool WrappedVulkan::Serialise_vkGetSwapchainImagesKHR(SerialiserType &ser, VkDev
     GetResourceDesc(Swapchain).derivedResources.push_back(SwapchainImage);
     GetResourceDesc(SwapchainImage).parentResources.push_back(Swapchain);
 
-    m_CreationInfo.m_Image[GetResID(swapInfo.images[SwapchainImageIndex].im)] =
+    m_CreationInfo.m_Image[GetResID(swapInfo.images[SwapchainImageIndex].userSwapImage)] =
         m_CreationInfo.m_Image[Swapchain];
   }
 
@@ -262,23 +271,45 @@ VkResult WrappedVulkan::vkGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR 
   SERIALISE_TIME_CALL(ret = ObjDisp(device)->GetSwapchainImagesKHR(
                           Unwrap(device), Unwrap(swapchain), pCount, pSwapchainImages));
 
+  // during swapchain create this function is called once to initialise and wrap the images,
+  // thereafter we just return the already wrapped image handles. When descriptor buffers are
+  // enabled we are wrapping fake images we created to be able to descriptor-ise as well as
+  // initialising the real image handles
   if(pSwapchainImages && IsCaptureMode(m_State))
   {
     uint32_t numImages = *pCount;
 
     VkResourceRecord *swapRecord = GetRecord(swapchain);
 
+    const bool fakeBackbuffers = AccelerationStructures() || DescriptorBuffers();
+
     for(uint32_t i = 0; i < numImages; i++)
     {
-      // these were all wrapped and serialised on swapchain create - we just have to
-      // return the wrapped image in that case
-      if(swapRecord->swapInfo->images[i].im != VK_NULL_HANDLE)
+      // for descriptor buffers or AS, if we already have the unwrapped real image then we've fully
+      // initialised so we can return the user swap image
+      if(fakeBackbuffers && swapRecord->swapInfo->images[i].unwrappedRealSwapImage != VK_NULL_HANDLE)
       {
-        pSwapchainImages[i] = swapRecord->swapInfo->images[i].im;
+        pSwapchainImages[i] = swapRecord->swapInfo->images[i].userSwapImage;
+      }
+      // if we're not using fake backbuffers and we've fetched & wrapped the user swap image we
+      // can also return that too.
+      else if(!fakeBackbuffers && swapRecord->swapInfo->images[i].userSwapImage != VK_NULL_HANDLE)
+      {
+        pSwapchainImages[i] = swapRecord->swapInfo->images[i].userSwapImage;
       }
       else
       {
-        ResourceId id = GetResourceManager()->WrapResource(Unwrap(device), pSwapchainImages[i]);
+        VkImage imageToWrap = pSwapchainImages[i];
+
+        // if using fake backbuffers, we store the real swapchain image and wrap our fake
+        if(fakeBackbuffers)
+        {
+          swapRecord->swapInfo->images[i].unwrappedRealSwapImage = pSwapchainImages[i];
+          imageToWrap = swapRecord->swapInfo->images[i].userSwapImage;
+          RDCASSERT(imageToWrap != VK_NULL_HANDLE);
+        }
+
+        ResourceId id = GetResourceManager()->WrapResource(ResourceId(), Unwrap(device), imageToWrap);
 
         Chunk *chunk = NULL;
 
@@ -286,12 +317,12 @@ VkResult WrappedVulkan::vkGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR 
           CACHE_THREAD_SERIALISER();
 
           SCOPED_SERIALISE_CHUNK(VulkanChunk::vkGetSwapchainImagesKHR);
-          Serialise_vkGetSwapchainImagesKHR(ser, device, swapchain, &i, &pSwapchainImages[i]);
+          Serialise_vkGetSwapchainImagesKHR(ser, device, swapchain, &i, &imageToWrap);
 
           chunk = scope.Get();
         }
 
-        VkResourceRecord *record = GetResourceManager()->AddResourceRecord(pSwapchainImages[i]);
+        VkResourceRecord *record = GetResourceManager()->AddResourceRecord(imageToWrap);
         VkResourceRecord *swaprecord = GetRecord(swapchain);
 
         record->InternalResource = true;
@@ -307,6 +338,8 @@ VkResult WrappedVulkan::vkGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR 
         // swapchain, if the image is referenced the swapchain (and thus all the getimages) will be
         // included.
         swaprecord->AddChunk(chunk);
+
+        pSwapchainImages[i] = imageToWrap;
       }
     }
   }
@@ -341,16 +374,60 @@ bool WrappedVulkan::Serialise_vkCreateSwapchainKHR(SerialiserType &ser, VkDevice
 
     vkr = ObjDisp(device)->GetSwapchainImagesKHR(Unwrap(device), Unwrap(*pSwapChain), &NumImages,
                                                  NULL);
-    CheckVkResult(vkr);
+    CHECK_VKR(this, vkr);
   }
 
   SERIALISE_ELEMENT(NumImages);
+
+  rdcarray<OpaqueDataForSerialising> opaqueDataFetch;
+
+  rdcarray<VkOpaqueCaptureDescriptorDataCreateInfoEXT> opaqueData;
+  rdcarray<uint64_t> imageMemOffsets;
+  uint64_t opaqueMemAddress = 0;
+
+  const bool fakeBackbuffers = AccelerationStructures() || DescriptorBuffers();
+
+  if(IsCaptureMode(m_State) && fakeBackbuffers)
+  {
+    if(DescriptorBuffers())
+    {
+      opaqueDataFetch.resize(NumImages);
+      opaqueData.resize(NumImages);
+    }
+    imageMemOffsets.resize(NumImages);
+
+    for(uint32_t i = 0; i < NumImages; i++)
+    {
+      if(DescriptorBuffers())
+      {
+        opaqueDataFetch[i].fillUnwrapped(device,
+                                         GetRecord(*pSwapChain)->swapInfo->images[i].userSwapImage,
+                                         m_DescriptorBufferProperties);
+        opaqueData[i] = opaqueDataFetch[i];
+      }
+      imageMemOffsets[i] = GetRecord(*pSwapChain)->swapInfo->images[i].fakeImageMemoryOffset;
+    }
+
+    VkDeviceMemoryOpaqueCaptureAddressInfo getInfo = {
+        VK_STRUCTURE_TYPE_DEVICE_MEMORY_OPAQUE_CAPTURE_ADDRESS_INFO,
+        NULL,
+        Unwrap(GetRecord(*pSwapChain)->swapInfo->imageMemory),
+    };
+
+    opaqueMemAddress = ObjDisp(device)->GetDeviceMemoryOpaqueCaptureAddress(Unwrap(device), &getInfo);
+  }
+
+  if(ser.VersionAtLeast(0x17))
+  {
+    SERIALISE_ELEMENT(opaqueData).Hidden();
+    SERIALISE_ELEMENT(imageMemOffsets).Hidden();
+    SERIALISE_ELEMENT(opaqueMemAddress).Hidden();
+  }
 
   SERIALISE_CHECK_READ_ERRORS();
 
   if(IsReplayingAndReading())
   {
-    // use original ID because we don't create a live version of the swapchain
     SwapchainInfo &swapinfo = m_CreationInfo.m_SwapChain[SwapChain];
 
     AddResource(SwapChain, ResourceType::SwapchainImage, "Swapchain");
@@ -364,12 +441,12 @@ bool WrappedVulkan::Serialise_vkCreateSwapchainKHR(SerialiserType &ser, VkDevice
 
     swapinfo.images.resize(NumImages);
 
-    VkImageCreateFlags imageFlags = 0;
+    VkImageCreateFlags imageFlags = DefaultImageCreateFlags();
 
     if(CreateInfo.flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR)
       imageFlags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
 
-    const VkImageCreateInfo imInfo = {
+    VkImageCreateInfo imInfo = {
         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         NULL,
         imageFlags,
@@ -388,42 +465,107 @@ bool WrappedVulkan::Serialise_vkCreateSwapchainKHR(SerialiserType &ser, VkDevice
         VK_IMAGE_LAYOUT_UNDEFINED,
     };
 
+    if(CreateInfo.imageSharingMode == VK_SHARING_MODE_CONCURRENT)
+    {
+      uint32_t *queueFamiles = (uint32_t *)CreateInfo.pQueueFamilyIndices;
+      for(uint32_t q = 0; q < CreateInfo.queueFamilyIndexCount; q++)
+        queueFamiles[q] = m_QueueRemapping[queueFamiles[q]][0].family;
+    }
+
+    uint32_t memIndices = ~0U;
+    uint64_t memSize = 0;
+
+    rdcarray<VkImage> ims;
+    ims.resize(NumImages);
+
     for(uint32_t i = 0; i < NumImages; i++)
     {
-      VkDeviceMemory mem = VK_NULL_HANDLE;
-      VkImage im = VK_NULL_HANDLE;
+      if(DescriptorBuffers())
+      {
+        RDCASSERT(i < opaqueData.size(), i, opaqueData.size());
+        imInfo.pNext = &opaqueData[i];
+      }
 
-      VkResult vkr = ObjDisp(device)->CreateImage(Unwrap(device), &imInfo, NULL, &im);
-      CheckVkResult(vkr);
-
-      ResourceId liveId = GetResourceManager()->WrapResource(Unwrap(device), im);
-
-      VkMemoryRequirements mrq = {0};
-
-      ObjDisp(device)->GetImageMemoryRequirements(Unwrap(device), Unwrap(im), &mrq);
-
-      VkMemoryAllocateInfo allocInfo = {
-          VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mrq.size,
-          GetGPULocalMemoryIndex(mrq.memoryTypeBits),
-      };
-
-      vkr = ObjDisp(device)->AllocateMemory(Unwrap(device), &allocInfo, NULL, &mem);
-      CheckVkResult(vkr);
+      VkResult vkr = ObjDisp(device)->CreateImage(Unwrap(device), &imInfo, NULL, &ims[i]);
+      CHECK_VKR(this, vkr);
 
       if(vkr != VK_SUCCESS)
+      {
+        SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                         "Failed creating fake backbuffer textures, VkResult: %s",
+                         ToStr(vkr).c_str());
         return false;
+      }
 
-      ResourceId memid = GetResourceManager()->WrapResource(Unwrap(device), mem);
-      // register as a live-only resource, so it is cleaned up properly
-      GetResourceManager()->AddLiveResource(memid, mem);
+      VkMemoryRequirements mrq = {0};
+      ObjDisp(device)->GetImageMemoryRequirements(Unwrap(device), ims[i], &mrq);
 
-      vkr = ObjDisp(device)->BindImageMemory(Unwrap(device), Unwrap(im), Unwrap(mem), 0);
-      CheckVkResult(vkr);
+      memSize = AlignUp(memSize, mrq.alignment);
 
-      // image live ID will be assigned separately in Serialise_vkGetSwapChainInfoWSI
-      // memory doesn't have a live ID
+      if(i < imageMemOffsets.size())
+      {
+        RDCASSERT(imageMemOffsets[i] == memSize);
+      }
+      else
+      {
+        RDCASSERT(imageMemOffsets.size() == i);
+        imageMemOffsets.push_back(memSize);
+      }
 
-      swapinfo.images[i].im = im;
+      memSize += mrq.size;
+      memIndices &= mrq.memoryTypeBits;
+    }
+
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    ResourceId memid;
+
+    for(uint32_t i = 0; i < NumImages; i++)
+    {
+      VkMemoryAllocateInfo allocInfo = {
+          VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+          NULL,
+          memSize,
+          GetGPULocalMemoryIndex(memIndices),
+      };
+
+      VkMemoryAllocateFlagsInfo memFlags = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+      VkMemoryOpaqueCaptureAddressAllocateInfo memoryDeviceAddress = {
+          VK_STRUCTURE_TYPE_MEMORY_OPAQUE_CAPTURE_ADDRESS_ALLOCATE_INFO,
+      };
+      if(fakeBackbuffers && opaqueMemAddress)
+      {
+        allocInfo.pNext = &memFlags;
+        memFlags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT |
+                         VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT;
+
+        memFlags.pNext = &memoryDeviceAddress;
+        memoryDeviceAddress.opaqueCaptureAddress = opaqueMemAddress;
+      }
+
+      VkResult vkr;
+      if(mem == VK_NULL_HANDLE)
+      {
+        vkr = ObjDisp(device)->AllocateMemory(Unwrap(device), &allocInfo, NULL, &mem);
+        CHECK_VKR(this, vkr);
+
+        if(vkr != VK_SUCCESS)
+        {
+          SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                           "Failed allocating fake backbuffer texture memory, VkResult: %s",
+                           ToStr(vkr).c_str());
+          return false;
+        }
+
+        memid = GetResourceManager()->WrapResource(ResourceId(), Unwrap(device), mem);
+      }
+
+      vkr = ObjDisp(device)->BindImageMemory(Unwrap(device), ims[i], Unwrap(mem), imageMemOffsets[i]);
+      CHECK_VKR(this, vkr);
+
+      // image will be wrapped and be added as a live resource separately in
+      // Serialise_vkGetSwapChainImagesKHR memory doesn't have a live ID
+
+      swapinfo.images[i].userSwapImage = ims[i];
 
       // fill out image info so we track resource state barriers
       // sneaky-cheeky use of the swapchain's ID here (it's not a live ID because
@@ -442,14 +584,6 @@ bool WrappedVulkan::Serialise_vkCreateSwapchainKHR(SerialiserType &ser, VkDevice
           TextureCategory::ShaderRead | TextureCategory::ColorTarget | TextureCategory::SwapBuffer;
       iminfo.cube = false;
       iminfo.samples = VK_SAMPLE_COUNT_1_BIT;
-
-      m_CreationInfo.m_Names[liveId] = StringFormat::Fmt("Presentable Image %u", i);
-
-      {
-        LockedImageStateRef state =
-            InsertImageState(im, liveId, ImageInfo(swapinfo.imageInfo), eFrameRef_Unknown);
-        state->isMemoryBound = true;
-      }
     }
   }
 
@@ -460,23 +594,13 @@ void WrappedVulkan::WrapAndProcessCreatedSwapchain(VkDevice device,
                                                    const VkSwapchainCreateInfoKHR *pCreateInfo,
                                                    VkSwapchainKHR *pSwapChain)
 {
-  ResourceId id = GetResourceManager()->WrapResource(Unwrap(device), *pSwapChain);
+  ResourceId id = GetResourceManager()->WrapResource(ResourceId(), Unwrap(device), *pSwapChain);
 
   if(IsCaptureMode(m_State))
   {
     Chunk *chunk = NULL;
 
-    {
-      CACHE_THREAD_SERIALISER();
-
-      SCOPED_SERIALISE_CHUNK(VulkanChunk::vkCreateSwapchainKHR);
-      Serialise_vkCreateSwapchainKHR(ser, device, pCreateInfo, NULL, pSwapChain);
-
-      chunk = scope.Get();
-    }
-
     VkResourceRecord *record = GetResourceManager()->AddResourceRecord(*pSwapChain);
-    record->AddChunk(chunk);
 
     record->swapInfo = new SwapchainInfo();
     SwapchainInfo &swapInfo = *record->swapInfo;
@@ -495,7 +619,116 @@ void WrappedVulkan::WrapAndProcessCreatedSwapchain(VkDevice device,
     swapInfo.shared = (pCreateInfo->presentMode == VK_PRESENT_MODE_SHARED_DEMAND_REFRESH_KHR ||
                        pCreateInfo->presentMode == VK_PRESENT_MODE_SHARED_CONTINUOUS_REFRESH_KHR);
 
-    VkResult vkr = VK_SUCCESS;
+    uint32_t numSwapImages = 0;
+    VkResult vkr;
+
+    vkr = ObjDisp(device)->GetSwapchainImagesKHR(Unwrap(device), Unwrap(*pSwapChain),
+                                                 &numSwapImages, NULL);
+    CHECK_VKR(this, vkr);
+
+    swapInfo.images.resize(numSwapImages);
+
+    const bool fakeBackbuffers = AccelerationStructures() || DescriptorBuffers();
+
+    // create fake images and memory if we're using descriptor buffers so that the user's handles
+    // that views and descriptors are created from are replayable
+    if(fakeBackbuffers)
+    {
+      VkImageCreateFlags imageFlags = DefaultImageCreateFlags();
+
+      if(pCreateInfo->flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR)
+        imageFlags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+
+      VkImageCreateInfo imInfo = {
+          VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+          NULL,
+          imageFlags,
+          VK_IMAGE_TYPE_2D,
+          pCreateInfo->imageFormat,
+          {pCreateInfo->imageExtent.width, pCreateInfo->imageExtent.height, 1},
+          1,
+          pCreateInfo->imageArrayLayers,
+          VK_SAMPLE_COUNT_1_BIT,
+          VK_IMAGE_TILING_OPTIMAL,
+          // we add SAMPLED_BIT to help hint that views created should be capture/replayable (as
+          // this could be used for a descriptor)
+          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+              VK_IMAGE_USAGE_SAMPLED_BIT | pCreateInfo->imageUsage,
+          pCreateInfo->imageSharingMode,
+          pCreateInfo->queueFamilyIndexCount,
+          pCreateInfo->pQueueFamilyIndices,
+          VK_IMAGE_LAYOUT_UNDEFINED,
+      };
+
+      uint64_t memOffs = 0;
+      uint32_t memIndices = ~0U;
+      for(uint32_t i = 0; i < numSwapImages; i++)
+      {
+        vkr = ObjDisp(device)->CreateImage(Unwrap(device), &imInfo, NULL,
+                                           &swapInfo.images[i].userSwapImage);
+        CHECK_VKR(this, vkr);
+
+        if(vkr != VK_SUCCESS)
+        {
+          RDCERR("Failed creating fake backbuffer textures, VkResult: %s", ToStr(vkr).c_str());
+          return;
+        }
+
+        // we don't wrap the image, vkGetSwapchainImagesKHR below will do that
+
+        VkMemoryRequirements mrq = {0};
+        ObjDisp(device)->GetImageMemoryRequirements(Unwrap(device),
+                                                    swapInfo.images[i].userSwapImage, &mrq);
+
+        memOffs = AlignUp(memOffs, mrq.alignment);
+        swapInfo.images[i].fakeImageMemoryOffset = memOffs;
+
+        memOffs += mrq.size;
+        memIndices &= mrq.memoryTypeBits;
+      }
+
+      VkMemoryAllocateFlagsInfo memFlags = {
+          VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+          NULL,
+          VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT | VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT,
+      };
+      VkMemoryAllocateInfo allocInfo = {
+          VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+          &memFlags,
+          memOffs,
+          GetGPULocalMemoryIndex(memIndices),
+      };
+
+      vkr = ObjDisp(device)->AllocateMemory(Unwrap(device), &allocInfo, NULL, &swapInfo.imageMemory);
+      CHECK_VKR(this, vkr);
+
+      if(vkr != VK_SUCCESS)
+      {
+        RDCERR("Failed allocating fake backbuffer texture memory, VkResult: %s", ToStr(vkr).c_str());
+        return;
+      }
+
+      GetResourceManager()->WrapResource(ResourceId(), Unwrap(device), swapInfo.imageMemory);
+      GetResourceManager()->SetInternalResource(GetResID(swapInfo.imageMemory));
+
+      for(uint32_t i = 0; i < numSwapImages; i++)
+      {
+        vkr = ObjDisp(device)->BindImageMemory(Unwrap(device), swapInfo.images[i].userSwapImage,
+                                               Unwrap(swapInfo.imageMemory),
+                                               swapInfo.images[i].fakeImageMemoryOffset);
+        CHECK_VKR(this, vkr);
+      }
+    }
+
+    {
+      CACHE_THREAD_SERIALISER();
+
+      SCOPED_SERIALISE_CHUNK(VulkanChunk::vkCreateSwapchainKHR);
+      Serialise_vkCreateSwapchainKHR(ser, device, pCreateInfo, NULL, pSwapChain);
+
+      chunk = scope.Get();
+    }
+    record->AddChunk(chunk);
 
     const VkDevDispatchTable *vt = ObjDisp(device);
 
@@ -536,42 +769,27 @@ void WrappedVulkan::WrapAndProcessCreatedSwapchain(VkDevice device,
       };
 
       vkr = vt->CreateRenderPass(Unwrap(device), &rpinfo, NULL, &swapInfo.rp);
-      CheckVkResult(vkr);
+      CHECK_VKR(this, vkr);
 
-      GetResourceManager()->WrapResource(Unwrap(device), swapInfo.rp);
+      GetResourceManager()->WrapResource(ResourceId(), Unwrap(device), swapInfo.rp);
       GetResourceManager()->SetInternalResource(GetResID(swapInfo.rp));
     }
 
     // serialise out the swap chain images
     {
-      uint32_t numSwapImages;
-      vkr = vt->GetSwapchainImagesKHR(Unwrap(device), Unwrap(*pSwapChain), &numSwapImages, NULL);
-      CheckVkResult(vkr);
-
-      swapInfo.lastPresent.imageIndex = 0;
-      swapInfo.lastPresent.presentQueue = VK_NULL_HANDLE;
-      swapInfo.lastPresent.waitSemaphores.clear();
-
-      swapInfo.images.resize(numSwapImages);
-      for(uint32_t i = 0; i < numSwapImages; i++)
-      {
-        swapInfo.images[i].im = VK_NULL_HANDLE;
-        swapInfo.images[i].view = VK_NULL_HANDLE;
-        swapInfo.images[i].fb = VK_NULL_HANDLE;
-      }
-
-      VkImage *images = new VkImage[numSwapImages];
+      rdcarray<VkImage> images;
+      images.resize(numSwapImages);
 
       // go through our own function so we assign these images IDs
-      vkr = vkGetSwapchainImagesKHR(device, *pSwapChain, &numSwapImages, images);
-      CheckVkResult(vkr);
+      vkr = vkGetSwapchainImagesKHR(device, *pSwapChain, &numSwapImages, images.data());
+      CHECK_VKR(this, vkr);
 
       for(uint32_t i = 0; i < numSwapImages; i++)
       {
         SwapchainInfo::SwapImage &swapImInfo = swapInfo.images[i];
 
         // memory doesn't exist for genuine WSI created images
-        swapImInfo.im = images[i];
+        swapImInfo.userSwapImage = images[i];
 
         ResourceId imid = GetResID(images[i]);
 
@@ -597,9 +815,9 @@ void WrappedVulkan::WrapAndProcessCreatedSwapchain(VkDevice device,
                                          VK_FENCE_CREATE_SIGNALED_BIT};
 
           vkr = ObjDisp(device)->CreateFence(Unwrap(device), &fenceInfo, NULL, &swapImInfo.fence);
-          CheckVkResult(vkr);
+          CHECK_VKR(this, vkr);
 
-          GetResourceManager()->WrapResource(Unwrap(device), swapImInfo.fence);
+          GetResourceManager()->WrapResource(ResourceId(), Unwrap(device), swapImInfo.fence);
           GetResourceManager()->SetInternalResource(GetResID(swapImInfo.fence));
         }
 
@@ -608,18 +826,22 @@ void WrappedVulkan::WrapAndProcessCreatedSwapchain(VkDevice device,
 
           vkr = ObjDisp(device)->CreateSemaphore(Unwrap(device), &semInfo, NULL,
                                                  &swapImInfo.overlaydone);
-          CheckVkResult(vkr);
+          CHECK_VKR(this, vkr);
 
-          GetResourceManager()->WrapResource(Unwrap(device), swapImInfo.overlaydone);
+          GetResourceManager()->WrapResource(ResourceId(), Unwrap(device), swapImInfo.overlaydone);
           GetResourceManager()->SetInternalResource(GetResID(swapImInfo.overlaydone));
         }
+
+        VkImage renderImage = Unwrap(images[i]);
+        if(swapImInfo.unwrappedRealSwapImage != VK_NULL_HANDLE)
+          renderImage = swapImInfo.unwrappedRealSwapImage;
 
         {
           VkImageViewCreateInfo info = {
               VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
               NULL,
-              0,
-              Unwrap(images[i]),
+              DefaultImageViewCreateFlags(),
+              renderImage,
               VK_IMAGE_VIEW_TYPE_2D,
               pCreateInfo->imageFormat,
               {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -628,9 +850,9 @@ void WrappedVulkan::WrapAndProcessCreatedSwapchain(VkDevice device,
           };
 
           vkr = vt->CreateImageView(Unwrap(device), &info, NULL, &swapImInfo.view);
-          CheckVkResult(vkr);
+          CHECK_VKR(this, vkr);
 
-          GetResourceManager()->WrapResource(Unwrap(device), swapImInfo.view);
+          GetResourceManager()->WrapResource(ResourceId(), Unwrap(device), swapImInfo.view);
           GetResourceManager()->SetInternalResource(GetResID(swapImInfo.view));
 
           VkFramebufferCreateInfo fbinfo = {
@@ -646,25 +868,19 @@ void WrappedVulkan::WrapAndProcessCreatedSwapchain(VkDevice device,
           };
 
           vkr = vt->CreateFramebuffer(Unwrap(device), &fbinfo, NULL, &swapImInfo.fb);
-          CheckVkResult(vkr);
+          CHECK_VKR(this, vkr);
 
-          GetResourceManager()->WrapResource(Unwrap(device), swapImInfo.fb);
+          GetResourceManager()->WrapResource(ResourceId(), Unwrap(device), swapImInfo.fb);
           GetResourceManager()->SetInternalResource(GetResID(swapImInfo.fb));
         }
       }
-
-      SAFE_DELETE_ARRAY(images);
     }
-  }
-  else
-  {
-    GetResourceManager()->AddLiveResource(id, *pSwapChain);
   }
 }
 
 VkResult WrappedVulkan::vkCreateSwapchainKHR(VkDevice device,
                                              const VkSwapchainCreateInfoKHR *pCreateInfo,
-                                             const VkAllocationCallbacks *pAllocator,
+                                             const VkAllocationCallbacks *,
                                              VkSwapchainKHR *pSwapChain)
 {
   VkSwapchainCreateInfoKHR createInfo = *pCreateInfo;
@@ -683,11 +899,13 @@ VkResult WrappedVulkan::vkCreateSwapchainKHR(VkDevice device,
   if(surfCap.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)
     createInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
+  // remove deferred allocation flag so we can process images immediately
+  createInfo.flags &= ~VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_KHR;
+
   createInfo.surface = Unwrap(createInfo.surface);
   createInfo.oldSwapchain = Unwrap(createInfo.oldSwapchain);
 
-  VkResult ret =
-      ObjDisp(device)->CreateSwapchainKHR(Unwrap(device), &createInfo, pAllocator, pSwapChain);
+  VkResult ret = ObjDisp(device)->CreateSwapchainKHR(Unwrap(device), &createInfo, NULL, pSwapChain);
 
   if(ret == VK_SUCCESS)
     WrapAndProcessCreatedSwapchain(device, pCreateInfo, pSwapChain);
@@ -706,11 +924,24 @@ bool WrappedVulkan::Serialise_vkQueuePresentKHR(SerialiserType &ser, VkQueue que
 
   if(ser.IsWriting())
   {
-    VkResourceRecord *swaprecord = GetRecord(pPresentInfo->pSwapchains[0]);
+    // use the image from the active window, or the first valid image if we don't find an active
+    // window
+    for(uint32_t i = 0; i < pPresentInfo->swapchainCount; i++)
+    {
+      VkResourceRecord *swaprecord = GetRecord(pPresentInfo->pSwapchains[i]);
 
-    SwapchainInfo &swapInfo = *swaprecord->swapInfo;
+      SwapchainInfo &swapInfo = *swaprecord->swapInfo;
 
-    PresentedImage = GetResID(swapInfo.images[pPresentInfo->pImageIndices[0]].im);
+      DeviceOwnedWindow devWnd(LayerDisp(m_Instance), swapInfo.wndHandle);
+
+      const bool activeWindow = RenderDoc::Inst().IsActiveWindow(devWnd);
+
+      if(activeWindow || PresentedImage == ResourceId())
+        PresentedImage = GetResID(swapInfo.images[pPresentInfo->pImageIndices[i]].userSwapImage);
+
+      if(activeWindow)
+        break;
+    }
   }
 
   // we don't have all the information we need about swapchains on replay to get the presented image
@@ -742,34 +973,35 @@ VkResult WrappedVulkan::vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR 
 {
   AdvanceFrame();
 
-  if(pPresentInfo->swapchainCount > 1 && (m_FrameCounter % 100) == 0)
+  if(Vulkan_Debug_VerboseCommandRecording())
   {
-    RDCWARN("Presenting multiple swapchains at once - only first will be processed");
+    RDCLOG("vkQueuePresentKHR() to queue %s", ToStr(GetResID(queue)).c_str());
   }
 
   rdcarray<VkSwapchainKHR> unwrappedSwaps;
-  rdcarray<VkSemaphore> unwrappedSems;
+  rdcarray<VkSemaphore> unwrappedWaitSems;
 
   VkPresentInfoKHR unwrappedInfo = *pPresentInfo;
 
   for(uint32_t i = 0; i < unwrappedInfo.swapchainCount; i++)
     unwrappedSwaps.push_back(Unwrap(unwrappedInfo.pSwapchains[i]));
   for(uint32_t i = 0; i < unwrappedInfo.waitSemaphoreCount; i++)
-    unwrappedSems.push_back(Unwrap(unwrappedInfo.pWaitSemaphores[i]));
+    unwrappedWaitSems.push_back(Unwrap(unwrappedInfo.pWaitSemaphores[i]));
 
   unwrappedInfo.pSwapchains = unwrappedSwaps.data();
-  unwrappedInfo.pWaitSemaphores = unwrappedSems.data();
 
-  // Don't support any extensions for present info
   const VkBaseInStructure *next = (const VkBaseInStructure *)pPresentInfo->pNext;
   while(next)
   {
     // allowed (and ignored) pNext structs
     if(next->sType != VK_STRUCTURE_TYPE_DISPLAY_PRESENT_INFO_KHR &&
        next->sType != VK_STRUCTURE_TYPE_DEVICE_GROUP_PRESENT_INFO_KHR &&
-       next->sType != VK_STRUCTURE_TYPE_PRESENT_FRAME_TOKEN_GGP &&
        next->sType != VK_STRUCTURE_TYPE_PRESENT_REGIONS_KHR &&
-       next->sType != VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE)
+       next->sType != VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE &&
+       next->sType != VK_STRUCTURE_TYPE_PRESENT_ID_KHR &&
+       next->sType != VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR &&
+       next->sType != VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR &&
+       next->sType != VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_KHR)
     {
       RDCWARN("Unsupported pNext structure in pPresentInfo: %s", ToStr(next->sType).c_str());
     }
@@ -777,39 +1009,168 @@ VkResult WrappedVulkan::vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR 
     next = next->pNext;
   }
 
-  // TODO support multiple swapchains here
-  VkResourceRecord *swaprecord = GetRecord(pPresentInfo->pSwapchains[0]);
+  if(IsBackgroundCapturing(m_State))
+    GetResourceManager()->CleanBackgroundFrameReferences();
+
+  m_LastSwap = ResourceId();
+
+  byte *tempMem = GetTempMemory(GetNextPatchSize(pPresentInfo->pNext));
+
+  if(pPresentInfo->swapchainCount == 1)
+  {
+    VkPresentInfoKHR mutableInfo = *pPresentInfo;
+
+    byte *mem = tempMem;
+    UnwrapNextChain(m_State, "VkPresentInfoKHR", mem, (VkBaseInStructure *)&mutableInfo);
+
+    HandlePresent(queue, &mutableInfo, unwrappedWaitSems);
+  }
+  else
+  {
+    VkPresentInfoKHR mutableInfo = *pPresentInfo;
+
+    byte *mem = tempMem;
+    UnwrapNextChain(m_State, "VkPresentInfoKHR", mem, (VkBaseInStructure *)&mutableInfo);
+
+    mutableInfo.swapchainCount = 1;
+
+    VkDeviceGroupPresentInfoKHR *groups = (VkDeviceGroupPresentInfoKHR *)FindNextStruct(
+        &mutableInfo, VK_STRUCTURE_TYPE_DEVICE_GROUP_PRESENT_INFO_KHR);
+    if(groups)
+      groups->swapchainCount = 1;
+
+    VkPresentRegionsKHR *regions =
+        (VkPresentRegionsKHR *)FindNextStruct(&mutableInfo, VK_STRUCTURE_TYPE_PRESENT_REGIONS_KHR);
+    if(regions)
+      regions->swapchainCount = 1;
+
+    VkPresentTimesInfoGOOGLE *times = (VkPresentTimesInfoGOOGLE *)FindNextStruct(
+        &mutableInfo, VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE);
+    if(times)
+      times->swapchainCount = 1;
+
+    VkPresentIdKHR *ids =
+        (VkPresentIdKHR *)FindNextStruct(&mutableInfo, VK_STRUCTURE_TYPE_PRESENT_ID_KHR);
+    if(ids)
+      ids->swapchainCount = 1;
+
+    VkPresentId2KHR *ids2 =
+        (VkPresentId2KHR *)FindNextStruct(&mutableInfo, VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR);
+    if(ids2)
+      ids2->swapchainCount = 1;
+
+    VkSwapchainPresentFenceInfoKHR *fences = (VkSwapchainPresentFenceInfoKHR *)FindNextStruct(
+        &mutableInfo, VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR);
+    if(fences)
+      fences->swapchainCount = 1;
+
+    VkSwapchainPresentModeInfoKHR *mode = (VkSwapchainPresentModeInfoKHR *)FindNextStruct(
+        &mutableInfo, VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR);
+    if(mode)
+      mode->swapchainCount = 1;
+
+    for(uint32_t i = 0; i < pPresentInfo->swapchainCount; i++)
+    {
+      HandlePresent(queue, &mutableInfo, unwrappedWaitSems);
+
+      mutableInfo.pSwapchains++;
+      mutableInfo.pImageIndices++;
+      mutableInfo.pResults++;
+      if(groups)
+        groups->pDeviceMasks++;
+      if(regions)
+        regions->pRegions++;
+      if(ids)
+        ids->pPresentIds++;
+      if(ids2)
+        ids2->pPresentIds++;
+      if(times)
+        times->pTimes++;
+      if(fences)
+        fences->pFences++;
+      if(mode)
+        mode->pPresentModes++;
+    }
+  }
+
+  unwrappedInfo.pWaitSemaphores = unwrappedWaitSems.data();
+  unwrappedInfo.waitSemaphoreCount = (uint32_t)unwrappedWaitSems.size();
+
+  UnwrapNextChain(m_State, "VkPresentInfoKHR", tempMem, (VkBaseInStructure *)&unwrappedInfo);
+
+  VkResult vkr;
+  SERIALISE_TIME_CALL(vkr = ObjDisp(queue)->QueuePresentKHR(Unwrap(queue), &unwrappedInfo));
+
+  if(IsActiveCapturing(m_State))
+  {
+    CACHE_THREAD_SERIALISER();
+
+    SCOPED_SERIALISE_CHUNK(VulkanChunk::vkQueuePresentKHR);
+    Serialise_vkQueuePresentKHR(ser, queue, pPresentInfo);
+
+    GetResourceManager()->MarkResourceFrameReferenced(GetResID(queue), eFrameRef_Read);
+
+    m_FrameCaptureRecord->AddChunk(scope.Get());
+  }
+
+  // do Present handling all the way after serialisation, so the present call is included in the
+  // captured frame.
+
+  for(uint32_t i = 0; i < pPresentInfo->swapchainCount; i++)
+  {
+    VkSwapchainKHR swap = pPresentInfo->pSwapchains[i];
+
+    VkResourceRecord *swaprecord = GetRecord(swap);
+    RDCASSERT(swaprecord->swapInfo);
+
+    SwapchainInfo &swapInfo = *swaprecord->swapInfo;
+
+    Present(DeviceOwnedWindow(LayerDisp(m_Instance), swapInfo.wndHandle));
+  }
+
+  return vkr;
+}
+
+void WrappedVulkan::HandlePresent(VkQueue queue, const VkPresentInfoKHR *pPresentInfo,
+                                  rdcarray<VkSemaphore> &unwrappedWaitSems)
+{
+  // any array is exploded above in vkQueuePresentKHR, so just look at the first element
+  VkSwapchainKHR swap = pPresentInfo->pSwapchains[0];
+  uint32_t imgIndex = pPresentInfo->pImageIndices[0];
+
+  VkResourceRecord *swaprecord = GetRecord(swap);
   RDCASSERT(swaprecord->swapInfo);
 
   SwapchainInfo &swapInfo = *swaprecord->swapInfo;
 
-  bool activeWindow = RenderDoc::Inst().IsActiveWindow(LayerDisp(m_Instance), swapInfo.wndHandle);
+  DeviceOwnedWindow devWnd(LayerDisp(m_Instance), swapInfo.wndHandle);
 
   // need to record which image was last flipped so we can get the correct backbuffer
   // for a thumbnail in EndFrameCapture
-  swapInfo.lastPresent.imageIndex = pPresentInfo->pImageIndices[0];
+  swapInfo.lastPresent.imageIndex = imgIndex;
   swapInfo.lastPresent.presentQueue = queue;
   swapInfo.lastPresent.waitSemaphores.resize(pPresentInfo->waitSemaphoreCount);
   for(size_t i = 0; i < swapInfo.lastPresent.waitSemaphores.size(); ++i)
     swapInfo.lastPresent.waitSemaphores[i] = pPresentInfo->pWaitSemaphores[i];
 
-  m_LastSwap = swaprecord->GetResourceID();
+  if(m_LastSwap == ResourceId())
+    m_LastSwap = swaprecord->GetResourceID();
 
   if(IsBackgroundCapturing(m_State))
   {
     uint32_t overlay = RenderDoc::Inst().GetOverlayBits();
 
-    if(overlay & eRENDERDOC_Overlay_Enabled)
-    {
-      // we'll do the wait ourselves before rendering the overlay
-      unwrappedInfo.waitSemaphoreCount = 0;
+    const bool fakeBackbuffers = AccelerationStructures() || DescriptorBuffers();
 
+    if(fakeBackbuffers || (overlay & eRENDERDOC_Overlay_Enabled))
+    {
       VkRenderPass rp = swapInfo.rp;
-      VkImage im = swapInfo.images[pPresentInfo->pImageIndices[0]].im;
-      VkFramebuffer fb = swapInfo.images[pPresentInfo->pImageIndices[0]].fb;
-      VkCommandBuffer cmd = swapInfo.images[pPresentInfo->pImageIndices[0]].cmd;
-      VkFence imfence = swapInfo.images[pPresentInfo->pImageIndices[0]].fence;
-      VkSemaphore sem = swapInfo.images[pPresentInfo->pImageIndices[0]].overlaydone;
+      VkImage unwrappedRealSwapImage = swapInfo.images[imgIndex].unwrappedRealSwapImage;
+      VkImage userSwapImage = swapInfo.images[imgIndex].userSwapImage;
+      VkFramebuffer fb = swapInfo.images[imgIndex].fb;
+      VkCommandBuffer cmd = swapInfo.images[imgIndex].cmd;
+      VkFence imfence = swapInfo.images[imgIndex].fence;
+      VkSemaphore sem = swapInfo.images[imgIndex].overlaydone;
 
       VkResourceRecord *queueRecord = GetRecord(queue);
       uint32_t swapQueueIndex = queueRecord->queueFamilyIndex;
@@ -829,7 +1190,7 @@ VkResult WrappedVulkan::vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR 
       // If this ring has never been used the fence is signalled on creation.
       // this should generally be a no-op because we only get here when we've acquired the image
       VkResult vkr = vt->WaitForFences(Unwrap(m_Device), 1, UnwrapPtr(imfence), VK_TRUE, 50000000);
-      CheckVkResult(vkr);
+      CHECK_VKR(this, vkr);
 
       vkr = vt->ResetFences(Unwrap(m_Device), 1, UnwrapPtr(imfence));
 
@@ -839,34 +1200,60 @@ VkResult WrappedVulkan::vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR 
                                             VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
 
       vkr = vt->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
-      CheckVkResult(vkr);
+      CHECK_VKR(this, vkr);
+
+      VkImageLayout presentLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+      if(swapInfo.shared)
+        presentLayout = VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR;
 
       VkImageMemoryBarrier bbBarrier = {
           VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
           NULL,
           0,
           0,
-          VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+          presentLayout,
           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
           swapQueueIndex,
           m_QueueFamilyIdx,
-          Unwrap(im),
+          Unwrap(userSwapImage),
           {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
       };
-
-      if(swapInfo.shared)
-        bbBarrier.oldLayout = VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR;
 
       if(swapInfo.concurrent)
         bbBarrier.srcQueueFamilyIndex = bbBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 
-      bbBarrier.srcAccessMask = VK_ACCESS_ALL_READ_BITS;
-      bbBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      bbBarrier.srcAccessMask = VK_ACCESS_ALL_READ_BITS | VK_ACCESS_ALL_WRITE_BITS;
 
-      DoPipelineBarrier(cmd, 1, &bbBarrier);
+      // if using descriptor buffers, we barrier both images - real and fake backbuffer to be ready
+      // to copy from fake to real
+      if(fakeBackbuffers)
+      {
+        bbBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+        // we fully overwrite with a copy, so we can transition from undefined
+        bbBarrier.image = unwrappedRealSwapImage;
+        bbBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        bbBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+        DoPipelineBarrier(cmd, 1, &bbBarrier);
+
+        bbBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+        bbBarrier.image = Unwrap(userSwapImage);
+        bbBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        bbBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        DoPipelineBarrier(cmd, 1, &bbBarrier);
+      }
+      else
+      {
+        bbBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        DoPipelineBarrier(cmd, 1, &bbBarrier);
+      }
 
       rdcarray<VkPipelineStageFlags> waitStage;
-      waitStage.fill(unwrappedSems.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+      waitStage.fill(unwrappedWaitSems.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 
       uint32_t ringIdx = 0;
 
@@ -874,8 +1261,8 @@ VkResult WrappedVulkan::vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR 
 
       // wait on the present's semaphores
       submitInfo.pWaitDstStageMask = waitStage.data();
-      submitInfo.pWaitSemaphores = unwrappedSems.data();
-      submitInfo.waitSemaphoreCount = (uint32_t)unwrappedSems.size();
+      submitInfo.pWaitSemaphores = unwrappedWaitSems.data();
+      submitInfo.waitSemaphoreCount = (uint32_t)unwrappedWaitSems.size();
 
       // and signal overlaydone
       submitInfo.pSignalSemaphores = UnwrapPtr(sem);
@@ -891,14 +1278,35 @@ VkResult WrappedVulkan::vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR 
         // wait for this queue ring to be free, but with a reasonably aggressive timeout (50ms). If
         // this ring has never been used the fence is signalled on creation
         vkr = vt->WaitForFences(Unwrap(m_Device), 1, UnwrapPtr(fence), VK_TRUE, 50000000);
-        CheckVkResult(vkr);
+        CHECK_VKR(this, vkr);
 
         vkr = vt->ResetFences(Unwrap(m_Device), 1, UnwrapPtr(fence));
 
         vkr = vt->BeginCommandBuffer(Unwrap(extQCmd), &beginInfo);
-        CheckVkResult(vkr);
+        CHECK_VKR(this, vkr);
 
-        DoPipelineBarrier(extQCmd, 1, &bbBarrier);
+        // if using fake backbuffers, we barrier both images - real and fake backbuffer
+        if(fakeBackbuffers)
+        {
+          bbBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+          bbBarrier.image = unwrappedRealSwapImage;
+          bbBarrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+          bbBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+          DoPipelineBarrier(extQCmd, 1, &bbBarrier);
+
+          bbBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+          bbBarrier.image = Unwrap(userSwapImage);
+          bbBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+          bbBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+          DoPipelineBarrier(extQCmd, 1, &bbBarrier);
+        }
+        else
+        {
+          DoPipelineBarrier(extQCmd, 1, &bbBarrier);
+        }
 
         ObjDisp(extQCmd)->EndCommandBuffer(Unwrap(extQCmd));
 
@@ -916,25 +1324,53 @@ VkResult WrappedVulkan::vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR 
             UnwrapPtr(m_ExternalQueues[swapQueueIndex].ring[ringIdx].fromext);
 
         vkr = ObjDisp(q)->QueueSubmit(Unwrap(q), 1, &submitInfo, VK_NULL_HANDLE);
-        CheckVkResult(vkr);
+        CHECK_VKR(this, vkr);
 
         // next submit needs to wait on fromext
-        unwrappedSems.assign(submitInfo.pSignalSemaphores, 1);
+        unwrappedWaitSems.assign(submitInfo.pSignalSemaphores, 1);
         waitStage.resize(1);
 
         submitInfo.pWaitDstStageMask = waitStage.data();
-        submitInfo.pWaitSemaphores = unwrappedSems.data();
-        submitInfo.waitSemaphoreCount = (uint32_t)unwrappedSems.size();
+        submitInfo.pWaitSemaphores = unwrappedWaitSems.data();
+        submitInfo.waitSemaphoreCount = (uint32_t)unwrappedWaitSems.size();
 
         // and signal toext
         submitInfo.pSignalSemaphores =
             UnwrapPtr(m_ExternalQueues[swapQueueIndex].ring[ringIdx].toext);
       }
 
-      int flags = activeWindow ? RenderDoc::eOverlay_ActiveWindow : 0;
-      rdcstr overlayText = RenderDoc::Inst().GetOverlayText(RDCDriver::Vulkan, m_FrameCounter, flags);
+      rdcstr overlayText =
+          RenderDoc::Inst().GetOverlayText(RDCDriver::Vulkan, devWnd, m_FrameCounter, 0);
 
-      if(!overlayText.empty())
+      if(m_LastCaptureFailed > 0 && Timing::GetUnixTimestamp() - m_LastCaptureFailed < 5)
+        overlayText += StringFormat::Fmt("\nCapture failed: %s",
+                                         ResultDetails(m_LastCaptureError).Message().c_str());
+
+      if(fakeBackbuffers)
+      {
+        VkImageCopy region = {};
+        region.dstSubresource.aspectMask = region.srcSubresource.aspectMask =
+            VK_IMAGE_ASPECT_COLOR_BIT;
+        region.dstSubresource.layerCount = region.srcSubresource.layerCount = 1;
+        region.extent = swapInfo.imageInfo.extent;
+        ObjDisp(cmd)->CmdCopyImage(Unwrap(cmd), Unwrap(userSwapImage),
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, unwrappedRealSwapImage,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        VkImageMemoryBarrier tmpBarrier = bbBarrier;
+        // remove any queue family transfer
+        tmpBarrier.srcQueueFamilyIndex = tmpBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+
+        // now do what the barrier above would have done, put the real swapchain in color attachment ready to render to
+        tmpBarrier.image = unwrappedRealSwapImage;
+        tmpBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        tmpBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        tmpBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        tmpBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        DoPipelineBarrier(cmd, 1, &tmpBarrier);
+      }
+
+      if(!overlayText.empty() && (overlay & eRENDERDOC_Overlay_Enabled))
       {
         m_TextRenderer->BeginText(textstate);
 
@@ -945,10 +1381,31 @@ VkResult WrappedVulkan::vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR 
 
       std::swap(bbBarrier.srcQueueFamilyIndex, bbBarrier.dstQueueFamilyIndex);
       std::swap(bbBarrier.oldLayout, bbBarrier.newLayout);
-      bbBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
       bbBarrier.dstAccessMask = VK_ACCESS_ALL_READ_BITS;
 
-      DoPipelineBarrier(textstate.cmd, 1, &bbBarrier);
+      if(fakeBackbuffers)
+      {
+        bbBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        bbBarrier.image = unwrappedRealSwapImage;
+        bbBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        bbBarrier.newLayout = presentLayout;
+
+        DoPipelineBarrier(textstate.cmd, 1, &bbBarrier);
+
+        bbBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+        bbBarrier.image = Unwrap(userSwapImage);
+        bbBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        bbBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        DoPipelineBarrier(textstate.cmd, 1, &bbBarrier);
+      }
+      else
+      {
+        bbBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        DoPipelineBarrier(textstate.cmd, 1, &bbBarrier);
+      }
 
       ObjDisp(cmd)->EndCommandBuffer(Unwrap(cmd));
 
@@ -957,7 +1414,7 @@ VkResult WrappedVulkan::vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR 
         submitInfo.pCommandBuffers = UnwrapPtr(cmd);
 
         vkr = ObjDisp(m_Queue)->QueueSubmit(Unwrap(m_Queue), 1, &submitInfo, Unwrap(imfence));
-        CheckVkResult(vkr);
+        CHECK_VKR(this, vkr);
       }
 
       if(swapQueueIndex != m_QueueFamilyIdx && !swapInfo.concurrent)
@@ -966,21 +1423,43 @@ VkResult WrappedVulkan::vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR 
         VkFence fence = m_ExternalQueues[swapQueueIndex].ring[ringIdx].fence;
 
         vkr = vt->BeginCommandBuffer(Unwrap(extQCmd), &beginInfo);
-        CheckVkResult(vkr);
+        CHECK_VKR(this, vkr);
 
-        DoPipelineBarrier(extQCmd, 1, &bbBarrier);
+        if(fakeBackbuffers)
+        {
+          bbBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+          bbBarrier.image = unwrappedRealSwapImage;
+          bbBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+          bbBarrier.newLayout = presentLayout;
+
+          DoPipelineBarrier(extQCmd, 1, &bbBarrier);
+
+          bbBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+          bbBarrier.image = Unwrap(userSwapImage);
+          bbBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+          bbBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+          DoPipelineBarrier(extQCmd, 1, &bbBarrier);
+        }
+        else
+        {
+          bbBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+          DoPipelineBarrier(extQCmd, 1, &bbBarrier);
+        }
 
         ObjDisp(extQCmd)->EndCommandBuffer(Unwrap(extQCmd));
 
         VkQueue q = m_ExternalQueues[swapQueueIndex].queue;
 
         // wait on toext which was signalled above
-        unwrappedSems.assign(submitInfo.pSignalSemaphores, 1);
+        unwrappedWaitSems.assign(submitInfo.pSignalSemaphores, 1);
         waitStage.resize(1);
 
         submitInfo.pWaitDstStageMask = waitStage.data();
-        submitInfo.pWaitSemaphores = unwrappedSems.data();
-        submitInfo.waitSemaphoreCount = (uint32_t)unwrappedSems.size();
+        submitInfo.pWaitSemaphores = unwrappedWaitSems.data();
+        submitInfo.waitSemaphoreCount = (uint32_t)unwrappedWaitSems.size();
 
         // release to the external queue
         submitInfo.commandBufferCount = 1;
@@ -993,41 +1472,20 @@ VkResult WrappedVulkan::vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR 
         // submit and signal the fence when we're done, so we know next time around that this is
         // safe to re-use
         vkr = ObjDisp(q)->QueueSubmit(Unwrap(q), 1, &submitInfo, Unwrap(fence));
-        CheckVkResult(vkr);
+        CHECK_VKR(this, vkr);
       }
 
-      // the present waits on our new semaphore
-      unwrappedInfo.waitSemaphoreCount = 1;
-      unwrappedInfo.pWaitSemaphores = submitInfo.pSignalSemaphores;
+      // the next thing waits on our new semaphore - whether a subsequent overlay render or the
+      // present
+      unwrappedWaitSems = {submitInfo.pSignalSemaphores[0]};
     }
-
-    GetResourceManager()->CleanBackgroundFrameReferences();
   }
-
-  VkResult vkr;
-  SERIALISE_TIME_CALL(vkr = ObjDisp(queue)->QueuePresentKHR(Unwrap(queue), &unwrappedInfo));
-
-  if(IsActiveCapturing(m_State))
-  {
-    CACHE_THREAD_SERIALISER();
-
-    SCOPED_SERIALISE_CHUNK(VulkanChunk::vkQueuePresentKHR);
-    Serialise_vkQueuePresentKHR(ser, queue, pPresentInfo);
-
-    GetResourceManager()->MarkResourceFrameReferenced(GetResID(queue), eFrameRef_Read);
-
-    m_FrameCaptureRecord->AddChunk(scope.Get());
-  }
-
-  Present(LayerDisp(m_Instance), swapInfo.wndHandle);
-
-  return vkr;
 }
 
 // creation functions are in vk_<platform>.cpp
 
 void WrappedVulkan::vkDestroySurfaceKHR(VkInstance instance, VkSurfaceKHR surface,
-                                        const VkAllocationCallbacks *pAllocator)
+                                        const VkAllocationCallbacks *)
 {
   if(surface == VK_NULL_HANDLE)
     return;
@@ -1040,7 +1498,7 @@ void WrappedVulkan::vkDestroySurfaceKHR(VkInstance instance, VkSurfaceKHR surfac
     PackedWindowHandle *wnd = (PackedWindowHandle *)wrapper->record;
     Keyboard::RemoveInputWindow(wnd->system, wnd->handle);
 
-    RenderDoc::Inst().RemoveFrameCapturer(LayerDisp(m_Instance), wnd->handle);
+    RenderDoc::Inst().RemoveFrameCapturer(DeviceOwnedWindow(LayerDisp(m_Instance), wnd->handle));
 
     delete wnd;
   }
@@ -1051,7 +1509,7 @@ void WrappedVulkan::vkDestroySurfaceKHR(VkInstance instance, VkSurfaceKHR surfac
   VkSurfaceKHR unwrappedObj = wrapper->real.As<VkSurfaceKHR>();
 
   GetResourceManager()->ReleaseWrappedResource(surface, true);
-  ObjDisp(instance)->DestroySurfaceKHR(Unwrap(instance), unwrappedObj, pAllocator);
+  ObjDisp(instance)->DestroySurfaceKHR(Unwrap(instance), unwrappedObj, NULL);
 }
 
 // VK_KHR_display and VK_KHR_display_swapchain. These have no library or include dependencies so
@@ -1097,12 +1555,11 @@ VkResult WrappedVulkan::vkGetDisplayModePropertiesKHR(VkPhysicalDevice physicalD
 
 VkResult WrappedVulkan::vkCreateDisplayModeKHR(VkPhysicalDevice physicalDevice, VkDisplayKHR display,
                                                const VkDisplayModeCreateInfoKHR *pCreateInfo,
-                                               const VkAllocationCallbacks *pAllocator,
-                                               VkDisplayModeKHR *pMode)
+                                               const VkAllocationCallbacks *, VkDisplayModeKHR *pMode)
 {
   // we don't wrap the resulting mode since there's no data we need for it
   return ObjDisp(physicalDevice)
-      ->CreateDisplayModeKHR(Unwrap(physicalDevice), display, pCreateInfo, pAllocator, pMode);
+      ->CreateDisplayModeKHR(Unwrap(physicalDevice), display, pCreateInfo, NULL, pMode);
 }
 
 VkResult WrappedVulkan::vkGetDisplayPlaneCapabilitiesKHR(VkPhysicalDevice physicalDevice,
@@ -1116,20 +1573,20 @@ VkResult WrappedVulkan::vkGetDisplayPlaneCapabilitiesKHR(VkPhysicalDevice physic
 
 VkResult WrappedVulkan::vkCreateDisplayPlaneSurfaceKHR(VkInstance instance,
                                                        const VkDisplaySurfaceCreateInfoKHR *pCreateInfo,
-                                                       const VkAllocationCallbacks *pAllocator,
+                                                       const VkAllocationCallbacks *,
                                                        VkSurfaceKHR *pSurface)
 {
   // should not come in here at all on replay
   RDCASSERT(IsCaptureMode(m_State));
 
-  VkResult ret = ObjDisp(instance)->CreateDisplayPlaneSurfaceKHR(Unwrap(instance), pCreateInfo,
-                                                                 pAllocator, pSurface);
+  VkResult ret =
+      ObjDisp(instance)->CreateDisplayPlaneSurfaceKHR(Unwrap(instance), pCreateInfo, NULL, pSurface);
 
   if(ret == VK_SUCCESS)
   {
     // we must wrap surfaces to be consistent with the rest of the code and surface handling,
     // but there's nothing actually to do here - no meaningful data we care about here.
-    GetResourceManager()->WrapResource(Unwrap(instance), *pSurface);
+    GetResourceManager()->WrapResource(ResourceId(), Unwrap(instance), *pSurface);
 
     WrappedVkSurfaceKHR *wrapped = GetWrapped(*pSurface);
 
@@ -1149,7 +1606,7 @@ VkResult WrappedVulkan::vkCreateDisplayPlaneSurfaceKHR(VkInstance instance,
 
 VkResult WrappedVulkan::vkCreateSharedSwapchainsKHR(VkDevice device, uint32_t swapchainCount,
                                                     const VkSwapchainCreateInfoKHR *pCreateInfos,
-                                                    const VkAllocationCallbacks *pAllocator,
+                                                    const VkAllocationCallbacks *,
                                                     VkSwapchainKHR *pSwapchains)
 {
   VkSwapchainCreateInfoKHR *unwrapped = GetTempArray<VkSwapchainCreateInfoKHR>(swapchainCount);
@@ -1163,7 +1620,7 @@ VkResult WrappedVulkan::vkCreateSharedSwapchainsKHR(VkDevice device, uint32_t sw
   }
 
   VkResult ret = ObjDisp(device)->CreateSharedSwapchainsKHR(Unwrap(device), swapchainCount,
-                                                            unwrapped, pAllocator, pSwapchains);
+                                                            unwrapped, NULL, pSwapchains);
 
   if(ret == VK_SUCCESS)
   {
@@ -1178,6 +1635,19 @@ VkResult WrappedVulkan::vkReleaseDisplayEXT(VkPhysicalDevice physicalDevice, VkD
 {
   // displays are not wrapped
   return ObjDisp(physicalDevice)->ReleaseDisplayEXT(Unwrap(physicalDevice), display);
+}
+
+VkResult WrappedVulkan::vkAcquireDrmDisplayEXT(VkPhysicalDevice physicalDevice, int32_t drmFd,
+                                               VkDisplayKHR display)
+{
+  return ObjDisp(physicalDevice)->AcquireDrmDisplayEXT(Unwrap(physicalDevice), drmFd, display);
+}
+
+VkResult WrappedVulkan::vkGetDrmDisplayEXT(VkPhysicalDevice physicalDevice, int32_t drmFd,
+                                           uint32_t connectorId, VkDisplayKHR *display)
+{
+  // displays are not wrapped
+  return ObjDisp(physicalDevice)->GetDrmDisplayEXT(Unwrap(physicalDevice), drmFd, connectorId, display);
 }
 
 VkResult WrappedVulkan::vkGetDeviceGroupPresentCapabilitiesKHR(
@@ -1281,20 +1751,20 @@ VkResult WrappedVulkan::vkGetSwapchainStatusKHR(VkDevice device, VkSwapchainKHR 
 
 VkResult WrappedVulkan::vkCreateHeadlessSurfaceEXT(VkInstance instance,
                                                    const VkHeadlessSurfaceCreateInfoEXT *pCreateInfo,
-                                                   const VkAllocationCallbacks *pAllocator,
+                                                   const VkAllocationCallbacks *,
                                                    VkSurfaceKHR *pSurface)
 {
   // should not come in here at all on replay
   RDCASSERT(IsCaptureMode(m_State));
 
-  VkResult ret = ObjDisp(instance)->CreateHeadlessSurfaceEXT(Unwrap(instance), pCreateInfo,
-                                                             pAllocator, pSurface);
+  VkResult ret =
+      ObjDisp(instance)->CreateHeadlessSurfaceEXT(Unwrap(instance), pCreateInfo, NULL, pSurface);
 
   if(ret == VK_SUCCESS)
   {
     // we must wrap surfaces to be consistent with the rest of the code and surface handling,
     // but there's nothing actually to do here - no meaningful data we care about here.
-    GetResourceManager()->WrapResource(Unwrap(instance), *pSurface);
+    GetResourceManager()->WrapResource(ResourceId(), Unwrap(instance), *pSurface);
 
     WrappedVkSurfaceKHR *wrapped = GetWrapped(*pSurface);
 
@@ -1309,21 +1779,85 @@ VkResult WrappedVulkan::vkCreateHeadlessSurfaceEXT(VkInstance instance,
   return ret;
 }
 
+VkResult WrappedVulkan::vkWaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain,
+                                            uint64_t presentId, uint64_t timeout)
+{
+  return ObjDisp(device)->WaitForPresentKHR(Unwrap(device), Unwrap(swapchain), presentId, timeout);
+}
+
+VkResult WrappedVulkan::vkWaitForPresent2KHR(VkDevice device, VkSwapchainKHR swapchain,
+                                             const VkPresentWait2InfoKHR *pPresentWait2Info)
+{
+  return ObjDisp(device)->WaitForPresent2KHR(Unwrap(device), Unwrap(swapchain), pPresentWait2Info);
+}
+
+VkResult WrappedVulkan::vkReleaseSwapchainImagesKHR(VkDevice device,
+                                                    const VkReleaseSwapchainImagesInfoKHR *pReleaseInfo)
+{
+  VkReleaseSwapchainImagesInfoKHR releaseInfo = *pReleaseInfo;
+  releaseInfo.swapchain = Unwrap(releaseInfo.swapchain);
+  return ObjDisp(device)->ReleaseSwapchainImagesKHR(Unwrap(device), &releaseInfo);
+}
+
+// we can forward this straight on regardless, as our handling of dispatch tables means if only the
+// EXT is available it will go through to the EXT from the driver, and we would rather merge the
+// EXT/KHR paths and silently promote than keep them separate and maintain two paths.
+VkResult WrappedVulkan::vkReleaseSwapchainImagesEXT(VkDevice device,
+                                                    const VkReleaseSwapchainImagesInfoKHR *pReleaseInfo)
+{
+  return vkReleaseSwapchainImagesKHR(device, pReleaseInfo);
+}
+
+VkResult WrappedVulkan::vkGetPastPresentationTimingEXT(
+    VkDevice device, const VkPastPresentationTimingInfoEXT *pPastPresentationTimingInfo,
+    VkPastPresentationTimingPropertiesEXT *pPastPresentationTimingProperties)
+{
+  VkPastPresentationTimingInfoEXT timingInfo = *pPastPresentationTimingInfo;
+  timingInfo.swapchain = Unwrap(timingInfo.swapchain);
+  return ObjDisp(device)->GetPastPresentationTimingEXT(Unwrap(device), &timingInfo,
+                                                       pPastPresentationTimingProperties);
+}
+
+VkResult WrappedVulkan::vkGetSwapchainTimeDomainPropertiesEXT(
+    VkDevice device, VkSwapchainKHR swapchain,
+    VkSwapchainTimeDomainPropertiesEXT *pSwapchainTimeDomainProperties, uint64_t *pTimeDomainsCounter)
+{
+  return ObjDisp(device)->GetSwapchainTimeDomainPropertiesEXT(
+      Unwrap(device), Unwrap(swapchain), pSwapchainTimeDomainProperties, pTimeDomainsCounter);
+}
+
+VkResult WrappedVulkan::vkGetSwapchainTimingPropertiesEXT(
+    VkDevice device, VkSwapchainKHR swapchain,
+    VkSwapchainTimingPropertiesEXT *pSwapchainTimingProperties,
+    uint64_t *pSwapchainTimingPropertiesCounter)
+{
+  return ObjDisp(device)->GetSwapchainTimingPropertiesEXT(Unwrap(device), Unwrap(swapchain),
+                                                          pSwapchainTimingProperties,
+                                                          pSwapchainTimingPropertiesCounter);
+}
+
+VkResult WrappedVulkan::vkSetSwapchainPresentTimingQueueSizeEXT(VkDevice device,
+                                                                VkSwapchainKHR swapchain,
+                                                                uint32_t size)
+{
+  return ObjDisp(device)->SetSwapchainPresentTimingQueueSizeEXT(Unwrap(device), Unwrap(swapchain),
+                                                                size);
+}
+
 #ifdef VK_USE_PLATFORM_WIN32_KHR
 VkResult WrappedVulkan::vkCreateWin32SurfaceKHR(VkInstance instance,
                                                 const VkWin32SurfaceCreateInfoKHR *pCreateInfo,
-                                                const VkAllocationCallbacks *pAllocator,
-                                                VkSurfaceKHR *pSurface)
+                                                const VkAllocationCallbacks *, VkSurfaceKHR *pSurface)
 {
   // should not come in here at all on replay
   RDCASSERT(IsCaptureMode(m_State));
 
   VkResult ret =
-      ObjDisp(instance)->CreateWin32SurfaceKHR(Unwrap(instance), pCreateInfo, pAllocator, pSurface);
+      ObjDisp(instance)->CreateWin32SurfaceKHR(Unwrap(instance), pCreateInfo, NULL, pSurface);
 
   if(ret == VK_SUCCESS)
   {
-    GetResourceManager()->WrapResource(Unwrap(instance), *pSurface);
+    GetResourceManager()->WrapResource(ResourceId(), Unwrap(instance), *pSurface);
 
     WrappedVkSurfaceKHR *wrapped = GetWrapped(*pSurface);
 
@@ -1345,7 +1879,7 @@ VkBool32 WrappedVulkan::vkGetPhysicalDeviceWin32PresentationSupportKHR(VkPhysica
 
 INSTANTIATE_FUNCTION_SERIALISED(VkResult, vkCreateSwapchainKHR, VkDevice device,
                                 const VkSwapchainCreateInfoKHR *pCreateInfo,
-                                const VkAllocationCallbacks *pAllocator, VkSwapchainKHR *pSwapchain);
+                                const VkAllocationCallbacks *, VkSwapchainKHR *pSwapchain);
 
 INSTANTIATE_FUNCTION_SERIALISED(VkResult, vkGetSwapchainImagesKHR, VkDevice device,
                                 VkSwapchainKHR swapchain, uint32_t *pSwapchainImageCount,

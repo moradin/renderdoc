@@ -4,7 +4,7 @@
 
 When filing a bug please click 'Get started' next to the 'Feature request' entry. Below is guidance for each section of the issue template.
 
-# Description
+# Description of Feature
 
 When writing the description of a feature request, it's important to describe what your end goal is. If you describe only what you think the solution should be then that makes it harder to understand what you're really after. This is often known as [the XY problem](http://xyproblem.info/). You can of course describe the solution you have in mind as well, just be sure not to _only_ describe that solution.
 

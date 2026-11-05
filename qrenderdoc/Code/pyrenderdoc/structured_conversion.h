@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,6 +23,8 @@
  ******************************************************************************/
 
 #pragma once
+
+#include "3rdparty/pythoncapi_compat.h"
 
 template <typename objType>
 inline std::map<const objType *, PyObject *> &obj2py();
@@ -263,7 +265,7 @@ struct TypeConversion<StructuredBufferList, false>
     for(int i = 0; i < out.count(); i++)
     {
       PyObject *elem = PyList_GetItem(in, i);
-      if(elem == Py_None)
+      if(Py_IsNone(elem))
       {
         out[i] = NULL;
       }
@@ -389,7 +391,7 @@ struct TypeConversion<StructuredObjectList, false>
     for(int i = 0; i < out.count(); i++)
     {
       PyObject *elem = PyList_GetItem(in, i);
-      if(elem == Py_None)
+      if(Py_IsNone(elem))
       {
         out[i] = NULL;
       }
@@ -535,7 +537,7 @@ struct TypeConversion<StructuredChunkList, false>
     for(int i = 0; i < out.count(); i++)
     {
       PyObject *elem = PyList_GetItem(in, i);
-      if(elem == Py_None)
+      if(Py_IsNone(elem))
       {
         out[i] = NULL;
       }

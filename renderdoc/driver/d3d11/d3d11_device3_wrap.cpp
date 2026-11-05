@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -72,9 +72,7 @@ bool WrappedID3D11Device::Serialise_CreateTexture2D1(SerialiserType &ser,
     TextureDisplayType dispType = DispTypeForTexture(Descriptor);
 
     // unset flags that are unimportant/problematic in replay
-    Descriptor.MiscFlags &=
-        ~(D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
-          D3D11_RESOURCE_MISC_GDI_COMPATIBLE | D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
+    MaskResourceMiscFlags(Descriptor.MiscFlags);
 
     if(m_pDevice3)
     {
@@ -85,19 +83,20 @@ bool WrappedID3D11Device::Serialise_CreateTexture2D1(SerialiserType &ser,
     }
     else
     {
-      RDCERR("Replaying a D3D11.3 device without D3D11.3 available");
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Replaying a D3D11.3 capture without D3D11.3 available");
+      return false;
     }
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating D3D11.3 2D texture, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11Texture2D1((ID3D11Texture2D1 *)ret, this, dispType);
-
-      GetResourceManager()->AddLiveResource(pTexture, ret);
+      ret = new WrappedID3D11Texture2D1(pTexture, (ID3D11Texture2D1 *)ret, this, dispType);
     }
 
     const char *prefix = Descriptor.ArraySize > 1 ? "2D TextureArray" : "2D Texture";
@@ -124,6 +123,10 @@ HRESULT WrappedID3D11Device::CreateTexture2D1(const D3D11_TEXTURE2D_DESC1 *pDesc
   if(m_pDevice3 == NULL)
     return E_NOINTERFACE;
 
+  // Tiled resources are not supported
+  if(pDesc1 && pDesc1->MiscFlags & D3D11_RESOURCE_MISC_TILED)
+    return DXGI_ERROR_UNSUPPORTED;
+
   // validation, returns S_FALSE for valid params, or an error code
   if(ppTexture2D == NULL)
     return m_pDevice3->CreateTexture2D1(pDesc1, pInitialData, NULL);
@@ -137,7 +140,7 @@ HRESULT WrappedID3D11Device::CreateTexture2D1(const D3D11_TEXTURE2D_DESC1 *pDesc
   {
     SCOPED_LOCK(m_D3DLock);
 
-    wrapped = new WrappedID3D11Texture2D1((ID3D11Texture2D *)real, this);
+    wrapped = new WrappedID3D11Texture2D1(ResourceId(), (ID3D11Texture2D *)real, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -157,12 +160,6 @@ HRESULT WrappedID3D11Device::CreateTexture2D1(const D3D11_TEXTURE2D_DESC1 *pDesc
 
       record->AddChunk(chunk);
       record->SetDataPtr(chunk->GetData());
-    }
-    else
-    {
-      WrappedID3D11Texture2D1 *w = (WrappedID3D11Texture2D1 *)wrapped;
-
-      GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
     }
 
     *ppTexture2D = wrapped;
@@ -212,9 +209,7 @@ bool WrappedID3D11Device::Serialise_CreateTexture3D1(SerialiserType &ser,
     TextureDisplayType dispType = DispTypeForTexture(Descriptor);
 
     // unset flags that are unimportant/problematic in replay
-    Descriptor.MiscFlags &=
-        ~(D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
-          D3D11_RESOURCE_MISC_GDI_COMPATIBLE | D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
+    MaskResourceMiscFlags(Descriptor.MiscFlags);
 
     if(m_pDevice3)
     {
@@ -225,19 +220,20 @@ bool WrappedID3D11Device::Serialise_CreateTexture3D1(SerialiserType &ser,
     }
     else
     {
-      RDCERR("Replaying a D3D11.3 device without D3D11.3 available");
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Replaying a D3D11.3 capture without D3D11.3 available");
+      return false;
     }
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating D3D11.3 3D texture, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11Texture3D1((ID3D11Texture3D1 *)ret, this, dispType);
-
-      GetResourceManager()->AddLiveResource(pTexture, ret);
+      ret = new WrappedID3D11Texture3D1(pTexture, (ID3D11Texture3D1 *)ret, this, dispType);
     }
 
     const char *prefix = "3D Texture";
@@ -277,7 +273,7 @@ HRESULT WrappedID3D11Device::CreateTexture3D1(const D3D11_TEXTURE3D_DESC1 *pDesc
   {
     SCOPED_LOCK(m_D3DLock);
 
-    wrapped = new WrappedID3D11Texture3D1((ID3D11Texture3D *)real, this);
+    wrapped = new WrappedID3D11Texture3D1(ResourceId(), (ID3D11Texture3D *)real, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -297,12 +293,6 @@ HRESULT WrappedID3D11Device::CreateTexture3D1(const D3D11_TEXTURE3D_DESC1 *pDesc
 
       record->AddChunk(chunk);
       record->SetDataPtr(chunk->GetData());
-    }
-    else
-    {
-      WrappedID3D11Texture3D1 *w = (WrappedID3D11Texture3D1 *)wrapped;
-
-      GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
     }
 
     *ppTexture3D = wrapped;
@@ -370,19 +360,20 @@ bool WrappedID3D11Device::Serialise_CreateShaderResourceView1(
     }
     else
     {
-      RDCERR("Replaying a D3D11.3 device without D3D11.3 available");
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Replaying a D3D11.3 capture without D3D11.3 available");
+      return false;
     }
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating D3D11.3 SRV, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11ShaderResourceView1(ret, pResource, this);
-
-      GetResourceManager()->AddLiveResource(pView, ret);
+      ret = new WrappedID3D11ShaderResourceView1(pView, ret, pResource, this);
     }
 
     AddResource(pView, ResourceType::View, "Shader Resource View");
@@ -413,7 +404,7 @@ HRESULT WrappedID3D11Device::CreateShaderResourceView1(ID3D11Resource *pResource
   {
     SCOPED_LOCK(m_D3DLock);
 
-    wrapped = new WrappedID3D11ShaderResourceView1(real, pResource, this);
+    wrapped = new WrappedID3D11ShaderResourceView1(ResourceId(), real, pResource, this);
 
     Chunk *chunk = NULL;
 
@@ -506,19 +497,20 @@ bool WrappedID3D11Device::Serialise_CreateRenderTargetView1(SerialiserType &ser,
     }
     else
     {
-      RDCERR("Replaying a D3D11.3 device without D3D11.3 available");
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Replaying a D3D11.3 capture without D3D11.3 available");
+      return false;
     }
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating D3D11.3 RTV, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11RenderTargetView1(ret, pResource, this);
-
-      GetResourceManager()->AddLiveResource(pView, ret);
+      ret = new WrappedID3D11RenderTargetView1(pView, ret, pResource, this);
     }
 
     AddResource(pView, ResourceType::View, "Render Target View");
@@ -549,7 +541,7 @@ HRESULT WrappedID3D11Device::CreateRenderTargetView1(ID3D11Resource *pResource,
   {
     SCOPED_LOCK(m_D3DLock);
 
-    wrapped = new WrappedID3D11RenderTargetView1(real, pResource, this);
+    wrapped = new WrappedID3D11RenderTargetView1(ResourceId(), real, pResource, this);
 
     Chunk *chunk = NULL;
 
@@ -612,19 +604,20 @@ bool WrappedID3D11Device::Serialise_CreateUnorderedAccessView1(
     }
     else
     {
-      RDCERR("Replaying a D3D11.3 device without D3D11.3 available");
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Replaying a D3D11.3 capture without D3D11.3 available");
+      return false;
     }
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating D3D11.3 UAV, HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11UnorderedAccessView1(ret, pResource, this);
-
-      GetResourceManager()->AddLiveResource(pView, ret);
+      ret = new WrappedID3D11UnorderedAccessView1(pView, ret, pResource, this);
     }
 
     AddResource(pView, ResourceType::View, "Unordered Access View");
@@ -668,7 +661,7 @@ HRESULT WrappedID3D11Device::CreateUnorderedAccessView1(ID3D11Resource *pResourc
   {
     SCOPED_LOCK(m_D3DLock);
 
-    wrapped = new WrappedID3D11UnorderedAccessView1(real, pResource, this);
+    wrapped = new WrappedID3D11UnorderedAccessView1(ResourceId(), real, pResource, this);
 
     Chunk *chunk = NULL;
 
@@ -723,31 +716,27 @@ bool WrappedID3D11Device::Serialise_CreateRasterizerState2(
     HRESULT hr = E_NOINTERFACE;
 
     if(m_pDevice3)
+    {
       hr = m_pDevice3->CreateRasterizerState2(&Descriptor, &ret);
+    }
     else
-      RDCERR("Replaying a D3D11.3 device without D3D11.3 available");
+    {
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Replaying a D3D11.3 capture without D3D11.3 available");
+      return false;
+    }
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating D3D11.3 rasterizer state. HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      if(GetResourceManager()->HasWrapper(ret))
-      {
-        ret->Release();
-        ret = (ID3D11RasterizerState2 *)GetResourceManager()->GetWrapper(ret);
-        ret->AddRef();
+      GetResourceManager()->OverrideWrapper(ret);
 
-        GetResourceManager()->AddLiveResource(pState, ret);
-      }
-      else
-      {
-        ret = new WrappedID3D11RasterizerState2(ret, this);
-
-        GetResourceManager()->AddLiveResource(pState, ret);
-      }
+      ret = new WrappedID3D11RasterizerState2(pState, ret, this);
     }
 
     AddResource(pState, ResourceType::StateObject, "Rasterizer State");
@@ -764,6 +753,8 @@ HRESULT WrappedID3D11Device::CreateRasterizerState2(const D3D11_RASTERIZER_DESC2
 
   if(ppRasterizerState == NULL)
     return m_pDevice3->CreateRasterizerState2(pRasterizerDesc, NULL);
+
+  CachedObjectsGarbageCollect();
 
   ID3D11RasterizerState2 *real = NULL;
   HRESULT ret;
@@ -786,9 +777,7 @@ HRESULT WrappedID3D11Device::CreateRasterizerState2(const D3D11_RASTERIZER_DESC2
       return ret;
     }
 
-    ID3D11RasterizerState2 *wrapped = new WrappedID3D11RasterizerState2(real, this);
-
-    CachedObjectsGarbageCollect();
+    ID3D11RasterizerState2 *wrapped = new WrappedID3D11RasterizerState2(ResourceId(), real, this);
 
     {
       RDCASSERT(m_CachedStateObjects.find(wrapped) == m_CachedStateObjects.end());
@@ -836,20 +825,25 @@ bool WrappedID3D11Device::Serialise_CreateQuery1(SerialiserType &ser,
     HRESULT hr = E_NOINTERFACE;
 
     if(m_pDevice3)
+    {
       hr = m_pDevice3->CreateQuery1(&Descriptor, &ret);
+    }
     else
-      RDCERR("Replaying a D3D11.3 device without D3D11.3 available");
+    {
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIHardwareUnsupported,
+                       "Replaying a D3D11.3 capture without D3D11.3 available");
+      return false;
+    }
 
     if(FAILED(hr))
     {
-      RDCERR("Failed on resource serialise-creation, HRESULT: %s", ToStr(hr).c_str());
+      SET_ERROR_RESULT(m_FailedReplayResult, ResultCode::APIReplayFailed,
+                       "Failed creating D3D11.3 query. HRESULT: %s", ToStr(hr).c_str());
       return false;
     }
     else
     {
-      ret = new WrappedID3D11Query1(ret, this);
-
-      GetResourceManager()->AddLiveResource(pQuery, ret);
+      ret = new WrappedID3D11Query1(pQuery, ret, this);
     }
 
     AddResource(pQuery, ResourceType::Query, "Query");
@@ -876,7 +870,7 @@ HRESULT WrappedID3D11Device::CreateQuery1(const D3D11_QUERY_DESC1 *pQueryDesc, I
   {
     SCOPED_LOCK(m_D3DLock);
 
-    wrapped = new WrappedID3D11Query1(real, this);
+    wrapped = new WrappedID3D11Query1(ResourceId(), real, this);
 
     if(IsCaptureMode(m_State))
     {
@@ -1016,7 +1010,7 @@ HRESULT WrappedID3D11Device::CreateFence(UINT64 InitialValue, D3D11_FENCE_FLAG F
   if(FAILED(hr) || ret == NULL)
     return hr;
 
-  WrappedID3D11Fence *wrapped = new WrappedID3D11Fence(ret, this);
+  WrappedID3D11Fence *wrapped = new WrappedID3D11Fence(ResourceId(), ret, this);
 
   *ppFence = (ID3D11Fence *)wrapped;
 
@@ -1043,7 +1037,7 @@ HRESULT WrappedID3D11Device::OpenSharedFence(HANDLE hFence, REFIID riid, void **
   if(FAILED(hr) || ret == NULL)
     return hr;
 
-  WrappedID3D11Fence *wrapped = new WrappedID3D11Fence(ret, this);
+  WrappedID3D11Fence *wrapped = new WrappedID3D11Fence(ResourceId(), ret, this);
 
   *ppFence = (ID3D11Fence *)wrapped;
 

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,10 +33,26 @@
 
 #include "data/hlsl/hlsl_cbuffers.h"
 
+static uint32_t VisModeToMeshDisplayFormat(const MeshDisplay &cfg)
+{
+  switch(cfg.visualisationMode)
+  {
+    default: return (uint32_t)cfg.visualisationMode;
+    case Visualisation::Secondary:
+      return cfg.second.showAlpha ? MESHDISPLAY_SECONDARY_ALPHA : MESHDISPLAY_SECONDARY;
+    case Visualisation::Meshlet:
+      RDCERR("D3D11 does not support meshlet rendering");
+      return MESHDISPLAY_SOLID;
+  }
+}
+
 void D3D11Replay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secondaryDraws,
                              const MeshDisplay &cfg)
 {
-  if(cfg.position.vertexResourceId == ResourceId() || cfg.position.numIndices == 0)
+  if(cfg.position.vertexResourceId == ResourceId() ||
+     WrappedID3D11Buffer::m_BufferList.find(cfg.position.vertexResourceId) ==
+         WrappedID3D11Buffer::m_BufferList.end() ||
+     cfg.position.numIndices == 0)
     return;
 
   D3D11MarkerRegion renderMesh(
@@ -47,13 +63,27 @@ void D3D11Replay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secon
 
   D3D11RenderStateTracker tracker(m_pImmediateContext);
 
-  Matrix4f projMat = Matrix4f::Perspective(90.0f, 0.1f, 100000.0f, m_OutputWidth / m_OutputHeight);
+  float nearPlane = cfg.cam ? ((Camera *)cfg.cam)->GetNear() : 0.1f;
+  float farPlane = cfg.cam ? ((Camera *)cfg.cam)->GetFar() : 100000.0f;
+
+  Matrix4f projMat =
+      Matrix4f::Perspective(90.0f, nearPlane, farPlane, m_OutputWidth / m_OutputHeight);
 
   Matrix4f camMat = cfg.cam ? ((Camera *)cfg.cam)->GetMatrix() : Matrix4f::Identity();
+
+  Matrix4f axisMapMat = Matrix4f(cfg.axisMapping);
+
   Matrix4f guessProjInv;
 
-  vertexData.ModelViewProj = projMat.Mul(camMat);
+  vertexData.ModelViewProj = projMat.Mul(camMat.Mul(axisMapMat));
   vertexData.SpriteSize = Vec2f();
+  vertexData.homogenousInput = cfg.position.unproject;
+  vertexData.vtxExploderSNorm = cfg.vtxExploderSliderSNorm;
+  vertexData.exploderCentre =
+      Vec3f((cfg.minBounds.x + cfg.maxBounds.x) * 0.5f, (cfg.minBounds.y + cfg.maxBounds.y) * 0.5f,
+            (cfg.minBounds.z + cfg.maxBounds.z) * 0.5f);
+  vertexData.exploderScale =
+      (cfg.visualisationMode == Visualisation::Explode) ? cfg.exploderScale : 0.0f;
 
   Vec4f col(0.0f, 0.0f, 0.0f, 1.0f);
   ID3D11Buffer *psCBuf = GetDebugManager()->MakeCBuffer(&col, sizeof(col));
@@ -172,15 +202,15 @@ void D3D11Replay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secon
       {
         const MeshFormat &fmt = secondaryDraws[i];
 
-        if(fmt.vertexResourceId != ResourceId())
+        auto it = WrappedID3D11Buffer::m_BufferList.find(fmt.vertexResourceId);
+
+        if(fmt.vertexResourceId != ResourceId() && it != WrappedID3D11Buffer::m_BufferList.end())
         {
           pixelData.MeshColour = Vec3f(fmt.meshColor.x, fmt.meshColor.y, fmt.meshColor.z);
           GetDebugManager()->FillCBuffer(psCBuf, &pixelData, sizeof(pixelData));
           m_pImmediateContext->PSSetConstantBuffers(0, 1, &psCBuf);
 
           m_pImmediateContext->IASetPrimitiveTopology(MakeD3DPrimitiveTopology(fmt.topology));
-
-          auto it = WrappedID3D11Buffer::m_BufferList.find(fmt.vertexResourceId);
 
           ID3D11Buffer *buf = it->second.m_Buffer;
           m_pImmediateContext->IASetVertexBuffers(0, 1, &buf, (UINT *)&fmt.vertexByteStride,
@@ -256,21 +286,21 @@ void D3D11Replay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secon
       m_pImmediateContext->IASetIndexBuffer(NULL, DXGI_FORMAT_UNKNOWN, NULL);
 
     // draw solid shaded mode
-    if(cfg.solidShadeMode != SolidShade::NoSolid && cfg.position.topology < Topology::PatchList_1CPs)
+    if(cfg.visualisationMode != Visualisation::NoSolid &&
+       cfg.position.topology < Topology::PatchList_1CPs)
     {
-      m_pImmediateContext->RSSetState(m_General.RasterState);
+      m_pImmediateContext->RSSetState(m_General.RasterClipState);
 
       m_pImmediateContext->IASetPrimitiveTopology(topo);
 
-      pixelData.MeshDisplayFormat = (int)cfg.solidShadeMode;
-      if(cfg.solidShadeMode == SolidShade::Secondary && cfg.second.showAlpha)
-        pixelData.MeshDisplayFormat = MESHDISPLAY_SECONDARY_ALPHA;
+      pixelData.MeshDisplayFormat = VisModeToMeshDisplayFormat(cfg);
 
       pixelData.MeshColour = Vec3f(0.8f, 0.8f, 0.0f);
       GetDebugManager()->FillCBuffer(psCBuf, &pixelData, sizeof(pixelData));
       m_pImmediateContext->PSSetConstantBuffers(0, 1, &psCBuf);
 
-      if(cfg.solidShadeMode == SolidShade::Lit)
+      if(cfg.visualisationMode == Visualisation::Lit ||
+         cfg.visualisationMode == Visualisation::Explode)
       {
         MeshGeometryCBuffer geomData;
 
@@ -288,12 +318,13 @@ void D3D11Replay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secon
       else
         m_pImmediateContext->Draw(cfg.position.numIndices, 0);
 
-      if(cfg.solidShadeMode == SolidShade::Lit)
+      if(cfg.visualisationMode == Visualisation::Lit ||
+         cfg.visualisationMode == Visualisation::Explode)
         m_pImmediateContext->GSSetShader(NULL, NULL, 0);
     }
 
     // draw wireframe mode
-    if(cfg.solidShadeMode == SolidShade::NoSolid || cfg.wireframeDraw ||
+    if(cfg.visualisationMode == Visualisation::NoSolid || cfg.wireframeDraw ||
        cfg.position.topology >= Topology::PatchList_1CPs)
     {
       m_pImmediateContext->RSSetState(m_MeshRender.WireframeRasterState);
@@ -302,7 +333,7 @@ void D3D11Replay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secon
 
       pixelData.MeshDisplayFormat = MESHDISPLAY_SOLID;
       pixelData.MeshColour =
-          Vec4f(cfg.position.meshColor.x, cfg.position.meshColor.y, cfg.position.meshColor.z);
+          Vec4f(cfg.position.meshColor.x, cfg.position.meshColor.y, cfg.position.meshColor.z, 0.0f);
       GetDebugManager()->FillCBuffer(psCBuf, &pixelData, sizeof(pixelData));
       m_pImmediateContext->PSSetConstantBuffers(0, 1, &psCBuf);
 
@@ -320,9 +351,13 @@ void D3D11Replay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secon
 
   m_pImmediateContext->RSSetState(m_MeshRender.WireframeRasterState);
 
+  vertexData.homogenousInput = 0U;
+
   // set up state for drawing helpers
   {
-    vertexData.ModelViewProj = projMat.Mul(camMat);
+    vertexData.ModelViewProj = projMat.Mul(camMat.Mul(axisMapMat));
+    vertexData.vtxExploderSNorm = 0.0f;
+    vertexData.exploderScale = 0.0f;
     GetDebugManager()->FillCBuffer(vsCBuf, &vertexData, sizeof(vertexData));
 
     m_pImmediateContext->RSSetState(m_MeshRender.SolidRasterState);
@@ -362,6 +397,8 @@ void D3D11Replay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secon
 
   if(cfg.highlightVert != ~0U)
   {
+    vertexData.homogenousInput = cfg.position.unproject;
+
     m_HighlightCache.CacheHighlightingData(eventId, cfg);
 
     D3D11_PRIMITIVE_TOPOLOGY meshtopo = topo;
@@ -384,9 +421,8 @@ void D3D11Replay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secon
     // will be N*M long, N adjacent prims of M verts each. M = primSize below
     rdcarray<FloatVector> adjacentPrimVertices;
 
-    D3D11_PRIMITIVE_TOPOLOGY primTopo =
-        D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;    // tri or line list
-    uint32_t primSize = 3;                        // number of verts per primitive
+    D3D11_PRIMITIVE_TOPOLOGY primTopo = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;    // tri or line list
+    uint32_t primSize = 3;    // number of verts per primitive
 
     if(meshtopo == D3D11_PRIMITIVE_TOPOLOGY_LINELIST ||
        meshtopo == D3D11_PRIMITIVE_TOPOLOGY_LINELIST_ADJ ||
@@ -409,7 +445,7 @@ void D3D11Replay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secon
       if(cfg.position.unproject)
         vertexData.ModelViewProj = projMat.Mul(camMat.Mul(guessProjInv));
       else
-        vertexData.ModelViewProj = projMat.Mul(camMat);
+        vertexData.ModelViewProj = projMat.Mul(camMat.Mul(axisMapMat));
 
       m_pImmediateContext->IASetInputLayout(m_MeshRender.GenericLayout);
 
@@ -484,7 +520,10 @@ void D3D11Replay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secon
       m_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 
       FloatVector vertSprite[4] = {
-          activeVertex, activeVertex, activeVertex, activeVertex,
+          activeVertex,
+          activeVertex,
+          activeVertex,
+          activeVertex,
       };
 
       hr = m_pImmediateContext->Map(m_MeshRender.TriHighlightHelper, 0, D3D11_MAP_WRITE_DISCARD, 0,
@@ -529,6 +568,8 @@ void D3D11Replay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secon
       m_pImmediateContext->VSSetShader(m_MeshRender.MeshVS, NULL, 0);
   }
 
+  vertexData.homogenousInput = 0U;
+
   // bounding box
   if(cfg.showBBox)
   {
@@ -537,7 +578,7 @@ void D3D11Replay::RenderMesh(uint32_t eventId, const rdcarray<MeshFormat> &secon
     D3D11_MAPPED_SUBRESOURCE mapped;
 
     vertexData.SpriteSize = Vec2f();
-    vertexData.ModelViewProj = projMat.Mul(camMat);
+    vertexData.ModelViewProj = projMat.Mul(camMat.Mul(axisMapMat));
     GetDebugManager()->FillCBuffer(vsCBuf, &vertexData, sizeof(vertexData));
 
     HRESULT hr = m_pImmediateContext->Map(m_MeshRender.TriHighlightHelper, 0,

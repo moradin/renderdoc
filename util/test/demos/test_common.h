@@ -1,33 +1,37 @@
 /******************************************************************************
-* The MIT License (MIT)
-*
-* Copyright (c) 2019-2021 Baldur Karlsson
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-* THE SOFTWARE.
-******************************************************************************/
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2018-2026 Baldur Karlsson
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ ******************************************************************************/
 
 #pragma once
 
 #if defined(WIN32)
 #include "win32/win32_platform.h"
+#elif defined(ANDROID)
+#include "android/android_platform.h"
 #elif defined(__linux__)
 #include "linux/linux_platform.h"
+#elif defined(__APPLE__)
+#include "apple/apple_platform.h"
 #else
 #error UNKNOWN PLATFORM
 #endif
@@ -74,14 +78,17 @@ enum class ShaderStage
   tesseval,
   geom,
   frag,
-  comp
+  comp,
+  mesh,
+  task,
 };
 
-bool InternalSpvCompiler();
 bool SpvCompilationSupported();
-std::vector<uint32_t> CompileShaderToSpv(const std::string &source_text, SPIRVTarget target,
-                                         ShaderLang lang, ShaderStage stage, const char *entry_point,
-                                         const std::map<std::string, std::string> &macros = {});
+std::vector<uint32_t> CompileShaderToSpv(const char *demo_name, const std::string &source_text,
+                                         SPIRVTarget target, ShaderLang lang, ShaderStage stage,
+                                         const char *entry_point,
+                                         const std::map<std::string, std::string> &macros = {},
+                                         bool debug_info = true);
 
 struct Vec2f
 {
@@ -154,6 +161,16 @@ struct Vec4u
   uint32_t x, y, z, w;
 };
 
+struct Vec2u
+{
+  Vec2u(uint32_t X = 0, uint32_t Y = 0)
+  {
+    x = X;
+    y = Y;
+  }
+  uint32_t x, y;
+};
+
 struct DefaultA2V
 {
   Vec3f pos;
@@ -175,9 +192,12 @@ void LoadXPM(const char **XPM, Texture &tex);
 
 struct GraphicsWindow
 {
+  GraphicsWindow(const std::string &title) : title(title) {}
   virtual ~GraphicsWindow() {}
   virtual void Resize(int width, int height) = 0;
   virtual bool Update() = 0;
+
+  std::string title;
 };
 
 struct GraphicsTest
@@ -186,7 +206,7 @@ struct GraphicsTest
   virtual GraphicsWindow *MakeWindow(int width, int height, const char *title) { return NULL; }
   virtual int main() { return 9; }
   virtual void Prepare(int argc, char **argv);
-  virtual void SetName(const char *name) { screenTitle = name; }
+  virtual void SetName(const char *name) { demoName = screenTitle = name; }
   virtual bool Init();
   virtual void Shutdown();
 
@@ -198,11 +218,14 @@ struct GraphicsTest
 
   int curFrame = -1;
 
+  const char *demoName = "Unknown_Test";
   const char *screenTitle = "RenderDoc test program";
 
   bool headless = false;
 
-  RENDERDOC_API_1_0_0 *rdoc = NULL;
+  RENDERDOC_API_1_7_0 *rdoc = NULL;
+
+  std::string tmpPath;
 
   // shared parameters
   static int maxFrameCount;
@@ -218,6 +241,7 @@ enum class TestAPI
   Vulkan,
   OpenGL,
   D3D12,
+  D3D9,
   Count,
 };
 
@@ -229,6 +253,7 @@ inline const char *APIName(TestAPI API)
     case TestAPI::Vulkan: return "Vulkan";
     case TestAPI::OpenGL: return "OpenGL";
     case TestAPI::D3D12: return "D3D12";
+    case TestAPI::D3D9: return "D3D9";
     case TestAPI::Count: break;
   }
 
@@ -316,7 +341,9 @@ std::string strlower(const std::string &str);
 std::string strupper(const std::string &str);
 std::string trim(const std::string &str);
 
+void SetDebugLogEnabled(bool enabled);
 void DebugPrint(const char *fmt, ...);
+void OutputPrint(const char *fmt, ...);
 
 #define TEST_ASSERT(cond, fmt, ...)                                                                 \
   do                                                                                                \
@@ -359,6 +386,44 @@ void DebugPrint(const char *fmt, ...);
     exit(0);                                                                         \
   } while(0)
 
+namespace PixelHistory
+{
+void init();
+
+struct draw
+{
+  uint32_t first;
+  uint32_t count;
+};
+
+extern std::vector<DefaultA2V> vb;
+
+extern draw DepthWrite;
+extern draw UnboundPS;
+extern draw StencilWrite;
+extern draw Background;
+extern draw CullFront;
+extern draw DepthBoundsPrep;
+extern draw DepthBoundsClip;
+extern draw Draws300;
+extern draw Instances300;
+extern draw MainTest;
+extern draw ScissorFail;
+extern draw ScissorPass;
+extern draw StencilRef;
+extern draw StencilMask;
+extern draw DepthTest;
+extern draw SampleColour;
+extern draw DepthEqualSetup;
+extern draw DepthEqualFail;
+extern draw DepthEqualPass16;
+extern draw DepthEqualPass24;
+extern draw DepthEqualPass32;
+extern draw ColourMask;
+extern draw OverflowingDraw;
+extern draw PerFragDiscard;
+};
+
 namespace TextureZoo
 {
 enum class DataType
@@ -390,6 +455,7 @@ enum class TextureType
   BC5,
   BC6,
   BC7,
+  A8,
 };
 
 static const uint32_t texWidth = 8;

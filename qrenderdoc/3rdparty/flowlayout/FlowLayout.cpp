@@ -194,6 +194,8 @@ int FlowLayout::doLayout(const QRect &rect, bool testOnly) const
       }
     }
 
+    QList<QPair<QLayoutItem *, QRect>> line;
+
     foreach (item, itemList) {
         QWidget *wid = item->widget();
 
@@ -209,6 +211,9 @@ int FlowLayout::doLayout(const QRect &rect, bool testOnly) const
                 QSizePolicy::PushButton, QSizePolicy::PushButton, Qt::Vertical);
         int nextX = x + size.width() + spaceX;
         if (nextX - spaceX > effectiveRect.right() && lineHeight > 0) {
+            setLineGeometry(line, lineHeight);
+            line.clear();
+
             x = effectiveRect.x();
             y = y + lineHeight + spaceY;
             nextX = x + size.width() + spaceX;
@@ -216,13 +221,33 @@ int FlowLayout::doLayout(const QRect &rect, bool testOnly) const
         }
 
         if (!testOnly)
-            item->setGeometry(QRect(QPoint(x, y), item->sizeHint()));
+        {
+            line.push_back({item, QRect(QPoint(x, y), item->sizeHint())});
+        }
 
         x = nextX;
         lineHeight = qMax(lineHeight, size.height());
     }
+
+    setLineGeometry(line, lineHeight);
+
     return y + lineHeight - rect.y() + bottom;
 }
+
+void FlowLayout::setLineGeometry(const QList<QPair<QLayoutItem *, QRect>> &line, int lineHeight) const
+{
+    for (const QPair<QLayoutItem *, QRect> &item : line)
+    {
+        QRect g = item.second;
+
+        QWidget *wid = item.first->widget();
+        if (wid && wid->sizePolicy().verticalPolicy() & QSizePolicy::ExpandFlag)
+            g.setHeight(qMax(g.height(), lineHeight));
+
+        item.first->setGeometry(g);
+    }
+}
+
 int FlowLayout::smartSpacing(QStyle::PixelMetric pm) const
 {
     QObject *parent = this->parent();

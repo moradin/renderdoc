@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -125,11 +125,20 @@ vec4 SampleTextureFloat4(int type, vec2 pos, float slice, int mipLevel, int samp
 
     float data[] = {
         // plane 0
-        col.x, col.y, col.z, col.w,
+        col.x,
+        col.y,
+        col.z,
+        col.w,
         // plane 1
-        col2.x, col2.y, col2.z, col2.w,
+        col2.x,
+        col2.y,
+        col2.z,
+        col2.w,
         // plane 3
-        col3.x, col3.y, col3.z, col3.w,
+        col3.x,
+        col3.y,
+        col3.z,
+        col3.w,
     };
 
     col = vec4(0, 0, 0, 1);

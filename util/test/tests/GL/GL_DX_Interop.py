@@ -1,4 +1,3 @@
-import renderdoc as rd
 import rdtest
 
 
@@ -7,9 +6,9 @@ class GL_DX_Interop(rdtest.TestCase):
     demos_frame_cap = 4
 
     def check_capture(self):
-        last_action: rd.ActionDescription = self.get_last_action()
+        last_action = self.get_last_action()
 
-        self.controller.SetFrameEvent(last_action.eventId, True)
+        self.set_event(last_action.eventId, True)
 
         out = last_action.copyDestination
 

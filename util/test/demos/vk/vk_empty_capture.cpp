@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -60,6 +60,7 @@ RD_TEST(VK_Empty_Capture, VulkanGraphicsTest)
       {
         rdoc->StartFrameCapture(NULL, NULL);
         rdoc->EndFrameCapture(NULL, NULL);
+        msleep(1000);
       }
 
       if(curFrame > 50)

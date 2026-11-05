@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2021 Baldur Karlsson
+ * Copyright (c) 2021-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,6 +26,7 @@
 #include "core/settings.h"
 #include "hooks/hooks.h"
 #include "strings/string_utils.h"
+#include "tinyfiledialogs/tinyfiledialogs.h"
 #include "d3d12_common.h"
 
 RDOC_CONFIG(rdcstr, D3D12_D3D12CoreDirPath, "",
@@ -158,7 +159,7 @@ HRESULT WINAPI Hooked_SDKLayers_D3D12GetInterface(_In_ REFCLSID rclsid, _In_ REF
 }
 
 // Can check signatures of .exe and .dll files
-bool IsSignedByMicrosoft(const rdcstr &filename)
+bool IsSignedByMicrosoft(const rdcstr &filename, rdcstr &signer)
 {
   bool IsSignatureValid = false;
 
@@ -188,7 +189,7 @@ bool IsSignedByMicrosoft(const rdcstr &filename)
   DWORD signer_info_size = 0;
   PCCERT_CONTEXT cert_context = NULL;
   CERT_INFO cert_info = {};
-  LPTSTR signer_name = NULL;
+  LPWSTR signer_name = NULL;
   DWORD signer_name_length = 0;
 
   do
@@ -269,7 +270,7 @@ bool IsSignedByMicrosoft(const rdcstr &filename)
     }
 
     // Allocate memory for subject name.
-    signer_name = (LPTSTR)LocalAlloc(LPTR, signer_name_length * sizeof(WCHAR));
+    signer_name = (LPWSTR)LocalAlloc(LPTR, signer_name_length * sizeof(WCHAR));
     if(!signer_name)
     {
       break;
@@ -281,6 +282,8 @@ bool IsSignedByMicrosoft(const rdcstr &filename)
     {
       break;
     }
+
+    signer = StringFormat::Wide2UTF8(rdcwstr(signer_name));
 
     // Check whether signer is Microsoft
     // Since Microsoft uses multiple different signatures,
@@ -311,11 +314,14 @@ bool IsSignedByMicrosoft(const rdcstr &filename)
   return IsSignatureValid;
 }
 
-void D3D12_PrepareReplaySDKVersion(UINT SDKVersion, bytebuf d3d12core_file,
-                                   bytebuf d3d12sdklayers_file, HMODULE d3d12lib)
+D3D12DevConfiguration *D3D12_PrepareReplaySDKVersion(bool untrustedCapture, UINT SDKVersion,
+                                                     bytebuf d3d12core_file,
+                                                     bytebuf d3d12sdklayers_file, HMODULE d3d12lib)
 {
-  // D3D12Core shouldn't be loaded at this point, but it might be due to bugs. If it is, we can't do
-  // anything to change it anymore so we have to just handle what we have
+  // D3D12Core shouldn't be loaded at this point, but it might be due to bugs. If it is, we don't do
+  // anything to change it anymore so we have to just handle what we have.
+  // In theory it might be possible to load multiple d3d12cores using the new dll selection API, but
+  // that's probably not stable/reliable so we don't use it.
   HMODULE D3D12Core = GetModuleHandleA("D3D12Core.dll");
   if(D3D12Core != NULL)
   {
@@ -323,7 +329,7 @@ void D3D12_PrepareReplaySDKVersion(UINT SDKVersion, bytebuf d3d12core_file,
 
     // if the core that's loaded is sufficient, don't show any warnings
     if(ver_ptr && SDKVersion <= *ver_ptr)
-      return;
+      return NULL;
 
     RDCWARN(
         "D3D12Core.dll was already loaded before replay started. This may be caused by a D3D12 "
@@ -336,7 +342,7 @@ void D3D12_PrepareReplaySDKVersion(UINT SDKVersion, bytebuf d3d12core_file,
       RDCWARN("The existing D3D12Core.dll had an unknown version, this capture requires version %u",
               SDKVersion);
 
-    return;
+    return NULL;
   }
 
   static bool core_fetched = false, hooks_applied = false;
@@ -386,36 +392,20 @@ void D3D12_PrepareReplaySDKVersion(UINT SDKVersion, bytebuf d3d12core_file,
   // if the system doesn't have a core DLL we can't intercept and point to our own runtime, so just
   // abort here before doing anything potentially dangerous below.
   if(SystemCoreVersion == 0)
-    return;
+    return NULL;
 
   // similarly, if the system version is enough then the user didn't use a new runtime (or they used
   // what was at the time a new runtime but is now available in the system...), so also abort.
   // That means we'll only do the interception & patching when we think it's really needed.
-  if(SDKVersion <= SystemCoreVersion)
-    return;
-
-  // finally we're at a point where we will hook to force the library we want.
-
-  if(!hooks_applied)
-  {
-    hooks_applied = true;
-
-    Win32_RegisterManualModuleHooking();
-
-    D3D12GetInterface_Core_hook.Register("d3d12core.dll", "D3D12GetInterface",
-                                         Hooked_Core_D3D12GetInterface);
-    D3D12GetInterface_SDKLayers_hook.Register("d3d12sdklayers.dll", "D3D12GetInterface",
-                                              Hooked_SDKLayers_D3D12GetInterface);
-
-    Win32_InterceptLibraryLoads(Hooked_D3D12LoadLibrary);
-  }
-
-  // we do this always, even if the hooks are already applied, because this module has possibly been
-  // reloaded and needs to be re-hooked each time
-  Win32_ManualHookModule("d3d12.dll", d3d12lib);
+  // The only exception is if the user has configured a force override, in which case we always use
+  // it.
+  if(SDKVersion <= SystemCoreVersion && D3D12_D3D12CoreDirPath().empty())
+    return NULL;
 
   // *always* use the user's path if it exists
   D3D12Core_Override_Path = D3D12_D3D12CoreDirPath();
+
+  DWORD OverrideDllVersion = 0;
 
   if(D3D12Core_Override_Path.empty() || !FileIO::exists(D3D12Core_Override_Path.c_str()))
   {
@@ -425,7 +415,7 @@ void D3D12_PrepareReplaySDKVersion(UINT SDKVersion, bytebuf d3d12core_file,
           "No D3D12Core.dll embedded in capture but we need a newer one (version %u) to properly "
           "replay this capture",
           SDKVersion);
-      return;
+      return NULL;
     }
 
     // find an appropriate spot to write this file. Other instances of RenderDoc might be running so
@@ -445,7 +435,10 @@ void D3D12_PrepareReplaySDKVersion(UINT SDKVersion, bytebuf d3d12core_file,
         FileIO::fwrite(d3d12core_file.data(), 1, d3d12core_file.size(), f);
         FileIO::fclose(f);
 
-        if(!IsSignedByMicrosoft(filename))
+        rdcstr signer;
+        // trusted captures (i.e. not marked as downloaded from the internet by windows) will skip
+        // this check entirely. Untrusted captures will verify the DLL signature is Microsoft signed
+        if(untrustedCapture && !IsSignedByMicrosoft(filename, signer))
         {
           if(D3D12_Debug_IgnoreSignatureCheck())
           {
@@ -455,24 +448,49 @@ void D3D12_PrepareReplaySDKVersion(UINT SDKVersion, bytebuf d3d12core_file,
           }
           else
           {
-            FileIO::Delete(filename);
-            RDCERR(
-                "Can't verify the digital signature of the D3D12Core.dll embedded in capture, it "
-                "won't be loaded. If the capture came from a trusted source and you want to load "
-                "unsigned dll's, set D3D12.Debug.IgnoreSignatureCheck to true");
-            break;
+            RDCLOG("D3D12Core signed by '%s' instead of MS", signer.c_str());
+
+            rdcstr msg =
+                "Capture file contains an embedded D3D12 dll which is not correctly signed by "
+                "Microsoft.\n\n";
+            if(signer.empty())
+              msg += "There is no signature at all.\n\n";
+            else
+              msg += "The file is signed by '" + signer + "'.\n\n";
+
+            msg +=
+                "If you want to load the capture anyway, click yes. To use the system version of "
+                "D3D12 click no.";
+
+            int res = tinyfd_messageBox("Unexpected DLL signature", msg.c_str(), "yesnocancel",
+                                        "error", 2);
+            // 1 == yes, either no or cancel will abort the load
+            if(res != 1)
+            {
+              FileIO::Delete(filename);
+              RDCERR(
+                  "Can't verify the digital signature of the D3D12Core.dll embedded in capture, it "
+                  "won't be loaded. If the capture came from a trusted source and you want to load "
+                  "unsigned dll's, set D3D12.Debug.IgnoreSignatureCheck to true");
+              break;
+            }
+
+            RDCLOG("User selected to continue with load.");
           }
         }
 
         rdcstr sdklayers_filename = get_dirname(filename) + "/d3d12sdklayers.dll";
 
-        f = FileIO::fopen(sdklayers_filename.c_str(), FileIO::WriteBinary);
-
-        // if we can write to this file, we have exclusive use of it so let's write it and use it
-        if(f)
+        if(!d3d12sdklayers_file.empty())
         {
-          FileIO::fwrite(d3d12sdklayers_file.data(), 1, d3d12sdklayers_file.size(), f);
-          FileIO::fclose(f);
+          f = FileIO::fopen(sdklayers_filename.c_str(), FileIO::WriteBinary);
+
+          // if we can write to this file, we have exclusive use of it so let's write it and use it
+          if(f)
+          {
+            FileIO::fwrite(d3d12sdklayers_file.data(), 1, d3d12sdklayers_file.size(), f);
+            FileIO::fclose(f);
+          }
         }
 
 // d3d12sdklayers.dll is not always signed
@@ -527,6 +545,124 @@ void D3D12_PrepareReplaySDKVersion(UINT SDKVersion, bytebuf d3d12core_file,
       FreeLibrary(ret);
     }
   }
+
+  if(FileIO::exists(D3D12Core_Override_Path.c_str()))
+  {
+    UINT prevErrorMode = GetErrorMode();
+    SetErrorMode(prevErrorMode | SEM_FAILCRITICALERRORS);
+    HMODULE ret =
+        LoadLibraryW(StringFormat::UTF82Wide(D3D12Core_Override_Path + "/d3d12core.dll").c_str());
+
+    SetErrorMode(prevErrorMode);
+
+    DWORD *ver_ptr = (DWORD *)GetProcAddress(ret, "D3D12SDKVersion");
+
+    if(ver_ptr)
+      OverrideDllVersion = *ver_ptr;
+
+    FreeLibrary(ret);
+  }
+
+  RDCLOG("Loading D3D12 runtime from %s which is version %u", D3D12Core_Override_Path.c_str(),
+         OverrideDllVersion);
+
+  // see if we can use the new proper D3D12 dll selection API
+  {
+    HMODULE d3d12Lib = GetModuleHandleA("d3d12.dll");
+    PFN_D3D12_GET_INTERFACE getD3D12Interface = NULL;
+
+    if(d3d12Lib)
+      getD3D12Interface = (PFN_D3D12_GET_INTERFACE)GetProcAddress(d3d12Lib, "D3D12GetInterface");
+
+    if(getD3D12Interface)
+    {
+      ID3D12SDKConfiguration *config = NULL;
+      HRESULT hr = getD3D12Interface(CLSID_D3D12SDKConfiguration, __uuidof(ID3D12SDKConfiguration),
+                                     (void **)&config);
+
+      if(SUCCEEDED(hr) && config)
+      {
+        ID3D12SDKConfiguration1 *config1 = NULL;
+        ID3D12DeviceFactory *devfactory = NULL;
+        hr = config->QueryInterface(__uuidof(ID3D12SDKConfiguration1), (void **)&config1);
+        if(SUCCEEDED(hr) && config1)
+        {
+          config1->CreateDeviceFactory(OverrideDllVersion, D3D12Core_Override_Path.c_str(),
+                                       __uuidof(ID3D12DeviceFactory), (void **)&devfactory);
+        }
+        SAFE_RELEASE(config);
+
+        if(devfactory)
+        {
+          ID3D12Debug *debug = NULL;
+          hr = devfactory->GetConfigurationInterface(CLSID_D3D12Debug, __uuidof(ID3D12Debug),
+                                                     (void **)&debug);
+          if(FAILED(hr))
+            SAFE_RELEASE(debug);
+          ID3D12DeviceConfiguration *devConfig = NULL;
+          hr = devfactory->QueryInterface(__uuidof(ID3D12DeviceConfiguration), (void **)&devConfig);
+          if(FAILED(hr))
+            SAFE_RELEASE(devConfig);
+
+          // we got what we need, return the interfaces to use
+          D3D12DevConfiguration *ret = new D3D12DevConfiguration;
+          ret->devfactory = devfactory;
+          ret->sdkconfig = config1;
+          ret->debug = debug;
+          ret->devconfig = devConfig;
+
+          hr = devfactory->GetConfigurationInterface(
+              CLSID_D3D12DeviceRemovedExtendedData,
+              __uuidof(ID3D12DeviceRemovedExtendedDataSettings), (void **)&ret->dred);
+          if(FAILED(hr))
+            SAFE_RELEASE(ret->dred);
+
+          RDCLOG("Accessing D3D12 dll via SDK configuration API");
+
+          return ret;
+        }
+        else
+        {
+          RDCLOG("Couldn't get device factory");
+        }
+
+        SAFE_RELEASE(config1);
+      }
+      else
+      {
+        RDCLOG("Couldn't get SDK configuration interface");
+      }
+      SAFE_RELEASE(config);
+    }
+    else
+    {
+      RDCLOG("Couldn't get D3D12 interface query");
+    }
+  }
+
+  RDCLOG("Accessing D3D12 dll via hooks");
+
+  // finally we're at a point where we will hook to force the library we want.
+
+  if(!hooks_applied)
+  {
+    hooks_applied = true;
+
+    Win32_RegisterManualModuleHooking();
+
+    D3D12GetInterface_Core_hook.Register("d3d12core.dll", "D3D12GetInterface",
+                                         Hooked_Core_D3D12GetInterface);
+    D3D12GetInterface_SDKLayers_hook.Register("d3d12sdklayers.dll", "D3D12GetInterface",
+                                              Hooked_SDKLayers_D3D12GetInterface);
+
+    Win32_InterceptLibraryLoads(Hooked_D3D12LoadLibrary);
+  }
+
+  // we do this always, even if the hooks are already applied, because this module has possibly been
+  // reloaded and needs to be re-hooked each time
+  Win32_ManualHookModule("d3d12.dll", d3d12lib);
+
+  return NULL;
 }
 
 void D3D12_CleanupReplaySDK()

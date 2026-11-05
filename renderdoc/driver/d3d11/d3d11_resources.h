@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -123,10 +123,12 @@ protected:
   WrappedID3D11Device *m_pDevice;
   NestedType *m_pReal;
 
-  WrappedDeviceChild11(NestedType *real, WrappedID3D11Device *device)
+  WrappedDeviceChild11(ResourceId id, NestedType *real, WrappedID3D11Device *device)
       : m_pDevice(device), m_pReal(real), m_ExtRef(1), m_IntRef(0)
   {
-    m_ID = ResourceIDGen::GetNewUniqueID();
+    if(id == ResourceId())
+      id = ResourceIDGen::GetNewUniqueID();
+    m_ID = id;
 
     // start off with a strong reference on the device.
     m_pDevice->AddRef();
@@ -135,7 +137,7 @@ protected:
     if(!ret)
       RDCERR("Error adding wrapper for type %s", ToStr(__uuidof(NestedType)).c_str());
 
-    m_pDevice->GetResourceManager()->AddCurrentResource(GetResourceID(), this);
+    m_pDevice->GetResourceManager()->AddResource(GetResourceID(), this);
   }
 
   virtual ~WrappedDeviceChild11()
@@ -456,8 +458,8 @@ protected:
   DescType m_Desc;
 #endif
 
-  WrappedResource11(NestedType *real, WrappedID3D11Device *device)
-      : WrappedDeviceChild11(real, device)
+  WrappedResource11(ResourceId id, NestedType *real, WrappedID3D11Device *device)
+      : WrappedDeviceChild11(id, real, device)
   {
 #if ENABLED(RDOC_DEVEL)
     real->GetDesc(&m_Desc);
@@ -527,8 +529,9 @@ public:
 
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11Buffer);
 
-  WrappedID3D11Buffer(ID3D11Buffer *real, uint32_t byteLength, WrappedID3D11Device *device)
-      : WrappedResource11(real, device)
+  WrappedID3D11Buffer(ResourceId id, ID3D11Buffer *real, uint32_t byteLength,
+                      WrappedID3D11Device *device)
+      : WrappedResource11(id, real, device)
   {
     if(RenderDoc::Inst().IsReplayApp())
     {
@@ -580,8 +583,8 @@ public:
 
   static std::map<ResourceId, TextureEntry> m_TextureList;
 
-  WrappedTexture(NestedType *real, WrappedID3D11Device *device, TextureDisplayType type)
-      : WrappedResource11(real, device)
+  WrappedTexture(ResourceId id, NestedType *real, WrappedID3D11Device *device, TextureDisplayType type)
+      : WrappedResource11(id, real, device)
   {
     if(type != TEXDISPLAY_UNKNOWN)
     {
@@ -609,9 +612,9 @@ class WrappedID3D11Texture1D
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11Texture1D);
 
-  WrappedID3D11Texture1D(ID3D11Texture1D *real, WrappedID3D11Device *device,
+  WrappedID3D11Texture1D(ResourceId id, ID3D11Texture1D *real, WrappedID3D11Device *device,
                          TextureDisplayType type = TEXDISPLAY_SRV_COMPATIBLE)
-      : WrappedTexture(real, device, type)
+      : WrappedTexture(id, real, device, type)
   {
   }
   virtual ~WrappedID3D11Texture1D() {}
@@ -628,9 +631,9 @@ class WrappedID3D11Texture2D1
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11Texture2D1);
 
-  WrappedID3D11Texture2D1(ID3D11Texture2D *real, WrappedID3D11Device *device,
+  WrappedID3D11Texture2D1(ResourceId id, ID3D11Texture2D *real, WrappedID3D11Device *device,
                           TextureDisplayType type = TEXDISPLAY_SRV_COMPATIBLE)
-      : WrappedTexture(real, device, type)
+      : WrappedTexture(id, real, device, type)
   {
     m_RealDescriptor = NULL;
   }
@@ -671,9 +674,9 @@ class WrappedID3D11Texture3D1
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11Texture3D1);
 
-  WrappedID3D11Texture3D1(ID3D11Texture3D *real, WrappedID3D11Device *device,
+  WrappedID3D11Texture3D1(ResourceId id, ID3D11Texture3D *real, WrappedID3D11Device *device,
                           TextureDisplayType type = TEXDISPLAY_SRV_COMPATIBLE)
-      : WrappedTexture(real, device, type)
+      : WrappedTexture(id, real, device, type)
   {
   }
   virtual ~WrappedID3D11Texture3D1() {}
@@ -705,8 +708,8 @@ class WrappedID3D11InputLayout : public WrappedDeviceChild11<ID3D11InputLayout>
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11InputLayout);
 
-  WrappedID3D11InputLayout(ID3D11InputLayout *real, WrappedID3D11Device *device)
-      : WrappedDeviceChild11<ID3D11InputLayout>(real, device)
+  WrappedID3D11InputLayout(ResourceId id, ID3D11InputLayout *real, WrappedID3D11Device *device)
+      : WrappedDeviceChild11<ID3D11InputLayout>(id, real, device)
   {
   }
   virtual ~WrappedID3D11InputLayout() {}
@@ -718,8 +721,9 @@ class WrappedID3D11RasterizerState2
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11RasterizerState2);
 
-  WrappedID3D11RasterizerState2(ID3D11RasterizerState *real, WrappedID3D11Device *device)
-      : WrappedDeviceChild11(real, device)
+  WrappedID3D11RasterizerState2(ResourceId id, ID3D11RasterizerState *real,
+                                WrappedID3D11Device *device)
+      : WrappedDeviceChild11(id, real, device)
   {
   }
   virtual ~WrappedID3D11RasterizerState2() {}
@@ -759,8 +763,8 @@ class WrappedID3D11BlendState1 : public WrappedDeviceChild11<ID3D11BlendState, I
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11BlendState1);
 
-  WrappedID3D11BlendState1(ID3D11BlendState *real, WrappedID3D11Device *device)
-      : WrappedDeviceChild11(real, device)
+  WrappedID3D11BlendState1(ResourceId id, ID3D11BlendState *real, WrappedID3D11Device *device)
+      : WrappedDeviceChild11(id, real, device)
   {
   }
   virtual ~WrappedID3D11BlendState1() {}
@@ -787,8 +791,9 @@ class WrappedID3D11DepthStencilState : public WrappedDeviceChild11<ID3D11DepthSt
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11DepthStencilState);
 
-  WrappedID3D11DepthStencilState(ID3D11DepthStencilState *real, WrappedID3D11Device *device)
-      : WrappedDeviceChild11<ID3D11DepthStencilState>(real, device)
+  WrappedID3D11DepthStencilState(ResourceId id, ID3D11DepthStencilState *real,
+                                 WrappedID3D11Device *device)
+      : WrappedDeviceChild11<ID3D11DepthStencilState>(id, real, device)
   {
   }
   virtual ~WrappedID3D11DepthStencilState() {}
@@ -806,8 +811,8 @@ class WrappedID3D11SamplerState : public WrappedDeviceChild11<ID3D11SamplerState
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11SamplerState);
 
-  WrappedID3D11SamplerState(ID3D11SamplerState *real, WrappedID3D11Device *device)
-      : WrappedDeviceChild11<ID3D11SamplerState>(real, device)
+  WrappedID3D11SamplerState(ResourceId id, ID3D11SamplerState *real, WrappedID3D11Device *device)
+      : WrappedDeviceChild11<ID3D11SamplerState>(id, real, device)
   {
   }
   virtual ~WrappedID3D11SamplerState() {}
@@ -825,8 +830,8 @@ protected:
   ResourceId m_ResourceResID;
   ResourceRange m_ResourceRange;
 
-  WrappedView1(NestedType *real, WrappedID3D11Device *device, ID3D11Resource *res)
-      : WrappedDeviceChild11(real, device), m_pResource(res), m_ResourceRange(this)
+  WrappedView1(ResourceId id, NestedType *real, WrappedID3D11Device *device, ID3D11Resource *res)
+      : WrappedDeviceChild11(id, real, device), m_pResource(res), m_ResourceRange(this)
   {
     m_ResourceResID = GetIDForDeviceChild(m_pResource);
     ::IntAddRef(m_pResource);
@@ -885,9 +890,9 @@ class WrappedID3D11RenderTargetView1
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11RenderTargetView1);
 
-  WrappedID3D11RenderTargetView1(ID3D11RenderTargetView *real, ID3D11Resource *res,
+  WrappedID3D11RenderTargetView1(ResourceId id, ID3D11RenderTargetView *real, ID3D11Resource *res,
                                  WrappedID3D11Device *device)
-      : WrappedView1(real, device, res)
+      : WrappedView1(id, real, device, res)
   {
   }
   virtual ~WrappedID3D11RenderTargetView1() {}
@@ -911,9 +916,9 @@ class WrappedID3D11ShaderResourceView1
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11ShaderResourceView1);
 
-  WrappedID3D11ShaderResourceView1(ID3D11ShaderResourceView *real, ID3D11Resource *res,
-                                   WrappedID3D11Device *device)
-      : WrappedView1(real, device, res)
+  WrappedID3D11ShaderResourceView1(ResourceId id, ID3D11ShaderResourceView *real,
+                                   ID3D11Resource *res, WrappedID3D11Device *device)
+      : WrappedView1(id, real, device, res)
   {
   }
   virtual ~WrappedID3D11ShaderResourceView1() {}
@@ -937,24 +942,23 @@ class WrappedID3D11DepthStencilView
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11DepthStencilView);
 
-  WrappedID3D11DepthStencilView(ID3D11DepthStencilView *real, ID3D11Resource *res,
+  WrappedID3D11DepthStencilView(ResourceId id, ID3D11DepthStencilView *real, ID3D11Resource *res,
                                 WrappedID3D11Device *device)
-      : WrappedView1(real, device, res)
+      : WrappedView1(id, real, device, res)
   {
   }
   virtual ~WrappedID3D11DepthStencilView() {}
 };
 
 class WrappedID3D11UnorderedAccessView1
-    : public WrappedView1<ID3D11UnorderedAccessView, D3D11_UNORDERED_ACCESS_VIEW_DESC,
-                          ID3D11UnorderedAccessView1>
+    : public WrappedView1<ID3D11UnorderedAccessView, D3D11_UNORDERED_ACCESS_VIEW_DESC, ID3D11UnorderedAccessView1>
 {
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11UnorderedAccessView1);
 
-  WrappedID3D11UnorderedAccessView1(ID3D11UnorderedAccessView *real, ID3D11Resource *res,
-                                    WrappedID3D11Device *device)
-      : WrappedView1(real, device, res)
+  WrappedID3D11UnorderedAccessView1(ResourceId id, ID3D11UnorderedAccessView *real,
+                                    ID3D11Resource *res, WrappedID3D11Device *device)
+      : WrappedView1(id, real, device, res)
   {
   }
   virtual ~WrappedID3D11UnorderedAccessView1() {}
@@ -979,13 +983,7 @@ public:
   {
   public:
     ShaderEntry() : m_DXBCFile(NULL) {}
-    ShaderEntry(WrappedID3D11Device *device, ResourceId id, const byte *code, size_t codeLen)
-    {
-      m_ID = id;
-      m_Bytecode.assign(code, codeLen);
-      m_DXBCFile = NULL;
-      m_Details = new ShaderReflection;
-    }
+    ShaderEntry(WrappedID3D11Device *device, ResourceId id, const byte *code, size_t codeLen);
     ~ShaderEntry()
     {
       m_Bytecode.clear();
@@ -1002,8 +1000,8 @@ public:
     {
       if(m_DXBCFile == NULL && !m_Bytecode.empty())
       {
-        m_DXBCFile = new DXBC::DXBCContainer(m_Bytecode, m_DebugInfoPath, GraphicsAPI::D3D11,
-                                             m_ShaderExtSlot, ~0U);
+        m_DXBCFile = new DXBC::DXBCContainer(std::move(m_Bytecode), m_DebugInfoPath);
+        m_DXBCFile->SetShaderExts(GraphicsAPI::D3D11, m_ShaderExtSlot, ~0U);
         m_Bytecode.clear();
       }
       return m_DXBCFile;
@@ -1017,18 +1015,17 @@ public:
       return *m_Details;
     }
 
-    const ShaderBindpointMapping &GetMapping()
+    const rdcarray<DescriptorAccess> &GetDescriptorAccess()
     {
       if(!m_Built && GetDXBC() != NULL)
         BuildReflection();
       m_Built = true;
-      return m_Mapping;
+      return m_Access;
     }
 
   private:
-    void TryReplaceOriginalByteCode();
-
     void BuildReflection();
+    void Reload();
 
     ResourceId m_ID;
 
@@ -1037,10 +1034,11 @@ public:
 
     bytebuf m_Bytecode;
 
+    ResourceId m_DescriptorStore;
     bool m_Built = false;
     DXBC::DXBCContainer *m_DXBCFile;
     ShaderReflection *m_Details;
-    ShaderBindpointMapping m_Mapping;
+    rdcarray<DescriptorAccess> m_Access;
 
     friend class WrappedShader;
   };
@@ -1048,15 +1046,13 @@ public:
   static std::map<ResourceId, ShaderEntry *> m_ShaderList;
   static Threading::CriticalSection m_ShaderListLock;
 
-  WrappedShader(WrappedID3D11Device *device, ResourceId origId, ResourceId liveId, const byte *code,
-                size_t codeLen)
-      : m_ID(liveId)
+  WrappedShader(WrappedID3D11Device *device, ResourceId id, const byte *code, size_t codeLen)
+      : m_ID(id)
   {
     SCOPED_LOCK(m_ShaderListLock);
 
     RDCASSERT(m_ShaderList.find(m_ID) == m_ShaderList.end());
-    m_ShaderList[m_ID] =
-        new ShaderEntry(device, origId != ResourceId() ? origId : liveId, code, codeLen);
+    m_ShaderList[m_ID] = new ShaderEntry(device, id, code, codeLen);
   }
   virtual ~WrappedShader()
   {
@@ -1080,7 +1076,12 @@ public:
     SCOPED_LOCK(m_ShaderListLock);
     return m_ShaderList[m_ID]->GetShaderExtSlot();
   }
-  DXBC::DXBCContainer *GetDXBC()
+  const DXBC::DXBCContainer *GetDXBC()
+  {
+    SCOPED_LOCK(m_ShaderListLock);
+    return m_ShaderList[m_ID]->GetDXBC();
+  }
+  DXBC::DXBCContainer *GetWriteableDXBC()
   {
     SCOPED_LOCK(m_ShaderListLock);
     return m_ShaderList[m_ID]->GetDXBC();
@@ -1090,13 +1091,15 @@ public:
     SCOPED_LOCK(m_ShaderListLock);
     return m_ShaderList[m_ID]->GetDetails();
   }
-  const ShaderBindpointMapping &GetMapping()
+  const rdcarray<DescriptorAccess> &GetDescriptorAccess()
   {
     SCOPED_LOCK(m_ShaderListLock);
-    return m_ShaderList[m_ID]->GetMapping();
+    return m_ShaderList[m_ID]->GetDescriptorAccess();
   }
 
-  static void GetReflections(rdcarray<ShaderReflection *> &refls)
+  static void ReloadShaderDebugInformation();
+
+  static void GetReflections(rdcarray<const ShaderReflection *> &refls)
   {
     SCOPED_LOCK(m_ShaderListLock);
     refls.clear();
@@ -1117,10 +1120,10 @@ class WrappedID3D11Shader : public WrappedDeviceChild11<RealShaderType>, public 
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11Shader<RealShaderType>);
 
-  WrappedID3D11Shader(RealShaderType *real, ResourceId origId, const byte *code, size_t codeLen,
+  WrappedID3D11Shader(ResourceId id, RealShaderType *real, const byte *code, size_t codeLen,
                       WrappedID3D11Device *device)
-      : WrappedDeviceChild11<RealShaderType>(real, device),
-        WrappedShader(device, origId, GetResourceID(), code, codeLen)
+      : WrappedDeviceChild11<RealShaderType>(id, real, device),
+        WrappedShader(device, GetResourceID(), code, codeLen)
   {
   }
   virtual ~WrappedID3D11Shader() {}
@@ -1131,8 +1134,8 @@ class WrappedID3D11Counter : public WrappedDeviceChild11<ID3D11Counter>
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11Counter);
 
-  WrappedID3D11Counter(ID3D11Counter *real, WrappedID3D11Device *device)
-      : WrappedDeviceChild11(real, device)
+  WrappedID3D11Counter(ResourceId id, ID3D11Counter *real, WrappedID3D11Device *device)
+      : WrappedDeviceChild11(id, real, device)
   {
   }
   virtual ~WrappedID3D11Counter() {}
@@ -1163,8 +1166,8 @@ class WrappedID3D11Query1 : public WrappedDeviceChild11<ID3D11Query, ID3D11Query
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11Query1);
 
-  WrappedID3D11Query1(ID3D11Query *real, WrappedID3D11Device *device)
-      : WrappedDeviceChild11(real, device)
+  WrappedID3D11Query1(ResourceId id, ID3D11Query *real, WrappedID3D11Device *device)
+      : WrappedDeviceChild11(id, real, device)
   {
   }
   virtual ~WrappedID3D11Query1() {}
@@ -1207,8 +1210,8 @@ class WrappedID3D11Predicate : public WrappedDeviceChild11<ID3D11Predicate>
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11Predicate);
 
-  WrappedID3D11Predicate(ID3D11Predicate *real, WrappedID3D11Device *device)
-      : WrappedDeviceChild11(real, device)
+  WrappedID3D11Predicate(ResourceId id, ID3D11Predicate *real, WrappedID3D11Device *device)
+      : WrappedDeviceChild11(id, real, device)
   {
   }
   virtual ~WrappedID3D11Predicate() {}
@@ -1242,9 +1245,9 @@ private:
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11ClassInstance);
 
-  WrappedID3D11ClassInstance(ID3D11ClassInstance *real, ID3D11ClassLinkage *linkage,
+  WrappedID3D11ClassInstance(ResourceId id, ID3D11ClassInstance *real, ID3D11ClassLinkage *linkage,
                              WrappedID3D11Device *device)
-      : WrappedDeviceChild11(real, device), m_pLinkage(linkage)
+      : WrappedDeviceChild11(id, real, device), m_pLinkage(linkage)
   {
     SAFE_ADDREF(m_pLinkage);
   }
@@ -1294,8 +1297,8 @@ class WrappedID3D11ClassLinkage : public WrappedDeviceChild11<ID3D11ClassLinkage
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11ClassLinkage);
 
-  WrappedID3D11ClassLinkage(ID3D11ClassLinkage *real, WrappedID3D11Device *device)
-      : WrappedDeviceChild11(real, device)
+  WrappedID3D11ClassLinkage(ResourceId id, ID3D11ClassLinkage *real, WrappedID3D11Device *device)
+      : WrappedDeviceChild11(id, real, device)
   {
   }
   virtual ~WrappedID3D11ClassLinkage() {}
@@ -1379,9 +1382,9 @@ class WrappedID3D11CommandList : public WrappedDeviceChild11<ID3D11CommandList>
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11CommandList);
 
-  WrappedID3D11CommandList(ID3D11CommandList *real, WrappedID3D11Device *device,
+  WrappedID3D11CommandList(ResourceId id, ID3D11CommandList *real, WrappedID3D11Device *device,
                            WrappedID3D11DeviceContext *context, bool success)
-      : WrappedDeviceChild11(real, device), m_pContext(context), m_Successful(success)
+      : WrappedDeviceChild11(id, real, device), m_pContext(context), m_Successful(success)
   {
     // context isn't defined type at this point.
   }
@@ -1429,7 +1432,8 @@ public:
   static Threading::CriticalSection m_Lock;
   D3D11RenderState *state;
 
-  WrappedID3DDeviceContextState(ID3DDeviceContextState *real, WrappedID3D11Device *device);
+  WrappedID3DDeviceContextState(ResourceId id, ID3DDeviceContextState *real,
+                                WrappedID3D11Device *device);
   virtual ~WrappedID3DDeviceContextState();
 };
 
@@ -1438,8 +1442,8 @@ class WrappedID3D11Fence : public WrappedDeviceChild11<ID3D11Fence>
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11Fence);
 
-  WrappedID3D11Fence(ID3D11Fence *real, WrappedID3D11Device *device)
-      : WrappedDeviceChild11(real, device)
+  WrappedID3D11Fence(ResourceId id, ID3D11Fence *real, WrappedID3D11Device *device)
+      : WrappedDeviceChild11(id, real, device)
   {
   }
   virtual ~WrappedID3D11Fence() {}

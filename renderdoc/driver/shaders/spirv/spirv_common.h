@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -209,6 +209,7 @@ private:
   T dummy;
 };
 
+// This must be a thread safe container
 template <typename T>
 class DenseIdMap : public rdcarray<T>
 {
@@ -231,9 +232,28 @@ private:
   uint32_t value;
 };
 
+// need to do this in a separate struct because you can't specialise a member function in a
+// templated class. Blech
+struct OpExtInstHelper
+{
+  rdcarray<uint32_t> params;
+
+  template <typename T>
+  T arg(uint32_t idx) const
+  {
+    return T(params[idx]);
+  }
+};
+
+template <>
+inline Id OpExtInstHelper::arg<Id>(uint32_t idx) const
+{
+  return Id::fromWord(params[idx]);
+}
+
 // helper in the style of the auto-generated one for ext insts
 template <typename InstType>
-struct OpExtInstGeneric
+struct OpExtInstGeneric : public OpExtInstHelper
 {
   OpExtInstGeneric(IdResultType resultType, IdResult result, Id set, InstType inst,
                    const rdcarray<IdOrWord> &params)
@@ -279,7 +299,6 @@ struct OpExtInstGeneric
   IdResult result;
   Id set;
   InstType inst;
-  rdcarray<uint32_t> params;
 };
 
 struct OpExtInst : public OpExtInstGeneric<uint32_t>
@@ -300,11 +319,126 @@ struct OpGLSL450 : public OpExtInstGeneric<rdcspv::GLSLstd450>
   }
   OpGLSL450(const ConstIter &it) : OpExtInstGeneric(it) {}
 };
+struct OpShaderDbg : public OpExtInstGeneric<rdcspv::ShaderDbg>
+{
+  OpShaderDbg(IdResultType resultType, IdResult result, Id set, rdcspv::ShaderDbg inst,
+              const rdcarray<IdOrWord> &params)
+      : OpExtInstGeneric(resultType, result, set, inst, params)
+  {
+  }
+  OpShaderDbg(const ConstIter &it) : OpExtInstGeneric(it) {}
+};
+
+template <typename T>
+struct SwitchPairLiteralId
+{
+  T literal;
+  Id target;
+};
+
+typedef SwitchPairLiteralId<uint32_t> SwitchPairU32LiteralId;
+typedef SwitchPairLiteralId<uint64_t> SwitchPairU64LiteralId;
+
+// helpers for OpSwitch 32-bit and 64-bit versions in the style of the auto-generated helpers
+struct OpSwitch32
+{
+  OpSwitch32(const ConstIter &it)
+  {
+    this->op = OpCode;
+    this->wordCount = (uint16_t)it.size();
+    this->selector = Id::fromWord(it.word(1));
+    this->def = Id::fromWord(it.word(2));
+    uint32_t word = 3;
+    while(word < it.size())
+    {
+      uint32_t literal(it.word(word));
+      word += 1;
+      rdcspv::Id target(Id::fromWord(it.word(word)));
+      word += 1;
+      this->targets.push_back({literal, target});
+    }
+  }
+  OpSwitch32(Id selector, Id def, const rdcarray<SwitchPairLiteralId<uint32_t>> &targets)
+      : op(Op::Switch)
+  {
+    this->wordCount = MinWordSize + 2 * (uint16_t)targets.count();
+    this->selector = selector;
+    this->def = def;
+    this->targets = targets;
+  }
+  operator Operation() const
+  {
+    rdcarray<uint32_t> words;
+    words.push_back(selector.value());
+    words.push_back(def.value());
+    for(size_t i = 0; i < targets.size(); i++)
+    {
+      words.push_back(targets[i].literal);
+      words.push_back(targets[i].target.value());
+    }
+    return rdcspv::Operation(Op::Switch, words);
+  }
+
+  static constexpr Op OpCode = Op::Switch;
+  static constexpr uint16_t MinWordSize = 3U;
+  Op op;
+  uint16_t wordCount;
+  Id selector;
+  Id def;
+  rdcarray<SwitchPairU32LiteralId> targets;
+};
+
+struct OpSwitch64
+{
+  OpSwitch64(const ConstIter &it)
+  {
+    this->op = OpCode;
+    this->wordCount = (uint16_t)it.size();
+    this->selector = Id::fromWord(it.word(1));
+    this->def = Id::fromWord(it.word(2));
+    uint32_t word = 3;
+    while(word < it.size())
+    {
+      uint64_t literal(*(uint64_t *)(it.words() + word));
+      word += 2;
+      rdcspv::Id target(Id::fromWord(it.word(word)));
+      word += 1;
+      this->targets.push_back({literal, target});
+    }
+  }
+  OpSwitch64(Id selector, Id def, const rdcarray<SwitchPairU64LiteralId> &targets) : op(Op::Switch)
+  {
+    this->wordCount = MinWordSize + 3 * (uint16_t)targets.count();
+    this->selector = selector;
+    this->def = def;
+    this->targets = targets;
+  }
+  operator Operation() const
+  {
+    rdcarray<uint32_t> words;
+    words.push_back(selector.value());
+    words.push_back(def.value());
+    for(size_t i = 0; i < targets.size(); i++)
+    {
+      uint32_t *literal = (uint32_t *)&(targets[i].literal);
+      words.push_back(literal[0]);
+      words.push_back(literal[1]);
+      words.push_back(targets[i].target.value());
+    }
+    return rdcspv::Operation(Op::Switch, words);
+  }
+
+  static constexpr Op OpCode = Op::Switch;
+  static constexpr uint16_t MinWordSize = 3U;
+
+  Op op;
+  uint16_t wordCount;
+  Id selector;
+  Id def;
+  rdcarray<SwitchPairU64LiteralId> targets;
+};
 
 };    // namespace rdcspv
-
-static const uint32_t SpecializationConstantBindSet = 1234567;
-static const uint32_t PushConstantBindSet = 1234568;
 
 struct SpecConstant
 {
@@ -317,8 +451,37 @@ struct SpecConstant
 
 DECLARE_STRINGISE_TYPE(rdcspv::Id);
 
-enum class ShaderStage : uint32_t;
+enum class ShaderStage : uint8_t;
 enum class ShaderBuiltin : uint32_t;
 
 ShaderStage MakeShaderStage(rdcspv::ExecutionModel model);
 ShaderBuiltin MakeShaderBuiltin(ShaderStage stage, const rdcspv::BuiltIn el);
+
+enum class BufferStorageMode : uint32_t
+{
+  Unknown,
+  // patched in plain descriptor
+  Descriptor,
+  // legacy path - EXT_buffer_device_address only
+  EXT_bda,
+  // KHR_buffer_device_address, but with uint2 addresses to not require int64 types/maths
+  KHR_bda32,
+  // like above, but requiring int64
+  KHR_bda64,
+};
+
+constexpr bool IsBDA(BufferStorageMode mode)
+{
+  return mode == BufferStorageMode::EXT_bda || mode == BufferStorageMode::KHR_bda32 ||
+         mode == BufferStorageMode::KHR_bda64;
+}
+
+constexpr bool IsKHRBDA(BufferStorageMode mode)
+{
+  return mode == BufferStorageMode::KHR_bda32 || mode == BufferStorageMode::KHR_bda64;
+}
+
+constexpr bool IsBinding(BufferStorageMode mode)
+{
+  return mode == BufferStorageMode::Descriptor;
+}

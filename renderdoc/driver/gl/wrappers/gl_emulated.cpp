@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -1187,7 +1187,8 @@ void APIENTRY _glCopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLev
     GLenum attach = eGL_COLOR_ATTACHMENT0;
 
     bool layered = false;
-    bool compressed = false;
+    bool msaa = false;
+    bool cpuTransfer = false;
 
     if(srcTarget == eGL_TEXTURE_CUBE_MAP || srcTarget == eGL_TEXTURE_CUBE_MAP_ARRAY ||
        srcTarget == eGL_TEXTURE_1D_ARRAY || srcTarget == eGL_TEXTURE_2D_ARRAY ||
@@ -1206,10 +1207,91 @@ void APIENTRY _glCopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLev
       GLenum fmt = eGL_NONE;
       GL.glGetTexLevelParameteriv(levelQueryType, 0, eGL_TEXTURE_INTERNAL_FORMAT, (GLint *)&fmt);
 
+      bool colorRenderable = true;
+
       if(IsCompressedFormat(fmt))
+        colorRenderable = false;
+
+      if(fmt == eGL_RGB9_E5)
+        colorRenderable = false;
+
+      if(colorRenderable && IsGLES)
+      {
+        // before GLES 3 framebuffers basically weren't supported for the lack of formats you could
+        // use. We can turn some on based on extensions below
+        if(GLCoreVersion < 30)
+          colorRenderable = false;
+
+        // GLES randomly excludes an inconsistent set of formats
+        switch(fmt)
+        {
+          // case eGL_RGB8: // valid?!
+          case eGL_SRGB8:
+          case eGL_RGB8I:
+          case eGL_RGB8UI:
+          case eGL_RGB8_SNORM:
+
+          case eGL_RGB9_E5:
+
+          case eGL_RGB10:
+
+          case eGL_RGB16I:
+          case eGL_RGB16UI:
+
+          case eGL_RGB32F:
+          case eGL_RGB32I:
+          case eGL_RGB32UI: colorRenderable = false; break;
+          default: break;
+        }
+
+        // SRGB 1- and 2- channel formats aren't renderable
+        if(fmt == eGL_SR8_EXT || fmt == eGL_SRG8_EXT)
+          colorRenderable = false;
+
+        // some extensions are required for other formats
+        switch(fmt)
+        {
+          case eGL_R8_SNORM:
+          case eGL_RG8_SNORM:
+          case eGL_RGBA8_SNORM: colorRenderable = HasExt[EXT_render_snorm]; break;
+
+          case eGL_R16_SNORM:
+          case eGL_RG16_SNORM:
+          case eGL_RGBA16_SNORM: colorRenderable = HasExt[EXT_render_snorm]; break;
+
+          case eGL_R16F:
+          case eGL_RG16F:
+          case eGL_RGBA16F:
+            colorRenderable = HasExt[EXT_color_buffer_half_float] || HasExt[EXT_color_buffer_float];
+            break;
+
+          case eGL_RGB16F: colorRenderable = HasExt[EXT_color_buffer_half_float]; break;
+
+          case eGL_R32F:
+          case eGL_RG32F:
+          case eGL_RGBA32F:
+          case eGL_R11F_G11F_B10F: colorRenderable = HasExt[EXT_color_buffer_float]; break;
+
+          case eGL_RGB10_A2:
+          case eGL_RGB10_A2UI: colorRenderable = (GLCoreVersion >= 30); break;
+
+          default: break;
+        }
+      }
+
+      // can't blit or CPU-read MSAA textures. we treat these as 'color-renderable' but we will just clear to black
+      if(srcTarget == eGL_TEXTURE_2D_MULTISAMPLE || srcTarget == eGL_TEXTURE_2D_MULTISAMPLE_ARRAY)
+      {
+        colorRenderable = true;
+        msaa = true;
+        RDCDEBUG("Can't support image copy emulation on MSAA images, clearing to black");
+      }
+
+      // non-color-renderable formats have to go through this path even though they are not compressed
+      if(!colorRenderable)
       {
         // have to do this via CPU readback, there's no alternative for GPU copies
-        compressed = true;
+        cpuTransfer = true;
 
         GLenum targets[] = {
             eGL_TEXTURE_CUBE_MAP_POSITIVE_X, eGL_TEXTURE_CUBE_MAP_NEGATIVE_X,
@@ -1225,7 +1307,10 @@ void APIENTRY _glCopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLev
           count = 1;
         }
 
-        size_t size = GetCompressedByteSize(srcWidth, srcHeight, srcDepth, fmt);
+        size_t size =
+            IsCompressedFormat(fmt)
+                ? GetCompressedByteSize(srcWidth, srcHeight, srcDepth, fmt)
+                : GetByteSize(srcWidth, srcHeight, srcDepth, GetBaseFormat(fmt), GetDataType(fmt));
 
         if(srcTarget == eGL_TEXTURE_CUBE_MAP)
           size /= 6;
@@ -1235,6 +1320,29 @@ void APIENTRY _glCopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLev
         for(int trg = 0; trg < count; trg++)
         {
           // read to CPU
+          if(!IsCompressedFormat(fmt))
+          {
+            GL.glGetTextureImageEXT(srcName, targets[trg], srcLevel, GetBaseFormat(fmt),
+                                    GetDataType(fmt), buf);
+
+            // write to GPU
+            if(srcTarget == eGL_TEXTURE_1D)
+              GL.glTextureSubImage1DEXT(dstName, targets[trg], dstLevel, 0, srcWidth,
+                                        GetBaseFormat(fmt), GetDataType(fmt), buf);
+            else if(srcTarget == eGL_TEXTURE_1D_ARRAY)
+              GL.glTextureSubImage2DEXT(dstName, targets[trg], dstLevel, 0, 0, srcWidth, srcDepth,
+                                        GetBaseFormat(fmt), GetDataType(fmt), buf);
+            else if(srcTarget == eGL_TEXTURE_3D || srcTarget == eGL_TEXTURE_2D_ARRAY ||
+                    srcTarget == eGL_TEXTURE_CUBE_MAP_ARRAY)
+              GL.glTextureSubImage3DEXT(dstName, targets[trg], dstLevel, 0, 0, 0, srcWidth, srcHeight,
+                                        srcDepth, GetBaseFormat(fmt), GetDataType(fmt), buf);
+            else
+              GL.glTextureSubImage2DEXT(dstName, targets[trg], dstLevel, 0, 0, srcWidth, srcHeight,
+                                        GetBaseFormat(fmt), GetDataType(fmt), buf);
+
+            continue;
+          }
+
           if(IsGLES)
           {
             RDCERR("Can't emulate glCopyImageSubData without glGetCompressedTexImage on GLES");
@@ -1246,10 +1354,14 @@ void APIENTRY _glCopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLev
           }
 
           // write to GPU
-          if(srcTarget == eGL_TEXTURE_1D || srcTarget == eGL_TEXTURE_1D_ARRAY)
+          if(srcTarget == eGL_TEXTURE_1D)
             GL.glCompressedTextureSubImage1DEXT(dstName, targets[trg], dstLevel, 0, srcWidth, fmt,
                                                 (GLsizei)size, buf);
-          else if(srcTarget == eGL_TEXTURE_3D)
+          else if(srcTarget == eGL_TEXTURE_1D_ARRAY)
+            GL.glCompressedTextureSubImage2DEXT(dstName, targets[trg], dstLevel, 0, 0, srcWidth,
+                                                srcDepth, fmt, (GLsizei)size, buf);
+          else if(srcTarget == eGL_TEXTURE_3D || srcTarget == eGL_TEXTURE_2D_ARRAY ||
+                  srcTarget == eGL_TEXTURE_CUBE_MAP_ARRAY)
             GL.glCompressedTextureSubImage3DEXT(dstName, targets[trg], dstLevel, 0, 0, 0, srcWidth,
                                                 srcHeight, srcDepth, fmt, (GLsizei)size, buf);
           else
@@ -1301,7 +1413,9 @@ void APIENTRY _glCopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLev
       }
     }
 
-    if(compressed)
+    GLfloat black[4] = {};
+
+    if(cpuTransfer)
     {
       // nothing to do!
     }
@@ -1317,8 +1431,16 @@ void APIENTRY _glCopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLev
       if(status != eGL_FRAMEBUFFER_COMPLETE)
         RDCERR("glCopyImageSubData emulation read FBO is %s", ToStr(status).c_str());
 
-      SafeBlitFramebuffer(srcX, srcY, srcX + srcWidth, srcY + srcHeight, dstX, dstY,
-                          dstX + srcWidth, dstY + srcHeight, mask, eGL_NEAREST);
+      if(msaa)
+      {
+        SafeClearFramebuffer(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT,
+                             black, 0.0f, 0);
+      }
+      else
+      {
+        SafeBlitFramebuffer(srcX, srcY, srcX + srcWidth, srcY + srcHeight, dstX, dstY,
+                            dstX + srcWidth, dstY + srcHeight, mask, eGL_NEAREST);
+      }
     }
     else if(srcTarget == eGL_TEXTURE_CUBE_MAP)
     {
@@ -1350,8 +1472,16 @@ void APIENTRY _glCopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLev
             RDCERR("glCopyImageSubData emulation read FBO is %s for slice 0", ToStr(status).c_str());
         }
 
-        SafeBlitFramebuffer(srcX, srcY, srcX + srcWidth, srcY + srcHeight, dstX, dstY,
-                            dstX + srcWidth, dstY + srcHeight, mask, eGL_NEAREST);
+        if(msaa)
+        {
+          SafeClearFramebuffer(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT,
+                               black, 0.0f, 0);
+        }
+        else
+        {
+          SafeBlitFramebuffer(srcX, srcY, srcX + srcWidth, srcY + srcHeight, dstX, dstY,
+                              dstX + srcWidth, dstY + srcHeight, mask, eGL_NEAREST);
+        }
       }
     }
     else
@@ -1374,8 +1504,16 @@ void APIENTRY _glCopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLev
             RDCERR("glCopyImageSubData emulation read FBO is %s for slice 0", ToStr(status).c_str());
         }
 
-        SafeBlitFramebuffer(srcX, srcY, srcX + srcWidth, srcY + srcHeight, dstX, dstY,
-                            dstX + srcWidth, dstY + srcHeight, mask, eGL_NEAREST);
+        if(msaa)
+        {
+          SafeClearFramebuffer(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT,
+                               black, 0.0f, 0);
+        }
+        else
+        {
+          SafeBlitFramebuffer(srcX, srcY, srcX + srcWidth, srcY + srcHeight, dstX, dstY,
+                              dstX + srcWidth, dstY + srcHeight, mask, eGL_NEAREST);
+        }
       }
     }
   }
@@ -2436,15 +2574,15 @@ static glslang::TProgram *GetGlslangProgram(GLuint program, bool *hasRealProgram
 
   ResourceId id = driver->GetResourceManager()->GetResID(ProgramRes(driver->GetCtx(), program));
 
-  if(!driver->m_Programs[id].glslangProgram)
+  if(!driver->GetProgram(id).glslangProgram)
   {
     RDCERR("Don't have glslang program for reflecting program %u = %s", program, ToStr(id).c_str());
   }
 
   if(hasRealProgram)
-    *hasRealProgram = !driver->m_Programs[id].shaders.empty();
+    *hasRealProgram = !driver->GetProgram(id).shaders.empty();
 
-  return driver->m_Programs[id].glslangProgram;
+  return driver->GetProgram(id).glslangProgram;
 }
 
 void APIENTRY _glGetProgramInterfaceiv(GLuint program, GLenum programInterface, GLenum pname,
@@ -2478,7 +2616,8 @@ void APIENTRY _glGetProgramResourceiv(GLuint program, GLenum programInterface, G
     return;
   }
 
-  rdcarray<ReflectionProperty> properties(propCount);
+  rdcarray<ReflectionProperty> properties;
+  properties.resize(propCount);
 
   for(GLsizei i = 0; i < propCount; i++)
     properties[i] = ConvertProperty(props[i]);
@@ -2705,6 +2844,28 @@ void APIENTRY _glGetTexImage(GLenum target, GLint level, const GLenum format, co
     depthFormat = true;
   }
 
+  // Qualcomm drivers seem to barf if we try to read from cubemap faces above X+ for mips 64x64 or
+  // smaller. In testing X+ works on any mip, and all faces work on larger mips, but since the
+  // driver seems completely unreliable in this area we enable the workaround blanket for all
+  // cubemap reads as different formats may break in different ways.
+  if(VendorCheck[VendorCheck_Qualcomm_emulate_cube_reads])
+  {
+    switch(target)
+    {
+      case eGL_TEXTURE_CUBE_MAP:
+      case eGL_TEXTURE_CUBE_MAP_POSITIVE_X:
+      case eGL_TEXTURE_CUBE_MAP_NEGATIVE_X:
+      case eGL_TEXTURE_CUBE_MAP_POSITIVE_Y:
+      case eGL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
+      case eGL_TEXTURE_CUBE_MAP_POSITIVE_Z:
+      case eGL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
+        RDCLOG("Forcing indirect read for cubemap face %s on level %d", ToStr(target).c_str(), level);
+        readDirectly = false;
+        break;
+      default: break;
+    }
+  }
+
   // if we can't attach the texture to a framebuffer, we can't readpixels it directly
   if(readDirectly)
   {
@@ -2863,30 +3024,51 @@ void APIENTRY _glGetTexImage(GLenum target, GLint level, const GLenum format, co
     GLint baseLevel = 0;
     GLint maxLevel = 0;
 
-    // sample from only the right level of the source texture
-    GL.glGetTexParameteriv(target, eGL_TEXTURE_BASE_LEVEL, &baseLevel);
-    GL.glGetTexParameteriv(target, eGL_TEXTURE_MAX_LEVEL, &maxLevel);
-    GL.glTexParameteri(target, eGL_TEXTURE_BASE_LEVEL, level);
-    GL.glTexParameteri(target, eGL_TEXTURE_MAX_LEVEL, level);
-
-    GLenum depthMode = eGL_DEPTH_COMPONENT;
-    if(depthFormat && HasExt[ARB_stencil_texturing])
+    // for cubemaps we read them back face by face so we blit to a 2D texture, but we still need to
+    // bind the source texture as a cubemap
+    GLenum origTarget = target;
+    GLenum bindTarget = target;
+    switch(target)
     {
-      GL.glGetTexParameteriv(target, eGL_DEPTH_STENCIL_TEXTURE_MODE, (GLint *)&depthMode);
-      GL.glTexParameteri(target, eGL_DEPTH_STENCIL_TEXTURE_MODE, eGL_DEPTH_COMPONENT);
+      case eGL_TEXTURE_CUBE_MAP:
+      case eGL_TEXTURE_CUBE_MAP_POSITIVE_X:
+      case eGL_TEXTURE_CUBE_MAP_NEGATIVE_X:
+      case eGL_TEXTURE_CUBE_MAP_POSITIVE_Y:
+      case eGL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
+      case eGL_TEXTURE_CUBE_MAP_POSITIVE_Z:
+      case eGL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
+        target = eGL_TEXTURE_2D;
+        bindTarget = eGL_TEXTURE_CUBE_MAP;
+        break;
+      default: break;
     }
 
-    // only support 2D textures for now
-    RDCASSERT(target == eGL_TEXTURE_2D, target);
+    // sample from only the right level of the source texture
+    GL.glGetTexParameteriv(bindTarget, eGL_TEXTURE_BASE_LEVEL, &baseLevel);
+    GL.glGetTexParameteriv(bindTarget, eGL_TEXTURE_MAX_LEVEL, &maxLevel);
+    GL.glTexParameteri(bindTarget, eGL_TEXTURE_BASE_LEVEL, level);
+    GL.glTexParameteri(bindTarget, eGL_TEXTURE_MAX_LEVEL, level);
+
+    // support 2D/Array/3D textures for now
+    RDCASSERT((target == eGL_TEXTURE_2D) || (target == eGL_TEXTURE_2D_ARRAY) ||
+                  (target == eGL_TEXTURE_3D),
+              target);
     GL.glGenTextures(1, &readtex);
     GL.glBindTexture(target, readtex);
 
     // allocate the texture
     GL.glTexParameteri(target, eGL_TEXTURE_MAX_LEVEL, 0);
-    GL.glTexImage2D(target, 0, internalformat, width, height, 0, remapformat, remaptype, NULL);
-
-    // render to it
-    GL.glFramebufferTexture2D(eGL_FRAMEBUFFER, eGL_COLOR_ATTACHMENT0, target, readtex, 0);
+    if(target == eGL_TEXTURE_2D)
+    {
+      GL.glTexImage2D(target, 0, internalformat, width, height, 0, remapformat, remaptype, NULL);
+      GL.glFramebufferTexture2D(eGL_FRAMEBUFFER, eGL_COLOR_ATTACHMENT0, target, readtex, 0);
+    }
+    else
+    {
+      GL.glTexImage3D(target, 0, internalformat, width, height, depth, 0, remapformat, remaptype,
+                      NULL);
+      GL.glFramebufferTextureLayer(eGL_FRAMEBUFFER, eGL_COLOR_ATTACHMENT0, readtex, 0, 0);
+    }
 
     GLenum fbostatus = GL.glCheckFramebufferStatus(eGL_FRAMEBUFFER);
 
@@ -2918,56 +3100,97 @@ void APIENTRY _glGetTexImage(GLenum target, GLint level, const GLenum format, co
       disableSRGBCorrect = true;
     }
 
-    GL.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-
     GL.glActiveTexture(eGL_TEXTURE0);
-    GL.glBindTexture(eGL_TEXTURE_2D, boundTexture);
+    GL.glBindTexture(bindTarget, boundTexture);
 
     GLuint prog;
 
     {
-      const char *vs =
-          "attribute vec2 pos;\n"
-          "void main() { gl_Position = vec4(pos, 0.5, 0.5); }";
-
-      char fs_src[] =
-          "precision highp float;\n"
-          "uniform vec2 res;\n"
-          "uniform sampler2D srcTex;\n"
-          "void main() { gl_FragColor = texture2D(srcTex, vec2(gl_FragCoord.xy)/res).????; }";
-
-      char *swizzle = strchr(fs_src, '?');
-
+      const char *swizzle = "rgba";
       if(format == eGL_ALPHA)
       {
-        swizzle[0] = 'a';
-        swizzle[1] = 'a';
-        swizzle[2] = 'a';
-        swizzle[3] = 'a';
+        swizzle = "aaaa";
       }
       else if(format == eGL_LUMINANCE || depthFormat)
       {
-        swizzle[0] = 'r';
-        swizzle[1] = 'r';
-        swizzle[2] = 'r';
-        swizzle[3] = 'r';
+        swizzle = "rrrr";
       }
       else if(format == eGL_LUMINANCE_ALPHA)
       {
-        swizzle[0] = 'r';
-        swizzle[1] = 'a';
-        swizzle[2] = 'a';
-        swizzle[3] = 'a';
+        swizzle = "raaa";
+      }
+
+      rdcstr vssource;
+      rdcstr fssource;
+      if(bindTarget == eGL_TEXTURE_CUBE_MAP)
+      {
+        vssource =
+            "attribute vec2 pos;\n"
+            "void main() { gl_Position = vec4(pos, 0.5, 0.5); }";
+
+        rdcstr cubecoord = "\nvec3 CalcCubeCoord(vec2 uv) {\nuv -= vec2(0.5);\nvec3 coord;\n";
+
+        if(origTarget == eGL_TEXTURE_CUBE_MAP_POSITIVE_X)
+          cubecoord += "coord = vec3(0.5, -uv.y, -uv.x);\n";
+        else if(origTarget == eGL_TEXTURE_CUBE_MAP_NEGATIVE_X)
+          cubecoord += "coord = vec3(-0.5, -uv.y, uv.x);\n";
+        else if(origTarget == eGL_TEXTURE_CUBE_MAP_POSITIVE_Y)
+          cubecoord += "coord = vec3(uv.x, 0.5, uv.y);\n";
+        else if(origTarget == eGL_TEXTURE_CUBE_MAP_NEGATIVE_Y)
+          cubecoord += "coord = vec3(uv.x, -0.5, -uv.y);\n";
+        else if(origTarget == eGL_TEXTURE_CUBE_MAP_POSITIVE_Z)
+          cubecoord += "coord = vec3(uv.x, -uv.y, 0.5);\n";
+        else    // origTarget == eGL_TEXTURE_CUBE_MAP_NEGATIVE_Z
+          cubecoord += "coord = vec3(-uv.x, -uv.y, -0.5);\n";
+
+        cubecoord += "\nreturn coord;\n}\n";
+
+        fssource = rdcstr(
+                       "precision highp float;\n"
+                       "uniform vec3 res;\n"
+                       "uniform samplerCube srcTex;\n") +
+                   cubecoord +
+                   "void main() { gl_FragColor = textureCube(srcTex, "
+                   "CalcCubeCoord(vec2(gl_FragCoord.xy)/res.xy))." +
+                   swizzle + "; }";
+      }
+      else if(target == eGL_TEXTURE_2D)
+      {
+        vssource =
+            "attribute vec2 pos;\n"
+            "void main() { gl_Position = vec4(pos, 0.5, 0.5); }";
+
+        fssource =
+            rdcstr(
+                "precision highp float;\n"
+                "uniform vec3 res;\n"
+                "uniform sampler2D srcTex;\n"
+                "void main() { gl_FragColor = texture2D(srcTex, vec2(gl_FragCoord.xy)/res.xy).") +
+            swizzle + "; }";
       }
       else
       {
-        swizzle[0] = 'r';
-        swizzle[1] = 'g';
-        swizzle[2] = 'b';
-        swizzle[3] = 'a';
+        vssource =
+            "#version 300 es\n"
+            "in vec2 pos;\n"
+            "void main() { gl_Position = vec4(pos, 0.5, 0.5); }";
+
+        const char *sampler = (target == eGL_TEXTURE_2D_ARRAY) ? "sampler2DArray" : "sampler3D";
+
+        fssource =
+            rdcstr(
+                "#version 300 es\n"
+                "uniform highp vec3 res;\n"
+                "uniform highp ") +
+            sampler +
+            " srcTex;\n"
+            "out highp vec4 color;\n"
+            "void main() { color = texture(srcTex, vec3(gl_FragCoord.xy/res.xy, res.z).xyz)." +
+            swizzle + "; }";
       }
 
-      const char *fs = fs_src;
+      const char *vs = vssource.c_str();
+      const char *fs = fssource.c_str();
 
       GLuint vert = GL.glCreateShader(eGL_VERTEX_SHADER);
       GLuint frag = GL.glCreateShader(eGL_FRAGMENT_SHADER);
@@ -3036,19 +3259,39 @@ void APIENTRY _glGetTexImage(GLenum target, GLint level, const GLenum format, co
 
     GL.glUseProgram(prog);
 
-    loc = GL.glGetUniformLocation(prog, "srcTex");
-    GL.glUniform1i(loc, 0);
-    loc = GL.glGetUniformLocation(prog, "res");
-    GL.glUniform2f(loc, float(width), float(height));
-
-    GL.glDrawArrays(eGL_TRIANGLES, 0, 3);
-
-    // if we support reading stencil, read the stencil into green
-    if(remapformat == eGL_DEPTH_STENCIL && HasExt[ARB_stencil_texturing])
+    GLenum depthMode = eGL_DEPTH_COMPONENT;
+    if(depthFormat && HasExt[ARB_stencil_texturing])
     {
-      GL.glTexParameteri(target, eGL_DEPTH_STENCIL_TEXTURE_MODE, eGL_STENCIL_INDEX);
-      GL.glColorMask(GL_FALSE, GL_TRUE, GL_FALSE, GL_FALSE);
+      GL.glGetTexParameteriv(bindTarget, eGL_DEPTH_STENCIL_TEXTURE_MODE, (GLint *)&depthMode);
+    }
+
+    for(int32_t d = 0; d < depth; ++d)
+    {
+      GL.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+      if(depthFormat && HasExt[ARB_stencil_texturing])
+      {
+        GL.glTexParameteri(bindTarget, eGL_DEPTH_STENCIL_TEXTURE_MODE, eGL_DEPTH_COMPONENT);
+      }
+      if(target != eGL_TEXTURE_2D)
+      {
+        GL.glFramebufferTextureLayer(eGL_FRAMEBUFFER, eGL_COLOR_ATTACHMENT0, readtex, 0, d);
+      }
+
+      loc = GL.glGetUniformLocation(prog, "srcTex");
+      GL.glUniform1i(loc, 0);
+      loc = GL.glGetUniformLocation(prog, "res");
+      GL.glUniform3f(loc, float(width), float(height), float(d));
+
       GL.glDrawArrays(eGL_TRIANGLES, 0, 3);
+
+      // if we support reading stencil, read the stencil into green
+      if(remapformat == eGL_DEPTH_STENCIL && HasExt[ARB_stencil_texturing])
+      {
+        GL.glTexParameteri(bindTarget, eGL_DEPTH_STENCIL_TEXTURE_MODE, eGL_STENCIL_INDEX);
+        GL.glColorMask(GL_FALSE, GL_TRUE, GL_FALSE, GL_FALSE);
+        GL.glDrawArrays(eGL_TRIANGLES, 0, 3);
+      }
     }
 
     GL.glDeleteVertexArrays(1, &vao);
@@ -3065,13 +3308,13 @@ void APIENTRY _glGetTexImage(GLenum target, GLint level, const GLenum format, co
     deltex = readtex;
 
     // restore base/max level as we changed them to sample from the right level above
-    GL.glBindTexture(target, boundTexture);
-    GL.glTexParameteri(target, eGL_TEXTURE_BASE_LEVEL, baseLevel);
-    GL.glTexParameteri(target, eGL_TEXTURE_MAX_LEVEL, maxLevel);
+    GL.glBindTexture(bindTarget, boundTexture);
+    GL.glTexParameteri(bindTarget, eGL_TEXTURE_BASE_LEVEL, baseLevel);
+    GL.glTexParameteri(bindTarget, eGL_TEXTURE_MAX_LEVEL, maxLevel);
 
     if(depthFormat && HasExt[ARB_stencil_texturing])
     {
-      GL.glTexParameteri(target, eGL_DEPTH_STENCIL_TEXTURE_MODE, depthMode);
+      GL.glTexParameteri(bindTarget, eGL_DEPTH_STENCIL_TEXTURE_MODE, depthMode);
     }
 
     // read from the blitted texture from level 0, as red
@@ -3079,6 +3322,9 @@ void APIENTRY _glGetTexImage(GLenum target, GLint level, const GLenum format, co
     level = 0;
     readFormat = remapformat;
     readType = remaptype;
+    // always reset depthFormat. If the target format is depth, it was remapped
+    // and read-back will happen on remapped texture.
+    depthFormat = false;
 
     attachment = eGL_COLOR_ATTACHMENT0;
 
@@ -3149,14 +3395,17 @@ void APIENTRY _glGetTexImage(GLenum target, GLint level, const GLenum format, co
       // see what format and type the implementation supports
       GLenum implFormat = eGL_NONE, implType = eGL_NONE;
 
-      GL.glGetIntegerv(eGL_IMPLEMENTATION_COLOR_READ_FORMAT, (GLint *)&implFormat);
-      GL.glGetIntegerv(eGL_IMPLEMENTATION_COLOR_READ_TYPE, (GLint *)&implType);
+      if(!depthFormat)
+      {
+        GL.glGetIntegerv(eGL_IMPLEMENTATION_COLOR_READ_FORMAT, (GLint *)&implFormat);
+        GL.glGetIntegerv(eGL_IMPLEMENTATION_COLOR_READ_TYPE, (GLint *)&implType);
 
-      // GL_HALF_FLOAT and GL_HALF_FLOAT_OES have different enum values but are the same otherwise.
-      // we always use the normal enum ourselves, but if the driver wants the _OES version then just
-      // use that so we match and can do a direct readback.
-      if(implType == eGL_HALF_FLOAT_OES && readType == eGL_HALF_FLOAT)
-        readType = eGL_HALF_FLOAT_OES;
+        // GL_HALF_FLOAT and GL_HALF_FLOAT_OES have different enum values but are the same
+        // otherwise. we always use the normal enum ourselves, but if the driver wants the _OES
+        // version then just use that so we match and can do a direct readback.
+        if(implType == eGL_HALF_FLOAT_OES && readType == eGL_HALF_FLOAT)
+          readType = eGL_HALF_FLOAT_OES;
+      }
 
       if(!depthFormat && implFormat == readFormat && implType == readType)
       {
@@ -3250,7 +3499,7 @@ void APIENTRY _glGetTexImage(GLenum target, GLint level, const GLenum format, co
       size_t readCompSize = GetByteSize(1, 1, 1, eGL_RED, readType);
 
       if(depthFormat)
-        readCompSize = 4;
+        readCompSize = GetByteSize(1, 1, 1, readFormat, readType);
 
       // if the type didn't change from what the caller expects, we only changed the number of
       // components. This is easy to remap
@@ -3968,7 +4217,7 @@ GLint APIENTRY _testStub_AttribLocation(GLuint program, const GLchar *name)
 }
 
 void MakeOfflineShaderReflection(ShaderStage stage, const rdcstr &source, const rdcstr &entryPoint,
-                                 ShaderReflection &refl, ShaderBindpointMapping &mapping)
+                                 ShaderReflection &refl)
 {
   rdcspv::Init();
   RenderDoc::Inst().RegisterShutdownFunction(&rdcspv::Shutdown);
@@ -3996,7 +4245,7 @@ void MakeOfflineShaderReflection(ShaderStage stage, const rdcstr &source, const 
   REQUIRE(prog);
 
   // the lookup won't get a valid Id, so set the program to the ResourceId()
-  driver.m_Programs[ResourceId()].glslangProgram = prog;
+  driver.GetWriteableProgram(ResourceId()).glslangProgram = prog;
 
   GLuint fakeProg = 0;
 
@@ -4018,8 +4267,6 @@ void MakeOfflineShaderReflection(ShaderStage stage, const rdcstr &source, const 
   GL.glGetIntegerv = &_testStub_GetIntegerv;
   GL.glGetAttribLocation = &_testStub_AttribLocation;
 
-  GetBindpointMapping(fakeProg, (int)stage, &refl, mapping);
-
   RDCEraseEl(HasExt);
   GL = GLDispatchTable();
   GL.DriverForEmulation(NULL);
@@ -4029,9 +4276,9 @@ void MakeOfflineShaderReflection(ShaderStage stage, const rdcstr &source, const 
 // current driver. Unused by default but you can change the unit test below to call this function
 // instead of MakeOfflineShaderReflection.
 void MakeOnlineShaderReflection(ShaderStage stage, const rdcstr &source, const rdcstr &entryPoint,
-                                ShaderReflection &refl, ShaderBindpointMapping &mapping)
+                                ShaderReflection &refl)
 {
-  ReplayStatus status = ReplayStatus::UnknownError;
+  RDResult status = ResultCode::APIUnsupported;
   IReplayDriver *driver = NULL;
 
   RDCASSERT(entryPoint == "main");
@@ -4041,7 +4288,7 @@ void MakeOnlineShaderReflection(ShaderStage stage, const rdcstr &source, const r
   if(replays.find(RDCDriver::OpenGL) != replays.end())
     status = RenderDoc::Inst().CreateProxyReplayDriver(RDCDriver::OpenGL, &driver);
 
-  if(status != ReplayStatus::Succeeded)
+  if(status != ResultCode::Succeeded)
   {
     RDCERR("No GL support locally, couldn't create proxy GL driver for reflection");
     return;
@@ -4052,7 +4299,7 @@ void MakeOnlineShaderReflection(ShaderStage stage, const rdcstr &source, const r
   bytebuf buf;
   buf.resize(source.size());
   memcpy(buf.data(), source.data(), source.size());
-  driver->BuildCustomShader(ShaderEncoding::GLSL, buf, "main", ShaderCompileFlags(), stage, id,
+  driver->BuildTargetShader(ShaderEncoding::GLSL, buf, "main", ShaderCompileFlags(), stage, id,
                             errors);
 
   if(id == ResourceId())
@@ -4062,10 +4309,6 @@ void MakeOnlineShaderReflection(ShaderStage stage, const rdcstr &source, const r
   }
 
   refl = *driver->GetShader(ResourceId(), id, ShaderEntryPoint("main", ShaderStage::Fragment));
-
-  // Note that we can't fill out ShaderBindpointMapping easily on the actual driver through the
-  // replay interface
-  WARN("Using online reflection - all checks with ShaderBindpointMapping will fail");
 
   driver->FreeCustomShader(id);
 
@@ -4136,7 +4379,7 @@ void main() {
     REQUIRE(prog);
 
     // the lookup won't get a valid Id, so set the program to the ResourceId()
-    driver.m_Programs[ResourceId()].glslangProgram = prog;
+    driver.GetWriteableProgram(ResourceId()).glslangProgram = prog;
 
     GLint numUniforms = 0;
     GL.glGetProgramInterfaceiv(0, eGL_UNIFORM, eGL_ACTIVE_RESOURCES, &numUniforms);

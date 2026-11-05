@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -48,6 +48,8 @@ enum class ToolDir
 rdcstr getToolPath(ToolDir subdir, const rdcstr &toolname, bool checkExist);
 bool toolExists(const rdcstr &path);
 
+bool IsDebuggable(const rdcstr &deviceID, const rdcstr &packageName);
+bool HasRootAccess(const rdcstr &deviceID);
 rdcstr GetFirstMatchingLine(const rdcstr &haystack, const rdcstr &needle);
 
 bool IsSupported(rdcstr deviceID);
@@ -71,8 +73,6 @@ rdcarray<ABI> GetSupportedABIs(const rdcstr &deviceID);
 rdcstr GetRenderDocPackageForABI(ABI abi);
 rdcstr GetPathForPackage(const rdcstr &deviceID, const rdcstr &packageName);
 rdcstr GetFolderName(const rdcstr &deviceID);
-
-bool PatchManifest(bytebuf &manifest);
 };
 
 DECLARE_REFLECTION_ENUM(Android::ABI);

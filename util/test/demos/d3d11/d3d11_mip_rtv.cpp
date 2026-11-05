@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -56,7 +56,9 @@ float4 main() : SV_Target0
 
     ID3D11Texture2DPtr rt = MakeTexture(DXGI_FORMAT_R8G8B8A8_UNORM, 1024, 1024).RTV().Mips(6);
     ID3D11RenderTargetViewPtr rtv[4] = {
-        MakeRTV(rt).FirstMip(0), MakeRTV(rt).FirstMip(1), MakeRTV(rt).FirstMip(2),
+        MakeRTV(rt).FirstMip(0),
+        MakeRTV(rt).FirstMip(1),
+        MakeRTV(rt).FirstMip(2),
         MakeRTV(rt).FirstMip(3),
     };
 

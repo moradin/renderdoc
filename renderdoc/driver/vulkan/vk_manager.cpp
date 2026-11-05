@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -255,7 +255,7 @@ void VulkanResourceManager::RecordBarriers(rdcarray<rdcpair<ResourceId, ImageReg
 
 void VulkanResourceManager::RecordBarriers(rdcflatmap<ResourceId, ImageState> &states,
                                            uint32_t queueFamilyIndex, uint32_t numBarriers,
-                                           const VkImageMemoryBarrier2KHR *barriers)
+                                           const VkImageMemoryBarrier2 *barriers)
 {
   rdcarray<VkImageMemoryBarrier> downcast;
   downcast.reserve(numBarriers);
@@ -312,7 +312,7 @@ void VulkanResourceManager::SerialiseImageStates(SerialiserType &ser,
     }
     else
     {
-      bool hasLiveRes = HasLiveResource(Image);
+      bool hasLiveRes = HasResource(Image);
 
       ImageState imageState;
 
@@ -338,7 +338,7 @@ void VulkanResourceManager::SerialiseImageStates(SerialiserType &ser,
             ImageSubresourceStateForRange p;
             p.range = st.subresourceRange;
             p.range.sliceCount = imageLayouts.imageInfo.extent.depth;
-            p.state.oldQueueFamilyIndex = st.dstQueueFamilyIndex;
+            p.state.oldQueueFamilyIndex = m_Core->RemapQueue(st.dstQueueFamilyIndex);
             p.state.newQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             p.state.oldLayout = st.newLayout;
             p.state.newLayout = imageState.GetImageInfo().initialLayout;
@@ -372,21 +372,20 @@ void VulkanResourceManager::SerialiseImageStates(SerialiserType &ser,
             // initial state to the state it was in at the beginning of the capture.
             ImageSubresourceState &state = it->state();
             state.newLayout = imageState.GetImageInfo().initialLayout;
+            state.oldQueueFamilyIndex = m_Core->RemapQueue(state.oldQueueFamilyIndex);
             state.newQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
           }
         }
       }
       if(hasLiveRes)
       {
-        ResourceId liveid = GetLiveID(Image);
-
         if(IsLoading(m_State))
         {
-          auto stit = states.find(liveid);
+          auto stit = states.find(Image);
           if(stit == states.end())
           {
             imageState.subresourceStates.Unsplit();
-            states.insert({liveid, LockingImageState(imageState)});
+            states.insert({Image, LockingImageState(imageState)});
           }
           else
           {
@@ -397,8 +396,8 @@ void VulkanResourceManager::SerialiseImageStates(SerialiserType &ser,
         }
         else if(IsActiveReplaying(m_State))
         {
-          auto current = states.find(liveid)->second.LockRead();
-          auto stit = states.find(liveid);
+          auto current = states.find(Image)->second.LockRead();
+          auto stit = states.find(Image);
           for(auto subit = imageState.subresourceStates.begin();
               subit != imageState.subresourceStates.end(); ++subit)
           {
@@ -539,11 +538,10 @@ bool VulkanResourceManager::Serialise_ImageRefs(ReadSerialiser &ser,
     // unpack data into states
     for(auto it = data.begin(); it != data.end(); ++it)
     {
-      if(!HasLiveResource(it->image))
+      if(!HasResource(it->image))
         continue;
-      ResourceId liveid = GetLiveID(it->image);
 
-      auto stit = states.find(liveid);
+      auto stit = states.find(it->image);
       if(stit == states.end())
       {
         RDCWARN("Found ImgRefs for unknown image");
@@ -578,10 +576,14 @@ void VulkanResourceManager::InsertDeviceMemoryRefs(WriteSerialiser &ser)
       memRefs = &emptyMemRefs;
     else
       memRefs = &it->second;
-    Intervals<FrameRefType> &rangeRefs = memRefs->rangeRefs;
+    const Intervals<FrameRefType> &rangeRefs = memRefs->rangeRefs;
     for(auto jt = rangeRefs.begin(); jt != rangeRefs.end(); jt++)
       data.push_back({*memIt, jt->start(), jt->value()});
   }
+
+  for(ResourceId dead : m_DeadDeviceMemories)
+    m_DeviceMemories.erase(dead);
+  m_DeadDeviceMemories.clear();
 
   uint64_t sizeEstimate = data.size() * sizeof(MemRefInterval) + 32;
 
@@ -589,6 +591,11 @@ void VulkanResourceManager::InsertDeviceMemoryRefs(WriteSerialiser &ser)
     SCOPED_SERIALISE_CHUNK(VulkanChunk::DeviceMemoryRefs, sizeEstimate);
     Serialise_DeviceMemoryRefs(ser, data);
   }
+}
+
+void VulkanResourceManager::RemoveAnnotations(ResourceId id)
+{
+  m_Core->RemoveAnnotations(id);
 }
 
 void VulkanResourceManager::MarkSparseMapReferenced(const ResourceInfo *sparse)
@@ -657,7 +664,7 @@ void VulkanResourceManager::ApplyBarriers(uint32_t queueFamilyIndex,
     ResourceId id = states[ti].first;
     ImageRegionState &t = states[ti].second;
 
-    TRDBG("Applying barrier to %s", ToStr(GetOriginalID(id)).c_str());
+    TRDBG("Applying barrier to %s", ToStr(id).c_str());
 
     auto stit = layouts.find(id);
 
@@ -879,7 +886,7 @@ void VulkanResourceManager::RecordBarriers(rdcflatmap<ResourceId, ImageState> &s
 
 ResourceId VulkanResourceManager::GetFirstIDForHandle(uint64_t handle)
 {
-  for(auto it = m_CurrentResourceMap.begin(); it != m_CurrentResourceMap.end(); ++it)
+  for(auto it = m_ResourceMap.begin(); it != m_ResourceMap.end(); ++it)
   {
     WrappedVkRes *res = it->second;
 
@@ -890,23 +897,31 @@ ResourceId VulkanResourceManager::GetFirstIDForHandle(uint64_t handle)
     {
       WrappedVkDispRes *disp = (WrappedVkDispRes *)res;
       if(disp->real.handle == handle)
-        return IsReplayMode(m_State) ? GetOriginalID(disp->id) : disp->id;
+        return disp->id;
     }
     else
     {
       WrappedVkNonDispRes *nondisp = (WrappedVkNonDispRes *)res;
       if(nondisp->real.handle == handle)
-        return IsReplayMode(m_State) ? GetOriginalID(nondisp->id) : nondisp->id;
+        return nondisp->id;
     }
   }
 
   return ResourceId();
 }
 
+uint32_t VulkanResourceManager::DescriptorDataSize(VkDescriptorType type)
+{
+  return m_Core->DescriptorDataSize(type);
+}
+
 void VulkanResourceManager::MarkMemoryFrameReferenced(ResourceId mem, VkDeviceSize offset,
                                                       VkDeviceSize size, FrameRefType refType)
 {
   SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
+
+  if(mem == ResourceId())
+    return;
 
   FrameRefType maxRef = MarkMemoryReferenced(m_MemFrameRefs, mem, offset, size, refType);
   if(IsCompleteWriteFrameRef(maxRef))
@@ -936,7 +951,10 @@ void VulkanResourceManager::RemoveDeviceMemory(ResourceId mem)
 {
   SCOPED_LOCK_OPTIONAL(m_Lock, m_Capturing);
 
-  m_DeviceMemories.erase(mem);
+  if(IsActiveCapturing(m_State))
+    m_DeadDeviceMemories.push_back(mem);
+  else
+    m_DeviceMemories.erase(mem);
 }
 
 void VulkanResourceManager::MergeReferencedMemory(std::unordered_map<ResourceId, MemRefs> &memRefs)
@@ -988,6 +1006,16 @@ MemRefs *VulkanResourceManager::FindMemRefs(ResourceId mem)
     return NULL;
 }
 
+void VulkanResourceManager::Begin_PrepareInitialBatch()
+{
+  return m_Core->Begin_PrepareInitialBatch();
+}
+
+void VulkanResourceManager::End_PrepareInitialBatch()
+{
+  return m_Core->End_PrepareInitialBatch();
+}
+
 bool VulkanResourceManager::Prepare_InitialState(WrappedVkRes *res)
 {
   return m_Core->Prepare_InitialState(res);
@@ -1005,14 +1033,14 @@ bool VulkanResourceManager::Serialise_InitialState(WriteSerialiser &ser, Resourc
   return m_Core->Serialise_InitialState(ser, id, record, initial);
 }
 
-void VulkanResourceManager::Create_InitialState(ResourceId id, WrappedVkRes *live, bool hasData)
+void VulkanResourceManager::Create_InitialState(ResourceId id, WrappedVkRes *res, bool hasData)
 {
-  return m_Core->Create_InitialState(id, live, hasData);
+  return m_Core->Create_InitialState(id, res, hasData);
 }
 
-void VulkanResourceManager::Apply_InitialState(WrappedVkRes *live, const VkInitialContents &initial)
+void VulkanResourceManager::Apply_InitialState(WrappedVkRes *res, VkInitialContents &initial)
 {
-  return m_Core->Apply_InitialState(live, initial);
+  return m_Core->Apply_InitialState(res, initial);
 }
 
 rdcarray<ResourceId> VulkanResourceManager::InitialContentResources()
@@ -1020,8 +1048,39 @@ rdcarray<ResourceId> VulkanResourceManager::InitialContentResources()
   rdcarray<ResourceId> resources =
       ResourceManager<VulkanResourceManagerConfiguration>::InitialContentResources();
   std::sort(resources.begin(), resources.end(), [this](ResourceId a, ResourceId b) {
-    return m_InitialContents[a].data.type < m_InitialContents[b].data.type;
+    const InitialContentData &aData = m_InitialContents[a].data;
+    const InitialContentData &bData = m_InitialContents[b].data;
+
+    // Always sort BLASs before TLASs, as a TLAS holds device addresses for it's BLASs
+    // and we make sure those addresses are valid.  There's no good handling for the generic types,
+    // so we just assume it is a TLAS
+    if(aData.accelerationStructureInfo && bData.accelerationStructureInfo)
+    {
+      const VkAccelerationStructureTypeKHR aType = aData.accelerationStructureInfo->type;
+      const VkAccelerationStructureTypeKHR bType = bData.accelerationStructureInfo->type;
+      if(aType == VkAccelerationStructureTypeKHR::VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR &&
+         (bType == VkAccelerationStructureTypeKHR::VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR ||
+          bType == VkAccelerationStructureTypeKHR::VK_ACCELERATION_STRUCTURE_TYPE_GENERIC_KHR))
+        return true;
+    }
+
+    // serialise ASs first to allow reallocation.
+    // since the enum is serialised we couldn't change the order so we do this by hand
+    int aASSort = aData.type == eResAccelerationStructureKHR ? 0 : 1;
+    int bASSort = bData.type == eResAccelerationStructureKHR ? 0 : 1;
+    if(aASSort != bASSort)
+      return aASSort < bASSort;
+
+    return aData.type < bData.type;
   });
+
+  // remove any initial contents we don't want to serialise. This can happen if a resource is
+  // postponed, then not prepared, so we don't want to fail.
+  resources.removeIf([this](ResourceId a) {
+    const InitialContentData &aData = m_InitialContents[a].data;
+    return aData.type == eResUnknown;
+  });
+
   return resources;
 }
 

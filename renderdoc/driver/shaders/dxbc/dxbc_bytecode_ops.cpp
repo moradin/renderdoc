@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -57,7 +57,7 @@ const DXBC::CBufferVariable *FindCBufferVar(const uint32_t minOffset, const uint
 
     // does minOffset-maxOffset reside in this variable? We don't handle the case where the range
     // crosses a variable (and I don't think FXC emits that anyway).
-    if(voffs <= minOffset && voffs + v.type.descriptor.bytesize > maxOffset)
+    if(voffs <= minOffset && voffs + v.type.bytesize > maxOffset)
     {
       byteOffset = voffs;
 
@@ -99,6 +99,28 @@ bool Operand::operator==(const Operand &o) const
       return false;
 
   return true;
+}
+
+bool Operand::operator<(const Operand &o) const
+{
+  if(type != o.type)
+    return type < o.type;
+  if(numComponents != o.numComponents)
+    return numComponents < o.numComponents;
+  int c = memcmp(comps, o.comps, 4);
+  if(c != 0)
+    return c < 0;
+  if((flags & (FLAG_ABS | FLAG_NEG)) != (o.flags & (FLAG_ABS | FLAG_NEG)))
+    return (flags & (FLAG_ABS | FLAG_NEG)) < (o.flags & (FLAG_ABS | FLAG_NEG));
+
+  if(indices != o.indices)
+    return indices < o.indices;
+
+  for(size_t i = 0; i < 4; i++)
+    if(values[i] != o.values[i])
+      return values[i] < o.values[i];
+
+  return false;
 }
 
 bool Operand::sameResource(const Operand &o) const
@@ -346,7 +368,16 @@ rdcstr Operand::toString(const DXBC::Reflection *reflection, ToString toStrFlags
           }
         }
 
-        if(cbuffer)
+        if(cbuffer && decl)
+        {
+          // for declarations don't look up the variable name. This actually lists the size in
+          // float4s of the constant buffer, and in the case of dead code elimination there could be
+          // variables past that point which have been removed which we'd find
+
+          if(!cbuffer->name.empty())
+            str += " (" + cbuffer->name + ")";
+        }
+        else if(cbuffer)
         {
           // if the second index is constant then this is easy enough, we just find the matching
           // cbuffer variable and use its name, possibly rebasing the swizzle.
@@ -385,14 +416,14 @@ rdcstr Operand::toString(const DXBC::Reflection *reflection, ToString toStrFlags
               uint32_t varOffset = minOffset - baseOffset;
 
               // if it's an array, add the index based on the relative index to the base offset
-              if(var->type.descriptor.elements > 1)
+              if(var->type.elements > 1)
               {
-                uint32_t byteSize = var->type.descriptor.bytesize;
+                uint32_t byteSize = var->type.bytesize;
 
                 // round up the byte size to a the nearest vec4 in case it's not quite a multiple
                 byteSize = AlignUp16(byteSize);
 
-                const uint32_t elementSize = byteSize / var->type.descriptor.elements;
+                const uint32_t elementSize = byteSize / var->type.elements;
 
                 const uint32_t elementIndex = varOffset / elementSize;
 
@@ -403,10 +434,8 @@ rdcstr Operand::toString(const DXBC::Reflection *reflection, ToString toStrFlags
               }
 
               // or if it's a matrix
-              if((var->type.descriptor.varClass == DXBC::CLASS_MATRIX_ROWS &&
-                  var->type.descriptor.cols > 1) ||
-                 (var->type.descriptor.varClass == DXBC::CLASS_MATRIX_COLUMNS &&
-                  var->type.descriptor.rows > 1))
+              if((var->type.varClass == DXBC::CLASS_MATRIX_ROWS && var->type.cols > 1) ||
+                 (var->type.varClass == DXBC::CLASS_MATRIX_COLUMNS && var->type.rows > 1))
               {
                 str += StringFormat::Fmt("[%u]", varOffset / 16);
               }
@@ -531,6 +560,8 @@ rdcstr Operand::toString(const DXBC::Reflection *reflection, ToString toStrFlags
     str = "oMask";
   else if(type == TYPE_OUTPUT_STENCIL_REF)
     str = "oStencilRef";
+  else if(type == TYPE_INNER_COVERAGE)
+    str = "vInnerCoverage";
   else
   {
     RDCERR("Unsupported system value semantic %d", type);
@@ -751,6 +782,10 @@ void Program::DecodeProgram()
         else
           m_LateDeclarations.back().push_back(decl);
       }
+
+      if(decl.declaration == OPCODE_DCL_THREAD_GROUP_SHARED_MEMORY_RAW ||
+         decl.declaration == OPCODE_DCL_THREAD_GROUP_SHARED_MEMORY_STRUCTURED)
+        m_Threadscope |= DXBC::ThreadScope::Workgroup;
     }
     else
     {
@@ -760,6 +795,9 @@ void Program::DecodeProgram()
       if(op.operation == OPCODE_HS_CONTROL_POINT_PHASE || op.operation == OPCODE_HS_FORK_PHASE ||
          op.operation == OPCODE_HS_JOIN_PHASE)
         m_LateDeclarations.push_back({});
+
+      if(decl.declaration == OPCODE_SYNC)
+        m_Threadscope |= DXBC::ThreadScope::Workgroup;
     }
   }
 
@@ -872,7 +910,7 @@ void Program::MakeDisassemblyString()
     fileLines.resize(m_DebugInfo->Files.size());
 
     for(size_t i = 0; i < m_DebugInfo->Files.size(); i++)
-      split(m_DebugInfo->Files[i].second, fileLines[i], '\n');
+      split(m_DebugInfo->Files[i].contents, fileLines[i], '\n');
   }
 
   for(size_t d = 0; d < m_Declarations.size(); d++)
@@ -955,15 +993,16 @@ void Program::MakeDisassemblyString()
 
           if(!func.empty())
           {
-            m_Disassembly += StringFormat::Fmt("%s:%d - %s()\n",
-                                               m_DebugInfo->Files[lineInfo.fileIndex].first.c_str(),
-                                               lineInfo.lineStart, func.c_str());
+            m_Disassembly += StringFormat::Fmt(
+                "%s:%d - %s()\n", m_DebugInfo->Files[lineInfo.fileIndex].filename.c_str(),
+                lineInfo.lineStart, func.c_str());
             linenum++;
           }
           else
           {
-            m_Disassembly += StringFormat::Fmt(
-                "%s:%d\n", m_DebugInfo->Files[lineInfo.fileIndex].first.c_str(), lineInfo.lineStart);
+            m_Disassembly +=
+                StringFormat::Fmt("%s:%d\n", m_DebugInfo->Files[lineInfo.fileIndex].filename.c_str(),
+                                  lineInfo.lineStart);
             linenum++;
           }
         }
@@ -1215,7 +1254,8 @@ bool Program::DecodeOperand(uint32_t *&tokenStream, ToString flags, Operand &ret
   uint32_t indexDim = Oper::IndexDimension.Get(OperandToken0);
 
   OperandIndexType rep[] = {
-      Oper::Index0.Get(OperandToken0), Oper::Index1.Get(OperandToken0),
+      Oper::Index0.Get(OperandToken0),
+      Oper::Index1.Get(OperandToken0),
       Oper::Index2.Get(OperandToken0),
   };
 
@@ -1237,6 +1277,10 @@ bool Program::DecodeOperand(uint32_t *&tokenStream, ToString flags, Operand &ret
       retOper.precision = ExtendedOperand::MinPrecision.Get(OperandTokenN);
       if(ExtendedOperand::NonUniform.Get(OperandTokenN))
         retOper.flags = Operand::Flags(retOper.flags | Operand::FLAG_NONUNIFORM);
+    }
+    else if(type == EXTENDED_OPERAND_EMPTY)
+    {
+      // do nothing? degenerate case
     }
     else
     {
@@ -2156,6 +2200,10 @@ bool Program::DecodeDecl(uint32_t *&tokenStream, Declaration &retDecl, bool frie
 
     retDecl.str += retDecl.operand.toString(m_Reflection, flags);
     retDecl.str += StringFormat::Fmt(", %u", retDecl.tgsmCount);
+
+    uint32_t reg = (uint32_t)retDecl.operand.indices[0].index;
+    m_GroupsharedTempSizes.resize_for_index(reg);
+    m_GroupsharedTempSizes[reg] = {4, AlignUp4(retDecl.tgsmCount) / 4};
   }
   else if(op == OPCODE_DCL_THREAD_GROUP_SHARED_MEMORY_STRUCTURED)
   {
@@ -2173,6 +2221,10 @@ bool Program::DecodeDecl(uint32_t *&tokenStream, Declaration &retDecl, bool frie
     retDecl.str += retDecl.operand.toString(m_Reflection, flags);
     retDecl.str +=
         StringFormat::Fmt(", %u, %u", retDecl.tsgm_structured.stride, retDecl.tsgm_structured.count);
+
+    uint32_t reg = (uint32_t)retDecl.operand.indices[0].index;
+    m_GroupsharedTempSizes.resize_for_index(reg);
+    m_GroupsharedTempSizes[reg] = {retDecl.tsgm_structured.stride, retDecl.tsgm_structured.count};
   }
   else if(op == OPCODE_DCL_INPUT_CONTROL_POINT_COUNT || op == OPCODE_DCL_OUTPUT_CONTROL_POINT_COUNT)
   {
@@ -2185,11 +2237,11 @@ bool Program::DecodeDecl(uint32_t *&tokenStream, Declaration &retDecl, bool frie
     retDecl.tessDomain = Decl::TessDomain.Get(OpcodeToken0);
 
     retDecl.str += " ";
-    if(retDecl.tessDomain == DOMAIN_ISOLINE)
+    if(retDecl.tessDomain == DXBC::TessellatorDomain::DOMAIN_ISOLINE)
       retDecl.str += "domain_isoline";
-    else if(retDecl.tessDomain == DOMAIN_TRI)
+    else if(retDecl.tessDomain == DXBC::TessellatorDomain::DOMAIN_TRI)
       retDecl.str += "domain_tri";
-    else if(retDecl.tessDomain == DOMAIN_QUAD)
+    else if(retDecl.tessDomain == DXBC::TessellatorDomain::DOMAIN_QUAD)
       retDecl.str += "domain_quad";
     else
       RDCERR("Unexpected Tessellation domain");
@@ -2199,13 +2251,13 @@ bool Program::DecodeDecl(uint32_t *&tokenStream, Declaration &retDecl, bool frie
     retDecl.tessPartition = Decl::TessPartitioning.Get(OpcodeToken0);
 
     retDecl.str += " ";
-    if(retDecl.tessPartition == PARTITIONING_INTEGER)
+    if(retDecl.tessPartition == DXBC::PARTITIONING_INTEGER)
       retDecl.str += "partitioning_integer";
-    else if(retDecl.tessPartition == PARTITIONING_POW2)
+    else if(retDecl.tessPartition == DXBC::PARTITIONING_POW2)
       retDecl.str += "partitioning_pow2";
-    else if(retDecl.tessPartition == PARTITIONING_FRACTIONAL_ODD)
+    else if(retDecl.tessPartition == DXBC::PARTITIONING_FRACTIONAL_ODD)
       retDecl.str += "partitioning_fractional_odd";
-    else if(retDecl.tessPartition == PARTITIONING_FRACTIONAL_EVEN)
+    else if(retDecl.tessPartition == DXBC::PARTITIONING_FRACTIONAL_EVEN)
       retDecl.str += "partitioning_fractional_even";
     else
       RDCERR("Unexpected Partitioning");
@@ -2215,22 +2267,22 @@ bool Program::DecodeDecl(uint32_t *&tokenStream, Declaration &retDecl, bool frie
     retDecl.geomInputPrimitive = Decl::InputPrimitive.Get(OpcodeToken0);
 
     retDecl.str += " ";
-    if(retDecl.geomInputPrimitive == PRIMITIVE_POINT)
+    if(retDecl.geomInputPrimitive == DXBC::PRIMITIVE_POINT)
       retDecl.str += "point";
-    else if(retDecl.geomInputPrimitive == PRIMITIVE_LINE)
+    else if(retDecl.geomInputPrimitive == DXBC::PRIMITIVE_LINE)
       retDecl.str += "line";
-    else if(retDecl.geomInputPrimitive == PRIMITIVE_TRIANGLE)
+    else if(retDecl.geomInputPrimitive == DXBC::PRIMITIVE_TRIANGLE)
       retDecl.str += "triangle";
-    else if(retDecl.geomInputPrimitive == PRIMITIVE_LINE_ADJ)
+    else if(retDecl.geomInputPrimitive == DXBC::PRIMITIVE_LINE_ADJ)
       retDecl.str += "line_adj";
-    else if(retDecl.geomInputPrimitive == PRIMITIVE_TRIANGLE_ADJ)
+    else if(retDecl.geomInputPrimitive == DXBC::PRIMITIVE_TRIANGLE_ADJ)
       retDecl.str += "triangle_adj";
-    else if(retDecl.geomInputPrimitive >= PRIMITIVE_1_CONTROL_POINT_PATCH &&
-            retDecl.geomInputPrimitive <= PRIMITIVE_32_CONTROL_POINT_PATCH)
+    else if(retDecl.geomInputPrimitive >= DXBC::PRIMITIVE_1_CONTROL_POINT_PATCH &&
+            retDecl.geomInputPrimitive <= DXBC::PRIMITIVE_32_CONTROL_POINT_PATCH)
     {
-      retDecl.str +=
-          StringFormat::Fmt("control_point_patch_%u",
-                            1 + int(retDecl.geomInputPrimitive - PRIMITIVE_1_CONTROL_POINT_PATCH));
+      retDecl.str += StringFormat::Fmt(
+          "control_point_patch_%u",
+          1 + int(retDecl.geomInputPrimitive - DXBC::PRIMITIVE_1_CONTROL_POINT_PATCH));
     }
     else
       RDCERR("Unexpected primitive type");
@@ -2266,13 +2318,13 @@ bool Program::DecodeDecl(uint32_t *&tokenStream, Declaration &retDecl, bool frie
     retDecl.tessOutputPrimitive = Decl::OutputPrimitive.Get(OpcodeToken0);
 
     retDecl.str += " ";
-    if(retDecl.tessOutputPrimitive == OUTPUT_PRIMITIVE_POINT)
+    if(retDecl.tessOutputPrimitive == DXBC::OUTPUT_PRIMITIVE_POINT)
       retDecl.str += "output_point";
-    else if(retDecl.tessOutputPrimitive == OUTPUT_PRIMITIVE_LINE)
+    else if(retDecl.tessOutputPrimitive == DXBC::OUTPUT_PRIMITIVE_LINE)
       retDecl.str += "output_line";
-    else if(retDecl.tessOutputPrimitive == OUTPUT_PRIMITIVE_TRIANGLE_CW)
+    else if(retDecl.tessOutputPrimitive == DXBC::OUTPUT_PRIMITIVE_TRIANGLE_CW)
       retDecl.str += "output_triangle_cw";
-    else if(retDecl.tessOutputPrimitive == OUTPUT_PRIMITIVE_TRIANGLE_CCW)
+    else if(retDecl.tessOutputPrimitive == DXBC::OUTPUT_PRIMITIVE_TRIANGLE_CCW)
       retDecl.str += "output_triangle_ccw";
     else
       RDCERR("Unexpected output primitive");

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -70,14 +70,14 @@ void WrappedOpenGL::ShaderData::ProcessSPIRVCompilation(WrappedOpenGL &drv, Reso
 {
   reflection->resourceId = id;
 
-  rdcarray<SpecConstant> specInfo;
+  specInfo.clear();
   for(size_t i = 0; i < specInfo.size(); i++)
   {
     specInfo.push_back(SpecConstant(pConstantIndex[i], pConstantValue[i], 4));
   }
 
   spirv.MakeReflection(GraphicsAPI::OpenGL, ShaderStage(ShaderIdx(type)), pEntryPoint, specInfo,
-                       *reflection, mapping, patchData);
+                       *reflection, patchData);
 
   version = 460;
 
@@ -205,7 +205,12 @@ void WrappedOpenGL::ShaderData::ProcessCompilation(WrappedOpenGL &drv, ResourceI
   // if we don't have program_interface_query, need to compile the shader with glslang to be able
   // to reflect with. This is needed on capture or replay
   if(!HasExt[ARB_program_interface_query] && status == 1)
+  {
     glslangShader = CompileShaderForReflection(rdcspv::ShaderStage(ShaderIdx(type)), sources);
+
+    if(glslangShader == NULL)
+      RDCERR("glslang shader failed to compile, reflection will fail");
+  }
 
   if(IsReplayMode(drv.GetState()) && !drv.IsInternalShader())
   {
@@ -225,7 +230,7 @@ void WrappedOpenGL::ShaderData::ProcessCompilation(WrappedOpenGL &drv, ResourceI
       // - this may or may not be emulated depending on if ARB_program_interface_query is supported.
       if(HasExt[ARB_separate_shader_objects])
       {
-        GLuint sepProg = MakeSeparableShaderProgram(drv, type, sources, NULL);
+        GLuint sepProg = MakeSeparableShaderProgram(drv, type, sources, includepaths);
 
         if(sepProg == 0)
         {
@@ -249,38 +254,371 @@ void WrappedOpenGL::ShaderData::ProcessCompilation(WrappedOpenGL &drv, ResourceI
         // In this case we forcibly emulate ARB_program_interface_query.
         RDCASSERT(!HasExt[ARB_program_interface_query]);
 
-        // to do this, we need to create an empty program object and manually configure its glslang
-        // program.
-        GLuint fakeProgram = drv.glCreateProgram();
+        if(glslangShader == NULL)
+        {
+          RDCERR("Couldn't compile shader via glslang - functionality will be broken.");
+        }
+        else
+        {
+          // to do this, we need to create an empty program object and manually configure its
+          // glslang program.
+          GLuint fakeProgram = drv.glCreateProgram();
 
-        ResourceId progid = drv.GetResourceManager()->GetResID(ProgramRes(drv.GetCtx(), fakeProgram));
+          ResourceId progid =
+              drv.GetResourceManager()->GetResID(ProgramRes(drv.GetCtx(), fakeProgram));
 
-        ProgramData &progDetails = drv.m_Programs[progid];
+          ProgramData &progDetails = drv.m_Programs[progid];
 
-        progDetails.linked = true;
+          progDetails.linked = true;
 
-        progDetails.glslangProgram = LinkProgramForReflection({glslangShader});
+          progDetails.glslangProgram = LinkProgramForReflection({glslangShader});
 
-        MakeShaderReflection(type, fakeProgram, *reflection, outputUsage);
-        reflected = true;
+          MakeShaderReflection(type, fakeProgram, *reflection, outputUsage);
+          reflected = true;
 
-        drv.glDeleteProgram(fakeProgram);
+          drv.glDeleteProgram(fakeProgram);
+        }
       }
 
       if(reflected)
       {
-        rdcarray<uint32_t> spirvwords;
-
         rdcspv::CompilationSettings settings(rdcspv::InputLanguage::OpenGLGLSL,
                                              rdcspv::ShaderStage(ShaderIdx(type)));
 
         settings.gles = IsGLES;
+        settings.debugInfo = true;
 
-        rdcstr s = rdcspv::Compile(settings, sources, spirvwords);
-        if(!spirvwords.empty())
-          spirv.Parse(spirvwords);
+        ShaderReflection spvReflection;
+        SPIRVPatchData spvPatchData;
+
+        rdcstr err = rdcspv::Compile(settings, sources, convertedSpirvWords);
+        if(!convertedSpirvWords.empty())
+        {
+          convertedSPIRV = true;
+          spirv.Parse(convertedSpirvWords);
+
+          spirv.MakeReflection(GraphicsAPI::OpenGL, ShaderStage(ShaderIdx(type)), "main", {},
+                               spvReflection, spvPatchData);
+        }
         else
-          disassembly = "Disassembly to SPIR-V failed:\n\n" + s;
+        {
+          // enable automapping and try again
+          settings.autoMapBindings = true;
+          settings.autoMapLocations = true;
+          err = rdcspv::Compile(settings, sources, convertedSpirvWords);
+
+          if(!convertedSpirvWords.empty())
+          {
+            convertedSPIRV = true;
+            convertedAutomapped = true;
+            spirv.Parse(convertedSpirvWords);
+
+            spirv.MakeReflection(GraphicsAPI::OpenGL, ShaderStage(ShaderIdx(type)), "main", {},
+                                 spvReflection, spvPatchData);
+          }
+          else
+          {
+            disassembly = "Disassembly to SPIR-V failed:\n\n" + err;
+          }
+        }
+
+        if(convertedSPIRV)
+        {
+          // we could assert here that convertedRefl looks like the real reflection
+          reflection->debugInfo.debuggable = spvReflection.debugInfo.debuggable;
+          reflection->debugInfo.debugStatus = spvReflection.debugInfo.debugStatus;
+          reflection->debugInfo.sourceDebugInformation =
+              spvReflection.debugInfo.sourceDebugInformation;
+
+          if(HasExt[ARB_shader_storage_buffer_object])
+          {
+            if(type == eGL_VERTEX_SHADER)
+            {
+              GLint numSSBOs = 0;
+              GL.glGetIntegerv(eGL_MAX_VERTEX_SHADER_STORAGE_BLOCKS, &numSSBOs);
+
+              if(numSSBOs == 0)
+              {
+                reflection->debugInfo.debuggable = false;
+                reflection->debugInfo.debugStatus =
+                    "Vertex shader debugging not supported on this driver.";
+              }
+            }
+            else if(type == eGL_FRAGMENT_SHADER)
+            {
+              GLint numSSBOs = 0;
+              GL.glGetIntegerv(eGL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS, &numSSBOs);
+
+              if(numSSBOs == 0)
+              {
+                reflection->debugInfo.debuggable = false;
+                reflection->debugInfo.debugStatus =
+                    "Fragment shader debugging not supported on this driver.";
+              }
+            }
+          }
+
+          // we must ensure the converted reflection & patch data matches the real reflection so
+          // that ShaderBindIndex references are consistent. We could do a manual remapping during
+          // debug to the right index, but ShaderBindIndex's are also baked into variable results.
+          convertedRefl = spvReflection;
+          convertedPatchData = spvPatchData;
+
+          // for each interface, clear it, then look through the real reflection and find the
+          // matching SPIR-V reflection entry by name and assign it to the same index
+          // any holes generated by SPIR-V
+
+          convertedRefl.constantBlocks.clear();
+          convertedRefl.readOnlyResources.clear();
+          convertedRefl.readWriteResources.clear();
+          convertedRefl.samplers.clear();
+
+          convertedPatchData.cblockInterface.clear();
+          convertedPatchData.roInterface.clear();
+          convertedPatchData.rwInterface.clear();
+          convertedPatchData.samplerInterface.clear();
+
+          for(size_t i = 0; i < reflection->constantBlocks.size(); i++)
+          {
+            rdcstr name = reflection->constantBlocks[i].name;
+            // Only match on base name remove any array indexes
+            int arrOffs = name.indexOf('[');
+            if(arrOffs > 0)
+              name.erase(arrOffs, name.size());
+
+            bool found = false;
+            for(size_t j = 0; j < spvReflection.constantBlocks.size(); j++)
+            {
+              const rdcstr &matchName = spvReflection.constantBlocks[j].name;
+              if(name == matchName)
+              {
+                convertedPatchData.cblockInterface.resize_for_index(i);
+                convertedPatchData.cblockInterface[i] = spvPatchData.cblockInterface[j];
+                convertedRefl.constantBlocks.resize_for_index(i);
+                convertedRefl.constantBlocks[i] = spvReflection.constantBlocks[j];
+                found = true;
+                break;
+              }
+            }
+
+            if(!found)
+            {
+              // try again to match but via type name. a block like `uniform foo_type { .. } foo`
+              // will show up via SPIR-V reflection as 'foo' but could show up as 'foo_type' via GL reflection.
+              for(size_t j = 0; j < spvReflection.constantBlocks.size(); j++)
+              {
+                const rdcspv::DataType &outerType =
+                    spirv.GetDataType(spirv.GetIDType(spvPatchData.cblockInterface[j]));
+
+                rdcstr matchName = outerType.name;
+                if(outerType.type == rdcspv::DataType::PointerType)
+                {
+                  const rdcspv::DataType &innerType = spirv.GetDataType(outerType.InnerType());
+                  if(innerType.type == rdcspv::DataType::ArrayType)
+                    matchName = spirv.GetDataType(innerType.InnerType()).name;
+                  else
+                    matchName = innerType.name;
+                }
+
+                if(name == matchName)
+                {
+                  convertedPatchData.cblockInterface.resize_for_index(i);
+                  convertedPatchData.cblockInterface[i] = spvPatchData.cblockInterface[j];
+                  convertedRefl.constantBlocks.resize_for_index(i);
+                  convertedRefl.constantBlocks[i] = spvReflection.constantBlocks[j];
+                  found = true;
+                  break;
+                }
+              }
+            }
+
+            if(!found)
+            {
+              // try again with a _var suffix that is added automatically commonly for pointer-to-type
+              name += "_var";
+              for(size_t j = 0; j < spvReflection.constantBlocks.size(); j++)
+              {
+                const rdcstr &matchName = spvReflection.constantBlocks[j].name;
+                if(name == matchName)
+                {
+                  convertedPatchData.cblockInterface.resize_for_index(i);
+                  convertedPatchData.cblockInterface[i] = spvPatchData.cblockInterface[j];
+                  convertedRefl.constantBlocks.resize_for_index(i);
+                  convertedRefl.constantBlocks[i] = spvReflection.constantBlocks[j];
+                  found = true;
+                  break;
+                }
+              }
+            }
+
+            // not finding one is fine, it means the reflection generated some entries which didn't exist in SPIR-V
+
+            if(!found)
+            {
+              RDCWARN(
+                  "Found reflection entry %s that does not exist in SPIR-V. Using GLSL reflection",
+                  reflection->constantBlocks[i].name.c_str());
+            }
+          }
+
+          // this is slightly more of a problem since the SPIR-V reflection will potentially refer
+          // to resources that don't exist at all. We hope that this only happens due to dead
+          // resources that won't be referenced.
+          if(spvReflection.constantBlocks.size() > reflection->constantBlocks.size())
+            RDCWARN("Found some SPIR-V reflection entries that don't exist in the GLSL reflection");
+
+          for(size_t i = 0; i < reflection->readOnlyResources.size(); i++)
+          {
+            rdcstr name = reflection->readOnlyResources[i].name;
+            // Only match on base name remove any array indexes
+            int arrOffs = name.indexOf('[');
+            if(arrOffs > 0)
+              name.erase(arrOffs, name.size());
+
+            bool found = false;
+            for(size_t j = 0; j < spvReflection.readOnlyResources.size(); j++)
+            {
+              const rdcstr &matchName = spvReflection.readOnlyResources[j].name;
+              if(name == matchName)
+              {
+                convertedPatchData.roInterface.resize_for_index(i);
+                convertedPatchData.roInterface[i] = spvPatchData.roInterface[j];
+                convertedRefl.readOnlyResources.resize_for_index(i);
+                convertedRefl.readOnlyResources[i] = spvReflection.readOnlyResources[j];
+                found = true;
+                break;
+              }
+            }
+
+            if(!found)
+            {
+              RDCWARN(
+                  "Found reflection entry %s that does not exist in SPIR-V. Using GLSL reflection",
+                  reflection->readOnlyResources[i].name.c_str());
+            }
+          }
+
+          if(spvReflection.readOnlyResources.size() > reflection->readOnlyResources.size())
+            RDCWARN("Found some SPIR-V reflection entries that don't exist in the GLSL reflection");
+
+          for(size_t i = 0; i < reflection->readWriteResources.size(); i++)
+          {
+            rdcstr name = reflection->readWriteResources[i].name;
+            // Only match on base name remove any array indexes
+            int arrOffs = name.indexOf('[');
+            if(arrOffs > 0)
+              name.erase(arrOffs, name.size());
+
+            bool found = false;
+            for(size_t j = 0; j < spvReflection.readWriteResources.size(); j++)
+            {
+              const rdcstr &matchName = spvReflection.readWriteResources[j].name;
+              if(name == matchName)
+              {
+                convertedPatchData.rwInterface.resize_for_index(i);
+                convertedPatchData.rwInterface[i] = spvPatchData.rwInterface[j];
+                convertedRefl.readWriteResources.resize_for_index(i);
+                convertedRefl.readWriteResources[i] = spvReflection.readWriteResources[j];
+                found = true;
+                break;
+              }
+            }
+
+            if(!found)
+            {
+              // try again to match but via type name. a block like `uniform foo_type { .. } foo`
+              // will show up via SPIR-V reflection as 'foo' but could show up as 'foo_type' via GL reflection.
+              for(size_t j = 0; j < spvReflection.readWriteResources.size(); j++)
+              {
+                const rdcspv::DataType &outerType =
+                    spirv.GetDataType(spirv.GetIDType(spvPatchData.rwInterface[j]));
+
+                rdcstr matchName = outerType.name;
+                if(outerType.type == rdcspv::DataType::PointerType)
+                {
+                  const rdcspv::DataType &innerType = spirv.GetDataType(outerType.InnerType());
+                  if(innerType.type == rdcspv::DataType::ArrayType)
+                    matchName = spirv.GetDataType(innerType.InnerType()).name;
+                  else
+                    matchName = innerType.name;
+                }
+
+                if(name == matchName)
+                {
+                  convertedPatchData.rwInterface.resize_for_index(i);
+                  convertedPatchData.rwInterface[i] = spvPatchData.rwInterface[j];
+                  convertedRefl.readWriteResources.resize_for_index(i);
+                  convertedRefl.readWriteResources[i] = spvReflection.readWriteResources[j];
+                  found = true;
+                  break;
+                }
+              }
+            }
+
+            if(!found)
+            {
+              // try again with a _var suffix that is added automatically commonly for pointer-to-type
+              name += "_var";
+              for(size_t j = 0; j < spvReflection.readWriteResources.size(); j++)
+              {
+                const rdcstr &matchName = spvReflection.readWriteResources[j].name;
+                if(name == matchName)
+                {
+                  convertedPatchData.rwInterface.resize_for_index(i);
+                  convertedPatchData.rwInterface[i] = spvPatchData.rwInterface[j];
+                  convertedRefl.readWriteResources.resize_for_index(i);
+                  convertedRefl.readWriteResources[i] = spvReflection.readWriteResources[j];
+                  found = true;
+                  break;
+                }
+              }
+            }
+
+            if(!found)
+            {
+              RDCWARN(
+                  "Found reflection entry %s that does not exist in SPIR-V. Using GLSL reflection",
+                  reflection->readWriteResources[i].name.c_str());
+            }
+          }
+
+          if(spvReflection.readWriteResources.size() > reflection->readWriteResources.size())
+            RDCWARN("Found some SPIR-V reflection entries that don't exist in the GLSL reflection");
+
+          for(size_t i = 0; i < reflection->samplers.size(); i++)
+          {
+            rdcstr name = spvReflection.samplers[i].name;
+            // Only match on base name remove any array indexes
+            int arrOffs = name.indexOf('[');
+            if(arrOffs > 0)
+              name.erase(arrOffs, name.size());
+
+            bool found = false;
+            for(size_t j = 0; j < spvReflection.samplers.size(); j++)
+            {
+              const rdcstr &matchName = spvReflection.samplers[j].name;
+              if(name == matchName)
+              {
+                convertedPatchData.samplerInterface.resize_for_index(i);
+                convertedPatchData.samplerInterface[i] = spvPatchData.samplerInterface[j];
+                convertedRefl.samplers.resize_for_index(i);
+                convertedRefl.samplers[i] = spvReflection.samplers[j];
+                found = true;
+                break;
+              }
+            }
+
+            if(!found)
+            {
+              RDCWARN(
+                  "Found reflection entry %s that does not exist in SPIR-V. Using GLSL reflection",
+                  reflection->samplers[i].name.c_str());
+            }
+          }
+
+          if(spvReflection.samplers.size() > reflection->samplers.size())
+            RDCWARN("Found some SPIR-V reflection entries that don't exist in the GLSL reflection");
+        }
 
         reflection->resourceId = id;
 
@@ -313,11 +651,9 @@ bool WrappedOpenGL::Serialise_glCreateShader(SerialiserType &ser, GLenum type, G
 
     GLResource res = ShaderRes(GetCtx(), real);
 
-    ResourceId liveId = GetResourceManager()->RegisterResource(res);
+    ResourceId id = GetResourceManager()->RegisterResource(Shader, res);
 
-    m_Shaders[liveId].type = type;
-
-    GetResourceManager()->AddLiveResource(Shader, res);
+    m_Shaders[id].type = type;
 
     AddResource(Shader, ResourceType::Shader, "Shader");
   }
@@ -331,7 +667,7 @@ GLuint WrappedOpenGL::glCreateShader(GLenum type)
   SERIALISE_TIME_CALL(real = GL.glCreateShader(type));
 
   GLResource res = ShaderRes(GetCtx(), real);
-  ResourceId id = GetResourceManager()->RegisterResource(res);
+  ResourceId id = GetResourceManager()->RegisterResource(ResourceId(), res);
 
   if(IsCaptureMode(m_State))
   {
@@ -349,10 +685,6 @@ GLuint WrappedOpenGL::glCreateShader(GLenum type)
     RDCASSERT(record);
 
     record->AddChunk(chunk);
-  }
-  else
-  {
-    GetResourceManager()->AddLiveResource(id, res);
   }
 
   m_Shaders[id].type = type;
@@ -392,9 +724,9 @@ bool WrappedOpenGL::Serialise_glShaderSource(SerialiserType &ser, GLuint shaderH
     for(size_t i = 0; i < sources.size(); i++)
       strs.push_back(sources[i].c_str());
 
-    ResourceId liveId = GetResourceManager()->GetResID(shader);
+    ResourceId id = GetResourceManager()->GetResID(shader);
 
-    m_Shaders[liveId].sources = sources;
+    m_Shaders[id].sources = sources;
 
     GL.glShaderSource(shader.name, (GLsizei)sources.size(), strs.data(), NULL);
 
@@ -405,10 +737,9 @@ bool WrappedOpenGL::Serialise_glShaderSource(SerialiserType &ser, GLuint shaderH
     // Doing this means we support the case of recompiling a shader different ways
     // and relinking a program before use, which is still moderately crazy and
     // so people who do that should be moderately ashamed.
-    if(m_Shaders[liveId].reflection->resourceId != ResourceId())
+    if(m_Shaders[id].GetReflection()->resourceId != ResourceId())
     {
-      m_Shaders[liveId].spirv = rdcspv::Reflector();
-      *m_Shaders[liveId].reflection = ShaderReflection();
+      m_Shaders[id].ClearReflection();
     }
 
     AddResourceInitChunk(shader);
@@ -460,12 +791,11 @@ bool WrappedOpenGL::Serialise_glCompileShader(SerialiserType &ser, GLuint shader
 
   if(IsReplayingAndReading())
   {
-    ResourceId liveId = GetResourceManager()->GetResID(shader);
+    ResourceId id = GetResourceManager()->GetResID(shader);
 
     GL.glCompileShader(shader.name);
 
-    m_Shaders[liveId].ProcessCompilation(*this, GetResourceManager()->GetOriginalID(liveId),
-                                         shader.name);
+    m_Shaders[id].ProcessCompilation(*this, id, shader.name);
 
     AddResourceInitChunk(shader);
   }
@@ -512,7 +842,7 @@ void WrappedOpenGL::glDeleteShader(GLuint shader)
   GL.glDeleteShader(shader);
 
   GLResource res = ShaderRes(GetCtx(), shader);
-  if(GetResourceManager()->HasCurrentResource(res))
+  if(GetResourceManager()->HasResource(res))
   {
     if(GetResourceManager()->HasResourceRecord(res))
       GetResourceManager()->GetResourceRecord(res)->Delete(GetResourceManager());
@@ -539,7 +869,7 @@ bool WrappedOpenGL::Serialise_glAttachShader(SerialiserType &ser, GLuint program
     GL.glAttachShader(program.name, shader.name);
 
     AddResourceInitChunk(program);
-    DerivedResource(program, GetResourceManager()->GetOriginalID(liveShadId));
+    DerivedResource(program, liveShadId);
   }
 
   return true;
@@ -608,8 +938,8 @@ bool WrappedOpenGL::Serialise_glDetachShader(SerialiserType &ser, GLuint program
       }
     }
 
-    GL.glDetachShader(GetResourceManager()->GetLiveResource(progid).name,
-                      GetResourceManager()->GetLiveResource(shadid).name);
+    GL.glDetachShader(GetResourceManager()->GetResource(progid).name,
+                      GetResourceManager()->GetResource(shadid).name);
     */
   }
 
@@ -624,7 +954,7 @@ void WrappedOpenGL::glDetachShader(GLuint program, GLuint shader)
   {
     // check that shader still exists, it might have been deleted. If it has, it's not too important
     // that we detach the shader (only important if the program will attach it elsewhere).
-    if(IsCaptureMode(m_State) && GetResourceManager()->HasCurrentResource(ShaderRes(GetCtx(), shader)))
+    if(IsCaptureMode(m_State) && GetResourceManager()->HasResource(ShaderRes(GetCtx(), shader)))
     {
       GLResourceRecord *progRecord =
           GetResourceManager()->GetResourceRecord(ProgramRes(GetCtx(), program));
@@ -676,23 +1006,21 @@ bool WrappedOpenGL::Serialise_glCreateShaderProgramv(SerialiserType &ser, GLenum
 
     GLResource res = ProgramRes(GetCtx(), real);
 
-    ResourceId liveId = m_ResourceManager->RegisterResource(res);
+    ResourceId id = m_ResourceManager->RegisterResource(Program, res);
 
-    auto &progDetails = m_Programs[liveId];
+    WrappedOpenGL::ProgramData &progDetails = m_Programs[id];
 
     progDetails.linked = true;
-    progDetails.shaders.push_back(liveId);
-    progDetails.stageShaders[ShaderIdx(type)] = liveId;
+    progDetails.shaders.push_back(id);
+    progDetails.stageShaders[ShaderIdx(type)] = id;
     progDetails.shaderProgramUnlinkable = true;
 
-    auto &shadDetails = m_Shaders[liveId];
+    WrappedOpenGL::ShaderData &shadDetails = m_Shaders[id];
 
     shadDetails.type = type;
     shadDetails.sources.swap(src);
 
     shadDetails.ProcessCompilation(*this, Program, 0);
-
-    GetResourceManager()->AddLiveResource(Program, res);
 
     AddResource(Program, ResourceType::StateObject, "Program");
   }
@@ -709,7 +1037,7 @@ GLuint WrappedOpenGL::glCreateShaderProgramv(GLenum type, GLsizei count, const G
     return real;
 
   GLResource res = ProgramRes(GetCtx(), real);
-  ResourceId id = GetResourceManager()->RegisterResource(res);
+  ResourceId id = GetResourceManager()->RegisterResource(ResourceId(), res);
 
   if(IsCaptureMode(m_State))
   {
@@ -763,11 +1091,9 @@ bool WrappedOpenGL::Serialise_glCreateProgram(SerialiserType &ser, GLuint progra
 
     GLResource res = ProgramRes(GetCtx(), real);
 
-    ResourceId liveId = m_ResourceManager->RegisterResource(res);
+    ResourceId id = m_ResourceManager->RegisterResource(Program, res);
 
-    m_Programs[liveId].linked = false;
-
-    GetResourceManager()->AddLiveResource(Program, res);
+    m_Programs[id].linked = false;
 
     AddResource(Program, ResourceType::StateObject, "Program");
   }
@@ -781,7 +1107,7 @@ GLuint WrappedOpenGL::glCreateProgram()
   SERIALISE_TIME_CALL(real = GL.glCreateProgram());
 
   GLResource res = ProgramRes(GetCtx(), real);
-  ResourceId id = GetResourceManager()->RegisterResource(res);
+  ResourceId id = GetResourceManager()->RegisterResource(ResourceId(), res);
 
   if(IsCaptureMode(m_State))
   {
@@ -804,10 +1130,6 @@ GLuint WrappedOpenGL::glCreateProgram()
 
     record->AddChunk(chunk);
   }
-  else
-  {
-    GetResourceManager()->AddLiveResource(id, res);
-  }
 
   m_Programs[id].linked = false;
 
@@ -829,11 +1151,11 @@ bool WrappedOpenGL::Serialise_glLinkProgram(SerialiserType &ser, GLuint programH
 
     progDetails.linked = true;
 
-    for(size_t s = 0; s < 6; s++)
+    for(size_t s = 0; s < NumShaderStages; s++)
     {
       for(size_t sh = 0; sh < progDetails.shaders.size(); sh++)
       {
-        if(m_Shaders[progDetails.shaders[sh]].type == ShaderEnum(s))
+        if(GetShader(progDetails.shaders[sh]).type == ShaderEnum(s))
           progDetails.stageShaders[s] = progDetails.shaders[sh];
       }
     }
@@ -847,14 +1169,14 @@ bool WrappedOpenGL::Serialise_glLinkProgram(SerialiserType &ser, GLuint programH
         if(id == ResourceId())
           continue;
 
-        glslang::TShader *s = m_Shaders[id].glslangShader;
+        glslang::TShader *s = GetShader(id).glslangShader;
         if(s == NULL)
         {
           RDCERR("Shader attached with no compiled glslang reflection shader!");
           continue;
         }
 
-        glslangShaders.push_back(m_Shaders[id].glslangShader);
+        glslangShaders.push_back(s);
       }
 
       progDetails.glslangProgram = LinkProgramForReflection(glslangShaders);
@@ -903,11 +1225,11 @@ void WrappedOpenGL::glLinkProgram(GLuint program)
 
     progDetails.linked = true;
 
-    for(size_t s = 0; s < 6; s++)
+    for(size_t s = 0; s < NumShaderStages; s++)
     {
       for(size_t sh = 0; sh < progDetails.shaders.size(); sh++)
       {
-        if(m_Shaders[progDetails.shaders[sh]].type == ShaderEnum(s))
+        if(GetShader(progDetails.shaders[sh]).type == ShaderEnum(s))
           progDetails.stageShaders[s] = progDetails.shaders[sh];
       }
     }
@@ -921,14 +1243,14 @@ void WrappedOpenGL::glLinkProgram(GLuint program)
         if(id == ResourceId())
           continue;
 
-        glslang::TShader *s = m_Shaders[id].glslangShader;
+        glslang::TShader *s = GetShader(id).glslangShader;
         if(s == NULL)
         {
           RDCERR("Shader attached with no compiled glslang reflection shader!");
           continue;
         }
 
-        glslangShaders.push_back(m_Shaders[id].glslangShader);
+        glslangShaders.push_back(s);
       }
 
       progDetails.glslangProgram = LinkProgramForReflection(glslangShaders);
@@ -1318,9 +1640,15 @@ void WrappedOpenGL::glDeleteProgram(GLuint program)
   GL.glDeleteProgram(program);
 
   GLResource res = ProgramRes(GetCtx(), program);
-  if(GetResourceManager()->HasCurrentResource(res))
+  if(GetResourceManager()->HasResource(res))
   {
     m_Programs.erase(GetResourceManager()->GetResID(res));
+
+    for(auto cd = m_ContextData.begin(); cd != m_ContextData.end(); ++cd)
+    {
+      if(cd->second.m_Program == program)
+        cd->second.m_Program = 0;
+    }
 
     if(GetResourceManager()->HasResourceRecord(res))
       GetResourceManager()->GetResourceRecord(res)->Delete(GetResourceManager());
@@ -1385,11 +1713,11 @@ bool WrappedOpenGL::Serialise_glShaderBinary(SerialiserType &ser, GLsizei count,
 
   if(IsReplayingAndReading())
   {
-    ResourceId liveId = GetResourceManager()->GetResID(shader);
+    ResourceId id = GetResourceManager()->GetResID(shader);
 
     GL.glShaderBinary(1, &shader.name, binaryformat, binary, length);
 
-    m_Shaders[liveId].spirvWords.assign((uint32_t *)binary, length / sizeof(uint32_t));
+    m_Shaders[id].spirvWords.assign((uint32_t *)binary, length / sizeof(uint32_t));
 
     AddResourceInitChunk(shader);
   }
@@ -1410,8 +1738,8 @@ void WrappedOpenGL::glShaderBinary(GLsizei count, const GLuint *shaders, GLenum 
     {
       for(GLsizei i = 0; i < count; i++)
       {
-        ResourceId liveId = GetResourceManager()->GetResID(ShaderRes(GetCtx(), shaders[i]));
-        m_Shaders[liveId].spirvWords.assign((uint32_t *)binary, length / sizeof(uint32_t));
+        ResourceId id = GetResourceManager()->GetResID(ShaderRes(GetCtx(), shaders[i]));
+        m_Shaders[id].spirvWords.assign((uint32_t *)binary, length / sizeof(uint32_t));
       }
     }
   }
@@ -1473,15 +1801,15 @@ bool WrappedOpenGL::Serialise_glUseProgramStages(SerialiserType &ser, GLuint pip
       ResourceId liveProgId = GetResourceManager()->GetResID(program);
 
       PipelineData &pipeDetails = m_Pipelines[livePipeId];
-      ProgramData &progDetails = m_Programs[liveProgId];
+      const ProgramData &progDetails = GetProgram(liveProgId);
 
-      for(size_t s = 0; s < 6; s++)
+      for(size_t s = 0; s < NumShaderStages; s++)
       {
         if(stages & ShaderBit(s))
         {
           for(size_t sh = 0; sh < progDetails.shaders.size(); sh++)
           {
-            if(m_Shaders[progDetails.shaders[sh]].type == ShaderEnum(s))
+            if(GetShader(progDetails.shaders[sh]).type == ShaderEnum(s))
             {
               pipeDetails.stagePrograms[s] = liveProgId;
               pipeDetails.stageShaders[s] = progDetails.shaders[sh];
@@ -1498,7 +1826,7 @@ bool WrappedOpenGL::Serialise_glUseProgramStages(SerialiserType &ser, GLuint pip
       ResourceId livePipeId = GetResourceManager()->GetResID(pipeline);
       PipelineData &pipeDetails = m_Pipelines[livePipeId];
 
-      for(size_t s = 0; s < 6; s++)
+      for(size_t s = 0; s < NumShaderStages; s++)
       {
         if(stages & ShaderBit(s))
         {
@@ -1572,15 +1900,15 @@ void WrappedOpenGL::glUseProgramStages(GLuint pipeline, GLbitfield stages, GLuin
       ResourceId progID = GetResourceManager()->GetResID(ProgramRes(GetCtx(), program));
 
       PipelineData &pipeDetails = m_Pipelines[pipeID];
-      ProgramData &progDetails = m_Programs[progID];
+      const ProgramData &progDetails = GetProgram(progID);
 
-      for(size_t s = 0; s < 6; s++)
+      for(size_t s = 0; s < NumShaderStages; s++)
       {
         if(stages & ShaderBit(s))
         {
           for(size_t sh = 0; sh < progDetails.shaders.size(); sh++)
           {
-            if(m_Shaders[progDetails.shaders[sh]].type == ShaderEnum(s))
+            if(GetShader(progDetails.shaders[sh]).type == ShaderEnum(s))
             {
               pipeDetails.stagePrograms[s] = progID;
               pipeDetails.stageShaders[s] = progDetails.shaders[sh];
@@ -1595,7 +1923,7 @@ void WrappedOpenGL::glUseProgramStages(GLuint pipeline, GLbitfield stages, GLuin
       ResourceId pipeID = GetResourceManager()->GetResID(ProgramPipeRes(GetCtx(), pipeline));
       PipelineData &pipeDetails = m_Pipelines[pipeID];
 
-      for(size_t s = 0; s < 6; s++)
+      for(size_t s = 0; s < NumShaderStages; s++)
       {
         if(stages & ShaderBit(s))
         {
@@ -1626,8 +1954,7 @@ bool WrappedOpenGL::Serialise_glGenProgramPipelines(SerialiserType &ser, GLsizei
 
     GLResource res = ProgramPipeRes(GetCtx(), real);
 
-    ResourceId live = m_ResourceManager->RegisterResource(res);
-    GetResourceManager()->AddLiveResource(pipeline, res);
+    ResourceId live = m_ResourceManager->RegisterResource(pipeline, res);
 
     AddResource(pipeline, ResourceType::StateObject, "Pipeline");
   }
@@ -1642,7 +1969,7 @@ void WrappedOpenGL::glGenProgramPipelines(GLsizei n, GLuint *pipelines)
   for(GLsizei i = 0; i < n; i++)
   {
     GLResource res = ProgramPipeRes(GetCtx(), pipelines[i]);
-    ResourceId id = GetResourceManager()->RegisterResource(res);
+    ResourceId id = GetResourceManager()->RegisterResource(ResourceId(), res);
 
     if(IsCaptureMode(m_State))
     {
@@ -1660,10 +1987,6 @@ void WrappedOpenGL::glGenProgramPipelines(GLsizei n, GLuint *pipelines)
       RDCASSERT(record);
 
       record->AddChunk(chunk);
-    }
-    else
-    {
-      GetResourceManager()->AddLiveResource(id, res);
     }
   }
 }
@@ -1686,8 +2009,7 @@ bool WrappedOpenGL::Serialise_glCreateProgramPipelines(SerialiserType &ser, GLsi
 
     GLResource res = ProgramPipeRes(GetCtx(), real);
 
-    ResourceId live = m_ResourceManager->RegisterResource(res);
-    GetResourceManager()->AddLiveResource(pipeline, res);
+    ResourceId live = m_ResourceManager->RegisterResource(pipeline, res);
 
     AddResource(pipeline, ResourceType::StateObject, "Pipeline");
   }
@@ -1702,7 +2024,7 @@ void WrappedOpenGL::glCreateProgramPipelines(GLsizei n, GLuint *pipelines)
   for(GLsizei i = 0; i < n; i++)
   {
     GLResource res = ProgramPipeRes(GetCtx(), pipelines[i]);
-    ResourceId id = GetResourceManager()->RegisterResource(res);
+    ResourceId id = GetResourceManager()->RegisterResource(ResourceId(), res);
 
     if(IsCaptureMode(m_State))
     {
@@ -1720,10 +2042,6 @@ void WrappedOpenGL::glCreateProgramPipelines(GLsizei n, GLuint *pipelines)
       RDCASSERT(record);
 
       record->AddChunk(chunk);
-    }
-    else
-    {
-      GetResourceManager()->AddLiveResource(id, res);
     }
   }
 }
@@ -1756,20 +2074,25 @@ void WrappedOpenGL::glBindProgramPipeline(GLuint pipeline)
     Serialise_glBindProgramPipeline(ser, pipeline);
 
     GetContextRecord()->AddChunk(scope.Get());
-    GetResourceManager()->MarkResourceFrameReferenced(ProgramPipeRes(GetCtx(), pipeline),
-                                                      eFrameRef_Read);
-    // mark all the sub programs referenced
-    GLenum programBinds[] = {
-        eGL_VERTEX_SHADER,       eGL_FRAGMENT_SHADER,        eGL_GEOMETRY_SHADER,
-        eGL_TESS_CONTROL_SHADER, eGL_TESS_EVALUATION_SHADER, eGL_COMPUTE_SHADER,
-    };
 
-    for(GLenum progbind : programBinds)
+    if(pipeline != 0)
     {
-      GLuint prog = 0;
-      GL.glGetProgramPipelineiv(pipeline, progbind, (GLint *)&prog);
-      if(prog)
-        GetResourceManager()->MarkResourceFrameReferenced(ProgramRes(GetCtx(), prog), eFrameRef_Read);
+      GetResourceManager()->MarkResourceFrameReferenced(ProgramPipeRes(GetCtx(), pipeline),
+                                                        eFrameRef_Read);
+      // mark all the sub programs referenced
+      GLenum programBinds[] = {
+          eGL_VERTEX_SHADER,       eGL_FRAGMENT_SHADER,        eGL_GEOMETRY_SHADER,
+          eGL_TESS_CONTROL_SHADER, eGL_TESS_EVALUATION_SHADER, eGL_COMPUTE_SHADER,
+      };
+
+      for(GLenum progbind : programBinds)
+      {
+        GLuint prog = 0;
+        GL.glGetProgramPipelineiv(pipeline, progbind, (GLint *)&prog);
+        if(prog)
+          GetResourceManager()->MarkResourceFrameReferenced(ProgramRes(GetCtx(), prog),
+                                                            eFrameRef_Read);
+      }
     }
   }
 }
@@ -1811,7 +2134,14 @@ void WrappedOpenGL::glDeleteProgramPipelines(GLsizei n, const GLuint *pipelines)
   for(GLsizei i = 0; i < n; i++)
   {
     GLResource res = ProgramPipeRes(GetCtx(), pipelines[i]);
-    if(GetResourceManager()->HasCurrentResource(res))
+
+    for(auto cd = m_ContextData.begin(); cd != m_ContextData.end(); ++cd)
+    {
+      if(cd->second.m_ProgramPipeline == pipelines[i])
+        cd->second.m_ProgramPipeline = 0;
+    }
+
+    if(GetResourceManager()->HasResource(res))
     {
       m_Pipelines.erase(GetResourceManager()->GetResID(res));
 
@@ -1845,9 +2175,9 @@ bool WrappedOpenGL::Serialise_glCompileShaderIncludeARB(SerialiserType &ser, GLu
   {
     CheckReplayFunctionPresent(glCompileShaderIncludeARB);
 
-    ResourceId liveId = GetResourceManager()->GetResID(shader);
+    ResourceId id = GetResourceManager()->GetResID(shader);
 
-    auto &shadDetails = m_Shaders[liveId];
+    WrappedOpenGL::ShaderData &shadDetails = m_Shaders[id];
 
     shadDetails.includepaths.clear();
     shadDetails.includepaths.reserve(count);
@@ -1857,7 +2187,7 @@ bool WrappedOpenGL::Serialise_glCompileShaderIncludeARB(SerialiserType &ser, GLu
 
     GL.glCompileShaderIncludeARB(shader.name, count, path, NULL);
 
-    shadDetails.ProcessCompilation(*this, GetResourceManager()->GetOriginalID(liveId), shader.name);
+    shadDetails.ProcessCompilation(*this, id, shader.name);
 
     AddResourceInitChunk(shader);
   }
@@ -1888,7 +2218,7 @@ void WrappedOpenGL::glCompileShaderIncludeARB(GLuint shader, GLsizei count,
   {
     ResourceId id = GetResourceManager()->GetResID(ShaderRes(GetCtx(), shader));
 
-    auto &shadDetails = m_Shaders[id];
+    WrappedOpenGL::ShaderData &shadDetails = m_Shaders[id];
 
     shadDetails.includepaths.clear();
     shadDetails.includepaths.reserve(count);
@@ -2008,16 +2338,15 @@ bool WrappedOpenGL::Serialise_glSpecializeShader(SerialiserType &ser, GLuint sha
   {
     CheckReplayFunctionPresent(glSpecializeShader);
 
-    ResourceId liveId = GetResourceManager()->GetResID(shader);
+    ResourceId id = GetResourceManager()->GetResID(shader);
 
     GL.glSpecializeShader(shader.name, pEntryPoint, numSpecializationConstants, pConstantIndex,
                           pConstantValue);
 
-    m_Shaders[liveId].spirv.Parse(m_Shaders[liveId].spirvWords);
+    m_Shaders[id].spirv.Parse(m_Shaders[id].spirvWords);
 
-    m_Shaders[liveId].ProcessSPIRVCompilation(*this, GetResourceManager()->GetOriginalID(liveId),
-                                              shader.name, pEntryPoint, numSpecializationConstants,
-                                              pConstantIndex, pConstantValue);
+    m_Shaders[id].ProcessSPIRVCompilation(*this, id, shader.name, pEntryPoint,
+                                          numSpecializationConstants, pConstantIndex, pConstantValue);
 
     AddResourceInitChunk(shader);
   }
@@ -2056,13 +2385,12 @@ void WrappedOpenGL::glSpecializeShader(GLuint shader, const GLchar *pEntryPoint,
   }
   else
   {
-    ResourceId liveId = GetResourceManager()->GetResID(ShaderRes(GetCtx(), shader));
+    ResourceId id = GetResourceManager()->GetResID(ShaderRes(GetCtx(), shader));
 
-    m_Shaders[liveId].spirv.Parse(m_Shaders[liveId].spirvWords);
+    m_Shaders[id].spirv.Parse(m_Shaders[id].spirvWords);
 
-    m_Shaders[liveId].ProcessSPIRVCompilation(*this, liveId, shader, pEntryPoint,
-                                              numSpecializationConstants, pConstantIndex,
-                                              pConstantValue);
+    m_Shaders[id].ProcessSPIRVCompilation(
+        *this, id, shader, pEntryPoint, numSpecializationConstants, pConstantIndex, pConstantValue);
   }
 }
 

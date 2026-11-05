@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,6 @@
 
 #pragma once
 
-#include <vector>
 #include "d3d12_common.h"
 #include "d3d12_manager.h"
 
@@ -48,9 +47,11 @@ struct D3D12RenderState
   D3D12RenderState &operator=(const D3D12RenderState &o) = default;
 
   void ApplyState(WrappedID3D12Device *dev, ID3D12GraphicsCommandListX *list) const;
-  void ApplyDescriptorHeaps(ID3D12GraphicsCommandListX *list) const;
-  void ApplyComputeRootElements(ID3D12GraphicsCommandListX *cmd) const;
-  void ApplyGraphicsRootElements(ID3D12GraphicsCommandListX *cmd) const;
+  void ApplyDescriptorHeaps(ID3D12GraphicsCommandList *list) const;
+  void ApplyComputeRootElements(ID3D12GraphicsCommandList *cmd) const;
+  void ApplyGraphicsRootElements(ID3D12GraphicsCommandList *cmd) const;
+  void ApplyComputeRootElementsUnwrapped(ID3D12GraphicsCommandList *cmd) const;
+  void ApplyGraphicsRootElementsUnwrapped(ID3D12GraphicsCommandList *cmd) const;
 
   rdcarray<D3D12_VIEWPORT> views;
   rdcarray<D3D12_RECT> scissors;
@@ -61,12 +62,16 @@ struct D3D12RenderState
   D3D12Descriptor dsv;
 
   bool renderpass = false;
+  rdcarray<D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_SUBRESOURCE_PARAMETERS> rpResolves;
   rdcarray<D3D12_RENDER_PASS_RENDER_TARGET_DESC> rpRTs;
   D3D12_RENDER_PASS_DEPTH_STENCIL_DESC rpDSV;
   D3D12_RENDER_PASS_FLAGS rpFlags;
 
   rdcarray<ResourceId> GetRTVIDs() const;
   ResourceId GetDSVID() const;
+
+  float depthBias = 0.0f, depthBiasClamp = 0.0f, slopeScaledDepthBias = 0.0f;
+  D3D12_INDEX_BUFFER_STRIP_CUT_VALUE cutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
 
   ResourceId shadingRateImage;
   D3D12_SHADING_RATE shadingRate;
@@ -76,6 +81,9 @@ struct D3D12RenderState
   {
     SignatureElement() : type(eRootUnknown), offset(0) {}
     SignatureElement(SignatureElementType t, ResourceId i, UINT64 o) : type(t), id(i), offset(o) {}
+    SignatureElement(SignatureElementType t, D3D12_GPU_VIRTUAL_ADDRESS addr);
+    SignatureElement(SignatureElementType t, D3D12_CPU_DESCRIPTOR_HANDLE handle);
+
     void SetConstant(UINT offs, UINT val) { SetConstants(1, &val, offs); }
     void SetConstants(UINT numVals, const void *vals, UINT offs)
     {
@@ -87,7 +95,8 @@ struct D3D12RenderState
       memcpy(&constants[offs], vals, numVals * sizeof(UINT));
     }
 
-    void SetToGraphics(D3D12ResourceManager *rm, ID3D12GraphicsCommandList *cmd, UINT slot) const
+    void SetToGraphics(D3D12ResourceManager *rm, ID3D12GraphicsCommandList *cmd, UINT slot,
+                       bool unwrapped) const
     {
       if(type == eRootConst)
       {
@@ -96,28 +105,32 @@ struct D3D12RenderState
       else if(type == eRootTable)
       {
         D3D12_GPU_DESCRIPTOR_HANDLE handle =
-            rm->GetCurrentAs<ID3D12DescriptorHeap>(id)->GetGPUDescriptorHandleForHeapStart();
+            rm->GetResAs<ID3D12DescriptorHeap>(id)->GetGPUDescriptorHandleForHeapStart();
         handle.ptr += sizeof(D3D12Descriptor) * offset;
-        cmd->SetGraphicsRootDescriptorTable(slot, handle);
+        if(unwrapped)
+          cmd->SetGraphicsRootDescriptorTable(slot, Unwrap(handle));
+        else
+          cmd->SetGraphicsRootDescriptorTable(slot, handle);
       }
       else if(type == eRootCBV)
       {
-        ID3D12Resource *res = rm->GetCurrentAs<ID3D12Resource>(id);
+        ID3D12Resource *res = rm->GetResAs<ID3D12Resource>(id);
         cmd->SetGraphicsRootConstantBufferView(slot, res ? res->GetGPUVirtualAddress() + offset : 0);
       }
       else if(type == eRootSRV)
       {
-        ID3D12Resource *res = rm->GetCurrentAs<ID3D12Resource>(id);
+        ID3D12Resource *res = rm->GetResAs<ID3D12Resource>(id);
         cmd->SetGraphicsRootShaderResourceView(slot, res ? res->GetGPUVirtualAddress() + offset : 0);
       }
       else if(type == eRootUAV)
       {
-        ID3D12Resource *res = rm->GetCurrentAs<ID3D12Resource>(id);
+        ID3D12Resource *res = rm->GetResAs<ID3D12Resource>(id);
         cmd->SetGraphicsRootUnorderedAccessView(slot, res ? res->GetGPUVirtualAddress() + offset : 0);
       }
     }
 
-    void SetToCompute(D3D12ResourceManager *rm, ID3D12GraphicsCommandList *cmd, UINT slot) const
+    void SetToCompute(D3D12ResourceManager *rm, ID3D12GraphicsCommandList *cmd, UINT slot,
+                      bool unwrapped) const
     {
       if(type == eRootConst)
       {
@@ -126,23 +139,26 @@ struct D3D12RenderState
       else if(type == eRootTable)
       {
         D3D12_GPU_DESCRIPTOR_HANDLE handle =
-            rm->GetCurrentAs<ID3D12DescriptorHeap>(id)->GetGPUDescriptorHandleForHeapStart();
+            rm->GetResAs<ID3D12DescriptorHeap>(id)->GetGPUDescriptorHandleForHeapStart();
         handle.ptr += sizeof(D3D12Descriptor) * offset;
-        cmd->SetComputeRootDescriptorTable(slot, handle);
+        if(unwrapped)
+          cmd->SetComputeRootDescriptorTable(slot, Unwrap(handle));
+        else
+          cmd->SetComputeRootDescriptorTable(slot, handle);
       }
       else if(type == eRootCBV)
       {
-        ID3D12Resource *res = rm->GetCurrentAs<ID3D12Resource>(id);
+        ID3D12Resource *res = rm->GetResAs<ID3D12Resource>(id);
         cmd->SetComputeRootConstantBufferView(slot, res ? res->GetGPUVirtualAddress() + offset : 0);
       }
       else if(type == eRootSRV)
       {
-        ID3D12Resource *res = rm->GetCurrentAs<ID3D12Resource>(id);
+        ID3D12Resource *res = rm->GetResAs<ID3D12Resource>(id);
         cmd->SetComputeRootShaderResourceView(slot, res ? res->GetGPUVirtualAddress() + offset : 0);
       }
       else if(type == eRootUAV)
       {
-        ID3D12Resource *res = rm->GetCurrentAs<ID3D12Resource>(id);
+        ID3D12Resource *res = rm->GetResAs<ID3D12Resource>(id);
         cmd->SetComputeRootUnorderedAccessView(slot, res ? res->GetGPUVirtualAddress() + offset : 0);
       }
     }
@@ -167,6 +183,13 @@ struct D3D12RenderState
   };
   rdcarray<StreamOut> streamouts;
 
+  struct Predication
+  {
+    ResourceId buffer;
+    UINT64 offset;
+    D3D12_PREDICATION_OP op;
+  } predication;
+
   struct RootSignature
   {
     ResourceId rootsig;
@@ -175,6 +198,7 @@ struct D3D12RenderState
   } compute, graphics;
 
   ResourceId pipe;
+  ResourceId stateobj;
 
   UINT viewInstMask = 0;
 
@@ -185,7 +209,7 @@ struct D3D12RenderState
   } samplePos;
 
   D3D12_PRIMITIVE_TOPOLOGY topo = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
-  UINT stencilRef = 0;
+  UINT stencilRefFront = 0, stencilRefBack = 0;
   float blendFactor[4] = {};
 
   float depthBoundsMin = 0.0f, depthBoundsMax = 1.0f;
@@ -212,4 +236,13 @@ struct D3D12RenderState
 
   D3D12DebugManager *GetDebugManager() const { return m_DebugManager; }
   D3D12DebugManager *m_DebugManager = NULL;
+
+  struct IndirectPendingState
+  {
+    ID3D12Resource *argsBuf = NULL;
+    uint64_t argsOffs = 0;
+    ID3D12CommandSignature *comSig = NULL;
+    uint32_t argsToProcess = 0;
+  } indirectState;
+  void ResolvePendingIndirectState(WrappedID3D12Device *device);
 };

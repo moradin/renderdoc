@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -53,7 +53,6 @@ private:
   static const uint32_t FONT_TEX_WIDTH = 256;
   static const uint32_t FONT_TEX_HEIGHT = 128;
 
-  WrappedVulkan *m_pDriver = NULL;
   VkDevice m_Device = VK_NULL_HANDLE;
 
   float m_FontCharAspect = 1.0f;
@@ -63,8 +62,8 @@ private:
   VkPipelineLayout m_TextPipeLayout = VK_NULL_HANDLE;
   VkDescriptorSet m_TextDescSet = VK_NULL_HANDLE;
 
-  // 0 - RGBA8_SRGB, 1 - RGBA8, 2 - BGRA8_SRGB, 3 - BGRA8
-  VkPipeline m_TextPipeline[4] = {VK_NULL_HANDLE};
+  static const int NUM_BB_FORMATS = 7;
+  VkPipeline m_TextPipeline[NUM_BB_FORMATS] = {};
 
   VkSampler m_LinearSampler = VK_NULL_HANDLE;
   VkDescriptorPool m_DescriptorPool = VK_NULL_HANDLE;

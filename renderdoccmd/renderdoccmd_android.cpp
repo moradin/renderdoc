@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,6 +28,7 @@
 #include <GLES2/gl2ext.h>
 #include <dlfcn.h>
 #include <locale.h>
+#include <math.h>
 #include <string.h>
 #include <unistd.h>
 #include <string>
@@ -68,6 +69,16 @@ PThreadLock m_DrawLock("m_DrawLock"), m_CmdLock("m_CmdLock");
 
 void Daemonise()
 {
+}
+
+// every 15 minutes we fade briefly to avoid burn-in
+const float splashFadePeriod = 45 * 60.0f;
+
+float curtime()
+{
+  timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return float(ts.tv_sec) + float(ts.tv_nsec & 0xffffffff) / 1000000000.0f;
 }
 
 void DisplayGenericSplash()
@@ -113,6 +124,7 @@ void DisplayGenericSplash()
   GPA_GET(glLinkProgram);
   GPA_GET(glGetUniformLocation);
   GPA_GET(glUniform2f);
+  GPA_GET(glUniform1f);
   GPA_GET(glUseProgram);
   GPA_GET(glVertexAttribPointer);
   GPA_GET(glEnableVertexAttribArray);
@@ -126,10 +138,10 @@ void DisplayGenericSplash()
 
   EGLDisplay eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
 
-  ANativeWindow *previewWindow = android_state->window;
-
-  if(eglDisplay && previewWindow)
+  if(eglDisplay && android_state && android_state->window)
   {
+    ANativeWindow *previewWindow = android_state->window;
+
     int major = 0, minor = 0;
     EGLBoolean initialised = eglInitialize(eglDisplay, &major, &minor);
 
@@ -197,6 +209,7 @@ float logo(in vec2 uv)
 }
 
 uniform vec2 iResolution;
+uniform float fFade;
 
 void main()
 {
@@ -211,7 +224,7 @@ void main()
   float smoothdist = smoothstep(0.0, edgeWidth, clamp(logo(uv), 0.0, 1.0));
 
   // the green is #3bb779
-  gl_FragColor = mix(vec4(1.0), vec4(0.2314, 0.7176, 0.4745, 1.0), smoothdist);
+  gl_FragColor = mix(vec4(1.0), vec4(0.2314, 0.7176, 0.4745, 1.0), smoothdist)*fFade;
 }
 )";
 
@@ -260,6 +273,23 @@ void main()
             GLuint loc = glGetUniformLocation(prog, "iResolution");
             glUniform2f(loc, float(ANativeWindow_getWidth(previewWindow)),
                         float(ANativeWindow_getHeight(previewWindow)));
+
+            // loop every 15 minutes, with the fade at the end of the period
+            float x = splashFadePeriod - fmod(curtime(), splashFadePeriod);
+
+            // multiply by 4 so the fade happens over a little more than a second instead of
+            // 6.28 seconds.
+            x = float(x) * 4.0f;
+
+            // do one cos loop and finish
+            if(x >= M_PI * 2.0f)
+              x = M_PI * 2.0f;
+
+            float fade = cosf(x);
+
+            // set the fade
+            loc = glGetUniformLocation(prog, "fFade");
+            glUniform1f(loc, fade);
 
             // fullscreen triangle
             float verts[] = {
@@ -333,7 +363,7 @@ WindowingData DisplayRemoteServerPreview(bool active, const rdcarray<WindowingSy
 
   WindowingData ret = {WindowingSystem::Unknown};
 
-  if(android_state->window)
+  if(android_state && android_state->window)
     ret = CreateAndroidWindowingData(android_state->window);
 
   return ret;
@@ -385,8 +415,7 @@ std::vector<std::string> getRenderdoccmdArgs()
   jmethodID gseid =
       env->GetMethodID(icl, "getStringExtra", "(Ljava/lang/String;)Ljava/lang/String;");
 
-  jstring jsParam1 =
-      (jstring)env->CallObjectMethod(intent, gseid, env->NewStringUTF("renderdoccmd"));
+  jstring jsParam1 = (jstring)env->CallObjectMethod(intent, gseid, env->NewStringUTF("renderdoccmd"));
 
   std::vector<std::string> ret;
   if(jsParam1)    // Check if arg value found
@@ -481,9 +510,24 @@ void android_main(struct android_app *state)
   // Used to poll the events in the main loop
   int events;
   android_poll_source *source;
+  float lastSplash = curtime();
   do
   {
+    // if we're near the end of the splash period force splashes at 30Hz
+    if(splashFadePeriod - fmod(curtime(), splashFadePeriod) < 10.0f)
+    {
+      if(curtime() - lastSplash > 1.0f / 30.0f)
+      {
+        DisplayGenericSplash();
+        lastSplash = curtime();
+      }
+    }
+
+#if __NDK_MAJOR__ >= 27
+    if(ALooper_pollOnce(1, nullptr, &events, (void **)&source) >= 0)
+#else
     if(ALooper_pollAll(1, nullptr, &events, (void **)&source) >= 0)
+#endif
     {
       if(source != NULL)
         source->process(android_state, source);
@@ -491,4 +535,5 @@ void android_main(struct android_app *state)
   } while(android_state->destroyRequested == 0);
 
   ANDROID_LOG("android_main exiting");
+  android_state = NULL;
 }

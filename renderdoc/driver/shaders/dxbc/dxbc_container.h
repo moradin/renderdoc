@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -27,8 +27,8 @@
 
 #include <map>
 #include "api/replay/rdcarray.h"
+#include "api/replay/rdcflatmap.h"
 #include "api/replay/rdcpair.h"
-#include "api/replay/rdcstr.h"
 #include "api/replay/rdcstr.h"
 #include "common/common.h"
 #include "driver/dx/official/d3dcommon.h"
@@ -43,6 +43,13 @@ IDebugInfo *ProcessSPDBChunk(void *data);
 IDebugInfo *ProcessPDB(byte *data, uint32_t length);
 bool IsPDBFile(void *data, size_t length);
 void UnwrapEmbeddedPDBData(bytebuf &bytes);
+};
+
+namespace DXIL
+{
+// defined in dxil_metadata.h as these have heavy dependency on dxil enums
+struct PSVData;
+struct RDATData;
 };
 
 // many thanks to winehq for information of format of RDEF, STAT and SIGN chunks:
@@ -126,27 +133,75 @@ enum class GlobalShaderFlags : int64_t
   ShadingRate = 0x080000,
   Raytracing1_1 = 0x100000,
   SamplerFeedback = 0x200000,
+  AtomicInt64OnTypedResource = 0x400000,
+  AtomicInt64OnGroupShared = 0x800000,
+  DerivativesInMeshAndAmpShaders = 0x1000000,
+  ResourceDescriptorHeapIndexing = 0x2000000,
+  SamplerDescriptorHeapIndexing = 0x4000000,
+  WaveMatrix = 0x8000000,
+  AtomicInt64OnHeapResource = 0x10000000,
+  AdvancedTextureOps = 0x20000000,
+  WriteableMSAATextures = 0x40000000,
+  SampleCmpGradientOrBias = 0x80000000,
+  ShaderFeatureInfo_ExtendedCommandInfo = 0x100000000,
+  KNOWN_FLAGS_MASK =
+      ShaderFeatureInfo_ExtendedCommandInfo + (ShaderFeatureInfo_ExtendedCommandInfo - 1),
 };
 
 BITMASK_OPERATORS(GlobalShaderFlags);
+
+static const uint32_t FOURCC_DXBC = MAKE_FOURCC('D', 'X', 'B', 'C');
+static const uint32_t FOURCC_RDEF = MAKE_FOURCC('R', 'D', 'E', 'F');
+static const uint32_t FOURCC_RD11 = MAKE_FOURCC('R', 'D', '1', '1');
+static const uint32_t FOURCC_STAT = MAKE_FOURCC('S', 'T', 'A', 'T');
+static const uint32_t FOURCC_SHEX = MAKE_FOURCC('S', 'H', 'E', 'X');
+static const uint32_t FOURCC_SHDR = MAKE_FOURCC('S', 'H', 'D', 'R');
+static const uint32_t FOURCC_SDBG = MAKE_FOURCC('S', 'D', 'B', 'G');
+static const uint32_t FOURCC_SPDB = MAKE_FOURCC('S', 'P', 'D', 'B');
+static const uint32_t FOURCC_ISGN = MAKE_FOURCC('I', 'S', 'G', 'N');
+static const uint32_t FOURCC_OSGN = MAKE_FOURCC('O', 'S', 'G', 'N');
+static const uint32_t FOURCC_ISG1 = MAKE_FOURCC('I', 'S', 'G', '1');
+static const uint32_t FOURCC_OSG1 = MAKE_FOURCC('O', 'S', 'G', '1');
+static const uint32_t FOURCC_OSG5 = MAKE_FOURCC('O', 'S', 'G', '5');
+static const uint32_t FOURCC_PCSG = MAKE_FOURCC('P', 'C', 'S', 'G');
+static const uint32_t FOURCC_PSG1 = MAKE_FOURCC('P', 'S', 'G', '1');
+static const uint32_t FOURCC_Aon9 = MAKE_FOURCC('A', 'o', 'n', '9');
+static const uint32_t FOURCC_PRIV = MAKE_FOURCC('P', 'R', 'I', 'V');
+static const uint32_t FOURCC_DXIL = MAKE_FOURCC('D', 'X', 'I', 'L');
+static const uint32_t FOURCC_ILDB = MAKE_FOURCC('I', 'L', 'D', 'B');
+static const uint32_t FOURCC_ILDN = MAKE_FOURCC('I', 'L', 'D', 'N');
+static const uint32_t FOURCC_HASH = MAKE_FOURCC('H', 'A', 'S', 'H');
+static const uint32_t FOURCC_SFI0 = MAKE_FOURCC('S', 'F', 'I', '0');
+static const uint32_t FOURCC_PSV0 = MAKE_FOURCC('P', 'S', 'V', '0');
+static const uint32_t FOURCC_RTS0 = MAKE_FOURCC('R', 'T', 'S', '0');
+static const uint32_t FOURCC_RDAT = MAKE_FOURCC('R', 'D', 'A', 'T');
+static const uint32_t FOURCC_VERS = MAKE_FOURCC('V', 'E', 'R', 'S');
+static const uint32_t FOURCC_SRCI = MAKE_FOURCC('S', 'R', 'C', 'I');
 
 struct RDEFHeader;
 
 uint32_t DecodeFlags(const ShaderCompileFlags &compileFlags);
 rdcstr GetProfile(const ShaderCompileFlags &compileFlags);
 ShaderCompileFlags EncodeFlags(const uint32_t flags, const rdcstr &profile);
+void EncodeDXCFlags(uint32_t flags, rdcarray<rdcwstr> &args);
 
 // declare one of these and pass in your shader bytecode, then inspect
 // the members that are populated with the shader information.
 class DXBCContainer
 {
 public:
-  DXBCContainer(const bytebuf &ByteCode, const rdcstr &debugInfoPath, GraphicsAPI api,
-                uint32_t shaderExtReg, uint32_t shaderExtSpace);
+  DXBCContainer(bytebuf &&ByteCode, const rdcstr &debugInfoPath = rdcstr());
+  DXBCContainer(const bytebuf &ByteCode, const rdcstr &debugInfoPath = rdcstr())
+      : DXBCContainer(bytebuf(ByteCode), debugInfoPath)
+  {
+  }
+  DXBCContainer(DXBCContainer *oldToRecreate, const rdcstr &debugInfoPath);
   ~DXBCContainer();
   DXBCContainer(const DXBCContainer &o) = delete;
   DXBCContainer(DXBCContainer &&o) = delete;
   DXBCContainer &operator=(const DXBCContainer &o) = delete;
+
+  void SetShaderExts(GraphicsAPI api, uint32_t shaderExtReg, uint32_t shaderExtSpace);
 
   DXBC::ShaderType m_Type = DXBC::ShaderType::Max;
   struct
@@ -157,36 +212,96 @@ public:
   const bytebuf &GetShaderBlob() const { return m_ShaderBlob; }
   const IDebugInfo *GetDebugInfo() const { return m_DebugInfo; }
   const Reflection *GetReflection() const { return m_Reflection; }
-  D3D_PRIMITIVE_TOPOLOGY GetOutputTopology();
+  void CacheOutputTopology();
+  D3D_PRIMITIVE_TOPOLOGY GetOutputTopology() const { return m_OutputTopology; }
+  ThreadScope GetThreadScope() const { return m_Threadscope; }
+  bool LoadedDebugBlob() const { return !m_DebugShaderBlob.empty() || m_ReplacedBlob; }
+  bool HasDebugInfo() const { return m_HasDebugInfo; }
+  const rdcstr &GetDebugInfoLoadingLog() const { return m_DebugInfoLoadingLog; }
 
-  const rdcstr &GetDisassembly();
+  CBufferVariableType GetRayPayload(const ShaderEntryPoint &entry)
+  {
+    if(m_RayPayloads.empty())
+      return {};
+    return m_RayPayloads[entry].first;
+  }
+  CBufferVariableType GetRayAttributes(const ShaderEntryPoint &entry)
+  {
+    if(m_RayPayloads.empty())
+      return {};
+    return m_RayPayloads[entry].second;
+  }
+
+  rdcarray<ShaderEntryPoint> GetEntryPoints() const { return m_EntryPoints; }
+
+  const rdcstr &GetDisassembly(bool dxcStyle);
   void FillTraceLineInfo(ShaderDebugTrace &trace) const;
-  void FillStateInstructionInfo(ShaderDebugState &state) const;
 
-  static void ReplaceDXBCBytecode(bytebuf &ByteCode, const rdcarray<uint32_t> &replacement);
+  static void StripChunk(bytebuf &ByteCode, uint32_t fourcc);
+  static void ReplaceChunk(bytebuf &ByteCode, uint32_t fourcc, const byte *replacement, size_t size);
+
+  template <typename T>
+  static void ReplaceChunk(bytebuf &ByteCode, uint32_t fourcc, const rdcarray<T> &replacement)
+  {
+    ReplaceChunk(ByteCode, fourcc, (byte *)replacement.data(), replacement.byteSize());
+  }
+
+  static const byte *FindChunk(const bytebuf &ByteCode, uint32_t fourcc, size_t &size);
+  static const byte *FindChunk(const byte *ByteCode, size_t ByteCodeLength, uint32_t fourcc,
+                               size_t &size);
 
   const DXBCBytecode::Program *GetDXBCByteCode() const { return m_DXBCByteCode; }
   DXBCBytecode::Program *GetDXBCByteCode() { return m_DXBCByteCode; }
-  const DXIL::Program *GetDXILByteCode() { return m_DXILByteCode; }
-  static void GetHash(uint32_t hash[4], const void *ByteCode, size_t BytecodeLength);
+  const DXIL::Program *GetDXILByteCode() const { return m_DXILByteCode; }
+  DXIL::Program *GetDXILByteCode() { return m_DXILByteCode; }
+  static void GetHash(rdcfixedarray<uint32_t, 4> &hash, bool debugHashOnly, const void *ByteCode,
+                      size_t BytecodeLength);
+  GlobalShaderFlags GetGlobalShaderFlags() const { return m_GlobalFlags; }
 
-  static bool IsHashedContainer(void *ByteCode, size_t BytecodeLength);
+  const byte *GetNonDebugDXILByteCode() const
+  {
+    return m_ShaderBlob.data() + m_NonDebugDXILByteCodeOffset;
+  }
+  size_t GetNonDebugDXILByteCodeSize() const { return m_NonDebugDXILByteCodeSize; }
+
+  static bytebuf MakeContainerForChunk(uint32_t fourcc, const byte *chunk, uint64_t chunkSize);
+
+  static bool IsHashedContainer(const void *ByteCode, size_t BytecodeLength);
   static bool HashContainer(void *ByteCode, size_t BytecodeLength);
 
   static bool UsesExtensionUAV(uint32_t slot, uint32_t space, const void *ByteCode,
                                size_t BytecodeLength);
 
-  static bool CheckForDebugInfo(const void *ByteCode, size_t ByteCodeLength);
   static bool CheckForDXIL(const void *ByteCode, size_t ByteCodeLength);
-  static rdcstr GetDebugBinaryPath(const void *ByteCode, size_t ByteCodeLength);
+  static bool CheckForRootSig(const void *ByteCode, size_t ByteCodeLength);
+  static D3D_PRIMITIVE_TOPOLOGY GetOutputTopology(const void *ByteCode, size_t ByteCodeLength);
+
+  bool GetPipelineValidation(DXIL::PSVData &psv) const;
+  bool GetRuntimeData(DXIL::RDATData &rdat) const;
+
+  static bool GetRuntimeData(const byte *RDATChunk, size_t RDATLength, DXIL::RDATData &rdat);
+
+  static void SetPipelineValidation(bytebuf &ByteCode, const DXIL::PSVData &psv);
+  static void SetRuntimeData(bytebuf &ByteCode, const DXIL::RDATData &rdat);
 
 private:
-  void TryFetchSeparateDebugInfo(bytebuf &byteCode, const rdcstr &debugInfoPath);
+  static bool CheckForDebugInfo(const void *ByteCode, size_t ByteCodeLength);
+  static rdcstr GetDebugBinaryPath(const void *ByteCode, size_t ByteCodeLength);
+
+  void Init();
+
+  bool TryFetchSeparateDebugInfo(const rdcstr &debugInfoPath);
+  void ProcessSourceInfo(const byte *chunkContents, uint32_t size);
 
   bytebuf m_DebugShaderBlob;
   bytebuf m_ShaderBlob;
 
+  bool m_HasDebugInfo = false;
+  bool m_ReplacedBlob = false;
+
   rdcstr m_Disassembly;
+  rdcstr m_DebugInfoLoadingLog;
+  bool m_DXCStyle = false;
 
   D3D_PRIMITIVE_TOPOLOGY m_OutputTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 
@@ -200,11 +315,23 @@ private:
   rdcstr m_DebugFileName;
   GlobalShaderFlags m_GlobalFlags = GlobalShaderFlags::None;
 
-  ShaderStatistics m_ShaderStats;
+  size_t m_NonDebugDXILByteCodeOffset = 0;
+  size_t m_NonDebugDXILByteCodeSize = 0;
+
+  size_t m_RDATOffset = 0;
+  size_t m_RDATSize = 0;
+  size_t m_PSVOffset = 0;
+  size_t m_PSVSize = 0;
+
+  rdcflatmap<ShaderEntryPoint, rdcpair<CBufferVariableType, CBufferVariableType>> m_RayPayloads;
+
+  ThreadScope m_Threadscope = ThreadScope::Thread;
+  ShaderStatistics m_ShaderStats = {};
   DXBCBytecode::Program *m_DXBCByteCode = NULL;
   DXIL::Program *m_DXILByteCode = NULL;
   IDebugInfo *m_DebugInfo = NULL;
   Reflection *m_Reflection = NULL;
+  rdcarray<ShaderEntryPoint> m_EntryPoints;
 };
 
 };    // namespace DXBC

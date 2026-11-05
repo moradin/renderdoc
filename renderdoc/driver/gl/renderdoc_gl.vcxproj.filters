@@ -126,6 +126,9 @@
     <ClInclude Include="official\cgl.h">
       <Filter>ARB Headers</Filter>
     </ClInclude>
+    <ClInclude Include="gl_shaderdebug.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="wrappers\gl_buffer_funcs.cpp">
@@ -259,6 +262,12 @@
     </ClCompile>
     <ClCompile Include="glx_fake_vk_hooks.cpp">
       <Filter>Platform Interfaces\Linux</Filter>
+    </ClCompile>
+    <ClCompile Include="gl_pixelhistory.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="gl_shaderdebug.cpp">
+      <Filter>Replay</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

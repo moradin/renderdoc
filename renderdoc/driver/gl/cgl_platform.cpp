@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -213,14 +213,18 @@ class CGLPlatform : public GLPlatform
     return ret;
   }
 
-  ReplayStatus InitialiseAPI(GLWindowingData &replayContext, RDCDriver api, bool debug)
+  void SetDriverType(RDCDriver api) {}
+  RDResult InitialiseAPI(GLWindowingData &replayContext, RDCDriver api, bool debug)
   {
     RDCASSERT(api == RDCDriver::OpenGL);
 
     NSGL_init();
     replayContext.nsgl_ctx = NSGL_createContext(NULL, NULL);
 
-    return ReplayStatus::Succeeded;
+    if(replayContext.nsgl_ctx != NULL)
+      return ResultCode::Succeeded;
+
+    RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Failed to create replay OpenGL context");
   }
 
   void DrawQuads(float width, float height, const rdcarray<Vec4f> &vertices)

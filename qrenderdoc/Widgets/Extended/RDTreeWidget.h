@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -73,11 +73,13 @@ public:
     m_bold = bold;
     dataChanged(0, Qt::FontRole);
   }
+  inline bool bold() const { return m_bold; }
   inline void setItalic(bool italic)
   {
     m_italic = italic;
     dataChanged(0, Qt::FontRole);
   }
+  inline bool italic() const { return m_italic; }
   inline void setTreeColor(QColor col) { m_treeCol = col; }
   inline void setBackgroundColor(QColor background) { setBackground(QBrush(background)); }
   inline void setForegroundColor(QColor foreground) { setForeground(QBrush(foreground)); }
@@ -122,6 +124,18 @@ public:
     setData(column, Qt::ToolTipRole, value);
     dataChanged(0, Qt::ToolTipRole);
   }
+  inline bool editable(int column) const { return m_editable & (1U << column); }
+  inline void setEditable(int column, bool edit)
+  {
+    uint32_t mask = 1U << column;
+
+    if(edit)
+      m_editable |= mask;
+    else
+      m_editable &= ~mask;
+  }
+  inline bool selectable() const { return m_selectable; }
+  inline void setSelectable(bool sel) { m_selectable = sel; }
 
   inline Qt::CheckState checkState(int column) const
   {
@@ -164,7 +178,11 @@ private:
   // we allocate this lazily only if it's really needed
   QVector<QVector<RoleData>> *m_data = NULL;
 
+  // bitfield of editable columns
+  uint32_t m_editable = 0;
+
   // per-item properties
+  bool m_selectable = true;
   QString m_tooltip;
   bool m_bold = false;
   bool m_italic = false;
@@ -218,12 +236,15 @@ public:
     m_activeHoverIcon = hover;
     m_hoverHandCursor = true;
     m_activateOnClick = true;
+    m_hoverRole = -1;
   }
+  void setHoverRole(int role) { m_hoverRole = role; }
   void setHoverHandCursor(bool hand) { m_hoverHandCursor = hand; }
   void setHoverClickActivate(bool click) { m_activateOnClick = click; }
   void setClearSelectionOnFocusLoss(bool clear) { m_clearSelectionOnFocusLoss = clear; }
   RDTreeWidgetItem *invisibleRootItem() { return m_root; }
   void addTopLevelItem(RDTreeWidgetItem *item) { m_root->addChild(item); }
+  void insertTopLevelItem(int idx, RDTreeWidgetItem *item) { m_root->insertChild(idx, item); }
   RDTreeWidgetItem *topLevelItem(int index) const { return m_root->child(index); }
   int indexOfTopLevelItem(RDTreeWidgetItem *item) const { return m_root->indexOfChild(item); }
   RDTreeWidgetItem *takeTopLevelItem(int index) { return m_root->takeChild(index); }
@@ -251,11 +272,13 @@ public:
 
   RDTreeWidgetItem *itemAt(const QPoint &p) const;
   RDTreeWidgetItem *itemAt(int x, int y) const { return itemAt(QPoint(x, y)); }
+  bool isItemExpanded(RDTreeWidgetItem *item);
   void expandItem(RDTreeWidgetItem *item);
   void expandAllItems(RDTreeWidgetItem *item);
   void collapseItem(RDTreeWidgetItem *item);
   void collapseAllItems(RDTreeWidgetItem *item);
-  void scrollToItem(RDTreeWidgetItem *node);
+  void scrollToItem(RDTreeWidgetItem *item);
+  void editItem(RDTreeWidgetItem *item);
 
   void clear();
 
@@ -310,6 +333,7 @@ private:
   QVector<Qt::Alignment> m_alignments;
 
   int m_hoverColumn = -1;
+  int m_hoverRole = -1;
   QIcon m_normalHoverIcon;
   QIcon m_activeHoverIcon;
   bool m_hoverHandCursor = false;

@@ -24,22 +24,19 @@ Performance notes
 
 Vulkan is intended as a high-performance low CPU overhead API, and RenderDoc strives to maintain that performance contract at a reasonable level. While some overhead is inevitable RenderDoc aims to have no locks on the 'hot path' of command buffer recording, minimal or no allocation, and in general to have low performance overhead while not capturing.
 
-Some patterns of access are more or less conducive to good performance on RenderDoc, so if you are having trouble with slow capture, large memory/disk overhead or slow replay you might want to try eliminating use of persistent maps of memory from coherent heaps - you can use ``vkFlushMappedMemoryRanges`` to emulate non-coherent heaps and RenderDoc will take advantage of that, or you can use non-persistent maps.
+Some patterns of access are more or less conducive to good performance on RenderDoc, so if you are having trouble with slow capture, large memory/disk overhead or slow replay you might want to try eliminating use of persistent maps of memory from coherent heaps by mapping and unmapping them around changes, or reduce the number of submits you make while you have coherent memory persistently mapped.
 
 Likewise try to avoid making very large memory allocations in the range of 1GB and above. By its nature RenderDoc must save one or more copies of memory allocations to enable proper capture, so having allocations limited to only a few 100s of megabytes can help gain granularity of management and limit the memory overhead RenderDoc adds. There may be optimisation of this in future on RenderDoc's side but there are no easy guarantees.
 
 Current support
 ---------------
 
-RenderDoc has support for Vulkan version 1.2, as well as a number of extensions, but it contains some caveats. In addition, not all replay features are currently supported, but this is being actively worked on.
+RenderDoc has support for Vulkan version 1.4, as well as a number of extensions, but it contains some caveats. In addition, not all replay features are currently supported, but this is being actively worked on.
 
 * RenderDoc assumes that even if multiple GPUs are present, that only one VkDevice will be created and used.
 * RenderDoc captures will in general not be portable between different systems, only currently supporting capture and replay on the same or similar enough machines.
 
-Stadia
-------
-
-Vulkan capture and replay on Stadia is natively supported. For more information on how to capture with Stadia see the Stadia documentation.
+For more information about RenderDoc's raytracing support see :doc:`raytracing`. Note that raytracing support is limited on nvidia drivers due to missing driver functionality.
 
 Android
 -------

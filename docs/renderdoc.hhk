@@ -252,16 +252,12 @@
     <param name="Local" value="how/how_inspect_pixel.html">
 </OBJECT>
 <LI> <OBJECT type="text/sitemap">
-    <param name="Keyword" value="Planned Features">
-    <param name="Local" value="behind_scenes/planned_features.html">
-</OBJECT>
-<LI> <OBJECT type="text/sitemap">
     <param name="Keyword" value="Preferences">
     <param name="Local" value="window/settings_window.html">
 </OBJECT>
 <LI> <OBJECT type="text/sitemap">
     <param name="Keyword" value="Python Scripting">
-    <param name="Local" value="window/python_shell.html">
+    <param name="Local" value="window/python_scripting.html">
 </OBJECT>
 <LI> <OBJECT type="text/sitemap">
     <param name="Keyword" value="Quick Start">
@@ -273,7 +269,7 @@
 </OBJECT>
 <LI> <OBJECT type="text/sitemap">
     <param name="Keyword" value="Raw Buffer View">
-    <param name="Local" value="window/buffer_viewer.html#raw-buffer-viewer">
+    <param name="Local" value="window/buffer_viewer.html">
 </OBJECT>
 <LI> <OBJECT type="text/sitemap">
     <param name="Keyword" value="RenderDoc API">
@@ -297,7 +293,7 @@
 </OBJECT>
 <LI> <OBJECT type="text/sitemap">
     <param name="Keyword" value="Scripting the UI">
-    <param name="Local" value="window/python_shell.html">
+    <param name="Local" value="window/python_scripting.html">
 </OBJECT>
 <LI> <OBJECT type="text/sitemap">
     <param name="Keyword" value="Settings">
@@ -339,7 +335,7 @@
 </OBJECT>
 <LI> <OBJECT type="text/sitemap">
     <param name="Keyword" value="SSBO Contents">
-    <param name="Local" value="window/buffer_viewer.html#raw-buffer-viewer">
+    <param name="Local" value="window/buffer_viewer.html">
 </OBJECT>
 <LI> <OBJECT type="text/sitemap">
     <param name="Keyword" value="Texture List">
@@ -359,7 +355,7 @@
 </OBJECT>
 <LI> <OBJECT type="text/sitemap">
     <param name="Keyword" value="UAV Contents">
-    <param name="Local" value="window/buffer_viewer.html#raw-buffer-viewer">
+    <param name="Local" value="window/buffer_viewer.html">
 </OBJECT>
 <LI> <OBJECT type="text/sitemap">
     <param name="Keyword" value="Vulkan">
@@ -404,11 +400,11 @@
 		</OBJECT>
 		<LI> <OBJECT type="text/sitemap">
 				<param name="Keyword" value="Mesh Output">
-				<param name="Local" value="window/buffer_viewer.html#mesh-viewer">
+				<param name="Local" value="window/mesh_viewer.html">
 		</OBJECT>
 		<LI> <OBJECT type="text/sitemap">
 				<param name="Keyword" value="Mesh Viewer">
-				<param name="Local" value="window/buffer_viewer.html#mesh-viewer">
+				<param name="Local" value="window/mesh_viewer.html">
 		</OBJECT>
 		<LI> <OBJECT type="text/sitemap">
 				<param name="Keyword" value="Performance Counter Viewer">
@@ -419,12 +415,12 @@
 				<param name="Local" value="window/pipeline_state.html">
 		</OBJECT>
 		<LI> <OBJECT type="text/sitemap">
-				<param name="Keyword" value="Python Shell">
-				<param name="Local" value="window/python_shell.html">
+				<param name="Keyword" value="Python Scripting">
+				<param name="Local" value="window/python_scripting.html">
 		</OBJECT>
 		<LI> <OBJECT type="text/sitemap">
 				<param name="Keyword" value="Raw Buffer Viewer">
-				<param name="Local" value="window/buffer_viewer.html#raw-buffer-viewer">
+				<param name="Local" value="window/buffer_viewer.html">
 		</OBJECT>
 		<LI> <OBJECT type="text/sitemap">
 				<param name="Keyword" value="Resource Inspector">

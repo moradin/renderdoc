@@ -82,6 +82,9 @@
     <Filter Include="Resources\Files">
       <UniqueIdentifier>{c6877252-7f18-4c63-a2f7-66b1913d8ada}</UniqueIdentifier>
     </Filter>
+    <Filter Include="3rdparty\catch">
+      <UniqueIdentifier>{3e544acc-65a0-4558-8a31-8865c030e996}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="3rdparty\toolwindowmanager\ToolWindowManager.cpp">
@@ -141,6 +144,9 @@
     <ClCompile Include="Windows\Dialogs\AboutDialog.cpp">
       <Filter>Windows\Dialogs</Filter>
     </ClCompile>
+    <ClCompile Include="Windows\Dialogs\AxisMappingDialog.cpp">
+      <Filter>Windows\Dialogs</Filter>
+    </ClCompile>
     <ClCompile Include="Windows\Dialogs\TextureSaveDialog.cpp">
       <Filter>Windows\Dialogs</Filter>
     </ClCompile>
@@ -168,6 +174,9 @@
     <ClCompile Include="Windows\PipelineState\D3D11PipelineStateViewer.cpp">
       <Filter>Windows\PipelineState</Filter>
     </ClCompile>
+    <ClCompile Include="Windows\PipelineState\D3D9PipelineStateViewer.cpp">
+      <Filter>Windows\PipelineState</Filter>
+    </ClCompile>
     <ClCompile Include="Windows\PipelineState\D3D12PipelineStateViewer.cpp">
       <Filter>Windows\PipelineState</Filter>
     </ClCompile>
@@ -182,9 +191,6 @@
     </ClCompile>
     <ClCompile Include="Widgets\Extended\RDTreeWidget.cpp">
       <Filter>Widgets\Extended</Filter>
-    </ClCompile>
-    <ClCompile Include="Windows\ConstantBufferPreviewer.cpp">
-      <Filter>Windows</Filter>
     </ClCompile>
     <ClCompile Include="Widgets\BufferFormatSpecifier.cpp">
       <Filter>Widgets</Filter>
@@ -375,6 +381,9 @@
     <ClCompile Include="Windows\CommentView.cpp">
       <Filter>Windows</Filter>
     </ClCompile>
+    <ClCompile Include="Windows\DescriptorViewer.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
     <ClCompile Include="Windows\StatisticsViewer.cpp">
       <Filter>Windows</Filter>
     </ClCompile>
@@ -399,6 +408,9 @@
     <ClCompile Include="$(IntDir)generated\moc_APIInspector.cpp">
       <Filter>Generated Files</Filter>
     </ClCompile>
+    <ClCompile Include="$(IntDir)generated\moc_AxisMappingDialog.cpp">
+      <Filter>Generated Files</Filter>
+    </ClCompile>
     <ClCompile Include="$(IntDir)generated\moc_BufferFormatSpecifier.cpp">
       <Filter>Generated Files</Filter>
     </ClCompile>
@@ -408,13 +420,16 @@
     <ClCompile Include="$(IntDir)generated\moc_CaptureDialog.cpp">
       <Filter>Generated Files</Filter>
     </ClCompile>
-    <ClCompile Include="$(IntDir)generated\moc_ConstantBufferPreviewer.cpp">
+    <ClCompile Include="$(IntDir)generated\moc_ComputeDebugSelector.cpp">
       <Filter>Generated Files</Filter>
     </ClCompile>
     <ClCompile Include="$(IntDir)generated\moc_CustomPaintWidget.cpp">
       <Filter>Generated Files</Filter>
     </ClCompile>
     <ClCompile Include="$(IntDir)generated\moc_D3D11PipelineStateViewer.cpp">
+      <Filter>Generated Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)generated\moc_D3D9PipelineStateViewer.cpp">
       <Filter>Generated Files</Filter>
     </ClCompile>
     <ClCompile Include="$(IntDir)generated\moc_D3D12PipelineStateViewer.cpp">
@@ -424,6 +439,9 @@
       <Filter>Generated Files</Filter>
     </ClCompile>
     <ClCompile Include="$(IntDir)generated\moc_CommentView.cpp">
+      <Filter>Generated Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)generated\moc_DescriptorViewer.cpp">
       <Filter>Generated Files</Filter>
     </ClCompile>
     <ClCompile Include="$(IntDir)generated\moc_EventBrowser.cpp">
@@ -570,14 +588,14 @@
     <ClCompile Include="Code\pyrenderdoc\PythonContext.cpp">
       <Filter>Code\pyrenderdoc</Filter>
     </ClCompile>
+    <ClCompile Include="Code\pyrenderdoc\PythonInvokers.cpp">
+      <Filter>Code\pyrenderdoc</Filter>
+    </ClCompile>
     <ClCompile Include="$(IntDir)generated\qrenderdoc_python.cxx">
       <Filter>Generated Files</Filter>
     </ClCompile>
     <ClCompile Include="$(IntDir)generated\moc_PythonContext.cpp">
       <Filter>Generated Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Code\Interface\PersistantConfig.cpp">
-      <Filter>Code\Interface</Filter>
     </ClCompile>
     <ClCompile Include="Code\Interface\RemoteHost.cpp">
       <Filter>Code\Interface</Filter>
@@ -755,6 +773,39 @@
     </ClCompile>
     <ClCompile Include="Widgets\MarkerBreadcrumbs.cpp">
       <Filter>Widgets</Filter>
+    </ClCompile>
+    <ClCompile Include="Widgets\ComputeDebugSelector.cpp">
+      <Filter>Widgets</Filter>
+    </ClCompile>
+    <ClCompile Include="Widgets\AnnotationDisplay.cpp">
+      <Filter>Widgets</Filter>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)generated\moc_AnnotationDisplay.cpp">
+      <Filter>Generated Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)generated\moc_ProjectionGuessDialog.cpp">
+      <Filter>Generated Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)generated\moc_CameraControlsDialog.cpp">
+      <Filter>Generated Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\Dialogs\CameraControlsDialog.cpp">
+      <Filter>Windows\Dialogs</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\Dialogs\ProjectionGuessDialog.cpp">
+      <Filter>Windows\Dialogs</Filter>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)generated\moc_RDToolTip.cpp">
+      <Filter>Generated Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Widgets\Extended\RDToolTip.cpp">
+      <Filter>Widgets\Extended</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\Interface\PersistentConfig.cpp">
+      <Filter>Code\Interface</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\Interface\Helpers.cpp">
+      <Filter>Code\Interface</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -956,6 +1007,9 @@
     <ClInclude Include="$(IntDir)generated\ui_APIInspector.h">
       <Filter>Generated Files</Filter>
     </ClInclude>
+    <ClInclude Include="$(IntDir)generated\ui_AxisMappingDialog.h">
+      <Filter>Generated Files</Filter>
+    </ClInclude>
     <ClInclude Include="$(IntDir)generated\ui_BufferFormatSpecifier.h">
       <Filter>Generated Files</Filter>
     </ClInclude>
@@ -965,10 +1019,13 @@
     <ClInclude Include="$(IntDir)generated\ui_CaptureDialog.h">
       <Filter>Generated Files</Filter>
     </ClInclude>
-    <ClInclude Include="$(IntDir)generated\ui_ConstantBufferPreviewer.h">
+    <ClInclude Include="$(IntDir)generated\ui_ComputeDebugSelector.h">
       <Filter>Generated Files</Filter>
     </ClInclude>
     <ClInclude Include="$(IntDir)generated\ui_D3D11PipelineStateViewer.h">
+      <Filter>Generated Files</Filter>
+    </ClInclude>
+    <ClInclude Include="$(IntDir)generated\ui_D3D9PipelineStateViewer.h">
       <Filter>Generated Files</Filter>
     </ClInclude>
     <ClInclude Include="$(IntDir)generated\ui_D3D12PipelineStateViewer.h">
@@ -978,6 +1035,9 @@
       <Filter>Generated Files</Filter>
     </ClInclude>
     <ClInclude Include="$(IntDir)generated\ui_CommentView.h">
+      <Filter>Generated Files</Filter>
+    </ClInclude>
+    <ClInclude Include="$(IntDir)generated\ui_DescriptorViewer.h">
       <Filter>Generated Files</Filter>
     </ClInclude>
     <ClInclude Include="$(IntDir)generated\ui_EnvironmentEditor.h">
@@ -1039,9 +1099,6 @@
     </ClInclude>
     <ClInclude Include="$(IntDir)generated\ui_FindReplace.h">
       <Filter>Generated Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Code\Interface\PersistantConfig.h">
-      <Filter>Code\Interface</Filter>
     </ClInclude>
     <ClInclude Include="Code\Interface\RemoteHost.h">
       <Filter>Code\Interface</Filter>
@@ -1124,6 +1181,24 @@
     <ClInclude Include="$(IntDir)generated\ui_ShaderMessageViewer.h">
       <Filter>Generated Files</Filter>
     </ClInclude>
+    <ClInclude Include="3rdparty\catch\catch.hpp">
+      <Filter>3rdparty\catch</Filter>
+    </ClInclude>
+    <ClInclude Include="3rdparty\catch\official\catch.hpp">
+      <Filter>3rdparty\catch</Filter>
+    </ClInclude>
+    <ClInclude Include="$(IntDir)generated\ui_ProjectionGuessDialog.h">
+      <Filter>Generated Files</Filter>
+    </ClInclude>
+    <ClInclude Include="$(IntDir)generated\ui_CameraControlsDialog.h">
+      <Filter>Generated Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\Interface\PersistentConfig.h">
+      <Filter>Code\Interface</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\Interface\Helpers.h">
+      <Filter>Code\Interface</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Code\pyrenderdoc\pyconversion.h">
@@ -1153,6 +1228,9 @@
     <None Include="Code\AppleUtils.mm">
       <Filter>Code</Filter>
     </None>
+    <None Include="Code\pyrenderdoc\parse_reflection.py">
+      <Filter>Code\pyrenderdoc</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="Resources\qrenderdoc.rc">
@@ -1166,13 +1244,13 @@
     <CustomBuild Include="Windows\BufferViewer.ui">
       <Filter>Windows</Filter>
     </CustomBuild>
-    <CustomBuild Include="Windows\ConstantBufferPreviewer.ui">
-      <Filter>Windows</Filter>
-    </CustomBuild>
     <CustomBuild Include="Windows\DebugMessageView.ui">
       <Filter>Windows</Filter>
     </CustomBuild>
     <CustomBuild Include="Windows\CommentView.ui">
+      <Filter>Windows</Filter>
+    </CustomBuild>
+    <CustomBuild Include="Windows\DescriptorViewer.ui">
       <Filter>Windows</Filter>
     </CustomBuild>
     <CustomBuild Include="Windows\EventBrowser.ui">
@@ -1191,6 +1269,9 @@
       <Filter>Windows</Filter>
     </CustomBuild>
     <CustomBuild Include="Windows\PipelineState\D3D11PipelineStateViewer.ui">
+      <Filter>Windows\PipelineState</Filter>
+    </CustomBuild>
+    <CustomBuild Include="Windows\PipelineState\D3D9PipelineStateViewer.ui">
       <Filter>Windows\PipelineState</Filter>
     </CustomBuild>
     <CustomBuild Include="Windows\PipelineState\D3D12PipelineStateViewer.ui">
@@ -1218,6 +1299,9 @@
       <Filter>Windows\Dialogs</Filter>
     </CustomBuild>
     <CustomBuild Include="Windows\Dialogs\AboutDialog.ui">
+      <Filter>Windows\Dialogs</Filter>
+    </CustomBuild>
+    <CustomBuild Include="Windows\Dialogs\AxisMappingDialog.ui">
       <Filter>Windows\Dialogs</Filter>
     </CustomBuild>
     <CustomBuild Include="Windows\Dialogs\CaptureDialog.ui">
@@ -1253,13 +1337,13 @@
     <CustomBuild Include="Windows\BufferViewer.h">
       <Filter>Windows</Filter>
     </CustomBuild>
-    <CustomBuild Include="Windows\ConstantBufferPreviewer.h">
-      <Filter>Windows</Filter>
-    </CustomBuild>
     <CustomBuild Include="Windows\DebugMessageView.h">
       <Filter>Windows</Filter>
     </CustomBuild>
     <CustomBuild Include="Windows\CommentView.h">
+      <Filter>Windows</Filter>
+    </CustomBuild>
+    <CustomBuild Include="Windows\DescriptorViewer.h">
       <Filter>Windows</Filter>
     </CustomBuild>
     <CustomBuild Include="Windows\EventBrowser.h">
@@ -1313,6 +1397,9 @@
     <CustomBuild Include="Windows\Dialogs\AboutDialog.h">
       <Filter>Windows\Dialogs</Filter>
     </CustomBuild>
+    <CustomBuild Include="Windows\Dialogs\AxisMappingDialog.h">
+      <Filter>Windows\Dialogs</Filter>
+    </CustomBuild>
     <CustomBuild Include="Windows\Dialogs\CaptureDialog.h">
       <Filter>Windows\Dialogs</Filter>
     </CustomBuild>
@@ -1344,6 +1431,9 @@
       <Filter>Windows\PipelineState</Filter>
     </CustomBuild>
     <CustomBuild Include="Windows\PipelineState\D3D11PipelineStateViewer.h">
+      <Filter>Windows\PipelineState</Filter>
+    </CustomBuild>
+    <CustomBuild Include="Windows\PipelineState\D3D9PipelineStateViewer.h">
       <Filter>Windows\PipelineState</Filter>
     </CustomBuild>
     <CustomBuild Include="Windows\PipelineState\D3D12PipelineStateViewer.h">
@@ -1534,6 +1624,30 @@
     </CustomBuild>
     <CustomBuild Include="Widgets\MarkerBreadcrumbs.h">
       <Filter>Widgets</Filter>
+    </CustomBuild>
+    <CustomBuild Include="Widgets\ComputeDebugSelector.h">
+      <Filter>Widgets</Filter>
+    </CustomBuild>
+    <CustomBuild Include="Widgets\ComputeDebugSelector.ui">
+      <Filter>Widgets</Filter>
+    </CustomBuild>
+    <CustomBuild Include="Widgets\AnnotationDisplay.h">
+      <Filter>Widgets</Filter>
+    </CustomBuild>
+    <CustomBuild Include="Windows\Dialogs\CameraControlsDialog.h">
+      <Filter>Windows\Dialogs</Filter>
+    </CustomBuild>
+    <CustomBuild Include="Windows\Dialogs\CameraControlsDialog.ui">
+      <Filter>Windows\Dialogs</Filter>
+    </CustomBuild>
+    <CustomBuild Include="Windows\Dialogs\ProjectionGuessDialog.h">
+      <Filter>Windows\Dialogs</Filter>
+    </CustomBuild>
+    <CustomBuild Include="Windows\Dialogs\ProjectionGuessDialog.ui">
+      <Filter>Windows\Dialogs</Filter>
+    </CustomBuild>
+    <CustomBuild Include="Widgets\Extended\RDToolTip.h">
+      <Filter>Widgets\Extended</Filter>
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
@@ -1942,8 +2056,27 @@
     <Image Include="Resources\filter%402x.png">
       <Filter>Resources\Files</Filter>
     </Image>
+    <Image Include="Resources\align.png">
+      <Filter>Resources\Files</Filter>
+    </Image>
+    <Image Include="Resources\align%402x.png">
+      <Filter>Resources\Files</Filter>
+    </Image>
+    <Image Include="Resources\help.png">
+      <Filter>Resources\Files</Filter>
+    </Image>
+    <Image Include="Resources\help%402x.png">
+      <Filter>Resources\Files</Filter>
+    </Image>
+    <Image Include="Resources\draw_vertex%402x.png">
+      <Filter>Resources\Files</Filter>
+    </Image>
+    <Image Include="Resources\draw_vertex.png">
+      <Filter>Resources\Files</Filter>
+    </Image>
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="python36.natvis" />
+    <Natvis Include="python38.natvis" />
   </ItemGroup>
 </Project>

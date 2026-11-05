@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -178,7 +178,6 @@ void StatisticsViewer::AppendShaderStatistics()
 
   const rdcarray<ShaderChangeStats> &shaders = frameInfo.stats.shaders;
   ShaderChangeStats totalShadersPerStage;
-  memset(&totalShadersPerStage, 0, sizeof(totalShadersPerStage));
   for(auto s : indices<ShaderStage>())
   {
     totalShadersPerStage.calls += shaders[s].calls;
@@ -222,7 +221,6 @@ void StatisticsViewer::AppendConstantBindStatistics()
   // thereof), but given we're heading for a Qt/C++ rewrite of the UI
   // perhaps best not to dwell too long on that
   ConstantBindStats totalConstantsPerStage[arraydim<ShaderStage>()];
-  memset(&totalConstantsPerStage, 0, sizeof(totalConstantsPerStage));
   for(auto s : indices<ShaderStage>())
   {
     totalConstantsPerStage[s].bindslots.resize(reference.bindslots.size());
@@ -246,7 +244,6 @@ void StatisticsViewer::AppendConstantBindStatistics()
   }
 
   ConstantBindStats totalConstantsForAllStages;
-  memset(&totalConstantsForAllStages, 0, sizeof(totalConstantsForAllStages));
   totalConstantsForAllStages.bindslots.resize(totalConstantsPerStage[0].bindslots.size());
   totalConstantsForAllStages.sizes.resize(totalConstantsPerStage[0].sizes.size());
 
@@ -314,7 +311,6 @@ void StatisticsViewer::AppendSamplerBindStatistics()
   const SamplerBindStats &reference = frameInfo.stats.samplers[0];
 
   SamplerBindStats totalSamplersPerStage[arraydim<ShaderStage>()];
-  memset(&totalSamplersPerStage, 0, sizeof(totalSamplersPerStage));
   for(auto s : indices<ShaderStage>())
   {
     totalSamplersPerStage[s].bindslots.resize(reference.bindslots.size());
@@ -336,7 +332,6 @@ void StatisticsViewer::AppendSamplerBindStatistics()
   }
 
   SamplerBindStats totalSamplersForAllStages;
-  memset(&totalSamplersForAllStages, 0, sizeof(totalSamplersForAllStages));
   totalSamplersForAllStages.bindslots.resize(totalSamplersPerStage[0].bindslots.size());
 
   for(auto s : indices<ShaderStage>())
@@ -380,7 +375,6 @@ void StatisticsViewer::AppendResourceBindStatistics()
   const ResourceBindStats &reference = frameInfo.stats.resources[0];
 
   ResourceBindStats totalResourcesPerStage[arraydim<ShaderStage>()];
-  memset(&totalResourcesPerStage, 0, sizeof(totalResourcesPerStage));
   for(auto s : indices<ShaderStage>())
   {
     totalResourcesPerStage[s].types.resize(reference.types.size());
@@ -408,7 +402,6 @@ void StatisticsViewer::AppendResourceBindStatistics()
   }
 
   ResourceBindStats totalResourcesForAllStages;
-  memset(&totalResourcesForAllStages, 0, sizeof(totalResourcesForAllStages));
   totalResourcesForAllStages.types.resize(totalResourcesPerStage[0].types.size());
   totalResourcesForAllStages.bindslots.resize(totalResourcesPerStage[0].bindslots.size());
 
@@ -478,7 +471,6 @@ void StatisticsViewer::AppendUpdateStatistics()
   const ResourceUpdateStats &reference = frameInfo.stats.updates;
 
   ResourceUpdateStats totalUpdates;
-  memset(&totalUpdates, 0, sizeof(totalUpdates));
   totalUpdates.types.resize(reference.types.size());
   totalUpdates.sizes.resize(reference.sizes.size());
 
@@ -633,7 +625,7 @@ void StatisticsViewer::CountContributingEvents(const ActionDescription &action, 
   if(diagnosticMasked != ActionFlags::NoFlags)
     diagnosticCount += 1;
 
-  if(action.flags & ActionFlags::Drawcall)
+  if(action.flags & (ActionFlags::MeshDispatch | ActionFlags::Drawcall))
     drawCount += 1;
 
   if(action.flags & ActionFlags::Dispatch)

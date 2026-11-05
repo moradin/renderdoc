@@ -1,7 +1,10 @@
-Capturing
-=========
+API Reference: Capturing
+========================
 
-.. contents::
+This is the API reference for the functions, classes, and enums in the ``renderdoc`` module which represents the underlying interface that the UI is built on top of. For more high-level information and instructions on using the python API, see :doc:`../index`.
+
+.. contents:: Sections
+   :local:
 
 .. currentmodule:: renderdoc
 
@@ -14,8 +17,6 @@ Execution & Injection
 .. autoclass:: renderdoc.CaptureOptions
   :members:
   
-.. autofunction:: renderdoc.GetDefaultCaptureOptions
-
 .. autoclass:: renderdoc.EnvironmentModification
   :members:
 

@@ -1,3 +1,5 @@
+from typing import List
+
 import renderdoc as rd
 import rdtest
 import struct
@@ -11,35 +13,33 @@ class D3D12_AMD_Shader_Extensions(rdtest.TestCase):
             action = self.find_action(pass_type + " Draw")
 
             if action is not None:
-                self.controller.SetFrameEvent(action.next.eventId, False)
+                self.set_event(action.nextAction.eventId, False)
 
                 pipe = self.controller.GetPipelineState()
-                tex = pipe.GetOutputTargets()[0].resourceId
-                vp = pipe.GetViewport(0)
+                tex = pipe.GetOutputTargets()[0].resource
 
                 # Should have barycentrics showing the closest vertex for each pixel in the triangle
                 # Without relying on barycentric order, ensure that the three pixels are red, green, and blue
-                pixels = []
+                pixels: List[rdtest.VectorValue] = []
 
-                x = int(vp.x + vp.width * 0.5)
-                y = int(vp.y + vp.height * 0.5)
+                x, y = self.get_view_centre()
 
-                picked: rd.PixelValue = self.controller.PickPixel(tex, x+ 0, y+ 0, rd.Subresource(), rd.CompType.UNorm)
+                picked = self.pick_pixel(tex, x+ 0, y+ 0, rd.Subresource(), rd.CompType.UNorm)
                 pixels.append(picked.floatValue[0:4])
-                picked: rd.PixelValue = self.controller.PickPixel(tex, x-20, y+20, rd.Subresource(), rd.CompType.UNorm)
+                picked = self.pick_pixel(tex, x-20, y+20, rd.Subresource(), rd.CompType.UNorm)
                 pixels.append(picked.floatValue[0:4])
-                picked: rd.PixelValue = self.controller.PickPixel(tex, x+20, y+20, rd.Subresource(), rd.CompType.UNorm)
+                picked = self.pick_pixel(tex, x+20, y+20, rd.Subresource(), rd.CompType.UNorm)
                 pixels.append(picked.floatValue[0:4])
 
                 if (not (1.0, 0.0, 0.0, 1.0) in pixels) or (not (1.0, 0.0, 0.0, 1.0) in pixels) or (
                 not (1.0, 0.0, 0.0, 1.0) in pixels):
-                    raise rdtest.TestFailureException("Expected red, green and blue in picked pixels. Got {}".format(pixels))
+                    raise rdtest.TestFailureException(f"Expected red, green and blue in picked pixels. Got {pixels}")
 
                 rdtest.log.success("Picked barycentric values are as expected")
 
                 action = self.find_action(pass_type + " Dispatch")
 
-                self.controller.SetFrameEvent(action.next.eventId, False)
+                self.set_event(action.nextAction.eventId, False)
 
                 # find the cpuMax and gpuMax actions
                 cpuMax = self.find_action(pass_type + " cpuMax")
@@ -51,7 +51,7 @@ class D3D12_AMD_Shader_Extensions(rdtest.TestCase):
 
                 if cpuMax != gpuMax or cpuMax == 0:
                     raise rdtest.TestFailureException(
-                        "captured cpuMax and gpuMax are not equal and positive: {} vs {}".format(cpuMax, gpuMax))
+                        f"captured cpuMax and gpuMax are not equal and positive: {cpuMax} vs {gpuMax}")
 
                 rdtest.log.success("recorded cpuMax and gpuMax are as expected")
 
@@ -63,12 +63,12 @@ class D3D12_AMD_Shader_Extensions(rdtest.TestCase):
 
                 if replayedGpuMax != gpuMax:
                     raise rdtest.TestFailureException(
-                        "captured gpuMax and replayed gpuMax are not equal: {} vs {}".format(gpuMax, replayedGpuMax))
+                        f"captured gpuMax and replayed gpuMax are not equal: {gpuMax} vs {replayedGpuMax}")
 
                 rdtest.log.success("replayed gpuMax is as expected")
             # We should get everything except maybe DXIL
             elif pass_type != "SM60":
-                raise rdtest.TestFailureException("Didn't find test action for {}".format(pass_type))
+                raise rdtest.TestFailureException(f"Didn't find test action for {pass_type}")
 
             # We always check the CS pipe to ensure the reflection is OK
             cs_pipe = self.get_resource_by_name("cspipe" + pass_type)
@@ -76,7 +76,7 @@ class D3D12_AMD_Shader_Extensions(rdtest.TestCase):
             if cs_pipe is None:
                 # everything but DXIL we must get, DXIL we may not be able to compile
                 if pass_type != "SM60":
-                    raise rdtest.TestFailureException("Didn't find compute pipeline for {}".format(pass_type))
+                    raise rdtest.TestFailureException(f"Didn't find compute pipeline for {pass_type}")
                 continue
 
             pipe = cs_pipe.resourceId
@@ -88,11 +88,12 @@ class D3D12_AMD_Shader_Extensions(rdtest.TestCase):
                     cs = res.resourceId
                     break
 
-            refl: rd.ShaderReflection = self.controller.GetShader(pipe, cs,
-                                                                  rd.ShaderEntryPoint("main", rd.ShaderStage.Compute))
+            refl = self.controller.GetShader(
+                pipe, cs, rd.ShaderEntryPoint("main", rd.ShaderStage.Compute)
+            )
 
-            self.check(len(refl.readWriteResources) == 2)
-            self.check([rw.name for rw in refl.readWriteResources] == ["inUAV", "outUAV"])
+            assert len(refl.readWriteResources) == 2
+            assert [rw.name for rw in refl.readWriteResources] == ["inUAV", "outUAV"]
 
             # Don't test disassembly or debugging with DXIL, we don't do any of that
             if pass_type == "SM60":
@@ -102,26 +103,16 @@ class D3D12_AMD_Shader_Extensions(rdtest.TestCase):
 
             if "amd_u64_atomic" not in disasm:
                 raise rdtest.TestFailureException(
-                    "Didn't find expected AMD opcode in disassembly: {}".format(disasm))
+                    f"Didn't find expected AMD opcode in disasse1mbly: {disasm}")
 
             rdtest.log.success("compute shader disassembly is as expected")
 
-            if refl.debugInfo.debuggable:
-                self.controller.SetFrameEvent(self.find_action("Dispatch").eventId, False)
+            self.set_event(self.find_action("Dispatch").eventId, False)
 
-                trace: rd.ShaderDebugTrace = self.controller.DebugThread((0, 0, 0), (0, 0, 0))
-
-                if trace.debugger is None:
-                    self.controller.FreeTrace(trace)
-
-                    raise rdtest.TestFailureException("Couldn't debug compute shader")
-
-                cycles, variables = self.process_trace(trace)
+            with self.debug_thread((0, 0, 0), (0, 0, 0)) as debug:
+                cycles, variables = self.process_trace(debug.trace)
 
                 if cycles < 3:
-                    raise rdtest.TestFailureException("Compute shader has too few cycles {}".format(cycles))
-            else:
-                raise rdtest.TestFailureException(
-                    "Compute shader is listed as non-debuggable: {}".format(refl.debugInfo.debugStatus))
+                    raise rdtest.TestFailureException(f"Compute shader has too few cycles {cycles}")
 
             rdtest.log.success("compute shader debugged successfully")

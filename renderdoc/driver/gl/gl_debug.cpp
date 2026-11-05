@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -425,7 +425,35 @@ void GLReplay::InitDebugData()
           "#extension GL_ARB_shader_bit_encoding : require\n";
   }
 
+  DebugData.texSampleDefines = texSampleDefines;
+
+  rdcstr vsDefines = "#define FORCE_IO_LOCATION 1";
+
+  if(!IsGLES)
+  {
+    vsDefines =
+        "#extension GL_ARB_separate_shader_objects : require\n"
+        "#extension GL_ARB_explicit_attrib_location : require\n" +
+        vsDefines;
+  }
+
+  vs = GenerateGLSLShader(GetEmbeddedResource(glsl_blit_vert), shaderType, glslBaseVer, vsDefines);
+
+  // used to combine with custom shaders.
+  // this has to have explicit locations on the output even though we don't normally use that,
+  // because GL doesn't have a fallback to match by name, and custom shaders are expected to have an
+  // explicit location on the input
+  DebugData.texDisplayVertexShader = CreateShader(eGL_VERTEX_SHADER, vs);
+
   vs = GenerateGLSLShader(GetEmbeddedResource(glsl_blit_vert), shaderType, glslBaseVer);
+  fs = GenerateGLSLShader(GetEmbeddedResource(glsl_fixedcol_frag), shaderType, glslBaseVer);
+  DebugData.fullScreenFixedColProg = CreateShaderProgram(vs, fs);
+
+  fs = GenerateGLSLShader(GetEmbeddedResource(glsl_depth_copy_frag), shaderType, glslBaseVer);
+  DebugData.fullScreenCopyDepth = CreateShaderProgram(vs, fs);
+
+  fs = GenerateGLSLShader(GetEmbeddedResource(glsl_depth_copyms_frag), shaderType, glslBaseVer);
+  DebugData.fullScreenCopyDepthMS = CreateShaderProgram(vs, fs);
 
   DebugData.fixedcolFragShaderSPIRV = DebugData.quadoverdrawFragShaderSPIRV = 0;
 
@@ -452,9 +480,6 @@ void GLReplay::InitDebugData()
       DebugData.quadoverdrawFragShaderSPIRV = CreateSPIRVShader(eGL_FRAGMENT_SHADER, source);
     }
   }
-
-  // used to combine with custom shaders.
-  DebugData.texDisplayVertexShader = CreateShader(eGL_VERTEX_SHADER, vs);
 
   for(int i = 0; i < 3; i++)
   {
@@ -756,6 +781,9 @@ void GLReplay::InitDebugData()
     GL.glDeleteShader(fsShad);
   }
 
+  cs = GenerateGLSLShader(GetEmbeddedResource(glsl_debug_math_comp), shaderType, glslCSVer);
+  DebugData.shaderDebugMathProg = CreateCShaderProgram(cs);
+
   RenderDoc::Inst().SetProgress(LoadProgress::DebugManagerInit, 0.4f);
 
   drv.glGenBuffers(ARRAY_COUNT(DebugData.UBOs), DebugData.UBOs);
@@ -970,15 +998,40 @@ void GLReplay::InitDebugData()
 
   Vec3f axisFrustum[] = {
       // axis marker vertices
-      Vec3f(0.0f, 0.0f, 0.0f), Vec3f(1.0f, 0.0f, 0.0f), Vec3f(0.0f, 0.0f, 0.0f),
-      Vec3f(0.0f, 1.0f, 0.0f), Vec3f(0.0f, 0.0f, 0.0f), Vec3f(0.0f, 0.0f, 1.0f),
+      Vec3f(0.0f, 0.0f, 0.0f),
+      Vec3f(1.0f, 0.0f, 0.0f),
+      Vec3f(0.0f, 0.0f, 0.0f),
+      Vec3f(0.0f, 1.0f, 0.0f),
+      Vec3f(0.0f, 0.0f, 0.0f),
+      Vec3f(0.0f, 0.0f, 1.0f),
 
       // frustum vertices
-      TLN, TRN, TRN, BRN, BRN, BLN, BLN, TLN,
+      TLN,
+      TRN,
+      TRN,
+      BRN,
+      BRN,
+      BLN,
+      BLN,
+      TLN,
 
-      TLN, TLF, TRN, TRF, BLN, BLF, BRN, BRF,
+      TLN,
+      TLF,
+      TRN,
+      TRF,
+      BLN,
+      BLF,
+      BRN,
+      BRF,
 
-      TLF, TRF, TRF, BRF, BRF, BLF, BLF, TLF,
+      TLF,
+      TRF,
+      TRF,
+      BRF,
+      BRF,
+      BLF,
+      BLF,
+      TLF,
   };
 
   drv.glNamedBufferDataEXT(DebugData.axisFrustumBuffer, sizeof(axisFrustum), axisFrustum,
@@ -1185,6 +1238,13 @@ void GLReplay::DeleteDebugData()
   drv.glDeleteFramebuffers(1, &DebugData.overlayFBO);
   drv.glDeleteTextures(1, &DebugData.overlayTex);
 
+  if(DebugData.fullScreenFixedColProg)
+    drv.glDeleteProgram(DebugData.fullScreenFixedColProg);
+  if(DebugData.fullScreenCopyDepth)
+    drv.glDeleteProgram(DebugData.fullScreenCopyDepth);
+  if(DebugData.fullScreenCopyDepthMS)
+    drv.glDeleteProgram(DebugData.fullScreenCopyDepthMS);
+
   if(DebugData.quadoverdrawFragShader)
     drv.glDeleteShader(DebugData.quadoverdrawFragShader);
   if(DebugData.quadoverdrawFragShaderSPIRV)
@@ -1218,6 +1278,14 @@ void GLReplay::DeleteDebugData()
   }
   if(DebugData.trisizeProg)
     drv.glDeleteProgram(DebugData.trisizeProg);
+
+  if(DebugData.shaderDebugMathProg)
+    drv.glDeleteProgram(DebugData.shaderDebugMathProg);
+
+  for(auto it = m_ShaderDebugSampleProg.begin(); it != m_ShaderDebugSampleProg.end(); ++it)
+  {
+    drv.glDeleteProgram(it->second);
+  }
 
   drv.glDeleteBuffers(ARRAY_COUNT(DebugData.UBOs), DebugData.UBOs);
   drv.glDeleteFramebuffers(1, &DebugData.pickPixelFBO);
@@ -1274,6 +1342,170 @@ void GLReplay::DeleteDebugData()
   drv.glDeleteBuffers(1, &DebugData.triHighlightBuffer);
 }
 
+GLuint GLReplay::GetShaderDebugMathProg()
+{
+  return DebugData.shaderDebugMathProg;
+}
+
+GLuint GLReplay::MakeShaderDebugSampleProg(const SamplingProgramConfig &config)
+{
+  uint32_t hash = config.hashKey();
+
+  if(m_ShaderDebugSampleProg[hash])
+    return m_ShaderDebugSampleProg[hash];
+
+  rdcstr defines;
+
+  defines += rdcstr("#define SHADER_BASETYPE ") + ToStr((uint32_t)config.resType) + "\n";
+
+  defines += StringFormat::Fmt("#define FETCH_OFFSET ivec3(%u, %u, %u)\n", config.fetchOffset.x,
+                               config.fetchOffset.y, config.fetchOffset.z);
+
+  defines += StringFormat::Fmt(
+      "#define GATHER_OFFSETS ivec2[4](ivec2(%u, %u), ivec2(%u, %u), ivec2(%u, %u), ivec2(%u, "
+      "%u))\n",
+      config.gatherOffsets[0], config.gatherOffsets[1], config.gatherOffsets[2],
+      config.gatherOffsets[3], config.gatherOffsets[4], config.gatherOffsets[5],
+      config.gatherOffsets[6], config.gatherOffsets[7]);
+
+  defines += StringFormat::Fmt("#define USE_GRAD %u\n", config.useGrad);
+  defines += StringFormat::Fmt("#define USE_GATHER_OFFS %u\n", config.useGatherOffs);
+  defines += StringFormat::Fmt("#define GATHER_CHANNEL %u\n", config.gatherChannel);
+
+  rdcstr operation = "Do";
+  switch(config.op)
+  {
+    case SamplingProgramConfig::Fetch: operation += "Fetch"; break;
+    case SamplingProgramConfig::QueryLod: operation += "QueryLod"; break;
+    case SamplingProgramConfig::Sample: operation += "Sample"; break;
+    case SamplingProgramConfig::SampleDref: operation += "SampleDref"; break;
+    case SamplingProgramConfig::Gather: operation += "Gather"; break;
+    case SamplingProgramConfig::GatherDref: operation += "GatherDref"; break;
+  }
+
+  rdcstr dim;
+  switch(config.dim)
+  {
+    case SamplingProgramConfig::TexBuffer: dim = "Buffer"; break;
+    case SamplingProgramConfig::Tex1D: dim = "1D"; break;
+    case SamplingProgramConfig::Tex2D: dim = "2D"; break;
+    case SamplingProgramConfig::Tex3D: dim = "3D"; break;
+    case SamplingProgramConfig::TexCube: dim = "Cube"; break;
+    case SamplingProgramConfig::Tex1DArray: dim = "1DArray"; break;
+    case SamplingProgramConfig::Tex2DArray: dim = "2DArray"; break;
+    case SamplingProgramConfig::Tex3DArray: dim = "3DArray"; break;
+    case SamplingProgramConfig::TexCubeArray: dim = "CubeArray"; break;
+    case SamplingProgramConfig::Tex2DRect: dim = "2DRect"; break;
+    case SamplingProgramConfig::Tex2DMS: dim = "2DMS"; break;
+    case SamplingProgramConfig::Tex2DMSArray: dim = "2DMSArray"; break;
+  }
+
+  rdcstr manualBias = config.manualBias ? "Bias" : "";
+
+  if(config.manualBias)
+  {
+    if(config.op == SamplingProgramConfig::Sample)
+    {
+      switch(config.dim)
+      {
+        case SamplingProgramConfig::Tex2D:
+        case SamplingProgramConfig::Tex3D:
+        case SamplingProgramConfig::TexCube:
+        case SamplingProgramConfig::Tex2DArray:
+        case SamplingProgramConfig::TexCubeArray:
+          // these are fine
+          break;
+        default: RDCERR("Unsupported dimension %u with manual bias on sample", config.dim);
+      }
+    }
+    else if(config.op == SamplingProgramConfig::SampleDref)
+    {
+      RDCASSERT(config.dim == SamplingProgramConfig::Tex2D, (uint32_t)config.dim);
+    }
+    else
+    {
+      RDCERR("Unsupported operation with manual bias");
+    }
+  }
+
+  defines += StringFormat::Fmt("#define OPERATION %s%s%s\n", operation.c_str(), manualBias.c_str(),
+                               dim.c_str());
+
+  defines += StringFormat::Fmt("#define USE_GRAD %u\n", config.useGrad);
+
+  ShaderType shaderType;
+  int glslVersion;
+  int glslBaseVer;
+  int glslCSVer;    // compute shader
+
+  GetGLSLVersions(shaderType, glslVersion, glslBaseVer, glslCSVer);
+
+  if(!IsGLES)
+  {
+    glslVersion = 330;
+    if(GLCoreVersion >= 45)
+    {
+      glslVersion = 450;
+      defines += "#extension GL_ARB_sparse_texture_clamp : require\n";
+      defines += "#define ENABLE_MINLOD 1\n";
+    }
+
+    if(HasExt[ARB_gpu_shader5] && HasExt[ARB_texture_gather])
+    {
+      defines += "#extension GL_ARB_texture_gather : require\n";
+      defines += "#extension GL_ARB_gpu_shader5 : require\n";
+      defines += "#define GATHER_SUPPORT 2\n";
+    }
+    else if(HasExt[ARB_texture_gather])
+    {
+      defines += "#extension GL_ARB_texture_gather : require\n";
+      defines += "#define GATHER_SUPPORT 1\n";
+    }
+    else
+    {
+      defines += "#define GATHER_SUPPORT 0\n";
+    }
+  }
+  else
+  {
+    defines += "#define ENABLE_MINLOD 0\n";
+    if(HasExt[ARB_gpu_shader5] && HasExt[ARB_texture_gather])
+    {
+      defines += "#define GATHER_SUPPORT 2\n";
+    }
+    else if(HasExt[ARB_texture_gather])
+    {
+      defines += "#define GATHER_SUPPORT 1\n";
+    }
+    else
+    {
+      defines += "#define GATHER_SUPPORT 0\n";
+    }
+  }
+
+  rdcstr vs =
+      GenerateGLSLShader(GetEmbeddedResource(glsl_shaderdebug_sample_vert), shaderType, glslVersion);
+  rdcstr ps = GenerateGLSLShader(GetEmbeddedResource(glsl_debug_sample_frag), shaderType,
+                                 glslVersion, defines + DebugData.texSampleDefines);
+  GLuint prog = CreateShaderProgram(vs, ps, "");
+
+  if(config.op == SamplingProgramConfig::SampleDref || config.op == SamplingProgramConfig::GatherDref)
+    dim += "Shadow";
+
+  dim = "tex" + dim;
+
+  GLuint prevProg = 0;
+  GL.glGetIntegerv(eGL_CURRENT_PROGRAM, (GLint *)&prevProg);
+
+  BindUBO(prog, "DebugSampleUBO", 0);
+  GL.glUseProgram(prog);
+  GL.glUniform1i(GL.glGetUniformLocation(prog, dim.c_str()), 0);
+
+  GL.glUseProgram(prevProg);
+
+  return m_ShaderDebugSampleProg[hash] = prog;
+}
+
 GLReplay::TextureSamplerState GLReplay::SetSamplerParams(GLenum target, GLuint texname,
                                                          TextureSamplerMode mode)
 {
@@ -1290,10 +1522,17 @@ GLReplay::TextureSamplerState GLReplay::SetSamplerParams(GLenum target, GLuint t
   GL.glGetTextureParameterivEXT(texname, target, eGL_TEXTURE_WRAP_T, (GLint *)&ret.wrapT);
   GL.glGetTextureParameterivEXT(texname, target, eGL_TEXTURE_WRAP_R, (GLint *)&ret.wrapR);
   GL.glGetTextureParameterivEXT(texname, target, eGL_TEXTURE_COMPARE_MODE, (GLint *)&ret.compareMode);
+  if(!IsGLES)
+    GL.glGetTextureParameterfvEXT(texname, target, eGL_TEXTURE_LOD_BIAS, &ret.lodBias);
 
   // disable depth comparison
   GLenum compareMode = eGL_NONE;
   GL.glTextureParameterivEXT(texname, target, eGL_TEXTURE_COMPARE_MODE, (GLint *)&compareMode);
+
+  // disable LOD bias, we control our own sampling
+  float lodBias = 0.0f;
+  if(!IsGLES)
+    GL.glTextureParameterfvEXT(texname, target, eGL_TEXTURE_LOD_BIAS, &lodBias);
 
   // always want to clamp
   GLenum param = eGL_CLAMP_TO_EDGE;
@@ -1339,6 +1578,8 @@ void GLReplay::RestoreSamplerParams(GLenum target, GLuint texname, TextureSample
   GL.glTextureParameterivEXT(texname, target, eGL_TEXTURE_MIN_FILTER, (GLint *)&state.minFilter);
   GL.glTextureParameterivEXT(texname, target, eGL_TEXTURE_MAG_FILTER, (GLint *)&state.magFilter);
   GL.glTextureParameterivEXT(texname, target, eGL_TEXTURE_COMPARE_MODE, (GLint *)&state.compareMode);
+  if(!IsGLES)
+    GL.glTextureParameterfvEXT(texname, target, eGL_TEXTURE_LOD_BIAS, &state.lodBias);
 }
 
 void GLReplay::FillWithDiscardPattern(DiscardType type, GLuint framebuffer, GLsizei numAttachments,
@@ -1489,7 +1730,7 @@ void GLReplay::FillWithDiscardPattern(DiscardType type, ResourceId id, GLuint mi
 
   GLMarkerRegion region("FillWithDiscardPattern Texture");
 
-  auto &texDetails = drv.m_Textures[id];
+  WrappedOpenGL::TextureData &texDetails = drv.m_Textures[id];
 
   GLenum fmt = texDetails.internalFormat;
 
@@ -1620,18 +1861,27 @@ void GLReplay::PickPixel(ResourceId texture, uint32_t x, uint32_t y, const Subre
   texDisplay.xOffset = -float(x << sub.mip);
   texDisplay.yOffset = -float(y << sub.mip);
 
+  WrappedOpenGL::TextureData &texDetails = m_pDriver->m_Textures[texDisplay.resourceId];
+
+  uint32_t mipWidth = RDCMAX(1U, (uint32_t)texDetails.width >> sub.mip);
+  uint32_t mipHeight = RDCMAX(1U, (uint32_t)texDetails.height >> sub.mip);
+
+  texDisplay.xOffset = -(float(x) / float(mipWidth)) * texDetails.width;
+  texDisplay.yOffset = -(float(y) / float(mipHeight)) * texDetails.height;
+
   RenderTextureInternal(texDisplay, eTexDisplay_MipShift);
 
   drv.glReadPixels(0, 0, 1, 1, eGL_RGBA, eGL_FLOAT, (void *)pixel);
 
   if(!HasExt[ARB_gpu_shader5])
   {
-    auto &texDetails = m_pDriver->m_Textures[texDisplay.resourceId];
-
     if(IsSIntFormat(texDetails.internalFormat))
     {
       int32_t casted[4] = {
-          (int32_t)pixel[0], (int32_t)pixel[1], (int32_t)pixel[2], (int32_t)pixel[3],
+          (int32_t)pixel[0],
+          (int32_t)pixel[1],
+          (int32_t)pixel[2],
+          (int32_t)pixel[3],
       };
 
       memcpy(pixel, casted, sizeof(casted));
@@ -1639,7 +1889,10 @@ void GLReplay::PickPixel(ResourceId texture, uint32_t x, uint32_t y, const Subre
     else if(IsUIntFormat(texDetails.internalFormat))
     {
       uint32_t casted[4] = {
-          (uint32_t)pixel[0], (uint32_t)pixel[1], (uint32_t)pixel[2], (uint32_t)pixel[3],
+          (uint32_t)pixel[0],
+          (uint32_t)pixel[1],
+          (uint32_t)pixel[2],
+          (uint32_t)pixel[3],
       };
 
       memcpy(pixel, casted, sizeof(casted));
@@ -1647,14 +1900,11 @@ void GLReplay::PickPixel(ResourceId texture, uint32_t x, uint32_t y, const Subre
   }
 
   {
-    auto &texDetails = m_pDriver->m_Textures[texture];
-
     // need to read stencil separately as GL can't read both depth and stencil
     // at the same time.
     if(texDetails.internalFormat == eGL_DEPTH24_STENCIL8 ||
        texDetails.internalFormat == eGL_DEPTH32F_STENCIL8 ||
-       texDetails.internalFormat == eGL_DEPTH_STENCIL ||
-       texDetails.internalFormat == eGL_STENCIL_INDEX8)
+       texDetails.internalFormat == eGL_DEPTH_STENCIL)
     {
       texDisplay.red = texDisplay.blue = texDisplay.alpha = false;
 
@@ -1676,14 +1926,6 @@ void GLReplay::PickPixel(ResourceId texture, uint32_t x, uint32_t y, const Subre
       // not sure whether [0] or [1] will return stencil values, so use
       // max of two because other channel should be 0
       pixel[1] = float(RDCMAX(stencilpixel[0], stencilpixel[1])) / 255.0f;
-
-      // the first depth read will have read stencil instead.
-      // NULL it out so the UI sees only stencil
-      if(texDetails.internalFormat == eGL_STENCIL_INDEX8)
-      {
-        pixel[1] = float(RDCMAX(stencilpixel[0], stencilpixel[1])) / 255.0f;
-        pixel[0] = 0.0f;
-      }
     }
   }
 }
@@ -1691,7 +1933,7 @@ void GLReplay::PickPixel(ResourceId texture, uint32_t x, uint32_t y, const Subre
 bool GLReplay::GetMinMax(ResourceId texid, const Subresource &sub, CompType typeCast, float *minval,
                          float *maxval)
 {
-  auto &texDetails = m_pDriver->m_Textures[texid];
+  WrappedOpenGL::TextureData &texDetails = m_pDriver->m_Textures[texid];
 
   if(!IsCompressedFormat(texDetails.internalFormat) &&
      GetBaseFormat(texDetails.internalFormat) == eGL_DEPTH_STENCIL)
@@ -1699,7 +1941,8 @@ bool GLReplay::GetMinMax(ResourceId texid, const Subresource &sub, CompType type
     // for depth/stencil we need to run the code twice - once to fetch depth and once to fetch
     // stencil - since we can't process float depth and int stencil at the same time
     Vec4f depth[2] = {
-        {0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f, 1.0f},
+        {0.0f, 0.0f, 0.0f, 0.0f},
+        {1.0f, 1.0f, 1.0f, 1.0f},
     };
     Vec4u stencil[2] = {{0, 0, 0, 0}, {1, 1, 1, 1}};
 
@@ -1748,7 +1991,7 @@ bool GLReplay::GetMinMax(ResourceId texid, const Subresource &sub, CompType type
   if(!HasExt[ARB_compute_shader] || !HasExt[ARB_shading_language_420pack])
     return false;
 
-  auto &texDetails = m_pDriver->m_Textures[texid];
+  WrappedOpenGL::TextureData &texDetails = m_pDriver->m_Textures[texid];
 
   TextureDescription details = GetTexture(texid);
 
@@ -1978,7 +2221,7 @@ bool GLReplay::GetHistogram(ResourceId texid, const Subresource &sub, CompType t
   // take a local copy so we can modify it
   rdcfixedarray<bool, 4> channels = channels_;
 
-  auto &texDetails = m_pDriver->m_Textures[texid];
+  WrappedOpenGL::TextureData &texDetails = m_pDriver->m_Textures[texid];
 
   TextureDescription details = GetTexture(texid);
 
@@ -2250,20 +2493,35 @@ uint32_t GLReplay::PickVertex(uint32_t eventId, int32_t width, int32_t height,
 
   drv.glUseProgram(DebugData.meshPickProgram);
 
-  Matrix4f projMat = Matrix4f::Perspective(90.0f, 0.1f, 100000.0f, float(width) / float(height));
+  float nearPlane = cfg.cam ? ((Camera *)cfg.cam)->GetNear() : 0.1f;
+  float farPlane = cfg.cam ? ((Camera *)cfg.cam)->GetFar() : 100000.0f;
+
+  Matrix4f projMat = Matrix4f::Perspective(90.0f, nearPlane, farPlane, float(width) / float(height));
 
   Matrix4f camMat = cfg.cam ? ((Camera *)cfg.cam)->GetMatrix() : Matrix4f::Identity();
   Matrix4f pickMVP = projMat.Mul(camMat);
+  if(!cfg.position.unproject)
+  {
+    pickMVP = pickMVP.Mul(Matrix4f(cfg.axisMapping));
+  }
 
-  Matrix4f pickMVPProj;
+  bool reverseProjection = false;
+  Matrix4f guessProj;
+  Matrix4f guessProjInverse;
   if(cfg.position.unproject)
   {
     // the derivation of the projection matrix might not be right (hell, it could be an
     // orthographic projection). But it'll be close enough likely.
-    Matrix4f guessProj =
-        cfg.position.farPlane != FLT_MAX
-            ? Matrix4f::Perspective(cfg.fov, cfg.position.nearPlane, cfg.position.farPlane, cfg.aspect)
-            : Matrix4f::ReversePerspective(cfg.fov, cfg.position.nearPlane, cfg.aspect);
+    if(cfg.position.farPlane != FLT_MAX)
+    {
+      guessProj =
+          Matrix4f::Perspective(cfg.fov, cfg.position.nearPlane, cfg.position.farPlane, cfg.aspect);
+    }
+    else
+    {
+      reverseProjection = true;
+      guessProj = Matrix4f::ReversePerspective(cfg.fov, cfg.position.nearPlane, cfg.aspect);
+    }
 
     if(cfg.ortho)
       guessProj = Matrix4f::Orthographic(cfg.position.nearPlane, cfg.position.farPlane);
@@ -2271,55 +2529,104 @@ uint32_t GLReplay::PickVertex(uint32_t eventId, int32_t width, int32_t height,
     if(cfg.position.flipY)
       guessProj[5] *= -1.0f;
 
-    pickMVPProj = projMat.Mul(camMat.Mul(guessProj.Inverse()));
+    guessProjInverse = guessProj.Inverse();
   }
 
-  vec3 rayPos;
-  vec3 rayDir;
+  Vec3f rayPos;
+  Vec3f rayDir;
   // convert mouse pos to world space ray
   {
-    Matrix4f inversePickMVP = pickMVP.Inverse();
-
     float pickX = ((float)x) / ((float)width);
     float pickXCanonical = RDCLERP(-1.0f, 1.0f, pickX);
 
     float pickY = ((float)y) / ((float)height);
-    // flip the Y axis
+    // flip the Y axis by default for Y-up
     float pickYCanonical = RDCLERP(1.0f, -1.0f, pickY);
 
-    vec3 cameraToWorldNearPosition =
-        inversePickMVP.Transform(Vec3f(pickXCanonical, pickYCanonical, -1), 1);
+    if(cfg.position.flipY && !cfg.ortho)
+      pickYCanonical = -pickYCanonical;
 
-    vec3 cameraToWorldFarPosition =
-        inversePickMVP.Transform(Vec3f(pickXCanonical, pickYCanonical, 1), 1);
+    // x/y is inside the window. Since we're not using the window projection we need to correct
+    // for the aspect ratio here.
+    if(cfg.position.unproject && !cfg.ortho)
+      pickXCanonical *= (float(width) / float(height)) / cfg.aspect;
 
-    vec3 testDir = (cameraToWorldFarPosition - cameraToWorldNearPosition);
-    testDir.Normalise();
+    // set up the NDC near/far pos
+    Vec3f nearPosNDC = Vec3f(pickXCanonical, pickYCanonical, 0);
+    Vec3f farPosNDC = Vec3f(pickXCanonical, pickYCanonical, 1);
 
-    // Calculate the ray direction first in the regular way (above), so we can use the
-    // the output for testing if the ray we are picking is negative or not. This is similar
-    // to checking against the forward direction of the camera, but more robust
-    if(cfg.position.unproject)
+    if(cfg.position.unproject && cfg.ortho)
     {
-      Matrix4f inversePickMVPGuess = pickMVPProj.Inverse();
+      // orthographic projections we raycast in NDC space
+      Matrix4f inversePickMVP = pickMVP.Inverse();
 
-      vec3 nearPosProj = inversePickMVPGuess.Transform(Vec3f(pickXCanonical, pickYCanonical, -1), 1);
+      // transform from the desired NDC co-ordinates into camera space
+      Vec3f nearPosCamera = inversePickMVP.Transform(nearPosNDC, 1);
+      Vec3f farPosCamera = inversePickMVP.Transform(farPosNDC, 1);
 
-      vec3 farPosProj = inversePickMVPGuess.Transform(Vec3f(pickXCanonical, pickYCanonical, 1), 1);
+      Vec3f testDir = (farPosCamera - nearPosCamera);
+      testDir.Normalise();
+
+      Matrix4f pickMVPguessProjInverse = guessProj.Mul(inversePickMVP);
+
+      Vec3f nearPosProj = pickMVPguessProjInverse.Transform(nearPosNDC, 1);
+      Vec3f farPosProj = pickMVPguessProjInverse.Transform(farPosNDC, 1);
 
       rayDir = (farPosProj - nearPosProj);
       rayDir.Normalise();
 
+      // Calculate the ray direction first in the regular way (above), so we can use the
+      // the output for testing if the ray we are picking is negative or not. This is similar
+      // to checking against the forward direction of the camera, but more robust
       if(testDir.z < 0)
       {
         rayDir = -rayDir;
       }
       rayPos = nearPosProj;
     }
+    else if(cfg.position.unproject)
+    {
+      // projected data we pick in world-space to avoid problems with handling unusual transforms
+
+      if(reverseProjection)
+      {
+        farPosNDC.z = 1e-6f;
+        nearPosNDC.z = 1e+6f;
+      }
+
+      // invert the guessed projection matrix to get the near/far pos in camera space
+      Vec3f nearPosCamera = guessProjInverse.Transform(nearPosNDC, 1.0f);
+      Vec3f farPosCamera = guessProjInverse.Transform(farPosNDC, 1.0f);
+
+      // normalise and generate the ray
+      rayDir = (farPosCamera - nearPosCamera);
+      rayDir.Normalise();
+
+      farPosCamera = nearPosCamera + rayDir;
+
+      // invert the camera transform to transform the ray as camera-relative into world space
+      Matrix4f inverseCamera = camMat.Inverse();
+
+      Vec3f nearPosWorld = inverseCamera.Transform(nearPosCamera, 1);
+      Vec3f farPosWorld = inverseCamera.Transform(farPosCamera, 1);
+
+      // again normalise our final ray
+      rayDir = (farPosWorld - nearPosWorld);
+      rayDir.Normalise();
+
+      rayPos = nearPosWorld;
+    }
     else
     {
-      rayDir = testDir;
-      rayPos = cameraToWorldNearPosition;
+      Matrix4f inversePickMVP = pickMVP.Inverse();
+
+      // transform from the desired NDC co-ordinates into model space
+      Vec3f nearPosCamera = inversePickMVP.Transform(nearPosNDC, 1);
+      Vec3f farPosCamera = inversePickMVP.Transform(farPosNDC, 1);
+
+      rayDir = (farPosCamera - nearPosCamera);
+      rayDir.Normalise();
+      rayPos = nearPosCamera;
     }
   }
 
@@ -2333,7 +2640,7 @@ uint32_t GLReplay::PickVertex(uint32_t eventId, int32_t width, int32_t height,
     idxclamp = uint32_t(-cfg.position.baseVertex);
 
   if(cfg.position.indexByteStride && cfg.position.indexResourceId != ResourceId())
-    ib = m_pDriver->GetResourceManager()->GetCurrentResource(cfg.position.indexResourceId).name;
+    ib = m_pDriver->GetResourceManager()->GetResource(cfg.position.indexResourceId).name;
 
   const bool fandecode =
       (cfg.position.topology == Topology::TriangleFan && cfg.position.allowRestart);
@@ -2493,6 +2800,8 @@ uint32_t GLReplay::PickVertex(uint32_t eventId, int32_t width, int32_t height,
 
     drv.glBindBuffer(eGL_SHADER_STORAGE_BUFFER, DebugData.pickIBBuf);
     drv.glBufferSubData(eGL_SHADER_STORAGE_BUFFER, 0, numIndices * sizeof(uint32_t), outidxs.data());
+
+    delete[] idxs;
   }
 
   // unpack and linearise the data
@@ -2540,6 +2849,12 @@ uint32_t GLReplay::PickVertex(uint32_t eventId, int32_t width, int32_t height,
       (MeshPickUBOData *)drv.glMapBufferRange(eGL_UNIFORM_BUFFER, 0, sizeof(MeshPickUBOData),
                                               GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
 
+  if(!cdata)
+  {
+    RDCERR("Map buffer failed %d", drv.glGetError());
+    return ~0U;
+  }
+
   cdata->rayPos = rayPos;
   cdata->rayDir = rayDir;
   cdata->use_indices = cfg.position.indexByteStride ? 1U : 0U;
@@ -2584,9 +2899,35 @@ uint32_t GLReplay::PickVertex(uint32_t eventId, int32_t width, int32_t height,
 
   // line/point data
   cdata->unproject = cfg.position.unproject;
-  cdata->mvp = cfg.position.unproject ? pickMVPProj : pickMVP;
+  cdata->flipY = cfg.position.flipY;
+  cdata->ortho = cfg.ortho;
   cdata->coords = Vec2f((float)x, (float)y);
   cdata->viewport = Vec2f((float)width, (float)height);
+
+  if(cfg.position.unproject && isTriangleMesh)
+  {
+    // projected triangle meshes we transform the vertices into world space, and ray-cast against
+    // that
+    //
+    // NOTE: for ortho, this matrix is not used and we just do the perspective W division on model
+    // vertices. The ray is cast in NDC
+    if(cfg.ortho)
+      cdata->transformMat = Matrix4f::Identity();
+    else
+      cdata->transformMat = guessProjInverse;
+  }
+  else if(cfg.position.unproject)
+  {
+    // projected non-triangles are just point clouds, so we transform the vertices into world space
+    // then project them back onto the output and compare that against the picking 2D co-ordinates
+    cdata->transformMat = pickMVP.Mul(guessProjInverse);
+  }
+  else
+  {
+    // plain meshes of either type, we just transform from model space to the output, and raycast or
+    // co-ordinate check
+    cdata->transformMat = pickMVP;
+  }
 
   drv.glUnmapBuffer(eGL_UNIFORM_BUFFER);
 
@@ -2712,6 +3053,12 @@ void GLReplay::RenderCheckerboard(FloatVector dark, FloatVector light)
   CheckerboardUBOData *ubo =
       (CheckerboardUBOData *)drv.glMapBufferRange(eGL_UNIFORM_BUFFER, 0, sizeof(CheckerboardUBOData),
                                                   GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+  if(!ubo)
+  {
+    RDCERR("Map buffer failed %d", drv.glGetError());
+    return;
+  }
 
   ubo->BorderWidth = 0.0f;
   ubo->RectPosition = Vec2f();

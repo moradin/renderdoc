@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,8 +29,10 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QScrollBar>
 #include <QVBoxLayout>
 #include <QWidget>
 #include "Code/QRDUtils.h"
@@ -59,7 +61,7 @@ MiniQtHelper::~MiniQtHelper()
   });
 }
 
-void MiniQtHelper::InvokeOntoUIThread(std::function<void()> callback)
+void MiniQtHelper::InvokeOntoUIThread(UIInvokeCallback callback)
 {
   GUIInvoke::call(m_Ctx.GetMainWindow()->Widget(), callback);
 }
@@ -305,6 +307,30 @@ void MiniQtHelper::InsertWidget(QWidget *parent, int32_t index, QWidget *child)
   box->insertWidget(qMin(qMax(0, index), box->count()), child);
 }
 
+void MiniQtHelper::SetLayoutSpacing(QWidget *layout, int spacing)
+{
+  if(!layout)
+    return;
+
+  QLayout *l = layout->layout();
+  if(!l)
+    return;
+
+  l->setSpacing(spacing);
+}
+
+void MiniQtHelper::SetLayoutMargins(QWidget *layout, int horizontal, int vertical)
+{
+  if(!layout)
+    return;
+
+  QLayout *l = layout->layout();
+  if(!l)
+    return;
+
+  l->setContentsMargins(horizontal, vertical, horizontal, vertical);
+}
+
 void MiniQtHelper::SetWidgetText(QWidget *widget, const rdcstr &text)
 {
   if(!widget)
@@ -363,6 +389,28 @@ void MiniQtHelper::SetWidgetText(QWidget *widget, const rdcstr &text)
   }
 }
 
+void MiniQtHelper::AppendText(QWidget *widget, const rdcstr &text)
+{
+#define APPEND_TEXT(TextWidget)                         \
+  {                                                     \
+    TextWidget *w = qobject_cast<TextWidget *>(widget); \
+    if(w)                                               \
+    {                                                   \
+      ScrollToBottom(widget);                           \
+      w->moveCursor(QTextCursor::End);                  \
+      w->insertPlainText(text);                         \
+      return;                                           \
+    }                                                   \
+  }
+
+  APPEND_TEXT(RDTextEdit);
+  APPEND_TEXT(QTextEdit);
+
+  rdcstr t = GetWidgetText(widget);
+  t += text;
+  SetWidgetText(widget, t);
+}
+
 rdcstr MiniQtHelper::GetWidgetText(QWidget *widget)
 {
   if(!widget)
@@ -397,6 +445,11 @@ rdcstr MiniQtHelper::GetWidgetText(QWidget *widget)
   }
 
   {
+    QComboBox *w = qobject_cast<QComboBox *>(widget);
+    if(w)
+      return w->currentText();
+  }
+  {
     QGroupBox *w = qobject_cast<QGroupBox *>(widget);
     if(w)
       return w->title();
@@ -411,16 +464,42 @@ rdcstr MiniQtHelper::GetWidgetText(QWidget *widget)
   return widget->windowTitle();
 }
 
+void MiniQtHelper::ScrollToTop(QWidget *widget)
+{
+  if(!widget)
+    return;
+
+  QAbstractScrollArea *w = qobject_cast<QAbstractScrollArea *>(widget);
+  if(w)
+    w->verticalScrollBar()->setSliderPosition(w->verticalScrollBar()->minimum());
+}
+
+void MiniQtHelper::ScrollToBottom(QWidget *widget)
+{
+  if(!widget)
+    return;
+
+  QAbstractScrollArea *w = qobject_cast<QAbstractScrollArea *>(widget);
+  if(w)
+    w->verticalScrollBar()->setSliderPosition(w->verticalScrollBar()->maximum());
+}
+
 void MiniQtHelper::SetWidgetFont(QWidget *widget, const rdcstr &font, int32_t fontSize, bool bold,
                                  bool italic)
 {
   if(!widget)
     return;
 
+  QString fontFamily = font;
+  if(font == "_default")
+    fontFamily = Formatter::PreferredFont().family();
+  if(font == "_fixed")
+    fontFamily = Formatter::FixedFont().family();
+
   QFont f = widget->font();
 
-  if(font.empty())
-    f.setFamily(font);
+  if(!fontFamily.isEmpty())
+    f.setFamily(fontFamily);
   if(fontSize != 0)
     f.setPointSize(fontSize);
   f.setBold(bold);
@@ -589,11 +668,14 @@ void MiniQtHelper::SetWidgetChecked(QWidget *checkableWidget, bool checked)
 
   QCheckBox *check = qobject_cast<QCheckBox *>(checkableWidget);
   QRadioButton *radio = qobject_cast<QRadioButton *>(checkableWidget);
+  CollapseGroupBox *group = qobject_cast<CollapseGroupBox *>(checkableWidget);
 
   if(check)
     check->setChecked(checked);
   else if(radio)
     radio->setChecked(checked);
+  else if(group)
+    group->setCollapsed(checked);
 }
 
 bool MiniQtHelper::IsWidgetChecked(QWidget *checkableWidget)
@@ -603,11 +685,14 @@ bool MiniQtHelper::IsWidgetChecked(QWidget *checkableWidget)
 
   QCheckBox *check = qobject_cast<QCheckBox *>(checkableWidget);
   QRadioButton *radio = qobject_cast<QRadioButton *>(checkableWidget);
+  CollapseGroupBox *group = qobject_cast<CollapseGroupBox *>(checkableWidget);
 
   if(check)
     return check->isChecked();
   else if(radio)
     return radio->isChecked();
+  else if(group)
+    return group->collapsed();
 
   return false;
 }
@@ -697,6 +782,123 @@ void MiniQtHelper::SetComboOptions(QWidget *combo, const rdcarray<rdcstr> &optio
   for(const rdcstr &o : options)
     texts << o;
 
-  comb->clear();
-  comb->addItems(texts);
+  if(comb)
+  {
+    comb->clear();
+    comb->addItems(texts);
+  }
+}
+
+size_t MiniQtHelper::GetComboCount(QWidget *combo)
+{
+  if(!combo)
+    return 0;
+  const QComboBox *comb = qobject_cast<const QComboBox *>(combo);
+
+  if(comb)
+    return comb->count();
+
+  return 0;
+}
+
+void MiniQtHelper::SelectComboOption(QWidget *combo, const rdcstr &option)
+{
+  if(!combo)
+    return;
+  QComboBox *comb = qobject_cast<QComboBox *>(combo);
+
+  if(comb)
+    comb->setCurrentText(option);
+}
+
+QWidget *MiniQtHelper::CreateProgressBar(bool horizontal)
+{
+  QProgressBar *w = new QProgressBar();
+
+  w->setOrientation(horizontal ? Qt::Horizontal : Qt::Vertical);
+
+  return w;
+}
+
+void MiniQtHelper::ResetProgressBar(QWidget *pbar)
+{
+  if(!pbar)
+    return;
+
+  QProgressBar *pb = qobject_cast<QProgressBar *>(pbar);
+
+  if(pb)
+    pb->reset();
+}
+
+void MiniQtHelper::SetProgressBarValue(QWidget *pbar, int32_t value)
+{
+  if(!pbar)
+    return;
+
+  QProgressBar *pb = qobject_cast<QProgressBar *>(pbar);
+
+  if(pb)
+    pb->setValue(value);
+}
+
+void MiniQtHelper::UpdateProgressBarValue(QWidget *pbar, int32_t delta)
+{
+  if(!pbar)
+    return;
+
+  QProgressBar *pb = qobject_cast<QProgressBar *>(pbar);
+
+  if(pb)
+    pb->setValue(pb->value() + delta);
+}
+
+int32_t MiniQtHelper::GetProgressBarValue(QWidget *pbar)
+{
+  if(!pbar)
+    return 0;
+
+  QProgressBar *pb = qobject_cast<QProgressBar *>(pbar);
+
+  if(pb)
+    return pb->value();
+
+  return 0;
+}
+
+void MiniQtHelper::SetProgressBarRange(QWidget *pbar, int32_t minimum, int32_t maximum)
+{
+  if(!pbar)
+    return;
+
+  QProgressBar *pb = qobject_cast<QProgressBar *>(pbar);
+
+  if(pb)
+    pb->setRange(minimum, maximum);
+}
+
+int32_t MiniQtHelper::GetProgressBarMinimum(QWidget *pbar)
+{
+  if(!pbar)
+    return 0;
+
+  QProgressBar *pb = qobject_cast<QProgressBar *>(pbar);
+
+  if(pb)
+    return pb->minimum();
+
+  return 0;
+}
+
+int32_t MiniQtHelper::GetProgressBarMaximum(QWidget *pbar)
+{
+  if(!pbar)
+    return 0;
+
+  QProgressBar *pb = qobject_cast<QProgressBar *>(pbar);
+
+  if(pbar)
+    return pb->maximum();
+
+  return 0;
 }

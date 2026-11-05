@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -51,6 +51,38 @@ RDTweakedNativeStyle::~RDTweakedNativeStyle()
 {
 }
 
+QRect RDTweakedNativeStyle::subControlRect(ComplexControl cc, const QStyleOptionComplex *opt,
+                                           SubControl sc, const QWidget *widget) const
+{
+  if(cc == QStyle::CC_ToolButton)
+  {
+    int indicatorWidth = proxy()->pixelMetric(PM_MenuButtonIndicator, opt, widget);
+
+    QRect ret = opt->rect;
+
+    const QStyleOptionToolButton *toolbutton = qstyleoption_cast<const QStyleOptionToolButton *>(opt);
+
+    // return the normal rect if there's no menu
+    if(!shouldDrawToolButtonMenuArrow(toolbutton))
+    {
+      return ret;
+    }
+
+    if(sc == QStyle::SC_ToolButton)
+    {
+      ret.setRight(ret.right() - indicatorWidth);
+    }
+    else if(sc == QStyle::SC_ToolButtonMenu)
+    {
+      ret.setLeft(ret.right() - indicatorWidth);
+    }
+
+    return ret;
+  }
+
+  return QProxyStyle::subControlRect(cc, opt, sc, widget);
+}
+
 QRect RDTweakedNativeStyle::subElementRect(SubElement element, const QStyleOption *opt,
                                            const QWidget *widget) const
 {
@@ -74,12 +106,11 @@ QSize RDTweakedNativeStyle::sizeFromContents(ContentsType type, const QStyleOpti
 {
   QSize sz = size;
 
-  // Toolbuttons are always at least icon sized, for consistency.
   if(type == QStyle::CT_ToolButton)
   {
     const QStyleOptionToolButton *toolbutton = qstyleoption_cast<const QStyleOptionToolButton *>(opt);
     if(toolbutton)
-      sz = sz.expandedTo(toolbutton->iconSize);
+      sz = adjustToolButtonSize(toolbutton, sz, widget);
   }
 
   // menu bar items can be sized for both the icon *and* the text
@@ -129,13 +160,6 @@ int RDTweakedNativeStyle::styleHint(StyleHint stylehint, const QStyleOption *opt
 QIcon RDTweakedNativeStyle::standardIcon(StandardPixmap standardIcon, const QStyleOption *opt,
                                          const QWidget *widget) const
 {
-  if(standardIcon == QStyle::SP_TitleBarCloseButton)
-  {
-    int sz = pixelMetric(QStyle::PM_SmallIconSize);
-
-    return QIcon(QPixmap(QSize(sz, sz)));
-  }
-
   return QProxyStyle::standardIcon(standardIcon, opt, widget);
 }
 
@@ -152,13 +176,24 @@ void RDTweakedNativeStyle::drawComplexControl(ComplexControl control, const QSty
     backCol.setAlphaF(0.2);
 
     QStyleOptionToolButton menu;
+    bool hasMenu = false;
+    bool hasSeparateMenu = false;
 
     // draw the menu arrow, if there is one
-    if((toolbutton->subControls & SC_ToolButtonMenu) ||
-       (toolbutton->features & QStyleOptionToolButton::MenuButtonPopup))
+    if(shouldDrawToolButtonMenuArrow(toolbutton))
     {
       menu = *toolbutton;
       menu.rect = subControlRect(control, opt, SC_ToolButtonMenu, widget);
+      hasMenu = true;
+      // We always draw an arrow if a menu is present (normally Qt only does it for MenuButtonPopup,
+      // where there is both a button with a default action and a menu triggered by a small arrow,
+      // and not InstantPopup where there is only a button). If the button uses MenuButtonPopup,
+      // we want to draw a line to distinguish the menu part of the button and the main part,
+      // but we don't need that line if the arrow is decorative only.
+      if(toolbutton->features & QStyleOptionToolButton::MenuButtonPopup)
+      {
+        hasSeparateMenu = true;
+      }
     }
 
     QStyle::State masked = opt->state & (State_On | State_MouseOver);
@@ -171,7 +206,7 @@ void RDTweakedNativeStyle::drawComplexControl(ComplexControl control, const QSty
       QRect rect = opt->rect.adjusted(0, 0, -1, -1);
       p->setPen(opt->palette.color(QPalette::Shadow));
       p->drawRect(rect);
-      if(menu.rect.isValid())
+      if(hasSeparateMenu)
         p->drawLine(menu.rect.topLeft(), menu.rect.bottomLeft());
 
       // when the mouse is over, make it a little stronger
@@ -189,7 +224,7 @@ void RDTweakedNativeStyle::drawComplexControl(ComplexControl control, const QSty
     // draw the label text/icon
     drawControl(CE_ToolButtonLabel, &labelTextIcon, p, widget);
 
-    if(menu.rect.isValid())
+    if(hasMenu)
     {
       menu.rect.adjust(2, 0, 0, 0);
       drawPrimitive(PE_IndicatorArrowDown, &menu, p, widget);
@@ -215,16 +250,12 @@ void RDTweakedNativeStyle::drawPrimitive(PrimitiveElement element, const QStyleO
 
       QColor col = opt->palette.color(QPalette::Text);
 
-      if(opt->state & State_MouseOver)
-      {
-        QColor highlightCol = opt->palette.color(QPalette::Highlight);
-
-        col.setRedF(col.redF() * 0.6 + highlightCol.redF() * 0.4);
-        col.setGreenF(col.greenF() * 0.6 + highlightCol.greenF() * 0.4);
-        col.setBlueF(col.blueF() * 0.6 + highlightCol.blueF() * 0.4);
-      }
-
-      p->setPen(QPen(col, 2.0));
+      // turbo hack to pass desired colour through QTreeView::drawBranches when it can't customise
+      // the colour and doesn't set the model index to let us look up this data ourselves :(
+      if(oldPen.widthF() == 1234.5f)
+        p->setPen(QPen(oldPen.color(), 2.0));
+      else
+        p->setPen(QPen(col, 2.0));
 
       QPainterPath path;
 
@@ -551,4 +582,35 @@ void RDTweakedNativeStyle::drawControl(ControlElement control, const QStyleOptio
 #endif
 
   QProxyStyle::drawControl(control, opt, p, widget);
+}
+
+bool RDTweakedNativeStyle::shouldDrawToolButtonMenuArrow(const QStyleOptionToolButton *toolbutton) const
+{
+  // Qt normally only draws the arrow for MenuButtonPopup; we want it for all tools button with
+  // menus (including InstantPopup).
+  return (toolbutton->subControls & SC_ToolButtonMenu) ||
+         (toolbutton->features & QStyleOptionToolButton::HasMenu);
+}
+
+QSize RDTweakedNativeStyle::adjustToolButtonSize(const QStyleOptionToolButton *toolbutton,
+                                                 const QSize &size, const QWidget *widget) const
+{
+  QSize sz = size;
+
+  // Toolbuttons are always at least icon sized, for consistency.
+  sz = sz.expandedTo(toolbutton->iconSize);
+
+  if(shouldDrawToolButtonMenuArrow(toolbutton))
+  {
+    // QToolButton::sizeHint automatically increases the width for MenuButtonPopup separate from
+    // calling sizeFromContents. But we want to draw the arrow for all tool buttons with menus,
+    // not just those using MenuButtonPopup. Check for MenuButtonPopup to avoid increasing the
+    // size twice.
+    if(!(toolbutton->features & QStyleOptionToolButton::MenuButtonPopup))
+    {
+      sz.setWidth(sz.width() + proxy()->pixelMetric(PM_MenuButtonIndicator, toolbutton, widget));
+    }
+  }
+
+  return sz;
 }

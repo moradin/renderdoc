@@ -52,7 +52,7 @@ The following libraries and components are incorporated into RenderDoc, listed h
 
   Used for parsing command line arguments to renderdoccmd.
 
-* `include-bin <https://github.com/tanakh/cmdline>`_ - Copyright 2016 Hubert Jarosz, distributed under the zlib license.
+* `include-bin <https://github.com/Marqin/include-bin>`_ - Copyright 2016 Eveline Jarosz, distributed under the zlib license.
 
   Used to compile in data files embedded into the source on non-Windows platforms.
 
@@ -112,9 +112,9 @@ The following libraries and components are incorporated into RenderDoc, listed h
 
   Used to provide shell thumbnail previews for block compressed DDS files.
 
-* `nvapi open source SDK <http://download.nvidia.com/XFree86/nvapi-open-source-sdk/>`_ - Copyright (c) 2019, NVIDIA CORPORATION. Distributed under the MIT License.
+* `nvapi open source SDK <https://github.com/NVIDIA/nvapi>`_ - Copyright (c) 2019, NVIDIA CORPORATION. Distributed under the MIT License.
 
-  Used to intercept nvapi calls on D3D11/D3D12.
+  Used to intercept nvapi calls on D3D11/D3D12 and enable RT validation.
 
 * `half.hpp <http://half.sourceforge.net/>`_ - Copyright (c) 2012-2019 Christian Rau. Distributed under the MIT License.
 
@@ -131,6 +131,18 @@ The following libraries and components are incorporated into RenderDoc, listed h
 * `md5 hashing <http://openwall.info/wiki/people/solar/software/public-domain-source-code/md5>`_ - Released to the Public Domain by Alexander Peslyak.
 
   Used for calculating DXBC container hash.
+
+* `NVIDIA Nsight Perf SDK <https://developer.nvidia.com/nsight-perf-sdk>`_ - Redistributable portions distributed under the NVIDIA Nsight Perf SDK license available in the RenderDoc source repository or in the SDK.
+
+  Provides hardware-specific counters over and above what individual hardware-agnostic graphics APIs are able to provide.
+
+* `pythoncapi-compat <https://github.com/python/pythoncapi-compat>`_ - Copyright Contributors to the pythoncapi_compat project. Distributed under the BSD Zero Clause License.
+
+  Used to simplify compatibility with a broad range of Python versions.
+
+* `intellij-community <https://github.com/JetBrains/intellij-community>`_ - Copyright Contributors to the intellij-community project. Distributed under the Apache License.
+
+  Used to generate Python stubs for binary modules.
 
 Thanks
 ------
@@ -188,6 +200,11 @@ There have been many people who have helped in the creation of RenderDoc. Whethe
 * Alex Kharlamov
 * Steve Karolewics
 * Kevin McCullough
+* Ting Cai
+* Zi Ming He
+* Orson Baines
+* John Kattukudiyil
+* Tony Tascioglu
 
 Contributors
 ------------
@@ -202,3 +219,5 @@ The following list highlights notable open source contributions. Many other peop
 * Balazs Torok - Implemented the RenderDoc in-application overlay for D3D9.
 * Steve Karolewics - Implemented DXBC shader debugging support for D3D12.
 * Aliya Pazylbekova - Implemented pixel history support for Vulkan.
+* Orson Baines, Zi Ming He, John Kattukudiyil, Ting Cai, Tony Tascioglu - Implemented pixel history support for OpenGL.
+* Steve Karolewics, Jovan Ristic - Implemented pixel history support for D3D12.

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -153,7 +153,6 @@ struct CachedHookData
   std::map<rdcstr, DllHookset> DllHooks;
   HMODULE ownmodule = NULL;
   Threading::CriticalSection lock;
-  char lowername[512] = {};
 
   std::set<rdcstr> ignores;
 
@@ -164,6 +163,8 @@ struct CachedHookData
 
   void ApplyHooks(const char *modName, HMODULE module)
   {
+    char lowername[512] = {};
+
     {
       size_t i = 0;
       while(modName[i])
@@ -187,7 +188,7 @@ struct CachedHookData
     // Also we exclude ourselves here - just in case the application has already loaded
     // renderdoc.dll, or tries to load it.
     if(strstr(lowername, "fraps") || strstr(lowername, "gameoverlayrenderer") ||
-       strstr(lowername, STRINGIZE(RDOC_DLL_FILE) ".dll") == lowername)
+       strstr(lowername, STRINGIZE(RDOC_BASE_NAME) ".dll") == lowername)
       return;
 
     // set module pointer if we are hooking exports from this module
@@ -267,18 +268,18 @@ struct CachedHookData
     if(!_stricmp(modName, "kernel32.dll") || !_stricmp(modName, "powrprof.dll") ||
        !_stricmp(modName, "CoreMessaging.dll") || !_stricmp(modName, "opengl32.dll") ||
        !_stricmp(modName, "gdi32.dll") || !_stricmp(modName, "gdi32full.dll") ||
-       !_stricmp(modName, "nvoglv32.dll") || !_stricmp(modName, "nvoglv64.dll") ||
-       !_stricmp(modName, "vulkan-1.dll") || !_stricmp(modName, "nvcuda.dll") ||
-       strstr(lowername, "cudart") == lowername || strstr(lowername, "msvcr") == lowername ||
-       strstr(lowername, "msvcp") == lowername || strstr(lowername, "nv-vk") == lowername ||
-       strstr(lowername, "amdvlk") == lowername || strstr(lowername, "igvk") == lowername ||
-       strstr(lowername, "nvopencl") == lowername || strstr(lowername, "nvapi") == lowername)
+       !_stricmp(modName, "windows.storage.dll") || !_stricmp(modName, "nvoglv32.dll") ||
+       !_stricmp(modName, "nvoglv64.dll") || !_stricmp(modName, "vulkan-1.dll") ||
+       !_stricmp(modName, "atio6axx.dll") || !_stricmp(modName, "atioglxx.dll") ||
+       !_stricmp(modName, "nvcuda.dll") || strstr(lowername, "cudart") == lowername ||
+       strstr(lowername, "msvcr") == lowername || strstr(lowername, "msvcp") == lowername ||
+       strstr(lowername, "nv-vk") == lowername || strstr(lowername, "amdvlk") == lowername ||
+       strstr(lowername, "igvk") == lowername || strstr(lowername, "nvopencl") == lowername ||
+       strstr(lowername, "nvapi") == lowername)
       return;
 
     if(ignores.find(lowername) != ignores.end())
       return;
-
-    byte *baseAddress = (byte *)module;
 
     // the module could have been unloaded after our toolhelp snapshot, especially if we spent a
     // long time
@@ -287,6 +288,27 @@ struct CachedHookData
     GetModuleFileNameW(module, modpath, 1023);
     if(modpath[0] == 0)
       return;
+
+    // windows 11 and newer versions have weird hotpatch DLLs that don't act like real DLLs. The
+    // LoadLibraryW below will fail for these DLLs even when using the module path provided.
+    // Only check the path for DLLs that might be a windows-hotpatch but if it matches we'll skip
+    // hooking these to avoid problems
+    if(strstr(lowername, "hotpatch"))
+    {
+      wchar_t lowerpath[1024] = {};
+
+      size_t i = 0;
+      while(modpath[i])
+      {
+        lowerpath[i] = towlower(modpath[i]);
+        i++;
+      }
+      lowerpath[i] = 0;
+
+      if(wcsstr(lowerpath, L"\\windows\\winsxs\\"))
+        return;
+    }
+
     // increment the module reference count, so it doesn't disappear while we're processing it
     // there's a very small race condition here between if GetModuleFileName returns, the module is
     // unloaded then we load it again. The only way around that is inserting very scary locks
@@ -294,6 +316,8 @@ struct CachedHookData
     // and FreeLibrary that I want to avoid. Worst case, we load a dll, hook it, then unload it
     // again.
     HMODULE refcountModHandle = LoadLibraryW(modpath);
+    RDCASSERTEQUAL(refcountModHandle, module);
+    byte *baseAddress = (byte *)refcountModHandle;
 
     PIMAGE_DOS_HEADER dosheader = (PIMAGE_DOS_HEADER)baseAddress;
 
@@ -597,7 +621,7 @@ static void HookAllModules()
 
     for(FunctionLoadCallback cb : callbacks)
       if(cb)
-        cb(it->second.module);
+        cb(it->second.module, it->first.c_str());
   }
 
   Atomic::CmpExch32(&s_HookData->posthooking, 1, 0);
@@ -680,7 +704,24 @@ HMODULE WINAPI Hooked_LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE fileHandle, D
     dohook = false;
   }
 
-  if(flags == 0 && GetModuleHandleW(lpLibFileName))
+  DWORD flagsExcludingSearchOrders = flags;
+
+  // if this is a pure "filename.dll" load, don't care about search-order flags since loaded DLLs are
+  // always returned first regardless of the search order and so we can detect the DLL is already loaded
+  if(wcschr(lpLibFileName, L'\\') == 0 && wcschr(lpLibFileName, L'/') == 0)
+  {
+    flagsExcludingSearchOrders &= ~(LOAD_LIBRARY_SEARCH_APPLICATION_DIR |
+                                    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32 |
+                                    LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_WITH_ALTERED_SEARCH_PATH);
+
+#ifdef LOAD_LIBRARY_SAFE_CURRENT_DIRS
+    flagsExcludingSearchOrders &= ~LOAD_LIBRARY_SAFE_CURRENT_DIRS;
+#endif
+  }
+
+  // if there are no flags (possibly with search path flags excluded) and we already have the
+  // library loaded, don't hook anything
+  if(flagsExcludingSearchOrders == 0 && GetModuleHandleW(lpLibFileName))
     dohook = false;
 
   if(flags & (LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE))
@@ -721,7 +762,7 @@ static bool OrdinalAsString(void *func)
   return uint64_t(func) <= 0xffff;
 }
 
-FARPROC WINAPI Hooked_GetProcAddress(HMODULE mod, LPCSTR func)
+FARPROC WINAPI Hooked_GetProcAddress(HMODULE mod, const LPCSTR func)
 {
   if(mod == NULL || func == NULL || mod == s_HookData->ownmodule)
     return GetProcAddress(mod, func);
@@ -767,6 +808,8 @@ FARPROC WINAPI Hooked_GetProcAddress(HMODULE mod, LPCSTR func)
       RDCDEBUG("Located module %s", it->first.c_str());
 #endif
 
+      LPCSTR searchFunc = func;
+
       if(OrdinalAsString((void *)func))
       {
 #if ENABLED(VERBOSE_DEBUG_HOOK)
@@ -795,14 +838,14 @@ FARPROC WINAPI Hooked_GetProcAddress(HMODULE mod, LPCSTR func)
           return GetProcAddress(mod, func);
         }
 
-        func = it->second.OrdinalNames[ordinal].c_str();
+        searchFunc = it->second.OrdinalNames[ordinal].c_str();
 
 #if ENABLED(VERBOSE_DEBUG_HOOK)
-        RDCDEBUG("found ordinal %s", func);
+        RDCDEBUG("found ordinal %s", searchFunc);
 #endif
       }
 
-      FunctionHook search(func, NULL, NULL);
+      FunctionHook search(searchFunc, NULL, NULL);
 
       auto found =
           std::lower_bound(it->second.FunctionHooks.begin(), it->second.FunctionHooks.end(), search);
@@ -938,6 +981,10 @@ void LibraryHooks::EndHookRegistration()
 void LibraryHooks::Refresh()
 {
   // don't need to refresh on windows
+}
+
+void LibraryHooks::ReplayInitialise()
+{
 }
 
 void LibraryHooks::RemoveHooks()

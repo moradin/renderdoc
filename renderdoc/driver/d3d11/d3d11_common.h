@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -403,6 +403,7 @@ enum class D3D11Chunk : uint32_t
   OpenSharedResource1,
   OpenSharedResourceByName,
   SetShaderExtUAV,
+  SetCommandAnnotation,
   Max,
 };
 

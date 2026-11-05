@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -71,8 +71,7 @@ bool WrappedOpenGL::Serialise_glGenFramebuffers(SerialiserType &ser, GLsizei n, 
 
     GLResource res = FramebufferRes(GetCtx(), real);
 
-    ResourceId live = m_ResourceManager->RegisterResource(res);
-    GetResourceManager()->AddLiveResource(framebuffer, res);
+    ResourceId live = m_ResourceManager->RegisterResource(framebuffer, res);
 
     AddResource(framebuffer, ResourceType::RenderPass, "Framebuffer");
   }
@@ -87,7 +86,7 @@ void WrappedOpenGL::glGenFramebuffers(GLsizei n, GLuint *framebuffers)
   for(GLsizei i = 0; i < n; i++)
   {
     GLResource res = FramebufferRes(GetCtx(), framebuffers[i]);
-    ResourceId id = GetResourceManager()->RegisterResource(res);
+    ResourceId id = GetResourceManager()->RegisterResource(ResourceId(), res);
 
     if(IsCaptureMode(m_State))
     {
@@ -105,10 +104,6 @@ void WrappedOpenGL::glGenFramebuffers(GLsizei n, GLuint *framebuffers)
       RDCASSERT(record);
 
       record->AddChunk(chunk);
-    }
-    else
-    {
-      GetResourceManager()->AddLiveResource(id, res);
     }
   }
 }
@@ -131,8 +126,7 @@ bool WrappedOpenGL::Serialise_glCreateFramebuffers(SerialiserType &ser, GLsizei 
 
     GLResource res = FramebufferRes(GetCtx(), real);
 
-    ResourceId live = m_ResourceManager->RegisterResource(res);
-    GetResourceManager()->AddLiveResource(framebuffer, res);
+    ResourceId live = m_ResourceManager->RegisterResource(framebuffer, res);
 
     AddResource(framebuffer, ResourceType::RenderPass, "Framebuffer");
   }
@@ -147,7 +141,7 @@ void WrappedOpenGL::glCreateFramebuffers(GLsizei n, GLuint *framebuffers)
   for(GLsizei i = 0; i < n; i++)
   {
     GLResource res = FramebufferRes(GetCtx(), framebuffers[i]);
-    ResourceId id = GetResourceManager()->RegisterResource(res);
+    ResourceId id = GetResourceManager()->RegisterResource(ResourceId(), res);
 
     if(IsCaptureMode(m_State))
     {
@@ -165,10 +159,6 @@ void WrappedOpenGL::glCreateFramebuffers(GLsizei n, GLuint *framebuffers)
       RDCASSERT(record);
 
       record->AddChunk(chunk);
-    }
-    else
-    {
-      GetResourceManager()->AddLiveResource(id, res);
     }
   }
 }
@@ -1837,7 +1827,7 @@ bool WrappedOpenGL::Serialise_glInvalidateNamedFramebufferData(SerialiserType &s
           id = GetResourceManager()->GetResID(RenderbufferRes(GetCtx(), obj));
 
         if(action.copyDestination == ResourceId())
-          action.copyDestination = GetResourceManager()->GetOriginalID(id);
+          action.copyDestination = id;
 
         m_ResourceUses[id].push_back(EventUsage(m_CurEventID, ResourceUsage::Discard));
       }
@@ -2035,7 +2025,7 @@ bool WrappedOpenGL::Serialise_glInvalidateNamedFramebufferSubData(
           id = GetResourceManager()->GetResID(RenderbufferRes(GetCtx(), obj));
 
         if(action.copyDestination == ResourceId())
-          action.copyDestination = GetResourceManager()->GetOriginalID(id);
+          action.copyDestination = id;
 
         m_ResourceUses[id].push_back(EventUsage(m_CurEventID, ResourceUsage::Discard));
       }
@@ -2132,10 +2122,8 @@ bool WrappedOpenGL::Serialise_glBlitNamedFramebuffer(SerialiserType &ser,
                                                      GLint dstX0, GLint dstY0, GLint dstX1,
                                                      GLint dstY1, GLbitfield mask, GLenum filter)
 {
-  SERIALISE_ELEMENT_LOCAL(readFramebuffer, FramebufferRes(GetCtx(), readFramebufferHandle))
-      .Important();
-  SERIALISE_ELEMENT_LOCAL(drawFramebuffer, FramebufferRes(GetCtx(), drawFramebufferHandle))
-      .Important();
+  SERIALISE_ELEMENT_LOCAL(readFramebuffer, FramebufferRes(GetCtx(), readFramebufferHandle)).Important();
+  SERIALISE_ELEMENT_LOCAL(drawFramebuffer, FramebufferRes(GetCtx(), drawFramebufferHandle)).Important();
   SERIALISE_ELEMENT(srcX0);
   SERIALISE_ELEMENT(srcY0);
   SERIALISE_ELEMENT(srcX1);
@@ -2172,31 +2160,34 @@ bool WrappedOpenGL::Serialise_glBlitNamedFramebuffer(SerialiserType &ser,
       ActionDescription action;
       action.flags |= ActionFlags::Resolve;
 
-      GLint numCols = 8;
-      GL.glGetIntegerv(eGL_MAX_COLOR_ATTACHMENTS, &numCols);
-
-      for(int i = 0; i < numCols + 2; i++)
+      for(int i = 0; i < 3; i++)
       {
-        GLenum attachName = GLenum(eGL_COLOR_ATTACHMENT0 + i);
-        if(i == numCols)
-          attachName = eGL_DEPTH_ATTACHMENT;
-        if(i == numCols + 1)
-          attachName = eGL_STENCIL_ATTACHMENT;
+        GLenum drawAttachName = eGL_COLOR_ATTACHMENT0;
+        if(i == 0)
+          GL.glGetIntegerv(eGL_DRAW_BUFFER0, (GLint *)&drawAttachName);
+        if(i == 1)
+          drawAttachName = eGL_DEPTH_ATTACHMENT;
+        if(i == 2)
+          drawAttachName = eGL_STENCIL_ATTACHMENT;
+
+        GLenum readAttachName = drawAttachName;
+        if(i == 0)
+          GL.glGetIntegerv(eGL_READ_BUFFER, (GLint *)&readAttachName);
 
         GLuint srcattachment = 0, dstattachment = 0;
         GLenum srctype = eGL_TEXTURE, dsttype = eGL_TEXTURE;
 
-        GL.glGetNamedFramebufferAttachmentParameterivEXT(readFramebuffer.name, attachName,
+        GL.glGetNamedFramebufferAttachmentParameterivEXT(readFramebuffer.name, readAttachName,
                                                          eGL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,
                                                          (GLint *)&srcattachment);
-        GL.glGetNamedFramebufferAttachmentParameterivEXT(readFramebuffer.name, attachName,
+        GL.glGetNamedFramebufferAttachmentParameterivEXT(readFramebuffer.name, readAttachName,
                                                          eGL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,
                                                          (GLint *)&srctype);
 
-        GL.glGetNamedFramebufferAttachmentParameterivEXT(drawFramebuffer.name, attachName,
+        GL.glGetNamedFramebufferAttachmentParameterivEXT(drawFramebuffer.name, drawAttachName,
                                                          eGL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,
                                                          (GLint *)&dstattachment);
-        GL.glGetNamedFramebufferAttachmentParameterivEXT(drawFramebuffer.name, attachName,
+        GL.glGetNamedFramebufferAttachmentParameterivEXT(drawFramebuffer.name, drawAttachName,
                                                          eGL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,
                                                          (GLint *)&dsttype);
 
@@ -2214,31 +2205,33 @@ bool WrappedOpenGL::Serialise_glBlitNamedFramebuffer(SerialiserType &ser,
 
         if(mask & GL_COLOR_BUFFER_BIT)
         {
-          if(attachName == eGL_COLOR_ATTACHMENT0)
+          if(i == 0)
           {
-            action.copySource = GetResourceManager()->GetOriginalID(srcid);
-            action.copyDestination = GetResourceManager()->GetOriginalID(dstid);
+            action.copySource = srcid;
+            action.copyDestination = dstid;
 
             GLint mip = 0, slice = 0;
             if(dsttype == eGL_TEXTURE)
-              GetFramebufferMipAndLayer(drawFramebuffer.name, eGL_COLOR_ATTACHMENT0, &mip, &slice);
+              GetFramebufferMipAndLayer(drawFramebuffer.name, drawAttachName, &mip, &slice);
             action.copyDestinationSubresource.mip = mip;
             action.copyDestinationSubresource.slice = slice;
 
             mip = 0;
             slice = 0;
             if(srctype == eGL_TEXTURE)
-              GetFramebufferMipAndLayer(readFramebuffer.name, eGL_COLOR_ATTACHMENT0, &mip, &slice);
+              GetFramebufferMipAndLayer(readFramebuffer.name, readAttachName, &mip, &slice);
             action.copySourceSubresource.mip = mip;
             action.copySourceSubresource.slice = slice;
           }
         }
         else
         {
-          if(attachName == eGL_DEPTH_ATTACHMENT)
+          if(drawAttachName == eGL_DEPTH_ATTACHMENT ||
+             (drawAttachName == eGL_STENCIL_ATTACHMENT &&
+              (mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) == GL_STENCIL_BUFFER_BIT))
           {
-            action.copySource = GetResourceManager()->GetOriginalID(srcid);
-            action.copyDestination = GetResourceManager()->GetOriginalID(dstid);
+            action.copySource = srcid;
+            action.copyDestination = dstid;
 
             GLint mip = 0, slice = 0;
             if(dsttype == eGL_TEXTURE)
@@ -2257,23 +2250,29 @@ bool WrappedOpenGL::Serialise_glBlitNamedFramebuffer(SerialiserType &ser,
 
         if(dstattachment == srcattachment && srctype == dsttype)
         {
-          m_ResourceUses[srcid].push_back(EventUsage(m_CurEventID, ResourceUsage::Copy));
+          if(srcid != ResourceId())
+            m_ResourceUses[srcid].push_back(EventUsage(m_CurEventID, ResourceUsage::Copy));
         }
         else
         {
           // MS to non-MS is a resolve
-          if((m_Textures[srcid].curType == eGL_TEXTURE_2D_MULTISAMPLE ||
+          if(srcid != ResourceId() &&
+             (m_Textures[srcid].curType == eGL_TEXTURE_2D_MULTISAMPLE ||
               m_Textures[srcid].curType == eGL_TEXTURE_2D_MULTISAMPLE_ARRAY) &&
-             m_Textures[dstid].curType != eGL_TEXTURE_2D_MULTISAMPLE &&
+             dstid != ResourceId() && m_Textures[dstid].curType != eGL_TEXTURE_2D_MULTISAMPLE &&
              m_Textures[dstid].curType != eGL_TEXTURE_2D_MULTISAMPLE_ARRAY)
           {
-            m_ResourceUses[srcid].push_back(EventUsage(m_CurEventID, ResourceUsage::ResolveSrc));
-            m_ResourceUses[dstid].push_back(EventUsage(m_CurEventID, ResourceUsage::ResolveDst));
+            if(srcid != ResourceId())
+              m_ResourceUses[srcid].push_back(EventUsage(m_CurEventID, ResourceUsage::ResolveSrc));
+            if(dstid != ResourceId())
+              m_ResourceUses[dstid].push_back(EventUsage(m_CurEventID, ResourceUsage::ResolveDst));
           }
           else
           {
-            m_ResourceUses[srcid].push_back(EventUsage(m_CurEventID, ResourceUsage::CopySrc));
-            m_ResourceUses[dstid].push_back(EventUsage(m_CurEventID, ResourceUsage::CopyDst));
+            if(srcid != ResourceId())
+              m_ResourceUses[srcid].push_back(EventUsage(m_CurEventID, ResourceUsage::CopySrc));
+            if(dstid != ResourceId())
+              m_ResourceUses[dstid].push_back(EventUsage(m_CurEventID, ResourceUsage::CopyDst));
           }
         }
       }
@@ -2359,10 +2358,21 @@ void WrappedOpenGL::glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers)
   for(GLsizei i = 0; i < n; i++)
   {
     GLResource res = FramebufferRes(GetCtx(), framebuffers[i]);
-    if(GetResourceManager()->HasCurrentResource(res) && framebuffers[i])
+    if(GetResourceManager()->HasResource(res) && framebuffers[i])
     {
       if(GetResourceManager()->HasResourceRecord(res))
-        GetResourceManager()->GetResourceRecord(res)->Delete(GetResourceManager());
+      {
+        GLResourceRecord *record = GetResourceManager()->GetResourceRecord(res);
+        record->Delete(GetResourceManager());
+
+        for(auto cd = m_ContextData.begin(); cd != m_ContextData.end(); ++cd)
+        {
+          if(cd->second.m_DrawFramebufferRecord == record)
+            cd->second.m_DrawFramebufferRecord = NULL;
+          if(cd->second.m_ReadFramebufferRecord == record)
+            cd->second.m_ReadFramebufferRecord = NULL;
+        }
+      }
       GetResourceManager()->UnregisterResource(res);
     }
   }
@@ -2388,8 +2398,7 @@ bool WrappedOpenGL::Serialise_glGenRenderbuffers(SerialiserType &ser, GLsizei n,
 
     GLResource res = RenderbufferRes(GetCtx(), real);
 
-    ResourceId live = m_ResourceManager->RegisterResource(res);
-    GetResourceManager()->AddLiveResource(renderbuffer, res);
+    ResourceId live = m_ResourceManager->RegisterResource(renderbuffer, res);
 
     AddResource(renderbuffer, ResourceType::Texture, "Renderbuffer");
 
@@ -2407,7 +2416,7 @@ void WrappedOpenGL::glGenRenderbuffers(GLsizei n, GLuint *renderbuffers)
   for(GLsizei i = 0; i < n; i++)
   {
     GLResource res = RenderbufferRes(GetCtx(), renderbuffers[i]);
-    ResourceId id = GetResourceManager()->RegisterResource(res);
+    ResourceId id = GetResourceManager()->RegisterResource(ResourceId(), res);
 
     if(IsCaptureMode(m_State))
     {
@@ -2425,10 +2434,6 @@ void WrappedOpenGL::glGenRenderbuffers(GLsizei n, GLuint *renderbuffers)
       RDCASSERT(record);
 
       record->AddChunk(chunk);
-    }
-    else
-    {
-      GetResourceManager()->AddLiveResource(id, res);
     }
   }
 }
@@ -2452,8 +2457,7 @@ bool WrappedOpenGL::Serialise_glCreateRenderbuffers(SerialiserType &ser, GLsizei
 
     GLResource res = RenderbufferRes(GetCtx(), real);
 
-    ResourceId live = m_ResourceManager->RegisterResource(res);
-    GetResourceManager()->AddLiveResource(renderbuffer, res);
+    ResourceId live = m_ResourceManager->RegisterResource(renderbuffer, res);
 
     AddResource(renderbuffer, ResourceType::Texture, "Renderbuffer");
 
@@ -2471,7 +2475,7 @@ void WrappedOpenGL::glCreateRenderbuffers(GLsizei n, GLuint *renderbuffers)
   for(GLsizei i = 0; i < n; i++)
   {
     GLResource res = RenderbufferRes(GetCtx(), renderbuffers[i]);
-    ResourceId id = GetResourceManager()->RegisterResource(res);
+    ResourceId id = GetResourceManager()->RegisterResource(ResourceId(), res);
 
     if(IsCaptureMode(m_State))
     {
@@ -2489,10 +2493,6 @@ void WrappedOpenGL::glCreateRenderbuffers(GLsizei n, GLuint *renderbuffers)
       RDCASSERT(record);
 
       record->AddChunk(chunk);
-    }
-    else
-    {
-      GetResourceManager()->AddLiveResource(id, res);
     }
   }
 }
@@ -2513,10 +2513,18 @@ void WrappedOpenGL::glDeleteRenderbuffers(GLsizei n, const GLuint *renderbuffers
   for(GLsizei i = 0; i < n; i++)
   {
     GLResource res = RenderbufferRes(GetCtx(), renderbuffers[i]);
-    if(GetResourceManager()->HasCurrentResource(res))
+    if(GetResourceManager()->HasResource(res))
     {
       if(GetResourceManager()->HasResourceRecord(res))
-        GetResourceManager()->GetResourceRecord(res)->Delete(GetResourceManager());
+      {
+        GLResourceRecord *record = GetResourceManager()->GetResourceRecord(res);
+        for(auto cd = m_ContextData.begin(); cd != m_ContextData.end(); ++cd)
+        {
+          if(cd->second.m_Renderbuffer == record->GetResourceID())
+            cd->second.m_Renderbuffer = ResourceId();
+        }
+        record->Delete(GetResourceManager());
+      }
       GetResourceManager()->UnregisterResource(res);
     }
   }
@@ -2539,8 +2547,7 @@ bool WrappedOpenGL::Serialise_glNamedRenderbufferStorageEXT(SerialiserType &ser,
 
   if(IsReplayingAndReading())
   {
-    ResourceId liveId = GetResourceManager()->GetResID(renderbuffer);
-    TextureData &texDetails = m_Textures[liveId];
+    TextureData &texDetails = m_Textures[GetResourceManager()->GetResID(renderbuffer)];
 
     GLenum fmt = GetBaseFormat(internalformat);
 
@@ -2741,8 +2748,7 @@ bool WrappedOpenGL::Serialise_glNamedRenderbufferStorageMultisampleEXT(Serialise
     // present
     CheckReplayFunctionPresent(glRenderbufferStorageMultisample);
 
-    ResourceId liveId = GetResourceManager()->GetResID(renderbuffer);
-    TextureData &texDetails = m_Textures[liveId];
+    TextureData &texDetails = m_Textures[GetResourceManager()->GetResID(renderbuffer)];
 
     GLenum fmt = GetBaseFormat(internalformat);
 
@@ -2978,8 +2984,7 @@ bool WrappedOpenGL::Serialise_glRenderbufferStorageMultisampleEXT(SerialiserType
   {
     CheckReplayFunctionPresent(glRenderbufferStorageMultisampleEXT);
 
-    ResourceId liveId = GetResourceManager()->GetResID(renderbuffer);
-    TextureData &texDetails = m_Textures[liveId];
+    TextureData &texDetails = m_Textures[GetResourceManager()->GetResID(renderbuffer)];
 
     GLenum fmt = GetBaseFormat(internalformat);
 

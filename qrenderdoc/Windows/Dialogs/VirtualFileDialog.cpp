@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -312,7 +312,9 @@ public:
         {
           switch(index.column())
           {
-            case 0: { return node->file.filename;
+            case 0:
+            {
+              return node->file.filename;
             }
             case 1:
             {
@@ -399,7 +401,7 @@ private:
 
   struct FSNode
   {
-    FSNode() { memset(&file, 0, sizeof(file)); }
+    FSNode() {}
     ~FSNode()
     {
       for(FSNode *n : children)
@@ -458,37 +460,38 @@ private:
     if(!(node->file.flags & PathProperty::Directory))
       return;
 
-    Renderer.ListFolder(makePath(node), true, [node](const rdcstr &path,
-                                                     const rdcarray<PathEntry> &files) {
-      if(files.count() == 1 && (files[0].flags & PathProperty::ErrorAccessDenied))
-      {
-        node->file.flags |= PathProperty::ErrorAccessDenied;
-        return;
-      }
+    Renderer.ListFolder(
+        makePath(node), true, [node](const rdcstr &path, const rdcarray<PathEntry> &files) {
+          if(files.count() == 1 && (files[0].flags & PathProperty::ErrorAccessDenied))
+          {
+            node->file.flags |= PathProperty::ErrorAccessDenied;
+            return;
+          }
 
-      QVector<PathEntry> sortedFiles;
-      sortedFiles.reserve(files.count());
-      for(const PathEntry &f : files)
-        sortedFiles.push_back(f);
+          QVector<PathEntry> sortedFiles;
+          sortedFiles.reserve(files.count());
+          for(const PathEntry &f : files)
+            sortedFiles.push_back(f);
 
-      std::sort(sortedFiles.begin(), sortedFiles.end(), [](const PathEntry &a, const PathEntry &b) {
-        // sort greater than so that files with the flag are sorted before those without
-        if((a.flags & PathProperty::Directory) != (b.flags & PathProperty::Directory))
-          return (a.flags & PathProperty::Directory) > (b.flags & PathProperty::Directory);
+          std::sort(
+              sortedFiles.begin(), sortedFiles.end(), [](const PathEntry &a, const PathEntry &b) {
+                // sort greater than so that files with the flag are sorted before those without
+                if((a.flags & PathProperty::Directory) != (b.flags & PathProperty::Directory))
+                  return (a.flags & PathProperty::Directory) > (b.flags & PathProperty::Directory);
 
-        return strcmp(a.filename.c_str(), b.filename.c_str()) < 0;
-      });
+                return strcmp(a.filename.c_str(), b.filename.c_str()) < 0;
+              });
 
-      for(int i = 0; i < sortedFiles.count(); i++)
-      {
-        FSNode *child = new FSNode();
-        child->parent = node;
-        child->parentIndex = i;
-        child->file = sortedFiles[i];
-        child->populated = !(child->file.flags & PathProperty::Directory);
-        node->children.push_back(child);
-      }
-    });
+          for(int i = 0; i < sortedFiles.count(); i++)
+          {
+            FSNode *child = new FSNode();
+            child->parent = node;
+            child->parentIndex = i;
+            child->file = sortedFiles[i];
+            child->populated = !(child->file.flags & PathProperty::Directory);
+            node->children.push_back(child);
+          }
+        });
   }
 };
 

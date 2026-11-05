@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -159,6 +159,12 @@ rdcstr GetAppFolderFilename(const rdcstr &filename)
   return ret + filename;
 }
 
+rdcstr DefaultFindFileInPath(const rdcstr &fileName);
+rdcstr FindFileInPath(const rdcstr &fileName)
+{
+  return DefaultFindFileInPath(fileName);
+}
+
 void GetExecutableFilename(rdcstr &selfName)
 {
   char path[512] = {0};
@@ -237,7 +243,8 @@ rdcstr Wide2UTF8(const rdcwstr &s)
   // utf-8 characters can be max 4 bytes.
   size_t len = (s.length() + 1) * 4;
 
-  rdcarray<char> charBuffer(len);
+  rdcarray<char> charBuffer;
+  charBuffer.resize(len);
 
   size_t ret;
 
@@ -281,7 +288,8 @@ rdcwstr UTF82Wide(const rdcstr &s)
   // input.
   size_t len = s.length() + 1;
 
-  rdcarray<wchar_t> wcharBuffer(len);
+  rdcarray<wchar_t> wcharBuffer;
+  wcharBuffer.resize(len);
 
   size_t ret;
 
@@ -318,6 +326,10 @@ rdcwstr UTF82Wide(const rdcstr &s)
 }
 };
 
+// Helper method to avoid #include file conflicts between
+// <Carbon/Carbon.h> and "core/core.h"
+bool ShouldOutputDebugMon();
+
 namespace OSUtility
 {
 void WriteOutput(int channel, const char *str)
@@ -326,6 +338,8 @@ void WriteOutput(int channel, const char *str)
     fprintf(stdout, "%s", str);
   else if(channel == OSUtility::Output_StdErr)
     fprintf(stderr, "%s", str);
+  else if(channel == OSUtility::Output_DebugMon && ShouldOutputDebugMon())
+    fprintf(stdout, "%s", str);
 }
 
 uint64_t GetMachineIdent()

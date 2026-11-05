@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2021 Baldur Karlsson
+ * Copyright (c) 2021-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -55,7 +55,13 @@ ProgramEditor::ProgramEditor(const DXBC::DXBCContainer *container, bytebuf &outB
 
 ProgramEditor::~ProgramEditor()
 {
-  DXBC::DXBCContainer::ReplaceDXBCBytecode(m_OutBlob, EncodeProgram());
+  rdcarray<uint32_t> encoded = EncodeProgram();
+  // only one of these fourcc's will be present
+  size_t dummy = 0;
+  if(DXBC::DXBCContainer::FindChunk(m_OutBlob, DXBC::FOURCC_SHEX, dummy))
+    DXBC::DXBCContainer::ReplaceChunk(m_OutBlob, MAKE_FOURCC('S', 'H', 'E', 'X'), encoded);
+  if(DXBC::DXBCContainer::FindChunk(m_OutBlob, DXBC::FOURCC_SHDR, dummy))
+    DXBC::DXBCContainer::ReplaceChunk(m_OutBlob, MAKE_FOURCC('S', 'H', 'D', 'R'), encoded);
 }
 
 /*
@@ -87,10 +93,13 @@ static const rdcarray<OpcodeType> opcodeOrder = {
     OPCODE_DCL_SAMPLER,
 
     // sorted by space, then register. Types can be intermixed as a result
-    OPCODE_DCL_RESOURCE, OPCODE_DCL_RESOURCE_RAW, OPCODE_DCL_RESOURCE_STRUCTURED,
+    OPCODE_DCL_RESOURCE,
+    OPCODE_DCL_RESOURCE_RAW,
+    OPCODE_DCL_RESOURCE_STRUCTURED,
 
     // sorted by space, then register. Types can be intermixed as a result
-    OPCODE_DCL_UNORDERED_ACCESS_VIEW_TYPED, OPCODE_DCL_UNORDERED_ACCESS_VIEW_RAW,
+    OPCODE_DCL_UNORDERED_ACCESS_VIEW_TYPED,
+    OPCODE_DCL_UNORDERED_ACCESS_VIEW_RAW,
     OPCODE_DCL_UNORDERED_ACCESS_VIEW_STRUCTURED,
 
     OPCODE_DCL_FUNCTION_BODY,
@@ -100,15 +109,20 @@ static const rdcarray<OpcodeType> opcodeOrder = {
     OPCODE_DCL_INTERFACE,
 
     // these can be mixed in signature order
-    OPCODE_DCL_INPUT_PS, OPCODE_DCL_INPUT_PS_SIV,
+    OPCODE_DCL_INPUT_PS,
+    OPCODE_DCL_INPUT_PS_SIV,
     // last of the input group
     OPCODE_DCL_INPUT_PS_SGV,
 
     // these can in any order
-    OPCODE_DCL_INPUT, OPCODE_DCL_INPUT_SIV, OPCODE_DCL_INPUT_SGV,
+    OPCODE_DCL_INPUT,
+    OPCODE_DCL_INPUT_SIV,
+    OPCODE_DCL_INPUT_SGV,
 
     // similarly in any order
-    OPCODE_DCL_OUTPUT, OPCODE_DCL_OUTPUT_SIV, OPCODE_DCL_OUTPUT_SGV,
+    OPCODE_DCL_OUTPUT,
+    OPCODE_DCL_OUTPUT_SIV,
+    OPCODE_DCL_OUTPUT_SGV,
 
     OPCODE_DCL_TEMPS,
 
@@ -136,7 +150,8 @@ static const rdcarray<OpcodeType> opcodeOrder = {
     OPCODE_DCL_MAX_OUTPUT_VERTEX_COUNT,
 
     // these happen in the separate phase declarations
-    OPCODE_DCL_HS_FORK_PHASE_INSTANCE_COUNT, OPCODE_DCL_HS_JOIN_PHASE_INSTANCE_COUNT,
+    OPCODE_DCL_HS_FORK_PHASE_INSTANCE_COUNT,
+    OPCODE_DCL_HS_JOIN_PHASE_INSTANCE_COUNT,
 };
 
 size_t ProgramEditor::GetDeclarationPosition(OpcodeType op)
@@ -525,7 +540,7 @@ ret.zw += tex.Load(ret.xyz).yz;
       {
         bytebuf bytecode = dxbccompile(make_source(snippet), profile);
 
-        DXBC::DXBCContainer container(bytecode, rdcstr(), GraphicsAPI::D3D11, ~0U, ~0U);
+        DXBC::DXBCContainer container(bytecode);
 
         bytebuf edited;
         {
@@ -563,7 +578,7 @@ ret.zw += tex.Load(ret.xyz).yz;
       {
         bytebuf bytecode = dxbccompile(make_source(snippets[i]), profile);
 
-        DXBC::DXBCContainer container(bytecode, rdcstr(), GraphicsAPI::D3D11, ~0U, ~0U);
+        DXBC::DXBCContainer container(bytecode);
 
         rdcstr disasm_before = container.GetDXBCByteCode()->GetDisassembly();
         uint32_t temp_index = 123456;
@@ -575,7 +590,7 @@ ret.zw += tex.Load(ret.xyz).yz;
           temp_index = editor.AddTemp();
         }
 
-        DXBC::DXBCContainer container2(edited, rdcstr(), GraphicsAPI::D3D11, ~0U, ~0U);
+        DXBC::DXBCContainer container2(edited);
 
         rdcstr disasm_after = container2.GetDXBCByteCode()->GetDisassembly();
 
@@ -600,7 +615,7 @@ ret.zw += tex.Load(ret.xyz).yz;
     {
       bytebuf bytecode = dxbccompile(make_source(""), profile);
 
-      DXBC::DXBCContainer container(bytecode, rdcstr(), GraphicsAPI::D3D11, ~0U, ~0U);
+      DXBC::DXBCContainer container(bytecode);
 
       rdcstr disasm_before = container.GetDXBCByteCode()->GetDisassembly();
       uint32_t t = 123456;
@@ -640,7 +655,7 @@ ret.zw += tex.Load(ret.xyz).yz;
                                         op.operands[1].comps[2], op.operands[1].comps[3]);
       }
 
-      DXBC::DXBCContainer container2(edited, rdcstr(), GraphicsAPI::D3D11, ~0U, ~0U);
+      DXBC::DXBCContainer container2(edited);
 
       rdcstr disasm_after = container2.GetDXBCByteCode()->GetDisassembly();
 
@@ -670,7 +685,7 @@ ret += tex2.Load(uvm);
 )"),
                                      profile);
 
-      DXBC::DXBCContainer container(bytecode, rdcstr(), GraphicsAPI::D3D11, ~0U, ~0U);
+      DXBC::DXBCContainer container(bytecode);
 
       rdcstr disasm_before = container.GetDXBCByteCode()->GetDisassembly();
 
@@ -713,7 +728,7 @@ ret += tex2.Load(uvm);
         }
       }
 
-      DXBC::DXBCContainer container2(edited, rdcstr(), GraphicsAPI::D3D11, ~0U, ~0U);
+      DXBC::DXBCContainer container2(edited);
 
       rdcstr disasm_after = container2.GetDXBCByteCode()->GetDisassembly();
 

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -30,6 +30,7 @@
 #include <string.h>
 #include <tchar.h>
 #include <time.h>
+#include <urlmon.h>
 #include <set>
 #include "api/app/renderdoc_app.h"
 #include "api/replay/data_types.h"
@@ -173,7 +174,7 @@ void GetExecutableFilename(rdcstr &selfName)
 void GetLibraryFilename(rdcstr &selfName)
 {
   wchar_t curFile[512] = {0};
-  GetModuleFileNameW(GetModuleHandleA(STRINGIZE(RDOC_DLL_FILE) ".dll"), curFile, 511);
+  GetModuleFileNameW(GetModuleHandleA(STRINGIZE(RDOC_BASE_NAME) ".dll"), curFile, 511);
 
   selfName = StringFormat::Wide2UTF8(curFile);
 }
@@ -524,7 +525,7 @@ void GetFilesInDirectory(const rdcstr &path, rdcarray<PathEntry> &ret)
 
     PathProperty flags = PathProperty::ErrorUnknown;
 
-    if(err == ERROR_FILE_NOT_FOUND)
+    if(err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)
       flags = PathProperty::ErrorInvalidPath;
     else if(err == ERROR_ACCESS_DENIED)
       flags = PathProperty::ErrorAccessDenied;
@@ -592,7 +593,93 @@ FILE *fopen(const rdcstr &filename, FileMode mode)
 
   FILE *ret = NULL;
   ::_wfopen_s(&ret, wfn.c_str(), modeString[mode]);
+
+  // specify the handle as non-inheriting
+  if(ret)
+  {
+    int fd = ::_fileno(ret);
+    HANDLE h = (HANDLE)::_get_osfhandle(fd);
+    SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+  }
+
   return ret;
+}
+
+FILE *FileIO::OpenTransientFileHandle(const rdcstr &filename, FileMode mode)
+{
+  rdcwstr wfn = StringFormat::UTF82Wide(filename);
+
+  // specify the handle as non-inheriting
+  SECURITY_ATTRIBUTES security = {};
+  security.nLength = sizeof(security);
+  security.bInheritHandle = FALSE;
+
+  HANDLE handle = CreateFileW(wfn.c_str(), GENERIC_READ | GENERIC_WRITE, 0, &security, OPEN_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+
+  if(!handle || handle == INVALID_HANDLE_VALUE)
+  {
+    return NULL;
+  }
+
+  int fd = _open_osfhandle((intptr_t)handle, 0);
+
+  if(fd < 0)
+  {
+    CloseHandle(handle);
+    RDCERR("Failed to convert handle to fd: %d", errno);
+    return NULL;
+  }
+
+  FILE *ret = _wfdopen(fd, modeString[mode]);
+
+  if(!ret)
+  {
+    RDCERR("Failed to open fd as FILE: %d", errno);
+    _close(fd);
+    return NULL;
+  }
+
+  return ret;
+}
+
+bool IsUntrustedFile(const rdcstr &filename)
+{
+  IPersistFile *file = NULL;
+  HRESULT hr = CoCreateInstance(CLSID_PersistentZoneIdentifier, 0, CLSCTX_INPROC_SERVER,
+                                __uuidof(IPersistFile), (void **)&file);
+  // we default to trusted on failure
+  if(FAILED(hr))
+  {
+    SAFE_RELEASE(file);
+    return false;
+  }
+  rdcwstr wfn = StringFormat::UTF82Wide(filename);
+  for(size_t i = 0; i < wfn.length(); i++)
+    if(wfn[i] == L'/')
+      wfn[i] = L'\\';
+  hr = file->Load(wfn.c_str(), STGM_READ);
+  if(FAILED(hr))
+  {
+    SAFE_RELEASE(file);
+    return false;
+  }
+  IZoneIdentifier *zone = NULL;
+  hr = file->QueryInterface(__uuidof(IZoneIdentifier), (void **)&zone);
+  if(FAILED(hr))
+  {
+    SAFE_RELEASE(file);
+    SAFE_RELEASE(zone);
+    return false;
+  }
+  DWORD zoneValue = URLZONE_LOCAL_MACHINE;
+  hr = zone->GetId(&zoneValue);
+  if(FAILED(hr))
+    zoneValue = URLZONE_LOCAL_MACHINE;
+  SAFE_RELEASE(file);
+  SAFE_RELEASE(zone);
+  // internet and worse are considered untrusted
+  return zoneValue >= URLZONE_INTERNET;
 }
 
 bool exists(const rdcstr &filename)
@@ -659,8 +746,14 @@ int fclose(FILE *f)
 LogFileHandle *logfile_open(const rdcstr &filename)
 {
   rdcwstr wfn = StringFormat::UTF82Wide(filename);
+
+  // specify the handle as non-inheriting
+  SECURITY_ATTRIBUTES security = {};
+  security.nLength = sizeof(security);
+  security.bInheritHandle = FALSE;
+
   return (LogFileHandle *)CreateFileW(wfn.c_str(), FILE_APPEND_DATA,
-                                      FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_ALWAYS,
                                       FILE_ATTRIBUTE_NORMAL, NULL);
 }
 
@@ -906,5 +999,96 @@ uint64_t GetMachineIdent()
 #endif
 
   return ret;
+}
+
+bool loaded = false;
+HMODULE version = NULL;
+
+using PFN_GetFileVersionInfoSizeW = decltype(&GetFileVersionInfoSizeW);
+using PFN_GetFileVersionInfoW = decltype(&GetFileVersionInfoW);
+using PFN_VerQueryValueA = decltype(&VerQueryValueA);
+
+PFN_GetFileVersionInfoSizeW getSize = NULL;
+PFN_GetFileVersionInfoW getData = NULL;
+PFN_VerQueryValueA queryValue = NULL;
+
+void Load()
+{
+  if(loaded)
+    return;
+  loaded = true;
+
+  version = LoadLibraryA("version.dll");
+  if(version)
+  {
+    getSize = (PFN_GetFileVersionInfoSizeW)GetProcAddress(version, "GetFileVersionInfoSizeW");
+    getData = (PFN_GetFileVersionInfoW)GetProcAddress(version, "GetFileVersionInfoW");
+    queryValue = (PFN_VerQueryValueA)GetProcAddress(version, "VerQueryValueA");
+
+    if(!getSize || !getData || !queryValue)
+    {
+      RDCWARN("Couldn't get version API");
+    }
+  }
+  else
+  {
+    RDCWARN("Couldn't load version.dll");
+  }
+}
+
+DLLFileVersion GetDLLVersion(const rdcstr &path)
+{
+  DLLFileVersion ret = {};
+
+  Load();
+
+  if(!version)
+    return {};
+
+  rdcwstr wpath = StringFormat::UTF82Wide(path);
+  DWORD bytesNeeded = getSize(wpath.c_str(), NULL);
+
+  if(bytesNeeded > 0 && bytesNeeded < 1024 * 1024)
+  {
+    bytebuf blockData;
+    blockData.resize(bytesNeeded);
+
+    VS_FIXEDFILEINFO *verInfo = NULL;
+    UINT size = 0;
+    if(getData(wpath.c_str(), 0, bytesNeeded, blockData.data()) &&
+       queryValue(blockData.data(), "\\", (void **)&verInfo, &size))
+    {
+      if(size > 0 && verInfo && verInfo->dwSignature == 0xFEEF04BD)
+      {
+        ret = {verInfo->dwFileVersionMS >> 16, verInfo->dwFileVersionMS & 0xffff,
+               verInfo->dwFileVersionLS >> 16, verInfo->dwFileVersionLS & 0xffff};
+      }
+      else
+      {
+        RDCWARN("Version data for '%s' invalid: %u %p %u", path.c_str(), size, verInfo,
+                verInfo ? verInfo->dwSignature : 0);
+      }
+    }
+    else
+    {
+      RDCWARN("Couldn't get version data for '%s'", path.c_str());
+    }
+  }
+  else
+  {
+    RDCWARN("Bytes needed for '%s': %u", path.c_str(), bytesNeeded);
+  }
+
+  return ret;
+}
+
+DLLFileVersion GetDLLVersion(HMODULE mod)
+{
+  wchar_t curFile[512] = {0};
+  GetModuleFileNameW(mod, curFile, 511);
+
+  rdcstr path = StringFormat::Wide2UTF8(curFile);
+
+  return GetDLLVersion(path);
 }
 };

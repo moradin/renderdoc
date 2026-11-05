@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -39,6 +39,12 @@
 #define NK_INCLUDE_DEFAULT_ALLOCATOR
 #define NK_ASSERT(expr) TEST_ASSERT(expr, "nuklear assertion failed")
 #include "3rdparty/nuklear/nuklear.h"
+
+static void ToLower(std::string &str)
+{
+  for(char &c : str)
+    c = tolower(c);
+}
 
 #if defined(WIN32)
 
@@ -139,6 +145,26 @@ void NuklearShutdown()
   UnregisterClassW(wc.lpszClassName, wc.hInstance);
 }
 
+#elif defined(ANDROID)
+
+nk_context *NuklearInit(int width, int height, const char *title)
+{
+  return NULL;
+}
+
+bool NuklearTick(nk_context *ctx)
+{
+  return false;
+}
+
+void NuklearRender()
+{
+}
+
+void NuklearShutdown()
+{
+}
+
 #elif defined(__linux__)
 
 #define NK_XLIB_IMPLEMENTATION
@@ -212,6 +238,68 @@ void NuklearShutdown()
   XFreeColormap(dpy, cmap);
   XDestroyWindow(dpy, win);
   XCloseDisplay(dpy);
+}
+
+#elif defined(__APPLE__)
+
+#include "apple/official/metal-cpp.h"
+extern "C" void *const NSDefaultRunLoopMode;
+
+#define NK_APPKIT_IMPLEMENTATION
+#include "apple/nuklear_appkit.h"
+
+static nk_appkit_window *window;
+static AppkitFont *font;
+static NS::Application *pSharedApplication = NULL;
+
+nk_context *NuklearInit(int width, int height, const char *title)
+{
+  if(!nk_appkit_core_initialize())
+    exit(EXIT_FAILURE);
+
+  pSharedApplication = NS::Application::sharedApplication();
+
+  window = nk_appkit_window_create(width, height, title);
+  if(!window)
+    exit(EXIT_FAILURE);
+
+  nk_context *ctx = nk_appkit_create(window);
+  font = nk_appkit_create_font("Menlo Regular", 9);
+  nk_appkit_init(font);
+  return ctx;
+}
+
+bool NuklearTick(nk_context *ctx)
+{
+  NS::AutoreleasePool *pAutoreleasePool = NS::AutoreleasePool::alloc()->init();
+  while(true)
+  {
+    NS::Event *event = pSharedApplication->nextEventMatchingMask(
+        (int)NS::EventMaskAny, NS::Date::distantPast(), (NS::String *)NSDefaultRunLoopMode, true);
+    if(event == NULL)
+      break;
+    pSharedApplication->sendEvent(event);
+  }
+  pAutoreleasePool->release();
+  nk_appkit_new_frame();
+
+  if(nk_appkit_window_is_closed(window))
+    return false;
+
+  return true;
+}
+
+void NuklearRender()
+{
+  nk_appkit_render(nk_rgb(30, 30, 30));
+}
+
+void NuklearShutdown()
+{
+  nk_appkit_delete_font(font);
+  nk_appkit_shutdown();
+  nk_appkit_window_delete(window);
+  nk_appkit_core_shutdown();
 }
 
 #else
@@ -313,7 +401,7 @@ int main(int argc, char **argv)
   if(argc >= 2 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h") || !strcmp(argv[1], "-?") ||
                    !strcmp(argv[1], "/help") || !strcmp(argv[1], "/h") || !strcmp(argv[1], "/?")))
   {
-    printf(R"(RenderDoc testing demo program
+    OutputPrint(R"(RenderDoc testing demo program
 
 Usage: %s Test_Name [test_options]
 
@@ -335,9 +423,8 @@ Usage: %s Test_Name [test_options]
                                 environment variable, or else in the data/demos
                                 folder next to the executable.
 )",
-           argc == 0 ? "demos" : argv[0]);
+                argc == 0 ? "demos" : argv[0]);
 
-    fflush(stdout);
     return 1;
   }
 
@@ -352,38 +439,38 @@ Usage: %s Test_Name [test_options]
       if(test.API != prev)
       {
         if(prev != TestAPI::Count)
-          printf("\n\n");
-        printf("======== %s tests ========\n\n", APIName(test.API));
+          OutputPrint("\n\n");
+        OutputPrint("======== %s tests ========\n\n", APIName(test.API));
       }
 
       prev = test.API;
 
-      printf("%s: %s", test.Name, test.IsAvailable() ? "Available" : "Unavailable");
+      OutputPrint("%s: %s", test.Name, test.IsAvailable() ? "Available" : "Unavailable");
 
       if(!test.IsAvailable())
-        printf(" because %s", test.AvailMessage());
+        OutputPrint(" because %s", test.AvailMessage());
 
-      printf("\n\t%s\n\n", test.Description);
+      OutputPrint("\n\t%s\n\n", test.Description);
     }
 
-    fflush(stdout);
     return 1;
   }
 
   if(argc >= 2 && !strcmp(argv[1], "--list-raw"))
   {
+    SetDebugLogEnabled(false);
+
     check_tests(argc, argv);
 
     // output TSV
-    printf("Name\tAvailable\tAvailMessage\n");
+    OutputPrint("Name\tAvailable\tAvailMessage\n");
 
     for(const TestMetadata &test : tests)
     {
-      printf("%s\t%s\t%s\n", test.Name, test.IsAvailable() ? "True" : "False",
-             test.IsAvailable() ? "Available" : test.AvailMessage());
+      OutputPrint("%s\t%s\t%s\n", test.Name, test.IsAvailable() ? "True" : "False",
+                  test.IsAvailable() ? "Available" : test.AvailMessage());
     }
 
-    fflush(stdout);
     return 1;
   }
 
@@ -399,9 +486,13 @@ Usage: %s Test_Name [test_options]
   bool validTestArg = false;
   if(argc >= 2)
   {
+    std::string match(argv[1]);
+    ToLower(match);
     for(const TestMetadata &test : tests)
     {
-      if(!strcmp(test.Name, argv[1]))
+      std::string name(test.Name);
+      ToLower(name);
+      if(name == match)
       {
         validTestArg = true;
         break;
@@ -410,7 +501,16 @@ Usage: %s Test_Name [test_options]
   }
 
   std::string testchoice;
-  if(tests.size() == 1)
+
+#if 0
+  testchoice = "Hardcoded test name";
+#endif
+
+  if(!testchoice.empty())
+  {
+    // hardcoded test, ignore everything else
+  }
+  else if(tests.size() == 1)
   {
     // if there's only one test we've probably hardcoded this for a repro. Launch it
     testchoice = tests[0].Name;
@@ -434,7 +534,7 @@ Usage: %s Test_Name [test_options]
     bool allow[(int)TestAPI::Count] = {};
     bool nofilters = true;
     const char *allow_names[] = {
-        "D3D11", "Vulkan", "OpenGL", "D3D12",
+        "D3D11", "Vulkan", "OpenGL", "D3D12", "D3D9",
     };
 
     char name_filter[256] = {};
@@ -580,13 +680,16 @@ Usage: %s Test_Name [test_options]
   SetUnhandledExceptionFilter(&exceptionHandler);
 #endif
 
+  ToLower(testchoice);
   for(const TestMetadata &test : tests)
   {
-    if(testchoice == test.Name)
+    std::string name(test.Name);
+    ToLower(name);
+    if(testchoice == name)
     {
       TEST_LOG("Running '%s'", test.Name);
-      test.test->Prepare(argc, argv);
       test.test->SetName(test.Name);
+      test.test->Prepare(argc, argv);
 
       if(!test.IsAvailable())
       {
@@ -601,7 +704,6 @@ Usage: %s Test_Name [test_options]
   }
 
   TEST_ERROR("%s is not a known test", argv[1]);
-
   return 2;
 }
 
@@ -636,6 +738,116 @@ int WINAPI wWinMain(_In_ HINSTANCE hInst, _In_opt_ HINSTANCE hPrevInstance, _In_
 
   delete[] argv;
   LocalFree(wargv);
+}
+
+#endif
+
+#if defined(ANDROID)
+#include <android_native_app_glue.h>
+#include <sstream>
+
+#include <android/log.h>
+
+struct android_app *android_state;
+pthread_t cmdthread_handle = 0;
+
+#define ANDROID_LOG(...) __android_log_print(ANDROID_LOG_DEBUG, "rd_demos", __VA_ARGS__);
+
+std::vector<std::string> getArgs()
+{
+  JNIEnv *env;
+  android_state->activity->vm->AttachCurrentThread(&env, 0);
+
+  jobject me = android_state->activity->clazz;
+
+  jclass acl = env->GetObjectClass(me);    // class pointer of NativeActivity
+  jmethodID giid = env->GetMethodID(acl, "getIntent", "()Landroid/content/Intent;");
+  jobject intent = env->CallObjectMethod(me, giid);    // Got our intent
+
+  jclass icl = env->GetObjectClass(intent);    // class pointer of Intent
+  jmethodID gseid =
+      env->GetMethodID(icl, "getStringExtra", "(Ljava/lang/String;)Ljava/lang/String;");
+
+  jstring jsParam1 = (jstring)env->CallObjectMethod(intent, gseid, env->NewStringUTF("rd_demos"));
+
+  std::vector<std::string> ret;
+  if(jsParam1)    // Check if arg value found
+  {
+    ret.push_back("rd_demos");
+    const char *param1 = env->GetStringUTFChars(jsParam1, 0);
+    std::istringstream iss(param1);
+    while(iss)
+    {
+      std::string sub;
+      iss >> sub;
+      ret.push_back(sub);
+    }
+  }
+  android_state->activity->vm->DetachCurrentThread();
+
+  return ret;
+}
+
+void *cmdthread(void *)
+{
+  ANDROID_LOG("cmdthread");
+  std::vector<std::string> args = getArgs();
+  if(args.size())
+  {
+    std::vector<char *> argv;
+    for(size_t i = 0; i < args.size(); i++)
+    {
+      ANDROID_LOG("argv %d: %s", (int)i, args[i].c_str());
+      argv.push_back(&args[i][0]);
+    }
+    int argc = argv.size();
+    argv.push_back(NULL);
+    ANDROID_LOG("premain");
+    main(argc, argv.data());
+    ANDROID_LOG("postmain");
+  }
+
+  // activity is done and should be closed
+  ANativeActivity_finish(android_state->activity);
+
+  return NULL;
+}
+
+void handle_cmd(android_app *app, int32_t cmd)
+{
+  if(cmd == APP_CMD_INIT_WINDOW)
+  {
+    ANDROID_LOG("APP_CMD_INIT_WINDOW");
+    pthread_create(&cmdthread_handle, NULL, cmdthread, NULL);
+  }
+}
+
+void android_main(struct android_app *state)
+{
+  android_state = state;
+  android_state->onAppCmd = handle_cmd;
+
+  ANDROID_LOG("android_main");
+
+  // Used to poll the events in the main loop
+  int events;
+  android_poll_source *source;
+  do
+  {
+#if __NDK_MAJOR__ >= 27
+    if(ALooper_pollOnce(1, nullptr, &events, (void **)&source) >= 0)
+#else
+    if(ALooper_pollAll(1, nullptr, &events, (void **)&source) >= 0)
+#endif
+    {
+      if(source != NULL)
+        source->process(android_state, source);
+    }
+  } while(android_state->destroyRequested == 0);
+
+  ANDROID_LOG("end android_main");
+
+  android_state = NULL;
 }
 
 #endif

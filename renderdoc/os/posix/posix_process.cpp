@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,9 +33,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <map>
-//#include "api/app/renderdoc_app.h"
 #include "api/replay/capture_options.h"
 #include "api/replay/control_types.h"
+#include "common/formatting.h"
 #include "common/threading.h"
 #include "core/core.h"
 #include "os/os_specific.h"
@@ -51,7 +51,7 @@ int GetIdentPort(pid_t childPid);
 // functions to try and let the child run just far enough to get to main() but no further. This lets
 // us check the ident port and resume.
 void StopAtMainInChild();
-bool StopChildAtMain(pid_t childPid);
+bool StopChildAtMain(pid_t childPid, bool *exitWithNoExec);
 void ResumeProcess(pid_t childPid, uint32_t delay = 0);
 
 #if ENABLED(RDOC_APPLE)
@@ -59,12 +59,14 @@ void ResumeProcess(pid_t childPid, uint32_t delay = 0);
 #define PRELOAD_ENV_VAR "DYLD_INSERT_LIBRARIES"
 #define LIB_PATH_ENV_VAR "DYLD_LIBRARY_PATH"
 #define LIB_SUFFIX ".dylib"
+#define RD_EXECVPE execve
 
 #else
 
 #define PRELOAD_ENV_VAR "LD_PRELOAD"
 #define LIB_PATH_ENV_VAR "LD_LIBRARY_PATH"
 #define LIB_SUFFIX ".so"
+#define RD_EXECVPE execvpe
 
 #endif
 
@@ -307,7 +309,7 @@ static rdcstr shellExpand(const rdcstr &in)
 
   // if it's ~/... then replace with $HOME and return
   if(path[0] == '~' && path[1] == '/')
-    return rdcstr(getenv("HOME")) + path.substr(1);
+    return Process::GetEnvVariable("HOME") + path.substr(1);
 
   // if it's ~user/... then use getpwname
   if(path[0] == '~')
@@ -338,6 +340,29 @@ static rdcstr shellExpand(const rdcstr &in)
   }
 
   return path;
+}
+
+using PFN_setenv = decltype(&setenv);
+
+int direct_setenv(const char *name, const char *value, int overwrite)
+{
+// on linux try to bypass any hooks to ensure we don't break (looking at you bash)
+#if ENABLED(RDOC_LINUX)
+  static PFN_setenv dyn_setenv = NULL;
+  static bool checked = false;
+  if(!checked)
+  {
+    checked = true;
+    void *libc = dlopen("libc.so.6", RTLD_NOLOAD | RTLD_GLOBAL | RTLD_NOW);
+    if(libc)
+      dyn_setenv = (PFN_setenv)dlsym(libc, "setenv");
+  }
+
+  if(dyn_setenv)
+    return dyn_setenv(name, value, overwrite);
+#endif
+
+  return setenv(name, value, overwrite);
 }
 
 void Process::RegisterEnvironmentModification(const EnvironmentModification &modif)
@@ -384,19 +409,36 @@ void ApplySingleEnvMod(EnvironmentModification &m, rdcstr &value)
 
 void ApplyEnvironmentModifications(rdcarray<EnvironmentModification> &modifications)
 {
-  // turn environment string to a UTF-8 map
-  char **currentEnvironment = GetCurrentEnvironment();
-  std::map<rdcstr, rdcstr> currentEnv = EnvStringToEnvMap(currentEnvironment);
+  bool needOldEnv = false;
+
+  for(const EnvironmentModification &env : modifications)
+  {
+    if(env.mod != EnvMod::Set)
+    {
+      needOldEnv = true;
+      break;
+    }
+  }
+
+  std::map<rdcstr, rdcstr> currentEnv;
+
+  // turn environment string to a UTF-8 map, but only if we actually need to. Environment variables
+  // are garbage 70s tier tech and so are not thread safe, minimise interaction with them as much as possible
+  if(needOldEnv)
+  {
+    char **currentEnvironment = GetCurrentEnvironment();
+    currentEnv = EnvStringToEnvMap(currentEnvironment);
+  }
 
   for(size_t i = 0; i < modifications.size(); i++)
   {
     EnvironmentModification &m = modifications[i];
 
-    rdcstr value = currentEnv[m.name.c_str()];
+    rdcstr &value = currentEnv[m.name.c_str()];
 
     ApplySingleEnvMod(m, value);
 
-    setenv(m.name.c_str(), value.c_str(), true);
+    direct_setenv(m.name.c_str(), value.c_str(), true);
   }
 }
 
@@ -603,14 +645,14 @@ static pid_t RunProcess(rdcstr appName, rdcstr workDir, const rdcstr &cmdLine, c
       }
 
       chdir(workDir.c_str());
-      execve(appPath.c_str(), argv, envp);
-      fprintf(stderr, "exec failed\n");
+      RD_EXECVPE(appPath.c_str(), argv, envp);
+      fprintf(stderr, "exec failed %s\n", strerror(errno));
       _exit(1);
     }
     else
     {
       if(pauseAtMain)
-        StopChildAtMain(childPid);
+        StopChildAtMain(childPid, NULL);
 
       if(!stdoutPipe)
       {
@@ -643,12 +685,16 @@ static pid_t RunProcess(rdcstr appName, rdcstr workDir, const rdcstr &cmdLine, c
   return childPid;
 }
 
-rdcpair<ReplayStatus, uint32_t> Process::InjectIntoProcess(
-    uint32_t pid, const rdcarray<EnvironmentModification> &env, const rdcstr &logfile,
-    const CaptureOptions &opts, bool waitForExit)
+rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
+                                                       const rdcarray<EnvironmentModification> &env,
+                                                       const rdcstr &logfile,
+                                                       const CaptureOptions &opts, bool waitForExit)
 {
   RDCUNIMPLEMENTED("Injecting into already running processes on linux");
-  return {ReplayStatus::InjectionFailed, 0};
+  return {
+      RDResult(ResultCode::InjectionFailed,
+               "Injecting into already running processes is not supported on non-Windows systems."),
+      0};
 }
 
 uint32_t Process::LaunchProcess(const rdcstr &app, const rdcstr &workingDir, const rdcstr &cmdLine,
@@ -752,7 +798,7 @@ void GetHookingEnvMods(rdcarray<EnvironmentModification> &modifications, const C
   FileIO::GetLibraryFilename(ownlibpath);
   ownlibpath = get_dirname(ownlibpath);
 
-  rdcstr libfile = "librenderdoc" LIB_SUFFIX;
+  rdcstr libfile = "lib" STRINGIZE(RDOC_BASE_NAME) LIB_SUFFIX;
 
 // on macOS, the path must be absolute
 #if ENABLED(RDOC_APPLE)
@@ -768,11 +814,11 @@ void GetHookingEnvMods(rdcarray<EnvironmentModification> &modifications, const C
                                                   "RENDERDOC_ORIGPRELOAD",
                                                   Process::GetEnvVariable(PRELOAD_ENV_VAR)));
   modifications.push_back(
+      EnvironmentModification(EnvMod::Append, EnvSep::Platform, LIB_PATH_ENV_VAR, ownlibpath));
+  modifications.push_back(
       EnvironmentModification(EnvMod::Append, EnvSep::Platform, LIB_PATH_ENV_VAR, binpath));
   modifications.push_back(
       EnvironmentModification(EnvMod::Append, EnvSep::Platform, LIB_PATH_ENV_VAR, libpath));
-  modifications.push_back(
-      EnvironmentModification(EnvMod::Append, EnvSep::Platform, LIB_PATH_ENV_VAR, ownlibpath));
   modifications.push_back(
       EnvironmentModification(EnvMod::Append, EnvSep::Platform, PRELOAD_ENV_VAR, libfile));
   modifications.push_back(
@@ -870,21 +916,31 @@ void GetHookedEnvp(char *const *envp, rdcstr &envpStr, rdcarray<char *> &modifie
 
 void ResetHookingEnvVars()
 {
-  setenv(LIB_PATH_ENV_VAR, Process::GetEnvVariable("RENDERDOC_ORIGLIBPATH").c_str(), true);
-  setenv(PRELOAD_ENV_VAR, Process::GetEnvVariable("RENDERDOC_ORIGPRELOAD").c_str(), true);
-  unsetenv("RENDERDOC_ORIGLIBPATH");
-  unsetenv("RENDERDOC_ORIGPRELOAD");
+  rdcstr origpath = Process::GetEnvVariable("RENDERDOC_ORIGLIBPATH");
+  rdcstr origpreload = Process::GetEnvVariable("RENDERDOC_ORIGPRELOAD");
+
+  if(!origpath.empty())
+  {
+    direct_setenv(LIB_PATH_ENV_VAR, origpath.c_str(), true);
+    direct_setenv("RENDERDOC_ORIGLIBPATH", "", true);
+  }
+  if(!origpreload.empty())
+  {
+    direct_setenv(PRELOAD_ENV_VAR, origpreload.c_str(), true);
+    direct_setenv("RENDERDOC_ORIGPRELOAD", "", true);
+  }
 }
 
-rdcpair<ReplayStatus, uint32_t> Process::LaunchAndInjectIntoProcess(
+rdcpair<RDResult, uint32_t> Process::LaunchAndInjectIntoProcess(
     const rdcstr &app, const rdcstr &workingDir, const rdcstr &cmdLine,
     const rdcarray<EnvironmentModification> &envList, const rdcstr &capturefile,
     const CaptureOptions &opts, bool waitForExit)
 {
   if(app.empty())
   {
-    RDCERR("Invalid empty 'app'");
-    return {ReplayStatus::InternalError, 0};
+    RDResult result;
+    SET_ERROR_RESULT(result, ResultCode::InvalidParameter, "Invalid empty path to launch.");
+    return {result, 0};
   }
 
   // turn environment string to a UTF-8 map
@@ -970,14 +1026,23 @@ rdcpair<ReplayStatus, uint32_t> Process::LaunchAndInjectIntoProcess(
   }
 
   CleanupStringArray(envp);
-  return {ret == 0 ? ReplayStatus::InjectionFailed : ReplayStatus::Succeeded, (uint32_t)ret};
+  RDResult result;
+  if(ret == 0)
+  {
+    SET_ERROR_RESULT(result, ResultCode::InjectionFailed,
+                     "Couldn't connect to target program. Check that it didn't crash or exit "
+                     "during early initialisation, e.g. due to an incorrectly configured working "
+                     "directory.");
+  }
+  return {result, (uint32_t)ret};
 }
 
-bool Process::StartGlobalHook(const rdcstr &pathmatch, const rdcstr &logfile,
-                              const CaptureOptions &opts)
+RDResult Process::StartGlobalHook(const rdcstr &pathmatch, const rdcstr &logfile,
+                                  const CaptureOptions &opts)
 {
   RDCUNIMPLEMENTED("Global hooking of all processes on linux");
-  return false;
+  return RDResult(ResultCode::InvalidParameter,
+                  "Global hooking is not supported on non-Windows systems");
 }
 
 bool Process::CanGlobalHook()

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,6 +34,18 @@
 namespace
 {
 #include "official/nvapi/nvapi_interface.h"
+
+uint32_t getId(const char *name)
+{
+  // slow lookup, we only check a couple of functions
+  for(NVAPI_INTERFACE_TABLE &table : nvapi_interface_table)
+    if(!strcmp(table.func, name))
+      return table.id;
+
+  RDCERR("Couldn't get function ID for %s", name);
+
+  return 0;
+}
 };
 
 typedef void *(*PFN_nvapi_QueryInterface)(NvU32 id);
@@ -149,18 +161,6 @@ private:
 
   NVAPI_FUNCS()
 };
-
-uint32_t getId(const char *name)
-{
-  // slow lookup, we only check a couple of functions
-  for(NVAPI_INTERFACE_TABLE &table : nvapi_interface_table)
-    if(!strcmp(table.func, name))
-      return table.id;
-
-  RDCERR("Couldn't get function ID for %s", name);
-
-  return 0;
-}
 
 // try to initialise nvapi for replay
 INVAPID3DDevice *InitialiseNVAPIReplay()

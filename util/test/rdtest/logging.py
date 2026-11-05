@@ -1,38 +1,56 @@
+from __future__ import annotations
 import os
 import sys
 import re
 import traceback
 import mimetypes
+import threading
 import difflib
 import shutil
+from typing import IO, Any, Callable, List, Type
 from . import util
 
 
 class TestFailureException(Exception):
-    def __init__(self, message, *args):
+    def __init__(self, message: str, *args: str):
         self.message = message
-        self.files = []
+        self.files: List[str] = []
         for a in args:
-            self.files.append(str(a))
+            self.files.append(a)
 
     def __str__(self):
         return self.message
 
     def __repr__(self):
-        return "<TestFailureException '{}' with files: {}>".format(self.message, repr(self.files))
+        return f"<TestFailureException '{self.message}' with files: {repr(self.files)}>"
 
 
 class TestLogger:
     def __init__(self):
         self.indentation = 0
         self.test_name = ''
-        self.outputs = [sys.stdout]
+        self.ctx_callback: Callable[[], None] | None = None
+        self.outputs: List[IO[str]] = [sys.stdout]
         self.failed = False
+        self.fast_fail = False
+        self.section_failed = False
+        self.logged_exception = False
+        self.mutex = threading.Lock()
 
-    def subprocess_print(self, line: str):
-        for o in self.outputs:
-            o.write(line)
-            o.flush()
+    def subprocess_test(self, test: str, thread: int, out_buf: List[str], path: str, exc: Exception | None = None):
+        with self.mutex:
+            self.begin_test(test, True, thread)
+            with open(path) as f:
+                lines = f.readlines()
+                for l in lines:
+                    self.rawprint(l, with_stdout=False)
+            sys.stdout.write(out_buf[0])
+            sys.stdout.flush()
+            sys.stderr.write(out_buf[1])
+            sys.stderr.flush()
+            if exc is not None:
+                self.failure(exc)
+            self.end_test(test, True, thread)
 
     def rawprint(self, line: str, with_stdout=True):
         for o in self.outputs:
@@ -47,9 +65,15 @@ class TestLogger:
 
             o.flush()
 
-    def add_output(self, o, header='', footer=''):
-        os.makedirs(os.path.dirname(o), exist_ok=True)
-        self.outputs.append(open(o, "a"))
+    def add_output(self, o: str | IO[str], header='', footer=''):
+        if isinstance(o, str):
+            os.makedirs(os.path.dirname(o), exist_ok=True)
+            self.outputs.append(open(o, "a"))
+        else:
+            self.outputs.append(o)
+
+    def set_context(self, ctx: Callable[[], None] | None | None):
+        self.ctx_callback = ctx
 
     def print(self, line: str, with_stdout=True):
         self.rawprint('.. ' + line, with_stdout)
@@ -57,7 +81,7 @@ class TestLogger:
     def comment(self, line: str):
         self.rawprint('// ' + line)
 
-    def header(self, text):
+    def header(self, text: str):
         self.rawprint('\n## ' + text + ' ##\n')
 
     def indent(self):
@@ -66,71 +90,123 @@ class TestLogger:
     def dedent(self):
         self.indentation -= 4
 
-    def begin_test(self, test_name: str, print_header: bool=True):
+    def begin_test(self, test_name: str, print_header: bool=True, thread=-1):
         self.test_name = test_name
         if print_header:
-            self.rawprint(">> Test {}".format(test_name))
+            if thread >= 0:
+                self.rawprint(f">> Test {test_name} (Worker {thread})")
+            else:
+                self.rawprint(f">> Test {test_name}")
         self.indent()
 
         self.failed = False
+        self.logged_exception = False
 
-    def end_test(self, test_name: str, print_footer: bool=True):
+    def end_test(self, test_name: str, print_footer: bool=True, thread=-1):
         if self.failed:
             self.rawprint("$$ FAILED")
         self.dedent()
         if print_footer:
-            self.rawprint("<< Test {}".format(test_name))
+            if thread >= 0:
+                self.rawprint(f"<< Test {test_name} (Worker {thread})")
+            else:
+                self.rawprint(f"<< Test {test_name}")
         self.test_name = ''
 
     def begin_section(self, name: str):
-        self.rawprint(">> Section {}".format(name))
+        self.rawprint(f">> Section {name}")
         self.indent()
+        self.section_failed = False
+        self.logged_exception = False
 
     def end_section(self, name: str):
+        if self.section_failed:
+            self.rawprint("$$ FAILED")
         self.dedent()
-        self.rawprint("<< Section {}".format(name))
+        self.rawprint(f"<< Section {name}")
+
+    def auto_section(self, name: str):
+        class ScopedSection():
+            def __init__(self, logger: TestLogger, name: str):
+                self.name = name
+                self.logger = logger
+
+            def __enter__(self):
+                self.logger.begin_section(name)
+
+            def __exit__(self, exc_type: Type[Exception] | None, exc_value: Exception | None, traceback: Any):
+                if exc_value is not None:
+                    self.logger.failure(exc_value)
+                self.logger.end_section(name)
+            
+        return ScopedSection(self, name)
 
     def inline_file(self, name: str, path: str, with_stdout: bool = False):
-        self.rawprint(">> Raw {}".format(name))
+        self.rawprint(f">> Raw {name}")
         self.indent()
         with open(path) as f:
             lines = f.readlines()
             for l in lines:
                 self.rawprint(l.strip(), with_stdout=with_stdout)
         self.dedent()
-        self.rawprint("<< Raw {}".format(name))
+        self.rawprint(f"<< Raw {name}")
 
-    def success(self, message):
+    def success(self, message: str):
         self.rawprint("** " + message)
 
-    def error(self, message):
-        self.failed = True
+    def error(self, message: str):
+        self.failed = self.section_failed = True
 
         self.rawprint("!! " + message)
 
-    def failure(self, ex):
-        self.failed = True
+        if self.fast_fail:
+            raise TestFailureException("Forcing failure")
 
-        if ex is TestFailureException:
-            self.rawprint("!+ FAILURE in {}: {}".format(self.test_name, str(ex)))
+    def failure(self, ex: Exception):
+        if self.logged_exception:
+            return
+
+        self.logged_exception = True
+        self.failed = self.section_failed = True
+
+        tb = traceback.extract_tb(sys.exc_info()[2])
+
+        if isinstance(ex, AssertionError):
+            assertion_line = tb[-1].line
+            
+            if assertion_line is not None:
+                assert_msg = re.sub(r'assert (.*)', r'\1', assertion_line)
+            else:
+                assert_msg = "Unknown Assertion"
+
+            if len(ex.args) > 0:
+                assert_msg += f": {ex.args[0]}"
+
+            self.rawprint(f"!+ ASSERT FAILURE in {self.test_name}: {assert_msg}")
+        elif isinstance(ex, TestFailureException):
+            self.rawprint(f"!+ FAILURE in {self.test_name}: {ex!s}")
         else:
-            self.rawprint("!+ FAILURE in {}: {} {}".format(self.test_name, type(ex).__name__, str(ex)))
+            self.rawprint(f"!+ FAILURE in {self.test_name}: {type(ex).__name__} {ex!s}")
+
+        if self.ctx_callback is not None:
+            self.rawprint('>> Section Context')
+            self.ctx_callback()
+            self.rawprint('<< Section Context')
 
         self.rawprint('>> Callstack')
-        tb = traceback.extract_tb(sys.exc_info()[2])
         for frame in reversed(tb):
             filename = util.sanitise_filename(frame.filename)
             filename = re.sub('.*site-packages/', 'site-packages/', filename)
             if filename[0] == '/':
                 filename = filename[1:]
-            self.rawprint("    File \"{}\", line {}, in {}".format(filename, frame.lineno, frame.name))
-            self.rawprint("        {}".format(frame.line))
+            self.rawprint(f"    File \"{filename}\", line {frame.lineno}, in {frame.name}")
+            self.rawprint(f"        {frame.line}")
         self.rawprint('<< Callstack')
 
         if isinstance(ex, TestFailureException):
-            file_list = []
+            file_list: List[str] = []
             for f in ex.files:
-                fname = '{}_{}'.format(self.test_name, os.path.basename(f))
+                fname = f'{self.test_name}_{os.path.basename(f)}'
                 if 'data' in f:
                     ext = fname.rfind('.')
                     if ext > 0:
@@ -147,14 +223,16 @@ class TestLogger:
             if len(file_list) == 2:
                 mime = mimetypes.guess_type(ex.files[0])
 
-                if 'image' in mime[0]:
+                if mime[0] is None:
+                    pass
+                elif 'image' in mime[0]:
                     # If we have two files and they are images, a failed image comparison should have
                     # generated a diff.png. Grab it and include it
                     diff_tmp_file = util.get_tmp_path('diff.png')
                     if os.path.exists(diff_tmp_file):
-                        diff_artifact = '{}_diff.png'.format(self.test_name)
+                        diff_artifact = f'{self.test_name}_diff.png'
                         shutil.move(diff_tmp_file, util.get_artifact_path(diff_artifact))
-                        diff_file = ' ({})'.format(diff_artifact)
+                        diff_file = f' ({diff_artifact})'
 
                 elif 'text' in mime[0] or 'xml' in mime[0]:
                     with open(ex.files[0]) as f:

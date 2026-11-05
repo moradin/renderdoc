@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -21,9 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  ******************************************************************************/
-
-#include <algorithm>
-#include <fstream>
 
 #include "common/common.h"
 #include "driver/gl/gl_dispatch_table.h"
@@ -69,8 +66,8 @@ CounterDescription IntelGlCounters::GetCounterDescription(GPUCounter index) cons
     desc.name = "Counters limited, see description";
     desc.category = "More counters are available";
     desc.description =
-        "Not all counters available, run 'sudo sysctl dev.i915.perf_stream_paranoid=0' to enable "
-        "more counters!";
+        "Not all counters available, run 'sudo sysctl dev.i915.perf_stream_paranoid=0' or "
+        "'sudo sysctl dev.xe.perf_stream_paranoid=0' to enable more counters!";
 
     desc.resultType = CompType::UInt;
     desc.resultByteWidth = 8;
@@ -200,17 +197,32 @@ bool IntelGlCounters::Init()
   m_Paranoid = false;
 
 #if defined(RENDERDOC_PLATFORM_ANDROID) || defined(RENDERDOC_PLATFORM_LINUX)
-  rdcstr contents;
-  FileIO::ReadAll("/proc/sys/dev/i915/perf_stream_paranoid", contents);
-  contents.trim();
-  if(!contents.empty())
+  rdcstr i915_contents, xe_contents;
+
+  FileIO::ReadAll("/proc/sys/dev/i915/perf_stream_paranoid", i915_contents);
+  i915_contents.trim();
+
+  FileIO::ReadAll("/proc/sys/dev/xe/perf_stream_paranoid", xe_contents);
+  xe_contents.trim();
+
+  if(!i915_contents.empty())
   {
-    int paranoid = atoi(contents.c_str());
-    if(paranoid)
+    if(atoi(i915_contents.c_str()))
     {
       RDCWARN(
           "Not all counters available, run "
           "'sudo sysctl dev.i915.perf_stream_paranoid=0' to enable more counters!");
+      m_Paranoid = true;
+    }
+  }
+
+  if(!xe_contents.empty())
+  {
+    if(atoi(xe_contents.c_str()))
+    {
+      RDCWARN(
+          "Not all counters available, run "
+          "'sudo sysctl dev.xe.perf_stream_paranoid=0' to enable more counters!");
       m_Paranoid = true;
     }
   }
@@ -272,7 +284,8 @@ void IntelGlCounters::EndPass()
 {
   // Flush all of the pass' queries to ensure we can begin further samples
   // with a different pass.
-  rdcarray<uint8_t> data(m_Queries[m_EnabledQueries[m_passIndex]].size);
+  rdcarray<uint8_t> data;
+  data.resize(m_Queries[m_EnabledQueries[m_passIndex]].size);
   GLuint len;
   uint32_t nSamples = (uint32_t)m_glQueries.size() / (m_passIndex + 1);
 
@@ -324,7 +337,8 @@ void IntelGlCounters::CopyData(void *dest, const IntelGlCounter &counter, uint32
   uint32_t pass = CounterPass(counter);
   uint32_t queryHandle = m_glQueries[maxSampleIndex * pass + sample];
 
-  rdcarray<uint8_t> data(m_Queries[m_EnabledQueries[pass]].size);
+  rdcarray<uint8_t> data;
+  data.resize(m_Queries[m_EnabledQueries[pass]].size);
   GLuint len;
   GL.glGetPerfQueryDataINTEL(queryHandle, 0, (GLsizei)data.size(), &data[0], &len);
 

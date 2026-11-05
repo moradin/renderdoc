@@ -1,26 +1,26 @@
 /******************************************************************************
-* The MIT License (MIT)
-*
-* Copyright (c) 2019-2021 Baldur Karlsson
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-* THE SOFTWARE.
-******************************************************************************/
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2018-2026 Baldur Karlsson
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ ******************************************************************************/
 
 #pragma once
 
@@ -28,6 +28,7 @@
 
 #include "3rdparty/glad/glad.h"
 
+#include <functional>
 #include <vector>
 
 struct OpenGLGraphicsTest : public GraphicsTest
@@ -40,13 +41,15 @@ struct OpenGLGraphicsTest : public GraphicsTest
   GraphicsWindow *MakeWindow(int width, int height, const char *title);
   void *MakeContext(GraphicsWindow *win, void *share);
   void DestroyContext(void *ctx);
-  void ActivateContext(GraphicsWindow *win, void *ctx);
+  void ActivateContext(GraphicsWindow *win, void *ctx, bool alt = false);
 
   void PostInit();
 
-  GLuint MakeProgram(std::string vertSrc, std::string fragSrc, std::string geomSrc = "");
+  GLuint MakeProgram(std::string vertSrc, std::string fragSrc, std::string geomSrc = "",
+                     std::function<void(GLuint)> prelink = {});
   GLuint MakeProgram(std::string compSrc);
   GLuint MakeProgram();
+  GLuint MakePipelineProgram(GLenum type, std::string src);
   GLuint MakePipeline();
   GLuint MakeBuffer();
   GLuint MakeTexture();
@@ -71,7 +74,12 @@ struct OpenGLGraphicsTest : public GraphicsTest
 
   bool vsync = false;
 
+  GLuint DefaultTriVAO;
+  GLuint DefaultTriVB;
+  GLuint DefaultTriProgram;
   GLuint swapBlitFBO;
+
+  GLfloat DefaultClearCol[4] = {0.2f, 0.2f, 0.2f, 1.0f};
 
   GraphicsWindow *mainWindow = NULL;
   void *mainContext = NULL;

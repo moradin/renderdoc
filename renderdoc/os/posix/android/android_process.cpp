@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -102,7 +102,7 @@ void StopAtMainInChild()
 {
 }
 
-bool StopChildAtMain(pid_t childPid)
+bool StopChildAtMain(pid_t childPid, bool *exitWithNoExec)
 {
   return false;
 }

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -40,6 +40,7 @@
 class MainWindow;
 class EventBrowser;
 class APIInspector;
+class AnnotationDisplay;
 class PipelineStateViewer;
 class BufferViewer;
 class TextureViewer;
@@ -62,10 +63,11 @@ class CaptureContext : public ICaptureContext, IExtensionManager
   Q_DECLARE_TR_FUNCTIONS(CaptureContext);
 
 public:
-  CaptureContext(PersistantConfig &cfg);
+  CaptureContext(PersistentConfig &cfg);
   ~CaptureContext();
 
-  void Begin(QString paramFilename, QString remoteHost, uint32_t remoteIdent, bool temp);
+  void Begin(QString paramFilename, QString remoteHost, uint32_t remoteIdent, bool temp,
+             QString scriptFilename);
   bool isRunning();
 
   rdcstr TempCaptureFilename(const rdcstr &appname) override;
@@ -74,8 +76,10 @@ public:
   // IExtensionManager
 
   rdcarray<ExtensionMetadata> GetInstalledExtensions() override;
+  rdcarray<rdcstr> GetLoadedExtensions() override;
   bool IsExtensionLoaded(rdcstr name) override;
-  bool LoadExtension(rdcstr name) override;
+  rdcstr LoadExtension(rdcstr name) override;
+  bool IsPythonDebuggerConnected() override;
 
   void RegisterWindowMenu(WindowMenu base, const rdcarray<rdcstr> &submenus,
                           ExtensionCallback callback) override;
@@ -91,19 +95,18 @@ public:
 
   IMiniQtHelper &GetMiniQtHelper() override;
 
-  void MessageDialog(const rdcstr &text, const rdcstr &title = "Python Extension Message") override;
-  void ErrorDialog(const rdcstr &text, const rdcstr &title = "Python Extension Error") override;
+  void MessageDialog(const rdcstr &text, const rdcstr &title = "") override;
+  void ErrorDialog(const rdcstr &text, const rdcstr &title = "") override;
   DialogButton QuestionDialog(const rdcstr &text, const rdcarray<DialogButton> &options,
-                              const rdcstr &title = "Python Extension Prompt") override;
+                              const rdcstr &title = "") override;
 
-  rdcstr OpenFileName(const rdcstr &caption = "Open a file", const rdcstr &dir = rdcstr(),
-                      const rdcstr &filter = rdcstr()) override;
+  rdcstr OpenFileName(const rdcstr &caption = "", const rdcstr &dir = "",
+                      const rdcstr &filter = "") override;
 
-  rdcstr OpenDirectoryName(const rdcstr &caption = "Open a directory",
-                           const rdcstr &dir = rdcstr()) override;
+  rdcstr OpenDirectoryName(const rdcstr &caption = "", const rdcstr &dir = "") override;
 
-  rdcstr SaveFileName(const rdcstr &caption = "Save a file", const rdcstr &dir = rdcstr(),
-                      const rdcstr &filter = rdcstr()) override;
+  rdcstr SaveFileName(const rdcstr &caption = "", const rdcstr &dir = "",
+                      const rdcstr &filter = "") override;
 
   //////////////////////////////////////////////////////////////////////////////
   // Control functions
@@ -113,6 +116,7 @@ public:
   bool SaveCaptureTo(const rdcstr &captureFile) override;
   void RecompressCapture() override;
   void CloseCapture() override;
+  IReplayController *GetBlockingController() override { return NULL; }
   bool ImportCapture(const CaptureFileFormat &fmt, const rdcstr &importfile,
                      const rdcstr &rdcfile) override;
   void ExportCapture(const CaptureFileFormat &fmt, const rdcstr &exportfile) override;
@@ -134,6 +138,7 @@ public:
     if(IsCaptureLoaded())
     {
       f->OnCaptureLoaded();
+      f->OnSelectedEventChanged(CurSelectedEvent());
       f->OnEventChanged(CurEvent());
     }
   }
@@ -142,18 +147,21 @@ public:
   //////////////////////////////////////////////////////////////////////////////
   // Accessors
 
+  void InvokeOntoUIThread(std::function<void()> callback) override;
+
   IReplayManager &Replay() override { return m_Replay; }
   IExtensionManager &Extensions() override { return *this; }
   bool IsCaptureLoaded() override { return m_CaptureLoaded; }
   bool IsCaptureLocal() override { return m_CaptureLocal; }
   bool IsCaptureTemporary() override { return m_CaptureTemporary; }
   bool IsCaptureLoading() override { return m_LoadInProgress; }
-  ReplayStatus GetFatalError() override { return m_Replay.GetFatalError(); }
+  ResultDetails GetFatalError() override { return m_Replay.GetFatalError(); }
   rdcstr GetCaptureFilename() override { return m_CaptureFile; }
   CaptureModifications GetCaptureModifications() override { return m_CaptureMods; }
-  const FrameDescription &FrameInfo() override { return m_FrameInfo; }
-  const APIProperties &APIProps() override { return m_APIProps; }
+  FrameDescription FrameInfo() override { return m_FrameInfo; }
+  APIProperties APIProps() override { return m_APIProps; }
   rdcarray<ShaderEncoding> CustomShaderEncodings() override { return m_CustomEncodings; }
+  rdcarray<ShaderSourcePrefix> CustomShaderSourcePrefixes() override { return m_CustomPrefixes; }
   rdcarray<ShaderEncoding> TargetShaderEncodings() override { return m_TargetEncodings; }
   uint32_t CurSelectedEvent() override { return m_SelectedEventID; }
   uint32_t CurEvent() override { return m_EventID; }
@@ -161,21 +169,26 @@ public:
   const ActionDescription *CurAction() override { return GetAction(CurEvent()); }
   const ActionDescription *GetFirstAction() override { return m_FirstAction; };
   const ActionDescription *GetLastAction() override { return m_LastAction; };
+  void ClearReplayCache() override;
   bool OpenRGPProfile(const rdcstr &filename) override;
   IRGPInterop *GetRGPInterop() override { return m_RGP; }
   const rdcarray<ActionDescription> &CurRootActions() override { return *m_Actions; }
-  ResourceDescription *GetResource(ResourceId id) override { return m_Resources[id]; }
+  const ResourceDescription *GetResource(ResourceId id) const override { return m_Resources[id]; }
   const rdcarray<ResourceDescription> &GetResources() override { return m_ResourceList; }
-  rdcstr GetResourceName(ResourceId id) override;
-  rdcstr GetResourceNameUnsuffixed(ResourceId id) override;
+  rdcstr GetResourceName(ResourceId id) const override;
+  rdcstr GetResourceNameUnsuffixed(ResourceId id) const override;
   bool IsAutogeneratedName(ResourceId id) override;
   bool HasResourceCustomName(ResourceId id) override;
   void SetResourceCustomName(ResourceId id, const rdcstr &name) override;
-  int32_t ResourceNameCacheID() override { return m_CustomNameCachedID; }
+  int32_t ResourceNameCacheID() const override { return m_CustomNameCachedID; }
   TextureDescription *GetTexture(ResourceId id) override { return m_Textures[id]; }
   const rdcarray<TextureDescription> &GetTextures() override { return m_TextureList; }
   BufferDescription *GetBuffer(ResourceId id) override { return m_Buffers[id]; }
-  const rdcarray<BufferDescription> &GetBuffers() override { return m_BufferList; }
+  DescriptorStoreDescription *GetDescriptorStore(ResourceId id) override
+  {
+    return m_DescriptorStores[id];
+  }
+  const rdcarray<BufferDescription> &GetBuffers() const override { return m_BufferList; }
   const ActionDescription *GetAction(uint32_t eventId) override
   {
     return GetAction(*m_Actions, eventId);
@@ -188,6 +201,7 @@ public:
   int32_t UnreadMessageCount() override { return m_UnreadMessageCount; }
   void MarkMessagesRead() override { m_UnreadMessageCount = 0; }
   void AddMessages(const rdcarray<DebugMessage> &msgs) override;
+  void ClearMessages() override;
 
   void ConnectToRemoteServer(RemoteHost host) override;
 
@@ -196,10 +210,15 @@ public:
   rdcarray<EventBookmark> GetBookmarks() override { return m_Bookmarks; }
   void SetBookmark(const EventBookmark &mark) override;
   void RemoveBookmark(uint32_t EID) override;
+  void EmbedDependentFiles() override;
+  void RemoveDependentFiles() override;
+
+  void DelayedCallback(uint32_t milliseconds, std::function<void()> callback) override;
 
   IMainWindow *GetMainWindow() override;
   IEventBrowser *GetEventBrowser() override;
   IAPIInspector *GetAPIInspector() override;
+  IAnnotationViewer *GetAnnotationViewer() override;
   ITextureViewer *GetTextureViewer() override;
   IBufferViewer *GetMeshPreview() override;
   IPipelineStateViewer *GetPipelineViewer() override;
@@ -215,6 +234,7 @@ public:
 
   bool HasEventBrowser() override { return m_EventBrowser != NULL; }
   bool HasAPIInspector() override { return m_APIInspector != NULL; }
+  bool HasAnnotationViewer() override { return m_AnnotationViewer != NULL; }
   bool HasTextureViewer() override { return m_TextureViewer != NULL; }
   bool HasPipelineViewer() override { return m_PipelineViewer != NULL; }
   bool HasMeshPreview() override { return m_MeshPreview != NULL; }
@@ -229,6 +249,7 @@ public:
   bool HasResourceInspector() override { return m_ResourceInspector != NULL; }
   void ShowEventBrowser() override;
   void ShowAPIInspector() override;
+  void ShowAnnotationViewer() override;
   void ShowTextureViewer() override;
   void ShowMeshPreview() override;
   void ShowPipelineViewer() override;
@@ -243,31 +264,33 @@ public:
   void ShowResourceInspector() override;
 
   IShaderViewer *EditShader(ResourceId id, ShaderStage stage, const rdcstr &entryPoint,
-                            const rdcstrpairs &files, ShaderEncoding shaderEncoding,
-                            ShaderCompileFlags flags, IShaderViewer::SaveCallback saveCallback,
-                            IShaderViewer::CloseCallback closeCallback) override;
+                            const rdcstrpairs &files, KnownShaderTool knownTool,
+                            ShaderEncoding shaderEncoding, ShaderCompileFlags flags,
+                            IShaderViewer::SaveCallback saveCallback,
+                            IShaderViewer::RevertCallback revertCallback) override;
 
   void ApplyShaderEdit(IShaderViewer *viewer, ResourceId id, ShaderStage stage,
                        ShaderEncoding shaderEncoding, ShaderCompileFlags flags,
                        const rdcstr &entryFunc, const bytebuf &shaderBytes);
   void RevertShaderEdit(IShaderViewer *viewer, ResourceId id);
 
-  IShaderViewer *DebugShader(const ShaderBindpointMapping *bind, const ShaderReflection *shader,
-                             ResourceId pipeline, ShaderDebugTrace *trace,
-                             const rdcstr &debugContext) override;
+  IShaderViewer *DebugShader(const ShaderReflection *shader, ResourceId pipeline,
+                             ShaderDebugTrace *trace, const rdcstr &debugContext) override;
 
   IShaderViewer *ViewShader(const ShaderReflection *shader, ResourceId pipeline) override;
 
   IShaderMessageViewer *ViewShaderMessages(ShaderStageMask stages) override;
 
+  IDescriptorViewer *ViewDescriptorStore(ResourceId id) override;
+  IDescriptorViewer *ViewDescriptors(const rdcarray<Descriptor> &descriptors,
+                                     const rdcarray<SamplerDescriptor> &samplerDescriptors) override;
   IBufferViewer *ViewBuffer(uint64_t byteOffset, uint64_t byteSize, ResourceId id,
                             const rdcstr &format = "") override;
   IBufferViewer *ViewTextureAsBuffer(ResourceId id, const Subresource &sub,
                                      const rdcstr &format = "") override;
 
-  IConstantBufferPreviewer *ViewConstantBuffer(ShaderStage stage, uint32_t slot,
-                                               uint32_t idx) override;
-  IPixelHistoryView *ViewPixelHistory(ResourceId texID, uint32_t x, uint32_t y,
+  IBufferViewer *ViewConstantBuffer(ShaderStage stage, uint32_t slot, uint32_t idx) override;
+  IPixelHistoryView *ViewPixelHistory(ResourceId texID, uint32_t x, uint32_t y, uint32_t view,
                                       const TextureDisplay &display) override;
 
   QWidget *CreateBuiltinWindow(const rdcstr &objectName) override;
@@ -281,8 +304,9 @@ public:
   const D3D12Pipe::State *CurD3D12PipelineState() override { return m_CurD3D12PipelineState; }
   const GLPipe::State *CurGLPipelineState() override { return m_CurGLPipelineState; }
   const VKPipe::State *CurVulkanPipelineState() override { return m_CurVulkanPipelineState; }
+  const D3D9Pipe::State *CurD3D9PipelineState() override { return m_CurD3D9PipelineState; }
   const PipeState &CurPipelineState() override { return *m_CurPipelineState; }
-  PersistantConfig &Config() override { return m_Config; }
+  PersistentConfig &Config() override { return m_Config; }
 private:
   ReplayManager m_Replay;
 
@@ -290,16 +314,18 @@ private:
   const D3D12Pipe::State *m_CurD3D12PipelineState;
   const GLPipe::State *m_CurGLPipelineState;
   const VKPipe::State *m_CurVulkanPipelineState;
+  const D3D9Pipe::State *m_CurD3D9PipelineState;
   const PipeState *m_CurPipelineState;
   PipeState m_DummyPipelineState;
 
-  PersistantConfig &m_Config;
+  PersistentConfig &m_Config;
 
   QVector<ICaptureViewer *> m_CaptureViewers;
 
   bool m_CaptureLoaded = false, m_LoadInProgress = false, m_CaptureLocal = false,
        m_CaptureTemporary = false;
   QString m_CaptureFile;
+  QString m_RemoteFile;
   CaptureModifications m_CaptureMods = CaptureModifications::NoModifications;
 
   rdcarray<DebugMessage> m_DebugMessages;
@@ -321,8 +347,11 @@ private:
   bool SaveEdits();
   void LoadEdits(const QString &data);
 
+  void AddExtensionWatches(rdcstr filePath);
+  void ExtensionTouched(const QString &path);
+
   void CacheResources();
-  rdcstr GetResourceNameUnsuffixed(const ResourceDescription *desc);
+  rdcstr GetResourceNameUnsuffixed(const ResourceDescription *desc) const;
 
   float m_LoadProgress = 0.0f;
   float m_PostloadProgress = 0.0f;
@@ -356,11 +385,12 @@ private:
     return NULL;
   }
 
-  void setupDockWindow(QWidget *shad);
+  void setupDockWindow(QWidget *shad, bool hide);
   const rdcarray<ActionDescription> *m_Actions;
   rdcarray<ActionDescription> m_EmptyActions;
 
   rdcarray<ShaderEncoding> m_CustomEncodings, m_TargetEncodings;
+  rdcarray<ShaderSourcePrefix> m_CustomPrefixes;
   APIProperties m_APIProps;
   FrameDescription m_FrameInfo;
   const ActionDescription *m_FirstAction = NULL;
@@ -372,6 +402,8 @@ private:
   rdcarray<TextureDescription> m_TextureList;
   QMap<ResourceId, BufferDescription *> m_Buffers;
   rdcarray<BufferDescription> m_BufferList;
+  QMap<ResourceId, DescriptorStoreDescription *> m_DescriptorStores;
+  rdcarray<DescriptorStoreDescription> m_DescriptorStoreList;
   QMap<ResourceId, ResourceDescription *> m_Resources;
   rdcarray<ResourceDescription> m_ResourceList;
 
@@ -404,6 +436,9 @@ private:
 
   QList<QObject *> m_PendingExtensionObjects;
   QMap<rdcstr, QList<QObject *>> m_ExtensionObjects;
+  rdcarray<rdcstr> m_DirtyExtensions;
+  rdcarray<rdcstr> m_FailedExtensions;
+  rdcarray<rdcstr> m_BadVerExtensions;
 
   QList<QPointer<RegisteredMenuItem>> m_RegisteredMenuItems;
 
@@ -412,11 +447,13 @@ private:
   MiniQtHelper *m_QtHelper = NULL;
 
   QFileSystemWatcher *m_Watcher = NULL;
+  QFileSystemWatcher *m_ExtensionWatcher = NULL;
 
   // Windows
   MainWindow *m_MainWindow = NULL;
   EventBrowser *m_EventBrowser = NULL;
   APIInspector *m_APIInspector = NULL;
+  AnnotationDisplay *m_AnnotationViewer = NULL;
   TextureViewer *m_TextureViewer = NULL;
   BufferViewer *m_MeshPreview = NULL;
   PipelineStateViewer *m_PipelineViewer = NULL;

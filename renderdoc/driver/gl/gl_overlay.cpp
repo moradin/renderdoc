@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -36,66 +36,66 @@
 #define OPENGL 1
 #include "data/glsl/glsl_ubos_cpp.h"
 
-bool GLReplay::CreateOverlayProgram(GLuint Program, GLuint Pipeline, GLuint fragShader,
-                                    GLuint fragShaderSPIRV)
+bool GLReplay::CreateShaderReplacementProgram(GLuint srcProgram, GLuint srcPipeline,
+                                              GLuint dstProgram, ShaderStage stage,
+                                              GLuint newShader, GLuint newShaderSPIRV)
 {
   WrappedOpenGL &drv = *m_pDriver;
 
   ContextPair &ctx = drv.GetCtx();
 
-  // delete the old program if it exists
-  if(DebugData.overlayProg != 0)
-    drv.glDeleteProgram(DebugData.overlayProg);
-
-  DebugData.overlayProg = drv.glCreateProgram();
-
   // these are the shaders to attach, and the programs to copy details from
-  GLuint shaders[4] = {0};
-  GLuint programs[4] = {0};
+  GLuint shaders[5] = {0};
+  GLuint programs[5] = {0};
 
   // temporary programs created as needed if the original program was created with
   // glCreateShaderProgramv and we don't have a shader to attach
-  GLuint tmpShaders[4] = {0};
+  GLuint tmpShaders[5] = {0};
 
   // the reflection for the vertex shader, used to copy vertex bindings
-  ShaderReflection *vsRefl = NULL;
+  const ShaderReflection *vsRefl = NULL;
+  // the reflection for the vertex shader, used to copy fragment bindings
+  const ShaderReflection *fsRefl = NULL;
 
   bool HasSPIRVShaders = false;
   bool HasGLSLShaders = false;
 
-  if(Program == 0)
+  if(srcProgram == 0)
   {
-    if(Pipeline == 0)
+    if(srcPipeline == 0)
     {
       return false;
     }
     else
     {
-      ResourceId id = m_pDriver->GetResourceManager()->GetResID(ProgramPipeRes(ctx, Pipeline));
-      const WrappedOpenGL::PipelineData &pipeDetails = m_pDriver->m_Pipelines[id];
+      ResourceId id = m_pDriver->GetResourceManager()->GetResID(ProgramPipeRes(ctx, srcPipeline));
+      const WrappedOpenGL::PipelineData &pipeDetails = m_pDriver->GetPipeline(id);
 
       // fetch the corresponding shaders and programs for each stage
-      for(size_t i = 0; i < 4; i++)
+      for(size_t i = 0; i < 5; i++)
       {
+        // don't copy the stage we're replacing
+        if(ShaderStage(i) == stage)
+          continue;
+
         if(pipeDetails.stageShaders[i] != ResourceId())
         {
           const WrappedOpenGL::ShaderData &shadDetails =
-              m_pDriver->m_Shaders[pipeDetails.stageShaders[i]];
+              m_pDriver->GetShader(pipeDetails.stageShaders[i]);
 
-          if(shadDetails.reflection->encoding == ShaderEncoding::SPIRV)
+          if(shadDetails.GetReflection()->encoding == ShaderEncoding::OpenGLSPIRV)
             HasSPIRVShaders = true;
           else
             HasGLSLShaders = true;
 
           programs[i] =
-              m_pDriver->GetResourceManager()->GetCurrentResource(pipeDetails.stagePrograms[i]).name;
-          shaders[i] =
-              m_pDriver->GetResourceManager()->GetCurrentResource(pipeDetails.stageShaders[i]).name;
+              m_pDriver->GetResourceManager()->GetResource(pipeDetails.stagePrograms[i]).name;
+          shaders[i] = m_pDriver->GetResourceManager()->GetResource(pipeDetails.stageShaders[i]).name;
 
           if(pipeDetails.stagePrograms[i] == pipeDetails.stageShaders[i])
           {
             const WrappedOpenGL::ProgramData &progDetails =
-                m_pDriver->m_Programs[pipeDetails.stagePrograms[i]];
+                m_pDriver->GetProgram(pipeDetails.stagePrograms[i]);
 
             if(progDetails.shaderProgramUnlinkable)
             {
@@ -116,13 +116,16 @@ bool GLReplay::CreateOverlayProgram(GLuint Program, GLuint Pipeline, GLuint frag
               {
                 char buffer[1024] = {};
                 drv.glGetShaderInfoLog(tmpShaders[i], 1024, NULL, buffer);
-                RDCERR("Trying to recreate overlay program, couldn't compile shader:\n%s", buffer);
+                RDCERR("Trying to recreate replacement program, couldn't compile shader:\n%s",
+                       buffer);
               }
             }
           }
 
-          if(i == 0)
+          if(i == (size_t)ShaderStage::Vertex)
             vsRefl = GetShader(ResourceId(), pipeDetails.stageShaders[i], ShaderEntryPoint());
+          if(i == (size_t)ShaderStage::Pixel)
+            fsRefl = GetShader(ResourceId(), pipeDetails.stageShaders[i], ShaderEntryPoint());
         }
       }
     }
@@ -130,27 +133,32 @@ bool GLReplay::CreateOverlayProgram(GLuint Program, GLuint Pipeline, GLuint frag
   else
   {
     const WrappedOpenGL::ProgramData &progDetails =
-        m_pDriver->m_Programs[m_pDriver->GetResourceManager()->GetResID(ProgramRes(ctx, Program))];
+        m_pDriver->GetProgram(m_pDriver->GetResourceManager()->GetResID(ProgramRes(ctx, srcProgram)));
 
     // fetch any and all non-fragment shader shaders
-    for(size_t i = 0; i < 4; i++)
+    for(size_t i = 0; i < 5; i++)
     {
+      // don't copy the stage we're replacing
+      if(ShaderStage(i) == stage)
+        continue;
+
       if(progDetails.stageShaders[i] != ResourceId())
       {
-        programs[i] = Program;
-        shaders[i] =
-            m_pDriver->GetResourceManager()->GetCurrentResource(progDetails.stageShaders[i]).name;
+        programs[i] = srcProgram;
+        shaders[i] = m_pDriver->GetResourceManager()->GetResource(progDetails.stageShaders[i]).name;
 
         const WrappedOpenGL::ShaderData &shadDetails =
-            m_pDriver->m_Shaders[progDetails.stageShaders[i]];
+            m_pDriver->GetShader(progDetails.stageShaders[i]);
 
-        if(shadDetails.reflection->encoding == ShaderEncoding::SPIRV)
+        if(shadDetails.GetReflection()->encoding == ShaderEncoding::OpenGLSPIRV)
           HasSPIRVShaders = true;
         else
           HasGLSLShaders = true;
 
-        if(i == 0)
-          vsRefl = GetShader(ResourceId(), progDetails.stageShaders[0], ShaderEntryPoint());
+        if(i == (size_t)ShaderStage::Vertex)
+          vsRefl = GetShader(ResourceId(), progDetails.stageShaders[i], ShaderEntryPoint());
+        if(i == (size_t)ShaderStage::Pixel)
+          fsRefl = GetShader(ResourceId(), progDetails.stageShaders[i], ShaderEntryPoint());
       }
     }
   }
@@ -159,50 +167,54 @@ bool GLReplay::CreateOverlayProgram(GLuint Program, GLuint Pipeline, GLuint frag
     RDCERR("Unsupported - mixed GLSL and SPIR-V shaders in pipeline");
 
   // attach the shaders
-  for(size_t i = 0; i < 4; i++)
+  for(size_t i = 0; i < 5; i++)
     if(shaders[i])
-      drv.glAttachShader(DebugData.overlayProg, shaders[i]);
+      drv.glAttachShader(dstProgram, shaders[i]);
 
   if(HasSPIRVShaders)
   {
-    RDCASSERT(fragShaderSPIRV);
-    drv.glAttachShader(DebugData.overlayProg, fragShaderSPIRV);
+    RDCASSERT(newShaderSPIRV);
+    drv.glAttachShader(dstProgram, newShaderSPIRV);
   }
   else
   {
-    drv.glAttachShader(DebugData.overlayProg, fragShader);
+    drv.glAttachShader(dstProgram, newShader);
   }
 
   // copy the vertex attribs over from the source program
-  if(vsRefl && programs[0] && !HasSPIRVShaders)
-    CopyProgramAttribBindings(programs[0], DebugData.overlayProg, vsRefl);
+  if(vsRefl && programs[(uint32_t)ShaderStage::Vertex] && !HasSPIRVShaders)
+    CopyProgramAttribBindings(programs[(uint32_t)ShaderStage::Vertex], dstProgram, vsRefl);
+  if(fsRefl && programs[(uint32_t)ShaderStage::Pixel] && !HasSPIRVShaders)
+    CopyProgramFragDataBindings(programs[(uint32_t)ShaderStage::Pixel], dstProgram, fsRefl);
 
   // link the overlay program
-  drv.glLinkProgram(DebugData.overlayProg);
+  drv.glLinkProgram(dstProgram);
 
   // detach the shaders
-  for(size_t i = 0; i < 4; i++)
+  for(size_t i = 0; i < 5; i++)
     if(shaders[i])
-      drv.glDetachShader(DebugData.overlayProg, shaders[i]);
+      drv.glDetachShader(dstProgram, shaders[i]);
 
   if(HasSPIRVShaders)
-    drv.glDetachShader(DebugData.overlayProg, fragShaderSPIRV);
+    drv.glDetachShader(dstProgram, newShaderSPIRV);
   else
-    drv.glDetachShader(DebugData.overlayProg, fragShader);
+    drv.glDetachShader(dstProgram, newShader);
 
   // delete any temporaries
-  for(size_t i = 0; i < 4; i++)
+  for(size_t i = 0; i < 5; i++)
     if(tmpShaders[i])
       drv.glDeleteShader(tmpShaders[i]);
 
   // check that the link succeeded
-  char buffer[1024] = {};
   GLint status = 0;
-  drv.glGetProgramiv(DebugData.overlayProg, eGL_LINK_STATUS, &status);
+  drv.glGetProgramiv(dstProgram, eGL_LINK_STATUS, &status);
   if(status == 0)
   {
-    drv.glGetProgramInfoLog(DebugData.overlayProg, 1024, NULL, buffer);
-    RDCERR("Error linking overlay program: %s", buffer);
+    rdcstr buffer;
+    drv.glGetProgramiv(dstProgram, eGL_INFO_LOG_LENGTH, &status);
+    buffer.resize(status);
+    drv.glGetProgramInfoLog(dstProgram, status, NULL, buffer.data());
+    RDCERR("Error linking overlay program: %s", buffer.c_str());
     return false;
   }
 
@@ -210,16 +222,16 @@ bool GLReplay::CreateOverlayProgram(GLuint Program, GLuint Pipeline, GLuint frag
   // same program is bound to multiple stages. It's just inefficient
   {
     PerStageReflections dstStages;
-    m_pDriver->FillReflectionArray(ProgramRes(ctx, DebugData.overlayProg), dstStages);
+    m_pDriver->FillReflectionArray(ProgramRes(ctx, dstProgram), dstStages);
 
-    for(size_t i = 0; i < 4; i++)
+    for(size_t i = 0; i < 5; i++)
     {
       if(programs[i])
       {
         PerStageReflections stages;
         m_pDriver->FillReflectionArray(ProgramRes(ctx, programs[i]), stages);
 
-        CopyProgramUniforms(stages, programs[i], dstStages, DebugData.overlayProg);
+        CopyProgramUniforms(stages, programs[i], dstStages, dstProgram);
       }
     }
   }
@@ -417,14 +429,14 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
 
     if(rs.Program.name)
       vs =
-          m_pDriver->m_Programs[m_pDriver->GetResourceManager()->GetResID(rs.Program)].stageShaders[0];
+          m_pDriver->GetProgram(m_pDriver->GetResourceManager()->GetResID(rs.Program)).stageShaders[0];
     else
-      vs = m_pDriver->m_Pipelines[m_pDriver->GetResourceManager()->GetResID(rs.Pipeline)]
+      vs = m_pDriver->GetPipeline(m_pDriver->GetResourceManager()->GetResID(rs.Pipeline))
                .stageShaders[0];
 
     if(vs != ResourceId())
     {
-      glslVer = m_pDriver->m_Shaders[vs].version;
+      glslVer = m_pDriver->GetShader(vs).version;
       if(glslVer == 0)
         glslVer = 100;
     }
@@ -479,12 +491,21 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
       RDCWARN("Quad overdraw not supported on GLES", glslVer);
   }
 
+  GLuint prog = 0, pipe = 0;
+  drv.glGetIntegerv(eGL_CURRENT_PROGRAM, (GLint *)&prog);
+  drv.glGetIntegerv(eGL_PROGRAM_PIPELINE_BINDING, (GLint *)&pipe);
+  // delete the old program if it exists
+  if(DebugData.overlayProg != 0)
+    drv.glDeleteProgram(DebugData.overlayProg);
+
+  DebugData.overlayProg = drv.glCreateProgram();
+
   // we bind the separable program created for each shader, and copy
   // uniforms and attrib bindings from the 'real' programs, wherever
   // they are.
-  bool spirvOverlay =
-      CreateOverlayProgram(rs.Program.name, rs.Pipeline.name, DebugData.fixedcolFragShader,
-                           DebugData.fixedcolFragShaderSPIRV);
+  bool spirvOverlay = CreateShaderReplacementProgram(
+      rs.Program.name, rs.Pipeline.name, DebugData.overlayProg, ShaderStage::Pixel,
+      DebugData.fixedcolFragShader, DebugData.fixedcolFragShaderSPIRV);
   drv.glUseProgram(DebugData.overlayProg);
 
   GLint overlayFixedColLocation = 0;
@@ -496,7 +517,7 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
     overlayFixedColLocation =
         drv.glGetUniformLocation(DebugData.overlayProg, "RENDERDOC_Fixed_Color");
 
-  auto &texDetails = m_pDriver->m_Textures[texid];
+  WrappedOpenGL::TextureData &texDetails = m_pDriver->m_Textures[texid];
 
   GLenum texBindingEnum = eGL_TEXTURE_2D;
   GLenum texQueryEnum = eGL_TEXTURE_BINDING_2D;
@@ -541,11 +562,15 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
     drv.glGenFramebuffers(1, &DebugData.overlayFBO);
     drv.glBindFramebuffer(eGL_FRAMEBUFFER, DebugData.overlayFBO);
 
+    drv.glObjectLabel(eGL_FRAMEBUFFER, DebugData.overlayFBO, -1, "FBO for overlay");
+
     GLuint curTex = 0;
     drv.glGetIntegerv(texQueryEnum, (GLint *)&curTex);
 
     drv.glGenTextures(1, &DebugData.overlayTex);
     drv.glBindTexture(texBindingEnum, DebugData.overlayTex);
+
+    drv.glObjectLabel(eGL_TEXTURE, DebugData.overlayTex, -1, "Colour tex for overlay");
 
     DebugData.overlayTexWidth = texDetails.width;
     DebugData.overlayTexHeight = texDetails.height;
@@ -675,6 +700,9 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
     drv.glEnable(eGL_DEPTH_CLAMP);
   }
 
+  if(HasExt[ARB_texture_multisample_no_array] || HasExt[ARB_texture_multisample])
+    drv.glDisable(eGL_SAMPLE_MASK);
+
   if(HasExt[ARB_viewport_array])
   {
     for(size_t s = 0; s < ARRAY_COUNT(rs.Scissors); s++)
@@ -777,9 +805,10 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
       {
         // generate 'index' list
         rdcarray<uint32_t> idxs;
+        uint32_t offset = action->vertexOffset;
         idxs.resize(action->numIndices);
         for(uint32_t i = 0; i < action->numIndices; i++)
-          idxs[i] = i;
+          idxs[i] = i + offset;
         PatchLineStripIndexBuffer(action, drawParams.topo, NULL, NULL, idxs.data(), patchedIndices);
       }
 
@@ -896,6 +925,12 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
         eGL_UNIFORM_BUFFER, 0, sizeof(CheckerboardUBOData),
         GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
 
+    if(!cdata)
+    {
+      RDCERR("Map buffer failed %d", drv.glGetError());
+      return ResourceId();
+    }
+
     cdata->BorderWidth = 3;
     cdata->CheckerSquareDimension = 16.0f;
 
@@ -925,6 +960,12 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
       cdata = (CheckerboardUBOData *)drv.glMapBufferRange(
           eGL_UNIFORM_BUFFER, 0, sizeof(CheckerboardUBOData),
           GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+      if(!cdata)
+      {
+        RDCERR("Map buffer failed %d", drv.glGetError());
+        return ResourceId();
+      }
 
       cdata->BorderWidth = 3;
       cdata->CheckerSquareDimension = 16.0f;
@@ -987,6 +1028,23 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
     GLenum copyQueryEnum = texQueryEnum;
 
     GLuint depthCopy = 0, stencilCopy = 0;
+    bool useDepthStencilMask = (overlay == DebugOverlay::Depth) && (curDepth != 0);
+
+    if(useDepthStencilMask)
+    {
+      useDepthStencilMask = false;
+      PerStageReflections stages;
+      m_pDriver->FillReflectionArray(rs.Program, stages);
+      const ShaderReflection *reflection = stages.refls[(uint32_t)ShaderStage::Fragment];
+      if(reflection)
+      {
+        for(const SigParameter &output : reflection->outputSignature)
+        {
+          if(output.systemValue == ShaderBuiltin::DepthOutput)
+            useDepthStencilMask = true;
+        }
+      }
+    }
 
     // create matching depth for existing FBO
     if(curDepth != 0)
@@ -1024,6 +1082,30 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
           fmt = eGL_DEPTH32F_STENCIL8;
         else if(depth == 0 && stencil == 8)
           fmt = eGL_STENCIL_INDEX8;
+      }
+      // Need a stencil buffer for the depth overlay stencil mask method
+      if(useDepthStencilMask)
+      {
+        GLenum oldFmt = fmt;
+        if((oldFmt == eGL_DEPTH_COMPONENT16) || (oldFmt == eGL_DEPTH_COMPONENT24) ||
+           (oldFmt == eGL_DEPTH24_STENCIL8))
+          fmt = eGL_DEPTH24_STENCIL8;
+        else
+          fmt = eGL_DEPTH32F_STENCIL8;
+
+        if(oldFmt != fmt)
+        {
+          if(DebugData.overlayTexSlices > 1)
+          {
+            useDepthStencilMask = false;
+            fmt = oldFmt;
+            RDCWARN("Depth overlay using fallback method instead of stencil mask");
+          }
+          else
+          {
+            curStencil = curDepth;
+          }
+        }
       }
 
       if(copyBindingEnum == eGL_TEXTURE_CUBE_MAP)
@@ -1106,18 +1188,18 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
 
       if(type != eGL_RENDERBUFFER)
       {
-        ResourceId id = m_pDriver->GetResourceManager()->GetResID(TextureRes(ctx, curDepth));
+        ResourceId id = m_pDriver->GetResourceManager()->GetResID(TextureRes(ctx, curStencil));
         fmt = m_pDriver->m_Textures[id].internalFormat;
       }
       else
       {
-        ResourceId id = m_pDriver->GetResourceManager()->GetResID(RenderbufferRes(ctx, curDepth));
+        ResourceId id = m_pDriver->GetResourceManager()->GetResID(RenderbufferRes(ctx, curStencil));
         fmt = m_pDriver->m_Textures[id].internalFormat;
 
         GLint depth = 0;
         GLint stencil = 0;
-        GL.glGetNamedRenderbufferParameterivEXT(curDepth, eGL_RENDERBUFFER_DEPTH_SIZE, &depth);
-        GL.glGetNamedRenderbufferParameterivEXT(curDepth, eGL_RENDERBUFFER_STENCIL_SIZE, &stencil);
+        GL.glGetNamedRenderbufferParameterivEXT(curStencil, eGL_RENDERBUFFER_DEPTH_SIZE, &depth);
+        GL.glGetNamedRenderbufferParameterivEXT(curStencil, eGL_RENDERBUFFER_STENCIL_SIZE, &stencil);
 
         if(depth == 16 && stencil == 0)
           fmt = eGL_DEPTH_COMPONENT16;
@@ -1201,6 +1283,9 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
       drv.glBindTexture(copyBindingEnum, curTex);
     }
 
+    // bind the 'real' fbo to the read framebuffer, so we can blit from it
+    drv.glBindFramebuffer(eGL_READ_FRAMEBUFFER, rs.DrawFBO.name);
+
     // bind depth/stencil to overlay FBO (currently bound to DRAW_FRAMEBUFFER)
     if(curDepth != 0 && curDepth == curStencil)
     {
@@ -1218,11 +1303,47 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
                                  stencilCopy, sub.mip);
     }
 
-    // bind the 'real' fbo to the read framebuffer, so we can blit from it
-    drv.glBindFramebuffer(eGL_READ_FRAMEBUFFER, rs.DrawFBO.name);
+    bool useBlitFramebuffer = !useDepthStencilMask;
+    if(useBlitFramebuffer)
+    {
+      // get latest depth/stencil from read FBO (existing FBO) into draw FBO (overlay FBO)
+      SafeBlitFramebuffer(0, 0, outWidth, outHeight, 0, 0, outWidth, outHeight,
+                          GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT, eGL_NEAREST);
+    }
+    else
+    {
+      GLRenderState savedRS;
+      savedRS.FetchState(&drv);
 
-    float green[] = {0.0f, 1.0f, 0.0f, 1.0f};
-    drv.glProgramUniform4fv(DebugData.overlayProg, overlayFixedColLocation, 1, green);
+      // Fullscreen pass with shader to read from old depth buffer and write to new depth buffer
+      drv.glDisable(eGL_BLEND);
+      drv.glDisable(eGL_SCISSOR_TEST);
+      drv.glDisable(eGL_STENCIL_TEST);
+      drv.glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+      drv.glEnable(eGL_DEPTH_TEST);
+      drv.glDepthFunc(eGL_ALWAYS);
+      drv.glDepthMask(GL_TRUE);
+      drv.glDisable(eGL_CULL_FACE);
+      if(!IsGLES)
+        drv.glPolygonMode(eGL_FRONT_AND_BACK, eGL_FILL);
+
+      if(DebugData.overlayTexSamples > 1)
+        drv.glUseProgram(DebugData.fullScreenCopyDepthMS);
+      else
+        drv.glUseProgram(DebugData.fullScreenCopyDepth);
+      drv.glBindProgramPipeline(0);
+
+      drv.glActiveTexture(eGL_TEXTURE0);
+      drv.glBindTexture(copyBindingEnum, curDepth);
+
+      GLuint emptyVAO = 0;
+      drv.glGenVertexArrays(1, &emptyVAO);
+      drv.glBindVertexArray(emptyVAO);
+      drv.glDrawArrays(eGL_TRIANGLE_STRIP, 0, 4);
+      drv.glDeleteVertexArrays(1, &emptyVAO);
+
+      savedRS.ApplyState(&drv);
+    }
 
     if(overlay == DebugOverlay::Depth)
     {
@@ -1252,11 +1373,59 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
     if(!IsGLES && !rs.Enabled[GLRenderState::eEnabled_DepthClamp])
       drv.glDisable(eGL_DEPTH_CLAMP);
 
-    // get latest depth/stencil from read FBO (existing FBO) into draw FBO (overlay FBO)
-    SafeBlitFramebuffer(0, 0, outWidth, outHeight, 0, 0, outWidth, outHeight,
-                        GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT, eGL_NEAREST);
+    if(useDepthStencilMask)
+    {
+      drv.glStencilMask(0xff);
+      GLint stencilClear = 0x0;
+      drv.glClearBufferiv(eGL_STENCIL, 0, &stencilClear);
+      drv.glEnable(eGL_STENCIL_TEST);
+      drv.glStencilFunc(eGL_ALWAYS, 1, 0xff);
+      drv.glStencilOp(eGL_KEEP, eGL_KEEP, eGL_REPLACE);
+
+      drv.glBindProgramPipeline(pipe);
+      drv.glUseProgram(prog);
+
+      drv.glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    }
+    else
+    {
+      float green[] = {0.0f, 1.0f, 0.0f, 1.0f};
+      drv.glProgramUniform4fv(DebugData.overlayProg, overlayFixedColLocation, 1, green);
+    }
 
     ReplayLog(eventId, eReplay_OnlyDraw);
+
+    if(useDepthStencilMask)
+    {
+      float green[] = {0.0f, 1.0f, 0.0f, 1.0f};
+      GLint fixedColLocation = 99;
+      if(!spirvOverlay)
+        fixedColLocation =
+            drv.glGetUniformLocation(DebugData.fullScreenFixedColProg, "RENDERDOC_Fixed_Color");
+      drv.glProgramUniform4fv(DebugData.fullScreenFixedColProg, fixedColLocation, 1, green);
+
+      drv.glDisable(eGL_BLEND);
+      drv.glDisable(eGL_SCISSOR_TEST);
+      drv.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+      drv.glDepthMask(GL_FALSE);
+      drv.glDisable(eGL_CULL_FACE);
+      if(!IsGLES)
+        drv.glPolygonMode(eGL_FRONT_AND_BACK, eGL_FILL);
+      drv.glDisable(eGL_DEPTH_TEST);
+      drv.glEnable(eGL_STENCIL_TEST);
+      drv.glStencilMask(0x0);
+      drv.glStencilFunc(eGL_EQUAL, 1, 0xff);
+
+      drv.glUseProgram(DebugData.fullScreenFixedColProg);
+      drv.glBindProgramPipeline(0);
+
+      GLuint emptyVAO = 0;
+      drv.glGenVertexArrays(1, &emptyVAO);
+      drv.glBindVertexArray(emptyVAO);
+      drv.glDrawArrays(eGL_TRIANGLE_STRIP, 0, 4);
+      drv.glBindVertexArray(0);
+      drv.glDeleteVertexArrays(1, &emptyVAO);
+    }
 
     // unset depth/stencil textures from overlay FBO and delete temp depth/stencil
     if(curDepth != 0 && curDepth == curStencil)
@@ -1456,13 +1625,27 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
     MeshUBOData *uboptr =
         (MeshUBOData *)drv.glMapBufferRange(eGL_COPY_WRITE_BUFFER, 0, sizeof(MeshUBOData),
                                             GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+
+    if(!uboptr)
+    {
+      RDCERR("Map buffer failed %d", drv.glGetError());
+      return ResourceId();
+    }
+
     *uboptr = uboParams;
     drv.glUnmapBuffer(eGL_COPY_WRITE_BUFFER);
 
     drv.glBindBuffer(eGL_COPY_WRITE_BUFFER, DebugData.UBOs[2]);
     Vec4f *v = (Vec4f *)drv.glMapBufferRange(eGL_COPY_WRITE_BUFFER, 0, sizeof(Vec4f),
                                              GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
-    *v = Vec4f(rs.Viewports[0].width, rs.Viewports[0].height);
+
+    if(!v)
+    {
+      RDCERR("Map buffer failed %d", drv.glGetError());
+      return ResourceId();
+    }
+
+    *v = Vec4f(rs.Viewports[0].width, rs.Viewports[0].height, 0.0f, 0.0f);
     drv.glUnmapBuffer(eGL_COPY_WRITE_BUFFER);
 
     rdcarray<uint32_t> events = passEvents;
@@ -1646,7 +1829,8 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
           }
         }
 
-        GLuint prog = 0, pipe = 0;
+        prog = 0;
+        pipe = 0;
         drv.glGetIntegerv(eGL_CURRENT_PROGRAM, (GLint *)&prog);
         drv.glGetIntegerv(eGL_PROGRAM_PIPELINE_BINDING, (GLint *)&pipe);
 
@@ -1758,8 +1942,7 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
                 drv.glVertexAttribIFormat(0, postvs.format.compCount, fmttype, 0);
               }
 
-              GLuint vb =
-                  m_pDriver->GetResourceManager()->GetCurrentResource(postvs.vertexResourceId).name;
+              GLuint vb = m_pDriver->GetResourceManager()->GetResource(postvs.vertexResourceId).name;
               drv.glBindVertexBuffer(0, vb, (GLintptr)postvs.vertexByteOffset,
                                      postvs.vertexByteStride);
             }
@@ -1775,8 +1958,7 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
               else if(postvs.indexByteStride == 4)
                 idxtype = eGL_UNSIGNED_INT;
 
-              GLuint ib =
-                  m_pDriver->GetResourceManager()->GetCurrentResource(postvs.indexResourceId).name;
+              GLuint ib = m_pDriver->GetResourceManager()->GetResource(postvs.indexResourceId).name;
               drv.glBindBuffer(eGL_ELEMENT_ARRAY_BUFFER, ib);
               drv.glDrawElementsBaseVertex(topo, postvs.numIndices, idxtype,
                                            (const void *)uintptr_t(postvs.indexByteOffset),
@@ -1951,6 +2133,7 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
           {
             drv.glGetNamedRenderbufferParameterivEXT(curDepth, eGL_RENDERBUFFER_INTERNAL_FORMAT,
                                                      (GLint *)&fmt);
+            depthEnum = eGL_RENDERBUFFER;
           }
         }
 
@@ -1979,6 +2162,18 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
                                      eGL_CLAMP_TO_EDGE);
 
           drv.glFramebufferTextureLayer(eGL_FRAMEBUFFER, dsAttach, overridedepth, 0, 0);
+
+          // this is a MEGA hack for mesa's behaviour - which is spec compliant. The problem is that
+          // the spec is absolutely stupid. When we called CopyTex2DMSToArray() above the
+          // framebuffer might have been incomplete since we hadn't bound this overridedepth here
+          // that we are setting up. This means that the effective stencil bits available in the FBO
+          // is 0, and mesa then clamps the query of the current stencil reference to 0. The render
+          // state push + pop inside CopyTex2DMSToArray then doesn't function correctly as it leaves
+          // the reference at 0 instead of whatever it should be - so we reset it here
+          GL.glStencilFuncSeparate(eGL_FRONT, rs.StencilFront.func, rs.StencilFront.ref,
+                                   rs.StencilFront.valuemask);
+          GL.glStencilFuncSeparate(eGL_BACK, rs.StencilBack.func, rs.StencilBack.ref,
+                                   rs.StencilBack.valuemask);
         }
 
         drv.glBindFramebuffer(eGL_DRAW_FRAMEBUFFER, curdrawfbo);
@@ -2025,15 +2220,23 @@ ResourceId GLReplay::RenderOverlay(ResourceId texid, FloatVector clearCol, Debug
           // bind image
           drv.glBindImageTexture(0, quadtexs[1], 0, GL_TRUE, 0, eGL_READ_WRITE, eGL_R32UI);
 
-          GLuint prog = 0, pipe = 0;
+          prog = 0;
+          pipe = 0;
           drv.glGetIntegerv(eGL_CURRENT_PROGRAM, (GLint *)&prog);
           drv.glGetIntegerv(eGL_PROGRAM_PIPELINE_BINDING, (GLint *)&pipe);
+
+          // delete the old program if it exists
+          if(DebugData.overlayProg != 0)
+            drv.glDeleteProgram(DebugData.overlayProg);
+
+          DebugData.overlayProg = drv.glCreateProgram();
 
           // replace fragment shader. This is exactly what we did
           // at the start of this function for the single-event case, but now we have
           // to do it for every event
-          spirvOverlay = CreateOverlayProgram(prog, pipe, DebugData.quadoverdrawFragShader,
-                                              DebugData.quadoverdrawFragShaderSPIRV);
+          spirvOverlay = CreateShaderReplacementProgram(
+              prog, pipe, DebugData.overlayProg, ShaderStage::Pixel,
+              DebugData.quadoverdrawFragShader, DebugData.quadoverdrawFragShaderSPIRV);
           drv.glUseProgram(DebugData.overlayProg);
           drv.glBindProgramPipeline(0);
 

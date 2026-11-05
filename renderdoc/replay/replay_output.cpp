@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -24,6 +24,7 @@
  ******************************************************************************/
 
 #include "common/common.h"
+#include "common/formatting.h"
 #include "maths/formatpacking.h"
 #include "maths/matrix.h"
 #include "strings/string_utils.h"
@@ -92,6 +93,7 @@ ReplayOutput::ReplayOutput(ReplayController *parent, WindowingData window, Repla
 
   m_MainOutput.dirty = true;
 
+  m_CustomDirty = false;
   m_OverlayDirty = false;
   m_ForceOverlayRefresh = false;
 
@@ -119,13 +121,13 @@ ReplayOutput::ReplayOutput(ReplayController *parent, WindowingData window, Repla
   m_MainOutput.texture = ResourceId();
 
   m_pController->FatalErrorCheck();
+  m_pDevice = parent->GetDevice();
 
   m_pDevice->GetOutputWindowDimensions(m_MainOutput.outputID, m_Width, m_Height);
 
   m_CustomShaderResourceId = ResourceId();
 
-  if(RenderDoc::Inst().GetCrashHandler())
-    RenderDoc::Inst().GetCrashHandler()->RegisterMemoryRegion(this, sizeof(ReplayController));
+  RenderDoc::Inst().RegisterMemoryRegion(this, sizeof(ReplayController));
 }
 
 ReplayOutput::~ReplayOutput()
@@ -145,16 +147,6 @@ void ReplayOutput::Shutdown()
   CHECK_REPLAY_THREAD();
 
   m_pController->ShutdownOutput(this);
-}
-
-void ReplayOutput::SetDimensions(int32_t width, int32_t height)
-{
-  CHECK_REPLAY_THREAD();
-
-  m_pDevice->SetOutputWindowDimensions(m_MainOutput.outputID, width > 0 ? width : 1,
-                                       height > 0 ? height : 1);
-  m_pDevice->GetOutputWindowDimensions(m_MainOutput.outputID, m_Width, m_Height);
-  m_pController->FatalErrorCheck();
 }
 
 bytebuf ReplayOutput::ReadbackOutputTexture()
@@ -197,8 +189,18 @@ void ReplayOutput::SetTextureDisplay(const TextureDisplay &o)
   }
   if(wasClearBeforeDraw && o.backgroundColor != m_RenderData.texDisplay.backgroundColor)
     m_OverlayDirty = true;
+  m_CustomDirty = true;
   m_RenderData.texDisplay = o;
   m_MainOutput.dirty = true;
+
+  m_TextureDim = {0, 0};
+  for(size_t t = 0; t < m_pController->m_Textures.size(); t++)
+  {
+    if(m_pController->m_Textures[t].resourceId == m_RenderData.texDisplay.resourceId)
+    {
+      m_TextureDim = {m_pController->m_Textures[t].width, m_pController->m_Textures[t].height};
+    }
+  }
 }
 
 void ReplayOutput::SetMeshDisplay(const MeshDisplay &o)
@@ -218,6 +220,7 @@ void ReplayOutput::SetFrameEvent(int eventId)
   m_EventID = eventId;
 
   m_OverlayDirty = (m_RenderData.texDisplay.overlay != DebugOverlay::NoOverlay);
+  m_CustomDirty = true;
   m_MainOutput.dirty = true;
 
   for(size_t i = 0; i < m_Thumbnails.size(); i++)
@@ -255,7 +258,7 @@ void ReplayOutput::RefreshOverlay()
     if(m_Type == ReplayOutputType::Mesh)
       m_OverlayDirty = false;
 
-    if(action != NULL && (action->flags & ActionFlags::Drawcall))
+    if(action != NULL && (action->flags & (ActionFlags::MeshDispatch | ActionFlags::Drawcall)))
     {
       m_pDevice->InitPostVSBuffers(action->eventId);
       m_pController->FatalErrorCheck();
@@ -273,9 +276,9 @@ void ReplayOutput::RefreshOverlay()
 
   if(m_Type == ReplayOutputType::Texture && m_RenderData.texDisplay.overlay != DebugOverlay::NoOverlay)
   {
-    ResourceId id = m_pDevice->GetLiveID(m_RenderData.texDisplay.resourceId);
+    ResourceId id = m_RenderData.texDisplay.resourceId;
 
-    if(action && m_pDevice->IsRenderOutput(id))
+    if(id != ResourceId() && action && m_pDevice->IsRenderOutput(id))
     {
       FloatVector f = m_RenderData.texDisplay.backgroundColor;
 
@@ -298,6 +301,17 @@ void ReplayOutput::RefreshOverlay()
 ResourceId ReplayOutput::GetCustomShaderTexID()
 {
   CHECK_REPLAY_THREAD();
+
+  if(m_CustomDirty)
+  {
+    TextureDisplay texDisplay = m_RenderData.texDisplay;
+    texDisplay.rawOutput = false;
+
+    m_CustomShaderResourceId = m_pDevice->ApplyCustomShader(texDisplay);
+    m_pController->FatalErrorCheck();
+
+    m_CustomDirty = false;
+  }
 
   return m_CustomShaderResourceId;
 }
@@ -325,10 +339,13 @@ void ReplayOutput::ClearThumbnails()
   for(size_t i = 0; i < m_Thumbnails.size(); i++)
     m_pDevice->DestroyOutputWindow(m_Thumbnails[i].outputID);
 
+  for(auto it = m_ThumbnailGenerators.begin(); it != m_ThumbnailGenerators.end(); ++it)
+    m_pDevice->DestroyOutputWindow(it->second);
+
   m_Thumbnails.clear();
 }
 
-bool ReplayOutput::SetPixelContext(WindowingData window)
+ResultDetails ReplayOutput::SetPixelContext(WindowingData window)
 {
   CHECK_REPLAY_THREAD();
 
@@ -338,13 +355,135 @@ bool ReplayOutput::SetPixelContext(WindowingData window)
 
   m_pController->FatalErrorCheck();
 
-  RDCASSERT(m_PixelContext.outputID > 0);
+  if(m_PixelContext.outputID == 0)
+  {
+    RETURN_ERROR_RESULT(ResultCode::InternalError, "Window creation failed");
+  }
 
-  return m_PixelContext.outputID != 0;
+  return RDResult();
 }
 
-bool ReplayOutput::AddThumbnail(WindowingData window, ResourceId texID, const Subresource &sub,
-                                CompType typeCast)
+bytebuf ReplayOutput::DrawThumbnail(int32_t width, int32_t height, ResourceId textureId,
+                                    const Subresource &sub, CompType typeCast)
+{
+  bytebuf ret;
+
+  width = RDCMAX(width, 1);
+  height = RDCMAX(height, 1);
+
+  uint64_t key = (uint64_t(width) << 32) | height;
+  int idx = -1;
+  uint64_t outputID = 0;
+  for(int i = 0; i < m_ThumbnailGenerators.count(); i++)
+  {
+    if(m_ThumbnailGenerators[i].first == key)
+    {
+      idx = i;
+      outputID = m_ThumbnailGenerators[i].second;
+      break;
+    }
+  }
+
+  if(idx < 0)
+  {
+    // release oldest generator if we have hit the max
+    if(m_ThumbnailGenerators.size() == MaxThumbnailGenerators)
+    {
+      m_pDevice->DestroyOutputWindow(m_ThumbnailGenerators.back().second);
+      m_ThumbnailGenerators.pop_back();
+    }
+
+    outputID = m_pDevice->MakeOutputWindow(CreateHeadlessWindowingData(width, height), false);
+  }
+  else
+  {
+    // remove the found one, so it can get inserted into the front
+    m_ThumbnailGenerators.erase(idx);
+  }
+  // make this the most recent generator, so the oldest one will be kicked out if we have too many
+  m_ThumbnailGenerators.insert(0, {key, outputID});
+
+  bool depthMode = false;
+
+  for(size_t t = 0; t < m_pController->m_Textures.size(); t++)
+  {
+    if(m_pController->m_Textures[t].resourceId == textureId)
+    {
+      depthMode = (m_pController->m_Textures[t].creationFlags & TextureCategory::DepthTarget) ||
+                  (m_pController->m_Textures[t].format.compType == CompType::Depth);
+      break;
+    }
+  }
+
+  if(textureId == ResourceId())
+  {
+    m_pDevice->BindOutputWindow(outputID, false);
+
+    FloatVector dark = RenderDoc::Inst().DarkCheckerboardColor();
+    FloatVector light = RenderDoc::Inst().LightCheckerboardColor();
+
+    FloatVector dark2;
+    dark2.x = light.x;
+    dark2.y = dark.y;
+    dark2.z = dark.z;
+    dark2.w = 1.0f;
+    FloatVector light2;
+    light2.x = dark.x;
+    light2.y = light.y;
+    light2.z = light.z;
+    light2.w = 1.0f;
+    m_pDevice->RenderCheckerboard(dark2, light2);
+    m_pController->FatalErrorCheck();
+
+    m_pDevice->FlipOutputWindow(outputID);
+    m_pController->FatalErrorCheck();
+  }
+  else
+  {
+    m_pDevice->BindOutputWindow(outputID, false);
+    m_pDevice->ClearOutputWindowColor(outputID, FloatVector());
+
+    TextureDisplay disp;
+
+    disp.red = disp.green = disp.blue = true;
+    disp.alpha = false;
+    disp.hdrMultiplier = -1.0f;
+    disp.linearDisplayAsGamma = true;
+    disp.flipY = false;
+    disp.subresource = sub;
+    disp.subresource.sample = 0;
+    disp.customShaderId = ResourceId();
+    disp.resourceId = textureId;
+    disp.typeCast = typeCast;
+    disp.scale = -1.0f;
+    disp.rangeMin = 0.0f;
+    disp.rangeMax = 1.0f;
+    disp.xOffset = 0.0f;
+    disp.yOffset = 0.0f;
+    disp.rawOutput = false;
+    disp.overlay = DebugOverlay::NoOverlay;
+
+    if(typeCast == CompType::SNorm)
+      disp.rangeMin = -1.0f;
+
+    if(depthMode)
+      disp.green = disp.blue = false;
+
+    m_pDevice->RenderTexture(disp);
+    m_pController->FatalErrorCheck();
+
+    m_pDevice->FlipOutputWindow(outputID);
+    m_pController->FatalErrorCheck();
+  }
+
+  m_pDevice->GetOutputWindowData(outputID, ret);
+  m_pController->FatalErrorCheck();
+
+  return ret;
+}
+
+ResultDetails ReplayOutput::AddThumbnail(WindowingData window, ResourceId texID,
+                                         const Subresource &sub, CompType typeCast)
 {
   CHECK_REPLAY_THREAD();
 
@@ -374,7 +513,7 @@ bool ReplayOutput::AddThumbnail(WindowingData window, ResourceId texID, const Su
       m_Thumbnails[i].typeCast = typeCast;
       m_Thumbnails[i].dirty = true;
 
-      return true;
+      return RDResult();
     }
   }
 
@@ -388,11 +527,14 @@ bool ReplayOutput::AddThumbnail(WindowingData window, ResourceId texID, const Su
 
   m_pController->FatalErrorCheck();
 
-  RDCASSERT(p.outputID > 0);
-
   m_Thumbnails.push_back(p);
 
-  return true;
+  if(p.outputID == 0)
+  {
+    RETURN_ERROR_RESULT(ResultCode::InternalError, "Window creation failed");
+  }
+
+  return RDResult();
 }
 
 rdcpair<uint32_t, uint32_t> ReplayOutput::PickVertex(uint32_t x, uint32_t y)
@@ -407,9 +549,7 @@ rdcpair<uint32_t, uint32_t> ReplayOutput::PickVertex(uint32_t x, uint32_t y)
 
   if(!action)
     return errorReturn;
-  if(m_RenderData.meshDisplay.type == MeshDataStage::Unknown)
-    return errorReturn;
-  if(!(action->flags & ActionFlags::Drawcall))
+  if(!(action->flags & (ActionFlags::MeshDispatch | ActionFlags::Drawcall)))
     return errorReturn;
 
   MeshDisplay cfg = m_RenderData.meshDisplay;
@@ -417,10 +557,10 @@ rdcpair<uint32_t, uint32_t> ReplayOutput::PickVertex(uint32_t x, uint32_t y)
   if(cfg.position.vertexResourceId == ResourceId() || cfg.position.numIndices == 0)
     return errorReturn;
 
-  cfg.position.vertexResourceId = m_pDevice->GetLiveID(cfg.position.vertexResourceId);
-  cfg.position.indexResourceId = m_pDevice->GetLiveID(cfg.position.indexResourceId);
-  cfg.second.vertexResourceId = m_pDevice->GetLiveID(cfg.second.vertexResourceId);
-  cfg.second.indexResourceId = m_pDevice->GetLiveID(cfg.second.indexResourceId);
+  cfg.position.vertexResourceId = cfg.position.vertexResourceId;
+  cfg.position.indexResourceId = cfg.position.indexResourceId;
+  cfg.second.vertexResourceId = cfg.second.vertexResourceId;
+  cfg.second.indexResourceId = cfg.second.indexResourceId;
 
   // input data either doesn't vary with instance, or is trivial (all verts the same for that
   // element), so only care about fetching the right instance for post-VS stages
@@ -441,23 +581,26 @@ rdcpair<uint32_t, uint32_t> ReplayOutput::PickVertex(uint32_t x, uint32_t y)
       maxInst = RDCMAX(1U, action->numInstances);
     }
 
-    // used for post-VS output, calculate the offset of the element we're using as position,
-    // relative to 0
-    MeshFormat fmt =
-        m_pDevice->GetPostVSBuffers(action->eventId, m_RenderData.meshDisplay.curInstance,
-                                    m_RenderData.meshDisplay.curView, m_RenderData.meshDisplay.type);
+    rdcarray<uint32_t> instIDs;
+    instIDs.reserve(maxInst - firstInst + 1);
+    for(uint32_t inst = firstInst; inst < maxInst; inst++)
+      instIDs.push_back(inst);
+    instIDs.push_back(m_RenderData.meshDisplay.curInstance);
 
+    rdcarray<MeshFormat> fmts = m_pDevice->GetBatchPostVSBuffers(
+        action->eventId, instIDs, m_RenderData.meshDisplay.curView, m_RenderData.meshDisplay.type);
     m_pController->FatalErrorCheck();
 
-    uint64_t elemOffset = cfg.position.vertexByteOffset - fmt.vertexByteOffset;
+    // used for post-VS output, calculate the offset of the element we're using as position,
+    // relative to 0
+    // the last element in fmts corresponds to curInstance
+    const uint64_t elemOffset = cfg.position.vertexByteOffset - fmts.back().vertexByteOffset;
+    fmts.pop_back();
 
-    for(uint32_t inst = firstInst; inst < maxInst; inst++)
+    uint32_t inst = firstInst;
+    for(MeshFormat &fmt : fmts)
     {
       // find the start of this buffer, and apply the element offset, then pick in that instance
-      fmt = m_pDevice->GetPostVSBuffers(action->eventId, inst, m_RenderData.meshDisplay.curView,
-                                        m_RenderData.meshDisplay.type);
-      m_pController->FatalErrorCheck();
-
       if(fmt.vertexResourceId != ResourceId())
         cfg.position.vertexByteOffset = fmt.vertexByteOffset + elemOffset;
 
@@ -465,9 +608,9 @@ rdcpair<uint32_t, uint32_t> ReplayOutput::PickVertex(uint32_t x, uint32_t y)
       m_pController->FatalErrorCheck();
 
       if(vert != ~0U)
-      {
         return make_rdcpair(vert, inst);
-      }
+
+      inst++;
     }
 
     return errorReturn;
@@ -543,14 +686,30 @@ void ReplayOutput::DisplayContext()
   disp.customShaderId = ResourceId();
 
   if(m_RenderData.texDisplay.customShaderId != ResourceId())
+  {
     disp.resourceId = m_CustomShaderResourceId;
+
+    disp.typeCast = CompType::Typeless;
+    disp.customShaderId = ResourceId();
+    disp.subresource.slice = 0;
+  }
 
   if((m_RenderData.texDisplay.overlay == DebugOverlay::QuadOverdrawDraw ||
       m_RenderData.texDisplay.overlay == DebugOverlay::QuadOverdrawPass ||
       m_RenderData.texDisplay.overlay == DebugOverlay::TriangleSizeDraw ||
       m_RenderData.texDisplay.overlay == DebugOverlay::TriangleSizePass) &&
      m_OverlayResourceId != ResourceId())
+  {
     disp.resourceId = m_OverlayResourceId;
+    disp.typeCast = CompType::Typeless;
+    disp.red = disp.green = disp.blue = disp.alpha = true;
+    disp.rawOutput = false;
+    disp.customShaderId = ResourceId();
+    disp.hdrMultiplier = -1.0f;
+    disp.rangeMin = 0.0f;
+    disp.rangeMax = 1.0f;
+    disp.linearDisplayAsGamma = false;
+  }
 
   const float contextZoom = 8.0f;
 
@@ -565,19 +724,40 @@ void ReplayOutput::DisplayContext()
   int x = (int)m_ContextX;
   int y = (int)m_ContextY;
 
-  x >>= disp.subresource.mip;
-  x <<= disp.subresource.mip;
+  if(m_TextureDim.first > 0 && m_TextureDim.second > 0)
+  {
+    rdcpair<uint32_t, uint32_t> mipDim = {RDCMAX(1U, m_TextureDim.first >> disp.subresource.mip),
+                                          RDCMAX(1U, m_TextureDim.second >> disp.subresource.mip)};
 
-  y >>= disp.subresource.mip;
-  y <<= disp.subresource.mip;
+    x = int((float(x) / float(m_TextureDim.first) + 1e-6f) * mipDim.first);
+    y = int((float(y) / float(m_TextureDim.second) + 1e-6f) * mipDim.second);
 
-  disp.xOffset = -(float)x * disp.scale;
-  disp.yOffset = -(float)y * disp.scale;
+    float fx = float(x) / mipDim.first;
+    float fy = float(y) / mipDim.second;
+
+    float mipAdjustFactor =
+        RDCMAX(float(mipDim.first) / float(m_TextureDim.first) * float(1 << disp.subresource.mip),
+               float(mipDim.second) / float(m_TextureDim.second) * float(1 << disp.subresource.mip));
+
+    disp.scale *= mipAdjustFactor;
+
+    disp.xOffset = -(float)(fx * m_TextureDim.first) * disp.scale;
+    disp.yOffset = -(float)(fy * m_TextureDim.second) * disp.scale;
+  }
+  else
+  {
+    x >>= disp.subresource.mip;
+    x <<= disp.subresource.mip;
+
+    y >>= disp.subresource.mip;
+    y <<= disp.subresource.mip;
+
+    disp.xOffset = -(float)x * disp.scale;
+    disp.yOffset = -(float)y * disp.scale;
+  }
 
   disp.xOffset += w / 2.0f;
   disp.yOffset += h / 2.0f;
-
-  disp.resourceId = m_pDevice->GetLiveID(disp.resourceId);
 
   m_pDevice->RenderTexture(disp);
   m_pController->FatalErrorCheck();
@@ -686,9 +866,9 @@ void ReplayOutput::Display()
     disp.linearDisplayAsGamma = true;
     disp.flipY = false;
     disp.subresource = m_Thumbnails[i].sub;
-    disp.subresource.sample = ~0U;
+    disp.subresource.sample = 0;
     disp.customShaderId = ResourceId();
-    disp.resourceId = m_pDevice->GetLiveID(m_Thumbnails[i].texture);
+    disp.resourceId = m_Thumbnails[i].texture;
     disp.typeCast = m_Thumbnails[i].typeCast;
     disp.scale = -1.0f;
     disp.rangeMin = 0.0f;
@@ -734,7 +914,6 @@ void ReplayOutput::DisplayTex()
 
   TextureDisplay texDisplay = m_RenderData.texDisplay;
   texDisplay.rawOutput = false;
-  texDisplay.resourceId = m_pDevice->GetLiveID(texDisplay.resourceId);
 
   if(m_RenderData.texDisplay.overlay != DebugOverlay::NoOverlay && action)
   {
@@ -756,15 +935,15 @@ void ReplayOutput::DisplayTex()
 
   if(m_RenderData.texDisplay.customShaderId != ResourceId())
   {
-    m_CustomShaderResourceId =
-        m_pDevice->ApplyCustomShader(m_RenderData.texDisplay.customShaderId, texDisplay.resourceId,
-                                     texDisplay.subresource, texDisplay.typeCast);
+    m_CustomShaderResourceId = m_pDevice->ApplyCustomShader(texDisplay);
     m_pController->FatalErrorCheck();
 
-    texDisplay.resourceId = m_pDevice->GetLiveID(m_CustomShaderResourceId);
+    texDisplay.resourceId = m_CustomShaderResourceId;
     texDisplay.typeCast = CompType::Typeless;
     texDisplay.customShaderId = ResourceId();
     texDisplay.subresource.slice = 0;
+
+    m_CustomDirty = false;
   }
 
   FloatVector color;
@@ -785,13 +964,13 @@ void ReplayOutput::DisplayTex()
   m_pDevice->RenderTexture(texDisplay);
   m_pController->FatalErrorCheck();
 
-  ResourceId id = m_pDevice->GetLiveID(m_RenderData.texDisplay.resourceId);
+  ResourceId id = m_RenderData.texDisplay.resourceId;
 
   if(m_RenderData.texDisplay.overlay != DebugOverlay::NoOverlay && action &&
      m_pDevice->IsRenderOutput(id) && m_RenderData.texDisplay.overlay != DebugOverlay::NaN &&
      m_RenderData.texDisplay.overlay != DebugOverlay::Clipping && m_OverlayResourceId != ResourceId())
   {
-    texDisplay.resourceId = m_pDevice->GetLiveID(m_OverlayResourceId);
+    texDisplay.resourceId = m_OverlayResourceId;
     texDisplay.red = texDisplay.green = texDisplay.blue = texDisplay.alpha = true;
     texDisplay.rawOutput = false;
     texDisplay.overlay = m_RenderData.texDisplay.overlay;
@@ -818,8 +997,8 @@ void ReplayOutput::DisplayMesh()
   ActionDescription *action = m_pController->GetActionByEID(m_EventID);
 
   if(action == NULL || m_MainOutput.outputID == 0 || m_Width <= 0 || m_Height <= 0 ||
-     (m_RenderData.meshDisplay.type == MeshDataStage::Unknown) ||
-     !(action->flags & ActionFlags::Drawcall))
+     (m_RenderData.meshDisplay.position.vertexResourceId == ResourceId()) ||
+     !(action->flags & (ActionFlags::MeshDispatch | ActionFlags::Drawcall)))
   {
     FloatVector color;
     m_pDevice->BindOutputWindow(m_MainOutput.outputID, false);
@@ -852,10 +1031,6 @@ void ReplayOutput::DisplayMesh()
   m_pController->FatalErrorCheck();
 
   MeshDisplay mesh = m_RenderData.meshDisplay;
-  mesh.position.vertexResourceId = m_pDevice->GetLiveID(mesh.position.vertexResourceId);
-  mesh.position.indexResourceId = m_pDevice->GetLiveID(mesh.position.indexResourceId);
-  mesh.second.vertexResourceId = m_pDevice->GetLiveID(mesh.second.vertexResourceId);
-  mesh.second.indexResourceId = m_pDevice->GetLiveID(mesh.second.indexResourceId);
 
   rdcarray<MeshFormat> secondaryDraws;
 
@@ -888,27 +1063,21 @@ void ReplayOutput::DisplayMesh()
 
       if(d)
       {
+        rdcarray<uint32_t> instIDs;
+        instIDs.reserve(RDCMAX(1U, d->numInstances));
         for(uint32_t inst = 0; inst < RDCMAX(1U, d->numInstances); inst++)
-        {
-          // get the 'most final' stage
-          MeshFormat fmt = m_pDevice->GetPostVSBuffers(
-              passEvents[i], inst, m_RenderData.meshDisplay.curView, MeshDataStage::GSOut);
-          m_pController->FatalErrorCheck();
-          if(fmt.vertexResourceId == ResourceId())
-          {
-            fmt = m_pDevice->GetPostVSBuffers(passEvents[i], inst, m_RenderData.meshDisplay.curView,
-                                              MeshDataStage::VSOut);
-            m_pController->FatalErrorCheck();
-          }
+          instIDs.push_back(inst);
 
-          fmt.meshColor = passDraws;
-
-          // if unproject is marked, this output had a 'real' system position output
-          if(fmt.unproject)
-            secondaryDraws.push_back(fmt);
-        }
+        // pass MeshDataStage::Count to get the 'most final' stage
+        secondaryDraws.append(m_pDevice->GetBatchPostVSBuffers(
+            passEvents[i], instIDs, m_RenderData.meshDisplay.curView, MeshDataStage::Count));
+        m_pController->FatalErrorCheck();
       }
     }
+
+    // all secondary draws so far are previous pass elements
+    for(MeshFormat &fmt : secondaryDraws)
+      fmt.meshColor = passDraws;
 
     // action previous instances in the current action
     if(action->flags & ActionFlags::Instanced)
@@ -919,26 +1088,28 @@ void ReplayOutput::DisplayMesh()
       if(m_RenderData.meshDisplay.showAllInstances)
         maxInst = RDCMAX(1U, action->numInstances);
 
-      for(uint32_t inst = 0; inst < maxInst; inst++)
+      if(maxInst > 0)
       {
-        // get the 'most final' stage
-        MeshFormat fmt = m_pDevice->GetPostVSBuffers(
-            action->eventId, inst, m_RenderData.meshDisplay.curView, MeshDataStage::GSOut);
+        rdcarray<uint32_t> instIDs;
+        instIDs.reserve(maxInst);
+        for(uint32_t inst = 0; inst < maxInst; inst++)
+          instIDs.push_back(inst);
+
+        size_t prevInstancesStart = secondaryDraws.size();
+
+        // pass MeshDataStage::Count to get the 'most final' stage
+        secondaryDraws.append(m_pDevice->GetBatchPostVSBuffers(
+            action->eventId, instIDs, m_RenderData.meshDisplay.curView, MeshDataStage::Count));
         m_pController->FatalErrorCheck();
-        if(fmt.vertexResourceId == ResourceId())
-        {
-          fmt = m_pDevice->GetPostVSBuffers(action->eventId, inst, m_RenderData.meshDisplay.curView,
-                                            MeshDataStage::VSOut);
-          m_pController->FatalErrorCheck();
-        }
 
-        fmt.meshColor = otherInstances;
-
-        // if unproject is marked, this output had a 'real' system position output
-        if(fmt.unproject)
-          secondaryDraws.push_back(fmt);
+        // set the colour for other instances
+        for(size_t i = prevInstancesStart; i < secondaryDraws.size(); i++)
+          secondaryDraws[i].meshColor = otherInstances;
       }
     }
+
+    // only if unproject is marked did this output have a 'real' system position output
+    secondaryDraws.removeIf([](const MeshFormat &fmt) { return fmt.unproject == false; });
   }
 
   mesh.position.meshColor = drawItself;

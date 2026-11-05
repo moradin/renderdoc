@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -35,16 +35,36 @@ BINDING(0) uniform MeshUBOData
   mat4 mvp;
   mat4 invProj;
   vec4 color;
+
   int displayFormat;
   uint homogenousInput;
   vec2 pointSpriteSize;
+
   uint rawoutput;
   uint flipY;
-  vec2 padding;
+  float vtxExploderSNorm;
+  float exploderScale;
+
+  vec3 exploderCentre;
+  float padding;
+
+  uvec4 meshletColours[12];
 }
 INST_NAME(Mesh);
 
 #endif    // defined(MESH_UBO) || defined(__cplusplus)
+
+#if defined(MESH_UBO) && defined(VULKAN)
+
+layout(binding = 1, std140) readonly buffer meshlet_data
+{
+  uint meshletCount;
+  uint meshletOffset;
+  uvec4 data[];
+}
+meshlet;
+
+#endif    // defined(MESH_UBO)
 
 #if defined(CHECKER_UBO) || defined(__cplusplus)
 
@@ -59,6 +79,7 @@ BINDING(0) uniform CheckerboardUBOData
 
   float CheckerSquareDimension;
   float BorderWidth;
+  int TargetView;
 }
 INST_NAME(checker);
 
@@ -87,9 +108,8 @@ BINDING(0) uniform TexDisplayUBOData
   float Slice;
 
   int SampleIdx;
-  float MipShift;
   int DecodeYUV;
-  float Padding;
+  vec2 MipShift;
 
   uvec4 YUVDownsampleRate;
   uvec4 YUVAChannels;
@@ -113,9 +133,10 @@ BINDING(0) uniform MeshPickUBOData
 
   uint meshMode;    // triangles, triangle strip, fan, etc...
   uint unproject;
-  vec2 padding;
+  uint flipY;
+  uint ortho;
 
-  mat4 mvp;
+  mat4 transformMat;
 }
 INST_NAME(meshpick);
 
@@ -198,3 +219,30 @@ BINDING(2) uniform HistogramUBOData
 INST_NAME(histogram_minmax);
 
 #endif    // defined(HISTOGRAM_UBO) || defined(__cplusplus)
+
+#if defined(DEBUGSAMPLE_UBO) || defined(__cplusplus)
+
+BINDING(0) uniform DebugSampleUBO
+{
+  ivec3 texel_uvw;
+  int texel_lod;
+
+  vec4 uvwa;    // last component for cubemap array index only
+
+  vec3 ddx_uvw;
+  float pad1;
+
+  vec3 ddy_uvw;
+  float pad2;
+
+  ivec3 dynoffset;
+  int sampleIdx;
+
+  float compare;
+  float lod;
+  float minlod;
+  float gles_bias;
+}
+INST_NAME(debugsample);
+
+#endif    // defined(DEBUGSAMPLE_UBO) || defined(__cplusplus)

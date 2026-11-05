@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -250,7 +250,7 @@ struct GLDispatchTable
   PFNGLDEPTHRANGEFPROC glDepthRangef;
   PFNGLDEPTHRANGEINDEXEDPROC glDepthRangeIndexed;
   PFNGLDEPTHRANGEARRAYVPROC glDepthRangeArrayv;
-  PFNGLCLIPCONTROLPROC glClipControl;
+  PFNGLCLIPCONTROLPROC glClipControl;    // aliases glClipControlEXT
   PFNGLPROVOKINGVERTEXPROC glProvokingVertex;    // aliases glProvokingVertexEXT
   PFNGLPRIMITIVERESTARTINDEXPROC glPrimitiveRestartIndex;
   PFNGLCREATESHADERPROC glCreateShader;
@@ -337,8 +337,8 @@ struct GLDispatchTable
   PFNGLBINDBUFFERSBASEPROC glBindBuffersBase;
   PFNGLBINDBUFFERSRANGEPROC glBindBuffersRange;
   PFNGLMAPBUFFERPROC glMapBuffer;    // aliases glMapBufferARB, glMapBufferOES
-  PFNGLMAPBUFFERRANGEPROC glMapBufferRange;
-  PFNGLFLUSHMAPPEDBUFFERRANGEPROC glFlushMappedBufferRange;
+  PFNGLMAPBUFFERRANGEPROC glMapBufferRange;    // aliases glMapBufferRangeEXT
+  PFNGLFLUSHMAPPEDBUFFERRANGEPROC glFlushMappedBufferRange;    // aliases glFlushMappedBufferRangeEXT
   PFNGLUNMAPBUFFERPROC glUnmapBuffer;    // aliases glUnmapBufferARB, glUnmapBufferOES
   PFNGLTRANSFORMFEEDBACKVARYINGSPROC glTransformFeedbackVaryings;    // aliases glTransformFeedbackVaryingsEXT
   PFNGLGENTRANSFORMFEEDBACKSPROC glGenTransformFeedbacks;

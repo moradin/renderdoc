@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -53,9 +53,9 @@ public:
   void DeleteCapture(const rdcstr &capturefile, bool local);
 
   bool IsRunning();
-  ReplayStatus GetCreateStatus() { return m_CreateStatus; }
+  ResultDetails GetCreateStatus() { return m_CreateResult; }
   void SetFatalErrorCallback(std::function<void()> cb) { m_FatalErrorCallback = cb; }
-  ReplayStatus GetFatalError() { return m_FatalError; }
+  ResultDetails GetFatalError() { return m_FatalError; }
   float GetCurrentProcessingTime();
   QString GetCurrentProcessingTag();
   // this tagged version is for cases when we might send a request - e.g. to pick a vertex or pixel
@@ -64,15 +64,18 @@ public:
   // processed.
   // the manager processes only the request on the top of the queue, so when a new tagged invoke
   // comes in, we remove any other requests in the queue before it that have the same tag
-  void AsyncInvoke(const rdcstr &tag, InvokeCallback m);
-  void AsyncInvoke(InvokeCallback m);
-  void BlockInvoke(InvokeCallback m);
+  void AsyncInvoke(ReplayInvokeCallback m, rdcstr tag = "");
+  using IReplayManager::AsyncInvoke;
+  void BlockInvoke(ReplayInvokeCallback m);
+
+  bool AccessInvoke(std::function<void(ICaptureAccess *)> callback, bool blocking, bool forceReplay,
+                    rdcstr tag);
 
   void CancelReplayLoop();
 
   void CloseThread();
 
-  ReplayStatus ConnectToRemoteServer(RemoteHost host);
+  ResultDetails ConnectToRemoteServer(RemoteHost host);
   void DisconnectFromRemoteServer();
   void ShutdownServer();
   void PingRemote();
@@ -104,7 +107,7 @@ public:
 private:
   struct InvokeHandle
   {
-    InvokeHandle(InvokeCallback m, const QString &t = QString())
+    InvokeHandle(ReplayInvokeCallback m, const QString &t = QString())
     {
       tag = t;
       method = m;
@@ -112,7 +115,7 @@ private:
     }
 
     QString tag;
-    InvokeCallback method;
+    ReplayInvokeCallback method;
     QSemaphore processed;
     bool selfdelete;
   };
@@ -139,8 +142,8 @@ private:
   IRemoteServer *m_OrphanedRemote = NULL;
 
   std::function<void()> m_FatalErrorCallback;
-  ReplayStatus m_FatalError = ReplayStatus::Succeeded;
+  ResultDetails m_FatalError = {ResultCode::Succeeded};
   volatile bool m_Running;
   LambdaThread *m_Thread;
-  ReplayStatus m_CreateStatus = ReplayStatus::Succeeded;
+  ResultDetails m_CreateResult = {ResultCode::Succeeded};
 };

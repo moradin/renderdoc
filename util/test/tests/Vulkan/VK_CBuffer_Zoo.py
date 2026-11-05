@@ -8,58 +8,57 @@ class VK_CBuffer_Zoo(rdtest.TestCase):
     def check_capture(self):
         action = self.find_action("Draw")
 
-        self.check(action is not None)
+        assert action is not None
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        props: rd.APIProperties = self.controller.GetAPIProperties()
-
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
         stage = rd.ShaderStage.Pixel
 
         # Verify that the GLSL action is first
-        disasm = self.controller.DisassembleShader(pipe.GetGraphicsPipelineObject(), pipe.GetShaderReflection(stage),
-                                                   '')
+        refl = pipe.GetShaderReflection(stage)
+        assert refl is not None
+        disasm = self.controller.DisassembleShader(pipe.GetGraphicsPipelineObject(), refl, '')
 
-        self.check('GLSL' in disasm)
+        assert 'GLSL' in disasm
 
-        cbuf: rd.BoundCBuffer = pipe.GetConstantBuffer(stage, 0, 0)
+        cbuf = pipe.GetConstantBlock(stage, 0, 0).descriptor
 
         var_check = rdtest.ConstantBufferChecker(
             self.controller.GetCBufferVariableContents(pipe.GetGraphicsPipelineObject(),
-                                                       pipe.GetShader(stage),
+                                                       pipe.GetShader(stage), stage,
                                                        pipe.GetShaderEntryPoint(stage), 0,
-                                                       cbuf.resourceId, cbuf.byteOffset, cbuf.byteSize))
+                                                       cbuf.resource, cbuf.byteOffset, cbuf.byteSize))
 
         self.check_glsl_cbuffer(var_check)
 
         rdtest.log.success("GLSL CBuffer variables are as expected")
 
-        cbuf: rd.BoundCBuffer = pipe.GetConstantBuffer(stage, 1, 0)
+        cbuf = pipe.GetConstantBlock(stage, 1, 0).descriptor
 
         inline_check = rdtest.ConstantBufferChecker(
             self.controller.GetCBufferVariableContents(pipe.GetGraphicsPipelineObject(),
-                                                       pipe.GetShader(stage),
+                                                       pipe.GetShader(stage), stage,
                                                        pipe.GetShaderEntryPoint(stage), 1,
-                                                       cbuf.resourceId, cbuf.byteOffset, cbuf.byteSize))
+                                                       cbuf.resource, cbuf.byteOffset, cbuf.byteSize))
 
         self.check_inline_cbuffer(inline_check)
 
         rdtest.log.success("GLSL Inline uniform variables are as expected")
 
-        self.check_pixel_value(pipe.GetOutputTargets()[0].resourceId, 0.5, 0.5, [536.1, 537.0, 538.0, 539.0])
+        self.check_pixel_value(pipe.GetOutputTargets()[0].resource, 0.5, 0.5, [536.1, 537.0, 538.0, 539.0])
 
         rdtest.log.success("GLSL picked value is as expected")
 
         # Check the specialization constants
-        cbuf: rd.BoundCBuffer = pipe.GetConstantBuffer(stage, 2, 0)
+        cbuf = pipe.GetConstantBlock(stage, 2, 0).descriptor
 
         var_check = rdtest.ConstantBufferChecker(
             self.controller.GetCBufferVariableContents(pipe.GetGraphicsPipelineObject(),
-                                                       pipe.GetShader(stage),
+                                                       pipe.GetShader(stage), stage,
                                                        pipe.GetShaderEntryPoint(stage), 2,
-                                                       cbuf.resourceId, cbuf.byteOffset, cbuf.byteSize))
+                                                       cbuf.resource, cbuf.byteOffset, cbuf.byteSize))
 
         # int A;
         # Default value 10, untouched
@@ -78,49 +77,50 @@ class VK_CBuffer_Zoo(rdtest.TestCase):
         rdtest.log.success("Specialization constants are as expected")
 
         # Move to the HLSL action
-        action = action.next
+        action = action.nextAction
 
-        self.check(action is not None)
+        assert action is not None
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
         # Verify that this is the HLSL action
-        disasm = self.controller.DisassembleShader(pipe.GetGraphicsPipelineObject(), pipe.GetShaderReflection(stage),
-                                                   '')
+        refl = pipe.GetShaderReflection(stage)
+        assert refl is not None
+        disasm = self.controller.DisassembleShader(pipe.GetGraphicsPipelineObject(), refl, '')
 
-        self.check('HLSL' in disasm)
+        assert 'HLSL' in disasm
 
-        cbuf: rd.BoundCBuffer = pipe.GetConstantBuffer(stage, 0, 0)
+        cbuf = pipe.GetConstantBlock(stage, 0, 0).descriptor
 
         var_check = rdtest.ConstantBufferChecker(
             self.controller.GetCBufferVariableContents(pipe.GetGraphicsPipelineObject(),
-                                                       pipe.GetShader(stage),
+                                                       pipe.GetShader(stage), stage,
                                                        pipe.GetShaderEntryPoint(stage), 0,
-                                                       cbuf.resourceId, cbuf.byteOffset, cbuf.byteSize))
+                                                       cbuf.resource, cbuf.byteOffset, cbuf.byteSize))
 
         self.check_hlsl_cbuffer(var_check)
 
         rdtest.log.success("HLSL CBuffer variables are as expected")
 
-        cbuf: rd.BoundCBuffer = pipe.GetConstantBuffer(stage, 1, 0)
+        cbuf = pipe.GetConstantBlock(stage, 1, 0).descriptor
 
         inline_check = rdtest.ConstantBufferChecker(
             self.controller.GetCBufferVariableContents(pipe.GetGraphicsPipelineObject(),
-                                                       pipe.GetShader(stage),
+                                                       pipe.GetShader(stage), stage,
                                                        pipe.GetShaderEntryPoint(stage), 1,
-                                                       cbuf.resourceId, cbuf.byteOffset, cbuf.byteSize))
+                                                       cbuf.resource, cbuf.byteOffset, cbuf.byteSize))
 
         self.check_inline_cbuffer(inline_check)
 
         rdtest.log.success("HLSL Inline uniform variables are as expected")
 
-        self.check_pixel_value(pipe.GetOutputTargets()[0].resourceId, 0.5, 0.5, [536.1, 537.0, 538.0, 539.0])
+        self.check_pixel_value(pipe.GetOutputTargets()[0].resource, 0.5, 0.5, [536.1, 537.0, 538.0, 539.0])
 
         rdtest.log.success("HLSL picked value is as expected")
 
-    def check_inline_cbuffer(self, inline_check):
+    def check_inline_cbuffer(self, inline_check: rdtest.ConstantBufferChecker):
         # float4 zero;
         inline_check.check('inline_zero').rows(1).cols(4).value([0.0, 0.0, 0.0, 0.0])
 
@@ -141,7 +141,7 @@ class VK_CBuffer_Zoo(rdtest.TestCase):
 
         inline_check.done()
 
-    def check_glsl_cbuffer(self, var_check):
+    def check_glsl_cbuffer(self, var_check: rdtest.ConstantBufferChecker):
         # For more detailed reference for the below checks, see the commented definition of the cbuffer
         # in the shader source code in the demo itself
 
@@ -479,7 +479,7 @@ class VK_CBuffer_Zoo(rdtest.TestCase):
 
         var_check.done()
 
-    def check_hlsl_cbuffer(self, var_check):
+    def check_hlsl_cbuffer(self, var_check: rdtest.ConstantBufferChecker):
         # For more detailed reference for the below checks, see the commented definition of the cbuffer
         # in the shader source code in the demo itself
 
@@ -529,8 +529,11 @@ class VK_CBuffer_Zoo(rdtest.TestCase):
             3: lambda x: x.rows(1).cols(1).value([60.0]),
         })
 
-        # float p; with std140 vulkan packing
-        var_check.check('p').rows(1).cols(1).value([64.0])
+        # float p; with forced scalar vulkan packing due to glslang regression
+        var_check.check('p').rows(1).cols(1).value([61.0])
+
+        # float3 glslang_regression;
+        var_check.check('glslang_regression')
 
         # float4 dummy2;
         var_check.check('dummy2')
@@ -608,7 +611,10 @@ class VK_CBuffer_Zoo(rdtest.TestCase):
                                                                    197.0, 201.0])
 
         # float z;
-        var_check.check('z').rows(1).cols(1).value([204.0])
+        var_check.check('z').rows(1).cols(1).value([202.0])
+
+        # float3 glslang_regression2;
+        var_check.check('glslang_regression2')
 
         # Temporarily until SPIR-V support for degenerate HLSL matrices is determined
         var_check.check('dummy9')

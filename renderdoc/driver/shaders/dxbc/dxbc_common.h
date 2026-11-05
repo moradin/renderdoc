@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,6 +29,13 @@
 #include "api/replay/rdcpair.h"
 #include "api/replay/rdcstr.h"
 #include "api/replay/shader_types.h"
+#include "dx_debug.h"
+
+struct DXBCContainerDebugger : public ShaderDebugger
+{
+  DXBCContainerDebugger(bool dxil) : isDXIL(dxil){};
+  const bool isDXIL;
+};
 
 namespace DXBCBytecode
 {
@@ -49,7 +56,7 @@ struct CountOffset
 };
 
 // matches D3D11_SHADER_VERSION_TYPE from d3d11shader.h
-enum class ShaderType
+enum class ShaderType : uint8_t
 {
   // D3D10 Shaders
   Pixel = 0,
@@ -76,6 +83,18 @@ enum class ShaderType
   Max,
 };
 
+ShaderStage GetShaderStage(ShaderType type);
+
+enum class ThreadScope : uint32_t
+{
+  Thread = 0,
+  Quad = 0x1,
+  Subgroup = 0x2,
+  Workgroup = 0x4,
+};
+
+BITMASK_OPERATORS(ThreadScope);
+
 /////////////////////////////////////////////////////////////////////////
 // the below classes basically mimics the existing reflection interface.
 //
@@ -97,14 +116,34 @@ enum ResourceRetType : uint8_t
   NUM_RETURN_TYPES,
 };
 
-enum SigCompType
+enum class SigCompType : uint8_t
 {
   COMPONENT_TYPE_UNKNOWN = 0,
   COMPONENT_TYPE_UINT32,
   COMPONENT_TYPE_SINT32,
   COMPONENT_TYPE_FLOAT32,
+  COMPONENT_TYPE_UINT16,
+  COMPONENT_TYPE_SINT16,
+  COMPONENT_TYPE_FLOAT16,
+  COMPONENT_TYPE_UINT64,
+  COMPONENT_TYPE_SINT64,
+  COMPONENT_TYPE_FLOAT64,
 
   NUM_COMP_TYPES,
+};
+
+enum class InterpolationMode : uint8_t
+{
+  INTERPOLATION_UNDEFINED = 0,
+  INTERPOLATION_CONSTANT,
+  INTERPOLATION_LINEAR,
+  INTERPOLATION_LINEAR_CENTROID,
+  INTERPOLATION_LINEAR_NOPERSPECTIVE,
+  INTERPOLATION_LINEAR_NOPERSPECTIVE_CENTROID,
+  INTERPOLATION_LINEAR_SAMPLE,
+  INTERPOLATION_LINEAR_NOPERSPECTIVE_SAMPLE,
+
+  NUM_INTERPOLATIONS,
 };
 
 enum SVSemantic
@@ -216,6 +255,88 @@ enum VariableType
   VARTYPE_MIN12INT,
   VARTYPE_MIN16INT,
   VARTYPE_MIN16UINT,
+  VARTYPE_INT16,
+  VARTYPE_UINT16,
+  VARTYPE_FLOAT16,
+  VARTYPE_INT64,
+  VARTYPE_UINT64,
+};
+
+enum class TessellatorDomain : uint8_t
+{
+  DOMAIN_UNDEFINED = 0,
+  DOMAIN_ISOLINE,
+  DOMAIN_TRI,
+  DOMAIN_QUAD,
+
+  NUM_DOMAINS,
+};
+
+enum TessellatorPartitioning
+{
+  PARTITIONING_UNDEFINED = 0,
+  PARTITIONING_INTEGER,
+  PARTITIONING_POW2,
+  PARTITIONING_FRACTIONAL_ODD,
+  PARTITIONING_FRACTIONAL_EVEN,
+
+  NUM_PARTITIONINGS,
+};
+
+enum TessellatorOutputPrimitive
+{
+  OUTPUT_PRIMITIVE_UNDEFINED = 0,
+  OUTPUT_PRIMITIVE_POINT,
+  OUTPUT_PRIMITIVE_LINE,
+  OUTPUT_PRIMITIVE_TRIANGLE_CW,
+  OUTPUT_PRIMITIVE_TRIANGLE_CCW,
+
+  NUM_OUTPUT_PRIMITIVES,
+};
+
+enum PrimitiveType
+{
+  PRIMITIVE_UNDEFINED = 0,
+  PRIMITIVE_POINT,
+  PRIMITIVE_LINE,
+  PRIMITIVE_TRIANGLE,
+  // 4 and 5 are skipped
+  PRIMITIVE_LINE_ADJ = 6,
+  PRIMITIVE_TRIANGLE_ADJ,
+  PRIMITIVE_1_CONTROL_POINT_PATCH,
+  PRIMITIVE_2_CONTROL_POINT_PATCH,
+  PRIMITIVE_3_CONTROL_POINT_PATCH,
+  PRIMITIVE_4_CONTROL_POINT_PATCH,
+  PRIMITIVE_5_CONTROL_POINT_PATCH,
+  PRIMITIVE_6_CONTROL_POINT_PATCH,
+  PRIMITIVE_7_CONTROL_POINT_PATCH,
+  PRIMITIVE_8_CONTROL_POINT_PATCH,
+  PRIMITIVE_9_CONTROL_POINT_PATCH,
+  PRIMITIVE_10_CONTROL_POINT_PATCH,
+  PRIMITIVE_11_CONTROL_POINT_PATCH,
+  PRIMITIVE_12_CONTROL_POINT_PATCH,
+  PRIMITIVE_13_CONTROL_POINT_PATCH,
+  PRIMITIVE_14_CONTROL_POINT_PATCH,
+  PRIMITIVE_15_CONTROL_POINT_PATCH,
+  PRIMITIVE_16_CONTROL_POINT_PATCH,
+  PRIMITIVE_17_CONTROL_POINT_PATCH,
+  PRIMITIVE_18_CONTROL_POINT_PATCH,
+  PRIMITIVE_19_CONTROL_POINT_PATCH,
+  PRIMITIVE_20_CONTROL_POINT_PATCH,
+  PRIMITIVE_21_CONTROL_POINT_PATCH,
+  PRIMITIVE_22_CONTROL_POINT_PATCH,
+  PRIMITIVE_23_CONTROL_POINT_PATCH,
+  PRIMITIVE_24_CONTROL_POINT_PATCH,
+  PRIMITIVE_25_CONTROL_POINT_PATCH,
+  PRIMITIVE_26_CONTROL_POINT_PATCH,
+  PRIMITIVE_27_CONTROL_POINT_PATCH,
+  PRIMITIVE_28_CONTROL_POINT_PATCH,
+  PRIMITIVE_29_CONTROL_POINT_PATCH,
+  PRIMITIVE_30_CONTROL_POINT_PATCH,
+  PRIMITIVE_31_CONTROL_POINT_PATCH,
+  PRIMITIVE_32_CONTROL_POINT_PATCH,
+
+  NUM_PRIMITIVES,
 };
 
 struct ShaderInputBind
@@ -236,6 +357,9 @@ struct ShaderInputBind
     TYPE_UAV_APPEND_STRUCTURED,
     TYPE_UAV_CONSUME_STRUCTURED,
     TYPE_UAV_RWSTRUCTURED_WITH_COUNTER,
+
+    // these entries below do not exist in dxbc and so are only set by RenderDoc manually
+    TYPE_RTAS,
   } type;
 
   constexpr bool IsCBuffer() const { return type == TYPE_CBUFFER; }
@@ -243,7 +367,7 @@ struct ShaderInputBind
   constexpr bool IsSRV() const
   {
     return type == TYPE_TBUFFER || type == TYPE_TEXTURE || type == TYPE_STRUCTURED ||
-           type == TYPE_BYTEADDRESS;
+           type == TYPE_BYTEADDRESS || type == TYPE_RTAS;
   }
   constexpr bool IsUAV() const
   {
@@ -272,6 +396,9 @@ struct ShaderInputBind
     DIM_TEXTURECUBE,
     DIM_TEXTURECUBEARRAY,
     DIM_BUFFEREX,
+
+    // these entries below do not exist in dxbc and so are only set by RenderDoc manually
+    DIM_RTAS,
   } dimension;
 
   uint32_t numComps;
@@ -293,16 +420,13 @@ enum VariableClass
 
 struct CBufferVariableType
 {
-  struct Descriptor
-  {
-    VariableClass varClass;
-    VarType varType;
-    uint32_t rows;
-    uint32_t cols;
-    uint32_t elements;
-    uint32_t bytesize;
-    rdcstr name;
-  } descriptor;
+  VariableClass varClass;
+  VarType varType;
+  uint32_t rows;
+  uint32_t cols;
+  uint32_t elements;
+  uint32_t bytesize;
+  rdcstr name;
 
   // if a struct, these are variables for each member (this can obviously nest). Not all
   // elements of the nested member descriptor are valid, as this might not be in a cbuffer,
@@ -310,12 +434,16 @@ struct CBufferVariableType
   rdcarray<CBufferVariable> members;
 };
 
-rdcstr TypeName(CBufferVariableType::Descriptor desc);
+void RecalculateScalarOffsetsSizes(CBufferVariableType &type);
+rdcstr TypeName(CBufferVariableType desc);
 
 struct CBufferVariable
 {
   rdcstr name;
   uint32_t offset;    // offset in parent (cbuffer or nested struct)
+
+  uint16_t bitFieldOffset = 0;
+  uint16_t bitFieldSize = 0;
 
   // type details of this variable
   CBufferVariableType type;
@@ -344,6 +472,7 @@ struct CBuffer
   } descriptor;
 
   rdcarray<CBufferVariable> variables;
+  bool hasReflectionData;
 };
 
 struct Reflection
@@ -357,6 +486,8 @@ struct Reflection
 
   CBuffer Interfaces;
 
+  CBufferVariableType TaskPayload;
+
   std::map<rdcstr, CBufferVariableType> ResourceBinds;
 
   rdcarray<SigParameter> InputSig;
@@ -364,6 +495,7 @@ struct Reflection
   rdcarray<SigParameter> PatchConstantSig;
 
   uint32_t DispatchThreadsDimension[3];
+  uint32_t WaveSize = 0;
 };
 
 class DXBCContainer;
@@ -376,16 +508,23 @@ public:
   virtual rdcstr GetEntryFunction() const = 0;
   virtual rdcstr GetShaderProfile() const = 0;
 
+  virtual bool HasSourceDebugInfo() const = 0;
   virtual ShaderCompileFlags GetShaderCompileFlags() const = 0;
 
-  rdcarray<rdcpair<rdcstr, rdcstr>> Files;    // <filename, source>
+  rdcarray<ShaderSourceFile> Files;
 
   virtual void GetLineInfo(size_t instruction, uintptr_t offset, LineColumnInfo &lineInfo) const = 0;
   virtual void GetCallstack(size_t instruction, uintptr_t offset,
                             rdcarray<rdcstr> &callstack) const = 0;
 
-  virtual bool HasSourceMapping() const = 0;
   virtual void GetLocals(const DXBC::DXBCContainer *dxbc, size_t instruction, uintptr_t offset,
                          rdcarray<SourceVariableMapping> &locals) const = 0;
+
+  virtual void FillReflection(DXBC::Reflection &refl) {}
 };
+
+rdcstr BasicDemangle(const rdcstr &possiblyMangledName);
+
+void ResetSearchDirsCache();
+
 };

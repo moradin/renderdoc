@@ -1,20 +1,25 @@
-From https://github.com/syoyo/tinyexr : 1.0
+From https://github.com/syoyo/tinyexr : 1.0.9
 
 # Tiny OpenEXR image library.
 
-[![Total alerts](https://img.shields.io/lgtm/alerts/g/syoyo/tinyexr.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/syoyo/tinyexr/alerts/)
+![Example](https://github.com/syoyo/tinyexr/blob/release/asakusa.png?raw=true)
 
-![Example](https://github.com/syoyo/tinyexr/blob/master/asakusa.png?raw=true)
-
-[![AppVeyor build status](https://ci.appveyor.com/api/projects/status/k07ftfe4ph057qau/branch/master?svg=true)](https://ci.appveyor.com/project/syoyo/tinyexr/branch/master)
-
-[![Travis build Status](https://travis-ci.org/syoyo/tinyexr.svg)](https://travis-ci.org/syoyo/tinyexr)
+[![AppVeyor build status](https://ci.appveyor.com/api/projects/status/k07ftfe4ph057qau/branch/release?svg=true)](https://ci.appveyor.com/project/syoyo/tinyexr/branch/release)
 
 [![Coverity Scan Build Status](https://scan.coverity.com/projects/5827/badge.svg)](https://scan.coverity.com/projects/5827)
 
 `tinyexr` is a small, single header-only library to load and save OpenEXR (.exr) images.
 `tinyexr` is written in portable C++ (no library dependency except for STL), thus `tinyexr` is good to embed into your application.
-To use `tinyexr`, simply copy `tinyexr.h` into your project.
+To use `tinyexr`, simply copy `tinyexr.h`, `miniz.c` and `miniz.h`(for zlib. You can use system-installed zlib instead of miniz, or the zlib implementation included in `stb_image[_write].h`. Controlled with `TINYEXR_USE_MINIZ` and `TINYEXR_USE_STB_ZLIB` compile flags) into your project.
+
+# Security
+
+TinyEXR does not use C++ exception.
+
+TinyEXR now does not use `assert` from v1.0.4(2023/06/04), except for miniz's assert.
+(We plan to use wuff's zlib for better security and performance)
+
+TinyEXR is fuzz tested and **currently no security issues**(No seg fault for any malcious/corrupted input EXR data) as of v1.0.7.
 
 # Features
 
@@ -22,18 +27,19 @@ Current status of `tinyexr` is:
 
 - OpenEXR v1 image
   - [x] Scanline format
-  - [ ] Tiled format
+  - [x] Tiled format
     - [x] Tile format with no LoD (load).
-    - [ ] Tile format with LoD (load).
-    - [ ] Tile format with no LoD (save).
-    - [ ] Tile format with LoD (save).
+    - [x] Tile format with LoD (load).
+    - [x] Tile format with no LoD (save).
+    - [x] Tile format with LoD (save).
   - [x] Custom attributes
 - OpenEXR v2 image
   - [ ] Multipart format
     - [x] Load multi-part image
-    - [ ] Save multi-part image
+    - [x] Save multi-part image
     - [ ] Load multi-part deep image
     - [ ] Save multi-part deep image
+  - [ ] deepscanline 
 - OpenEXR v2 deep image
   - [x] Loading scanline + ZIPS + HALF or FLOAT pixel type.
 - Compression
@@ -46,10 +52,12 @@ Current status of `tinyexr` is:
   - [ ] B44?
   - [ ] B44A?
   - [ ] PIX24?
+  - [ ] DWA (not planned, patent encumbered)
 - Line order.
   - [x] Increasing, decreasing (load)
   - [ ] Random?
-  - [ ] Increasing, decreasing (save)
+  - [x] Increasing (save)
+  - [ ] decreasing (save)
 - Pixel format (UINT, FLOAT).
   - [x] UINT, FLOAT (load)
   - [x] UINT, FLOAT (deep load)
@@ -58,8 +66,8 @@ Current status of `tinyexr` is:
 - Support for big endian machine.
   - [x] Loading scanline image
   - [x] Saving scanline image
-  - [ ] Loading multi-part channel EXR
-  - [ ] Saving multi-part channel EXR
+  - [x] Loading multi-part channel EXR (not tested)
+  - [x] Saving multi-part channel EXR (not tested)
   - [ ] Loading deep image
   - [ ] Saving deep image
 - Optimization
@@ -83,7 +91,7 @@ Current status of `tinyexr` is:
   * [x] aarch64 linux(e.g. Raspberry Pi)
   * [x] Android
   * [x] iOS
-  * [ ] macOS(Should work)
+  * [x] macOS
 * [ ] RISC-V(Should work)
 * [x] Big endian machine(not maintained, but should work)
   * SPARC, PowerPC, ...
@@ -104,6 +112,8 @@ Current status of `tinyexr` is:
 * Filament. PBR engine(used in a converter tool). https://github.com/google/filament
 * PyEXR. Loading OpenEXR (.exr) images using Python. https://github.com/ialhashim/PyEXR
 * The-Forge. The Forge Cross-Platform Rendering Framework PC, Linux, Ray Tracing, macOS / iOS, Android, XBOX, PS4 https://github.com/ConfettiFX/The-Forge
+* psdr-cuda. Path-space differentiable renderer. https://github.com/uci-rendering/psdr-cuda
+* Studying Microfacets BSDFs https://virtualgonio.pages.xlim.fr/
 * Your project here!
 
 ## Older TinyEXR (v0.9.0)
@@ -121,7 +131,7 @@ Current status of `tinyexr` is:
 * [examples/ldr2exr/](examples/exr2rgbe) LDR to EXR converter
 * [examples/exr2ldr/](examples/exr2ldr) EXR to LDR converter
 * [examples/exr2fptiff/](examples/exr2fptiff) EXR to 32bit floating point TIFF converter
-  * for 32bit floating point TIFF to EXR convert, see https://github.com/syoyo/tinydngloader/tree/master/examples/fptiff2exr
+  * for 32bit floating point TIFF to EXR convert, see https://github.com/syoyo/tinydngloader/tree/release/examples/fptiff2exr
 * [examples/cube2longlat/](examples/cube2longlat) Cubemap to longlat (equirectangler) converter
 
 ## Experimental
@@ -139,13 +149,17 @@ Include `tinyexr.h` with `TINYEXR_IMPLEMENTATION` flag (do this only for **one**
 //including `tinyexr.h` when you disable `TINYEXR_USE_MINIZ`
 //#define TINYEXR_USE_MINIZ 0
 //#include "zlib.h"
+//Or, if your project uses `stb_image[_write].h`, use their
+//zlib implementation:
+//#define TINYEXR_USE_STB_ZLIB 1
 #define TINYEXR_IMPLEMENTATION
 #include "tinyexr.h"
 ```
 
 ### Compile flags
 
-* `TINYEXR_USE_MINIZ` Use embedded miniz (default = 1). Please include `zlib.h` header (before `tinyexr.h`) if you disable miniz support.
+* `TINYEXR_USE_MINIZ` Use miniz (default = 1). Please include `zlib.h` header before `tinyexr.h` if you disable miniz support(e.g. use system's zlib).
+* `TINYEXR_USE_STB_ZLIB` Use zlib from `stb_image[_write].h` instead of miniz or the system's zlib (default = 0).
 * `TINYEXR_USE_PIZ` Enable PIZ compression support (default = 1)
 * `TINYEXR_USE_ZFP` Enable ZFP compression supoort (TinyEXR extension, default = 0)
 * `TINYEXR_USE_THREAD` Enable threaded loading using C++11 thread (Requires C++11 compiler, default = 0)
@@ -433,7 +447,7 @@ See `example/deepview` for actual usage.
 
 `examples/deepview` is simple deep image viewer in OpenGL.
 
-![DeepViewExample](https://github.com/syoyo/tinyexr/blob/master/examples/deepview/deepview_screencast.gif?raw=true)
+![DeepViewExample](https://github.com/syoyo/tinyexr/blob/release/examples/deepview/deepview_screencast.gif?raw=true)
 
 ## TinyEXR extension
 
@@ -556,6 +570,7 @@ Contribution is welcome!
 
 `tinyexr` tools uses stb, which is licensed under public domain: https://github.com/nothings/stb
 `tinyexr` uses some code from OpenEXR, which is licensed under 3-clause BSD license.
+`tinyexr` uses nanozlib and wuffs, whose are licensed unnder Apache 2.0 license.
 
 ## Author(s)
 

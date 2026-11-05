@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -87,5 +87,10 @@ fail:
 template <>
 inline SDFile *MakeFromArgsTuple<SDFile>(PyObject *args)
 {
+  if(!SWIG_Python_UnpackTuple(args, "new_SDFile", 0, 0, 0))
+    SWIG_fail;
+
   return new SDFile();
+fail:
+  return NULL;
 }

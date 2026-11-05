@@ -10,7 +10,7 @@ set(sources
     vk_postvs.cpp
     vk_shader_feedback.cpp
     vk_overlay.cpp
-    vk_msaa_array_conv.cpp
+    vk_msaa_buffer_conv.cpp
     vk_outputwindow.cpp
     vk_rendermesh.cpp
     vk_rendertexture.cpp
@@ -40,6 +40,8 @@ set(sources
     vk_serialise.cpp
     vk_stringise.cpp
     vk_layer.cpp
+    vk_acceleration_structure.h
+    vk_acceleration_structure.cpp
     imagestate_tests.cpp
     imgrefs_tests.cpp
     official/vk_layer.h
@@ -47,7 +49,6 @@ set(sources
     official/vulkan.h
     official/vulkan_android.h
     official/vulkan_core.h
-    official/vulkan_ggp.h
     official/vulkan_ios.h
     official/vulkan_macos.h
     official/vulkan_fuchsia.h
@@ -84,6 +85,11 @@ endif()
 # they can set this variable to make sure it stays local
 set(VULKAN_LAYER_FOLDER ${VULKAN_LAYER_FOLDER_DEFAULT} CACHE PATH "Path to install the vulkan layer file")
 
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set_property(SOURCE vk_shaderdebug.cpp
+        APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-shadow -Wno-shorten-64-to-32")
+endif()
+
 if(ANDROID)
     list(APPEND sources vk_posix.cpp vk_android.cpp vk_layer_android.cpp)
     list(APPEND definitions PRIVATE -DVK_USE_PLATFORM_ANDROID_KHR)
@@ -91,19 +97,6 @@ elseif(APPLE)
     list(APPEND sources vk_posix.cpp vk_apple.cpp vk_apple_helpers.mm)
 
     add_definitions(-DVK_USE_PLATFORM_MACOS_MVK -DVK_USE_PLATFORM_METAL_EXT)
-elseif(ENABLE_GGP)
-    list(APPEND sources vk_posix.cpp vk_ggp.cpp)
-    add_definitions(-DVK_USE_PLATFORM_GGP)
-
-    set(VULKAN_LAYER_MODULE_PATH "${CMAKE_INSTALL_PREFIX}/lib${LIB_SUFFIX}/${LIB_SUBFOLDER_TRAIL_SLASH}librenderdoc.so")
-    set(VULKAN_ENABLE_VAR "ENABLE_VULKAN_RENDERDOC_CAPTURE")
-
-    set(json_in ${CMAKE_CURRENT_SOURCE_DIR}/renderdoc.json)
-    set(json_out ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/renderdoc_capture.json)
-    
-    configure_file(${json_in} ${json_out})
-
-    install (FILES ${json_out} DESTINATION ${VULKAN_LAYER_FOLDER})
 elseif(UNIX)
     list(APPEND sources vk_posix.cpp vk_linux.cpp)
 
@@ -115,17 +108,18 @@ elseif(UNIX)
         add_definitions(-DVK_USE_PLATFORM_XCB_KHR)
     endif()
 
-    if(ENABLE_WAYLAND)
+    if(ENABLE_UNSUPPORTED_EXPERIMENTAL_POSSIBLY_BROKEN_WAYLAND)
         add_definitions(-DVK_USE_PLATFORM_WAYLAND_KHR)
     endif()
     
     add_definitions(-DVK_USE_PLATFORM_WIN32_KHR)
 
-    set(VULKAN_LAYER_MODULE_PATH "${CMAKE_INSTALL_PREFIX}/lib${LIB_SUFFIX}/${LIB_SUBFOLDER_TRAIL_SLASH}librenderdoc.so")
-    set(VULKAN_ENABLE_VAR "ENABLE_VULKAN_RENDERDOC_CAPTURE")
+    set(VULKAN_LAYER_MODULE_PATH "${CMAKE_INSTALL_PREFIX}/lib${LIB_SUFFIX}/${LIB_SUBFOLDER_TRAIL_SLASH}lib${RDOC_BASE_NAME}.so")
+    set(VULKAN_ENABLE_VAR "ENABLE_VULKAN_${RDOC_BASE_NAME_UPPER}_CAPTURE")
+    set(VULKAN_LAYER_NAME "VK_LAYER_${RDOC_BASE_NAME_UPPER}_Capture")
 
     set(json_in ${CMAKE_CURRENT_SOURCE_DIR}/renderdoc.json)
-    set(json_out ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/renderdoc_capture.json)
+    set(json_out ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/${RDOC_BASE_NAME}_capture${VULKAN_JSON_SUFFIX}.json)
     
     configure_file(${json_in} ${json_out})
 

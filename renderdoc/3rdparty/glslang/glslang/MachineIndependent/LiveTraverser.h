@@ -59,8 +59,8 @@ namespace glslang {
 class TLiveTraverser : public TIntermTraverser {
 public:
     TLiveTraverser(const TIntermediate& i, bool traverseAll = false,
-                   bool preVisit = true, bool inVisit = false, bool postVisit = false) :
-        TIntermTraverser(preVisit, inVisit, postVisit),
+                   bool preVisit = true, bool inVisit = false, bool postVisit = false, bool includeDeclSymbol = false) :
+        TIntermTraverser(preVisit, inVisit, postVisit, false, includeDeclSymbol),
         intermediate(i), traverseAll(traverseAll)
     { }
 
@@ -74,14 +74,33 @@ public:
         for (unsigned int f = 0; f < globals.size(); ++f) {
             TIntermAggregate* candidate = globals[f]->getAsAggregate();
             if (candidate && candidate->getOp() == EOpFunction && candidate->getName() == name) {
-                functions.push_back(candidate);
+                destinations.push_back(candidate);
                 break;
             }
         }
     }
 
-    typedef std::list<TIntermAggregate*> TFunctionStack;
-    TFunctionStack functions;
+    void pushGlobalReference(const TString& name)
+    {
+        TIntermSequence& globals = intermediate.getTreeRoot()->getAsAggregate()->getSequence();
+        for (unsigned int f = 0; f < globals.size(); ++f) {
+            TIntermAggregate* candidate = globals[f]->getAsAggregate();
+            if (candidate && candidate->getOp() == EOpSequence &&
+                candidate->getSequence().size() == 1 &&
+                candidate->getSequence()[0]->getAsBinaryNode()) {
+                TIntermBinary* binary = candidate->getSequence()[0]->getAsBinaryNode();
+                TIntermSymbol* symbol = binary->getLeft()->getAsSymbolNode();
+                if (symbol && symbol->getQualifier().storage == EvqGlobal &&
+                    symbol->getName() == name) {
+                    destinations.push_back(candidate);
+                    break;
+                }
+            }
+        }
+    }
+
+    typedef std::list<TIntermAggregate*> TDestinationStack;
+    TDestinationStack destinations;
 
 protected:
     // To catch which function calls are not dead, and hence which functions must be visited.
@@ -113,20 +132,72 @@ protected:
             return true; // traverse the whole subtree
     }
 
+    // To prune semantically dead paths in switch statements with constant expressions.
+    virtual bool visitSwitch(TVisit /* visit */, TIntermSwitch* node)
+    {
+        if (traverseAll)
+            return true; // traverse all code
+
+        TIntermConstantUnion* constant = node->getCondition()->getAsConstantUnion();
+        if (constant) {
+            TConstUnion switchValue = constant->getConstArray()[0];
+            int liveBranch = -1;
+            const auto& body = node->getBody()->getSequence();
+            for (unsigned int i = 0; i < body.size(); ++i) {
+                if (body[i]->getAsBranchNode()) {
+                    if (body[i]->getAsBranchNode()->getFlowOp() == glslang::EOpCase) {
+                        TConstUnion caseValue =
+                            body[i]->getAsBranchNode()->getExpression()->getAsConstantUnion()->getConstArray()[0];
+                        if (switchValue == caseValue.getIConst()) {
+                            liveBranch = (int)i;
+                            break;
+                        }
+                    } else if (body[i]->getAsBranchNode()->getFlowOp() == glslang::EOpDefault) {
+                        liveBranch = (int)i;
+                    }
+                }
+            }
+            if (liveBranch != -1) {
+                for (int i = liveBranch; i < (int)body.size(); ++i) {
+                    if (body[i]->getAsAggregate()) {
+                        for (auto* inst : body[i]->getAsAggregate()->getSequence()) {
+                            if (inst->getAsBranchNode() && (inst->getAsBranchNode()->getFlowOp() == glslang::EOpBreak))
+                                return false; // found and traversed the live case(s)
+                            inst->traverse(this);
+                        }
+                    }
+                }
+            }
+            return false; // finished traversing all cases
+        } else
+            return true; // traverse the whole subtree
+    }
+
     // Track live functions as well as uniforms, so that we don't visit dead functions
     // and only visit each function once.
     void addFunctionCall(TIntermAggregate* call)
     {
-        // // just use the map to ensure we process each function at most once
+        // just use the map to ensure we process each function at most once
         if (liveFunctions.find(call->getName()) == liveFunctions.end()) {
             liveFunctions.insert(call->getName());
             pushFunction(call->getName());
         }
     }
 
+    void addGlobalReference(const TString& name)
+    {
+        // just use the map to ensure we process each global at most once
+        if (liveGlobals.find(name) == liveGlobals.end()) {
+            liveGlobals.insert(name);
+            pushGlobalReference(name);
+        }
+    }
+
     const TIntermediate& intermediate;
     typedef std::unordered_set<TString> TLiveFunctions;
     TLiveFunctions liveFunctions;
+    typedef std::unordered_set<TString> TLiveGlobals;
+    TLiveGlobals liveGlobals;
     bool traverseAll;
 
 private:

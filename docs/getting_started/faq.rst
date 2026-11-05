@@ -19,7 +19,7 @@ How do I do some particular task?
 
 Many specific tasks or functions are detailed in the :doc:`"How Do I... ?" <../how/index>` sections. These sections each take a feature or element of a workflow and explain how it fits into the program as a whole as well as any details of how it works.
 
-If the task you have in mind isn't listed there you might find something similar, or you might find a related feature which can be used to do what you want. If the feature you want doesn't seem to exist at all you might want to check the :doc:`../behind_scenes/planned_features` to see if it's coming soon - if it's not on that list please feel free to `contact me <mailto:baldurk@baldurk.org?subject=RenderDoc%20request>`__ and request it! It has often been that simple features are very quick to implement and the prioritisation and scheduling of features is fairly fluid depending on user needs.
+If the task you have in mind isn't listed there you might find something similar, or you might find a related feature which can be used to do what you want. If you have a workflow which isn't supported at all, feel free to open an issue on github to request a new feature. Make sure to describe clearly what you are trying to do and what workflow you want to support, not just the specific feature you want. That way the problem can be better understood.
 
 Why did you make RenderDoc?
 ---------------------------
@@ -47,7 +47,7 @@ In particular I'm used to working with people who have strong NDA protection ove
 How can I associate RenderDoc's file extensions with the program?
 -----------------------------------------------------------------
 
-On Windows if you installed RenderDoc via the msi installer, the option is available there to associate RenderDoc's file extensions with the program.
+On Windows if you installed RenderDoc via the ``msi`` installer, the option is available there to associate RenderDoc's file extensions with the program.
 
 On linux the binary tarball comes with files to place under ``/usr/share`` to associate RenderDoc with files. This obviously also requires ``qrenderdoc`` to be available in your ``PATH``.
 
@@ -58,7 +58,7 @@ There is also a thumbnail handler available for ``.rdc`` so that while browsing 
 What APIs does RenderDoc support?
 ---------------------------------
 
-Currently RenderDoc supports Vulkan 1.2, D3D11 (up to D3D11.4), D3D12, OpenGL 3.2+, and OpenGL ES 2.0 - 3.2. Note that OpenGL (and similarly OpenGL ES) is a complex & sprawling API, so see the details of what is supported in :doc:`its own page <../behind_scenes/opengl_support>`. In particular on desktop only modern GL is supported - legacy GL that is only available via the compatibility profile in OpenGL 3.2 is not supported.
+Currently RenderDoc supports Vulkan 1.4, D3D11 (up to D3D11.4), D3D12, OpenGL 3.2+, and OpenGL ES 2.0 - 3.2. Note that OpenGL (and similarly OpenGL ES) is a complex & sprawling API, so see the details of what is supported in :doc:`its own page <../behind_scenes/opengl_support>`. In particular on desktop only modern GL is supported - legacy GL that is only available via the compatibility profile in OpenGL 3.2 is not supported.
 
 Vulkan support has :doc:`a few notes <../behind_scenes/vulkan_support>`, as does :doc:`D3D12 <../behind_scenes/d3d12_support>`.
 
@@ -125,7 +125,7 @@ For other textures it's more difficult - for starters they may actually contain 
 
 Nothing is actually wrong here except perhaps that when visualising linear data it is often more convenient to "over-correct" such that the data is perceptually linear. A good example to use is a normal map: The classic deep blue of (127,127,255) flat normals is technically incorrect as everyone is used to visualising these textures in programs that display the data as if it were sRGB (which is the convention for normal images that do not represent vectors).
 
-You can override this behaviour on any texture that isn't listed as explicitly sRGB with the gamma (γ) button - toggle this off and the over-correction will be disabled.
+You can override this behaviour on any texture that isn't listed as explicitly sRGB with the gamma (``γ``) button - toggle this off and the over-correction will be disabled.
 
 RenderDoc makes my bug go away! Or causes new artifacts that weren't there
 --------------------------------------------------------------------------
@@ -201,22 +201,18 @@ Querying an ``ID3D11Device`` or ``ID3D12Device`` for UUID ``{A7AA6116-9C8D-4BBA-
 
 On Vulkan `VK_EXT_tooling_info` will return an entry for RenderDoc. This extension will always be available when running under RenderDoc.
 
-.. _unstripped-shader-info:
-
 My shaders have 'cbuffer0' and unnamed variables, how do I get proper debug info?
 ---------------------------------------------------------------------------------
 
 If you get textures that are just named ``texture0`` and ``texture1`` or constant/uniform buffers named ``cbuffer2`` then this indicates that you have stripped optional reflection/debug information out of your shaders.
 
-This optional information is generated by the compiler, but is not required for API correctness so some codebases will strip the information out after processing it offline, and so it will not be available for RenderDoc to fetch.
+This optional information is generated by the compiler, but is not required for API correctness so some codebases will strip the information out after processing it offline, and so it will not be available for RenderDoc to fetch. This also includes shader source for source-level shader debugging on APIs that support it.
 
-The simplest solution is just to avoid stripping the data when using RenderDoc, but that isn't always possible. Instead RenderDoc allows you to use API-specific methods to specify where the unstripped data can be found. This means you can save the unstripped shader to a debug location and then either store this location with the shader, or specify it at runtime. On replay RenderDoc will expect the data to be available at that location and it will load it up instead.
+The simplest solution is just to avoid stripping the data when using RenderDoc. If you can enable debugging information to be embedded when building your shaders that's all that is necessary. All APIs will allow this data in the shader blob, but the way it is generated varies by API and shader compiler.
 
-The path you specify (with the stripped shader, or at runtime) can be either absolute or relative. If it's relative, you must configure a shader search path in the :doc:`../window/settings_window`.
+It's not always simple to avoid that stripping, and in some cases it may not be desirable as debug information can be quite a storage and memory overhead, it may instead be better to separate out the debug information and store it in a disk cache, with only a path or identifier remaining in the stripped blob so that RenderDoc can identify the matching debug information later.
 
-The stripped shader file stored on disk can also be compressed with LZ4 to save space as often most of the size is made up for shader source text which compresses well. To do this, simply compress the contents of the file and prepend the pathname (either absolute or relative, specified in the shader blob or at runtime) with ``lz4#``.
-
-For example code using this method, check out :doc:`tips_tricks`.
+For more information on how to do this, see :doc:`../how/how_shader_debug_info`.
 
 I want to debug a child process that my program launches, how can I inject RenderDoc?
 -------------------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -32,7 +32,7 @@ namespace Ui
 class CrashDialog;
 }
 
-class PersistantConfig;
+class PersistentConfig;
 class QNetworkAccessManager;
 class QNetworkReply;
 class QElapsedTimer;
@@ -43,10 +43,11 @@ class CrashDialog : public QDialog
 {
   Q_OBJECT
 public:
-  explicit CrashDialog(PersistantConfig &cfg, QVariantMap crashReportJSON, QWidget *parent = 0);
+  explicit CrashDialog(PersistentConfig &cfg, QVariantMap crashReportJSON, QWidget *parent = 0);
   ~CrashDialog();
 
-  static bool HasCaptureReady(PersistantConfig &cfg);
+  static bool HasCaptureReady(PersistentConfig &cfg);
+  static bool CaptureTooLarge(PersistentConfig &cfg);
 
 private slots:
   // automatic slots
@@ -82,10 +83,12 @@ private:
 
   QElapsedTimer *m_UploadTimer = NULL;
 
+  bool m_Corrupted = false;
+
   QNetworkAccessManager *m_NetManager;
   QNetworkReply *m_Request = NULL;
 
   Thumbnail *m_Thumbnail = NULL;
 
-  PersistantConfig &m_Config;
+  PersistentConfig &m_Config;
 };

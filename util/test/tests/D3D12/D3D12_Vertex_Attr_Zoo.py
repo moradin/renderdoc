@@ -9,11 +9,11 @@ class D3D12_Vertex_Attr_Zoo(rdtest.TestCase):
     def check_capture(self):
         action = self.find_action("Draw")
 
-        self.check(action is not None)
+        assert action is not None
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        ref = {
+        ref: rdtest.MeshReference = {
             0: {
                 'SNORM': [1.0, -1.0, 1.0, -1.0],
                 'UNORM': [12345.0/65535.0, 6789.0/65535.0, 1234.0/65535.0, 567.0/65535.0],
@@ -70,8 +70,8 @@ class D3D12_Vertex_Attr_Zoo(rdtest.TestCase):
 
         rdtest.log.success("Geometry output data is as expected")
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
 
-        self.check_pixel_value(pipe.GetOutputTargets()[0].resourceId, 0.5, 0.5, [0.0, 1.0, 0.0, 1.0])
+        self.check_pixel_value(pipe.GetOutputTargets()[0].resource, 0.5, 0.5, [0.0, 1.0, 0.0, 1.0])
 
         rdtest.log.success("Triangle picked value is as expected")

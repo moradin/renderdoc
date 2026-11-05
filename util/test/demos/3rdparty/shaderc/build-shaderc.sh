@@ -43,19 +43,17 @@ pushd shaderc
 git pull
 ./utils/git-sync-deps
 
+rm -rf build64 build32
+
 if [[ "$PLATFORM" == "Windows" ]]; then
 
-	if [[ "$CMAKE_GENERATOR" == "" ]]; then
-		CMAKE_GENERATOR="Visual Studio 14 2015"
-	fi
-
 	# CMake configure if the folders don't exist
-	cmake -DSHADERC_SKIP_TESTS=ON -DSHADERC_ENABLE_SPVC=OFF -DCMAKE_INSTALL_PREFIX="$INSTALL_PATH"/x64 -DCMAKE_BUILD_TYPE=Release -G "$CMAKE_GENERATOR Win64" -Bbuild64 -H.
-	cmake -DSHADERC_SKIP_TESTS=ON -DSHADERC_ENABLE_SPVC=OFF -DCMAKE_INSTALL_PREFIX="$INSTALL_PATH"/x86 -DCMAKE_BUILD_TYPE=Release -G "$CMAKE_GENERATOR" -Bbuild32 -H.
+	cmake -DSHADERC_SKIP_TESTS=ON -DSHADERC_SKIP_EXAMPLES=ON -DCMAKE_INSTALL_PREFIX="$INSTALL_PATH"/x64 -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 17 2022" -A x64 -Bbuild64 -H. || exit
+	cmake -DSHADERC_SKIP_TESTS=ON -DSHADERC_SKIP_EXAMPLES=ON -DCMAKE_INSTALL_PREFIX="$INSTALL_PATH"/x86 -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 17 2022" -A Win32 -Bbuild32 -H. || exit
 
 	# Build and install
-	cmake --build build64 --config Release --target install --parallel 8
-	cmake --build build32 --config Release --target install --parallel 8
+	cmake --build build64 --config Release --target install --parallel 8 || exit
+	cmake --build build32 --config Release --target install --parallel 8 || exit
 
 else
 

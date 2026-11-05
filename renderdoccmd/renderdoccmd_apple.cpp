@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -110,6 +110,11 @@ int main(int argc, char *argv[])
 
 #if defined(RENDERDOC_SUPPORT_GL)
     support += "GL, ";
+    count++;
+#endif
+
+#if defined(RENDERDOC_SUPPORT_METAL)
+    support += "Metal, ";
     count++;
 #endif
 

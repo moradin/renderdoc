@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -45,6 +45,13 @@ public:
   void setColumnWidths(const QList<int> &widths);
   void resizeColumnsToContents();
 
+  void copyIndices(const QModelIndexList &sel);
+  void copySelectedIndices();
+
+  void setAllowKeyboardSearches(bool allow) { m_allowKeyboardSearches = allow; }
+  bool allowKeyboardSearches() const { return m_allowKeyboardSearches; }
+  void keyboardSearch(const QString &search) override;
+
   void setCustomHeaderSizing(bool sizing) { m_horizontalHeader->setCustomSizing(sizing); }
   void setItemDelegate(QAbstractItemDelegate *delegate);
   QAbstractItemDelegate *itemDelegate() const;
@@ -73,6 +80,8 @@ protected:
 private:
   int m_pinnedColumns = 0;
   int m_columnGroupRole = 0;
+
+  bool m_allowKeyboardSearches = true;
 
   RDHeaderView *m_horizontalHeader;
 

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2019-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -81,7 +81,8 @@ void main()
 
     pipeCreateInfo.vertexInputState.vertexBindingDescriptions = {vkh::vertexBind(0, DefaultA2V)};
     pipeCreateInfo.vertexInputState.vertexAttributeDescriptions = {
-        vkh::vertexAttr(0, 0, DefaultA2V, pos), vkh::vertexAttr(1, 0, DefaultA2V, col),
+        vkh::vertexAttr(0, 0, DefaultA2V, pos),
+        vkh::vertexAttr(1, 0, DefaultA2V, col),
         vkh::vertexAttr(2, 0, DefaultA2V, uv),
     };
 
@@ -93,8 +94,9 @@ void main()
     VkPipeline pipe = createGraphicsPipeline(pipeCreateInfo);
 
     AllocatedBuffer vb(
-        this, vkh::BufferCreateInfo(sizeof(DefaultTri), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                                                            VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        this,
+        vkh::BufferCreateInfo(sizeof(DefaultTri),
+                              VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT),
         VmaAllocationCreateInfo({0, VMA_MEMORY_USAGE_CPU_TO_GPU}));
 
     vb.upload(DefaultTri);
@@ -126,15 +128,19 @@ void main()
         imageInfo.pViewFormats = &mainWindow->format;
 
         VkFramebufferAttachmentsCreateInfoKHR viewsInfo = {
-            VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO_KHR, NULL, 1, &imageInfo,
+            VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO_KHR,
+            NULL,
+            1,
+            &imageInfo,
         };
 
-        CHECK_VKR(vkCreateFramebuffer(
-            device, vkh::FramebufferCreateInfo(mainWindow->rp, {(VkImageView)0x1234},
-                                               mainWindow->scissor.extent, 1,
-                                               VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT_KHR)
-                        .next(&viewsInfo),
-            NULL, &fb));
+        CHECK_VKR(
+            vkCreateFramebuffer(device,
+                                vkh::FramebufferCreateInfo(mainWindow->rp, {(VkImageView)0x1234},
+                                                           mainWindow->scissor.extent, 1,
+                                                           VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT_KHR)
+                                    .next(&viewsInfo),
+                                NULL, &fb));
       }
 
       VkCommandBuffer cmd = GetCommandBuffer();
@@ -150,7 +156,10 @@ void main()
 
       VkImageView curView = mainWindow->GetView();
       VkRenderPassAttachmentBeginInfoKHR usedView = {
-          VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO_KHR, NULL, 1, &curView,
+          VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO_KHR,
+          NULL,
+          1,
+          &curView,
       };
 
       vkCmdBeginRenderPass(
@@ -165,11 +174,43 @@ void main()
 
       vkCmdEndRenderPass(cmd);
 
+      VkCommandBuffer cmd2 = GetCommandBuffer(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+
+      {
+        VkCommandBufferInheritanceInfo inherit = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+        inherit.framebuffer = fb;
+        inherit.renderPass = mainWindow->rp;
+
+        vkBeginCommandBuffer(cmd2, vkh::CommandBufferBeginInfo(
+                                       VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &inherit));
+
+        VkViewport v = mainWindow->viewport;
+        v.width /= 2;
+        v.height /= 2;
+
+        vkCmdBindPipeline(cmd2, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+        vkCmdSetViewport(cmd2, 0, 1, &v);
+        vkCmdSetScissor(cmd2, 0, 1, &mainWindow->scissor);
+        vkh::cmdBindVertexBuffers(cmd2, 0, {vb.buffer}, {0});
+
+        vkCmdDraw(cmd2, 3, 1, 0, 0);
+
+        vkEndCommandBuffer(cmd2);
+      }
+
+      vkCmdBeginRenderPass(
+          cmd, vkh::RenderPassBeginInfo(mainWindow->rp, fb, mainWindow->scissor).next(&usedView),
+          VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+
+      vkCmdExecuteCommands(cmd, 1, &cmd2);
+
+      vkCmdEndRenderPass(cmd);
+
       FinishUsingBackbuffer(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL);
 
       vkEndCommandBuffer(cmd);
 
-      Submit(0, 1, {cmd});
+      Submit(0, 1, {cmd}, {cmd2});
 
       Present();
     }

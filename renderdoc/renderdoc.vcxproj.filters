@@ -112,9 +112,6 @@
     <Filter Include="Android">
       <UniqueIdentifier>{f9ed2873-6120-4b34-a3c2-e57b2de31eb9}</UniqueIdentifier>
     </Filter>
-    <Filter Include="3rdparty\android">
-      <UniqueIdentifier>{6e798cbc-0eae-4f48-9d7c-f3fe58bd32dc}</UniqueIdentifier>
-    </Filter>
     <Filter Include="3rdparty\interceptor-lib">
       <UniqueIdentifier>{0362a726-a8e6-436e-b523-893693163440}</UniqueIdentifier>
     </Filter>
@@ -130,15 +127,6 @@
     <Filter Include="3rdparty\miniz">
       <UniqueIdentifier>{5994c355-880b-45b9-b17a-2e9e1fc2044a}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Common\Serialise\Codecs\cpp_codec">
-      <UniqueIdentifier>{27f41754-8fa8-4a78-afb8-f63a32473540}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Common\Serialise\Codecs\cpp_codec\vulkan">
-      <UniqueIdentifier>{ee6a7f7e-becf-43f0-8c7f-e0109a364ebb}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="OS\Posix\GGP">
-      <UniqueIdentifier>{b76c42f4-d523-4417-a474-56d278d35a36}</UniqueIdentifier>
-    </Filter>
     <Filter Include="3rdparty\compressonator">
       <UniqueIdentifier>{3d212b9b-bf42-40db-84a3-b94e064fd281}</UniqueIdentifier>
     </Filter>
@@ -150,6 +138,12 @@
     </Filter>
     <Filter Include="3rdparty\md5">
       <UniqueIdentifier>{fcbf71ce-3767-435c-9aa2-e1327b9016f4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Replay\Common">
+      <UniqueIdentifier>{02773850-117a-47d9-b238-d5d4b96468b3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{d8130624-7075-486d-91fc-b5ab8cd2b811}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -220,6 +214,9 @@
       <Filter>API\Replay</Filter>
     </ClInclude>
     <ClInclude Include="api\replay\d3d11_pipestate.h">
+      <Filter>API\Replay</Filter>
+    </ClInclude>
+    <ClInclude Include="api\replay\d3d9_pipestate.h">
       <Filter>API\Replay</Filter>
     </ClInclude>
     <ClInclude Include="api\replay\data_types.h">
@@ -303,7 +300,7 @@
     <ClInclude Include="3rdparty\plthook\plthook.h">
       <Filter>3rdparty\plthook</Filter>
     </ClInclude>
-    <ClInclude Include="3rdparty\stb\stb_image_resize.h">
+    <ClInclude Include="3rdparty\stb\stb_image_resize2.h">
       <Filter>3rdparty\stb</Filter>
     </ClInclude>
     <ClInclude Include="api\replay\version.h">
@@ -432,9 +429,6 @@
     <ClInclude Include="android\jdwp.h">
       <Filter>Android</Filter>
     </ClInclude>
-    <ClInclude Include="3rdparty\android\android_manifest.h">
-      <Filter>3rdparty\android</Filter>
-    </ClInclude>
     <ClInclude Include="3rdparty\interceptor-lib\lib\code_generator.h">
       <Filter>3rdparty\interceptor-lib</Filter>
     </ClInclude>
@@ -473,9 +467,6 @@
     </ClInclude>
     <ClInclude Include="core\intervals.h">
       <Filter>Core</Filter>
-    </ClInclude>
-    <ClInclude Include="serialise\codecs\vk_cpp_codec_common.h">
-      <Filter>Common\Serialise\Codecs\cpp_codec\vulkan</Filter>
     </ClInclude>
     <ClInclude Include="data\glsl\glsl_ubos_cpp.h">
       <Filter>Resources\glsl</Filter>
@@ -572,6 +563,27 @@
     </ClInclude>
     <ClInclude Include="replay\dummy_driver.h">
       <Filter>Replay</Filter>
+    </ClInclude>
+    <ClInclude Include="data\hlsl\hlsl_custom_prefix.h">
+      <Filter>Resources\hlsl</Filter>
+    </ClInclude>
+    <ClInclude Include="common\result.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="core\gpu_address_range_tracker.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="replay\common\var_dispatch_helpers.h">
+      <Filter>Replay\Common</Filter>
+    </ClInclude>
+    <ClInclude Include="common\tex_data.h">
+      <Filter>Common\File Formats</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\controlflow.h">
+      <Filter>Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="core\rdcbytetrie.h">
+      <Filter>Core</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -875,9 +887,6 @@
     <ClCompile Include="android\android_utils.cpp">
       <Filter>Android</Filter>
     </ClCompile>
-    <ClCompile Include="android\android_patch.cpp">
-      <Filter>Android</Filter>
-    </ClCompile>
     <ClCompile Include="android\jdwp.cpp">
       <Filter>Android</Filter>
     </ClCompile>
@@ -885,9 +894,6 @@
       <Filter>Android</Filter>
     </ClCompile>
     <ClCompile Include="android\jdwp_util.cpp">
-      <Filter>Android</Filter>
-    </ClCompile>
-    <ClCompile Include="android\android_manifest.cpp">
       <Filter>Android</Filter>
     </ClCompile>
     <ClCompile Include="3rdparty\interceptor-lib\lib\code_generator.cc">
@@ -928,24 +934,6 @@
     </ClCompile>
     <ClCompile Include="core\intervals_tests.cpp">
       <Filter>Core</Filter>
-    </ClCompile>
-    <ClCompile Include="os\posix\ggp\ggp_callstack.cpp">
-      <Filter>OS\Posix\GGP</Filter>
-    </ClCompile>
-    <ClCompile Include="os\posix\ggp\ggp_hook.cpp">
-      <Filter>OS\Posix\GGP</Filter>
-    </ClCompile>
-    <ClCompile Include="os\posix\ggp\ggp_network.cpp">
-      <Filter>OS\Posix\GGP</Filter>
-    </ClCompile>
-    <ClCompile Include="os\posix\ggp\ggp_process.cpp">
-      <Filter>OS\Posix\GGP</Filter>
-    </ClCompile>
-    <ClCompile Include="os\posix\ggp\ggp_stringio.cpp">
-      <Filter>OS\Posix\GGP</Filter>
-    </ClCompile>
-    <ClCompile Include="os\posix\ggp\ggp_threading.cpp">
-      <Filter>OS\Posix\GGP</Filter>
     </ClCompile>
     <ClCompile Include="core\bit_flag_iterator_tests.cpp">
       <Filter>Core</Filter>
@@ -991,6 +979,18 @@
     </ClCompile>
     <ClCompile Include="replay\dummy_driver.cpp">
       <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="core\gpu_address_range_tracker.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="common\jobsystem.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="common\jobsystem_tests.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="shaders\controlflow.cpp">
+      <Filter>Shaders</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -1099,6 +1099,9 @@
     <None Include="data\hlsl\pixelhistory.hlsl">
       <Filter>Resources\hlsl</Filter>
     </None>
+    <None Include="data\hlsl\d3d12_pixelhistory.hlsl">
+      <Filter>Resources\hlsl</Filter>
+    </None>
     <None Include="data\hlsl\quadoverdraw.hlsl">
       <Filter>Resources\hlsl</Filter>
     </None>
@@ -1125,6 +1128,42 @@
       <Filter>Resources\glsl</Filter>
     </None>
     <None Include="data\glsl\discard.frag">
+      <Filter>Resources\glsl</Filter>
+    </None>
+    <None Include="data\hlsl\shaderdebug.hlsl">
+      <Filter>Resources\hlsl</Filter>
+    </None>
+    <None Include="data\glsl\vk_buffer2ms.comp">
+      <Filter>Resources\glsl</Filter>
+    </None>
+    <None Include="data\glsl\vk_depthbuf2ms.frag">
+      <Filter>Resources\glsl</Filter>
+    </None>
+    <None Include="data\glsl\vk_depthms2buffer.comp">
+      <Filter>Resources\glsl</Filter>
+    </None>
+    <None Include="data\glsl\vk_ms2buffer.comp">
+      <Filter>Resources\glsl</Filter>
+    </None>
+    <None Include="data\glsl\depth_copy.frag">
+      <Filter>Resources\glsl</Filter>
+    </None>
+    <None Include="data\glsl\depth_copyms.frag">
+      <Filter>Resources\glsl</Filter>
+    </None>
+    <None Include="data\hlsl\depth_copy.hlsl">
+      <Filter>Resources\hlsl</Filter>
+    </None>
+    <None Include="data\hlsl\raytracing.hlsl">
+      <Filter>Resources\hlsl</Filter>
+    </None>
+    <None Include="data\hlsl\quadswizzle.hlsl">
+      <Filter>Resources\hlsl</Filter>
+    </None>
+    <None Include="data\glsl\debug_math.comp">
+      <Filter>Resources\glsl</Filter>
+    </None>
+    <None Include="data\glsl\debug_sample.frag">
       <Filter>Resources\glsl</Filter>
     </None>
   </ItemGroup>

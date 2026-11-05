@@ -1,7 +1,10 @@
-Vulkan Pipeline State
-=====================
+API Reference: Vulkan Pipeline State
+=====================================
 
-.. contents::
+This is the API reference for the functions, classes, and enums in the ``renderdoc`` module which represents the underlying interface that the UI is built on top of. For more high-level information and instructions on using the python API, see :doc:`../../index`.
+
+.. contents:: Sections
+   :local:
 
 .. currentmodule:: renderdoc
 
@@ -17,10 +20,10 @@ Pipeline and Bindings
 .. autoclass:: VKDescriptorSet
   :members:
 
-.. autoclass:: VKDescriptorBinding
+.. autoclass:: VKDescriptorBuffer
   :members:
 
-.. autoclass:: VKBindingElement
+.. autoclass:: VKDynamicOffset
   :members:
 
 Vertex Input
@@ -108,9 +111,6 @@ Renderpass and Framebuffer
   :members:
 
 .. autoclass:: VKFramebuffer
-  :members:
-
-.. autoclass:: VKAttachment
   :members:
 
 .. autoclass:: VKRenderArea

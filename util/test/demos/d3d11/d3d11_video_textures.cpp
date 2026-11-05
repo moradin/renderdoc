@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -187,8 +187,14 @@ float4 main(v2f IN) : SV_Target0
   bool video_loaded = false;
 
   // implement IUnknown
-  ULONG STDMETHODCALLTYPE AddRef() { return 1; }
-  ULONG STDMETHODCALLTYPE Release() { return 1; }
+  ULONG STDMETHODCALLTYPE AddRef()
+  {
+    return 1;
+  }
+  ULONG STDMETHODCALLTYPE Release()
+  {
+    return 1;
+  }
   HRESULT STDMETHODCALLTYPE QueryInterface(const IID &iid, void **obj)
   {
     if(iid == __uuidof(IUnknown))
@@ -819,7 +825,8 @@ float4 main(v2f IN) : SV_Target0
         RSSetViewport({0.0f, 100.0f, 356.0f, 200.0f, 0.0f, 1.0f});
 
         Vec4i videoConfig[] = {
-            Vec4i(videoWidth, videoHeight, 2, 2), Vec4i(0, 4, 5, 1),
+            Vec4i(videoWidth, videoHeight, 2, 2),
+            Vec4i(0, 4, 5, 1),
         };
 
         if(annot)

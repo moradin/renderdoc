@@ -1,3 +1,5 @@
+from typing import Callable, List
+
 import rdtest
 import renderdoc as rd
 
@@ -8,20 +10,25 @@ class GL_CBuffer_Zoo(rdtest.TestCase):
     def check_capture(self):
         action = self.find_action("Draw")
 
-        self.check(action is not None)
+        assert action is not None
 
-        self.controller.SetFrameEvent(action.eventId, False)
+        self.set_event(action.eventId, False)
 
-        pipe: rd.PipeState = self.controller.GetPipelineState()
+        pipe = self.controller.GetPipelineState()
+
+        refl = pipe.GetShaderReflection(rd.ShaderStage.Fragment)
+
+        # identify the constant buffer
+        cbufIdx = [index for index, c in enumerate(refl.constantBlocks) if c.bufferBacked][0]
 
         stage = rd.ShaderStage.Pixel
-        cbuf: rd.BoundCBuffer = pipe.GetConstantBuffer(stage, 0, 0)
+        cbuf = pipe.GetConstantBlock(stage, cbufIdx, 0).descriptor
 
         var_check = rdtest.ConstantBufferChecker(
             self.controller.GetCBufferVariableContents(pipe.GetGraphicsPipelineObject(),
-                                                       pipe.GetShader(stage),
-                                                       pipe.GetShaderEntryPoint(stage), 0,
-                                                       cbuf.resourceId, cbuf.byteOffset, cbuf.byteSize))
+                                                       pipe.GetShader(stage), stage,
+                                                       pipe.GetShaderEntryPoint(stage), cbufIdx,
+                                                       cbuf.resource, cbuf.byteOffset, cbuf.byteSize))
 
         # For more detailed reference for the below checks, see the commented definition of the cbuffer
         # in the shader source code in the demo itself
@@ -85,7 +92,8 @@ class GL_CBuffer_Zoo(rdtest.TestCase):
         # row_major vec4x4 r;
         var_check.check('r').cols(4).rows(4).row_major().value([92.0, 93.0, 94.0, 95.0,
                                                                 96.0, 97.0, 98.0, 99.0,
-                                                                100.0, 101.0, 102.0, 103.0])
+                                                                100.0, 101.0, 102.0, 103.0,
+                                                                104.0, 105.0, 106.0, 107.0])
 
         # column_major vec4x3 s;
         var_check.check('s').cols(4).rows(3).column_major().value([108.0, 112.0, 116.0, 120.0,
@@ -361,7 +369,9 @@ class GL_CBuffer_Zoo(rdtest.TestCase):
         # to save duplicating if this array changes, we calculate out from the start, as the array is tightly packed
         base = 540.0
 
-        exp_vals = lambda wi,yi,xi: [base + wi * 24.0 + yi * 8.0 + xi * 4.0 + c * 1.0 for c in range(0,4)]
+        exp_vals: Callable[[int, int, int], List[float]] = lambda wi, yi, xi: [
+            base + wi * 24.0 + yi * 8.0 + xi * 4.0 + c * 1.0 for c in range(0, 4)
+        ]
 
         # vec4 multiarray2[4][3][2];
         var_check.check('multiarray2').cols(0).rows(0).arraySize(4).members({
@@ -427,17 +437,20 @@ class GL_CBuffer_Zoo(rdtest.TestCase):
 
         rdtest.log.success("CBuffer variables are as expected")
 
-        self.check_pixel_value(pipe.GetOutputTargets()[0].resourceId, 0.5, 0.5, [536.1, 537.0, 538.0, 539.0])
+        self.check_pixel_value(pipe.GetOutputTargets()[0].resource, 0.5, 0.5, [537.1, 538.0, 539.0, 540.0])
 
         rdtest.log.success("Picked value is as expected")
 
-        cbuf: rd.BoundCBuffer = pipe.GetConstantBuffer(stage, 1, 0)
+        # identify the bare uniforms cbuffer
+        cbufIdx = [index for index, c in enumerate(refl.constantBlocks) if not c.bufferBacked][0]
+
+        cbuf = pipe.GetConstantBlock(stage, 1, 0).descriptor
 
         var_check = rdtest.ConstantBufferChecker(
             self.controller.GetCBufferVariableContents(pipe.GetGraphicsPipelineObject(),
-                                                       pipe.GetShader(stage),
-                                                       pipe.GetShaderEntryPoint(stage), 1,
-                                                       cbuf.resourceId, cbuf.byteOffset, cbuf.byteSize))
+                                                       pipe.GetShader(stage), stage,
+                                                       pipe.GetShaderEntryPoint(stage), cbufIdx,
+                                                       cbuf.resource, cbuf.byteOffset, cbuf.byteSize))
 
         # For bare uniforms we have partial data - only values used in the shader need to get assigned locations and
         # some drivers are aggressive about stripping any others. Only uniforms with locations get upload values.
@@ -569,6 +582,17 @@ class GL_CBuffer_Zoo(rdtest.TestCase):
                     }),
                 }),
             }),
+        })
+
+        var_check.check('H').cols(1).rows(1).value([14000])
+        var_check.check('I').cols(2).rows(1).value([15000, 16000])
+        var_check.check('J').cols(3).rows(1).value([17000, 18000, 19000])
+        var_check.check('K').cols(4).rows(1).value([20000, 21000, 22000, 23000])
+        var_check.check('L').cols(4).rows(1).value([-24000, -25000, -26000, -27000])
+        # float2_struct M[1];
+        var_check.check('M').cols(0).rows(0).arraySize(2).members({
+            0: lambda x: x.cols(1).rows(1).value([28001.0]),
+            1: lambda x: x.cols(1).rows(1).value([-28000.0]),
         })
 
         var_check.done()

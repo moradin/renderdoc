@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -46,6 +46,20 @@ rdcstr DoStringise(const DXIL::ComponentType &el)
     STRINGISE_ENUM_CLASS(UNormF32);
     STRINGISE_ENUM_CLASS(SNormF64);
     STRINGISE_ENUM_CLASS(UNormF64);
+  }
+  END_ENUM_STRINGISE();
+}
+
+template <>
+rdcstr DoStringise(const DXIL::ResourceClass &el)
+{
+  BEGIN_ENUM_STRINGISE(DXIL::ResourceClass);
+  {
+    STRINGISE_ENUM_CLASS(SRV);
+    STRINGISE_ENUM_CLASS(UAV);
+    STRINGISE_ENUM_CLASS(CBuffer);
+    STRINGISE_ENUM_CLASS(Sampler);
+    STRINGISE_ENUM_CLASS_NAMED(Invalid, "<invalid ResourceClass>");
   }
   END_ENUM_STRINGISE();
 }

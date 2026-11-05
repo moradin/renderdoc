@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -50,6 +50,11 @@ void *GetGLHandle()
 
 class GLXPlatform : public GLPlatform
 {
+  RDCDriver m_API = RDCDriver::OpenGL;
+  bool m_Debug = false;
+
+  bool CanFreshBindOnDeletion() { return false; }
+
   bool MakeContextCurrent(GLWindowingData data)
   {
     if(GLX.glXMakeCurrent)
@@ -64,7 +69,7 @@ class GLXPlatform : public GLPlatform
 
     ret.ctx = NULL;
 
-    if(!GLX.glXCreateContext)
+    if(!GLX.glXCreateContextAttribsARB)
       return ret;
 
     bool is_direct = false;
@@ -72,26 +77,52 @@ class GLXPlatform : public GLPlatform
     if(GLX.glXIsDirect)
       is_direct = GLX.glXIsDirect(share.dpy, share.ctx);
 
-    XVisualInfo *cfg = share.cfg;
+    int visAttribs[64] = {0};
+    int i = 0;
 
-    if(cfg == NULL)
+    if(share.cfg)
     {
-      static int visAttribs[] = {0};
-      int numCfgs = 0;
-      GLXFBConfig *fbcfg =
-          GLX.glXChooseFBConfig(share.dpy, DefaultScreen(share.dpy), visAttribs, &numCfgs);
+      int fbcfgID = -1;
+      GLX.glXGetConfig(share.dpy, share.cfg, GLX_FBCONFIG_ID, &fbcfgID);
 
-      cfg = GLX.glXGetVisualFromFBConfig(share.dpy, fbcfg[0]);
+      if(fbcfgID == -1)
+        GLX.glXQueryContext(share.dpy, share.ctx, GLX_FBCONFIG_ID, &fbcfgID);
 
-      XFree(fbcfg);
+      if(fbcfgID != -1)
+      {
+        visAttribs[i++] = GLX_FBCONFIG_ID;
+        visAttribs[i++] = fbcfgID;
+      }
     }
 
-    ret.ctx = GLX.glXCreateContext(share.dpy, cfg, share.ctx, is_direct);
+    int numCfgs = 0;
+    GLXFBConfig *fbcfg =
+        GLX.glXChooseFBConfig(share.dpy, DefaultScreen(share.dpy), visAttribs, &numCfgs);
 
-    if(cfg != share.cfg)
+    int attribs[64] = {0};
+    i = 0;
+
+    if(m_API == RDCDriver::OpenGLES)
     {
-      XFree(cfg);
+      attribs[i++] = GLX_CONTEXT_MAJOR_VERSION_ARB;
+      attribs[i++] = 2;
+      attribs[i++] = GLX_CONTEXT_MINOR_VERSION_ARB;
+      attribs[i++] = 0;
+      attribs[i++] = GLX_CONTEXT_PROFILE_MASK_ARB;
+      attribs[i++] = GLX_CONTEXT_ES2_PROFILE_BIT_EXT;
     }
+    else
+    {
+      attribs[i++] = GLX_CONTEXT_MAJOR_VERSION_ARB;
+      attribs[i++] = 3;
+      attribs[i++] = GLX_CONTEXT_MINOR_VERSION_ARB;
+      attribs[i++] = 2;
+      attribs[i++] = GLX_CONTEXT_PROFILE_MASK_ARB;
+      attribs[i++] = GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
+    }
+    ret.ctx = GLX.glXCreateContextAttribsARB(share.dpy, fbcfg[0], share.ctx, is_direct, attribs);
+
+    XFree(fbcfg);
 
     return ret;
   }
@@ -235,13 +266,10 @@ class GLXPlatform : public GLPlatform
     attribs[i++] = GLX_CONTEXT_MINOR_VERSION_ARB;
     attribs[i++] = GLCoreVersion % 10;
     attribs[i++] = GLX_CONTEXT_FLAGS_ARB;
-#if ENABLED(RDOC_DEVEL)
-    attribs[i++] = GLX_CONTEXT_DEBUG_BIT_ARB;
-#else
-    attribs[i++] = 0;
-#endif
+    attribs[i++] = m_Debug ? GLX_CONTEXT_DEBUG_BIT_ARB : 0;
     attribs[i++] = GLX_CONTEXT_PROFILE_MASK_ARB;
-    attribs[i++] = GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
+    attribs[i++] = m_API == RDCDriver::OpenGLES ? GLX_CONTEXT_ES2_PROFILE_BIT_EXT
+                                                : GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
 
     GLXContext ctx = GLX.glXCreateContextAttribsARB(dpy, fbcfg[0], share_context.ctx, true, attribs);
 
@@ -333,14 +361,13 @@ class GLXPlatform : public GLPlatform
   }
 
   bool PopulateForReplay() { return GLX.PopulateForReplay(); }
-  ReplayStatus InitialiseAPI(GLWindowingData &replayContext, RDCDriver api, bool debug)
+  void SetDriverType(RDCDriver api) { m_API = api; }
+  RDResult InitialiseAPI(GLWindowingData &replayContext, RDCDriver api, bool debug)
   {
-// force debug in development builds
-#if ENABLED(RDOC_DEVEL)
-    debug = true;
-#endif
-
     RDCASSERT(api == RDCDriver::OpenGL || api == RDCDriver::OpenGLES);
+
+    m_API = api;
+    m_Debug = debug;
 
     int attribs[64] = {0};
     int i = 0;
@@ -352,7 +379,7 @@ class GLXPlatform : public GLPlatform
     int &minor = attribs[i];
     attribs[i++] = 0;
     attribs[i++] = GLX_CONTEXT_FLAGS_ARB;
-    attribs[i++] = debug ? GLX_CONTEXT_DEBUG_BIT_ARB : 0;
+    attribs[i++] = m_Debug ? GLX_CONTEXT_DEBUG_BIT_ARB : 0;
     attribs[i++] = GLX_CONTEXT_PROFILE_MASK_ARB;
     attribs[i++] = api == RDCDriver::OpenGLES ? GLX_CONTEXT_ES2_PROFILE_BIT_EXT
                                               : GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
@@ -361,8 +388,7 @@ class GLXPlatform : public GLPlatform
 
     if(dpy == NULL)
     {
-      RDCERR("Couldn't open default X display");
-      return ReplayStatus::APIInitFailed;
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Couldn't open default X display");
     }
 
     // don't need to care about the fb config as we won't be using the default framebuffer
@@ -373,8 +399,7 @@ class GLXPlatform : public GLPlatform
 
     if(fbcfg == NULL)
     {
-      RDCERR("Couldn't choose default framebuffer config");
-      return ReplayStatus::APIInitFailed;
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Couldn't choose default framebuffer config");
     }
 
     GLXContext ctx = NULL;
@@ -402,8 +427,9 @@ class GLXPlatform : public GLPlatform
     if(ctx == NULL || X11ErrorSeen)
     {
       XFree(fbcfg);
-      RDCERR("Couldn't create 3.2 context - RenderDoc requires OpenGL 3.2 availability");
-      return ReplayStatus::APIHardwareUnsupported;
+      RETURN_ERROR_RESULT(
+          ResultCode::APIHardwareUnsupported,
+          "Couldn't create 3.2 context - RenderDoc requires OpenGL 3.2 availability");
     }
 
     GLCoreVersion = major * 10 + minor;
@@ -421,8 +447,8 @@ class GLXPlatform : public GLPlatform
     {
       GLX.glXDestroyPbuffer(dpy, pbuffer);
       GLX.glXDestroyContext(dpy, ctx);
-      RDCERR("Couldn't make pbuffer & context current");
-      return ReplayStatus::APIInitFailed;
+      return ResultCode::APIInitFailed;
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Couldn't make pbuffer & context current");
     }
 
     PFNGLGETSTRINGPROC GetString = (PFNGLGETSTRINGPROC)GetReplayFunction("glGetString");
@@ -448,7 +474,7 @@ class GLXPlatform : public GLPlatform
 
     pbuffers.insert(pbuffer);
 
-    return ReplayStatus::Succeeded;
+    return ResultCode::Succeeded;
   }
 
   void DrawQuads(float width, float height, const rdcarray<Vec4f> &vertices)
@@ -482,20 +508,20 @@ bool GLXDispatchTable::PopulateForReplay()
 
   bool symbols_ok = true;
 
-#define LOAD_FUNC(func)                                                                             \
-  if(!this->func)                                                                                   \
-    this->func = (CONCAT(PFN_, func))Process::GetFunctionAddress(handle, STRINGIZE(func));          \
-                                                                                                    \
-  if(!func && this->glXGetProcAddressARB)                                                           \
-    this->func = (CONCAT(PFN_, func)) this->glXGetProcAddressARB((const GLubyte *)STRINGIZE(func)); \
-                                                                                                    \
-  if(!func && this->glXGetProcAddress)                                                              \
-    this->func = (CONCAT(PFN_, func)) this->glXGetProcAddress((const GLubyte *)STRINGIZE(func));    \
-                                                                                                    \
-  if(!func)                                                                                         \
-  {                                                                                                 \
-    symbols_ok = false;                                                                             \
-    RDCWARN("Unable to load '%s'", STRINGIZE(func));                                                \
+#define LOAD_FUNC(func)                                                                            \
+  if(!this->func)                                                                                  \
+    this->func = (CONCAT(PFN_, func))Process::GetFunctionAddress(handle, STRINGIZE(func));         \
+                                                                                                   \
+  if(!func && this->glXGetProcAddressARB)                                                          \
+    this->func = (CONCAT(PFN_, func))this->glXGetProcAddressARB((const GLubyte *)STRINGIZE(func)); \
+                                                                                                   \
+  if(!func && this->glXGetProcAddress)                                                             \
+    this->func = (CONCAT(PFN_, func))this->glXGetProcAddress((const GLubyte *)STRINGIZE(func));    \
+                                                                                                   \
+  if(!func)                                                                                        \
+  {                                                                                                \
+    symbols_ok = false;                                                                            \
+    RDCWARN("Unable to load '%s'", STRINGIZE(func));                                               \
   }
 
   GLX_HOOKED_SYMBOLS(LOAD_FUNC)

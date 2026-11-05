@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2018-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -87,7 +87,7 @@ void main()
 
     for(int i = 0; i < 100; i++)
     {
-      GraphicsWindow *win2 = MakeWindow(32, 32, NULL);
+      GraphicsWindow *win2 = MakeWindow(32, 32, "extra");
       void *ctx2 = MakeContext(win2, mainContext);
       ActivateContext(win2, ctx2);
       ActivateContext(mainWindow, mainContext);

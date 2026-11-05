@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -32,87 +32,53 @@
 #include <QMutexLocker>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QSplitter>
 #include <QTimer>
+#include <QToolTip>
 #include <QtMath>
 #include "Code/QRDUtils.h"
 #include "Code/Resources.h"
+#include "Widgets/CollapseGroupBox.h"
+#include "Widgets/ComputeDebugSelector.h"
+#include "Widgets/Extended/RDLabel.h"
+#include "Widgets/Extended/RDLineEdit.h"
+#include "Widgets/Extended/RDSplitter.h"
+#include "Windows/Dialogs/AxisMappingDialog.h"
+#include "Windows/Dialogs/CameraControlsDialog.h"
 #include "ui_BufferViewer.h"
 
+struct FixedVarTag
+{
+  FixedVarTag() = default;
+  FixedVarTag(uint32_t size) : valid(true), padding(true), byteSize(size) {}
+  FixedVarTag(rdcstr varName, uint32_t offset)
+      : valid(true), padding(false), name(varName), byteOffset(offset)
+  {
+  }
+  bool valid = false;
+  bool padding = false;
+  bool matrix = false;
+  bool rowmajor = false;
+  rdcstr name;
+  union
+  {
+    uint32_t byteOffset;
+    uint32_t byteSize;
+  };
+};
+
+Q_DECLARE_METATYPE(FixedVarTag);
+
 static const uint32_t MaxVisibleRows = 10000;
-
-namespace NativeScanCode
-{
-enum
-{
-#if defined(Q_OS_WIN32)
-  Key_A = 30,
-  Key_S = 31,
-  Key_D = 32,
-  Key_F = 33,
-  Key_W = 17,
-  Key_R = 19,
-#elif defined(Q_OS_LINUX)
-  Key_A = 30 + 8,
-  Key_S = 31 + 8,
-  Key_D = 32 + 8,
-  Key_F = 33 + 8,
-  Key_W = 17 + 8,
-  Key_R = 19 + 8,
-#elif defined(Q_OS_MACOS)
-  // scan codes not supported on OS X
-  Key_A = 0xDEADBEF1,
-  Key_S = 0xDEADBEF2,
-  Key_D = 0xDEADBEF3,
-  Key_F = 0xDEADBEF4,
-  Key_W = 0xDEADBEF5,
-  Key_R = 0xDEADBEF6,
-#else
-#error "Unknown platform! Define NativeScanCode"
-#endif
-};
-};
-
-namespace NativeVirtualKey
-{
-enum
-{
-#if defined(Q_OS_WIN32)
-  Key_A = quint32('A'),
-  Key_S = quint32('S'),
-  Key_D = quint32('D'),
-  Key_F = quint32('F'),
-  Key_W = quint32('W'),
-  Key_R = quint32('R'),
-#elif defined(Q_OS_LINUX)
-  Key_A = quint32('a'),
-  Key_S = quint32('s'),
-  Key_D = quint32('d'),
-  Key_F = quint32('f'),
-  Key_W = quint32('w'),
-  Key_R = quint32('r'),
-#elif defined(Q_OS_MACOS)
-  Key_A = 0x00,
-  Key_S = 0x01,
-  Key_D = 0x02,
-  Key_F = 0x03,
-  Key_W = 0x0D,
-  Key_R = 0x0F,
-#else
-#error "Unknown platform! Define NativeVirtualKey"
-#endif
-};
-};
 
 class CameraWrapper
 {
 public:
+  CameraWrapper(ICaptureContext &ctx) : m_Ctx(ctx) {}
   virtual ~CameraWrapper() {}
   virtual bool Update(QRect winSize) = 0;
   virtual ICamera *camera() = 0;
 
-  virtual void MouseWheel(QWheelEvent *e) = 0;
-
-  virtual void MouseClick(QMouseEvent *e) { m_DragStartPos = e->pos(); }
   virtual void MouseMove(QMouseEvent *e)
   {
     if(e->buttons() & Qt::LeftButton)
@@ -125,58 +91,73 @@ public:
     }
   }
 
-  enum class KeyPressDirection
-  {
-    None,
-    Left,
-    Right,
-    Forward,
-    Back,
-    Up,
-    Down,
-  };
-
   KeyPressDirection GetDirection(QKeyEvent *e)
   {
-    // if we have a native scancode, we expect to be able to match it. If we don't then don't get
-    // any false positives by checking the virtual key
-    if(e->nativeScanCode() > 1)
+    const rdcarray<uint32_t> &keys = m_Ctx.Config().MeshViewer_KeySettings;
+    for(int i = 0; i < (int)KeyPressDirection::Count; i++)
     {
-      switch(e->nativeScanCode())
-      {
-        case NativeScanCode::Key_A: return KeyPressDirection::Left;
-        case NativeScanCode::Key_D: return KeyPressDirection::Right;
-        case NativeScanCode::Key_W: return KeyPressDirection::Forward;
-        case NativeScanCode::Key_S: return KeyPressDirection::Back;
-        case NativeScanCode::Key_R: return KeyPressDirection::Up;
-        case NativeScanCode::Key_F: return KeyPressDirection::Down;
-        default: break;
-      }
+      KeyPressDirection dir = KeyPressDirection(i);
+      Qt::Key primary, secondary;
+
+      int p = keySettingIdx(dir, true);
+      int s = keySettingIdx(dir, false);
+
+      if(p < keys.count() && keys[p] != 0)
+        primary = getKeySetting(keys[p]);
+      else
+        primary = getDefaultKey(dir, true);
+
+      if(s < keys.count() && keys[s] != 0)
+        secondary = getKeySetting(keys[s]);
+      else
+        secondary = getDefaultKey(dir, false);
+
+      if(e->key() == primary || e->key() == secondary)
+        return dir;
     }
-    else
+
+    return KeyPressDirection::None;
+  }
+
+  KeyPressDirection GetDirection(QMouseEvent *e)
+  {
+    if(m_Ctx.Config().MeshViewer_KeySettings.size() >= (size_t)KeyPressDirection::NumSettings)
     {
-      switch(e->nativeVirtualKey())
+      for(int i = 0; i < (int)KeyPressDirection::Count; i++)
       {
-        case NativeVirtualKey::Key_A: return KeyPressDirection::Left;
-        case NativeVirtualKey::Key_D: return KeyPressDirection::Right;
-        case NativeVirtualKey::Key_W: return KeyPressDirection::Forward;
-        case NativeVirtualKey::Key_S: return KeyPressDirection::Back;
-        case NativeVirtualKey::Key_R: return KeyPressDirection::Up;
-        case NativeVirtualKey::Key_F: return KeyPressDirection::Down;
-        default: break;
+        KeyPressDirection dir = KeyPressDirection(i);
+        Qt::MouseButton primary =
+            getMouseButtonSetting(m_Ctx.Config().MeshViewer_KeySettings[keySettingIdx(dir, true)]);
+        Qt::MouseButton secondary =
+            getMouseButtonSetting(m_Ctx.Config().MeshViewer_KeySettings[keySettingIdx(dir, false)]);
+
+        if(e->button() == primary || e->button() == secondary)
+          return dir;
       }
     }
 
-    // handle arrow keys, we can do this safely with Qt::Key
-    switch(e->key())
+    return KeyPressDirection::None;
+  }
+
+  KeyPressDirection GetDirection(QWheelEvent *e)
+  {
+    if(m_Ctx.Config().MeshViewer_KeySettings.size() >= (size_t)KeyPressDirection::NumSettings)
     {
-      case Qt::Key_Left: return KeyPressDirection::Left;
-      case Qt::Key_Right: return KeyPressDirection::Right;
-      case Qt::Key_Up: return KeyPressDirection::Forward;
-      case Qt::Key_Down: return KeyPressDirection::Back;
-      case Qt::Key_PageUp: return KeyPressDirection::Up;
-      case Qt::Key_PageDown: return KeyPressDirection::Down;
-      default: break;
+      QPoint angleDelta = e->angleDelta();
+      angleDelta.setX(qMin(1, qMax(-1, angleDelta.x())));
+      angleDelta.setY(qMin(1, qMax(-1, angleDelta.y())));
+
+      for(int i = 0; i < (int)KeyPressDirection::Count; i++)
+      {
+        KeyPressDirection dir = KeyPressDirection(i);
+        QPoint primary =
+            getMouseWheelSetting(m_Ctx.Config().MeshViewer_KeySettings[keySettingIdx(dir, true)]);
+        QPoint secondary =
+            getMouseWheelSetting(m_Ctx.Config().MeshViewer_KeySettings[keySettingIdx(dir, false)]);
+
+        if(angleDelta == primary || angleDelta == secondary)
+          return dir;
+      }
     }
 
     return KeyPressDirection::None;
@@ -188,12 +169,16 @@ public:
 
     if(dir == KeyPressDirection::Left || dir == KeyPressDirection::Right)
       setMove(Direction::Horiz, 0);
-    if(dir == KeyPressDirection::Forward || dir == KeyPressDirection::Back)
+    else if(dir == KeyPressDirection::Forward || dir == KeyPressDirection::Back)
       setMove(Direction::Fwd, 0);
-    if(dir == KeyPressDirection::Up || dir == KeyPressDirection::Down)
+    else if(dir == KeyPressDirection::Up || dir == KeyPressDirection::Down)
       setMove(Direction::Vert, 0);
 
-    if(e->modifiers() & Qt::ShiftModifier)
+    Qt::KeyboardModifier speedMod = Qt::ShiftModifier;
+    if(m_Ctx.Config().MeshViewer_SpeedModifier > 0)
+      speedMod = Qt::KeyboardModifier(m_Ctx.Config().MeshViewer_SpeedModifier);
+
+    if(speedMod != Qt::NoModifier && (e->modifiers() & speedMod))
       m_CurrentSpeed = 3.0f;
     else
       m_CurrentSpeed = 1.0f;
@@ -205,7 +190,7 @@ public:
 
     switch(dir)
     {
-      case KeyPressDirection::None: break;
+      default: break;
       case KeyPressDirection::Left: setMove(Direction::Horiz, -1); break;
       case KeyPressDirection::Right: setMove(Direction::Horiz, 1); break;
       case KeyPressDirection::Forward: setMove(Direction::Fwd, 1); break;
@@ -214,11 +199,46 @@ public:
       case KeyPressDirection::Down: setMove(Direction::Vert, -1); break;
     }
 
-    if(e->modifiers() & Qt::ShiftModifier)
+    Qt::KeyboardModifier speedMod = Qt::ShiftModifier;
+    if(m_Ctx.Config().MeshViewer_SpeedModifier > 0)
+      speedMod = Qt::KeyboardModifier(m_Ctx.Config().MeshViewer_SpeedModifier);
+
+    if(speedMod != Qt::NoModifier && (e->modifiers() & speedMod))
       m_CurrentSpeed = 3.0f;
     else
       m_CurrentSpeed = 1.0f;
   }
+
+  virtual void MouseClick(QMouseEvent *e)
+  {
+    m_DragStartPos = e->pos();
+    KeyPressDirection dir = GetDirection(e);
+
+    switch(dir)
+    {
+      default: break;
+      case KeyPressDirection::Left: setMove(Direction::Horiz, -1); break;
+      case KeyPressDirection::Right: setMove(Direction::Horiz, 1); break;
+      case KeyPressDirection::Forward: setMove(Direction::Fwd, 1); break;
+      case KeyPressDirection::Back: setMove(Direction::Fwd, -1); break;
+      case KeyPressDirection::Up: setMove(Direction::Vert, 1); break;
+      case KeyPressDirection::Down: setMove(Direction::Vert, -1); break;
+    }
+  }
+
+  virtual void MouseUnclick(QMouseEvent *e)
+  {
+    KeyPressDirection dir = GetDirection(e);
+
+    if(dir == KeyPressDirection::Left || dir == KeyPressDirection::Right)
+      setMove(Direction::Horiz, 0);
+    else if(dir == KeyPressDirection::Forward || dir == KeyPressDirection::Back)
+      setMove(Direction::Fwd, 0);
+    else if(dir == KeyPressDirection::Up || dir == KeyPressDirection::Down)
+      setMove(Direction::Vert, 0);
+  }
+
+  virtual void MouseWheel(QWheelEvent *e) {}
 
   float SpeedMultiplier = 0.05f;
 
@@ -234,6 +254,8 @@ protected:
   int move(Direction dir) { return m_CurrentMove[(int)dir]; }
   float currentSpeed() { return m_CurrentSpeed * SpeedMultiplier; }
   QPoint dragStartPos() { return m_DragStartPos; }
+
+  ICaptureContext &m_Ctx;
 private:
   float m_CurrentSpeed = 1.0f;
   int m_CurrentMove[(int)Direction::Num] = {0, 0, 0};
@@ -245,7 +267,10 @@ private:
 class ArcballWrapper : public CameraWrapper
 {
 public:
-  ArcballWrapper() { m_Cam = RENDERDOC_InitCamera(CameraType::Arcball); }
+  ArcballWrapper(ICaptureContext &ctx) : CameraWrapper(ctx)
+  {
+    m_Cam = RENDERDOC_InitCamera(CameraType::Arcball);
+  }
   virtual ~ArcballWrapper() { m_Cam->Shutdown(); }
   ICamera *camera() override { return m_Cam; }
   void Reset(FloatVector pos, float dist)
@@ -270,6 +295,8 @@ public:
 
   void MouseWheel(QWheelEvent *e) override
   {
+    CameraWrapper::MouseWheel(e);
+
     float mod = (1.0f - e->delta() / 2500.0f);
 
     SetDistance(qMax(1e-6f, m_Distance * mod));
@@ -347,7 +374,10 @@ private:
 class FlycamWrapper : public CameraWrapper
 {
 public:
-  FlycamWrapper() { m_Cam = RENDERDOC_InitCamera(CameraType::FPSLook); }
+  FlycamWrapper(ICaptureContext &ctx) : CameraWrapper(ctx)
+  {
+    m_Cam = RENDERDOC_InitCamera(CameraType::FPSLook);
+  }
   virtual ~FlycamWrapper() { m_Cam->Shutdown(); }
   ICamera *camera() override { return m_Cam; }
   void Reset(FloatVector pos)
@@ -402,7 +432,49 @@ public:
     return false;
   }
 
-  void MouseWheel(QWheelEvent *e) override {}
+  virtual void MouseWheel(QWheelEvent *e) override
+  {
+    CameraWrapper::MouseWheel(e);
+
+    KeyPressDirection dir = GetDirection(e);
+
+    FloatVector fwd = m_Cam->GetForward();
+    FloatVector right = m_Cam->GetRight();
+
+    float speed = currentSpeed();
+
+    if(dir == KeyPressDirection::Left || dir == KeyPressDirection::Right)
+    {
+      int horizMove = dir == KeyPressDirection::Left ? -1 : 1;
+      m_Position.x += right.x * speed * (float)horizMove;
+      m_Position.y += right.y * speed * (float)horizMove;
+      m_Position.z += right.z * speed * (float)horizMove;
+    }
+    else if(dir == KeyPressDirection::Up || dir == KeyPressDirection::Down)
+    {
+      // this makes less intuitive sense, instead go 'absolute' up
+      // m_Position.x += up.x * speed * (float)vertMove;
+      // m_Position.y += up.y * speed * (float)vertMove;
+      // m_Position.z += up.z * speed * (float)vertMove;
+
+      int vertMove = dir == KeyPressDirection::Up ? -1 : 1;
+      m_Position.y += speed * (float)vertMove;
+    }
+    else if(dir == KeyPressDirection::Forward || dir == KeyPressDirection::Back)
+    {
+      int fwdMove = dir == KeyPressDirection::Back ? -1 : 1;
+      m_Position.x += fwd.x * speed * (float)fwdMove;
+      m_Position.y += fwd.y * speed * (float)fwdMove;
+      m_Position.z += fwd.z * speed * (float)fwdMove;
+    }
+    else
+    {
+      return;
+    }
+
+    m_Cam->SetPosition(m_Position.x, m_Position.y, m_Position.z);
+  }
+
   void MouseMove(QMouseEvent *e) override
   {
     if(dragStartPos().x() > 0 && e->buttons() == Qt::LeftButton)
@@ -455,6 +527,7 @@ struct BufferElementProperties
   int buffer = 0;
   ShaderBuiltin systemValue = ShaderBuiltin::Undefined;
   bool perinstance = false;
+  bool perprimitive = false;
   bool floatCastWrong = false;
   int instancerate = 1;
 };
@@ -465,7 +538,13 @@ struct BufferConfiguration
   uint32_t numRows = 0, unclampedNumRows = 0;
   uint32_t pagingOffset = 0;
 
-  QString noDraw;
+  PackingRules packing;
+  ShaderConstant fixedVars;
+  rdcarray<ShaderVariable> evalVars;
+  uint32_t repeatStride = 1;
+  uint32_t repeatOffset = 0;
+
+  QString statusString;
 
   bool noVertices = false;
   bool noInstances = false;
@@ -477,6 +556,14 @@ struct BufferConfiguration
   int32_t displayBaseVertex = 0;
   BufferData *indices = NULL;
   int32_t baseVertex = 0;
+
+  rdcfixedarray<uint32_t, 3> dispatchSize;
+  rdcarray<TaskGroupSize> taskSizes;
+  rdcarray<uint32_t> meshletVertexPrefixCounts;
+  uint32_t taskOrMeshletOffset = 0;
+  uint64_t perPrimitiveOffset = 0;
+  uint32_t perPrimitiveStride = 0;
+  Topology topology = Topology::TriangleList;
 
   rdcarray<ShaderConstant> columns;
   rdcarray<BufferElementProperties> props;
@@ -498,7 +585,13 @@ struct BufferConfiguration
     unclampedNumRows = o.unclampedNumRows;
     pagingOffset = o.pagingOffset;
 
-    noDraw = o.noDraw;
+    packing = o.packing;
+    fixedVars = o.fixedVars;
+    evalVars = o.evalVars;
+    repeatStride = o.repeatStride;
+    repeatOffset = o.repeatOffset;
+
+    statusString = o.statusString;
 
     noVertices = o.noVertices;
     noInstances = o.noInstances;
@@ -513,6 +606,13 @@ struct BufferConfiguration
       indices->ref();
 
     baseVertex = o.baseVertex;
+    meshletVertexPrefixCounts = o.meshletVertexPrefixCounts;
+    dispatchSize = o.dispatchSize;
+    taskSizes = o.taskSizes;
+    taskOrMeshletOffset = o.taskOrMeshletOffset;
+    perPrimitiveOffset = o.perPrimitiveOffset;
+    perPrimitiveStride = o.perPrimitiveStride;
+    topology = o.topology;
 
     columns = o.columns;
     props = o.props;
@@ -540,6 +640,10 @@ struct BufferConfiguration
     for(BufferData *b : buffers)
       b->deref();
 
+    meshletVertexPrefixCounts.clear();
+    dispatchSize = {};
+    taskSizes.clear();
+
     buffers.clear();
     columns.clear();
     props.clear();
@@ -548,7 +652,7 @@ struct BufferConfiguration
     numRows = 0;
     unclampedNumRows = 0;
 
-    noDraw.clear();
+    statusString.clear();
 
     noVertices = false;
     noInstances = false;
@@ -748,10 +852,15 @@ static QString interpretVariant(const QVariant &v, const ShaderConstant &el,
       memcpy(&u, &f, sizeof(f));
     }
 
-    if(el.type.descriptor.displayAsHex && prop.format.type == ResourceFormatType::Regular)
+    const bool hexDisplay = bool(el.type.flags & ShaderVariableFlags::HexDisplay);
+    const bool binDisplay = bool(el.type.flags & ShaderVariableFlags::BinaryDisplay);
+
+    if(hexDisplay && prop.format.type == ResourceFormatType::Regular)
       ret = Formatter::HexFormat(u, prop.format.compByteWidth);
+    else if(binDisplay && prop.format.type == ResourceFormatType::Regular)
+      ret = Formatter::BinFormat(u, prop.format.compByteWidth);
     else
-      ret = Formatter::Format(u, el.type.descriptor.displayAsHex);
+      ret = Formatter::Format(u, hexDisplay);
   }
   else if(vt == QMetaType::Int || vt == QMetaType::Short || vt == QMetaType::SChar)
   {
@@ -770,7 +879,13 @@ static QString interpretVariant(const QVariant &v, const ShaderConstant &el,
   }
   else if(vt == QMetaType::ULongLong)
   {
-    ret = Formatter::Format((uint64_t)v.toULongLong(), el.type.descriptor.displayAsHex);
+    const bool hexDisplay = bool(el.type.flags & ShaderVariableFlags::HexDisplay);
+    const bool binDisplay = bool(el.type.flags & ShaderVariableFlags::BinaryDisplay);
+
+    if(binDisplay)
+      ret = Formatter::BinFormat((uint64_t)v.toULongLong(), 8);
+    else
+      ret = Formatter::Format((uint64_t)v.toULongLong(), hexDisplay);
   }
   else if(vt == QMetaType::LongLong)
   {
@@ -828,8 +943,8 @@ public:
 
     if(ret == 0)
     {
-      if(!config.noDraw.isEmpty())
-        ret += config.noDraw.count(QLatin1Char('\n')) + 1;
+      if(!config.statusString.isEmpty())
+        ret += config.statusString.count(QLatin1Char('\n')) + 1;
       if(config.noVertices)
         ret++;
       if(config.noInstances)
@@ -854,7 +969,7 @@ public:
   {
     if(section < totalColumnCount && orientation == Qt::Horizontal)
     {
-      if(role == Qt::DisplayRole || role == columnGroupRole)
+      if(role == Qt::DisplayRole || role == Qt::ToolTipRole || role == columnGroupRole)
       {
         if(section == 0)
         {
@@ -868,7 +983,7 @@ public:
         {
           const ShaderConstant &el = elementForColumn(section);
 
-          if(el.type.descriptor.columns == 1 || role == columnGroupRole)
+          if(el.type.columns == 1 || role == Qt::ToolTipRole || role == columnGroupRole)
             return el.name;
 
           QChar comps[] = {QLatin1Char('x'), QLatin1Char('y'), QLatin1Char('z'), QLatin1Char('w')};
@@ -979,7 +1094,7 @@ public:
           const ShaderConstant &el = elementForColumn(col);
           const BufferElementProperties &prop = propForColumn(col);
 
-          if(el.type.descriptor.displayAsRGB && prop.buffer < config.buffers.size())
+          if((el.type.flags & ShaderVariableFlags::RGBDisplay) && prop.buffer < config.buffers.size())
           {
             const byte *data = config.buffers[prop.buffer]->data();
             const byte *end = config.buffers[prop.buffer]->end();
@@ -989,7 +1104,7 @@ public:
 
             // only slightly wasteful, we need to fetch all variants together
             // since some formats are packed and can't be read individually
-            QVariantList list = GetVariants(prop.format, el.type.descriptor, data, end);
+            QVariantList list = GetVariants(prop.format, el, data, end);
 
             if(!list.isEmpty())
             {
@@ -1003,7 +1118,8 @@ public:
                 double g = list.size() > 1 ? qBound(0.0, list[1].toDouble(), 1.0) : 0.0;
                 double b = list.size() > 2 ? qBound(0.0, list[2].toDouble(), 1.0) : 0.0;
 
-                rgb = QColor::fromRgbF(r, g, b);
+                rgb = QColor::fromRgbF(ConvertLinearToSRGB(float(r)), ConvertLinearToSRGB(float(g)),
+                                       ConvertLinearToSRGB(float(b)));
               }
               else if(vt == QMetaType::Float)
               {
@@ -1011,7 +1127,8 @@ public:
                 float g = list.size() > 1 ? qBound(0.0f, list[1].toFloat(), 1.0f) : 0.0;
                 float b = list.size() > 2 ? qBound(0.0f, list[2].toFloat(), 1.0f) : 0.0;
 
-                rgb = QColor::fromRgbF(r, g, b);
+                rgb = QColor::fromRgbF(ConvertLinearToSRGB(float(r)), ConvertLinearToSRGB(float(g)),
+                                       ConvertLinearToSRGB(float(b)));
               }
               else if(vt == QMetaType::UInt || vt == QMetaType::UShort || vt == QMetaType::UChar)
               {
@@ -1019,6 +1136,8 @@ public:
                 uint g = list.size() > 1 ? qBound(0U, list[1].toUInt(), 255U) : 0.0;
                 uint b = list.size() > 2 ? qBound(0U, list[2].toUInt(), 255U) : 0.0;
 
+                // we leave this as assuming it's in sRGB space since most commonly this will be an
+                // 8-bit texture being viewed as a buffer
                 rgb = QColor::fromRgb(r, g, b);
               }
               else if(vt == QMetaType::Int || vt == QMetaType::Short || vt == QMetaType::SChar)
@@ -1028,6 +1147,10 @@ public:
                 int b = list.size() > 2 ? qBound(0, list[2].toInt(), 255) : 0.0;
 
                 rgb = QColor::fromRgb(r, g, b);
+              }
+              else
+              {
+                return QVariant();
               }
 
               if(role == Qt::BackgroundRole)
@@ -1039,10 +1162,24 @@ public:
         }
       }
 
+      if(role == Qt::BackgroundRole && meshView && !config.meshletVertexPrefixCounts.empty())
+      {
+        auto it = std::upper_bound(config.meshletVertexPrefixCounts.begin(),
+                                   config.meshletVertexPrefixCounts.end(), row);
+
+        if(it != config.meshletVertexPrefixCounts.begin())
+          it--;
+
+        size_t meshletIdx = it - config.meshletVertexPrefixCounts.begin();
+
+        return meshletIdx % 2 ? view->palette().color(QPalette::AlternateBase)
+                              : view->palette().color(QPalette::Base);
+      }
+
       if(role == Qt::DisplayRole)
       {
         if(config.numRows == 0 &&
-           (config.noInstances || config.noVertices || !config.noDraw.isEmpty()))
+           (config.noInstances || config.noVertices || !config.statusString.isEmpty()))
         {
           if(col < 2)
             return lit("---");
@@ -1050,9 +1187,9 @@ public:
           if(col != 2)
             return QVariant();
 
-          if(!config.noDraw.isEmpty())
+          if(!config.statusString.isEmpty())
           {
-            return config.noDraw.split(QLatin1Char('\n'))[row];
+            return config.statusString.split(QLatin1Char('\n'))[row];
           }
           else if(config.noVertices && config.noInstances)
           {
@@ -1090,7 +1227,26 @@ public:
         if(col >= 0 && col < totalColumnCount && row < config.numRows)
         {
           if(col == 0)
-            return row + config.pagingOffset;
+          {
+            if(meshView && !config.meshletVertexPrefixCounts.empty())
+            {
+              auto it = std::upper_bound(config.meshletVertexPrefixCounts.begin(),
+                                         config.meshletVertexPrefixCounts.end(), row);
+
+              if(it != config.meshletVertexPrefixCounts.begin())
+                it--;
+
+              size_t meshletIdx = it - config.meshletVertexPrefixCounts.begin();
+
+              return QFormatStr("%1[%2]")
+                  .arg(meshletIdx + config.taskOrMeshletOffset)
+                  .arg(row + config.pagingOffset - *it);
+            }
+            else
+            {
+              return row + config.pagingOffset;
+            }
+          }
 
           uint32_t idx = row;
 
@@ -1133,33 +1289,43 @@ public:
             const byte *data = config.buffers[prop.buffer]->data();
             const byte *end = config.buffers[prop.buffer]->end();
 
-            if(!prop.perinstance)
+            if(prop.perprimitive)
+            {
+              uint32_t prim = row / RENDERDOC_NumVerticesPerPrimitive(config.topology);
+              data += config.perPrimitiveOffset;
+              data += config.perPrimitiveStride * prim;
+            }
+            else if(!prop.perinstance)
+            {
               data += config.buffers[prop.buffer]->stride * idx;
+            }
             else
+            {
               data += config.buffers[prop.buffer]->stride * instIdx;
+            }
 
             data += el.byteOffset;
 
             // only slightly wasteful, we need to fetch all variants together
             // since some formats are packed and can't be read individually
-            QVariantList list = GetVariants(prop.format, el.type.descriptor, data, end);
+            QVariantList list = GetVariants(prop.format, el, data, end);
 
             int comp = componentForIndex(col);
 
             if(comp < list.count())
             {
-              uint32_t rowdim = el.type.descriptor.rows;
-              uint32_t coldim = el.type.descriptor.columns;
+              uint32_t rowdim = el.type.rows;
+              uint32_t coldim = el.type.columns;
 
               if(rowdim == 1)
               {
                 QVariant v = list[comp];
 
-                if(el.type.descriptor.pointerTypeID != ~0U)
+                if(el.type.pointerTypeID != ~0U)
                 {
                   PointerVal ptr;
                   ptr.pointer = v.toULongLong();
-                  ptr.pointerTypeID = el.type.descriptor.pointerTypeID;
+                  ptr.pointerTypeID = el.type.pointerTypeID;
                   v = ToQStr(ptr);
                 }
 
@@ -1254,17 +1420,23 @@ public:
 
   const ShaderConstant &elementForColumn(int col) const
   {
-    return config.columns[columnLookup[col - reservedColumnCount()]];
+    if(col >= reservedColumnCount())
+      col -= reservedColumnCount();
+    return config.columns[columnLookup[col]];
   }
 
   const BufferElementProperties &propForColumn(int col) const
   {
-    return config.props[columnLookup[col - reservedColumnCount()]];
+    if(col >= reservedColumnCount())
+      col -= reservedColumnCount();
+    return config.props[columnLookup[col]];
   }
 
   bool useGenerics(int col) const
   {
-    col = columnLookup[col - reservedColumnCount()];
+    if(col >= reservedColumnCount())
+      col -= reservedColumnCount();
+    col = columnLookup[col];
     return col < config.genericsEnabled.size() && config.genericsEnabled[col];
   }
 
@@ -1305,7 +1477,12 @@ private:
   bool secondaryElAlpha = false;
 
   int reservedColumnCount() const { return (meshView ? 2 : 1); }
-  int componentForIndex(int col) const { return componentLookup[col - reservedColumnCount()]; }
+  int componentForIndex(int col) const
+  {
+    if(col >= reservedColumnCount())
+      col -= reservedColumnCount();
+    return componentLookup[col];
+  }
   int firstColumnForElement(int el) const
   {
     for(int i = 0; i < columnLookup.count(); i++)
@@ -1337,7 +1514,7 @@ private:
 
     for(int i = 0; i < config.columns.count(); i++)
     {
-      uint32_t columnCount = config.columns[i].type.descriptor.columns;
+      uint32_t columnCount = config.columns[i].type.columns;
 
       for(uint32_t c = 0; c < columnCount; c++)
       {
@@ -1352,7 +1529,9 @@ private:
   {
     int comp = componentForIndex(col);
 
-    col = columnLookup[col - reservedColumnCount()];
+    if(col >= reservedColumnCount())
+      col -= reservedColumnCount();
+    col = columnLookup[col];
 
     if(col < config.generics.size())
     {
@@ -1395,19 +1574,23 @@ struct PopulateBufferData
 {
   int sequence;
 
-  int vsinHoriz;
-  int vsoutHoriz;
-  int gsoutHoriz;
+  int inHoriz;
+  int out1Horiz;
+  int out2Horiz;
 
-  int vsinVert;
-  int vsoutVert;
-  int gsoutVert;
+  int inVert;
+  int out1Vert;
+  int out2Vert;
 
+  CBufferData cb;
+
+  // {In, Out1, Out2} x {primary, secondary}
   QString highlightNames[6];
 
-  BufferConfiguration vsinConfig, vsoutConfig, gsoutConfig;
+  bool meshDispatch = false;
 
-  MeshFormat postVS, postGS;
+  BufferConfiguration inConfig, out1Config, out2Config;
+  MeshFormat postOut1, postOut2;
 };
 
 struct CalcBoundingBoxData
@@ -1435,9 +1618,9 @@ void CacheDataForIteration(QVector<CachedElData> &cache, const rdcarray<ShaderCo
     d.el = &el;
     d.prop = &prop;
 
-    d.byteSize = el.type.descriptor.arrayByteStride;
+    d.byteSize = el.type.arrayByteStride;
     d.nulls = QByteArray(d.byteSize, '\0');
-    d.numColumns = el.type.descriptor.columns;
+    d.numColumns = el.type.columns;
 
     if(prop.instancerate > 0)
       d.instIdx = inst / prop.instancerate;
@@ -1455,11 +1638,33 @@ void CacheDataForIteration(QVector<CachedElData> &cache, const rdcarray<ShaderCo
         d.data += d.stride * d.instIdx;
     }
 
+    if(prop.perprimitive)
+      d.end = d.data;
+
     cache.push_back(d);
   }
 }
 
-static void ConfigureColumnsForShader(ICaptureContext &ctx, const ShaderReflection *shader,
+static void ConfigureStatusColumn(rdcarray<ShaderConstant> &columns,
+                                  rdcarray<BufferElementProperties> &props)
+{
+  ShaderConstant f;
+  f.name = "STATUS";
+  f.type.columns = 1;
+  f.type.rows = 1;
+
+  BufferElementProperties p;
+  p.format.type = ResourceFormatType::Regular;
+  p.format.compType = CompType::UInt;
+  p.format.compCount = 1;
+  p.format.compByteWidth = 4;
+
+  columns.push_back(f);
+  props.push_back(p);
+}
+
+static void ConfigureColumnsForShader(ICaptureContext &ctx, int32_t streamSelect,
+                                      const ShaderReflection *shader,
                                       rdcarray<ShaderConstant> &columns,
                                       rdcarray<BufferElementProperties> &props)
 {
@@ -1472,15 +1677,24 @@ static void ConfigureColumnsForShader(ICaptureContext &ctx, const ShaderReflecti
   int i = 0, posidx = -1;
   for(const SigParameter &sig : shader->outputSignature)
   {
+    if(sig.stream != (uint32_t)streamSelect)
+      continue;
+
+    if(sig.systemValue == ShaderBuiltin::OutputIndices)
+      continue;
+
     ShaderConstant f;
     BufferElementProperties p;
 
     f.name = !sig.varName.isEmpty() ? sig.varName : sig.semanticIdxName;
-    f.type.descriptor.rows = 1;
-    f.type.descriptor.columns = sig.compCount;
+    if(sig.perPrimitiveRate)
+      f.name += lit(" (Per-Prim)");
+    f.type.rows = 1;
+    f.type.columns = sig.compCount;
 
     p.buffer = 0;
     p.perinstance = false;
+    p.perprimitive = sig.perPrimitiveRate;
     p.instancerate = 1;
     p.systemValue = sig.systemValue;
     p.format.type = ResourceFormatType::Regular;
@@ -1488,7 +1702,7 @@ static void ConfigureColumnsForShader(ICaptureContext &ctx, const ShaderReflecti
     p.format.compCount = sig.compCount;
     p.format.compType = VarTypeCompType(sig.varType);
 
-    f.type.descriptor.arrayByteStride = p.format.compByteWidth * p.format.compCount;
+    f.type.arrayByteStride = p.format.compByteWidth * p.format.compCount;
 
     if(sig.systemValue == ShaderBuiltin::Position)
       posidx = i;
@@ -1508,17 +1722,31 @@ static void ConfigureColumnsForShader(ICaptureContext &ctx, const ShaderReflecti
   }
 
   i = 0;
-  uint32_t offset = 0;
+  uint32_t perPrimOffset = 0, perVertOffset = 0;
   for(i = 0; i < columns.count(); i++)
   {
     BufferElementProperties &prop = props[i];
     ShaderConstant &el = columns[i];
 
-    uint numComps = el.type.descriptor.columns;
+    uint numComps = el.type.columns;
     uint elemSize = prop.format.compByteWidth > 4 ? 8U : 4U;
 
-    if(ctx.CurPipelineState().HasAlignedPostVSData(
-           shader->stage == ShaderStage::Vertex ? MeshDataStage::VSOut : MeshDataStage::GSOut))
+    MeshDataStage outStage = MeshDataStage::VSOut;
+
+    switch(shader->stage)
+    {
+      case ShaderStage::Vertex: outStage = MeshDataStage::VSOut; break;
+      case ShaderStage::Hull: outStage = MeshDataStage::GSOut; break;
+      case ShaderStage::Domain: outStage = MeshDataStage::GSOut; break;
+      case ShaderStage::Geometry: outStage = MeshDataStage::GSOut; break;
+      case ShaderStage::Task: outStage = MeshDataStage::TaskOut; break;
+      case ShaderStage::Mesh: outStage = MeshDataStage::MeshOut; break;
+      default: break;
+    }
+
+    uint32_t &offset = prop.perprimitive ? perPrimOffset : perVertOffset;
+
+    if(ctx.CurPipelineState().HasAlignedPostVSData(outStage))
     {
       if(numComps == 2)
         offset = AlignUp(offset, 2U * elemSize);
@@ -1532,59 +1760,49 @@ static void ConfigureColumnsForShader(ICaptureContext &ctx, const ShaderReflecti
   }
 }
 
-static void ConfigureMeshColumns(ICaptureContext &ctx, PopulateBufferData *bufdata)
+static void ConfigureColumnsForMeshPipe(ICaptureContext &ctx, PopulateBufferData *bufdata)
+{
+  bufdata->inConfig.statusString = lit("No input visualisation supported for mesh shaders");
+
+  ConfigureStatusColumn(bufdata->inConfig.columns, bufdata->inConfig.props);
+
+  const ShaderReflection *ts = ctx.CurPipelineState().GetShaderReflection(ShaderStage::Task);
+
+  if(ts && bufdata->out1Config.statusString.isEmpty())
+  {
+    bufdata->out1Config.columns = ts->taskPayload.variables;
+    bufdata->out1Config.props.resize(bufdata->out1Config.columns.size());
+  }
+  else
+  {
+    if(bufdata->out1Config.statusString.isEmpty())
+      bufdata->out1Config.statusString = lit("No output visualisation supported for task shaders");
+    ConfigureStatusColumn(bufdata->out1Config.columns, bufdata->out1Config.props);
+  }
+
+  const ShaderReflection *ms = ctx.CurPipelineState().GetShaderReflection(ShaderStage::Mesh);
+
+  ConfigureColumnsForShader(ctx, 0, ms, bufdata->out2Config.columns, bufdata->out2Config.props);
+}
+
+static void ConfigureColumnsForVertexPipe(ICaptureContext &ctx, PopulateBufferData *bufdata)
 {
   const ActionDescription *action = ctx.CurAction();
 
-  bufdata->vsinConfig.numRows = 0;
-  bufdata->vsinConfig.unclampedNumRows = 0;
+  bufdata->inConfig.numRows = 0;
+  bufdata->inConfig.unclampedNumRows = 0;
 
-  bufdata->vsinConfig.noVertices = false;
-  bufdata->vsinConfig.noInstances = false;
-
-  if(!action || !(action->flags & ActionFlags::Drawcall))
-  {
-    IEventBrowser *eb = ctx.GetEventBrowser();
-
-    bufdata->vsinConfig.noDraw =
-        lit("No current draw action\nSelected EID @%1 - %2\nEffective EID: @%3 - %4")
-            .arg(ctx.CurSelectedEvent())
-            .arg(QString(eb->GetEventName(ctx.CurSelectedEvent())))
-            .arg(ctx.CurEvent())
-            .arg(QString(eb->GetEventName(ctx.CurEvent())));
-
-    ShaderConstant f;
-    f.name = "ERROR";
-    f.type.descriptor.columns = 1;
-    f.type.descriptor.rows = 1;
-
-    BufferElementProperties p;
-    p.format.type = ResourceFormatType::Regular;
-    p.format.compType = CompType::UInt;
-    p.format.compCount = 1;
-    p.format.compByteWidth = 4;
-
-    bufdata->vsinConfig.columns.push_back(f);
-    bufdata->vsinConfig.props.push_back(p);
-    bufdata->vsinConfig.genericsEnabled.push_back(false);
-    bufdata->vsinConfig.generics.push_back(PixelValue());
-
-    bufdata->vsoutConfig.columns.clear();
-    bufdata->vsoutConfig.props.clear();
-    bufdata->gsoutConfig.columns.clear();
-    bufdata->gsoutConfig.props.clear();
-
-    return;
-  }
+  bufdata->inConfig.noVertices = false;
+  bufdata->inConfig.noInstances = false;
 
   rdcarray<VertexInputAttribute> vinputs = ctx.CurPipelineState().GetVertexInputs();
 
-  bufdata->vsinConfig.columns.reserve(vinputs.count());
-  bufdata->vsinConfig.columns.clear();
-  bufdata->vsinConfig.props.reserve(vinputs.count());
-  bufdata->vsinConfig.props.clear();
-  bufdata->vsinConfig.genericsEnabled.resize(vinputs.count());
-  bufdata->vsinConfig.generics.resize(vinputs.count());
+  bufdata->inConfig.columns.reserve(vinputs.count());
+  bufdata->inConfig.columns.clear();
+  bufdata->inConfig.props.reserve(vinputs.count());
+  bufdata->inConfig.props.clear();
+  bufdata->inConfig.genericsEnabled.resize(vinputs.count());
+  bufdata->inConfig.generics.resize(vinputs.count());
 
   for(const VertexInputAttribute &a : vinputs)
   {
@@ -1594,9 +1812,9 @@ static void ConfigureMeshColumns(ICaptureContext &ctx, PopulateBufferData *bufda
     ShaderConstant f;
     f.name = a.name;
     f.byteOffset = a.byteOffset;
-    f.type.descriptor.columns = a.format.compCount;
-    f.type.descriptor.rows = 1;
-    f.type.descriptor.arrayByteStride = f.type.descriptor.matrixByteStride = a.format.ElementSize();
+    f.type.columns = a.format.compCount;
+    f.type.rows = 1;
+    f.type.arrayByteStride = f.type.matrixByteStride = a.format.ElementSize();
 
     BufferElementProperties p;
     p.buffer = a.vertexBuffer;
@@ -1605,45 +1823,85 @@ static void ConfigureMeshColumns(ICaptureContext &ctx, PopulateBufferData *bufda
     p.floatCastWrong = a.floatCastWrong;
     p.format = a.format;
 
-    bufdata->vsinConfig.genericsEnabled[bufdata->vsinConfig.columns.count()] = false;
+    bufdata->inConfig.genericsEnabled[bufdata->inConfig.columns.count()] = false;
 
     if(a.genericEnabled)
     {
-      bufdata->vsinConfig.genericsEnabled[bufdata->vsinConfig.columns.count()] = true;
-      bufdata->vsinConfig.generics[bufdata->vsinConfig.columns.count()] = a.genericValue;
+      bufdata->inConfig.genericsEnabled[bufdata->inConfig.columns.count()] = true;
+      bufdata->inConfig.generics[bufdata->inConfig.columns.count()] = a.genericValue;
     }
 
-    bufdata->vsinConfig.columns.push_back(f);
-    bufdata->vsinConfig.props.push_back(p);
+    bufdata->inConfig.columns.push_back(f);
+    bufdata->inConfig.props.push_back(p);
   }
 
-  if(action)
+  bufdata->inConfig.numRows = action->numIndices;
+  bufdata->inConfig.unclampedNumRows = 0;
+
+  // calculate an upper bound on the valid number of rows just in case it's an invalid value (e.g.
+  // 0xdeadbeef) and we want to clamp.
+  uint32_t numRowsUpperBound = 0;
+
+  if(action->flags & ActionFlags::Indexed)
   {
-    bufdata->vsinConfig.numRows = action->numIndices;
-    bufdata->vsinConfig.unclampedNumRows = 0;
+    // In an indexed draw we clamp to however many indices are available in the index buffer
 
-    // calculate an upper bound on the valid number of rows just in case it's an invalid value (e.g.
-    // 0xdeadbeef) and we want to clamp.
-    uint32_t numRowsUpperBound = 0;
+    BoundVBuffer ib = ctx.CurPipelineState().GetIBuffer();
 
-    if(action->flags & ActionFlags::Indexed)
+    uint32_t bytesAvailable = ib.byteSize;
+
+    if(bytesAvailable == ~0U)
     {
-      // In an indexed draw we clamp to however many indices are available in the index buffer
+      BufferDescription *buf = ctx.GetBuffer(ib.resourceId);
+      if(buf)
+      {
+        uint64_t offset = ib.byteOffset + action->indexOffset * ib.byteStride;
+        if(offset > buf->length)
+          bytesAvailable = 0;
+        else
+          bytesAvailable = buf->length - offset;
+      }
+      else
+      {
+        bytesAvailable = 0;
+      }
+    }
 
-      BoundVBuffer ib = ctx.CurPipelineState().GetIBuffer();
+    // drawing more than this many indices will read off the end of the index buffer - which while
+    // technically not invalid is certainly not intended, so serves as a good 'upper bound'
+    numRowsUpperBound = bytesAvailable / qMax(1U, ib.byteStride);
+  }
+  else
+  {
+    // for a non-indexed draw, we take the largest vertex buffer
+    rdcarray<BoundVBuffer> VBs = ctx.CurPipelineState().GetVBuffers();
 
-      uint32_t bytesAvailable = ib.byteSize;
+    rdcarray<int> usedVBs;
+
+    for(const VertexInputAttribute &attr : ctx.CurPipelineState().GetVertexInputs())
+      usedVBs.push_back(attr.vertexBuffer);
+
+    for(int i = 0; i < VBs.count(); i++)
+    {
+      if(!usedVBs.contains(i))
+        continue;
+
+      const BoundVBuffer &vb = VBs[i];
+
+      if(vb.byteStride == 0)
+        continue;
+
+      uint32_t bytesAvailable = vb.byteSize;
 
       if(bytesAvailable == ~0U)
       {
-        BufferDescription *buf = ctx.GetBuffer(ib.resourceId);
+        BufferDescription *buf = ctx.GetBuffer(vb.resourceId);
         if(buf)
         {
-          uint64_t offset = ib.byteOffset + action->indexOffset * ib.byteStride;
-          if(offset > buf->length)
+          if(vb.byteOffset > buf->length)
             bytesAvailable = 0;
           else
-            bytesAvailable = buf->length - offset;
+            bytesAvailable = buf->length - vb.byteOffset;
         }
         else
         {
@@ -1651,81 +1909,162 @@ static void ConfigureMeshColumns(ICaptureContext &ctx, PopulateBufferData *bufda
         }
       }
 
-      // drawing more than this many indices will read off the end of the index buffer - which while
-      // technically not invalid is certainly not intended, so serves as a good 'upper bound'
-      numRowsUpperBound = bytesAvailable / qMax(1U, ib.byteStride);
-    }
-    else
-    {
-      // for a non-indexed draw, we take the largest vertex buffer
-      rdcarray<BoundVBuffer> VBs = ctx.CurPipelineState().GetVBuffers();
-
-      for(const BoundVBuffer &vb : VBs)
-      {
-        if(vb.byteStride == 0)
-          continue;
-
-        uint32_t bytesAvailable = vb.byteSize;
-
-        if(bytesAvailable == ~0U)
-        {
-          BufferDescription *buf = ctx.GetBuffer(vb.resourceId);
-          if(buf)
-          {
-            if(vb.byteOffset > buf->length)
-              bytesAvailable = 0;
-            else
-              bytesAvailable = buf->length - vb.byteOffset;
-          }
-          else
-          {
-            bytesAvailable = 0;
-          }
-        }
-
-        numRowsUpperBound = qMax(numRowsUpperBound, bytesAvailable / qMax(1U, vb.byteStride));
-      }
-
-      // if there are no vertex buffers we can't clamp.
-      if(numRowsUpperBound == 0)
-        numRowsUpperBound = ~0U;
+      numRowsUpperBound = qMax(numRowsUpperBound, bytesAvailable / qMax(1U, vb.byteStride));
     }
 
-    // if we have significantly clamped, then set the unclamped number of rows and clamp.
-    if(numRowsUpperBound != ~0U && numRowsUpperBound + 100 < bufdata->vsinConfig.numRows)
-    {
-      bufdata->vsinConfig.unclampedNumRows = bufdata->vsinConfig.numRows;
-      bufdata->vsinConfig.numRows = numRowsUpperBound + 100;
-    }
-
-    if((action->flags & ActionFlags::Drawcall) && action->numIndices == 0)
-      bufdata->vsinConfig.noVertices = true;
-
-    if((action->flags & ActionFlags::Instanced) && action->numInstances == 0)
-    {
-      bufdata->vsinConfig.noInstances = true;
-      bufdata->vsinConfig.numRows = bufdata->vsinConfig.unclampedNumRows = 0;
-    }
+    // if there are no vertex buffers we can't clamp.
+    if(numRowsUpperBound == 0)
+      numRowsUpperBound = ~0U;
   }
 
-  bufdata->vsoutConfig.columns.clear();
-  bufdata->vsoutConfig.props.clear();
-  bufdata->gsoutConfig.columns.clear();
-  bufdata->gsoutConfig.props.clear();
-
-  if(action)
+  // if we have significantly clamped, then set the unclamped number of rows and clamp.
+  if(numRowsUpperBound != ~0U && numRowsUpperBound + 100 < bufdata->inConfig.numRows)
   {
-    const ShaderReflection *vs = ctx.CurPipelineState().GetShaderReflection(ShaderStage::Vertex);
-    const ShaderReflection *last = ctx.CurPipelineState().GetShaderReflection(ShaderStage::Geometry);
-    if(last == NULL)
-      last = ctx.CurPipelineState().GetShaderReflection(ShaderStage::Domain);
+    bufdata->inConfig.unclampedNumRows = bufdata->inConfig.numRows;
+    bufdata->inConfig.numRows = numRowsUpperBound + 100;
+  }
 
-    ConfigureColumnsForShader(ctx, vs, bufdata->vsoutConfig.columns, bufdata->vsoutConfig.props);
-    ConfigureColumnsForShader(ctx, last, bufdata->gsoutConfig.columns, bufdata->gsoutConfig.props);
+  if((action->flags & ActionFlags::Drawcall) && action->numIndices == 0)
+    bufdata->inConfig.noVertices = true;
+
+  if((action->flags & ActionFlags::Instanced) && action->numInstances == 0)
+  {
+    bufdata->inConfig.noInstances = true;
+    bufdata->inConfig.numRows = bufdata->inConfig.unclampedNumRows = 0;
+  }
+
+  bufdata->out1Config.columns.clear();
+  bufdata->out1Config.props.clear();
+  bufdata->out2Config.columns.clear();
+  bufdata->out2Config.props.clear();
+
+  const ShaderReflection *vs = ctx.CurPipelineState().GetShaderReflection(ShaderStage::Vertex);
+  const ShaderReflection *last = ctx.CurPipelineState().GetShaderReflection(ShaderStage::Geometry);
+  if(last == NULL)
+    last = ctx.CurPipelineState().GetShaderReflection(ShaderStage::Domain);
+
+  ConfigureColumnsForShader(ctx, 0, vs, bufdata->out1Config.columns, bufdata->out1Config.props);
+  ConfigureColumnsForShader(ctx, ctx.CurPipelineState().GetRasterizedStream(), last,
+                            bufdata->out2Config.columns, bufdata->out2Config.props);
+}
+
+static void ConfigureColumns(ICaptureContext &ctx, PopulateBufferData *bufdata)
+{
+  const ActionDescription *action = ctx.CurAction();
+
+  if(action && (action->flags & ActionFlags::MeshDispatch))
+  {
+    ConfigureColumnsForMeshPipe(ctx, bufdata);
+  }
+  else if(action && (action->flags & ActionFlags::Drawcall))
+  {
+    ConfigureColumnsForVertexPipe(ctx, bufdata);
+  }
+  else
+  {
+    IEventBrowser *eb = ctx.GetEventBrowser();
+
+    bufdata->inConfig.statusString = bufdata->out1Config.statusString =
+        bufdata->out2Config.statusString =
+            lit("No current draw action\nSelected EID @%1 - %2\nEffective EID: @%3 - %4")
+                .arg(ctx.CurSelectedEvent())
+                .arg(QString(eb->GetEventName(ctx.CurSelectedEvent())))
+                .arg(ctx.CurEvent())
+                .arg(QString(eb->GetEventName(ctx.CurEvent())));
+
+    ConfigureStatusColumn(bufdata->inConfig.columns, bufdata->inConfig.props);
+    ConfigureStatusColumn(bufdata->out1Config.columns, bufdata->out1Config.props);
+    ConfigureStatusColumn(bufdata->out2Config.columns, bufdata->out2Config.props);
+
+    bufdata->inConfig.genericsEnabled.push_back(false);
+    bufdata->inConfig.generics.push_back(PixelValue());
   }
 }
 
-static void RT_FetchMeshData(IReplayController *r, ICaptureContext &ctx, PopulateBufferData *data)
+static void RT_FetchMeshPipeData(IReplayController *r, ICaptureContext &ctx, PopulateBufferData *data)
+{
+  uint32_t numIndices = data->postOut2.numIndices;
+
+  if(data->inConfig.indices)
+    data->inConfig.indices->deref();
+
+  data->inConfig.indices = NULL;
+
+  data->out1Config.numRows = data->postOut1.numIndices;
+  data->out1Config.unclampedNumRows = 0;
+
+  if(data->out1Config.indices)
+    data->out1Config.indices->deref();
+  if(data->out1Config.displayIndices)
+    data->out1Config.displayIndices->deref();
+  data->out1Config.displayIndices = NULL;
+
+  data->out1Config.dispatchSize = data->postOut1.dispatchSize;
+  data->out1Config.taskSizes = data->postOut1.taskSizes;
+
+  if(data->postOut1.vertexResourceId != ResourceId())
+  {
+    BufferData *postts = new BufferData;
+    postts->storage =
+        r->GetBufferData(data->postOut1.vertexResourceId, data->postOut1.vertexByteOffset, 0);
+
+    postts->stride = data->postOut1.vertexByteStride;
+
+    // ref passes to model
+    data->out1Config.buffers.push_back(postts);
+  }
+
+  data->out1Config.statusString = data->postOut1.status;
+
+  if(data->out2Config.indices)
+    data->out2Config.indices->deref();
+  if(data->out2Config.displayIndices)
+    data->out2Config.displayIndices->deref();
+  data->out2Config.displayIndices = NULL;
+
+  uint32_t count = 0;
+  for(const MeshletSize &meshletSize : data->postOut2.meshletSizes)
+  {
+    data->out2Config.meshletVertexPrefixCounts.push_back(count);
+    count += meshletSize.numIndices;
+  }
+
+  data->out2Config.numRows = numIndices;
+  data->out2Config.unclampedNumRows = 0;
+
+  data->out2Config.topology = data->postOut2.topology;
+  data->out2Config.perPrimitiveOffset = data->postOut2.perPrimitiveOffset;
+  data->out2Config.perPrimitiveStride = data->postOut2.perPrimitiveStride;
+
+  bytebuf idata = r->GetBufferData(data->postOut2.indexResourceId, data->postOut2.indexByteOffset,
+                                   numIndices * data->postOut2.indexByteStride);
+
+  data->out2Config.indices = new BufferData();
+  data->out2Config.indices->storage.resize(sizeof(uint32_t) * numIndices);
+  uint32_t *indices = (uint32_t *)data->out2Config.indices->data();
+
+  memcpy(indices, idata.data(), qMin(idata.size(), numIndices * sizeof(uint32_t)));
+
+  if(data->postOut2.vertexResourceId != ResourceId())
+  {
+    BufferData *postms = new BufferData;
+    postms->storage =
+        r->GetBufferData(data->postOut2.vertexResourceId, data->postOut2.vertexByteOffset, 0);
+
+    postms->stride = data->postOut2.vertexByteStride;
+
+    // ref passes to model
+    data->out2Config.buffers.push_back(postms);
+  }
+
+  data->out2Config.perPrimitiveOffset = data->postOut2.perPrimitiveOffset;
+  data->out2Config.perPrimitiveStride = data->postOut2.perPrimitiveStride;
+
+  data->out2Config.statusString = data->postOut2.status;
+}
+
+static void RT_FetchVertexPipeData(IReplayController *r, ICaptureContext &ctx,
+                                   PopulateBufferData *data)
 {
   const ActionDescription *action = ctx.CurAction();
 
@@ -1750,19 +2089,19 @@ static void RT_FetchMeshData(IReplayController *r, ICaptureContext &ctx, Populat
       idata = r->GetBufferData(ib.resourceId, ib.byteOffset + offset, readBytes);
   }
 
-  if(data->vsinConfig.indices)
-    data->vsinConfig.indices->deref();
+  if(data->inConfig.indices)
+    data->inConfig.indices->deref();
 
-  data->vsinConfig.indices = new BufferData();
+  data->inConfig.indices = new BufferData();
 
   if(action && ib.byteStride != 0 && !idata.isEmpty())
-    data->vsinConfig.indices->storage.resize(
+    data->inConfig.indices->storage.resize(
         sizeof(uint32_t) *
         qMin(numIndices, (((uint32_t)idata.size() + ib.byteStride - 1) / ib.byteStride)));
   else if(action && (action->flags & ActionFlags::Indexed))
-    data->vsinConfig.indices->storage.resize(sizeof(uint32_t));
+    data->inConfig.indices->storage.resize(sizeof(uint32_t));
 
-  uint32_t *indices = (uint32_t *)data->vsinConfig.indices->data();
+  uint32_t *indices = (uint32_t *)data->inConfig.indices->data();
 
   uint32_t maxIndex = 0;
   if(action)
@@ -1773,7 +2112,7 @@ static void RT_FetchMeshData(IReplayController *r, ICaptureContext &ctx, Populat
     maxIndex = 0;
     if(ib.byteStride == 1)
     {
-      uint8_t primRestart = data->vsinConfig.primRestart & 0xff;
+      uint8_t primRestart = data->inConfig.primRestart & 0xff;
 
       for(size_t i = 0; i < idata.size() && (uint32_t)i < numIndices; i++)
       {
@@ -1786,7 +2125,7 @@ static void RT_FetchMeshData(IReplayController *r, ICaptureContext &ctx, Populat
     }
     else if(ib.byteStride == 2)
     {
-      uint16_t primRestart = data->vsinConfig.primRestart & 0xffff;
+      uint16_t primRestart = data->inConfig.primRestart & 0xffff;
 
       uint16_t *src = (uint16_t *)idata.data();
       for(size_t i = 0; i < idata.size() / sizeof(uint16_t) && (uint32_t)i < numIndices; i++)
@@ -1800,7 +2139,7 @@ static void RT_FetchMeshData(IReplayController *r, ICaptureContext &ctx, Populat
     }
     else if(ib.byteStride == 4)
     {
-      uint32_t primRestart = data->vsinConfig.primRestart;
+      uint32_t primRestart = data->inConfig.primRestart;
 
       memcpy(indices, idata.data(), qMin(idata.size(), numIndices * sizeof(uint32_t)));
 
@@ -1823,10 +2162,10 @@ static void RT_FetchMeshData(IReplayController *r, ICaptureContext &ctx, Populat
 
     uint32_t maxAttrOffset = 0;
 
-    for(int c = 0; c < data->vsinConfig.columns.count(); c++)
+    for(int c = 0; c < data->inConfig.columns.count(); c++)
     {
-      const ShaderConstant &col = data->vsinConfig.columns[c];
-      const BufferElementProperties &prop = data->vsinConfig.props[c];
+      const ShaderConstant &col = data->inConfig.columns[c];
+      const BufferElementProperties &prop = data->inConfig.props[c];
 
       if(prop.buffer == vbIdx)
       {
@@ -1889,45 +2228,48 @@ static void RT_FetchMeshData(IReplayController *r, ICaptureContext &ctx, Populat
       buf->stride = vb.byteStride;
     }
     // ref passes to model
-    data->vsinConfig.buffers.push_back(buf);
+    data->inConfig.buffers.push_back(buf);
   }
 
-  if(data->postVS.numIndices <= data->vsinConfig.numRows)
+  if(data->postOut1.numIndices <= data->inConfig.numRows)
   {
-    data->vsoutConfig.numRows = data->postVS.numIndices;
-    data->vsoutConfig.unclampedNumRows = 0;
+    data->out1Config.numRows = data->postOut1.numIndices;
+    data->out1Config.unclampedNumRows = 0;
   }
   else
   {
     // the vertex shader can't run any expansion, so apply the same clamping to it as we applied to
     // the inputs. This protects against draws with an invalid number of vertices.
-    data->vsoutConfig.numRows = data->vsinConfig.numRows;
-    data->vsoutConfig.unclampedNumRows = data->vsinConfig.unclampedNumRows;
+    data->out1Config.numRows = data->inConfig.numRows;
+    data->out1Config.unclampedNumRows = data->inConfig.unclampedNumRows;
   }
 
-  data->vsoutConfig.baseVertex = data->postVS.baseVertex;
-  data->vsoutConfig.displayBaseVertex = data->vsinConfig.baseVertex;
+  data->out1Config.statusString = data->postOut1.status;
 
-  if(action && data->postVS.indexResourceId != ResourceId() && (action->flags & ActionFlags::Indexed))
-    idata = r->GetBufferData(data->postVS.indexResourceId, data->postVS.indexByteOffset,
-                             numIndices * data->postVS.indexByteStride);
+  data->out1Config.baseVertex = data->postOut1.baseVertex;
+  data->out1Config.displayBaseVertex = data->inConfig.baseVertex;
+
+  if(action && data->postOut1.indexResourceId != ResourceId() &&
+     (action->flags & ActionFlags::Indexed))
+    idata = r->GetBufferData(data->postOut1.indexResourceId, data->postOut1.indexByteOffset,
+                             numIndices * data->postOut1.indexByteStride);
 
   indices = NULL;
-  if(data->vsoutConfig.indices)
-    data->vsoutConfig.indices->deref();
-  if(data->vsoutConfig.displayIndices)
-    data->vsoutConfig.displayIndices->deref();
+  if(data->out1Config.indices)
+    data->out1Config.indices->deref();
+  if(data->out1Config.displayIndices)
+    data->out1Config.displayIndices->deref();
 
   {
     // display the same index values
-    data->vsoutConfig.displayIndices = data->vsinConfig.indices;
-    data->vsoutConfig.displayIndices->ref();
+    data->out1Config.displayIndices = data->inConfig.indices;
+    data->out1Config.displayIndices->ref();
 
-    data->vsoutConfig.indices = new BufferData();
+    data->out1Config.indices = new BufferData();
     if(action && ib.byteStride != 0 && !idata.isEmpty())
     {
-      data->vsoutConfig.indices->storage.resize(sizeof(uint32_t) * numIndices);
-      indices = (uint32_t *)data->vsoutConfig.indices->data();
+      data->out1Config.indices->storage.resize(sizeof(uint32_t) * numIndices);
+      indices = (uint32_t *)data->out1Config.indices->data();
 
       if(ib.byteStride == 1)
       {
@@ -1947,45 +2289,50 @@ static void RT_FetchMeshData(IReplayController *r, ICaptureContext &ctx, Populat
     }
   }
 
-  if(data->postVS.vertexResourceId != ResourceId())
+  if(data->postOut1.vertexResourceId != ResourceId())
   {
     BufferData *postvs = new BufferData;
     postvs->storage =
-        r->GetBufferData(data->postVS.vertexResourceId, data->postVS.vertexByteOffset, 0);
+        r->GetBufferData(data->postOut1.vertexResourceId, data->postOut1.vertexByteOffset, 0);
 
-    postvs->stride = data->postVS.vertexByteStride;
+    postvs->stride = data->postOut1.vertexByteStride;
 
     // ref passes to model
-    data->vsoutConfig.buffers.push_back(postvs);
+    data->out1Config.buffers.push_back(postvs);
   }
 
-  data->gsoutConfig.numRows = data->postGS.numIndices;
-  data->gsoutConfig.unclampedNumRows = 0;
-  data->gsoutConfig.baseVertex = data->postGS.baseVertex;
-  data->gsoutConfig.displayBaseVertex = data->vsinConfig.baseVertex;
+  data->out2Config.statusString = data->postOut2.status;
+
+  data->out2Config.numRows = data->postOut2.numIndices;
+  data->out2Config.unclampedNumRows = 0;
+  data->out2Config.baseVertex = data->postOut2.baseVertex;
+  data->out2Config.displayBaseVertex = data->inConfig.baseVertex;
 
   indices = NULL;
-  data->gsoutConfig.indices = NULL;
+  data->out2Config.indices = NULL;
 
-  if(data->postGS.vertexResourceId != ResourceId())
+  if(data->postOut2.vertexResourceId != ResourceId())
   {
     BufferData *postgs = new BufferData;
     postgs->storage =
-        r->GetBufferData(data->postGS.vertexResourceId, data->postGS.vertexByteOffset, 0);
+        r->GetBufferData(data->postOut2.vertexResourceId, data->postOut2.vertexByteOffset, 0);
 
-    postgs->stride = data->postGS.vertexByteStride;
+    postgs->stride = data->postOut2.vertexByteStride;
 
     // ref passes to model
-    data->gsoutConfig.buffers.push_back(postgs);
+    data->out2Config.buffers.push_back(postgs);
   }
 }
 
 static int MaxNumRows(const ShaderConstant &c)
 {
-  int ret = c.type.descriptor.rows;
+  int ret = c.type.rows;
 
-  for(const ShaderConstant &child : c.type.members)
-    ret = qMax(ret, MaxNumRows(child));
+  if(c.type.baseType != VarType::Enum)
+  {
+    for(const ShaderConstant &child : c.type.members)
+      ret = qMax(ret, MaxNumRows(child));
+  }
 
   return ret;
 }
@@ -1994,14 +2341,14 @@ static void UnrollConstant(rdcstr prefix, uint32_t baseOffset, const ShaderConst
                            rdcarray<ShaderConstant> &columns,
                            rdcarray<BufferElementProperties> &props)
 {
-  bool isArray = constant.type.descriptor.elements > 1;
+  bool isArray = constant.type.elements > 1;
 
   rdcstr baseName = constant.name;
 
   if(!prefix.isEmpty())
     baseName = prefix + "." + baseName;
 
-  if(constant.type.members.isEmpty())
+  if(constant.type.baseType == VarType::Enum || constant.type.members.isEmpty())
   {
     BufferElementProperties prop;
     prop.format = GetInterpretedResourceFormat(constant);
@@ -2011,12 +2358,12 @@ static void UnrollConstant(rdcstr prefix, uint32_t baseOffset, const ShaderConst
 
     if(isArray)
     {
-      for(uint32_t a = 0; a < constant.type.descriptor.elements; a++)
+      for(uint32_t a = 0; a < constant.type.elements; a++)
       {
         c.name = QFormatStr("%1[%2]").arg(baseName).arg(a);
         columns.push_back(c);
         props.push_back(prop);
-        c.byteOffset += constant.type.descriptor.arrayByteStride;
+        c.byteOffset += constant.type.arrayByteStride;
       }
     }
     else
@@ -2030,13 +2377,16 @@ static void UnrollConstant(rdcstr prefix, uint32_t baseOffset, const ShaderConst
   }
 
   // struct, expand by members
-  for(uint32_t a = 0; a < qMax(1U, constant.type.descriptor.elements); a++)
+  uint32_t arraySize = qMax(1U, constant.type.elements);
+  if(arraySize == ~0U)
+    arraySize = 1U;
+  for(uint32_t a = 0; a < arraySize; a++)
   {
     for(const ShaderConstant &child : constant.type.members)
     {
       UnrollConstant(isArray ? QFormatStr("%1[%2]").arg(baseName).arg(a) : QString(baseName),
-                     baseOffset + constant.byteOffset + a * constant.type.descriptor.arrayByteStride,
-                     child, columns, props);
+                     baseOffset + constant.byteOffset + a * constant.type.arrayByteStride, child,
+                     columns, props);
     }
   }
 }
@@ -2046,6 +2396,8 @@ static void UnrollConstant(const ShaderConstant &constant, rdcarray<ShaderConsta
 {
   UnrollConstant("", 0, constant, columns, props);
 }
+
+QList<BufferViewer *> BufferViewer::m_CBufferViews;
 
 BufferViewer::BufferViewer(ICaptureContext &ctx, bool meshview, QWidget *parent)
     : QFrame(parent), ui(new Ui::BufferViewer), m_Ctx(ctx)
@@ -2063,30 +2415,71 @@ BufferViewer::BufferViewer(ICaptureContext &ctx, bool meshview, QWidget *parent)
   byteRangeStart->setMinimum(0ULL);
   byteRangeLength->setMinimum(0ULL);
 
-  m_ModelVSIn = new BufferItemModel(ui->vsinData, true, meshview, this);
-  m_ModelVSOut = new BufferItemModel(ui->vsoutData, false, meshview, this);
-  m_ModelGSOut = new BufferItemModel(ui->gsoutData, false, meshview, this);
+  m_ModelIn = new BufferItemModel(ui->inTable, true, meshview, this);
+  m_ModelOut1 = new BufferItemModel(ui->out1Table, false, meshview, this);
+  m_ModelOut2 = new BufferItemModel(ui->out2Table, false, meshview, this);
+
+  if(meshview)
+  {
+    ui->inTable->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    ui->inTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    ui->out1Table->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    ui->out1Table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    ui->out2Table->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    ui->out2Table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+  }
+
+  m_MeshDebugSelector = new ComputeDebugSelector(this);
+
+  // we keep the old UI names for serialised layouts compatibility
+  QString containerNames[] = {
+      lit("vsinData"),
+      lit("vsoutData"),
+      lit("gsoutData"),
+  };
+
+  for(size_t i = 0; i < 3; i++)
+  {
+    m_Containers[i] = new QWidget(this);
+    // for layout compatibility
+    m_Containers[i]->setObjectName(containerNames[i]);
+
+    QVBoxLayout *layout = new QVBoxLayout(m_Containers[i]);
+    layout->setSpacing(0);
+    layout->setContentsMargins(0, 0, 0, 0);
+  }
+
+  if(meshview)
+  {
+    m_Containers[0]->layout()->addWidget(ui->inTable);
+    m_Containers[0]->layout()->addWidget(ui->fixedVars);
+    m_Containers[1]->layout()->addWidget(ui->out1Table);
+    m_Containers[2]->layout()->addWidget(ui->out2Table);
+
+    ui->fixedVars->setVisible(false);
+  }
 
   m_MeshView = meshview;
 
   ui->formatSpecifier->setContext(&m_Ctx);
 
-  m_Flycam = new FlycamWrapper();
-  m_Arcball = new ArcballWrapper();
+  m_Flycam = new FlycamWrapper(m_Ctx);
+  m_Arcball = new ArcballWrapper(m_Ctx);
   m_CurrentCamera = m_Arcball;
 
   m_Output = NULL;
 
-  memset(&m_Config, 0, sizeof(m_Config));
+  m_Config = MeshDisplay();
   m_Config.type = MeshDataStage::VSIn;
   m_Config.wireframeDraw = true;
+  m_Config.exploderScale = 1.0f;
 
   ui->outputTabs->setCurrentIndex(0);
   m_CurStage = MeshDataStage::VSIn;
 
-  ui->vsinData->setFont(Formatter::FixedFont());
-  ui->vsoutData->setFont(Formatter::FixedFont());
-  ui->gsoutData->setFont(Formatter::FixedFont());
+  ui->inTable->setFont(Formatter::FixedFont());
+  ui->out1Table->setFont(Formatter::FixedFont());
+  ui->out2Table->setFont(Formatter::FixedFont());
 
   ui->minBoundsLabel->setFont(Formatter::FixedFont());
   ui->maxBoundsLabel->setFont(Formatter::FixedFont());
@@ -2095,21 +2488,23 @@ BufferViewer::BufferViewer(ICaptureContext &ctx, bool meshview, QWidget *parent)
   ui->instance->setFont(Formatter::PreferredFont());
   ui->viewIndex->setFont(Formatter::PreferredFont());
   ui->camSpeed->setFont(Formatter::PreferredFont());
-  ui->fovGuess->setFont(Formatter::PreferredFont());
-  ui->aspectGuess->setFont(Formatter::PreferredFont());
-  ui->nearGuess->setFont(Formatter::PreferredFont());
-  ui->farGuess->setFont(Formatter::PreferredFont());
 
   if(meshview)
+  {
     SetupMeshView();
+    if(isMeshDraw())
+    {
+      m_CurStage = MeshDataStage::TaskOut;
+      m_Config.type = MeshDataStage::TaskOut;
+    }
+  }
   else
     SetupRawView();
 
   m_ExportMenu = new QMenu(this);
-
-  m_ExportCSV = new QAction(tr("Export to &CSV"), this);
+  m_ExportCSV = new QAction(this);
   m_ExportCSV->setIcon(Icons::save());
-  m_ExportBytes = new QAction(tr("Export to &Bytes"), this);
+  m_ExportBytes = new QAction(this);
   m_ExportBytes->setIcon(Icons::save());
 
   m_ExportMenu->addAction(m_ExportCSV);
@@ -2118,40 +2513,99 @@ BufferViewer::BufferViewer(ICaptureContext &ctx, bool meshview, QWidget *parent)
   m_DebugVert = new QAction(tr("&Debug this Vertex"), this);
   m_DebugVert->setIcon(Icons::wrench());
 
+  m_DebugMeshThread = new QAction(tr("&Debug Mesh Thread"), this);
+  m_DebugMeshThread->setIcon(Icons::wrench());
+
+  m_FilterMesh = new QAction(tr("&Filter to this Meshlet"), this);
+  m_FilterMesh->setIcon(Icons::filter());
+
+  m_RemoveFilter = new QAction(tr("&Remove Filter"), this);
+  m_RemoveFilter->setIcon(Icons::arrow_undo());
+
+  m_GotoTask = new QAction(tr("&Go to task"), this);
+  m_GotoTask->setIcon(Icons::arrow_join());
+
   ui->exportDrop->setMenu(m_ExportMenu);
+
+  QObject::connect(m_ExportMenu, &QMenu::aboutToShow, this, &BufferViewer::updateExportActionNames);
 
   QObject::connect(m_ExportCSV, &QAction::triggered,
                    [this] { exportData(BufferExport(BufferExport::CSV)); });
   QObject::connect(m_ExportBytes, &QAction::triggered,
                    [this] { exportData(BufferExport(BufferExport::RawBytes)); });
   QObject::connect(m_DebugVert, &QAction::triggered, this, &BufferViewer::debugVertex);
+  QObject::connect(m_DebugMeshThread, &QAction::triggered, this, &BufferViewer::debugMeshThread);
+  QObject::connect(m_RemoveFilter, &QAction::triggered,
+                   [this]() { SetMeshFilter(MeshFilter::None); });
+  QObject::connect(m_FilterMesh, &QAction::triggered, [this]() {
+    QModelIndex idx = m_CurView->selectionModel()->currentIndex();
+
+    if(!idx.isValid())
+      return;
+
+    uint32_t taskIndex = 0, meshletIndex = 0;
+    GetIndicesForMeshRow((uint32_t)idx.row(), taskIndex, meshletIndex);
+
+    SetMeshFilter(MeshFilter::Mesh, taskIndex, meshletIndex);
+  });
+  QObject::connect(m_GotoTask, &QAction::triggered, [this]() {
+    // if there's a filter then by definition only one task is visible, just scroll to it
+    if(m_CurMeshFilter != MeshFilter::None)
+    {
+      ShowMeshData(MeshDataStage::TaskOut);
+      ScrollToRow(0, MeshDataStage::TaskOut);
+      return;
+    }
+
+    QModelIndex idx = m_CurView->selectionModel()->currentIndex();
+
+    if(!idx.isValid())
+      return;
+
+    uint32_t taskIndex = 0, meshletIndex = 0;
+    GetIndicesForMeshRow((uint32_t)idx.row(), taskIndex, meshletIndex);
+
+    ShowMeshData(MeshDataStage::TaskOut);
+    ScrollToRow((int)taskIndex, MeshDataStage::TaskOut);
+  });
 
   QObject::connect(ui->exportDrop, &QToolButton::clicked,
                    [this] { exportData(BufferExport(BufferExport::CSV)); });
 
-  ui->vsinData->setContextMenuPolicy(Qt::CustomContextMenu);
-  ui->vsoutData->setContextMenuPolicy(Qt::CustomContextMenu);
-  ui->gsoutData->setContextMenuPolicy(Qt::CustomContextMenu);
+  ui->inTable->setContextMenuPolicy(Qt::CustomContextMenu);
+  ui->out1Table->setContextMenuPolicy(Qt::CustomContextMenu);
+  ui->out2Table->setContextMenuPolicy(Qt::CustomContextMenu);
+
+  ui->fixedVars->setContextMenuPolicy(Qt::CustomContextMenu);
+
+  ui->fixedVars->setFrameShape(QFrame::NoFrame);
 
   QMenu *menu = new QMenu(this);
 
-  ui->vsinData->setCustomHeaderSizing(true);
-  ui->vsoutData->setCustomHeaderSizing(true);
-  ui->gsoutData->setCustomHeaderSizing(true);
+  ui->inTable->setCustomHeaderSizing(true);
+  ui->out1Table->setCustomHeaderSizing(true);
+  ui->out2Table->setCustomHeaderSizing(true);
 
-  QObject::connect(ui->vsinData, &RDTableView::customContextMenuRequested,
+  ui->inTable->setAllowKeyboardSearches(false);
+  ui->out1Table->setAllowKeyboardSearches(false);
+  ui->out2Table->setAllowKeyboardSearches(false);
+
+  QObject::connect(ui->fixedVars, &RDTreeWidget::customContextMenuRequested, this,
+                   &BufferViewer::fixedVars_contextMenu);
+
+  QObject::connect(ui->inTable, &RDTableView::customContextMenuRequested,
                    [this, menu](const QPoint &pos) { stageRowMenu(MeshDataStage::VSIn, menu, pos); });
 
   menu = new QMenu(this);
 
   QObject::connect(
-      ui->vsoutData, &RDTableView::customContextMenuRequested,
+      ui->out1Table, &RDTableView::customContextMenuRequested,
       [this, menu](const QPoint &pos) { stageRowMenu(MeshDataStage::VSOut, menu, pos); });
 
   menu = new QMenu(this);
 
   QObject::connect(
-      ui->gsoutData, &RDTableView::customContextMenuRequested,
+      ui->out2Table, &RDTableView::customContextMenuRequested,
       [this, menu](const QPoint &pos) { stageRowMenu(MeshDataStage::GSOut, menu, pos); });
 
   ui->dockarea->setAllowFloatingWindow(false);
@@ -2161,49 +2615,79 @@ BufferViewer::BufferViewer(ICaptureContext &ctx, bool meshview, QWidget *parent)
 
   configureDrawRange();
 
-  ui->solidShading->addItems({tr("None"), tr("Solid Colour"), tr("Flat Shaded"), tr("Secondary")});
-  ui->solidShading->adjustSize();
-  ui->solidShading->setCurrentIndex(0);
+  ui->visualisation->clear();
+  ui->visualisation->addItems(
+      {tr("None"), tr("Solid Colour"), tr("Flat Shaded"), tr("Secondary"), tr("Exploded")});
+  ui->visualisation->adjustSize();
+  ui->visualisation->setCurrentIndex(0);
 
-  ui->matrixType->addItems({tr("Perspective"), tr("Orthographic")});
+  ui->axisMappingCombo->addItems({tr("Y-up, left handed"), tr("Y-up, right handed"),
+                                  tr("Z-up, left handed"), tr("Z-up, right handed"), tr("Custom...")});
+  ui->axisMappingCombo->setCurrentIndex(0);
 
   // wireframe only available on solid shaded options
   ui->wireframeRender->setEnabled(false);
 
-  ui->fovGuess->setValue(90.0);
+  ui->setFormat->setVisible(false);
 
+  QObject::connect(ui->fixedVars, &RDTreeWidget::keyPress, [this](QKeyEvent *ev) {
+    if(!IsCBufferView())
+      return;
+
+    if((ev->modifiers() & Qt::ControlModifier) && ev->key() == Qt::Key_F)
+    {
+      ui->filterCBuffer->setChecked(true);
+    }
+  });
+
+  ui->filterStrip->setVisible(false);
+
+  QObject::connect(ui->filterExpression, &RDLineEdit::keyPress, [this](QKeyEvent *event) {
+    if(event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+      OnEventChanged(m_Ctx.CurEvent());
+    if(event->key() == Qt::Key_Escape)
+      ui->filterCBuffer->setChecked(false);
+  });
+
+  m_FilterTimeout = new QTimer(this);
+  m_FilterTimeout->setInterval(600);
+  m_FilterTimeout->setSingleShot(true);
+  connect(m_FilterTimeout, &QTimer::timeout, [this]() { OnEventChanged(m_Ctx.CurEvent()); });
+
+  QObject::connect(ui->filterExpression, &RDLineEdit::textChanged,
+                   [this](const QString &) { m_FilterTimeout->start(); });
+
+  ui->controlType->setCurrentIndex(0);
   on_controlType_currentIndexChanged(0);
 
-  QObject::connect(ui->vsinData->selectionModel(), &QItemSelectionModel::selectionChanged, this,
+  QObject::connect(ui->inTable->selectionModel(), &QItemSelectionModel::selectionChanged, this,
                    &BufferViewer::data_selected);
-  QObject::connect(ui->vsoutData->selectionModel(), &QItemSelectionModel::selectionChanged, this,
+  QObject::connect(ui->out1Table->selectionModel(), &QItemSelectionModel::selectionChanged, this,
                    &BufferViewer::data_selected);
-  QObject::connect(ui->gsoutData->selectionModel(), &QItemSelectionModel::selectionChanged, this,
+  QObject::connect(ui->out2Table->selectionModel(), &QItemSelectionModel::selectionChanged, this,
                    &BufferViewer::data_selected);
 
-  m_CurView = ui->vsinData;
+  m_CurView = ui->inTable;
+  m_CurFixed = false;
 
-  QObject::connect(ui->vsinData, &RDTableView::clicked, [this]() { m_CurView = ui->vsinData; });
-  QObject::connect(ui->vsoutData, &RDTableView::clicked, [this]() { m_CurView = ui->vsoutData; });
-  QObject::connect(ui->gsoutData, &RDTableView::clicked, [this]() { m_CurView = ui->gsoutData; });
+  QObject::connect(ui->inTable, &RDTableView::clicked, [this]() {
+    m_CurView = ui->inTable;
+    m_CurFixed = false;
+  });
+  QObject::connect(ui->out1Table, &RDTableView::clicked, [this]() { m_CurView = ui->out1Table; });
+  QObject::connect(ui->out2Table, &RDTableView::clicked, [this]() { m_CurView = ui->out2Table; });
 
-  QObject::connect(ui->vsinData->verticalScrollBar(), &QScrollBar::valueChanged, this,
-                   &BufferViewer::data_scrolled);
-  QObject::connect(ui->vsoutData->verticalScrollBar(), &QScrollBar::valueChanged, this,
-                   &BufferViewer::data_scrolled);
-  QObject::connect(ui->gsoutData->verticalScrollBar(), &QScrollBar::valueChanged, this,
-                   &BufferViewer::data_scrolled);
+  QObject::connect(ui->fixedVars, &RDTreeWidget::clicked, [this]() {
+    m_CurView = NULL;
+    m_CurFixed = true;
+  });
 
-  QObject::connect(ui->fovGuess, OverloadedSlot<double>::of(&QDoubleSpinBox::valueChanged), this,
-                   &BufferViewer::camGuess_changed);
-  QObject::connect(ui->aspectGuess, OverloadedSlot<double>::of(&QDoubleSpinBox::valueChanged), this,
-                   &BufferViewer::camGuess_changed);
-  QObject::connect(ui->nearGuess, OverloadedSlot<double>::of(&QDoubleSpinBox::valueChanged), this,
-                   &BufferViewer::camGuess_changed);
-  QObject::connect(ui->farGuess, OverloadedSlot<double>::of(&QDoubleSpinBox::valueChanged), this,
-                   &BufferViewer::camGuess_changed);
-  QObject::connect(ui->matrixType, OverloadedSlot<int>::of(&QComboBox::currentIndexChanged),
-                   [this](int) { camGuess_changed(0.0); });
+  QObject::connect(ui->inTable->verticalScrollBar(), &QScrollBar::valueChanged, this,
+                   &BufferViewer::data_scrolled);
+  QObject::connect(ui->out1Table->verticalScrollBar(), &QScrollBar::valueChanged, this,
+                   &BufferViewer::data_scrolled);
+  QObject::connect(ui->out2Table->verticalScrollBar(), &QScrollBar::valueChanged, this,
+                   &BufferViewer::data_scrolled);
 
   {
     QMenu *extensionsMenu = new QMenu(this);
@@ -2213,29 +2697,72 @@ BufferViewer::BufferViewer(ICaptureContext &ctx, bool meshview, QWidget *parent)
 
     QObject::connect(extensionsMenu, &QMenu::aboutToShow, [this, extensionsMenu]() {
       extensionsMenu->clear();
-      m_Ctx.Extensions().MenuDisplaying(PanelMenu::MeshPreview, extensionsMenu, ui->extensions, {});
+      m_Ctx.Extensions().MenuDisplaying(m_MeshView ? PanelMenu::MeshPreview : PanelMenu::BufferViewer,
+                                        extensionsMenu, ui->extensions, {});
     });
   }
 
   QObject::connect(ui->render, &CustomPaintWidget::mouseMove, this, &BufferViewer::render_mouseMove);
   QObject::connect(ui->render, &CustomPaintWidget::clicked, this, &BufferViewer::render_clicked);
+  QObject::connect(ui->render, &CustomPaintWidget::unclicked, this, &BufferViewer::render_unclicked);
   QObject::connect(ui->render, &CustomPaintWidget::keyPress, this, &BufferViewer::render_keyPress);
   QObject::connect(ui->render, &CustomPaintWidget::keyRelease, this,
                    &BufferViewer::render_keyRelease);
   QObject::connect(ui->render, &CustomPaintWidget::mouseWheel, this,
                    &BufferViewer::render_mouseWheel);
 
+  // event filter to pick up tooltip events
+  ui->fixedVars->setTooltipElidedItems(false);
+  ui->fixedVars->installEventFilter(this);
+
+  QObject::connect(m_MeshDebugSelector, &ComputeDebugSelector::beginDebug, this,
+                   &BufferViewer::meshDebugSelector_beginDebug);
+
   Reset();
 
   m_Ctx.AddCaptureViewer(this);
+}
+
+void BufferViewer::GetIndicesForMeshRow(uint32_t row, uint32_t &taskIndex, uint32_t &meshletIdx)
+{
+  const BufferConfiguration &config2 = m_ModelOut2->getConfig();
+
+  auto it = std::upper_bound(config2.meshletVertexPrefixCounts.begin(),
+                             config2.meshletVertexPrefixCounts.end(), row);
+
+  if(it != config2.meshletVertexPrefixCounts.begin())
+    it--;
+
+  meshletIdx = uint32_t(it - config2.meshletVertexPrefixCounts.begin());
+
+  const BufferConfiguration &config1 = m_ModelOut1->getConfig();
+
+  taskIndex = 0;
+
+  uint32_t meshletCounter = 0;
+  for(taskIndex = 0; taskIndex < meshletIdx && taskIndex < config1.taskSizes.size(); taskIndex++)
+  {
+    meshletCounter += config1.taskSizes[taskIndex].x * config1.taskSizes[taskIndex].y *
+                      config1.taskSizes[taskIndex].z;
+
+    if(meshletIdx < meshletCounter)
+      break;
+  }
+
+  taskIndex += config1.taskOrMeshletOffset;
+  meshletIdx += config2.taskOrMeshletOffset;
 }
 
 void BufferViewer::SetupRawView()
 {
   ui->formatSpecifier->setVisible(true);
   ui->outputTabs->setVisible(false);
-  ui->vsoutData->setVisible(false);
-  ui->gsoutData->setVisible(false);
+  ui->out1Table->setVisible(false);
+  ui->out2Table->setVisible(false);
+
+  m_Containers[0]->setVisible(false);
+  m_Containers[1]->setVisible(false);
+  m_Containers[2]->setVisible(false);
 
   // hide buttons we don't want in the toolbar
   ui->syncViews->setVisible(false);
@@ -2243,27 +2770,24 @@ void BufferViewer::SetupRawView()
   ui->instance->setVisible(false);
   ui->viewLabel->setVisible(false);
   ui->viewIndex->setVisible(false);
+  ui->dockarea->setVisible(false);
 
-  ui->vsinData->setWindowTitle(tr("Buffer Contents"));
-  ui->vsinData->setFrameShape(QFrame::NoFrame);
-  ui->dockarea->addToolWindow(ui->vsinData, ToolWindowManager::EmptySpace);
-  ui->dockarea->setToolWindowProperties(ui->vsinData, ToolWindowManager::HideCloseButton);
+  ui->meshFilterLabel->setVisible(false);
+  ui->resetMeshFilterButton->setVisible(false);
 
-  ui->vsinData->setPinnedColumns(1);
-  ui->vsinData->setColumnGroupRole(columnGroupRole);
+  ui->inTable->setFrameShape(QFrame::NoFrame);
 
-  m_delegate = new RichTextViewDelegate(ui->vsinData);
-  ui->vsinData->setItemDelegate(m_delegate);
+  ui->inTable->setPinnedColumns(1);
+  ui->inTable->setColumnGroupRole(columnGroupRole);
 
-  ui->vsinData->viewport()->installEventFilter(this);
+  m_delegate = new RichTextViewDelegate(ui->inTable);
+  ui->inTable->setItemDelegate(m_delegate);
 
-  ui->vsinData->setMouseTracking(true);
+  ui->inTable->viewport()->installEventFilter(this);
+
+  ui->inTable->setMouseTracking(true);
 
   ui->formatSpecifier->setWindowTitle(tr("Buffer Format"));
-  ui->dockarea->addToolWindow(ui->formatSpecifier, ToolWindowManager::AreaReference(
-                                                       ToolWindowManager::BottomOf,
-                                                       ui->dockarea->areaOf(ui->vsinData), 0.5f));
-  ui->dockarea->setToolWindowProperties(ui->formatSpecifier, ToolWindowManager::HideCloseButton);
 
   QObject::connect(ui->formatSpecifier, &BufferFormatSpecifier::processFormat,
                    [this](const QString &format) {
@@ -2271,19 +2795,89 @@ void BufferViewer::SetupRawView()
                      processFormat(format);
                    });
 
-  QVBoxLayout *vertical = new QVBoxLayout(this);
+  ui->fixedVars->setColumns({tr("Name"), tr("Value"), tr("Byte Offset"), tr("Type")});
+  {
+    ui->fixedVars->header()->setSectionResizeMode(0, QHeaderView::Interactive);
+    ui->fixedVars->header()->setSectionResizeMode(1, QHeaderView::Interactive);
+    ui->fixedVars->header()->setSectionResizeMode(2, QHeaderView::Interactive);
+  }
 
-  vertical->setSpacing(3);
-  vertical->setContentsMargins(3, 3, 3, 3);
+  ui->fixedVars->setFont(Formatter::FixedFont());
 
-  vertical->addWidget(ui->meshToolbar);
-  vertical->addWidget(ui->dockarea);
+  m_FixedGroup = new CollapseGroupBox(this);
+  m_RepeatedGroup = new CollapseGroupBox(this);
+
+  m_RepeatedControlBar = new QFrame(this);
+
+  m_RepeatedControlBar->setFrameShape(QFrame::Panel);
+  m_RepeatedControlBar->setFrameShadow(QFrame::Raised);
+
+  QHBoxLayout *controlLayout = new QHBoxLayout(m_RepeatedControlBar);
+  controlLayout->setSpacing(2);
+  controlLayout->setContentsMargins(6, 2, 6, 2);
+
+  m_RepeatedOffset = new RDLabel(this);
+
+  QFrame *line = new QFrame(this);
+  line->setFrameShape(QFrame::VLine);
+  line->setFrameShadow(QFrame::Sunken);
+
+  controlLayout->addWidget(line);
+
+  controlLayout->addWidget(m_RepeatedOffset);
+
+  controlLayout->addItem(new QSpacerItem(40, 20, QSizePolicy::Expanding, QSizePolicy::Minimum));
+
+  QVBoxLayout *fixedLayout = new QVBoxLayout(m_FixedGroup);
+  fixedLayout->setSpacing(0);
+  fixedLayout->setContentsMargins(0, 0, 0, 0);
+
+  QVBoxLayout *repeatedLayout = new QVBoxLayout(m_RepeatedGroup);
+  repeatedLayout->setSpacing(3);
+  repeatedLayout->setContentsMargins(2, 0, 0, 0);
+
+  repeatedLayout->addWidget(m_RepeatedControlBar);
+
+  m_FixedGroup->setTitle(tr("Fixed SoA data"));
+  m_RepeatedGroup->setTitle(tr("Repeated AoS values"));
+
+  m_VLayout = new QVBoxLayout(this);
+  m_VLayout->setSpacing(3);
+  m_VLayout->setContentsMargins(3, 3, 3, 3);
+
+  m_OuterSplitter = new RDSplitter(Qt::Vertical, this);
+  m_OuterSplitter->setHandleWidth(12);
+  m_OuterSplitter->setChildrenCollapsible(false);
+
+  m_InnerSplitter = new RDSplitter(Qt::Vertical, this);
+  m_InnerSplitter->setHandleWidth(12);
+  m_InnerSplitter->setChildrenCollapsible(false);
+
+  m_InnerSplitter->setVisible(false);
+
+  // inner splitter is only used when we have these groups, so we can add these unconditionally
+  m_InnerSplitter->addWidget(m_FixedGroup);
+  m_InnerSplitter->addWidget(m_RepeatedGroup);
+
+  QFrame *meshToolbar = new QFrame(this);
+  meshToolbar->setFrameShape(QFrame::Panel);
+  meshToolbar->setFrameShadow(QFrame::Plain);
+
+  QVBoxLayout *meshToolbarLayout = new QVBoxLayout(meshToolbar);
+  meshToolbarLayout->setSpacing(2);
+  meshToolbarLayout->setContentsMargins(0, 0, 0, 0);
+  meshToolbarLayout->addWidget(ui->mainMeshToolbar);
+  meshToolbarLayout->addWidget(ui->filterStrip);
+
+  m_VLayout->addWidget(meshToolbar);
+  // 0 will be variable, but set it to something here so QSplitter doesn't barf
+  m_OuterSplitter->insertWidget(0, ui->inTable);
+  m_OuterSplitter->insertWidget(1, ui->formatSpecifier);
+  m_VLayout->addWidget(m_OuterSplitter);
 }
 
 void BufferViewer::SetupMeshView()
 {
-  setWindowTitle(tr("Mesh Viewer"));
-
   // hide buttons we don't want in the toolbar
   ui->byteRangeLine->setVisible(false);
   ui->byteRangeStartLabel->setVisible(false);
@@ -2291,9 +2885,23 @@ void BufferViewer::SetupMeshView()
   ui->byteRangeLengthLabel->setVisible(false);
   byteRangeLength->setVisible(false);
 
+  ui->meshFilterLabel->setVisible(false);
+  ui->resetMeshFilterButton->setVisible(false);
+
+  ui->fixedVars->setVisible(false);
+  ui->showPadding->setVisible(false);
+
+  ui->fixedVars->setColumns({tr("Name"), tr("Value"), tr("Type")});
+  {
+    ui->fixedVars->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    ui->fixedVars->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+  }
+
+  ui->fixedVars->setFont(Formatter::FixedFont());
+
   ui->resourceDetails->setVisible(false);
   ui->formatSpecifier->setVisible(false);
-  ui->cameraControlsGroup->setVisible(false);
+  ui->configurationGroup->setVisible(false);
 
   ui->minBoundsLabel->setText(lit("---"));
   ui->maxBoundsLabel->setText(lit("---"));
@@ -2302,28 +2910,27 @@ void BufferViewer::SetupMeshView()
   ui->dockarea->addToolWindow(ui->outputTabs, ToolWindowManager::EmptySpace);
   ui->dockarea->setToolWindowProperties(ui->outputTabs, ToolWindowManager::HideCloseButton);
 
-  ui->vsinData->setWindowTitle(tr("VS Input"));
-  ui->vsinData->setFrameShape(QFrame::NoFrame);
+  ui->inTable->setFrameShape(QFrame::NoFrame);
   ui->dockarea->addToolWindow(
-      ui->vsinData, ToolWindowManager::AreaReference(ToolWindowManager::TopOf,
-                                                     ui->dockarea->areaOf(ui->outputTabs), 0.5f));
-  ui->dockarea->setToolWindowProperties(ui->vsinData, ToolWindowManager::HideCloseButton);
+      m_Containers[0], ToolWindowManager::AreaReference(
+                           ToolWindowManager::TopOf, ui->dockarea->areaOf(ui->outputTabs), 0.5f));
+  ui->dockarea->setToolWindowProperties(m_Containers[0], ToolWindowManager::HideCloseButton);
 
-  ui->vsoutData->setWindowTitle(tr("VS Output"));
-  ui->vsoutData->setFrameShape(QFrame::NoFrame);
+  ui->out1Table->setFrameShape(QFrame::NoFrame);
   ui->dockarea->addToolWindow(
-      ui->vsoutData, ToolWindowManager::AreaReference(ToolWindowManager::RightOf,
-                                                      ui->dockarea->areaOf(ui->vsinData), 0.5f));
-  ui->dockarea->setToolWindowProperties(ui->vsoutData, ToolWindowManager::HideCloseButton);
+      m_Containers[1], ToolWindowManager::AreaReference(
+                           ToolWindowManager::RightOf, ui->dockarea->areaOf(m_Containers[0]), 0.5f));
+  ui->dockarea->setToolWindowProperties(m_Containers[1], ToolWindowManager::HideCloseButton);
 
-  ui->gsoutData->setWindowTitle(tr("GS/DS Output"));
-  ui->gsoutData->setFrameShape(QFrame::NoFrame);
+  ui->out2Table->setFrameShape(QFrame::NoFrame);
   ui->dockarea->addToolWindow(
-      ui->gsoutData, ToolWindowManager::AreaReference(ToolWindowManager::AddTo,
-                                                      ui->dockarea->areaOf(ui->vsoutData), 0.5f));
-  ui->dockarea->setToolWindowProperties(ui->gsoutData, ToolWindowManager::HideCloseButton);
+      m_Containers[2], ToolWindowManager::AreaReference(
+                           ToolWindowManager::AddTo, ui->dockarea->areaOf(m_Containers[1]), 0.5f));
+  ui->dockarea->setToolWindowProperties(m_Containers[2], ToolWindowManager::HideCloseButton);
 
-  ToolWindowManager::raiseToolWindow(ui->vsoutData);
+  ToolWindowManager::raiseToolWindow(m_Containers[1]);
+
+  updateLabelsAndLayout();
 
   m_HeaderMenu = new QMenu(this);
 
@@ -2342,9 +2949,9 @@ void BufferViewer::SetupMeshView()
     BufferItemModel *model = (BufferItemModel *)m_CurView->model();
 
     model->setPosColumn(-1);
-    model->setSecondaryColumn(-1, m_Config.solidShadeMode == SolidShade::Secondary, false);
+    model->setSecondaryColumn(-1, m_Config.visualisationMode == Visualisation::Secondary, false);
 
-    UI_CalculateMeshFormats();
+    UI_ConfigureFormats();
     on_resetCamera_clicked();
     UpdateCurrentMeshConfig();
     INVOKE_MEMFN(RT_UpdateAndDisplay);
@@ -2354,7 +2961,7 @@ void BufferViewer::SetupMeshView()
 
     model->setPosColumn(m_ContextColumn);
 
-    UI_CalculateMeshFormats();
+    UI_ConfigureFormats();
     on_resetCamera_clicked();
     UpdateCurrentMeshConfig();
     INVOKE_MEMFN(RT_UpdateAndDisplay);
@@ -2362,48 +2969,62 @@ void BufferViewer::SetupMeshView()
   QObject::connect(m_SelectSecondColumn, &QAction::triggered, [this]() {
     BufferItemModel *model = (BufferItemModel *)m_CurView->model();
 
-    model->setSecondaryColumn(m_ContextColumn, m_Config.solidShadeMode == SolidShade::Secondary,
-                              false);
+    model->setSecondaryColumn(m_ContextColumn,
+                              m_Config.visualisationMode == Visualisation::Secondary, false);
 
-    UI_CalculateMeshFormats();
+    UI_ConfigureFormats();
     UpdateCurrentMeshConfig();
     INVOKE_MEMFN(RT_UpdateAndDisplay);
   });
   QObject::connect(m_SelectSecondAlphaColumn, &QAction::triggered, [this]() {
     BufferItemModel *model = (BufferItemModel *)m_CurView->model();
 
-    model->setSecondaryColumn(m_ContextColumn, m_Config.solidShadeMode == SolidShade::Secondary,
-                              true);
-    UI_CalculateMeshFormats();
+    model->setSecondaryColumn(m_ContextColumn,
+                              m_Config.visualisationMode == Visualisation::Secondary, true);
+    UI_ConfigureFormats();
     UpdateCurrentMeshConfig();
     INVOKE_MEMFN(RT_UpdateAndDisplay);
   });
 
-  ui->vsinData->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
-  ui->vsoutData->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
-  ui->gsoutData->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
+  ui->inTable->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
+  ui->out1Table->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
+  ui->out2Table->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
 
-  ui->vsinData->setPinnedColumns(2);
-  ui->vsoutData->setPinnedColumns(2);
-  ui->gsoutData->setPinnedColumns(2);
+  ui->inTable->horizontalHeader()->setTextElideMode(Qt::ElideMiddle);
+  ui->out1Table->horizontalHeader()->setTextElideMode(Qt::ElideMiddle);
+  ui->out2Table->horizontalHeader()->setTextElideMode(Qt::ElideMiddle);
 
-  ui->vsinData->setColumnGroupRole(columnGroupRole);
-  ui->vsoutData->setColumnGroupRole(columnGroupRole);
-  ui->gsoutData->setColumnGroupRole(columnGroupRole);
+  ui->inTable->setPinnedColumns(2);
+  ui->out1Table->setPinnedColumns(2);
+  ui->out2Table->setPinnedColumns(2);
 
-  QObject::connect(ui->vsinData->horizontalHeader(), &QHeaderView::customContextMenuRequested,
+  ui->inTable->setColumnGroupRole(columnGroupRole);
+  ui->out1Table->setColumnGroupRole(columnGroupRole);
+  ui->out2Table->setColumnGroupRole(columnGroupRole);
+
+  QObject::connect(ui->inTable->horizontalHeader(), &QHeaderView::customContextMenuRequested,
                    [this](const QPoint &pos) { meshHeaderMenu(MeshDataStage::VSIn, pos); });
-  QObject::connect(ui->vsoutData->horizontalHeader(), &QHeaderView::customContextMenuRequested,
+  QObject::connect(ui->out1Table->horizontalHeader(), &QHeaderView::customContextMenuRequested,
                    [this](const QPoint &pos) { meshHeaderMenu(MeshDataStage::VSOut, pos); });
-  QObject::connect(ui->gsoutData->horizontalHeader(), &QHeaderView::customContextMenuRequested,
+  QObject::connect(ui->out2Table->horizontalHeader(), &QHeaderView::customContextMenuRequested,
                    [this](const QPoint &pos) { meshHeaderMenu(MeshDataStage::GSOut, pos); });
+
+  QFrame *meshToolbar = new QFrame(this);
+  meshToolbar->setFrameShape(QFrame::Panel);
+  meshToolbar->setFrameShadow(QFrame::Plain);
+
+  QVBoxLayout *meshToolbarLayout = new QVBoxLayout(meshToolbar);
+  meshToolbarLayout->setSpacing(2);
+  meshToolbarLayout->setContentsMargins(0, 0, 0, 0);
+  meshToolbarLayout->addWidget(ui->mainMeshToolbar);
+  meshToolbarLayout->addWidget(ui->filterStrip);
 
   QVBoxLayout *vertical = new QVBoxLayout(this);
 
   vertical->setSpacing(3);
   vertical->setContentsMargins(3, 3, 3, 3);
 
-  vertical->addWidget(ui->meshToolbar);
+  vertical->addWidget(meshToolbar);
   vertical->addWidget(ui->dockarea);
 
   QTimer *renderTimer = new QTimer(this);
@@ -2421,21 +3042,211 @@ void BufferViewer::meshHeaderMenu(MeshDataStage stage, const QPoint &pos)
     return;
 
   m_CurView = tableForStage(stage);
+  m_CurFixed = false;
   m_ContextColumn = modelForStage(stage)->elementIndexForColumn(col);
 
-  m_SelectSecondAlphaColumn->setEnabled(
-      modelForStage(stage)->elementForColumn(col).type.descriptor.columns == 4);
+  bool perPrim = modelForStage(stage)->propForColumn(col).perprimitive;
+
+  if(perPrim)
+  {
+    m_SelectPosColumn->setEnabled(false);
+    m_SelectSecondColumn->setEnabled(false);
+    m_SelectSecondAlphaColumn->setEnabled(false);
+  }
+  else
+  {
+    m_SelectPosColumn->setEnabled(true);
+    m_SelectSecondColumn->setEnabled(true);
+
+    m_SelectSecondAlphaColumn->setEnabled(modelForStage(stage)->elementForColumn(col).type.columns ==
+                                          4);
+  }
 
   m_HeaderMenu->popup(tableForStage(stage)->horizontalHeader()->mapToGlobal(pos));
+}
+
+void BufferViewer::fixedVars_contextMenu(const QPoint &pos)
+{
+  RDTreeWidgetItem *item = ui->fixedVars->itemAt(pos);
+
+  m_CurView = NULL;
+  m_CurFixed = true;
+
+  updateExportActionNames();
+
+  QMenu contextMenu(this);
+
+  QAction expandAll(tr("&Expand All"), this);
+  QAction collapseAll(tr("C&ollapse All"), this);
+  QAction copy(tr("&Copy"), this);
+  QAction showPadding(tr("&Show Padding"), this);
+  QAction removeFilter(tr("&Remove Filter"), this);
+  QAction filterTask(tr("&Filter to this Task"), this);
+  QAction gotoMesh(tr("&Go to meshes"), this);
+
+  expandAll.setIcon(Icons::arrow_out());
+  collapseAll.setIcon(Icons::arrow_in());
+  copy.setIcon(Icons::copy());
+  removeFilter.setIcon(Icons::arrow_undo());
+  filterTask.setIcon(Icons::filter());
+  gotoMesh.setIcon(Icons::arrow_join());
+  showPadding.setCheckable(true);
+  showPadding.setChecked(ui->showPadding->isChecked());
+
+  expandAll.setEnabled(item && item->childCount() > 0);
+  removeFilter.setEnabled(item && m_CurMeshFilter != MeshFilter::None);
+  filterTask.setEnabled(item);
+  gotoMesh.setEnabled(item);
+  collapseAll.setEnabled(expandAll.isEnabled());
+
+  contextMenu.addAction(&expandAll);
+  contextMenu.addAction(&collapseAll);
+  contextMenu.addAction(&copy);
+
+  contextMenu.addSeparator();
+
+  int idx = ui->fixedVars->indexOfTopLevelItem(item);
+
+  if(m_MeshView)
+  {
+    contextMenu.addAction(&removeFilter);
+    contextMenu.addAction(&filterTask);
+    contextMenu.addAction(&gotoMesh);
+
+    const BufferConfiguration &config1 = m_ModelOut1->getConfig();
+
+    // if we're already filtering to a task, don't offer to filter any more. However if we're
+    // filtered to a mesh allow 'broadening' the filter back to the task
+    // also don't allow filtering at all if there is no task shader bound
+    filterTask.setEnabled(!config1.taskSizes.empty() && m_CurMeshFilter != MeshFilter::TaskGroup);
+
+    if(config1.taskSizes.empty() ||
+       config1.taskSizes[idx].x * config1.taskSizes[idx].y * config1.taskSizes[idx].z == 0)
+      gotoMesh.setEnabled(false);
+
+    // if there's a filter don't enable goto mesh as normally we just scroll to the first mesh - it
+    // would be redundant and potentially annoying to be able to and doesn't do anything useful
+    if(m_CurMeshFilter != MeshFilter::None)
+      gotoMesh.setEnabled(false);
+  }
+  else
+  {
+    contextMenu.addAction(&showPadding);
+  }
+
+  contextMenu.addSeparator();
+
+  contextMenu.addAction(m_ExportCSV);
+  contextMenu.addAction(m_ExportBytes);
+
+  QObject::connect(&removeFilter, &QAction::triggered, [this]() { SetMeshFilter(MeshFilter::None); });
+  QObject::connect(&filterTask, &QAction::triggered, [this, idx]() {
+    // if there's no filter, select this task. If we were mesh filtering, filter back to all meshes
+    // under the current task (don't use idx there, since it will just be 0)
+    if(m_CurMeshFilter == MeshFilter::None)
+      SetMeshFilter(MeshFilter::TaskGroup, idx);
+    else
+      SetMeshFilter(MeshFilter::TaskGroup, m_FilteredTaskGroup);
+  });
+  QObject::connect(&gotoMesh, &QAction::triggered, [this, idx]() {
+    const BufferConfiguration &config1 = m_ModelOut1->getConfig();
+
+    uint32_t meshletIndex = 0;
+    for(int i = 0; i < idx && i < config1.taskSizes.count(); i++)
+    {
+      meshletIndex += config1.taskSizes[i].x * config1.taskSizes[i].y * config1.taskSizes[i].z;
+    }
+
+    const BufferConfiguration &config2 = m_ModelOut2->getConfig();
+    uint32_t vertexOffset = config2.meshletVertexPrefixCounts[meshletIndex];
+
+    ShowMeshData(MeshDataStage::MeshOut);
+    ScrollToRow((int)vertexOffset, MeshDataStage::MeshOut);
+  });
+
+  QObject::connect(&expandAll, &QAction::triggered,
+                   [this, item]() { ui->fixedVars->expandAllItems(item); });
+
+  QObject::connect(&collapseAll, &QAction::triggered,
+                   [this, item]() { ui->fixedVars->collapseAllItems(item); });
+  QObject::connect(&copy, &QAction::triggered,
+                   [this, item, pos]() { ui->fixedVars->copyItem(pos, item); });
+  QObject::connect(&showPadding, &QAction::triggered,
+                   [this]() { ui->showPadding->setChecked(!ui->showPadding->isChecked()); });
+
+  RDDialog::show(&contextMenu, ui->fixedVars->viewport()->mapToGlobal(pos));
 }
 
 void BufferViewer::stageRowMenu(MeshDataStage stage, QMenu *menu, const QPoint &pos)
 {
   m_CurView = tableForStage(stage);
+  m_CurFixed = false;
+
+  updateExportActionNames();
 
   menu->clear();
 
   menu->setToolTipsVisible(true);
+
+  QModelIndex idx = m_CurView->selectionModel()->currentIndex();
+
+  const ActionDescription *action = m_Ctx.CurAction();
+
+  if(action && (action->flags & ActionFlags::MeshDispatch))
+  {
+    if(stage == MeshDataStage::GSOut)
+    {
+      const BufferConfiguration &config = m_ModelOut2->getConfig();
+
+      auto it = std::upper_bound(config.meshletVertexPrefixCounts.begin(),
+                                 config.meshletVertexPrefixCounts.end(), (uint32_t)idx.row());
+
+      if(it != config.meshletVertexPrefixCounts.begin())
+        it--;
+
+      size_t meshletIdx = it - config.meshletVertexPrefixCounts.begin();
+
+      m_RemoveFilter->setEnabled(m_CurMeshFilter != MeshFilter::None);
+
+      menu->addAction(m_RemoveFilter);
+      menu->addAction(m_FilterMesh);
+      menu->addAction(m_GotoTask);
+
+      const ShaderReflection *shaderDetails =
+          m_Ctx.CurPipelineState().GetShaderReflection(ShaderStage::Mesh);
+
+      m_DebugMeshThread->setEnabled(false);
+
+      if(!m_Ctx.APIProps().shaderDebugging)
+      {
+        m_DebugMeshThread->setToolTip(tr("This API does not support shader debugging"));
+      }
+      else if(!m_Ctx.CurAction() ||
+              !(m_Ctx.CurAction()->flags & (ActionFlags::Drawcall | ActionFlags::MeshDispatch)))
+      {
+        m_DebugMeshThread->setToolTip(tr("No draw call selected"));
+      }
+      else if(!shaderDetails)
+      {
+        m_DebugMeshThread->setToolTip(tr("No mesh shader bound"));
+      }
+      else if(!shaderDetails->debugInfo.debuggable)
+      {
+        m_DebugMeshThread->setToolTip(
+            tr("This shader doesn't support debugging: %1").arg(shaderDetails->debugInfo.debugStatus));
+      }
+      else
+      {
+        m_DebugMeshThread->setEnabled(true);
+        m_DebugMeshThread->setToolTip(QString());
+      }
+      menu->addAction(m_DebugMeshThread);
+
+      menu->addSeparator();
+
+      m_GotoTask->setEnabled(m_Ctx.CurPipelineState().GetShaderReflection(ShaderStage::Task));
+    }
+  }
 
   if(m_MeshView && stage != MeshDataStage::GSOut)
   {
@@ -2448,7 +3259,8 @@ void BufferViewer::stageRowMenu(MeshDataStage stage, QMenu *menu, const QPoint &
     {
       m_DebugVert->setToolTip(tr("This API does not support shader debugging"));
     }
-    else if(!m_Ctx.CurAction() || !(m_Ctx.CurAction()->flags & ActionFlags::Drawcall))
+    else if(!m_Ctx.CurAction() ||
+            !(m_Ctx.CurAction()->flags & (ActionFlags::Drawcall | ActionFlags::MeshDispatch)))
     {
       m_DebugVert->setToolTip(tr("No draw call selected"));
     }
@@ -2482,8 +3294,10 @@ void BufferViewer::stageRowMenu(MeshDataStage stage, QMenu *menu, const QPoint &
     contextMenu = ContextMenu::MeshPreview_VSOutVertex;
   else if(stage == MeshDataStage::GSOut)
     contextMenu = ContextMenu::MeshPreview_GSOutVertex;
-
-  QModelIndex idx = m_CurView->selectionModel()->currentIndex();
+  else if(stage == MeshDataStage::TaskOut)
+    contextMenu = ContextMenu::MeshPreview_TaskOutVertex;
+  else if(stage == MeshDataStage::MeshOut)
+    contextMenu = ContextMenu::MeshPreview_MeshOutVertex;
 
   ExtensionCallbackData callbackdata = {make_pyarg("stage", (uint32_t)stage)};
 
@@ -2508,6 +3322,8 @@ BufferViewer::~BufferViewer()
     m_Ctx.Replay().BlockInvoke([this](IReplayController *r) { m_Output->Shutdown(); });
   }
 
+  delete m_Scrolls;
+
   delete m_Arcball;
   delete m_Flycam;
 
@@ -2516,6 +3332,8 @@ BufferViewer::~BufferViewer()
 
   m_Ctx.RemoveCaptureViewer(this);
   delete ui;
+
+  m_CBufferViews.removeOne(this);
 }
 
 void BufferViewer::OnCaptureLoaded()
@@ -2546,13 +3364,19 @@ void BufferViewer::OnCaptureClosed()
 
 void BufferViewer::FillScrolls(PopulateBufferData *bufdata)
 {
-  bufdata->vsinHoriz = ui->vsinData->horizontalScrollBar()->value();
-  bufdata->vsoutHoriz = ui->vsoutData->horizontalScrollBar()->value();
-  bufdata->gsoutHoriz = ui->gsoutData->horizontalScrollBar()->value();
+  bufdata->inHoriz = ui->inTable->horizontalScrollBar()->value();
+  bufdata->out1Horiz = ui->out1Table->horizontalScrollBar()->value();
+  bufdata->out2Horiz = ui->out2Table->horizontalScrollBar()->value();
 
-  bufdata->vsinVert = ui->vsinData->indexAt(QPoint(0, 0)).row();
-  bufdata->vsoutVert = ui->vsoutData->indexAt(QPoint(0, 0)).row();
-  bufdata->gsoutVert = ui->gsoutData->indexAt(QPoint(0, 0)).row();
+  bufdata->inVert = ui->inTable->indexAt(QPoint(0, 0)).row();
+  bufdata->out1Vert = ui->out1Table->indexAt(QPoint(0, 0)).row();
+  bufdata->out2Vert = ui->out2Table->indexAt(QPoint(0, 0)).row();
+
+  if(bufdata->meshDispatch)
+  {
+    bufdata->out1Horiz = ui->fixedVars->horizontalScrollBar()->value();
+    bufdata->out1Vert = ui->fixedVars->indexOfTopLevelItem(ui->fixedVars->itemAt(QPoint(0, 0)));
+  }
 }
 
 void BufferViewer::OnEventChanged(uint32_t eventId)
@@ -2564,13 +3388,13 @@ void BufferViewer::OnEventChanged(uint32_t eventId)
 
   if(m_Scrolls)
   {
-    bufdata->vsinHoriz = m_Scrolls->vsinHoriz;
-    bufdata->vsoutHoriz = m_Scrolls->vsoutHoriz;
-    bufdata->gsoutHoriz = m_Scrolls->gsoutHoriz;
+    bufdata->inHoriz = m_Scrolls->inHoriz;
+    bufdata->out1Horiz = m_Scrolls->out1Horiz;
+    bufdata->out2Horiz = m_Scrolls->out2Horiz;
 
-    bufdata->vsinVert = m_Scrolls->vsinVert;
-    bufdata->vsoutVert = m_Scrolls->vsoutVert;
-    bufdata->gsoutVert = m_Scrolls->gsoutVert;
+    bufdata->inVert = m_Scrolls->inVert;
+    bufdata->out1Vert = m_Scrolls->out1Vert;
+    bufdata->out2Vert = m_Scrolls->out2Vert;
 
     delete m_Scrolls;
     m_Scrolls = NULL;
@@ -2587,16 +3411,16 @@ void BufferViewer::OnEventChanged(uint32_t eventId)
   m_Scroll[(int)MeshDataStage::VSOut] = QPoint(-1, -1);
   m_Scroll[(int)MeshDataStage::GSOut] = QPoint(-1, -1);
 
-  bufdata->highlightNames[0] = m_ModelVSIn->posName();
-  bufdata->highlightNames[1] = m_ModelVSIn->secondaryName();
-  bufdata->highlightNames[2] = m_ModelVSOut->posName();
-  bufdata->highlightNames[3] = m_ModelVSOut->secondaryName();
-  bufdata->highlightNames[4] = m_ModelGSOut->posName();
-  bufdata->highlightNames[5] = m_ModelGSOut->secondaryName();
-
-  updateWindowTitle();
+  bufdata->highlightNames[0] = m_ModelIn->posName();
+  bufdata->highlightNames[1] = m_ModelIn->secondaryName();
+  bufdata->highlightNames[2] = m_ModelOut1->posName();
+  bufdata->highlightNames[3] = m_ModelOut1->secondaryName();
+  bufdata->highlightNames[4] = m_ModelOut2->posName();
+  bufdata->highlightNames[5] = m_ModelOut2->secondaryName();
 
   const ActionDescription *action = m_Ctx.CurAction();
+
+  bufdata->meshDispatch = action && (action->flags & ActionFlags::MeshDispatch);
 
   configureDrawRange();
 
@@ -2610,60 +3434,132 @@ void BufferViewer::OnEventChanged(uint32_t eventId)
 
     const PipeState &pipe = m_Ctx.CurPipelineState();
 
-    if(pipe.IsStripRestartEnabled() && action && (action->flags & ActionFlags::Indexed) &&
-       SupportsRestart(pipe.GetPrimitiveTopology()))
+    if(pipe.IsRestartEnabled() && action && (action->flags & ActionFlags::Indexed))
     {
-      bufdata->vsinConfig.primRestart = pipe.GetStripRestartIndex();
+      bufdata->inConfig.primRestart = pipe.GetRestartIndex();
 
       if(pipe.GetIBuffer().byteStride == 1)
-        bufdata->vsinConfig.primRestart &= 0xff;
+        bufdata->inConfig.primRestart &= 0xff;
       else if(pipe.GetIBuffer().byteStride == 2)
-        bufdata->vsinConfig.primRestart &= 0xffff;
+        bufdata->inConfig.primRestart &= 0xffff;
 
-      bufdata->vsoutConfig.primRestart = bufdata->vsinConfig.primRestart;
+      bufdata->out1Config.primRestart = bufdata->inConfig.primRestart;
       // GS Out doesn't use primitive restart because it is post-expansion
     }
 
-    ConfigureMeshColumns(m_Ctx, bufdata);
-
-    if(!bufdata->vsinConfig.noDraw.isEmpty())
-    {
-      m_ColumnWidthRowCount = 0;
-      m_DataColWidth = 500;
-    }
+    ConfigureColumns(m_Ctx, bufdata);
 
     Viewport vp = m_Ctx.CurPipelineState().GetViewport(0);
 
     float vpWidth = qAbs(vp.width);
     float vpHeight = qAbs(vp.height);
 
-    m_Config.fov = ui->fovGuess->value();
+    m_Config.fov = m_ProjGuess.fov;
     m_Config.aspect = (vpWidth > 0.0f && vpHeight > 0.0f) ? (vpWidth / vpHeight) : 1.0f;
     m_Config.highlightVert = 0;
 
-    if(ui->aspectGuess->value() > 0.0)
-      m_Config.aspect = ui->aspectGuess->value();
+    if(m_ProjGuess.aspect > 0.0)
+      m_Config.aspect = m_ProjGuess.aspect;
   }
   else
   {
-    QString errors;
-    ShaderConstant constant = BufferFormatter::ParseFormatString(m_Format, m_ByteSize, true, errors);
+    // update with the current cbuffer for the current slot
+    if(IsCBufferView())
+    {
+      UsedDescriptor cb = m_Ctx.CurPipelineState().GetConstantBlock(
+          m_CBufferSlot.stage, m_CBufferSlot.slot, m_CBufferSlot.arrayIdx);
+      m_BufferID = cb.descriptor.resource;
+      m_ByteOffset = cb.descriptor.byteOffset;
+      m_ByteSize = cb.descriptor.byteSize;
 
-    UnrollConstant(constant, bufdata->vsinConfig.columns, bufdata->vsinConfig.props);
+      const ShaderReflection *reflection =
+          m_Ctx.CurPipelineState().GetShaderReflection(m_CBufferSlot.stage);
+      bufdata->cb.valid =
+          (reflection != NULL && m_CBufferSlot.slot < reflection->constantBlocks.size());
+      if(bufdata->cb.valid)
+      {
+        bufdata->cb.bytesBacked = reflection->constantBlocks[m_CBufferSlot.slot].bufferBacked ||
+                                  reflection->constantBlocks[m_CBufferSlot.slot].inlineDataBytes;
+        bufdata->cb.compileConstants =
+            reflection->constantBlocks[m_CBufferSlot.slot].compileConstants;
+      }
+
+      ui->setFormat->setEnabled(bufdata->cb.bytesBacked);
+      if(ui->setFormat->isEnabled())
+        ui->setFormat->setToolTip(tr("Specify a custom format for this constant buffer"));
+      else
+        ui->setFormat->setToolTip(tr("Cannot specify custom format without backing memory"));
+
+      bufdata->cb.pipe = m_CBufferSlot.stage == ShaderStage::Compute
+                             ? m_Ctx.CurPipelineState().GetComputePipelineObject()
+                             : m_Ctx.CurPipelineState().GetGraphicsPipelineObject();
+      bufdata->cb.shader = m_Ctx.CurPipelineState().GetShader(m_CBufferSlot.stage);
+      bufdata->cb.entryPoint = m_Ctx.CurPipelineState().GetShaderEntryPoint(m_CBufferSlot.stage);
+
+      if(m_Format.isEmpty())
+      {
+        // stage, slot, and array index are all invariant when viewing a constant buffer
+        // ee only need to use the actual bound shader as a key.
+        RDTreeViewExpansionState &prevShaderExpansionState =
+            ui->fixedVars->getInternalExpansion(qHash(ToQStr(m_CurCBuffer.shader)));
+
+        ui->fixedVars->saveExpansion(prevShaderExpansionState, 0);
+      }
+    }
+
+    ParsedFormat parsed = BufferFormatter::ParseFormatString(m_Format, m_ByteSize, IsCBufferView());
+
+    bufdata->inConfig.fixedVars = parsed.fixed;
+    bufdata->inConfig.packing = parsed.packing;
+
+    if(parsed.repeating.type.baseType != VarType::Unknown)
+    {
+      bufdata->inConfig.repeatStride = parsed.repeating.type.arrayByteStride;
+      bufdata->inConfig.repeatOffset = parsed.repeating.byteOffset;
+
+      UnrollConstant(parsed.repeating, bufdata->inConfig.columns, bufdata->inConfig.props);
+    }
+    else
+    {
+      bufdata->inConfig.repeatStride = 1U;
+      bufdata->inConfig.repeatOffset = parsed.fixed.type.arrayByteStride;
+    }
+
+    if((m_Format.isEmpty() || !bufdata->cb.bytesBacked) && IsCBufferView())
+    {
+      if(bufdata->cb.valid)
+      {
+        const ShaderReflection *reflection =
+            m_Ctx.CurPipelineState().GetShaderReflection(m_CBufferSlot.stage);
+
+        bufdata->inConfig.fixedVars.type.members =
+            reflection->constantBlocks[m_CBufferSlot.slot].variables;
+
+        if(IsD3D(m_Ctx.APIProps().pipelineType))
+          bufdata->inConfig.packing = PackingRules::D3DCB();
+        else
+          bufdata->inConfig.packing = BufferFormatter::EstimatePackingRules(
+              reflection->resourceId, bufdata->inConfig.fixedVars.type.members);
+      }
+    }
 
     ClearModels();
   }
 
-  bufdata->vsinConfig.curInstance = bufdata->vsoutConfig.curInstance =
-      bufdata->gsoutConfig.curInstance = m_Config.curInstance;
-  bufdata->vsinConfig.curView = bufdata->vsoutConfig.curView = bufdata->gsoutConfig.curView =
+  updateLabelsAndLayout();
+
+  bufdata->inConfig.curInstance = bufdata->out1Config.curInstance =
+      bufdata->out2Config.curInstance = m_Config.curInstance;
+  bufdata->inConfig.curView = bufdata->out1Config.curView = bufdata->out2Config.curView =
       m_Config.curView;
 
-  m_ModelVSIn->beginReset();
-  m_ModelVSOut->beginReset();
-  m_ModelGSOut->beginReset();
+  m_ModelIn->beginReset();
+  m_ModelOut1->beginReset();
+  m_ModelOut2->beginReset();
 
-  bufdata->vsinConfig.baseVertex = action ? action->baseVertex : 0;
+  bufdata->inConfig.baseVertex = action ? action->baseVertex : 0;
+
+  ui->formatSpecifier->setEnabled(!IsCBufferView() || bufdata->cb.bytesBacked);
 
   ui->instance->setEnabled(action && (action->flags & ActionFlags::Instanced));
   if(!ui->instance->isEnabled())
@@ -2685,46 +3581,160 @@ void BufferViewer::OnEventChanged(uint32_t eventId)
     ui->viewIndex->setValue(0);
   }
 
+  // no data to fetch if we don't have a buffer yet. This happens when BufferViewer() is created
+  // because the capture viewer being registered automatically calls OnEventChanged but we haven't
+  // had ViewBuffer() etc yet
+  if(!m_MeshView && m_BufferID == ResourceId())
+    return;
+
   QPointer<BufferViewer> me(this);
 
   m_Ctx.Replay().AsyncInvoke([this, me, bufdata](IReplayController *r) {
-
     if(!me)
+    {
+      delete bufdata;
       return;
+    }
 
     BufferData *buf = NULL;
 
     if(m_MeshView)
     {
-      bufdata->postVS = r->GetPostVSData(bufdata->vsinConfig.curInstance,
-                                         bufdata->vsinConfig.curView, MeshDataStage::VSOut);
-      bufdata->postGS = r->GetPostVSData(bufdata->vsinConfig.curInstance,
-                                         bufdata->vsinConfig.curView, MeshDataStage::GSOut);
+      if(bufdata->meshDispatch)
+      {
+        bufdata->postOut1 = r->GetPostVSData(0, bufdata->inConfig.curView, MeshDataStage::TaskOut);
+        bufdata->postOut2 = r->GetPostVSData(0, bufdata->inConfig.curView, MeshDataStage::MeshOut);
 
-      RT_FetchMeshData(r, m_Ctx, bufdata);
+        const uint32_t vertsPerPrim = RENDERDOC_NumVerticesPerPrimitive(bufdata->postOut2.topology);
+
+        // apply mesh/task filtering to mesh data here, which will also propagate to preview
+        if(m_FilteredMeshGroup != ~0U)
+        {
+          bufdata->out1Config.taskOrMeshletOffset = m_FilteredTaskGroup;
+
+          // find this meshlet's offset in the index buffer and filter to only it
+          uint32_t indexCount = 0, vertexCount = 0;
+          for(uint32_t i = 0; i <= m_FilteredMeshGroup && i < bufdata->postOut2.meshletSizes.size();
+              i++)
+          {
+            MeshletSize meshletSize = bufdata->postOut2.meshletSizes[i];
+            uint32_t numIndices = meshletSize.numIndices;
+            if(i == m_FilteredMeshGroup)
+            {
+              bufdata->postOut2.meshletIndexOffset = vertexCount;
+              bufdata->postOut2.meshletOffset = m_FilteredMeshGroup;
+              bufdata->out2Config.taskOrMeshletOffset = m_FilteredMeshGroup;
+              bufdata->postOut2.numIndices = numIndices;
+              bufdata->postOut2.meshletSizes = {meshletSize};
+              bufdata->postOut2.indexByteOffset += indexCount * bufdata->postOut2.indexByteStride;
+
+              bufdata->postOut2.perPrimitiveOffset +=
+                  (indexCount / vertsPerPrim) * bufdata->postOut2.perPrimitiveStride;
+            }
+            indexCount += numIndices;
+            vertexCount += meshletSize.numVertices;
+          }
+        }
+        else if(m_FilteredTaskGroup != ~0U)
+        {
+          bufdata->out1Config.taskOrMeshletOffset = m_FilteredTaskGroup;
+
+          // find the relevant task and which mesh indices it corresponds to
+          uint32_t meshletCounter = 0;
+          for(uint32_t taskIndex = 0;
+              taskIndex <= m_FilteredTaskGroup && taskIndex < bufdata->postOut1.taskSizes.size();
+              taskIndex++)
+          {
+            uint32_t numMeshesInTask = bufdata->postOut1.taskSizes[taskIndex].x *
+                                       bufdata->postOut1.taskSizes[taskIndex].y *
+                                       bufdata->postOut1.taskSizes[taskIndex].z;
+
+            // once we've found the desired task, filter our view to only its meshes
+            if(taskIndex == m_FilteredTaskGroup)
+            {
+              bufdata->postOut2.numIndices = 0;
+
+              rdcarray<MeshletSize> meshletSizes;
+              meshletSizes.reserve(numMeshesInTask);
+
+              uint32_t indexCount = 0, vertexCount = 0;
+              for(uint32_t i = 0;
+                  i < meshletCounter + numMeshesInTask && i < bufdata->postOut2.meshletSizes.size();
+                  i++)
+              {
+                uint32_t indicesInMeshlet = bufdata->postOut2.meshletSizes[i].numIndices;
+
+                if(i >= meshletCounter)
+                {
+                  bufdata->postOut2.numIndices += indicesInMeshlet;
+                  meshletSizes.push_back(bufdata->postOut2.meshletSizes[i]);
+                }
+
+                if(i == meshletCounter)
+                {
+                  bufdata->postOut2.meshletIndexOffset = vertexCount;
+                  bufdata->postOut2.meshletOffset = meshletCounter;
+                  bufdata->out2Config.taskOrMeshletOffset = meshletCounter;
+                  bufdata->postOut2.indexByteOffset += indexCount * bufdata->postOut2.indexByteStride;
+
+                  bufdata->postOut2.perPrimitiveOffset +=
+                      (indexCount / vertsPerPrim) * bufdata->postOut2.perPrimitiveStride;
+                }
+                indexCount += indicesInMeshlet;
+                vertexCount += bufdata->postOut2.meshletSizes[i].numVertices;
+              }
+
+              bufdata->postOut2.meshletSizes = meshletSizes;
+
+              break;
+            }
+
+            meshletCounter += numMeshesInTask;
+          }
+        }
+
+        RT_FetchMeshPipeData(r, m_Ctx, bufdata);
+      }
+      else
+      {
+        bufdata->postOut1 = r->GetPostVSData(bufdata->inConfig.curInstance,
+                                             bufdata->inConfig.curView, MeshDataStage::VSOut);
+        bufdata->postOut2 = r->GetPostVSData(bufdata->inConfig.curInstance,
+                                             bufdata->inConfig.curView, MeshDataStage::GSOut);
+
+        RT_FetchVertexPipeData(r, m_Ctx, bufdata);
+      }
 
       if(!me)
+      {
+        delete bufdata;
         return;
+      }
     }
     else
     {
       buf = new BufferData;
 
       // calculate tight stride
-      buf->stride = 0;
-      for(int i = 0; i < bufdata->vsinConfig.columns.count(); i++)
-        buf->stride += bufdata->vsinConfig.columns[i].type.descriptor.arrayByteStride;
+      buf->stride = std::max(1U, bufdata->inConfig.repeatStride);
 
-      buf->stride = qMax((size_t)1, buf->stride);
+      // we want to fetch the data for fixed and repeated sections (either of which might be 0)
+      // but calculate the number of rows etc for the repeated sections based on just the data
+      // available for it
+      const uint64_t fixedLength = bufdata->inConfig.repeatOffset;
 
-      // the "permanent" range starts at ByteOffset and goes for m_ByteSize
-      uint64_t rangeStart = m_ByteOffset;
-      uint64_t rangeEnd = m_ByteOffset + m_ByteSize;
+      // the "permanent" repeated range starts after the fixed data and goes for m_ByteSize
+      uint64_t repeatedRangeStart = m_ByteOffset + fixedLength;
+      uint64_t repeatedRangeEnd = m_ByteOffset + m_ByteSize;
 
       // if the byte size is unbounded, the end is unbounded - fix the potential overflow from
       // adding the offset
       if(m_ByteSize == UINT64_MAX)
-        rangeEnd = UINT64_MAX;
+        repeatedRangeEnd = UINT64_MAX;
+
+      // if the fixed length is out of the range given, clamp it
+      if(repeatedRangeStart > repeatedRangeEnd)
+        repeatedRangeStart = repeatedRangeEnd;
 
       // get the underlying buffer length
       uint64_t bufferLength = 0;
@@ -2737,108 +3747,170 @@ void BufferViewer::OnEventChanged(uint32_t eventId)
       }
 
       // clamp the range to the buffer length, which may end up with it being empty
-      rangeEnd = qMin(rangeEnd, bufferLength);
-      rangeStart = qMin(rangeStart, bufferLength);
+      repeatedRangeEnd = qMin(repeatedRangeEnd, bufferLength);
+      repeatedRangeStart = qMin(repeatedRangeStart, bufferLength);
 
       // store the number of rows unclamped without the paging window
-      bufdata->vsinConfig.unclampedNumRows =
-          uint32_t((rangeEnd - rangeStart + buf->stride - 1) / buf->stride);
+      bufdata->inConfig.unclampedNumRows =
+          uint32_t((repeatedRangeEnd - repeatedRangeStart + buf->stride - 1) / buf->stride);
 
       // advance the range by the paging offset
-      rangeStart = qMin(rangeEnd, rangeStart + m_PagingByteOffset);
+      repeatedRangeStart = qMin(repeatedRangeEnd, repeatedRangeStart + m_PagingByteOffset);
 
       // calculate the length clamped to the MaxVisibleRows
-      uint64_t clampedLength =
-          qMin(rangeEnd - rangeStart, uint64_t(buf->stride * (MaxVisibleRows + 2)));
+      const uint64_t clampedRepeatedLength =
+          qMin(repeatedRangeEnd - repeatedRangeStart, uint64_t(buf->stride * (MaxVisibleRows + 2)));
 
       if(m_IsBuffer)
       {
-        if(clampedLength > 0)
-          buf->storage = r->GetBufferData(m_BufferID, CurrentByteOffset(), clampedLength);
+        if(m_BufferID == ResourceId())
+        {
+          buf->storage.clear();
+        }
+        else if(repeatedRangeStart > m_ByteOffset + fixedLength)
+        {
+          // if the repeated range subsection we're fetching is paged further in, we still need to
+          // fetch the fixed data from the 'start'
+          if(fixedLength > 0)
+            buf->storage = r->GetBufferData(m_BufferID, m_ByteOffset, fixedLength);
+          // then append the data from where we're paged to
+          if(clampedRepeatedLength > 0)
+            buf->storage.append(
+                r->GetBufferData(m_BufferID, repeatedRangeStart, clampedRepeatedLength));
+        }
+        else
+        {
+          // otherwise we can fetch it all at once
+          buf->storage =
+              r->GetBufferData(m_BufferID, m_ByteOffset, fixedLength + clampedRepeatedLength);
+        }
       }
       else
       {
         buf->storage = r->GetTextureData(m_BufferID, m_TexSub);
+
+        // recalculate total size for this subresource based on the data returned
+        if(!buf->storage.empty())
+          m_ObjectByteSize = buf->storage.size();
       }
 
-      uint32_t bufCount = uint32_t(buf->size());
+      uint32_t repeatedDataAvailable = uint32_t(buf->size());
+      if(repeatedDataAvailable > fixedLength)
+        repeatedDataAvailable -= fixedLength;
 
-      bufdata->vsinConfig.pagingOffset = uint32_t(m_PagingByteOffset / buf->stride);
-      bufdata->vsinConfig.numRows = uint32_t((bufCount + buf->stride - 1) / buf->stride);
+      bufdata->inConfig.pagingOffset = uint32_t(m_PagingByteOffset / buf->stride);
+      bufdata->inConfig.numRows = uint32_t((repeatedDataAvailable + buf->stride - 1) / buf->stride);
 
       // ownership passes to model
-      bufdata->vsinConfig.buffers.push_back(buf);
+      bufdata->inConfig.buffers.push_back(buf);
 
       if(!me)
       {
-        delete buf;
+        delete bufdata;
         return;
       }
     }
 
+    // for cbuffers, if the format is empty or if we're not buffer-backed and don't have inline
+    // data, we evaluate variables here and don't use the format override with a fetched buffer
+    if((m_Format.isEmpty() || !bufdata->cb.bytesBacked) && IsCBufferView())
+    {
+      // only fetch the cbuffer constants if this binding is currently valid
+      if(bufdata->cb.valid)
+        bufdata->inConfig.evalVars = r->GetCBufferVariableContents(
+            bufdata->cb.pipe, bufdata->cb.shader, m_CBufferSlot.stage, bufdata->cb.entryPoint,
+            m_CBufferSlot.slot, m_BufferID, m_ByteOffset, m_ByteSize);
+    }
+
     GUIInvoke::call(this, [this, bufdata]() {
       if(bufdata->sequence != m_Sequence)
+      {
+        delete bufdata;
         return;
+      }
 
-      m_ModelVSIn->endReset(bufdata->vsinConfig);
-      m_ModelVSOut->endReset(bufdata->vsoutConfig);
-      m_ModelGSOut->endReset(bufdata->gsoutConfig);
+      if(!bufdata->out1Config.statusString.isEmpty())
+      {
+        bufdata->out1Config.columns.clear();
+        bufdata->out1Config.props.clear();
+        ConfigureStatusColumn(bufdata->out1Config.columns, bufdata->out1Config.props);
+      }
 
-      m_PostVS = bufdata->postVS;
-      m_PostGS = bufdata->postGS;
+      if(!bufdata->out2Config.statusString.isEmpty())
+      {
+        bufdata->out2Config.columns.clear();
+        bufdata->out2Config.props.clear();
+        ConfigureStatusColumn(bufdata->out2Config.columns, bufdata->out2Config.props);
+      }
+
+      m_ModelIn->endReset(bufdata->inConfig);
+      m_ModelOut1->endReset(bufdata->out1Config);
+      m_ModelOut2->endReset(bufdata->out2Config);
+
+      m_Out1Data = bufdata->postOut1;
+      m_Out2Data = bufdata->postOut2;
+
+      m_CurCBuffer = bufdata->cb;
 
       // if we didn't have a position column selected before, or the name has changed, re-guess
-      if(m_ModelVSIn->posColumn() == -1 ||
-         bufdata->highlightNames[0] != bufdata->vsinConfig.columnName(m_ModelVSIn->posColumn()))
-        m_ModelVSIn->setPosColumn(-1);
+      if(m_ModelIn->posColumn() == -1 ||
+         bufdata->highlightNames[0] != bufdata->inConfig.columnName(m_ModelIn->posColumn()))
+        m_ModelIn->setPosColumn(-1);
       // similarly for secondary columns
-      if(m_ModelVSIn->secondaryColumn() == -1 ||
-         bufdata->highlightNames[1] != bufdata->vsinConfig.columnName(m_ModelVSIn->secondaryColumn()))
-        m_ModelVSIn->setSecondaryColumn(-1, m_Config.solidShadeMode == SolidShade::Secondary, false);
+      if(m_ModelIn->secondaryColumn() == -1 ||
+         bufdata->highlightNames[1] != bufdata->inConfig.columnName(m_ModelIn->secondaryColumn()))
+        m_ModelIn->setSecondaryColumn(-1, m_Config.visualisationMode == Visualisation::Secondary,
+                                      false);
 
       // and as above for VS Out / GS Out
-      if(m_ModelVSOut->posColumn() == -1 ||
-         bufdata->highlightNames[2] != bufdata->vsoutConfig.columnName(m_ModelVSOut->posColumn()))
-        m_ModelVSOut->setPosColumn(-1);
-      if(m_ModelVSOut->secondaryColumn() == -1 ||
-         bufdata->highlightNames[3] !=
-             bufdata->vsoutConfig.columnName(m_ModelVSOut->secondaryColumn()))
-        m_ModelVSOut->setSecondaryColumn(-1, m_Config.solidShadeMode == SolidShade::Secondary, false);
+      if(m_ModelOut1->posColumn() == -1 ||
+         bufdata->highlightNames[2] != bufdata->out1Config.columnName(m_ModelOut1->posColumn()))
+        m_ModelOut1->setPosColumn(-1);
+      if(m_ModelOut1->secondaryColumn() == -1 ||
+         bufdata->highlightNames[3] != bufdata->out1Config.columnName(m_ModelOut1->secondaryColumn()))
+        m_ModelOut1->setSecondaryColumn(-1, m_Config.visualisationMode == Visualisation::Secondary,
+                                        false);
 
-      if(m_ModelGSOut->posColumn() == -1 ||
-         bufdata->highlightNames[4] != bufdata->gsoutConfig.columnName(m_ModelGSOut->posColumn()))
-        m_ModelGSOut->setPosColumn(-1);
-      if(m_ModelGSOut->secondaryColumn() == -1 ||
-         bufdata->highlightNames[5] !=
-             bufdata->gsoutConfig.columnName(m_ModelGSOut->secondaryColumn()))
-        m_ModelGSOut->setSecondaryColumn(-1, m_Config.solidShadeMode == SolidShade::Secondary, false);
+      if(m_ModelOut2->posColumn() == -1 ||
+         bufdata->highlightNames[4] != bufdata->out2Config.columnName(m_ModelOut2->posColumn()))
+        m_ModelOut2->setPosColumn(-1);
+      if(m_ModelOut2->secondaryColumn() == -1 ||
+         bufdata->highlightNames[5] != bufdata->out2Config.columnName(m_ModelOut2->secondaryColumn()))
+        m_ModelOut2->setSecondaryColumn(-1, m_Config.visualisationMode == Visualisation::Secondary,
+                                        false);
 
-      EnableCameraGuessControls();
+      UpdateStageDataControls();
 
       populateBBox(bufdata);
 
-      UI_CalculateMeshFormats();
+      UI_ConfigureFormats();
       UpdateCurrentMeshConfig();
 
-      ApplyRowAndColumnDims(m_ModelVSIn->columnCount(), ui->vsinData);
-      ApplyRowAndColumnDims(m_ModelVSOut->columnCount(), ui->vsoutData);
-      ApplyRowAndColumnDims(m_ModelGSOut->columnCount(), ui->gsoutData);
+      ApplyRowAndColumnDims(
+          m_ModelIn->columnCount(), ui->inTable,
+          bufdata->inConfig.statusString.isEmpty() ? m_DataColWidth : m_ErrorColWidth);
+      ApplyRowAndColumnDims(
+          m_ModelOut1->columnCount(), ui->out1Table,
+          bufdata->out1Config.statusString.isEmpty() ? m_DataColWidth : m_ErrorColWidth);
+      ApplyRowAndColumnDims(
+          m_ModelOut2->columnCount(), ui->out2Table,
+          bufdata->out2Config.statusString.isEmpty() ? m_DataColWidth : m_ErrorColWidth);
 
-      uint32_t numRows = qMax(qMax(bufdata->vsinConfig.numRows, bufdata->vsoutConfig.numRows),
-                              bufdata->gsoutConfig.numRows);
+      uint32_t numRows = qMax(qMax(bufdata->inConfig.numRows, bufdata->out1Config.numRows),
+                              bufdata->out2Config.numRows);
 
       if(!m_MeshView)
-        numRows = qMax(numRows, bufdata->vsinConfig.unclampedNumRows);
+        numRows = qMax(numRows, bufdata->inConfig.unclampedNumRows);
 
       ui->rowOffset->setMaximum((int)qMax(1U, numRows) - 1);
 
-      ScrollToRow(ui->vsinData, qMin(int(bufdata->vsinConfig.numRows) - 1, bufdata->vsinVert));
-      ScrollToRow(ui->vsoutData, qMin(int(bufdata->vsoutConfig.numRows) - 1, bufdata->vsoutVert));
-      ScrollToRow(ui->gsoutData, qMin(int(bufdata->gsoutConfig.numRows) - 1, bufdata->gsoutVert));
+      ScrollToRow(ui->inTable, qMin(int(bufdata->inConfig.numRows) - 1, bufdata->inVert));
+      ScrollToRow(ui->out1Table, qMin(int(bufdata->out1Config.numRows) - 1, bufdata->out1Vert));
+      ScrollToRow(ui->out2Table, qMin(int(bufdata->out2Config.numRows) - 1, bufdata->out2Vert));
 
-      ui->vsinData->horizontalScrollBar()->setValue(bufdata->vsinHoriz);
-      ui->vsoutData->horizontalScrollBar()->setValue(bufdata->vsoutHoriz);
-      ui->gsoutData->horizontalScrollBar()->setValue(bufdata->gsoutHoriz);
+      ui->inTable->horizontalScrollBar()->setValue(bufdata->inHoriz);
+      ui->out1Table->horizontalScrollBar()->setValue(bufdata->out1Horiz);
+      ui->out2Table->horizontalScrollBar()->setValue(bufdata->out2Horiz);
 
       for(MeshDataStage stage : {MeshDataStage::VSIn, MeshDataStage::VSOut, MeshDataStage::GSOut})
       {
@@ -2852,30 +3924,166 @@ void BufferViewer::OnEventChanged(uint32_t eventId)
         m_Scroll[i] = QPoint(-1, -1);
       }
 
+      if(m_MeshView)
+      {
+        RDTreeViewExpansionState state;
+        ui->fixedVars->saveExpansion(state, 0);
+
+        ui->fixedVars->beginUpdate();
+
+        ui->fixedVars->clear();
+
+        if(bufdata->meshDispatch && !bufdata->out1Config.statusString.isEmpty())
+        {
+          RDTreeWidgetItem *n =
+              new RDTreeWidgetItem({lit("-, -, -"), bufdata->out1Config.statusString, QString()});
+
+          ui->fixedVars->addTopLevelItem(n);
+        }
+        else if(bufdata->meshDispatch && !bufdata->out1Config.taskSizes.empty())
+        {
+          const ActionDescription *action = m_Ctx.CurAction();
+
+          uint32_t i = 0;
+          for(uint32_t x = 0; x < bufdata->out1Config.dispatchSize[0]; x++)
+          {
+            for(uint32_t y = 0; y < bufdata->out1Config.dispatchSize[1]; y++)
+            {
+              for(uint32_t z = 0; z < bufdata->out1Config.dispatchSize[2]; z++)
+              {
+                TaskGroupSize size = bufdata->out1Config.taskSizes[i];
+
+                RDTreeWidgetItem *n = NULL;
+
+                if(m_CurMeshFilter == MeshFilter::None || m_FilteredTaskGroup == i)
+                {
+                  n = new RDTreeWidgetItem(
+                      {QFormatStr("%1, %2, %3").arg(x).arg(y).arg(z),
+                       QFormatStr("Dispatched [%1, %2, %3]").arg(size.x).arg(size.y).arg(size.z),
+                       lit("Task Group")});
+
+                  ui->fixedVars->addTopLevelItem(n);
+                }
+
+                if(n && !bufdata->out1Config.columns.empty())
+                {
+                  UI_AddTaskPayloads(n, i * bufdata->out1Config.buffers[0]->stride,
+                                     bufdata->out1Config.columns, bufdata->out1Config.buffers[0]);
+                }
+
+                i++;
+              }
+            }
+          }
+        }
+
+        ui->fixedVars->endUpdate();
+
+        ResourceId shader = m_Ctx.CurPipelineState().GetShader(ShaderStage::Task);
+
+        // if we have saved expansion state for the new shader, apply it, otherwise apply the
+        // previous one to get any overlap (e.g. two different shaders with very similar or
+        // identical constants)
+        if(ui->fixedVars->hasInternalExpansion(qHash(ToQStr(shader))))
+          ui->fixedVars->applyExpansion(ui->fixedVars->getInternalExpansion(qHash(ToQStr(shader))),
+                                        0);
+        else
+          ui->fixedVars->applyExpansion(state, 0);
+
+        if(bufdata->out1Vert >= 0 && bufdata->out1Vert < ui->fixedVars->topLevelItemCount())
+        {
+          ScrollToRow(bufdata->out1Vert, MeshDataStage::TaskOut);
+          ui->fixedVars->horizontalScrollBar()->setValue(bufdata->out1Horiz);
+        }
+      }
+
       if(!m_MeshView)
       {
+        m_RepeatedOffset->setText(
+            tr("Starting at: %1 bytes")
+                .arg(Formatter::HumanFormat(m_ByteOffset + bufdata->inConfig.repeatOffset,
+                                            Formatter::OffsetSize)));
+
+        {
+          rdcarray<ShaderVariable> vars;
+
+          if(m_BufferID == ResourceId() || m_Format.isEmpty())
+          {
+            vars = bufdata->inConfig.evalVars;
+          }
+          else
+          {
+            ShaderVariable var = InterpretShaderVar(bufdata->inConfig.fixedVars,
+                                                    bufdata->inConfig.buffers[0]->storage.begin(),
+                                                    bufdata->inConfig.buffers[0]->storage.end());
+
+            vars.swap(var.members);
+          }
+
+          bool wasEmpty = ui->fixedVars->topLevelItemCount() == 0;
+
+          RDTreeViewExpansionState state;
+          ui->fixedVars->saveExpansion(state, 0);
+
+          RDTreeViewSelectedItemState selItemState = ui->fixedVars->saveSelectedItemState();
+
+          ui->fixedVars->beginUpdate();
+
+          ui->fixedVars->clear();
+
+          if(!vars.isEmpty())
+          {
+            UI_AddFixedVariables(ui->fixedVars->invisibleRootItem(), 0,
+                                 bufdata->inConfig.fixedVars.type.members, vars, false);
+
+            if(IsCBufferView() && !bufdata->cb.bytesBacked)
+              UI_RemoveOffsets(ui->fixedVars->invisibleRootItem());
+          }
+
+          ui->fixedVars->endUpdate();
+
+          if(wasEmpty)
+          {
+            // Expand before resizing so that collapsed data will already be visible when expanded
+            ui->fixedVars->expandAll();
+            for(int i = 0; i < ui->fixedVars->header()->count(); i++)
+              ui->fixedVars->resizeColumnToContents(i);
+            ui->fixedVars->collapseAll();
+          }
+
+          // if we have saved expansion state for the new shader, apply it, otherwise apply the
+          // previous one to get any overlap (e.g. two different shaders with very similar or
+          // identical constants)
+          if(ui->fixedVars->hasInternalExpansion(qHash(ToQStr(m_CurCBuffer.shader))))
+            ui->fixedVars->applyExpansion(
+                ui->fixedVars->getInternalExpansion(qHash(ToQStr(m_CurCBuffer.shader))), 0);
+          else
+            ui->fixedVars->applyExpansion(state, 0);
+
+          ui->fixedVars->applySelectedItemState(selItemState);
+        }
+
         on_rowOffset_valueChanged(ui->rowOffset->value());
 
-        const bool prev = (bufdata->vsinConfig.pagingOffset > 0);
-        const bool next = (bufdata->vsinConfig.numRows >= MaxVisibleRows);
+        const bool prev = (bufdata->inConfig.pagingOffset > 0);
+        const bool next = (bufdata->inConfig.numRows >= MaxVisibleRows);
 
         if(prev && next)
         {
-          ui->vsinData->setIndexWidget(m_ModelVSIn->index(0, 0), MakePreviousPageButton());
-          ui->vsinData->setIndexWidget(m_ModelVSIn->index(0, 1), MakeNextPageButton());
+          ui->inTable->setIndexWidget(m_ModelIn->index(0, 0), MakePreviousPageButton());
+          ui->inTable->setIndexWidget(m_ModelIn->index(0, 1), MakeNextPageButton());
 
-          ui->vsinData->setIndexWidget(m_ModelVSIn->index(MaxVisibleRows + 1, 0),
-                                       MakePreviousPageButton());
-          ui->vsinData->setIndexWidget(m_ModelVSIn->index(MaxVisibleRows + 1, 1),
-                                       MakeNextPageButton());
+          ui->inTable->setIndexWidget(m_ModelIn->index(MaxVisibleRows + 1, 0),
+                                      MakePreviousPageButton());
+          ui->inTable->setIndexWidget(m_ModelIn->index(MaxVisibleRows + 1, 1), MakeNextPageButton());
         }
         else if(prev)
         {
-          ui->vsinData->setIndexWidget(m_ModelVSIn->index(0, 0), MakePreviousPageButton());
+          ui->inTable->setIndexWidget(m_ModelIn->index(0, 0), MakePreviousPageButton());
         }
         else if(next)
         {
-          ui->vsinData->setIndexWidget(m_ModelVSIn->index(MaxVisibleRows, 1), MakeNextPageButton());
+          ui->inTable->setIndexWidget(m_ModelIn->index(MaxVisibleRows, 1), MakeNextPageButton());
         }
       }
 
@@ -2916,21 +4124,27 @@ void BufferViewer::populateBBox(PopulateBufferData *bufdata)
 
     bbox->eventId = eventId;
 
-    bbox->input[0] = bufdata->vsinConfig;
-    bbox->input[1] = bufdata->vsoutConfig;
-    bbox->input[2] = bufdata->vsoutConfig;
+    bbox->input[0] = bufdata->inConfig;
+    bbox->input[1] = bufdata->out1Config;
+    bbox->input[2] = bufdata->out2Config;
 
     QPointer<BufferViewer> me(this);
 
     // fire up a thread to calculate the bounding box
     LambdaThread *thread = new LambdaThread([this, me, bbox] {
       if(!me)
+      {
+        delete bbox;
         return;
+      }
 
       calcBoundingData(*bbox);
 
       if(!me)
+      {
+        delete bbox;
         return;
+      }
 
       GUIInvoke::call(this, [this, bbox]() { UI_UpdateBoundingBox(*bbox); });
     });
@@ -2945,7 +4159,21 @@ void BufferViewer::populateBBox(PopulateBufferData *bufdata)
 
 QVariant BufferViewer::persistData()
 {
-  QVariantMap state = ui->dockarea->saveState();
+  QVariantMap state;
+  state = ui->dockarea->saveState();
+  state[lit("axisMappingIndex")] = ui->axisMappingCombo->currentIndex();
+  QVariantList xAxisMapping = {QVariant(m_Config.axisMapping.xAxis.x),
+                               QVariant(m_Config.axisMapping.xAxis.y),
+                               QVariant(m_Config.axisMapping.xAxis.z)};
+  state[lit("xAxisMapping")] = xAxisMapping;
+  QVariantList yAxisMapping = {QVariant(m_Config.axisMapping.yAxis.x),
+                               QVariant(m_Config.axisMapping.yAxis.y),
+                               QVariant(m_Config.axisMapping.yAxis.z)};
+  state[lit("yAxisMapping")] = yAxisMapping;
+  QVariantList zAxisMapping = {QVariant(m_Config.axisMapping.zAxis.x),
+                               QVariant(m_Config.axisMapping.zAxis.y),
+                               QVariant(m_Config.axisMapping.zAxis.z)};
+  state[lit("zAxisMapping")] = zAxisMapping;
 
   return state;
 }
@@ -2955,6 +4183,351 @@ void BufferViewer::setPersistData(const QVariant &persistData)
   QVariantMap state = persistData.toMap();
 
   ui->dockarea->restoreState(state);
+  previousAxisMappingIndex = state[lit("axisMappingIndex")].toInt();
+  ui->axisMappingCombo->setCurrentIndex(previousAxisMappingIndex);
+  if(!state[lit("xAxisMapping")].toList().isEmpty())
+  {
+    m_Config.axisMapping.xAxis.x = state[lit("xAxisMapping")].toList()[0].toInt();
+    m_Config.axisMapping.xAxis.y = state[lit("xAxisMapping")].toList()[1].toInt();
+    m_Config.axisMapping.xAxis.z = state[lit("xAxisMapping")].toList()[2].toInt();
+    m_Config.axisMapping.yAxis.x = state[lit("yAxisMapping")].toList()[0].toInt();
+    m_Config.axisMapping.yAxis.y = state[lit("yAxisMapping")].toList()[1].toInt();
+    m_Config.axisMapping.yAxis.z = state[lit("yAxisMapping")].toList()[2].toInt();
+    m_Config.axisMapping.zAxis.x = state[lit("zAxisMapping")].toList()[0].toInt();
+    m_Config.axisMapping.zAxis.y = state[lit("zAxisMapping")].toList()[1].toInt();
+    m_Config.axisMapping.zAxis.z = state[lit("zAxisMapping")].toList()[2].toInt();
+  }
+}
+
+void BufferViewer::UI_FixedAddMatrixRows(RDTreeWidgetItem *n, const ShaderConstant &c,
+                                         const ShaderVariable &v)
+{
+  const bool showPadding = ui->showPadding->isChecked() && m_CurCBuffer.bytesBacked;
+
+  if(v.rows > 1)
+  {
+    uint32_t vecSize = VarTypeByteSize(v.type) * v.columns;
+
+    FixedVarTag tag = n->tag().value<FixedVarTag>();
+    tag.matrix = true;
+    tag.rowmajor = v.RowMajor();
+    n->setTag(QVariant::fromValue(tag));
+
+    if(v.ColMajor())
+      vecSize = VarTypeByteSize(v.type) * v.rows;
+
+    for(uint32_t r = 0; r < v.rows; r++)
+    {
+      n->addChild(new RDTreeWidgetItem({QFormatStr("%1.row%2").arg(v.name).arg(r), RowString(v, r),
+                                        QString(), RowTypeString(v)}));
+
+      if(showPadding && v.RowMajor() && c.type.matrixByteStride > vecSize)
+      {
+        uint32_t size = c.type.matrixByteStride - vecSize;
+
+        RDTreeWidgetItem *pad = new RDTreeWidgetItem({
+            tr(""),
+            QFormatStr("%1 bytes").arg(Formatter::HumanFormat(size, Formatter::OffsetSize)),
+            QString(),
+            tr("Padding"),
+        });
+
+        pad->setItalic(true);
+        pad->setTag(QVariant::fromValue(FixedVarTag(size)));
+
+        n->addChild(pad);
+      }
+    }
+
+    if(showPadding && v.ColMajor() && c.type.matrixByteStride > vecSize)
+    {
+      uint32_t size = c.type.matrixByteStride - vecSize;
+
+      RDTreeWidgetItem *pad = new RDTreeWidgetItem({
+          tr(""),
+          QFormatStr("%1 bytes each column").arg(Formatter::HumanFormat(size, Formatter::OffsetSize)),
+          QString(),
+          tr("Padding"),
+      });
+
+      pad->setItalic(true);
+      pad->setTag(QVariant::fromValue(FixedVarTag(size)));
+
+      n->addChild(pad);
+    }
+  }
+}
+
+static void TaskAddMatrixRows(RDTreeWidgetItem *n, const ShaderConstant &c, const ShaderVariable &v)
+{
+  if(v.rows > 1)
+  {
+    uint32_t vecSize = VarTypeByteSize(v.type) * v.columns;
+
+    if(v.ColMajor())
+      vecSize = VarTypeByteSize(v.type) * v.rows;
+
+    for(uint32_t r = 0; r < v.rows; r++)
+    {
+      n->addChild(new RDTreeWidgetItem(
+          {QFormatStr("%1.row%2").arg(v.name).arg(r), RowString(v, r), RowTypeString(v)}));
+    }
+  }
+}
+
+void BufferViewer::UI_AddTaskPayloads(RDTreeWidgetItem *root, size_t baseOffset,
+                                      const rdcarray<ShaderConstant> &consts, BufferData *buffer)
+{
+  uint32_t offset = 0;
+
+  for(size_t idx = 0; idx < consts.size(); idx++)
+  {
+    const ShaderConstant &c = consts[idx];
+    ShaderVariable v = InterpretShaderVar(c, buffer->data() + baseOffset + offset, buffer->end());
+
+    RDTreeWidgetItem *n = new RDTreeWidgetItem({v.name, VarString(v, c), TypeString(v, c)});
+
+    root->addChild(n);
+
+    TaskAddMatrixRows(n, c, v);
+
+    // if it's an array the value (v) will be expanded with one element in each of v.members, but
+    // the constant (c) will just have the type with a number of elements
+    if(c.type.elements > 1)
+    {
+      ShaderConstant noarray = c;
+      noarray.type.elements = 1;
+
+      // calculate the tight scalar-packed advance, so we can detect padding
+      uint32_t elSize = BufferFormatter::GetVarAdvance(PackingRules::Scalar(), noarray);
+
+      for(uint32_t e = 0; e < v.members.size(); e++)
+      {
+        const uint32_t elOffset = (uint32_t)baseOffset + c.byteOffset + c.type.arrayByteStride * e;
+
+        RDTreeWidgetItem *el = new RDTreeWidgetItem(
+            {v.members[e].name, VarString(v.members[e], c), TypeString(v.members[e], c)});
+
+        // if it's an array of structs we can recurse, just need to do the outer iteration here
+        // because v.members[...].members will be the actual struct members because of the expansion
+        if(c.type.baseType == VarType::Struct)
+        {
+          UI_AddTaskPayloads(el, elOffset, c.type.members, buffer);
+        }
+        else
+        {
+          // otherwise just expand by hand since there will be no more members in c.type.members for
+          // us to recurse with
+          TaskAddMatrixRows(el, c, v.members[e]);
+        }
+
+        n->addChild(el);
+
+        // don't count the padding in the last struct in an array of structs, it will be handled as
+        // padding after the array
+        if(c.type.baseType == VarType::Struct && e + 1 == v.members.size())
+          break;
+      }
+    }
+    // for single structs, recurse
+    else if(v.type == VarType::Struct)
+    {
+      UI_AddTaskPayloads(n, c.byteOffset, c.type.members, buffer);
+    }
+
+    // advance by the tight scalar-packed advance, so we can detect padding
+    offset += BufferFormatter::GetVarAdvance(PackingRules::Scalar(), c);
+  }
+}
+
+bool BufferViewer::UI_AddFixedVariables(RDTreeWidgetItem *root, uint32_t baseOffset,
+                                        const rdcarray<ShaderConstant> &consts,
+                                        const rdcarray<ShaderVariable> &vars, bool ignoreFilter)
+{
+  bool ret = false;
+
+  Qt::CaseSensitivity filterCase =
+      ui->filterCaseSensitive->isChecked() ? Qt::CaseSensitive : Qt::CaseInsensitive;
+
+  const bool showPadding = ui->showPadding->isChecked() && m_CurCBuffer.bytesBacked;
+  const QString filterExpression = ignoreFilter ? QString() : ui->filterExpression->text();
+  const QStringList filterWords =
+      filterExpression.split(QRegularExpression(lit("\\s+")), QString::SkipEmptyParts);
+
+  if(consts.size() != vars.size())
+    qCritical() << "Shader variable mismatch";
+
+  uint32_t offset = 0;
+
+  for(size_t idx = 0; idx < consts.size() && idx < vars.size(); idx++)
+  {
+    const ShaderConstant &c = consts[idx];
+    const ShaderVariable &v = vars[idx];
+
+    if(showPadding && c.byteOffset > offset && filterWords.isEmpty())
+    {
+      uint32_t size = c.byteOffset - offset;
+
+      RDTreeWidgetItem *pad = new RDTreeWidgetItem({
+          QString(),
+          QFormatStr("%1 bytes").arg(Formatter::HumanFormat(size, Formatter::OffsetSize)),
+          QString(),
+          tr("Padding"),
+      });
+
+      pad->setItalic(true);
+      pad->setTag(QVariant::fromValue(FixedVarTag(size)));
+
+      root->addChild(pad);
+      ret = true;
+
+      offset = c.byteOffset;
+    }
+
+    QVariant offsetStr = Formatter::HumanFormat(baseOffset + c.byteOffset, Formatter::OffsetSize);
+
+    if(c.bitFieldSize != 0)
+    {
+      offsetStr =
+          offsetStr.toString() +
+          QFormatStr(" (bits %1:%2)").arg(c.bitFieldOffset).arg(c.bitFieldOffset + c.bitFieldSize);
+    }
+
+    if(m_CurCBuffer.compileConstants)
+      offsetStr = lit("-");
+
+    RDTreeWidgetItem *n =
+        new RDTreeWidgetItem({v.name, VarString(v, c), offsetStr, TypeString(v, c)});
+
+    // display colour swatch for floats with RGB display
+    if((v.flags & ShaderVariableFlags::RGBDisplay) && VarTypeCompType(v.type) == CompType::Float &&
+       v.rows == 1 && v.columns >= 1 && v.members.empty())
+    {
+      QColor swatchColor(0, 0, 0, 255);
+      float rgb[3] = {0.0f, 0.0f, 0.0f};
+      for(uint8_t col = 0; col < v.columns && col < 4; col++)
+      {
+        float fval = 0.0f;
+        if(v.type == VarType::Float)
+          fval = v.value.f32v[col];
+        else if(v.type == VarType::Double)
+          fval = float(v.value.f64v[col]);
+        else if(v.type == VarType::Half)
+          fval = float(v.value.f16v[col]);
+        rgb[col] = ConvertLinearToSRGB(fval);
+      }
+      swatchColor.setRgbF(rgb[0], rgb[1], rgb[2], 1.0f);
+      n->setIcon(1, MakeSwatchIcon(ui->fixedVars, swatchColor));
+    }
+
+    n->setTag(QVariant::fromValue(FixedVarTag(v.name, baseOffset + c.byteOffset)));
+
+    UI_FixedAddMatrixRows(n, c, v);
+
+    bool anyPassFilter = filterWords.empty();
+    QString filterName = v.name;
+    for(QString filter : filterWords)
+    {
+      if(filterName.contains(filter, filterCase))
+        anyPassFilter = true;
+    }
+
+    const bool rootPassFilter = anyPassFilter;
+
+    // if it's an array the value (v) will be expanded with one element in each of v.members, but
+    // the constant (c) will just have the type with a number of elements
+    if(c.type.elements > 1)
+    {
+      ShaderConstant noarray = c;
+      noarray.type.elements = 1;
+
+      // calculate the tight scalar-packed advance, so we can detect padding
+      uint32_t elSize = BufferFormatter::GetVarAdvance(PackingRules::Scalar(), noarray);
+
+      for(uint32_t e = 0; e < v.members.size(); e++)
+      {
+        const uint32_t elOffset = baseOffset + c.byteOffset + c.type.arrayByteStride * e;
+
+        RDTreeWidgetItem *el = new RDTreeWidgetItem({
+            v.members[e].name,
+            VarString(v.members[e], c),
+            m_CurCBuffer.compileConstants ? lit("-")
+                                          : Formatter::HumanFormat(elOffset, Formatter::OffsetSize),
+            TypeString(v.members[e], c),
+        });
+
+        el->setTag(QVariant::fromValue(FixedVarTag(v.members[e].name, elOffset)));
+
+        // if it's an array of structs we can recurse, just need to do the outer iteration here
+        // because v.members[...].members will be the actual struct members because of the expansion
+        if(c.type.baseType == VarType::Struct)
+        {
+          if(UI_AddFixedVariables(el, elOffset, c.type.members, v.members[e].members,
+                                  rootPassFilter || ignoreFilter))
+            anyPassFilter = true;
+        }
+        else
+        {
+          // otherwise just expand by hand since there will be no more members in c.type.members for
+          // us to recurse with
+          UI_FixedAddMatrixRows(el, c, v.members[e]);
+        }
+
+        n->addChild(el);
+
+        // don't count the padding in the last struct in an array of structs, it will be handled as
+        // padding after the array
+        if(c.type.baseType == VarType::Struct && e + 1 == v.members.size())
+          break;
+
+        if(showPadding && c.type.arrayByteStride > elSize && filterWords.isEmpty())
+        {
+          uint32_t size = c.type.arrayByteStride - elSize;
+
+          RDTreeWidgetItem *pad = new RDTreeWidgetItem({
+              QString(),
+              QFormatStr("%1 bytes").arg(Formatter::HumanFormat(size, Formatter::OffsetSize)),
+              QString(),
+              tr("Padding"),
+          });
+
+          pad->setItalic(true);
+          pad->setTag(QVariant::fromValue(FixedVarTag(size)));
+
+          n->addChild(pad);
+        }
+      }
+    }
+    // for single structs, recurse
+    else if(v.type == VarType::Struct)
+    {
+      if(UI_AddFixedVariables(n, c.byteOffset, c.type.members, v.members,
+                              rootPassFilter || ignoreFilter))
+        anyPassFilter = true;
+    }
+
+    ret = ret || anyPassFilter;
+
+    if(anyPassFilter)
+      root->addChild(n);
+    else
+      delete n;
+
+    // advance by the tight scalar-packed advance, so we can detect padding
+    offset += BufferFormatter::GetVarAdvance(PackingRules::Scalar(), c);
+  }
+
+  return ret;
+}
+
+void BufferViewer::UI_RemoveOffsets(RDTreeWidgetItem *root)
+{
+  for(int i = 0; i < root->childCount(); i++)
+  {
+    RDTreeWidgetItem *item = root->child(i);
+    item->setText(2, QVariant());
+    UI_RemoveOffsets(item);
+  }
 }
 
 void BufferViewer::calcBoundingData(CalcBoundingBoxData &bbox)
@@ -2973,11 +4546,11 @@ void BufferViewer::calcBoundingData(CalcBoundingBoxData &bbox)
     {
       FloatVector maxvec(FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX);
 
-      if(s.columns[i].type.descriptor.columns == 1)
+      if(s.columns[i].type.columns == 1)
         maxvec.y = maxvec.z = maxvec.w = 0.0;
-      else if(s.columns[i].type.descriptor.columns == 2)
+      else if(s.columns[i].type.columns == 2)
         maxvec.z = maxvec.w = 0.0;
-      else if(s.columns[i].type.descriptor.columns == 3)
+      else if(s.columns[i].type.columns == 3)
         maxvec.w = 0.0;
 
       minOutputList.push_back(maxvec);
@@ -3019,7 +4592,7 @@ void BufferViewer::calcBoundingData(CalcBoundingBoxData &bbox)
           if(!prop->perinstance)
             bytes += d.stride * idx;
 
-          QVariantList list = GetVariants(prop->format, el->type.descriptor, bytes, d.end);
+          QVariantList list = GetVariants(prop->format, *el, bytes, d.end);
 
           for(int comp = 0; comp < 4 && comp < list.count(); comp++)
           {
@@ -3077,7 +4650,7 @@ void BufferViewer::UI_UpdateBoundingBoxLabels(int compCount)
       int posEl = model->posColumn();
       if(posEl >= 0 && posEl < model->getConfig().columns.count())
       {
-        compCount = model->getConfig().columns[posEl].type.descriptor.columns;
+        compCount = model->getConfig().columns[posEl].type.columns;
       }
     }
   }
@@ -3145,6 +4718,22 @@ void BufferViewer::UI_ResetArcball()
         mid.y = bbox.bounds[stage].Min[posEl].y + diag.y * 0.5f;
         mid.z = bbox.bounds[stage].Min[posEl].z + diag.z * 0.5f;
 
+        if(!isCurrentRasterOut())
+        {
+          // apply axis mapping to midpoint
+          FloatVector transformedMid;
+          transformedMid.x = m_Config.axisMapping.xAxis.x * mid.x +
+                             m_Config.axisMapping.yAxis.x * mid.y +
+                             m_Config.axisMapping.zAxis.x * mid.z;
+          transformedMid.y = m_Config.axisMapping.xAxis.y * mid.x +
+                             m_Config.axisMapping.yAxis.y * mid.y +
+                             m_Config.axisMapping.zAxis.y * mid.z;
+          transformedMid.z = m_Config.axisMapping.xAxis.z * mid.x +
+                             m_Config.axisMapping.yAxis.z * mid.y +
+                             m_Config.axisMapping.zAxis.z * mid.z;
+          mid = transformedMid;
+        }
+
         m_Arcball->Reset(mid, len * 0.7f);
 
         GUIInvoke::call(this, [this, len]() { ui->camSpeed->setValue(len / 200.0f); });
@@ -3155,16 +4744,21 @@ void BufferViewer::UI_ResetArcball()
   INVOKE_MEMFN(RT_UpdateAndDisplay);
 }
 
-uint64_t BufferViewer::CurrentByteOffset()
-{
-  return m_ByteOffset + m_PagingByteOffset;
-}
-
-void BufferViewer::UI_CalculateMeshFormats()
+void BufferViewer::UI_ConfigureFormats()
 {
   if(!m_MeshView)
     return;
 
+  const ActionDescription *action = m_Ctx.CurAction();
+
+  if(action && (action->flags & ActionFlags::MeshDispatch))
+    UI_ConfigureMeshPipeFormats();
+  else
+    UI_ConfigureVertexPipeFormats();
+}
+
+void BufferViewer::UI_ConfigureVertexPipeFormats()
+{
   const PipeState &pipe = m_Ctx.CurPipelineState();
 
   rdcarray<BoundVBuffer> vbs = pipe.GetVBuffers();
@@ -3172,184 +4766,227 @@ void BufferViewer::UI_CalculateMeshFormats()
 
   if(action)
   {
-    m_VSInPosition = MeshFormat();
-    m_VSInSecondary = MeshFormat();
+    m_InPosition = MeshFormat();
+    m_InSecondary = MeshFormat();
 
-    m_VSInPosition.allowRestart = pipe.IsStripRestartEnabled() &&
-                                  (action->flags & ActionFlags::Indexed) &&
-                                  SupportsRestart(pipe.GetPrimitiveTopology());
-    m_VSInPosition.restartIndex = pipe.GetStripRestartIndex();
+    m_InPosition.allowRestart = pipe.IsRestartEnabled() && (action->flags & ActionFlags::Indexed);
+    m_InPosition.restartIndex = pipe.GetRestartIndex();
 
-    const BufferConfiguration &vsinConfig = m_ModelVSIn->getConfig();
+    const BufferConfiguration &vsinConfig = m_ModelIn->getConfig();
 
     if(!vsinConfig.columns.empty())
     {
-      int elIdx = m_ModelVSIn->posColumn();
+      int elIdx = m_ModelIn->posColumn();
       if(elIdx < 0 || elIdx >= vsinConfig.columns.count())
         elIdx = 0;
 
       if(vsinConfig.unclampedNumRows > 0)
-        m_VSInPosition.numIndices = vsinConfig.numRows;
+        m_InPosition.numIndices = vsinConfig.numRows;
       else
-        m_VSInPosition.numIndices = action->numIndices;
+        m_InPosition.numIndices = action->numIndices;
 
       if((action->flags & ActionFlags::Instanced) && action->numInstances == 0)
-        m_VSInPosition.numIndices = 0;
+        m_InPosition.numIndices = 0;
 
       BoundVBuffer ib = pipe.GetIBuffer();
-      m_VSInPosition.topology = pipe.GetPrimitiveTopology();
-      m_VSInPosition.indexByteStride = ib.byteStride;
-      m_VSInPosition.baseVertex = action->baseVertex;
-      m_VSInPosition.indexResourceId = ib.resourceId;
-      m_VSInPosition.indexByteOffset = ib.byteOffset + action->indexOffset * ib.byteStride;
-      m_VSInPosition.indexByteSize = ib.byteSize;
+      m_InPosition.topology = pipe.GetPrimitiveTopology();
+      m_InPosition.indexByteStride = ib.byteStride;
+      m_InPosition.baseVertex = action->baseVertex;
+      m_InPosition.indexResourceId = ib.resourceId;
 
-      if((action->flags & ActionFlags::Indexed) && m_VSInPosition.indexByteStride == 0)
-        m_VSInPosition.indexByteStride = 4U;
+      uint32_t drawIdxByteOffs = action->indexOffset * ib.byteStride;
+      m_InPosition.indexByteOffset = ib.byteOffset + drawIdxByteOffs;
+      if(ib.byteSize >= ~0U)
+        m_InPosition.indexByteSize = ib.byteSize;
+      else if(drawIdxByteOffs > ib.byteSize)
+        m_InPosition.indexByteSize = 0;
+      else
+        m_InPosition.indexByteSize = ib.byteSize - drawIdxByteOffs;
+
+      if((action->flags & ActionFlags::Indexed) && m_InPosition.indexByteStride == 0)
+        m_InPosition.indexByteStride = 4U;
 
       {
         const ShaderConstant &el = vsinConfig.columns[elIdx];
         const BufferElementProperties &prop = vsinConfig.props[elIdx];
 
-        m_VSInPosition.instanced = prop.perinstance;
-        m_VSInPosition.instStepRate = prop.instancerate;
+        m_InPosition.instanced = prop.perinstance;
+        m_InPosition.instStepRate = prop.instancerate;
 
         if(prop.buffer < vbs.count() && !vsinConfig.genericsEnabled[elIdx])
         {
-          m_VSInPosition.vertexResourceId = vbs[prop.buffer].resourceId;
-          m_VSInPosition.vertexByteStride = vbs[prop.buffer].byteStride;
-          m_VSInPosition.vertexByteOffset = vbs[prop.buffer].byteOffset + el.byteOffset +
-                                            action->vertexOffset * m_VSInPosition.vertexByteStride;
-          m_VSInPosition.vertexByteSize = vbs[prop.buffer].byteSize;
+          m_InPosition.vertexResourceId = vbs[prop.buffer].resourceId;
+          m_InPosition.vertexByteStride = vbs[prop.buffer].byteStride;
+          m_InPosition.vertexByteOffset = vbs[prop.buffer].byteOffset + el.byteOffset +
+                                          action->vertexOffset * m_InPosition.vertexByteStride;
+          m_InPosition.vertexByteSize = vbs[prop.buffer].byteSize;
         }
         else
         {
-          m_VSInPosition.vertexResourceId = ResourceId();
-          m_VSInPosition.vertexByteStride = 0;
-          m_VSInPosition.vertexByteOffset = 0;
+          m_InPosition.vertexResourceId = ResourceId();
+          m_InPosition.vertexByteStride = 0;
+          m_InPosition.vertexByteOffset = 0;
         }
 
-        m_VSInPosition.format = prop.format;
-        m_VSInPosition.format.compCount = qMin((uint8_t)3, m_VSInPosition.format.compCount);
+        m_InPosition.format = prop.format;
       }
 
-      elIdx = m_ModelVSIn->secondaryColumn();
+      elIdx = m_ModelIn->secondaryColumn();
 
       if(elIdx >= 0 && elIdx < vsinConfig.columns.count())
       {
         const ShaderConstant &el = vsinConfig.columns[elIdx];
         const BufferElementProperties &prop = vsinConfig.props[elIdx];
 
-        m_VSInSecondary.instanced = prop.perinstance;
-        m_VSInSecondary.instStepRate = prop.instancerate;
+        m_InSecondary.instanced = prop.perinstance;
+        m_InSecondary.instStepRate = prop.instancerate;
 
         if(prop.buffer < vbs.count() && !vsinConfig.genericsEnabled[elIdx])
         {
-          m_VSInSecondary.vertexResourceId = vbs[prop.buffer].resourceId;
-          m_VSInSecondary.vertexByteStride = vbs[prop.buffer].byteStride;
-          m_VSInSecondary.vertexByteOffset = vbs[prop.buffer].byteOffset + el.byteOffset +
-                                             action->vertexOffset * m_VSInSecondary.vertexByteStride;
-          m_VSInSecondary.vertexByteSize = vbs[prop.buffer].byteSize;
+          m_InSecondary.vertexResourceId = vbs[prop.buffer].resourceId;
+          m_InSecondary.vertexByteStride = vbs[prop.buffer].byteStride;
+          m_InSecondary.vertexByteOffset = vbs[prop.buffer].byteOffset + el.byteOffset +
+                                           action->vertexOffset * m_InSecondary.vertexByteStride;
+          m_InSecondary.vertexByteSize = vbs[prop.buffer].byteSize;
         }
         else
         {
-          m_VSInSecondary.vertexResourceId = ResourceId();
-          m_VSInSecondary.vertexByteStride = 0;
-          m_VSInSecondary.vertexByteOffset = 0;
+          m_InSecondary.vertexResourceId = ResourceId();
+          m_InSecondary.vertexByteStride = 0;
+          m_InSecondary.vertexByteOffset = 0;
         }
 
-        m_VSInSecondary.format = prop.format;
-        m_VSInSecondary.showAlpha = m_ModelVSIn->secondaryAlpha();
+        m_InSecondary.format = prop.format;
+        m_InSecondary.showAlpha = m_ModelIn->secondaryAlpha();
       }
     }
 
-    const BufferConfiguration &vsoutConfig = m_ModelVSOut->getConfig();
+    const BufferConfiguration &out1Config = m_ModelOut1->getConfig();
 
-    m_PostVSPosition = MeshFormat();
-    m_PostVSSecondary = MeshFormat();
+    m_Out1Position = MeshFormat();
+    m_Out1Secondary = MeshFormat();
 
-    if(!vsoutConfig.columns.empty())
+    if(!out1Config.columns.empty())
     {
-      int elIdx = m_ModelVSOut->posColumn();
-      if(elIdx < 0 || elIdx >= vsoutConfig.columns.count())
+      int elIdx = m_ModelOut1->posColumn();
+      if(elIdx < 0 || elIdx >= out1Config.columns.count())
         elIdx = 0;
 
-      const ShaderConstant &el = vsoutConfig.columns[elIdx];
-      const BufferElementProperties &prop = vsoutConfig.props[elIdx];
+      const ShaderConstant &el = out1Config.columns[elIdx];
+      const BufferElementProperties &prop = out1Config.props[elIdx];
 
-      m_PostVSPosition = m_PostVS;
-      m_PostVSPosition.vertexByteOffset += el.byteOffset;
-      m_PostVSPosition.unproject = prop.systemValue == ShaderBuiltin::Position;
-      m_PostVSPosition.format.compCount = el.type.descriptor.columns;
+      m_Out1Position = m_Out1Data;
+      m_Out1Position.vertexByteOffset += el.byteOffset;
+      m_Out1Position.unproject = prop.systemValue == ShaderBuiltin::Position;
+      m_Out1Position.format.compCount = el.type.columns;
 
       // if geometry/tessellation is enabled, don't unproject VS output data
       if(m_Ctx.CurPipelineState().GetShader(ShaderStage::Tess_Eval) != ResourceId() ||
          m_Ctx.CurPipelineState().GetShader(ShaderStage::Geometry) != ResourceId())
-      {
-        m_PostVSPosition.unproject = false;
-        // ignore any W component that might be there, let it be filled in with 1.0
-        m_PostVSPosition.format.compCount = qMin((uint8_t)3, m_VSInPosition.format.compCount);
-      }
+        m_Out1Position.unproject = false;
 
-      elIdx = m_ModelVSOut->secondaryColumn();
+      elIdx = m_ModelOut1->secondaryColumn();
 
-      if(elIdx >= 0 && elIdx < vsoutConfig.columns.count())
+      if(elIdx >= 0 && elIdx < out1Config.columns.count())
       {
-        m_PostVSSecondary = m_PostVS;
-        m_PostVSSecondary.vertexByteOffset += vsoutConfig.columns[elIdx].byteOffset;
-        m_PostVSSecondary.format = prop.format;
-        m_PostVSSecondary.showAlpha = m_ModelVSOut->secondaryAlpha();
+        m_Out1Secondary = m_Out1Data;
+        m_Out1Secondary.vertexByteOffset += out1Config.columns[elIdx].byteOffset;
+        m_Out1Secondary.format = prop.format;
+        m_Out1Secondary.showAlpha = m_ModelOut1->secondaryAlpha();
       }
     }
 
-    m_PostVSPosition.allowRestart = m_VSInPosition.allowRestart;
-    m_PostVSPosition.restartIndex = m_VSInPosition.restartIndex;
+    m_Out1Position.allowRestart = m_InPosition.allowRestart;
+    m_Out1Position.restartIndex = m_InPosition.restartIndex;
 
-    const BufferConfiguration &gsoutConfig = m_ModelGSOut->getConfig();
+    const BufferConfiguration &out2Config = m_ModelOut2->getConfig();
 
-    m_PostGSPosition = MeshFormat();
-    m_PostGSSecondary = MeshFormat();
+    m_Out2Position = MeshFormat();
+    m_Out2Secondary = MeshFormat();
 
-    if(!gsoutConfig.columns.empty())
+    if(!out2Config.columns.empty())
     {
-      int elIdx = m_ModelGSOut->posColumn();
-      if(elIdx < 0 || elIdx >= gsoutConfig.columns.count())
+      int elIdx = m_ModelOut2->posColumn();
+      if(elIdx < 0 || elIdx >= out2Config.columns.count())
         elIdx = 0;
 
-      const ShaderConstant &el = gsoutConfig.columns[elIdx];
-      const BufferElementProperties &prop = gsoutConfig.props[elIdx];
+      const ShaderConstant &el = out2Config.columns[elIdx];
+      const BufferElementProperties &prop = out2Config.props[elIdx];
 
-      m_PostGSPosition = m_PostGS;
-      m_PostGSPosition.vertexByteOffset += el.byteOffset;
-      m_PostGSPosition.unproject = prop.systemValue == ShaderBuiltin::Position;
+      m_Out2Position = m_Out2Data;
+      m_Out2Position.vertexByteOffset += el.byteOffset;
+      m_Out2Position.unproject = prop.systemValue == ShaderBuiltin::Position;
 
-      elIdx = m_ModelGSOut->secondaryColumn();
+      elIdx = m_ModelOut2->secondaryColumn();
 
-      if(elIdx >= 0 && elIdx < gsoutConfig.columns.count())
+      if(elIdx >= 0 && elIdx < out2Config.columns.count())
       {
-        m_PostGSSecondary = m_PostGS;
-        m_PostGSSecondary.vertexByteOffset += gsoutConfig.columns[elIdx].byteOffset;
-        m_PostGSSecondary.showAlpha = m_ModelGSOut->secondaryAlpha();
+        m_Out2Secondary = m_Out2Data;
+        m_Out2Secondary.vertexByteOffset += out2Config.columns[elIdx].byteOffset;
+        m_Out2Secondary.showAlpha = m_ModelOut2->secondaryAlpha();
       }
     }
 
-    m_PostGSPosition.allowRestart = false;
+    m_Out2Position.allowRestart = false;
 
-    m_PostGSPosition.indexByteStride = 0;
+    m_Out2Position.indexByteStride = 0;
 
     if(!(action->flags & ActionFlags::Indexed))
-      m_PostVSPosition.indexByteStride = m_VSInPosition.indexByteStride = 0;
+      m_Out1Position.indexByteStride = m_InPosition.indexByteStride = 0;
   }
   else
   {
-    m_VSInPosition = MeshFormat();
-    m_VSInSecondary = MeshFormat();
+    m_InPosition = MeshFormat();
+    m_InSecondary = MeshFormat();
 
-    m_PostVSPosition = MeshFormat();
-    m_PostVSSecondary = MeshFormat();
+    m_Out1Position = MeshFormat();
+    m_Out1Secondary = MeshFormat();
 
-    m_PostGSPosition = MeshFormat();
-    m_PostGSSecondary = MeshFormat();
+    m_Out2Position = MeshFormat();
+    m_Out2Secondary = MeshFormat();
+  }
+}
+
+void BufferViewer::UI_ConfigureMeshPipeFormats()
+{
+  const PipeState &pipe = m_Ctx.CurPipelineState();
+
+  const ActionDescription *action = m_Ctx.CurAction();
+
+  m_InPosition = MeshFormat();
+  m_InSecondary = MeshFormat();
+
+  // out1 is task shaders, which do not have displayable data
+  m_Out1Position = MeshFormat();
+  m_Out1Secondary = MeshFormat();
+
+  const BufferConfiguration &out2Config = m_ModelOut2->getConfig();
+
+  m_Out2Position = MeshFormat();
+  m_Out2Secondary = MeshFormat();
+  m_Out2Position.allowRestart = false;
+
+  if(!out2Config.columns.empty())
+  {
+    int elIdx = m_ModelOut2->posColumn();
+    if(elIdx < 0 || elIdx >= out2Config.columns.count())
+      elIdx = 0;
+
+    const ShaderConstant &el = out2Config.columns[elIdx];
+    const BufferElementProperties &prop = out2Config.props[elIdx];
+
+    m_Out2Position = m_Out2Data;
+    m_Out2Position.vertexByteOffset += el.byteOffset;
+    m_Out2Position.unproject = prop.systemValue == ShaderBuiltin::Position;
+
+    elIdx = m_ModelOut2->secondaryColumn();
+
+    if(elIdx >= 0 && elIdx < out2Config.columns.count())
+    {
+      m_Out2Secondary = m_Out2Data;
+      m_Out2Secondary.vertexByteOffset += out2Config.columns[elIdx].byteOffset;
+      m_Out2Secondary.showAlpha = m_ModelOut2->secondaryAlpha();
+    }
   }
 }
 
@@ -3389,7 +5026,7 @@ void BufferViewer::configureDrawRange()
   m_Config.showWholePass = (curIndex >= 3);
 }
 
-void BufferViewer::ApplyRowAndColumnDims(int numColumns, RDTableView *view)
+void BufferViewer::ApplyRowAndColumnDims(int numColumns, RDTableView *view, int dataColWidth)
 {
   int start = 0;
 
@@ -3403,7 +5040,7 @@ void BufferViewer::ApplyRowAndColumnDims(int numColumns, RDTableView *view)
     widths << m_IdxColWidth;
 
   for(int i = start; i < numColumns; i++)
-    widths << m_DataColWidth;
+    widths << dataColWidth;
 
   view->verticalHeader()->setDefaultSectionSize(m_DataRowHeight);
 
@@ -3426,26 +5063,31 @@ void BufferViewer::UpdateCurrentMeshConfig()
   switch(m_CurStage)
   {
     case MeshDataStage::VSIn:
-      m_Config.position = m_VSInPosition;
-      m_Config.second = m_VSInSecondary;
+      m_Config.position = m_InPosition;
+      m_Config.second = m_InSecondary;
       break;
     case MeshDataStage::VSOut:
-      m_Config.position = m_PostVSPosition;
-      m_Config.second = m_PostVSSecondary;
+      m_Config.position = m_Out1Position;
+      m_Config.second = m_Out1Secondary;
       break;
     case MeshDataStage::GSOut:
-      m_Config.position = m_PostGSPosition;
-      m_Config.second = m_PostGSSecondary;
+    case MeshDataStage::MeshOut:
+      m_Config.position = m_Out2Position;
+      m_Config.second = m_Out2Secondary;
       break;
+    case MeshDataStage::TaskOut:
     default: break;
   }
 
-  camGuess_changed(0.0);
+  UI_UpdateGuessParameters();
+
+  m_Config.showBBox = false;
+
+  if(m_CurStage == MeshDataStage::TaskOut)
+    return;
 
   BufferItemModel *model = currentBufferModel();
   int stage = currentStageIndex();
-
-  m_Config.showBBox = false;
 
   if(model)
   {
@@ -3457,7 +5099,7 @@ void BufferViewer::UpdateCurrentMeshConfig()
       m_Config.maxBounds = bbox.bounds[stage].Max[posEl];
       m_Config.showBBox = !isCurrentRasterOut();
 
-      int compCount = model->getConfig().columns[posEl].type.descriptor.columns;
+      int compCount = model->getConfig().columns[posEl].type.columns;
 
       UI_UpdateBoundingBoxLabels(compCount);
     }
@@ -3535,6 +5177,17 @@ void BufferViewer::render_clicked(QMouseEvent *e)
   INVOKE_MEMFN(RT_UpdateAndDisplay);
 }
 
+void BufferViewer::render_unclicked(QMouseEvent *e)
+{
+  if(!m_Ctx.IsCaptureLoaded())
+    return;
+
+  if(m_CurrentCamera)
+    m_CurrentCamera->MouseUnclick(e);
+
+  INVOKE_MEMFN(RT_UpdateAndDisplay);
+}
+
 void BufferViewer::ScrollToRow(RDTableView *view, int row)
 {
   int hs = view->horizontalScrollBar()->value();
@@ -3553,6 +5206,27 @@ void BufferViewer::ScrollToColumn(RDTableView *view, int column)
   view->scrollTo(view->model()->index(0, column), QAbstractItemView::PositionAtTop);
 
   view->verticalScrollBar()->setValue(vs);
+}
+
+void BufferViewer::ShowMeshData(MeshDataStage stage)
+{
+  const ActionDescription *action = m_Ctx.CurAction();
+  if(action && (action->flags & ActionFlags::MeshDispatch) && stage == MeshDataStage::VSIn)
+  {
+    ToolWindowManager::raiseToolWindow(m_Containers[2]);
+    return;
+  }
+
+  if(stage == MeshDataStage::VSIn)
+    ToolWindowManager::raiseToolWindow(m_Containers[0]);
+  else if(stage == MeshDataStage::VSOut)
+    ToolWindowManager::raiseToolWindow(m_Containers[1]);
+  else if(stage == MeshDataStage::GSOut)
+    ToolWindowManager::raiseToolWindow(m_Containers[2]);
+  else if(stage == MeshDataStage::TaskOut)
+    ToolWindowManager::raiseToolWindow(m_Containers[0]);
+  else if(stage == MeshDataStage::MeshOut)
+    ToolWindowManager::raiseToolWindow(m_Containers[1]);
 }
 
 void BufferViewer::SetCurrentInstance(int32_t instance)
@@ -3577,6 +5251,10 @@ void BufferViewer::SetPreviewStage(MeshDataStage stage)
       ui->outputTabs->setCurrentIndex(1);
     else if(stage == MeshDataStage::GSOut)
       ui->outputTabs->setCurrentIndex(2);
+    else if(stage == MeshDataStage::TaskOut)
+      ui->outputTabs->setCurrentIndex(1);
+    else if(stage == MeshDataStage::MeshOut)
+      ui->outputTabs->setCurrentIndex(2);
   }
 }
 
@@ -3590,8 +5268,9 @@ void BufferViewer::ViewBuffer(uint64_t byteOffset, uint64_t byteSize, ResourceId
   m_ByteOffset = byteOffset;
   m_ByteSize = byteSize;
   m_BufferID = id;
+  m_TexSub = {0, 0, 0};
 
-  updateWindowTitle();
+  updateLabelsAndLayout();
 
   BufferDescription *buf = m_Ctx.GetBuffer(id);
   if(buf)
@@ -3599,7 +5278,59 @@ void BufferViewer::ViewBuffer(uint64_t byteOffset, uint64_t byteSize, ResourceId
 
   m_PagingByteOffset = 0;
 
-  processFormat(format);
+  ui->formatSpecifier->setAutoFormat(format);
+}
+
+BufferViewer *BufferViewer::HasCBufferView(ShaderStage stage, uint32_t slot, uint32_t idx)
+{
+  CBufferSlot cbuffer = {stage, slot, idx};
+
+  for(BufferViewer *c : m_CBufferViews)
+  {
+    if(c->m_CBufferSlot == cbuffer)
+      return c;
+  }
+
+  return NULL;
+}
+
+BufferViewer *BufferViewer::GetFirstCBufferView(BufferViewer *exclude)
+{
+  for(BufferViewer *b : m_CBufferViews)
+  {
+    if(b != exclude)
+      return b;
+  }
+
+  return NULL;
+}
+
+void BufferViewer::ViewCBuffer(const ShaderStage stage, uint32_t slot, uint32_t idx)
+{
+  if(!m_Ctx.IsCaptureLoaded())
+    return;
+
+  m_IsBuffer = true;
+  m_ByteOffset = 0;
+  m_ByteSize = UINT64_MAX;
+  m_BufferID = ResourceId();
+  m_CBufferSlot = {stage, slot, idx};
+  m_TexSub = {0, 0, 0};
+
+  updateLabelsAndLayout();
+
+  m_ObjectByteSize = 0;
+  m_PagingByteOffset = 0;
+
+  // enable the button to toggle on formatting, so we can pre-fill with a sensible format when it's
+  // enabled
+  ui->setFormat->setVisible(true);
+
+  ui->formatSpecifier->setFormat(QString());
+  ui->formatSpecifier->setVisible(false);
+  ui->formatSpecifier->setAutoFormat(QString());
+
+  m_CBufferViews.push_back(this);
 }
 
 void BufferViewer::ViewTexture(ResourceId id, const Subresource &sub, const rdcstr &format)
@@ -3608,22 +5339,39 @@ void BufferViewer::ViewTexture(ResourceId id, const Subresource &sub, const rdcs
     return;
 
   m_IsBuffer = false;
+  m_ByteOffset = 0;
+  m_ByteSize = UINT64_MAX;
   m_BufferID = id;
   m_TexSub = sub;
 
-  updateWindowTitle();
+  updateLabelsAndLayout();
 
   TextureDescription *tex = m_Ctx.GetTexture(id);
   if(tex)
+  {
     m_ObjectByteSize = tex->byteSize;
+
+    if(m_TexSub.sample == ~0U)
+      m_TexSub.sample = tex->msSamp - 1;
+  }
 
   m_PagingByteOffset = 0;
 
-  processFormat(format);
+  ui->formatSpecifier->setAutoFormat(format);
 }
 
 void BufferViewer::ScrollToRow(int32_t row, MeshDataStage stage)
 {
+  if(m_MeshView && stage == MeshDataStage::TaskOut)
+  {
+    ui->fixedVars->scrollToItem(ui->fixedVars->topLevelItem(row));
+    ui->fixedVars->setSelectedItem(ui->fixedVars->topLevelItem(row));
+    return;
+  }
+
+  if(!m_MeshView)
+    stage = MeshDataStage::VSIn;
+
   ScrollToRow(tableForStage(stage), row);
 
   if(m_MeshView)
@@ -3635,6 +5383,9 @@ void BufferViewer::ScrollToRow(int32_t row, MeshDataStage stage)
 
 void BufferViewer::ScrollToColumn(int32_t column, MeshDataStage stage)
 {
+  if(!m_MeshView)
+    stage = MeshDataStage::VSIn;
+
   ScrollToColumn(tableForStage(stage), column);
 
   m_Scroll[(int)stage].setX(column);
@@ -3642,32 +5393,337 @@ void BufferViewer::ScrollToColumn(int32_t column, MeshDataStage stage)
 
 bool BufferViewer::eventFilter(QObject *watched, QEvent *event)
 {
-  if(!m_MeshView && watched == ui->vsinData->viewport() && event->type() == QEvent::MouseMove)
+  if(event->type() == QEvent::ToolTip)
   {
-    bool ret = QObject::eventFilter(watched, event);
+    RDTreeWidget *tree = qobject_cast<RDTreeWidget *>(watched);
+    if(tree)
+    {
+      RDTreeWidgetItem *item = tree->itemAt(tree->viewport()->mapFromGlobal(QCursor::pos()));
+      if(item)
+      {
+        FixedVarTag tag = item->tag().value<FixedVarTag>();
 
-    QMouseEvent *mouseEvent = (QMouseEvent *)event;
+        QString tooltip;
 
-    if(m_delegate->linkHover(mouseEvent, font(),
-                             ui->vsinData->indexAt(mouseEvent->localPos().toPoint())))
-      ui->vsinData->setCursor(QCursor(Qt::PointingHandCursor));
-    else
-      ui->vsinData->unsetCursor();
+        PackingRules pack = m_ModelIn->getConfig().packing;
 
-    return ret;
+        if(tag.valid && tag.padding)
+        {
+          tooltip = tr("%1 bytes of padding. Packing rules in effect:\n\n")
+                        .arg(Formatter::HumanFormat(tag.byteSize, Formatter::OffsetSize));
+
+          if(pack == PackingRules::D3DCB())
+            tooltip += tr("Standard D3D constant buffer packing.\n\n");
+          else if(pack == PackingRules::STD140())
+            tooltip += tr("Standard std140 buffer packing.\n\n");
+          else if(pack == PackingRules::STD430())
+            tooltip += tr("Standard std430 buffer packing.\n\n");
+          else if(pack == PackingRules::C())
+            tooltip += tr("Standard C / D3D UAV packing.\n\n");
+          else if(pack == PackingRules::Scalar())
+            tooltip += tr("Scalar packing.\n\n");
+
+          if(pack.vectorAlignComponent)
+            tooltip +=
+                tr("- Vectors are only aligned to their component (float4 to 4-byte boundary)\n");
+          else
+            tooltip +=
+                tr("- 3- and 4-wide vectors must be aligned to a 4-wide boundary\n"
+                   "  (vec3 and vec4 to 16-byte boundary)\n");
+
+          if(pack.tightArrays)
+            tooltip += tr("- Arrays are tightly packed to each element\n");
+          else
+            tooltip += tr("- Arrays have a stride of a 16 bytes\n");
+
+          if(pack.trailingOverlap)
+            tooltip += tr("- Variables can overlap the trailing padding in arrays or structs.\n");
+          else
+            tooltip +=
+                tr("- Variables must not overlap the trailing padding in arrays or structs.\n");
+
+          if(pack.vectorStraddle16b)
+            tooltip += tr("- Vectors can straddle 16-byte boundaries.\n");
+          else
+            tooltip += tr("- Vectors must not straddle 16-byte boundaries.\n");
+        }
+        else if(tag.valid && !tag.padding)
+        {
+          tooltip = tr("Variable %1 is at byte offset %2")
+                        .arg(tag.name)
+                        .arg(Formatter::HumanFormat(tag.byteOffset, Formatter::OffsetSize));
+
+          if(!IsCBufferView())
+            tooltip += tr(", not including overall base byte offset %1 in buffer")
+                           .arg(Formatter::HumanFormat(m_ByteOffset, Formatter::OffsetSize));
+
+          tooltip += lit(".");
+
+          if(tag.matrix)
+          {
+            tooltip += tr("\n\nMatrix stored ");
+            if(tag.rowmajor)
+              tooltip += tr("row-major.");
+            else
+              tooltip += tr("column-major.");
+          }
+        }
+
+        if(!tooltip.isEmpty())
+        {
+          QPoint pos = QCursor::pos();
+          pos.setX(pos.x() + 10);
+          pos.setY(pos.y() + 10);
+          QToolTip::showText(pos, tooltip.trimmed());
+
+          return true;
+        }
+      }
+    }
+    else if(!m_MeshView && watched == ui->inTable->viewport())
+    {
+      QModelIndex index =
+          ui->inTable->indexAt(ui->inTable->viewport()->mapFromGlobal(QCursor::pos()));
+
+      if(index.isValid())
+      {
+        const ShaderConstant &c = m_ModelIn->elementForColumn(index.column());
+
+        QModelIndex rowidx = m_ModelIn->index(index.row(), 0, index.parent());
+        int row = m_ModelIn->data(rowidx).toInt();
+
+        size_t stride = m_ModelIn->getConfig().buffers[0]->stride;
+
+        QString tooltip;
+
+        tooltip =
+            tr("%1 at overall byte offset %2")
+                .arg(c.name)
+                .arg(Formatter::HumanFormat(stride * row + c.byteOffset, Formatter::OffsetSize));
+        tooltip += tr(", not including overall base byte offset %1 in buffer")
+                       .arg(Formatter::HumanFormat(m_ByteOffset, Formatter::OffsetSize));
+
+        tooltip += lit(".\n\n");
+
+        tooltip +=
+            tr("Row %1 begins at offset %2 (stride of %3 bytes)\n%4 is at offset %5 in each row.")
+                .arg(row)
+                .arg(Formatter::HumanFormat(stride * row, Formatter::OffsetSize))
+                .arg(Formatter::HumanFormat(stride, Formatter::OffsetSize))
+                .arg(c.name)
+                .arg(Formatter::HumanFormat(c.byteOffset, Formatter::OffsetSize));
+
+        QPoint pos = QCursor::pos();
+        pos.setX(pos.x() + 10);
+        pos.setY(pos.y() + 10);
+        QToolTip::showText(pos, tooltip.trimmed());
+
+        return true;
+      }
+    }
+  }
+  else if(!m_MeshView && watched == ui->inTable->viewport())
+  {
+    if(event->type() == QEvent::MouseMove)
+    {
+      bool ret = QObject::eventFilter(watched, event);
+
+      QMouseEvent *mouseEvent = (QMouseEvent *)event;
+
+      if(m_delegate->linkHover(mouseEvent, font(),
+                               ui->inTable->indexAt(mouseEvent->localPos().toPoint())))
+        ui->inTable->setCursor(QCursor(Qt::PointingHandCursor));
+      else
+        ui->inTable->unsetCursor();
+
+      return ret;
+    }
   }
 
   return QObject::eventFilter(watched, event);
 }
 
-void BufferViewer::updateWindowTitle()
+void BufferViewer::updateLabelsAndLayout()
 {
-  if(!m_MeshView)
-    setWindowTitle(m_Ctx.GetResourceName(m_BufferID) + lit(" - Contents"));
+  if(m_MeshView)
+  {
+    setWindowTitle(tr("Mesh Viewer"));
+
+    // D3D9 has no geometry, hull or domain shaders, so there's no GS/DS output table or preview
+    const bool noGSOut =
+        m_Ctx.IsCaptureLoaded() && m_Ctx.APIProps().pipelineType == GraphicsAPI::D3D9;
+
+    const int gsTab = ui->outputTabs->indexOf(ui->out2Tab);
+    if(noGSOut && gsTab >= 0)
+      ui->outputTabs->removeTab(gsTab);
+    else if(!noGSOut && gsTab < 0)
+      ui->outputTabs->addTab(ui->out2Tab, tr("GS/DS Out"));
+
+    if(ui->dockarea->toolWindows().contains(m_Containers[2]))
+    {
+      ToolWindowManagerArea *gsArea = ui->dockarea->areaOf(m_Containers[2]);
+      if(noGSOut && gsArea)
+      {
+        ui->dockarea->hideToolWindow(m_Containers[2]);
+      }
+      else if(!noGSOut && !gsArea && ui->dockarea->areaOf(m_Containers[1]))
+      {
+        ui->dockarea->moveToolWindow(
+            m_Containers[2], ToolWindowManager::AreaReference(
+                                 ToolWindowManager::AddTo, ui->dockarea->areaOf(m_Containers[1])));
+        ToolWindowManager::raiseToolWindow(m_Containers[1]);
+      }
+    }
+
+    ui->filterCBuffer->setVisible(false);
+
+    if(m_Ctx.IsCaptureLoaded())
+    {
+      GraphicsAPI pipeType = m_Ctx.APIProps().pipelineType;
+
+      if(isMeshDraw())
+      {
+        m_Containers[0]->layout()->addWidget(ui->out1Table);
+        m_Containers[0]->layout()->addWidget(ui->fixedVars);
+        m_Containers[1]->layout()->addWidget(ui->out2Table);
+        m_Containers[2]->layout()->addWidget(ui->inTable);
+
+        ui->instanceLabel->setVisible(false);
+        ui->instance->setVisible(false);
+        ui->meshFilterLabel->setVisible(true);
+        ui->resetMeshFilterButton->setVisible(true);
+
+        ui->fixedVars->setVisible(true);
+        ui->out1Table->setVisible(false);
+        m_Containers[2]->setWindowTitle(tr("Mesh Input"));
+        m_Containers[0]->setWindowTitle(IsD3D(pipeType) ? tr("Amp. Out") : tr("Task Out"));
+        m_Containers[1]->setWindowTitle(tr("Mesh Output"));
+
+        if(ui->outputTabs->indexOf(ui->out1Tab) == 1)
+          ui->outputTabs->removeTab(1);
+        ui->outputTabs->setTabText(0, tr("Mesh Input"));
+        ui->outputTabs->setTabText(1, tr("Mesh Out"));
+
+        if(ui->visualisation->itemText(ui->visualisation->count() - 1) != tr("Meshlet"))
+          ui->visualisation->addItem(tr("Meshlet"));
+        ui->visualisation->adjustSize();
+      }
+      else
+      {
+        m_Containers[0]->layout()->addWidget(ui->inTable);
+        m_Containers[0]->layout()->addWidget(ui->fixedVars);
+        m_Containers[1]->layout()->addWidget(ui->out1Table);
+        m_Containers[2]->layout()->addWidget(ui->out2Table);
+
+        ui->instanceLabel->setVisible(true);
+        ui->instance->setVisible(true);
+        ui->meshFilterLabel->setVisible(false);
+        ui->resetMeshFilterButton->setVisible(false);
+
+        ui->fixedVars->setVisible(false);
+        ui->out1Table->setVisible(true);
+        m_Containers[0]->setWindowTitle(tr("VS Input"));
+        m_Containers[1]->setWindowTitle(tr("VS Output"));
+        m_Containers[2]->setWindowTitle(tr("GS/DS Output"));
+
+        ui->outputTabs->setTabText(0, tr("VS In"));
+        if(ui->outputTabs->indexOf(ui->out1Tab) < 0)
+          ui->outputTabs->insertTab(1, ui->out1Tab, tr("VS Out"));
+        ui->outputTabs->setTabText(1, tr("VS Out"));
+        ui->outputTabs->setTabText(2, tr("GS/DS Out"));
+
+        if(ui->visualisation->itemText(ui->visualisation->count() - 1) == tr("Meshlet"))
+          ui->visualisation->removeItem(ui->visualisation->count() - 1);
+        ui->visualisation->adjustSize();
+      }
+    }
+    else
+    {
+      m_Containers[0]->layout()->addWidget(ui->inTable);
+      m_Containers[0]->layout()->addWidget(ui->fixedVars);
+      m_Containers[1]->layout()->addWidget(ui->out1Table);
+      m_Containers[2]->layout()->addWidget(ui->out2Table);
+
+      ui->instanceLabel->setVisible(true);
+      ui->instance->setVisible(true);
+      ui->meshFilterLabel->setVisible(false);
+      ui->resetMeshFilterButton->setVisible(false);
+
+      ui->fixedVars->setVisible(false);
+      ui->out1Table->setVisible(true);
+      m_Containers[0]->setWindowTitle(tr("VS Input"));
+      m_Containers[1]->setWindowTitle(tr("VS Output"));
+      m_Containers[2]->setWindowTitle(tr("GS/DS Output"));
+
+      ui->outputTabs->setTabText(0, tr("VS In"));
+      if(ui->outputTabs->indexOf(ui->out1Tab) < 0)
+        ui->outputTabs->insertTab(1, ui->out1Tab, tr("VS Out"));
+      ui->outputTabs->setTabText(1, tr("VS Out"));
+      ui->outputTabs->setTabText(2, tr("GS/DS Out"));
+
+      if(ui->visualisation->itemText(ui->visualisation->count() - 1) == tr("Meshlet"))
+        ui->visualisation->removeItem(ui->visualisation->count() - 1);
+      ui->visualisation->adjustSize();
+    }
+  }
+  else
+  {
+    if(IsCBufferView())
+    {
+      QString bufName;
+
+      const ShaderReflection *reflection =
+          m_Ctx.CurPipelineState().GetShaderReflection(m_CBufferSlot.stage);
+
+      uint32_t arraySize = ~0U;
+      if(reflection != NULL)
+      {
+        if(m_CBufferSlot.slot < reflection->constantBlocks.size() &&
+           !reflection->constantBlocks[m_CBufferSlot.slot].name.isEmpty())
+        {
+          bufName = QFormatStr("<%1>").arg(reflection->constantBlocks[m_CBufferSlot.slot].name);
+          arraySize = reflection->constantBlocks[m_CBufferSlot.slot].bindArraySize;
+        }
+      }
+
+      if(bufName.isEmpty())
+      {
+        if(m_BufferID != ResourceId())
+          bufName = m_Ctx.GetResourceName(m_BufferID);
+        else
+          bufName = tr("Unbound");
+      }
+
+      GraphicsAPI pipeType = m_Ctx.APIProps().pipelineType;
+
+      QString title = QFormatStr("%1 %2 %3")
+                          .arg(ToQStr(m_CBufferSlot.stage, pipeType))
+                          .arg(IsD3D(pipeType) ? lit("CB") : lit("UBO"))
+                          .arg(m_CBufferSlot.slot);
+
+      if(m_Ctx.CurPipelineState().SupportsResourceArrays() && arraySize > 1)
+        title += QFormatStr("[%1]").arg(m_CBufferSlot.arrayIdx);
+
+      title += QFormatStr(" - %1").arg(bufName);
+
+      ui->filterCBuffer->setVisible(true);
+
+      setWindowTitle(title);
+    }
+    else
+    {
+      ui->filterCBuffer->setVisible(false);
+
+      setWindowTitle(m_Ctx.GetResourceName(m_BufferID) + lit(" - Contents"));
+    }
+  }
 }
 
 void BufferViewer::on_resourceDetails_clicked()
 {
+  if(m_BufferID == ResourceId())
+    return;
+
   if(!m_Ctx.HasResourceInspector())
     m_Ctx.ShowResourceInspector();
 
@@ -3737,11 +5793,15 @@ QPushButton *BufferViewer::MakeNextPageButton()
 RDTableView *BufferViewer::tableForStage(MeshDataStage stage)
 {
   if(stage == MeshDataStage::VSIn)
-    return ui->vsinData;
+    return ui->inTable;
   else if(stage == MeshDataStage::VSOut)
-    return ui->vsoutData;
+    return ui->out1Table;
   else if(stage == MeshDataStage::GSOut)
-    return ui->gsoutData;
+    return ui->out2Table;
+  else if(stage == MeshDataStage::TaskOut)
+    return ui->out1Table;
+  else if(stage == MeshDataStage::MeshOut)
+    return ui->out2Table;
 
   return NULL;
 }
@@ -3749,11 +5809,15 @@ RDTableView *BufferViewer::tableForStage(MeshDataStage stage)
 BufferItemModel *BufferViewer::modelForStage(MeshDataStage stage)
 {
   if(stage == MeshDataStage::VSIn)
-    return m_ModelVSIn;
+    return m_ModelIn;
   else if(stage == MeshDataStage::VSOut)
-    return m_ModelVSOut;
+    return m_ModelOut1;
   else if(stage == MeshDataStage::GSOut)
-    return m_ModelGSOut;
+    return m_ModelOut2;
+  else if(stage == MeshDataStage::TaskOut)
+    return m_ModelOut1;
+  else if(stage == MeshDataStage::MeshOut)
+    return m_ModelOut2;
 
   return NULL;
 }
@@ -3761,12 +5825,15 @@ BufferItemModel *BufferViewer::modelForStage(MeshDataStage stage)
 bool BufferViewer::isCurrentRasterOut()
 {
   BufferItemModel *model = currentBufferModel();
-  int stage = currentStageIndex();
 
   // if geometry/tessellation is enabled, only the GS out stage is rasterized output
   if((m_Ctx.CurPipelineState().GetShader(ShaderStage::Tess_Eval) != ResourceId() ||
       m_Ctx.CurPipelineState().GetShader(ShaderStage::Geometry) != ResourceId()) &&
      m_CurStage != MeshDataStage::GSOut)
+    return false;
+
+  // task shader outputs are not rasterized by definition
+  if(m_CurStage == MeshDataStage::TaskOut)
     return false;
 
   if(model)
@@ -3775,6 +5842,21 @@ bool BufferViewer::isCurrentRasterOut()
     if(posEl >= 0 && posEl < model->getConfig().columns.count())
     {
       return model->getConfig().props[posEl].systemValue == ShaderBuiltin::Position;
+    }
+
+    // if the model isn't prepared yet then return a sensible default answer - if no tess/geom,
+    // vertex is the output. Otherwise geom is the output. For task/mesh then mesh is the output
+    if(model->getConfig().columns.empty())
+    {
+      if(m_Ctx.CurPipelineState().GetShader(ShaderStage::Tess_Eval) != ResourceId() ||
+         m_Ctx.CurPipelineState().GetShader(ShaderStage::Geometry) != ResourceId())
+        return m_CurStage == MeshDataStage::GSOut;
+      else if(m_CurStage == MeshDataStage::MeshOut)
+        return true;
+      else if(m_Ctx.CurPipelineState().GetShader(ShaderStage::Tess_Eval) == ResourceId() &&
+              m_Ctx.CurPipelineState().GetShader(ShaderStage::Geometry) == ResourceId() &&
+              m_CurStage == MeshDataStage::VSOut)
+        return true;
     }
   }
 
@@ -3789,8 +5871,19 @@ int BufferViewer::currentStageIndex()
     return 1;
   else if(m_CurStage == MeshDataStage::GSOut)
     return 2;
+  else if(m_CurStage == MeshDataStage::TaskOut)
+    return 1;
+  else if(m_CurStage == MeshDataStage::MeshOut)
+    return 2;
 
   return 0;
+}
+
+bool BufferViewer::isMeshDraw()
+{
+  const ActionDescription *action = m_Ctx.CurAction();
+
+  return action && action->flags & ActionFlags::MeshDispatch;
 }
 
 void BufferViewer::Reset()
@@ -3801,16 +5894,21 @@ void BufferViewer::Reset()
 
   ClearModels();
 
-  ui->vsinData->setColumnWidths({40, 40});
-  ui->vsoutData->setColumnWidths({40, 40});
-  ui->gsoutData->setColumnWidths({40, 40});
+  updateLabelsAndLayout();
+  SetMeshFilter(MeshFilter::None);
+
+  ui->fixedVars->clear();
+
+  ui->inTable->setColumnWidths({40, 40});
+  ui->out1Table->setColumnWidths({40, 40});
+  ui->out2Table->setColumnWidths({40, 40});
 
   m_BBoxes.clear();
 }
 
 void BufferViewer::ClearModels()
 {
-  for(BufferItemModel *m : {m_ModelVSIn, m_ModelVSOut, m_ModelGSOut})
+  for(BufferItemModel *m : {m_ModelIn, m_ModelOut1, m_ModelOut2})
   {
     if(!m)
       continue;
@@ -3851,15 +5949,15 @@ void BufferViewer::CalcColumnWidth(int maxNumRows)
   ShaderConstant elem;
   elem.name = headerText;
   elem.byteOffset = 0;
-  elem.type.descriptor.rows = maxNumRows;
-  elem.type.descriptor.columns = 1;
+  elem.type.rows = maxNumRows;
+  elem.type.columns = 1;
 
   bufconfig.columns.clear();
 
   bufconfig.columns.push_back(elem);
   bufconfig.props.push_back(floatProp);
 
-  elem.type.descriptor.rows = 1;
+  elem.type.rows = 1;
   elem.byteOffset = 4;
 
   bufconfig.columns.push_back(elem);
@@ -3918,15 +6016,15 @@ void BufferViewer::CalcColumnWidth(int maxNumRows)
   test->ui[1] = 0x12345678;
   test->ui[2] = 0xffffffff;
 
-  m_ModelVSIn->beginReset();
+  m_ModelIn->beginReset();
 
-  m_ModelVSIn->endReset(bufconfig);
+  m_ModelIn->endReset(bufconfig);
 
   // measure this data so we can use this as column widths
-  ui->vsinData->resizeColumnsToContents();
+  ui->inTable->resizeColumnsToContents();
 
   // index/element column
-  m_IdxColWidth = ui->vsinData->columnWidth(0);
+  m_IdxColWidth = ui->inTable->columnWidth(0);
 
   int col = 1;
   if(m_MeshView)
@@ -3935,13 +6033,13 @@ void BufferViewer::CalcColumnWidth(int maxNumRows)
   m_DataColWidth = 10;
   for(int c = 0; c < 5; c++)
   {
-    int colWidth = ui->vsinData->columnWidth(col + c);
+    int colWidth = ui->inTable->columnWidth(col + c);
     m_DataColWidth = qMax(m_DataColWidth, colWidth);
   }
 
-  ui->vsinData->resizeRowsToContents();
+  ui->inTable->resizeRowsToContents();
 
-  m_DataRowHeight = ui->vsinData->rowHeight(0);
+  m_DataRowHeight = ui->inTable->rowHeight(0);
 }
 
 void BufferViewer::data_selected(const QItemSelection &selected, const QItemSelection &deselected)
@@ -3955,6 +6053,7 @@ void BufferViewer::data_selected(const QItemSelection &selected, const QItemSele
     return;
 
   m_CurView = view;
+  m_CurFixed = false;
 
   if(selected.count() > 0)
   {
@@ -3982,11 +6081,16 @@ void BufferViewer::data_scrolled(int scrollvalue)
   SyncViews(view, false, true);
 }
 
-void BufferViewer::camGuess_changed(double value)
+void BufferViewer::UI_UpdateGuessParameters()
 {
-  m_Config.ortho = (ui->matrixType->currentIndex() == 1);
+  m_Arcball->camera()->SetNearFar(m_Ctx.Config().MeshViewer_CameraNear,
+                                  m_Ctx.Config().MeshViewer_CameraFar);
+  m_Flycam->camera()->SetNearFar(m_Ctx.Config().MeshViewer_CameraNear,
+                                 m_Ctx.Config().MeshViewer_CameraFar);
 
-  m_Config.fov = ui->fovGuess->value();
+  m_Config.ortho = m_ProjGuess.orthographic;
+
+  m_Config.fov = m_ProjGuess.fov;
 
   m_Config.aspect = 1.0f;
 
@@ -3998,8 +6102,8 @@ void BufferViewer::camGuess_changed(double value)
 
   m_Config.aspect = (vpWidth > 0.0f && vpHeight > 0.0f) ? (vpWidth / vpHeight) : 1.0f;
 
-  if(ui->aspectGuess->value() > 0.0)
-    m_Config.aspect = ui->aspectGuess->value();
+  if(m_ProjGuess.aspect > 0.0)
+    m_Config.aspect = m_ProjGuess.aspect;
 
   // use estimates from post vs data (calculated from vertex position data) if the user
   // hasn't overridden the values
@@ -4008,37 +6112,204 @@ void BufferViewer::camGuess_changed(double value)
 
   if(m_CurStage == MeshDataStage::VSOut)
   {
-    m_Config.position.nearPlane = m_PostVS.nearPlane;
-    m_Config.position.flipY = m_PostVS.flipY;
+    m_Config.position.nearPlane = m_Out1Data.nearPlane;
+    m_Config.position.flipY = m_Out1Data.flipY;
   }
   else if(m_CurStage == MeshDataStage::GSOut)
   {
-    m_Config.position.nearPlane = m_PostGS.nearPlane;
-    m_Config.position.flipY = m_PostGS.flipY;
+    m_Config.position.nearPlane = m_Out2Data.nearPlane;
+    m_Config.position.flipY = m_Out2Data.flipY;
+  }
+  else if(m_CurStage == MeshDataStage::TaskOut)
+  {
+    m_Config.position.nearPlane = m_Out1Data.nearPlane;
+    m_Config.position.flipY = m_Out1Data.flipY;
+  }
+  else if(m_CurStage == MeshDataStage::MeshOut)
+  {
+    m_Config.position.nearPlane = m_Out2Data.nearPlane;
+    m_Config.position.flipY = m_Out2Data.flipY;
   }
 
-  if(ui->nearGuess->value() > 0.0)
-    m_Config.position.nearPlane = ui->nearGuess->value();
+  if(m_ProjGuess.nearPlane > 0.0)
+    m_Config.position.nearPlane = m_ProjGuess.nearPlane;
 
   m_Config.position.farPlane = 100.0f;
 
   if(m_CurStage == MeshDataStage::VSOut)
-    m_Config.position.farPlane = m_PostVS.farPlane;
+    m_Config.position.farPlane = m_Out1Data.farPlane;
   else if(m_CurStage == MeshDataStage::GSOut)
-    m_Config.position.farPlane = m_PostGS.farPlane;
+    m_Config.position.farPlane = m_Out2Data.farPlane;
+  else if(m_CurStage == MeshDataStage::TaskOut)
+    m_Config.position.farPlane = m_Out1Data.farPlane;
+  else if(m_CurStage == MeshDataStage::MeshOut)
+    m_Config.position.farPlane = m_Out2Data.farPlane;
 
-  if(ui->farGuess->value() > 0.0)
-    m_Config.position.farPlane = ui->farGuess->value();
+  if(m_ProjGuess.farPlane > 0.0)
+    m_Config.position.farPlane = m_ProjGuess.farPlane;
 
-  EnableCameraGuessControls();
+  UpdateStageDataControls();
 
   INVOKE_MEMFN(RT_UpdateAndDisplay);
 }
 
+void BufferViewer::on_axisMappingCombo_currentIndexChanged(int index)
+{
+  if(index != 4)
+  {
+    switch(index)
+    {
+      case 0:    // Y-up, Left Handed
+        m_Config.axisMapping.xAxis = FloatVector(1.0f, 0.0f, 0.0f, 0.0f);
+        m_Config.axisMapping.yAxis = FloatVector(0.0f, 1.0f, 0.0f, 0.0f);
+        m_Config.axisMapping.zAxis = FloatVector(0.0f, 0.0f, 1.0f, 0.0f);
+        break;
+      case 1:    // Y-up, Right Handed
+        m_Config.axisMapping.xAxis = FloatVector(1.0f, 0.0f, 0.0f, 0.0f);
+        m_Config.axisMapping.yAxis = FloatVector(0.0f, 1.0f, 0.0f, 0.0f);
+        m_Config.axisMapping.zAxis = FloatVector(0.0f, 0.0f, -1.0f, 0.0f);
+        break;
+      case 2:    // Z-up, Left Handed
+        m_Config.axisMapping.xAxis = FloatVector(1.0f, 0.0f, 0.0f, 0.0f);
+        m_Config.axisMapping.yAxis = FloatVector(0.0f, 0.0f, -1.0f, 0.0f);
+        m_Config.axisMapping.zAxis = FloatVector(0.0f, 1.0f, 0.0f, 0.0f);
+        break;
+      case 3:    // Z-up, Right Handed
+        m_Config.axisMapping.xAxis = FloatVector(1.0f, 0.0f, 0.0f, 0.0f);
+        m_Config.axisMapping.yAxis = FloatVector(0.0f, 0.0f, 1.0f, 0.0f);
+        m_Config.axisMapping.zAxis = FloatVector(0.0f, 1.0f, 0.0f, 0.0f);
+        break;
+      default: break;
+    }
+    ui->axisMappingButton->setEnabled(false);
+    previousAxisMappingIndex = index;
+    on_resetCamera_clicked();
+    INVOKE_MEMFN(RT_UpdateAndDisplay);
+  }
+  else
+  {
+    ui->axisMappingButton->setEnabled(true);
+    if(previousAxisMappingIndex != 4)
+    {
+      bool validConfig = showAxisMappingDialog();
+
+      if(!validConfig)
+      {
+        ui->axisMappingCombo->setCurrentIndex(previousAxisMappingIndex);
+        ui->axisMappingButton->setEnabled(false);
+      }
+    }
+  }
+}
+
+bool BufferViewer::showAxisMappingDialog()
+{
+  AxisMappingDialog dialog(m_Ctx, m_Config, this);
+  RDDialog::show(&dialog);
+
+  if(dialog.result() == QDialog::Accepted)
+  {
+    m_Config.axisMapping = dialog.getAxisMapping();
+    on_resetCamera_clicked();
+    INVOKE_MEMFN(RT_UpdateAndDisplay);
+    return true;
+  }
+  return false;
+}
+
+void BufferViewer::on_axisMappingButton_clicked()
+{
+  showAxisMappingDialog();
+}
+
+void BufferViewer::on_camParameters_clicked()
+{
+  CameraControlsDialog dialog(m_Ctx, this);
+  RDDialog::show(&dialog);
+
+  if(dialog.result() == QDialog::Accepted)
+    UI_UpdateGuessParameters();
+}
+
+void BufferViewer::on_guessButton_clicked()
+{
+  ProjectionGuessDialog dialog(m_Ctx, m_ProjGuess, this);
+  RDDialog::show(&dialog);
+
+  if(dialog.result() == QDialog::Accepted)
+  {
+    m_ProjGuess = dialog.getParameters();
+    UI_UpdateGuessParameters();
+  }
+}
+
+void BufferViewer::on_setFormat_toggled(bool checked)
+{
+  if(!checked)
+  {
+    ui->formatSpecifier->setVisible(false);
+
+    processFormat(QString());
+    return;
+  }
+
+  ui->formatSpecifier->setVisible(true);
+
+  const ShaderReflection *reflection =
+      m_Ctx.CurPipelineState().GetShaderReflection(m_CBufferSlot.stage);
+
+  if(m_CBufferSlot.slot >= reflection->constantBlocks.size())
+  {
+    ui->formatSpecifier->setVisible(false);
+
+    processFormat(QString());
+    return;
+  }
+
+  if(IsD3D(m_Ctx.APIProps().pipelineType))
+    ui->formatSpecifier->setAutoFormat(BufferFormatter::DeclareStruct(
+        PackingRules::D3DCB(), reflection->resourceId,
+        reflection->constantBlocks[m_CBufferSlot.slot].name,
+        reflection->constantBlocks[m_CBufferSlot.slot].variables, 0));
+  else
+    ui->formatSpecifier->setAutoFormat(BufferFormatter::DeclareStruct(
+        BufferFormatter::EstimatePackingRules(
+            reflection->resourceId, reflection->constantBlocks[m_CBufferSlot.slot].variables),
+        reflection->resourceId, reflection->constantBlocks[m_CBufferSlot.slot].name,
+        reflection->constantBlocks[m_CBufferSlot.slot].variables, 0));
+}
+
+void BufferViewer::on_filterCBuffer_toggled(bool checked)
+{
+  if(!checked)
+  {
+    ui->filterExpression->setText(QString());
+    ui->filterStrip->setVisible(false);
+  }
+  else
+  {
+    ui->filterStrip->setVisible(true);
+    ui->filterExpression->setFocus(Qt::OtherFocusReason);
+  }
+
+  if(m_FilterTimeout->isActive())
+    m_FilterTimeout->stop();
+
+  OnEventChanged(m_Ctx.CurEvent());
+}
+
+void BufferViewer::on_filterCaseSensitive_toggled(bool checked)
+{
+  OnEventChanged(m_Ctx.CurEvent());
+}
+
+void BufferViewer::on_resetMeshFilterButton_clicked()
+{
+  SetMeshFilter(MeshFilter::None);
+}
+
 void BufferViewer::processFormat(const QString &format)
 {
-  QString errors;
-
   // save scroll values now before we reset all the models
   m_Scrolls = new PopulateBufferData;
   FillScrolls(m_Scrolls);
@@ -4047,28 +6318,192 @@ void BufferViewer::processFormat(const QString &format)
 
   BufferConfiguration bufconfig;
 
-  ShaderConstant cols = BufferFormatter::ParseFormatString(format, m_ByteSize, true, errors);
+  ParsedFormat parsed;
 
-  CalcColumnWidth(MaxNumRows(cols));
+  if(IsCBufferView() && format.isEmpty())
+  {
+    // insert a dummy member so we get identified as plain fixed vars - we will automatically
+    // evaluate ignoring the format
+    parsed.fixed.type.members.push_back(ShaderConstant());
+  }
+  else
+  {
+    parsed = BufferFormatter::ParseFormatString(format, m_ByteSize, IsCBufferView());
+  }
+
+  const bool repeatedVars = parsed.repeating.type.baseType != VarType::Unknown;
+  const bool fixedVars = !parsed.fixed.type.members.empty();
+
+  if(fixedVars && repeatedVars)
+  {
+    if(m_OuterSplitter->widget(0) != m_InnerSplitter)
+      m_OuterSplitter->replaceWidget(0, m_InnerSplitter);
+
+    m_FixedGroup->layout()->addWidget(ui->fixedVars);
+    m_RepeatedGroup->layout()->addWidget(ui->inTable);
+
+    // row offset should be shown in the repeated control bar, but no separator line is needed
+    ui->offsetLine->setVisible(false);
+    ui->rowOffsetLabel->setVisible(true);
+    ui->rowOffset->setVisible(true);
+    if(ui->rowOffset->parentWidget() != m_RepeatedControlBar)
+    {
+      QHBoxLayout *hbox = qobject_cast<QHBoxLayout *>(m_RepeatedControlBar->layout());
+      hbox->insertWidget(0, ui->rowOffsetLabel);
+      hbox->insertWidget(1, ui->rowOffset);
+    }
+    ui->fixedVars->setVisible(true);
+    ui->inTable->setVisible(true);
+
+    ui->showPadding->setVisible(true);
+
+    m_InnerSplitter->setVisible(true);
+
+    if(m_CurView == NULL && !m_CurFixed)
+      m_CurView = ui->inTable;
+  }
+  else if(fixedVars)
+  {
+    if(m_OuterSplitter->widget(0) != ui->fixedVars)
+      m_OuterSplitter->replaceWidget(0, ui->fixedVars);
+
+    // row offset should not be shown
+    ui->offsetLine->setVisible(false);
+    ui->rowOffsetLabel->setVisible(false);
+    ui->rowOffset->setVisible(false);
+
+    ui->fixedVars->setVisible(true);
+    ui->inTable->setVisible(false);
+
+    ui->showPadding->setVisible(true);
+
+    m_InnerSplitter->setVisible(false);
+
+    m_CurView = NULL;
+    m_CurFixed = true;
+  }
+  else if(repeatedVars)
+  {
+    if(m_OuterSplitter->widget(0) != ui->inTable)
+      m_OuterSplitter->replaceWidget(0, ui->inTable);
+
+    // row offset should be shown with the other controls
+    ui->offsetLine->setVisible(true);
+    ui->rowOffsetLabel->setVisible(true);
+    ui->rowOffset->setVisible(true);
+    // insert after the offsetLine
+    if(ui->rowOffset->parentWidget() != ui->mainMeshToolbar)
+    {
+      QHBoxLayout *hbox = qobject_cast<QHBoxLayout *>(ui->mainMeshToolbar->layout());
+
+      int i = 0;
+      for(; i < hbox->count(); i++)
+      {
+        if(hbox->itemAt(i)->widget() == ui->offsetLine)
+          break;
+      }
+      i++;
+      if(i < hbox->count())
+      {
+        hbox->insertWidget(i, ui->rowOffset);
+        hbox->insertWidget(i, ui->rowOffsetLabel);
+      }
+    }
+
+    ui->fixedVars->setVisible(false);
+    ui->inTable->setVisible(true);
+
+    ui->showPadding->setVisible(false);
+
+    m_InnerSplitter->setVisible(false);
+
+    m_CurView = ui->inTable;
+    m_CurFixed = false;
+  }
+
+  CalcColumnWidth(MaxNumRows(parsed.repeating));
 
   ClearModels();
 
   m_Format = format;
 
-  ui->formatSpecifier->setFormat(format);
+  if(IsCBufferView())
+  {
+    ui->byteRangeLine->setVisible(false);
+    ui->byteRangeStartLabel->setVisible(false);
+    byteRangeStart->setVisible(false);
+    ui->byteRangeLengthLabel->setVisible(false);
+    byteRangeLength->setVisible(false);
+    GraphicsAPI pipeType = m_Ctx.APIProps().pipelineType;
 
-  qulonglong stride = qMax(1U, cols.type.descriptor.arrayByteStride);
+    if(IsD3D(pipeType))
+      ui->formatSpecifier->setTitle(tr("Constant Buffer Custom Format"));
+    else
+      ui->formatSpecifier->setTitle(tr("Uniform Buffer Custom Format"));
+  }
+  else
+  {
+    qulonglong stride = qMax(1U, parsed.repeating.type.arrayByteStride);
 
-  byteRangeStart->setSingleStep(stride);
-  byteRangeLength->setSingleStep(stride);
+    m_PagingByteOffset = 0;
 
-  byteRangeStart->setMaximum((qulonglong)m_ObjectByteSize);
-  byteRangeLength->setMaximum((qulonglong)m_ObjectByteSize);
+    // normally these would call into processFormat() again if the user updated them, we don't want to do that
+    {
+      QSignalBlocker block1(byteRangeStart);
+      QSignalBlocker block2(byteRangeLength);
 
-  byteRangeStart->setValue(m_ByteOffset);
-  byteRangeLength->setValue(m_ByteSize);
+      byteRangeStart->setSingleStep(stride);
+      byteRangeLength->setSingleStep(stride);
 
-  ui->formatSpecifier->setErrors(errors);
+      byteRangeStart->setMaximum((qulonglong)m_ObjectByteSize);
+      byteRangeLength->setMaximum((qulonglong)m_ObjectByteSize);
+
+      byteRangeStart->setValue(m_ByteOffset);
+      byteRangeLength->setValue(m_ByteSize);
+    }
+
+    if(!m_IsBuffer)
+    {
+      byteRangeStart->setVisible(false);
+
+      TextureDescription *tex = m_Ctx.GetTexture(m_BufferID);
+      if(tex)
+      {
+        if(tex->arraysize == 1 && tex->mips == 1 && tex->msSamp == 1 && tex->depth == 1)
+        {
+          ui->byteRangeStartLabel->setVisible(false);
+        }
+        else
+        {
+          QString text;
+
+          if(tex->arraysize > 1 || tex->depth > 1)
+            text = tr("Slice %1").arg(m_TexSub.slice);
+
+          if(tex->mips > 1)
+          {
+            if(!text.isEmpty())
+              text += lit(", ");
+            text += tr("Mip %1").arg(m_TexSub.mip);
+          }
+
+          if(tex->msSamp > 1)
+          {
+            if(!text.isEmpty())
+              text += lit(", ");
+            text += tr("Sample %1").arg(m_TexSub.sample);
+          }
+
+          text += lit(". ");
+
+          ui->byteRangeStartLabel->setText(text);
+        }
+      }
+      byteRangeLength->setEnabled(false);
+    }
+  }
+
+  ui->formatSpecifier->setErrors(parsed.errors);
 
   OnEventChanged(m_Ctx.CurEvent());
 }
@@ -4091,6 +6526,80 @@ void BufferViewer::on_byteRangeLength_valueChanged(double value)
   processFormat(m_Format);
 }
 
+void BufferViewer::updateExportActionNames()
+{
+  QString csv = tr("Export%1 to &CSV");
+  QString bytes = tr("Export%1 to &Bytes");
+
+  bool valid = m_Ctx.IsCaptureLoaded() && m_Ctx.CurAction();
+
+  if(m_MeshView)
+  {
+    valid = valid && m_CurView != NULL;
+  }
+  else
+  {
+    valid = valid && (m_CurView != NULL || m_CurFixed);
+  }
+
+  if(!valid)
+  {
+    m_ExportCSV->setText(csv.arg(QString()));
+    m_ExportBytes->setText(bytes.arg(QString()));
+    m_ExportCSV->setEnabled(false);
+    m_ExportBytes->setEnabled(false);
+    return;
+  }
+
+  m_ExportCSV->setEnabled(true);
+  m_ExportBytes->setEnabled(m_BufferID != ResourceId());
+
+  if(m_MeshView)
+  {
+    m_ExportCSV->setText(csv.arg(lit(" ") + m_CurView->windowTitle()));
+    m_ExportBytes->setText(bytes.arg(lit(" ") + m_CurView->windowTitle()));
+    m_ExportBytes->setEnabled(true);
+  }
+  else
+  {
+    // if only one type of data is visible, the export is unambiguous
+    if(!ui->inTable->isVisible() || !ui->fixedVars->isVisible())
+    {
+      m_ExportCSV->setText(csv.arg(QString()));
+      m_ExportBytes->setText(bytes.arg(QString()));
+    }
+    // otherwise go by which is selected
+    else if(m_CurFixed)
+    {
+      m_ExportCSV->setText(csv.arg(lit(" ") + m_FixedGroup->title()));
+      m_ExportBytes->setText(bytes.arg(lit(" ") + m_FixedGroup->title()));
+    }
+    else
+    {
+      m_ExportCSV->setText(csv.arg(lit(" ") + m_RepeatedGroup->title()));
+      m_ExportBytes->setText(bytes.arg(lit(" ") + m_RepeatedGroup->title()));
+    }
+  }
+}
+
+void BufferViewer::exportCSV(QTextStream &ts, const QString &prefix, RDTreeWidgetItem *item)
+{
+  if(item->childCount() == 0)
+  {
+    ts << QFormatStr("%1,\"%2\",%3,%4\n")
+              .arg(item->text(0))
+              .arg(item->text(1))
+              .arg(item->text(2))
+              .arg(item->text(3));
+  }
+  else
+  {
+    ts << QFormatStr("%1,,%2,%3\n").arg(item->text(0)).arg(item->text(2)).arg(item->text(3));
+    for(int i = 0; i < item->childCount(); i++)
+      exportCSV(ts, item->text(0) + lit("."), item->child(i));
+  }
+}
+
 void BufferViewer::exportData(const BufferExport &params)
 {
   if(!m_Ctx.IsCaptureLoaded())
@@ -4099,7 +6608,7 @@ void BufferViewer::exportData(const BufferExport &params)
   if(!m_Ctx.CurAction())
     return;
 
-  if(!m_CurView)
+  if(!m_CurView && !m_CurFixed)
     return;
 
   QString filter;
@@ -4145,208 +6654,294 @@ void BufferViewer::exportData(const BufferExport &params)
     ANALYTIC_SET(Export.RawBuffer, true);
   }
 
-  BufferItemModel *model = (BufferItemModel *)m_CurView->model();
+  if(m_CurView)
+  {
+    BufferItemModel *model = (BufferItemModel *)m_CurView->model();
 
-  LambdaThread *exportThread = new LambdaThread([this, params, model, f]() {
-    if(params.format == BufferExport::RawBytes)
-    {
-      const BufferConfiguration &config = model->getConfig();
-
-      if(!m_MeshView)
+    LambdaThread *exportThread = new LambdaThread([this, params, model, f]() {
+      if(params.format == BufferExport::RawBytes)
       {
-        // this is the simplest possible case, we just dump the contents of the first buffer.
-        if(!m_IsBuffer || config.buffers[0]->size() >= m_ObjectByteSize)
+        const BufferConfiguration &config = model->getConfig();
+
+        if(!m_MeshView)
         {
-          f->write((const char *)config.buffers[0]->data(), int(config.buffers[0]->size()));
+          // this is the simplest possible case, we just dump the contents of the first buffer.
+          if(!m_IsBuffer || config.buffers[0]->size() >= m_ByteSize)
+          {
+            f->write((const char *)config.buffers[0]->data(), int(config.buffers[0]->size()));
+          }
+          else
+          {
+            // For buffers we have to handle reading in pages though as we might not have everything
+            // in memory.
+            ResourceId buff = m_BufferID;
+
+            static const uint64_t maxChunkSize = 4 * 1024 * 1024;
+            for(uint64_t byteOffset = m_ByteOffset; byteOffset < m_ByteSize + m_ByteOffset;
+                byteOffset += maxChunkSize)
+            {
+              uint64_t chunkSize = qMin(m_ByteOffset + m_ByteSize - byteOffset, maxChunkSize);
+
+              // it's fine to block invoke, because this is on the export thread
+              m_Ctx.Replay().BlockInvoke([buff, f, byteOffset, chunkSize](IReplayController *r) {
+                bytebuf chunk = r->GetBufferData(buff, byteOffset, chunkSize);
+                f->write((const char *)chunk.data(), (qint64)chunk.size());
+              });
+            }
+          }
         }
         else
         {
-          // For buffers we have to handle reading in pages though as we might not have everything
-          // in memory.
-          ResourceId buff = m_BufferID;
+          // cache column data for the inner loop
+          QVector<CachedElData> cache;
 
-          static const uint64_t chunkSize = 4 * 1024 * 1024;
-          for(uint64_t byteOffset = m_ByteOffset; byteOffset < m_ObjectByteSize;
-              byteOffset += chunkSize)
+          CacheDataForIteration(cache, config.columns, config.props, config.buffers,
+                                config.curInstance);
+
+          // go row by row, finding the start of the row and dumping out the elements using their
+          // offset and sizes
+          for(int i = 0; i < model->rowCount(); i++)
           {
-            // it's fine to block invoke, because this is on the export thread
-            m_Ctx.Replay().BlockInvoke([buff, f, byteOffset](IReplayController *r) {
-              bytebuf chunk = r->GetBufferData(buff, byteOffset, chunkSize);
-              f->write((const char *)chunk.data(), (qint64)chunk.size());
-            });
+            // manually calculate the index so that we get the real offset (not the displayed
+            // offset)
+            // in the case of vertex output.
+            uint32_t idx = i;
+
+            if(config.indices && config.indices->hasData())
+            {
+              idx = CalcIndex(config.indices, i, config.baseVertex, config.primRestart);
+
+              // completely omit primitive restart indices
+              if(config.primRestart && idx == config.primRestart)
+                continue;
+            }
+
+            for(int col = 0; col < cache.count(); col++)
+            {
+              const CachedElData &d = cache[col];
+              const ShaderConstant *el = d.el;
+              const BufferElementProperties *prop = d.prop;
+
+              if(d.data)
+              {
+                const char *bytes = (const char *)d.data;
+
+                if(!prop->perinstance)
+                  bytes += d.stride * idx;
+
+                if(bytes + d.byteSize <= (const char *)d.end)
+                {
+                  f->write(bytes, d.byteSize);
+                  continue;
+                }
+              }
+
+              // if we didn't continue above, something was wrong, so write nulls
+              f->write(d.nulls);
+            }
           }
         }
       }
-      else
+      else if(params.format == BufferExport::CSV)
       {
-        // cache column data for the inner loop
-        QVector<CachedElData> cache;
+        // otherwise we need to iterate over all the data ourselves
+        const BufferConfiguration &config = model->getConfig();
 
-        CacheDataForIteration(cache, config.columns, config.props, config.buffers,
-                              config.curInstance);
+        QTextStream s(f);
 
-        // go row by row, finding the start of the row and dumping out the elements using their
-        // offset and sizes
-        for(int i = 0; i < model->rowCount(); i++)
+        for(int i = 0; i < model->columnCount(); i++)
         {
-          // manually calculate the index so that we get the real offset (not the displayed offset)
-          // in the case of vertex output.
-          uint32_t idx = i;
+          s << model->headerData(i, Qt::Horizontal, Qt::DisplayRole).toString();
 
-          if(config.indices && config.indices->hasData())
+          if(i + 1 < model->columnCount())
+            s << ", ";
+        }
+
+        s << "\n";
+
+        if(m_MeshView || !m_IsBuffer || config.buffers[0]->size() >= m_ByteSize)
+        {
+          // if there's no pagination to worry about, dump using the model's data()
+          for(int row = 0; row < model->rowCount(); row++)
           {
-            idx = CalcIndex(config.indices, i, config.baseVertex, config.primRestart);
-
-            // completely omit primitive restart indices
-            if(config.primRestart && idx == config.primRestart)
-              continue;
-          }
-
-          for(int col = 0; col < cache.count(); col++)
-          {
-            const CachedElData &d = cache[col];
-            const ShaderConstant *el = d.el;
-            const BufferElementProperties *prop = d.prop;
-
-            if(d.data)
+            for(int col = 0; col < model->columnCount(); col++)
             {
-              const char *bytes = (const char *)d.data;
-
-              if(!prop->perinstance)
-                bytes += d.stride * idx;
-
-              if(bytes + d.byteSize <= (const char *)d.end)
+              QList<QString> lines =
+                  model->data(model->index(row, col), Qt::DisplayRole).toString().split(lit("\n"));
+              bool quote = (lines.count() > 1);
+              if(quote)
+                s << "\"";
+              for(int l = 0; l < lines.count(); l++)
               {
-                f->write(bytes, d.byteSize);
-                continue;
+                s << lines[l].trimmed();
+                if(l + 1 < lines.size())
+                  s << "\n";
               }
+              if(quote)
+                s << "\"";
+
+              if(col + 1 < model->columnCount())
+                s << ", ";
             }
 
-            // if we didn't continue above, something was wrong, so write nulls
-            f->write(d.nulls);
+            s << "\n";
           }
         }
+        else
+        {
+          // write 64k rows at a time
+          ResourceId buff = m_BufferID;
+          const uint64_t maxChunkSize = 64 * 1024 * config.buffers[0]->stride;
+          for(uint64_t byteOffset = m_ByteOffset; byteOffset < m_ByteSize; byteOffset += maxChunkSize)
+          {
+            uint64_t chunkSize = qMin(m_ByteSize - byteOffset, maxChunkSize);
+
+            // it's fine to block invoke, because this is on the export thread
+            m_Ctx.Replay().BlockInvoke(
+                [buff, &s, &config, byteOffset, chunkSize](IReplayController *controller) {
+                  // cache column data for the inner loop
+                  QVector<CachedElData> cache;
+
+                  BufferData bufferData;
+
+                  bufferData.storage = controller->GetBufferData(buff, byteOffset, chunkSize);
+                  bufferData.stride = config.buffers[0]->stride;
+
+                  size_t numRows =
+                      (bufferData.storage.size() + bufferData.stride - 1) / bufferData.stride;
+                  size_t rowOffset = byteOffset / bufferData.stride;
+
+                  CacheDataForIteration(cache, config.columns, config.props, {&bufferData}, 0);
+
+                  // go row by row, finding the start of the row and dumping out the elements using
+                  // their
+                  // offset and sizes
+                  for(size_t idx = 0; idx < numRows; idx++)
+                  {
+                    s << (rowOffset + idx) << ", ";
+
+                    for(int col = 0; col < cache.count(); col++)
+                    {
+                      const CachedElData &d = cache[col];
+                      const ShaderConstant *el = d.el;
+                      const BufferElementProperties *prop = d.prop;
+
+                      if(d.data)
+                      {
+                        const byte *data = d.data;
+                        const byte *end = d.end;
+
+                        data += d.stride * idx;
+
+                        // only slightly wasteful, we need to fetch all variants together
+                        // since some formats are packed and can't be read individually
+                        QVariantList list = GetVariants(prop->format, *el, data, end);
+
+                        if(el->type.rows > 1)
+                        {
+                          for(int c = 0; c < el->type.columns; c++)
+                          {
+                            s << "\"";
+                            for(int r = 0; r < el->type.rows; r++)
+                            {
+                              if(list.empty())
+                              {
+                                s << "---";
+                              }
+                              else
+                              {
+                                int el_idx = r * el->type.columns + c;
+                                s << interpretVariant(list[el_idx], *el, *prop).trimmed();
+                              }
+
+                              if(r + 1 < el->type.rows)
+                                s << "\n";
+                            }
+                            s << "\", ";
+                          }
+                        }
+                        else if(list.empty())
+                        {
+                          for(int v = 0; v < d.numColumns; v++)
+                          {
+                            s << "---";
+
+                            if(v + 1 < d.numColumns)
+                              s << ", ";
+                          }
+                        }
+                        else
+                        {
+                          for(int v = 0; v < list.count(); v++)
+                          {
+                            s << interpretVariant(list[v], *el, *prop);
+
+                            if(v + 1 < list.count())
+                              s << ", ";
+                          }
+                        }
+
+                        if(col + 1 < cache.count())
+                          s << ", ";
+                      }
+                    }
+
+                    s << "\n";
+                  }
+                });
+          }
+        }
+      }
+
+      f->close();
+
+      delete f;
+    });
+    exportThread->start();
+
+    ShowProgressDialog(this, tr("Exporting data"),
+                       [exportThread]() { return !exportThread->isRunning(); });
+
+    exportThread->deleteLater();
+  }
+  else if(m_CurFixed)
+  {
+    if(params.format == BufferExport::RawBytes)
+    {
+      BufferItemModel *model = (BufferItemModel *)ui->inTable->model();
+      const BufferConfiguration &config = model->getConfig();
+
+      size_t byteSize = 0;
+
+      if(!config.fixedVars.type.members.empty())
+        byteSize = BufferFormatter::GetVarAdvance(config.packing, config.fixedVars);
+
+      const bytebuf &bufdata = config.buffers[0]->storage;
+
+      f->write((const char *)bufdata.data(), qMin(bufdata.size(), byteSize));
+
+      // if the buffer wasn't large enough for the variables, fill with 0s
+      if(byteSize > bufdata.size())
+      {
+        QByteArray nulls;
+        nulls.resize(int(byteSize - config.buffers[0]->storage.size()));
+        f->write(nulls);
       }
     }
     else if(params.format == BufferExport::CSV)
     {
-      // otherwise we need to iterate over all the data ourselves
-      const BufferConfiguration &config = model->getConfig();
+      QTextStream ts(f);
 
-      QTextStream s(f);
+      ts << tr("Name,Value,Byte Offset,Type\n");
 
-      for(int i = 0; i < model->columnCount(); i++)
-      {
-        s << model->headerData(i, Qt::Horizontal, Qt::DisplayRole).toString();
-
-        if(i + 1 < model->columnCount())
-          s << ", ";
-      }
-
-      s << "\n";
-
-      if(m_MeshView || !m_IsBuffer || config.buffers[0]->size() >= m_ObjectByteSize)
-      {
-        // if there's no pagination to worry about, dump using the model's data()
-        for(int row = 0; row < model->rowCount(); row++)
-        {
-          for(int col = 0; col < model->columnCount(); col++)
-          {
-            s << model->data(model->index(row, col), Qt::DisplayRole).toString();
-
-            if(col + 1 < model->columnCount())
-              s << ", ";
-          }
-
-          s << "\n";
-        }
-      }
-      else
-      {
-        // write 64k rows at a time
-        ResourceId buff = m_BufferID;
-        const uint64_t chunkSize = 64 * 1024 * config.buffers[0]->stride;
-        for(uint64_t byteOffset = m_ByteOffset; byteOffset < m_ObjectByteSize; byteOffset += chunkSize)
-        {
-          // it's fine to block invoke, because this is on the export thread
-          m_Ctx.Replay().BlockInvoke([buff, &s, &config, byteOffset, chunkSize](IReplayController *r) {
-            // cache column data for the inner loop
-            QVector<CachedElData> cache;
-
-            BufferData bufferData;
-
-            bufferData.storage = r->GetBufferData(buff, byteOffset, chunkSize);
-            bufferData.stride = config.buffers[0]->stride;
-
-            size_t numRows = (bufferData.storage.size() + bufferData.stride - 1) / bufferData.stride;
-            size_t rowOffset = byteOffset / bufferData.stride;
-
-            CacheDataForIteration(cache, config.columns, config.props, {&bufferData}, 0);
-
-            // go row by row, finding the start of the row and dumping out the elements using their
-            // offset and sizes
-            for(size_t idx = 0; idx < numRows; idx++)
-            {
-              s << (rowOffset + idx) << ", ";
-
-              for(int col = 0; col < cache.count(); col++)
-              {
-                const CachedElData &d = cache[col];
-                const ShaderConstant *el = d.el;
-                const BufferElementProperties *prop = d.prop;
-
-                if(d.data)
-                {
-                  const byte *data = d.data;
-                  const byte *end = d.end;
-
-                  data += d.stride * idx;
-
-                  // only slightly wasteful, we need to fetch all variants together
-                  // since some formats are packed and can't be read individually
-                  QVariantList list = GetVariants(prop->format, el->type.descriptor, data, end);
-
-                  for(int v = 0; v < list.count(); v++)
-                  {
-                    s << interpretVariant(list[v], *el, *prop);
-
-                    if(v + 1 < list.count())
-                      s << ", ";
-                  }
-
-                  if(list.empty())
-                  {
-                    for(int v = 0; v < d.numColumns; v++)
-                    {
-                      s << "---";
-
-                      if(v + 1 < d.numColumns)
-                        s << ", ";
-                    }
-                  }
-
-                  if(col + 1 < cache.count())
-                    s << ", ";
-                }
-              }
-
-              s << "\n";
-            }
-          });
-        }
-      }
+      for(int i = 0; i < ui->fixedVars->topLevelItemCount(); i++)
+        exportCSV(ts, QString(), ui->fixedVars->topLevelItem(i));
     }
 
     f->close();
 
     delete f;
-  });
-  exportThread->start();
-
-  ShowProgressDialog(this, tr("Exporting data"),
-                     [exportThread]() { return !exportThread->isRunning(); });
-
-  exportThread->deleteLater();
+  }
 }
 
 void BufferViewer::debugVertex()
@@ -4390,7 +6985,6 @@ void BufferViewer::debugVertex()
     }
 
     done = true;
-
   });
 
   QString debugContext = tr("Vertex %1").arg(vertid);
@@ -4414,12 +7008,139 @@ void BufferViewer::debugVertex()
 
   const ShaderReflection *shaderDetails =
       m_Ctx.CurPipelineState().GetShaderReflection(ShaderStage::Vertex);
-  const ShaderBindpointMapping &bindMapping =
-      m_Ctx.CurPipelineState().GetBindpointMapping(ShaderStage::Vertex);
   ResourceId pipeline = m_Ctx.CurPipelineState().GetGraphicsPipelineObject();
 
   // viewer takes ownership of the trace
-  IShaderViewer *s = m_Ctx.DebugShader(&bindMapping, shaderDetails, pipeline, trace, debugContext);
+  IShaderViewer *s = m_Ctx.DebugShader(shaderDetails, pipeline, trace, debugContext);
+
+  m_Ctx.AddDockWindow(s->Widget(), DockReference::AddTo, this);
+}
+
+void BufferViewer::debugMeshThread()
+{
+  if(!m_Ctx.IsCaptureLoaded())
+    return;
+
+  const ActionDescription *action = m_Ctx.CurAction();
+  if(!action)
+    return;
+
+  if(!m_CurView)
+    return;
+
+  QModelIndex idx = m_CurView->selectionModel()->currentIndex();
+
+  if(!idx.isValid())
+  {
+    GUIInvoke::call(this, [this]() {
+      RDDialog::critical(this, tr("Error debugging"),
+                         tr("Error debugging meshlet - make sure a valid meshlet is selected"));
+    });
+    return;
+  }
+
+  uint32_t taskIndex = 0, meshletIndex = 0;
+  GetIndicesForMeshRow((uint32_t)idx.row(), taskIndex, meshletIndex);
+
+  const ShaderReflection *shaderDetails =
+      m_Ctx.CurPipelineState().GetShaderReflection(ShaderStage::Mesh);
+
+  if(!shaderDetails)
+    return;
+
+  rdcfixedarray<uint32_t, 3> threadGroupSize = action->dispatchThreadsDimension[0] == 0
+                                                   ? shaderDetails->dispatchThreadsDimension
+                                                   : action->dispatchThreadsDimension;
+  m_MeshDebugSelector->SetThreadBounds(action->dispatchDimension, threadGroupSize);
+
+  // Calculate 3d group id from 1d meshlet index and dispatch dimensions
+  // Imagine 8x2x4 with idx 60
+  // 8x2 = 16
+  // 8x2x4 = 64
+  // 60 % x = 4
+  // 60 % (x * y) = 12 / x = 1
+  // 60 / (x * y) = 3
+  // index 60 is id (4,1,3)
+  // 4 + (8 * 1) + (16 * 3) = 60
+  uint32_t xDim = action->dispatchDimension[0];
+  uint32_t yDim = action->dispatchDimension[1];
+  uint32_t zDim = action->dispatchDimension[2];
+  rdcfixedarray<uint32_t, 3> meshletGroup = {
+      meshletIndex % xDim,
+      (meshletIndex % (xDim * yDim)) / xDim,
+      meshletIndex / (xDim * yDim),
+  };
+  m_MeshDebugSelector->SetDefaultDispatch(meshletGroup, {0, 0, 0});
+
+  RDDialog::show(m_MeshDebugSelector);
+}
+
+void BufferViewer::meshDebugSelector_beginDebug(const rdcfixedarray<uint32_t, 3> &group,
+                                                const rdcfixedarray<uint32_t, 3> &thread)
+{
+  const ActionDescription *action = m_Ctx.CurAction();
+
+  if(!action)
+    return;
+
+  const ShaderReflection *shaderDetails =
+      m_Ctx.CurPipelineState().GetShaderReflection(ShaderStage::Mesh);
+
+  if(!shaderDetails)
+    return;
+
+  struct threadSelect
+  {
+    rdcfixedarray<uint32_t, 3> g;
+    rdcfixedarray<uint32_t, 3> t;
+  } debugThread = {
+      // g[]
+      {group[0], group[1], group[2]},
+      // t[]
+      {thread[0], thread[1], thread[2]},
+  };
+
+  bool done = false;
+  ShaderDebugTrace *trace = NULL;
+
+  m_Ctx.Replay().AsyncInvoke([&trace, &done, debugThread](IReplayController *r) {
+    trace = r->DebugMeshThread(debugThread.g, debugThread.t);
+
+    if(trace->debugger == NULL)
+    {
+      r->FreeTrace(trace);
+      trace = NULL;
+    }
+
+    done = true;
+  });
+
+  QString debugContext = lit("Mesh Group [%1,%2,%3] Thread [%4,%5,%6]")
+                             .arg(group[0])
+                             .arg(group[1])
+                             .arg(group[2])
+                             .arg(thread[0])
+                             .arg(thread[1])
+                             .arg(thread[2]);
+
+  // wait a short while before displaying the progress dialog (which won't show if we're already
+  // done by the time we reach it)
+  for(int i = 0; !done && i < 100; i++)
+    QThread::msleep(5);
+
+  ShowProgressDialog(this, tr("Debugging %1").arg(debugContext), [&done]() { return done; });
+
+  if(!trace)
+  {
+    RDDialog::critical(
+        this, tr("Error debugging"),
+        tr("Error debugging thread - make sure a valid group and thread is selected"));
+    return;
+  }
+
+  // viewer takes ownership of the trace
+  IShaderViewer *s = m_Ctx.DebugShader(
+      shaderDetails, m_Ctx.CurPipelineState().GetComputePipelineObject(), trace, debugContext);
 
   m_Ctx.AddDockWindow(s->Widget(), DockReference::AddTo, this);
 }
@@ -4429,7 +7150,7 @@ void BufferViewer::SyncViews(RDTableView *primary, bool selection, bool scroll)
   if(!ui->syncViews->isChecked())
     return;
 
-  RDTableView *views[] = {ui->vsinData, ui->vsoutData, ui->gsoutData};
+  RDTableView *views[] = {ui->inTable, ui->out1Table, ui->out2Table};
 
   int horizScrolls[ARRAY_COUNT(views)] = {0};
 
@@ -4475,7 +7196,7 @@ void BufferViewer::UpdateHighlightVerts()
 {
   m_Config.highlightVert = ~0U;
 
-  if(!ui->highlightVerts->isChecked())
+  if(ui->highlightVerts->isHidden() || !ui->highlightVerts->isChecked())
     return;
 
   RDTableView *table = currentTable();
@@ -4491,15 +7212,69 @@ void BufferViewer::UpdateHighlightVerts()
   m_Config.highlightVert = selected[0].row();
 }
 
-void BufferViewer::EnableCameraGuessControls()
+void BufferViewer::UpdateStageDataControls()
 {
-  ui->matrixType->setEnabled(isCurrentRasterOut());
-  ui->aspectGuess->setEnabled(isCurrentRasterOut());
-  ui->nearGuess->setEnabled(isCurrentRasterOut());
-  ui->farGuess->setEnabled(isCurrentRasterOut());
+  if(isCurrentRasterOut())
+  {
+    ui->guessLabel->setVisible(true);
+    ui->guessDetails1->setVisible(true);
+    ui->guessDetails2->setVisible(true);
+    ui->guessButton->setVisible(true);
 
-  // FOV is only available in perspective mode
-  ui->fovGuess->setEnabled(isCurrentRasterOut() && ui->matrixType->currentIndex() == 0);
+    QString aspectStr = tr("Auto");
+    if(m_ProjGuess.aspect > 0)
+      aspectStr = Formatter::Format(m_ProjGuess.aspect);
+
+    if(m_ProjGuess.orthographic)
+      ui->guessDetails1->setText(tr("Orthographic Projection"));
+    else
+      ui->guessDetails1->setText(
+          tr("Perspective Projection, FOV %1").arg(Formatter::Format(m_ProjGuess.fov)));
+
+    if(m_ProjGuess.farPlane == FLT_MAX)
+    {
+      if(m_ProjGuess.nearPlane > 0)
+        ui->guessDetails2->setText(tr("Aspect Ratio %1, Reverse Z Near %2")
+                                       .arg(aspectStr)
+                                       .arg(Formatter::Format(m_ProjGuess.nearPlane)));
+      else
+        ui->guessDetails2->setText(tr("Aspect Ratio %1, Reverse Z Near Automatic").arg(aspectStr));
+    }
+    else
+    {
+      if(m_ProjGuess.nearPlane > 0 && m_ProjGuess.farPlane > 0)
+        ui->guessDetails2->setText(tr("Aspect Ratio %1, Near-Far %2 - %3")
+                                       .arg(aspectStr)
+                                       .arg(Formatter::Format(m_ProjGuess.nearPlane))
+                                       .arg(Formatter::Format(m_ProjGuess.farPlane)));
+      else if(m_ProjGuess.nearPlane > 0)
+        ui->guessDetails2->setText(tr("Aspect Ratio %1, Near %2 Far Auto")
+                                       .arg(aspectStr)
+                                       .arg(Formatter::Format(m_ProjGuess.nearPlane)));
+      else if(m_ProjGuess.farPlane > 0)
+        ui->guessDetails2->setText(tr("Aspect Ratio %1, Near Auto Far %2")
+                                       .arg(aspectStr)
+                                       .arg(Formatter::Format(m_ProjGuess.farPlane)));
+      else
+        ui->guessDetails2->setText(tr("Aspect Ratio %1, Near-Far Automatic").arg(aspectStr));
+    }
+
+    ui->axisMappingLabel->setVisible(false);
+    ui->axisMappingCombo->setVisible(false);
+    ui->axisMappingButton->setVisible(false);
+  }
+  else
+  {
+    ui->guessLabel->setVisible(false);
+    ui->guessDetails1->setVisible(false);
+    ui->guessDetails2->setVisible(false);
+    ui->guessButton->setVisible(false);
+
+    ui->axisMappingLabel->setVisible(true);
+    ui->axisMappingCombo->setVisible(true);
+    ui->axisMappingButton->setVisible(true);
+    ui->axisMappingButton->setEnabled(ui->axisMappingCombo->currentIndex() == 4);
+  }
 }
 
 void BufferViewer::on_outputTabs_currentChanged(int index)
@@ -4508,9 +7283,9 @@ void BufferViewer::on_outputTabs_currentChanged(int index)
   ui->outputTabs->widget(index)->layout()->addWidget(ui->renderContainer);
 
   if(index == 0)
-    m_CurStage = MeshDataStage::VSIn;
+    m_CurStage = isMeshDraw() ? MeshDataStage::TaskOut : MeshDataStage::VSIn;
   else if(index == 1)
-    m_CurStage = MeshDataStage::VSOut;
+    m_CurStage = isMeshDraw() ? MeshDataStage::MeshOut : MeshDataStage::VSOut;
   else if(index == 2)
     m_CurStage = MeshDataStage::GSOut;
 
@@ -4519,7 +7294,7 @@ void BufferViewer::on_outputTabs_currentChanged(int index)
   on_resetCamera_clicked();
   ui->autofitCamera->setEnabled(!isCurrentRasterOut());
 
-  EnableCameraGuessControls();
+  UpdateStageDataControls();
 
   UpdateCurrentMeshConfig();
 
@@ -4528,7 +7303,7 @@ void BufferViewer::on_outputTabs_currentChanged(int index)
 
 void BufferViewer::on_toggleControls_toggled(bool checked)
 {
-  ui->cameraControlsGroup->setVisible(checked);
+  ui->configurationGroup->setVisible(checked);
 
   // temporarily set minimum bounds to the longest float we could format, to ensure the minimum size
   // we calculate below is as big as needs to be (sigh...). This is necessary because Qt doesn't
@@ -4551,7 +7326,7 @@ void BufferViewer::on_toggleControls_toggled(bool checked)
 
   UI_UpdateBoundingBoxLabels();
 
-  EnableCameraGuessControls();
+  UpdateStageDataControls();
 }
 
 void BufferViewer::on_syncViews_toggled(bool checked)
@@ -4559,9 +7334,33 @@ void BufferViewer::on_syncViews_toggled(bool checked)
   SyncViews(NULL, true, true);
 }
 
+void BufferViewer::on_showPadding_toggled(bool checked)
+{
+  OnEventChanged(m_Ctx.CurEvent());
+}
+
 void BufferViewer::on_highlightVerts_toggled(bool checked)
 {
   UpdateHighlightVerts();
+
+  INVOKE_MEMFN(RT_UpdateAndDisplay);
+}
+
+void BufferViewer::on_vtxExploderSlider_valueChanged(int value)
+{
+  m_Config.vtxExploderSliderSNorm = (float)value / 100.0f;
+
+  INVOKE_MEMFN(RT_UpdateAndDisplay);
+}
+
+void BufferViewer::on_exploderReset_clicked()
+{
+  ui->vtxExploderSlider->setSliderPosition(0);
+}
+
+void BufferViewer::on_exploderScale_valueChanged(double value)
+{
+  m_Config.exploderScale = (float)value;
 
   INVOKE_MEMFN(RT_UpdateAndDisplay);
 }
@@ -4573,7 +7372,7 @@ void BufferViewer::on_wireframeRender_toggled(bool checked)
   INVOKE_MEMFN(RT_UpdateAndDisplay);
 }
 
-void BufferViewer::on_solidShading_currentIndexChanged(int index)
+void BufferViewer::on_visualisation_currentIndexChanged(int index)
 {
   ui->wireframeRender->setEnabled(index > 0);
 
@@ -4583,17 +7382,32 @@ void BufferViewer::on_solidShading_currentIndexChanged(int index)
     m_Config.wireframeDraw = true;
   }
 
-  m_Config.solidShadeMode = (SolidShade)qMax(0, index);
+  bool explodeHidden = (index != (int)Visualisation::Explode);
+  ui->vtxExploderLabel->setHidden(explodeHidden);
+  ui->vtxExploderSlider->setHidden(explodeHidden);
+  ui->exploderReset->setHidden(explodeHidden);
+  ui->exploderScaleLabel->setHidden(explodeHidden);
+  ui->exploderScale->setHidden(explodeHidden);
+  // Because the vertex/prim highlights draw from a new, temporary vertex buffer,
+  // those vertex IDs (which determine the explode displacement) won't necessarily
+  // match the original mesh's IDs and exploded vertices.  Because of this, it seems
+  // cleanest to just avoid drawing the highlighted vert/prim with the explode
+  // visualisation (while also getting back a little room on the toolbar used by
+  // the extra exploder controls).
+  ui->highlightVerts->setHidden(!explodeHidden);
+  UpdateHighlightVerts();
 
-  m_ModelVSIn->setSecondaryColumn(m_ModelVSIn->secondaryColumn(),
-                                  m_Config.solidShadeMode == SolidShade::Secondary,
-                                  m_ModelVSIn->secondaryAlpha());
-  m_ModelVSOut->setSecondaryColumn(m_ModelVSOut->secondaryColumn(),
-                                   m_Config.solidShadeMode == SolidShade::Secondary,
-                                   m_ModelVSOut->secondaryAlpha());
-  m_ModelGSOut->setSecondaryColumn(m_ModelGSOut->secondaryColumn(),
-                                   m_Config.solidShadeMode == SolidShade::Secondary,
-                                   m_ModelGSOut->secondaryAlpha());
+  m_Config.visualisationMode = (Visualisation)qMax(0, index);
+
+  m_ModelIn->setSecondaryColumn(m_ModelIn->secondaryColumn(),
+                                m_Config.visualisationMode == Visualisation::Secondary,
+                                m_ModelIn->secondaryAlpha());
+  m_ModelOut1->setSecondaryColumn(m_ModelOut1->secondaryColumn(),
+                                  m_Config.visualisationMode == Visualisation::Secondary,
+                                  m_ModelOut1->secondaryAlpha());
+  m_ModelOut2->setSecondaryColumn(m_ModelOut2->secondaryColumn(),
+                                  m_Config.visualisationMode == Visualisation::Secondary,
+                                  m_ModelOut2->secondaryAlpha());
 
   INVOKE_MEMFN(RT_UpdateAndDisplay);
 }
@@ -4658,14 +7472,130 @@ void BufferViewer::on_viewIndex_valueChanged(int value)
   OnEventChanged(m_Ctx.CurEvent());
 }
 
+void BufferViewer::SetMeshFilter(MeshFilter filter, uint32_t taskGroup, uint32_t meshGroup)
+{
+  if(!isMeshDraw() || m_CurMeshFilter == filter)
+    return;
+
+  // calculate new scrolls manually to keep the same logical item selected
+  m_Scrolls = new PopulateBufferData;
+  FillScrolls(m_Scrolls);
+
+  {
+    const BufferConfiguration &config1 = m_ModelOut1->getConfig();
+    const BufferConfiguration &config2 = m_ModelOut2->getConfig();
+
+    // baseTaskRow is the first row in the mesh view for the start of the task with no mesh filter,
+    // and baseMeshRow is the offset to the filtered mesh (if relevant). They could be identical
+    const uint32_t prevBaseTaskRow = m_TaskFilterRowOffset;
+    const uint32_t prevBaseMeshRow = m_MeshFilterRowOffset;
+
+    // if we're filtering directly to a task from none, we also have the prefix count we just have
+    // to determine the base mesh
+    uint32_t taskBaseMesh = 0;
+    for(uint32_t i = 0; i < taskGroup && i < config1.taskSizes.size(); i++)
+      taskBaseMesh += config1.taskSizes[i].x * config1.taskSizes[i].y * config1.taskSizes[i].z;
+
+    uint32_t newBaseTaskRow = 0, newBaseMeshRow = 0;
+    if(filter == MeshFilter::None || config2.meshletVertexPrefixCounts.empty())
+    {
+      // if the new filter is none, then our new base row for both is 0
+      newBaseTaskRow = newBaseMeshRow = 0;
+    }
+    else if(m_CurMeshFilter == MeshFilter::None && filter == MeshFilter::Mesh)
+    {
+      newBaseTaskRow = config2.meshletVertexPrefixCounts[taskBaseMesh];
+      newBaseMeshRow = config2.meshletVertexPrefixCounts[meshGroup];
+    }
+    else if(m_CurMeshFilter == MeshFilter::None && filter == MeshFilter::TaskGroup)
+    {
+      newBaseTaskRow = newBaseMeshRow = config2.meshletVertexPrefixCounts[taskBaseMesh];
+    }
+    else if(m_CurMeshFilter == MeshFilter::TaskGroup && filter == MeshFilter::Mesh)
+    {
+      // the first complex case - if we're already filtered to a task and now we're filtering to a
+      // mesh, we only have prefix counts relatively so look it up
+      newBaseTaskRow = prevBaseTaskRow;
+      newBaseMeshRow = prevBaseTaskRow + config2.meshletVertexPrefixCounts[meshGroup - taskBaseMesh];
+    }
+    else if(m_CurMeshFilter == MeshFilter::Mesh && filter == MeshFilter::TaskGroup)
+    {
+      // the second complex case - if we're already filtered to a *mesh* and now we're filtering
+      // back to the task, we undo the previous per-mesh filter
+      newBaseTaskRow = newBaseMeshRow = prevBaseTaskRow;
+
+      // only support filtering within the same group, not arbitrarily from one mesh in one task
+      // group to a different task group
+      Q_ASSERT(m_FilteredTaskGroup == taskGroup);
+    }
+
+    const uint32_t prevBaseRow = prevBaseMeshRow;
+    const uint32_t newBaseRow = newBaseMeshRow;
+
+    // when going to/from no filter, we just rebase by the base row and set the task row that we know directly
+    if(m_CurMeshFilter == MeshFilter::None)
+    {
+      m_Scrolls->out1Vert = 0;
+      m_Scrolls->out2Vert -= newBaseRow;
+    }
+    else if(filter == MeshFilter::None)
+    {
+      m_Scrolls->out1Vert = config1.taskOrMeshletOffset;
+      m_Scrolls->out2Vert += prevBaseRow;
+    }
+
+    // otherwise changing between task and mesh filter, we rebase based on the difference between
+    // the number of meshes shown. The task filter doesn't have to change
+    else if(m_CurMeshFilter == MeshFilter::TaskGroup && filter == MeshFilter::Mesh)
+    {
+      m_Scrolls->out1Vert = 0;
+      m_Scrolls->out2Vert -= (newBaseRow - prevBaseRow);
+    }
+    else if(m_CurMeshFilter == MeshFilter::Mesh && filter == MeshFilter::TaskGroup)
+    {
+      m_Scrolls->out1Vert = 0;
+      m_Scrolls->out2Vert += (prevBaseRow - newBaseRow);
+    }
+
+    m_TaskFilterRowOffset = newBaseTaskRow;
+    m_MeshFilterRowOffset = newBaseMeshRow;
+  }
+
+  m_CurMeshFilter = filter;
+  m_FilteredTaskGroup = taskGroup;
+  m_FilteredMeshGroup = meshGroup;
+
+  switch(m_CurMeshFilter)
+  {
+    case MeshFilter::None:
+      ui->meshFilterLabel->setText(tr("Current Range filter: None"));
+      ui->resetMeshFilterButton->setEnabled(false);
+      break;
+    case MeshFilter::TaskGroup:
+      if(IsD3D(m_Ctx.APIProps().pipelineType))
+        ui->meshFilterLabel->setText(tr("Current Range filter: Single Amplification Threadgroup"));
+      else
+        ui->meshFilterLabel->setText(tr("Current Range filter: Single Task"));
+      ui->resetMeshFilterButton->setEnabled(true);
+      break;
+    case MeshFilter::Mesh:
+      ui->meshFilterLabel->setText(tr("Current Range filter: Single Meshlet"));
+      ui->resetMeshFilterButton->setEnabled(true);
+      break;
+  }
+
+  if(m_Ctx.IsCaptureLoaded())
+    OnEventChanged(m_Ctx.CurEvent());
+}
+
 void BufferViewer::on_rowOffset_valueChanged(int value)
 {
-  if(!m_MeshView && m_ModelVSIn->getConfig().unclampedNumRows > 0)
+  if(!m_MeshView && m_ModelIn->getConfig().unclampedNumRows > 0)
   {
     int page = value / MaxVisibleRows;
     value %= MaxVisibleRows;
 
-    uint64_t pageOffset = page * MaxVisibleRows * m_ModelVSIn->getConfig().buffers[0]->stride;
+    uint64_t pageOffset = page * MaxVisibleRows * m_ModelIn->getConfig().buffers[0]->stride;
 
     // account for the extra row at the top with previous/next buttons
     if(pageOffset > 0)
@@ -4681,14 +7611,14 @@ void BufferViewer::on_rowOffset_valueChanged(int value)
     }
   }
 
-  ScrollToRow(ui->vsinData, value);
-  ScrollToRow(ui->vsoutData, value);
-  ScrollToRow(ui->gsoutData, value);
+  ScrollToRow(ui->inTable, value);
+  ScrollToRow(ui->out1Table, value);
+  ScrollToRow(ui->out2Table, value);
 
   // when we're paging and we select the first row, actually scroll up to include the previous/next
   // buttons.
   if(!m_MeshView && value == 1 && m_PagingByteOffset > 0)
-    ui->vsinData->verticalScrollBar()->setValue(0);
+    ui->inTable->verticalScrollBar()->setValue(0);
 }
 
 void BufferViewer::on_autofitCamera_clicked()
@@ -4706,25 +7636,8 @@ void BufferViewer::on_autofitCamera_clicked()
       bbox = m_BBoxes[m_Ctx.CurEvent()];
   }
 
-  BufferItemModel *model = NULL;
+  BufferItemModel *model = m_ModelIn;
   int stage = 0;
-
-  switch(m_CurStage)
-  {
-    case MeshDataStage::VSIn:
-      model = m_ModelVSIn;
-      stage = 0;
-      break;
-    case MeshDataStage::VSOut:
-      model = m_ModelVSOut;
-      stage = 1;
-      break;
-    case MeshDataStage::GSOut:
-      model = m_ModelGSOut;
-      stage = 2;
-      break;
-    default: break;
-  }
 
   if(bbox.bounds[stage].Min.isEmpty())
     return;
@@ -4751,7 +7664,20 @@ void BufferViewer::on_autofitCamera_clicked()
     mid.y = bbox.bounds[stage].Min[posEl].y + diag.y * 0.5f;
     mid.z = bbox.bounds[stage].Min[posEl].z + diag.z * 0.5f;
 
-    mid.z -= len;
+    if(!isCurrentRasterOut())
+    {
+      // apply axis mapping to midpoint
+      FloatVector transformedMid;
+      transformedMid.x = m_Config.axisMapping.xAxis.x * mid.x +
+                         m_Config.axisMapping.yAxis.x * mid.y + m_Config.axisMapping.zAxis.x * mid.z;
+      transformedMid.y = m_Config.axisMapping.xAxis.y * mid.x +
+                         m_Config.axisMapping.yAxis.y * mid.y + m_Config.axisMapping.zAxis.y * mid.z;
+      transformedMid.z = m_Config.axisMapping.xAxis.z * mid.x +
+                         m_Config.axisMapping.yAxis.z * mid.y + m_Config.axisMapping.zAxis.z * mid.z;
+      mid = transformedMid;
+    }
+
+    mid.z -= len * 0.7f;
 
     m_Flycam->Reset(mid);
   }

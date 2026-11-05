@@ -17,7 +17,7 @@ class D3D12_RGP_Capture(rdtest.TestCase):
         return super().check_support()
 
     def check_capture(self):
-        apiprops: rd.APIProperties = self.controller.GetAPIProperties()
+        apiprops = self.controller.GetAPIProperties()
 
         if not apiprops.rgpCapture:
             rdtest.log.print("RGP capture not tested")
@@ -28,9 +28,9 @@ class D3D12_RGP_Capture(rdtest.TestCase):
         window = tkinter.Tk()
         window.geometry("1280x720")
 
-        path = self.controller.CreateRGPProfile(rd.CreateWin32WindowingData(int(window.frame(), 16)))
+        path = self.controller.CreateRGPProfile(rd.CreateWin32WindowingData(int(window.frame(), 16))) # type: ignore
 
-        rdtest.log.print("RGP capture created: '{}'".format(path))
+        rdtest.log.print(f"RGP capture created: '{path}'")
 
         if os.path.exists(path) and os.path.getsize(path) > 100:
             rdtest.log.success("RGP capture created successfully")

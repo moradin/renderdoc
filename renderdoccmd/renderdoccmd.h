@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -35,6 +35,7 @@ struct Command
   virtual int Execute(const CaptureOptions &opts) = 0;
   virtual const char *Description() = 0;
 
+  virtual rdcarray<rdcstr> ReplayArgs() { return {}; }
   virtual bool HandlesUsageManually() { return false; }
   virtual bool IsInternalOnly() = 0;
   virtual bool IsCaptureCommand() = 0;

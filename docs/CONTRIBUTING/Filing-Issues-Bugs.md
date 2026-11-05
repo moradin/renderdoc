@@ -18,7 +18,7 @@ If you really want to go in-depth there is a lot of writing online about how to 
 
 Below is guidance for each section of the issue template.
 
-# Description
+# Description of Bug
 
 In the description section you can explain what kind of problem you're running into. The golden rule for this is to describe what you actually see happening, and then describe what you'd expect to see instead.
 

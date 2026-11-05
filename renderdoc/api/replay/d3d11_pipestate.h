@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -32,7 +32,11 @@
 
 namespace D3D11Pipe
 {
-DOCUMENT(R"(Describes a single D3D11 input layout element for one vertex input.
+DOCUMENT(R"(
+D3D11Layout()
+D3D11Layout(other: D3D11Layout)
+
+Describes a single D3D11 input layout element for one vertex input.
 
 .. data:: TightlyPacked
 
@@ -69,10 +73,16 @@ struct Layout
       return instanceDataStepRate < o.instanceDataStepRate;
     return false;
   }
-  DOCUMENT("The semantic name for this input.");
+  DOCUMENT(R"(The semantic name for this input.
+
+:type: str
+)");
   rdcstr semanticName;
 
-  DOCUMENT("The semantic index for this input.");
+  DOCUMENT(R"(The semantic index for this input.
+
+:type: int
+)");
   uint32_t semanticIndex = 0;
 
   DOCUMENT(R"(The format describing how the input data is interpreted.
@@ -81,7 +91,10 @@ struct Layout
 )");
   ResourceFormat format;
 
-  DOCUMENT("The vertex buffer input slot where the data is sourced from.");
+  DOCUMENT(R"(The vertex buffer input slot where the data is sourced from.
+
+:type: int
+)");
   uint32_t inputSlot = 0;
 
   DOCUMENT(R"(The byte offset from the start of the vertex data in the vertex buffer from
@@ -89,10 +102,15 @@ struct Layout
 
 If the value is :data:`TightlyPacked` then the element is packed tightly after the previous element, or 0
 if this is the first element.
+
+:type: int
 )");
   uint32_t byteOffset = 0;
 
-  DOCUMENT("``True`` if the vertex data is instance-rate.");
+  DOCUMENT(R"(``True`` if the vertex data is instance-rate.
+
+:type: bool
+)");
   bool perInstance = false;
 
   DOCUMENT(R"(If :data:`perInstance` is ``True`` then this is how many times each instance data is
@@ -100,6 +118,8 @@ used before advancing to the next instance.
 
 E.g. if this value is two, then two instances will be drawn with the first instance data, then two
 with the next instance data.
+
+:type: int
 )");
   uint32_t instanceDataStepRate = 0;
 
@@ -107,7 +127,12 @@ with the next instance data.
   static const uint32_t TightlyPacked = ~0U;
 };
 
-DOCUMENT("Describes a single D3D11 vertex buffer binding.")
+DOCUMENT(R"(
+D3D11VertexBuffer()
+D3D11VertexBuffer(other: D3D11VertexBuffer)
+
+Describes a single D3D11 vertex buffer binding.
+)")
 struct VertexBuffer
 {
   DOCUMENT("");
@@ -129,17 +154,31 @@ struct VertexBuffer
       return byteOffset < o.byteOffset;
     return false;
   }
-  DOCUMENT("The :class:`ResourceId` of the buffer bound to this slot.");
+  DOCUMENT(R"(The :class:`ResourceId` of the buffer bound to this slot.
+
+:type: ResourceId
+)");
   ResourceId resourceId;
 
-  DOCUMENT("The byte offset from the start of the buffer to the beginning of the vertex data.");
+  DOCUMENT(R"(The byte offset from the start of the buffer to the beginning of the vertex data.
+
+:type: int
+)");
   uint32_t byteOffset = 0;
 
-  DOCUMENT("The byte stride between the start of one set of vertex data and the next.");
+  DOCUMENT(R"(The byte stride between the start of one set of vertex data and the next.
+
+:type: int
+)");
   uint32_t byteStride = 0;
 };
 
-DOCUMENT("Describes the D3D11 index buffer binding.")
+DOCUMENT(R"(
+D3D11IndexBuffer()
+D3D11IndexBuffer(other: D3D11IndexBuffer)
+
+Describes the D3D11 index buffer binding.
+)")
 struct IndexBuffer
 {
   DOCUMENT("");
@@ -147,19 +186,32 @@ struct IndexBuffer
   IndexBuffer(const IndexBuffer &) = default;
   IndexBuffer &operator=(const IndexBuffer &) = default;
 
-  DOCUMENT("The :class:`ResourceId` of the index buffer.");
+  DOCUMENT(R"(The :class:`ResourceId` of the index buffer.
+
+:type: ResourceId
+)");
   ResourceId resourceId;
 
-  DOCUMENT("The byte offset from the start of the buffer to the beginning of the index data.");
+  DOCUMENT(R"(The byte offset from the start of the buffer to the beginning of the index data.
+
+:type: int
+)");
   uint32_t byteOffset = 0;
 
   DOCUMENT(R"(The number of bytes for each index in the index buffer. Typically 2 or 4 bytes but
 it can be 0 if no index buffer is bound.
+
+:type: int
 )");
   uint32_t byteStride = 0;
 };
 
-DOCUMENT("Describes the input assembler data.");
+DOCUMENT(R"(
+D3D11InputAssembly()
+D3D11InputAssembly(other: D3D11InputAssembly)
+
+Describes the input assembler data.
+)");
 struct InputAssembly
 {
   DOCUMENT("");
@@ -173,14 +225,17 @@ struct InputAssembly
 )");
   rdcarray<Layout> layouts;
 
-  DOCUMENT("The :class:`ResourceId` of the layout object.");
+  DOCUMENT(R"(The :class:`ResourceId` of the layout object.
+
+:type: ResourceId
+)");
   ResourceId resourceId;
 
   DOCUMENT(R"(The shader reflection for the bytecode used to create the input layout.
 
 :type: ShaderReflection
 )");
-  ShaderReflection *bytecode = NULL;
+  const ShaderReflection *bytecode = NULL;
 
   DOCUMENT(R"(The bound vertex buffers
 
@@ -201,227 +256,12 @@ struct InputAssembly
   Topology topology = Topology::Unknown;
 };
 
-DOCUMENT("Describes the details of a D3D11 resource view - any one of UAV, SRV, RTV or DSV.");
-struct View
-{
-  DOCUMENT("");
-  View() = default;
-  View(const View &) = default;
-  View &operator=(const View &) = default;
+DOCUMENT(R"(
+D3D11Shader()
+D3D11Shader(other: D3D11Shader)
 
-  bool operator==(const View &o) const
-  {
-    return viewResourceId == o.viewResourceId && resourceResourceId == o.resourceResourceId &&
-           counterResourceId == o.counterResourceId && type == o.type && viewFormat == o.viewFormat &&
-           structured == o.structured && bufferStructCount == o.bufferStructCount &&
-           elementByteSize == o.elementByteSize && firstElement == o.firstElement &&
-           numElements == o.numElements && bufferFlags == o.bufferFlags && firstMip == o.firstMip &&
-           numMips == o.numMips && numSlices == o.numSlices && firstSlice == o.firstSlice;
-  }
-  bool operator<(const View &o) const
-  {
-    if(!(viewResourceId == o.viewResourceId))
-      return viewResourceId < o.viewResourceId;
-    if(!(resourceResourceId == o.resourceResourceId))
-      return resourceResourceId < o.resourceResourceId;
-    if(!(counterResourceId == o.counterResourceId))
-      return counterResourceId < o.counterResourceId;
-    if(!(type == o.type))
-      return type < o.type;
-    if(!(viewFormat == o.viewFormat))
-      return viewFormat < o.viewFormat;
-    if(!(structured == o.structured))
-      return structured < o.structured;
-    if(!(bufferStructCount == o.bufferStructCount))
-      return bufferStructCount < o.bufferStructCount;
-    if(!(elementByteSize == o.elementByteSize))
-      return elementByteSize < o.elementByteSize;
-    if(!(firstElement == o.firstElement))
-      return firstElement < o.firstElement;
-    if(!(numElements == o.numElements))
-      return numElements < o.numElements;
-    if(!(bufferFlags == o.bufferFlags))
-      return bufferFlags < o.bufferFlags;
-    if(!(firstMip == o.firstMip))
-      return firstMip < o.firstMip;
-    if(!(numMips == o.numMips))
-      return numMips < o.numMips;
-    if(!(numSlices == o.numSlices))
-      return numSlices < o.numSlices;
-    if(!(firstSlice == o.firstSlice))
-      return firstSlice < o.firstSlice;
-    return false;
-  }
-  DOCUMENT("The :class:`ResourceId` of the view itself.");
-  ResourceId viewResourceId;
-
-  DOCUMENT("The :class:`ResourceId` of the underlying resource the view refers to.");
-  ResourceId resourceResourceId;
-
-  DOCUMENT("The :class:`ResourceId` of the resource where the hidden buffer counter is stored.");
-  ResourceId counterResourceId;
-
-  DOCUMENT("The :class:`TextureType` of the view type.");
-  TextureType type;
-
-  DOCUMENT(R"(The format cast that the view uses.
-
-:type: ResourceFormat
+Describes a D3D11 shader stage.
 )");
-  ResourceFormat viewFormat;
-
-  DOCUMENT("``True`` if this view describes a structured buffer.");
-  bool structured = false;
-
-  DOCUMENT("If the view has a hidden counter, this stores the current value of the counter.");
-  uint32_t bufferStructCount = 0;
-
-  DOCUMENT(R"(The byte size of a single element in the view. Either the byte size of
-:data:`viewFormat`, or the structured buffer element size, as appropriate.
-)");
-  uint32_t elementByteSize = 0;
-
-  DOCUMENT("Valid for buffers - the first element to be used in the view.");
-  uint32_t firstElement = 0;
-  DOCUMENT("Valid for buffers - the number of elements to be used in the view.");
-  uint32_t numElements = 1;
-
-  DOCUMENT("Valid for buffers - the flags for additional view properties.");
-  D3DBufferViewFlags bufferFlags = D3DBufferViewFlags::NoFlags;
-
-  DOCUMENT("Valid for textures - the first mip that is available through the view.");
-  uint32_t firstMip = 0;
-  DOCUMENT("Valid for textures - the number of mip levels in the view.");
-  uint32_t numMips = 0;
-
-  DOCUMENT("Valid for texture arrays or 3D textures - the first slice available through the view.");
-  uint32_t firstSlice = 0;
-  DOCUMENT("Valid for texture arrays or 3D textures - the number of slices in the view.");
-  uint32_t numSlices = 1;
-};
-
-DOCUMENT("Describes a sampler state object.");
-struct Sampler
-{
-  DOCUMENT("");
-  Sampler() = default;
-  Sampler(const Sampler &) = default;
-  Sampler &operator=(const Sampler &) = default;
-
-  bool operator==(const Sampler &o) const
-  {
-    return resourceId == o.resourceId && addressU == o.addressU && addressV == o.addressV &&
-           addressW == o.addressW && borderColor == o.borderColor &&
-           compareFunction == o.compareFunction && filter == o.filter &&
-           maxAnisotropy == o.maxAnisotropy && maxLOD == o.maxLOD && minLOD == o.minLOD &&
-           mipLODBias == o.mipLODBias;
-  }
-  bool operator<(const Sampler &o) const
-  {
-    if(!(resourceId == o.resourceId))
-      return resourceId < o.resourceId;
-    if(!(addressU == o.addressU))
-      return addressU < o.addressU;
-    if(!(addressV == o.addressV))
-      return addressV < o.addressV;
-    if(!(addressW == o.addressW))
-      return addressW < o.addressW;
-    if(!(borderColor == o.borderColor))
-      return borderColor < o.borderColor;
-    if(!(compareFunction == o.compareFunction))
-      return compareFunction < o.compareFunction;
-    if(!(filter == o.filter))
-      return filter < o.filter;
-    if(!(maxAnisotropy == o.maxAnisotropy))
-      return maxAnisotropy < o.maxAnisotropy;
-    if(!(maxLOD == o.maxLOD))
-      return maxLOD < o.maxLOD;
-    if(!(minLOD == o.minLOD))
-      return minLOD < o.minLOD;
-    if(!(mipLODBias == o.mipLODBias))
-      return mipLODBias < o.mipLODBias;
-    return false;
-  }
-  DOCUMENT("The :class:`ResourceId` of the sampler state object.");
-  ResourceId resourceId;
-  DOCUMENT("The :class:`AddressMode` in the U direction.");
-  AddressMode addressU = AddressMode::Wrap;
-  DOCUMENT("The :class:`AddressMode` in the V direction.");
-  AddressMode addressV = AddressMode::Wrap;
-  DOCUMENT("The :class:`AddressMode` in the W direction.");
-  AddressMode addressW = AddressMode::Wrap;
-  DOCUMENT(R"(The RGBA border color.
-
-:type: Tuple[float,float,float,float]
-)");
-  rdcfixedarray<float, 4> borderColor = {0.0f, 0.0f, 0.0f, 0.0f};
-  DOCUMENT("The :class:`CompareFunction` for comparison samplers.");
-  CompareFunction compareFunction = CompareFunction::AlwaysTrue;
-  DOCUMENT(R"(The filtering mode.
-
-:type: TextureFilter
-)");
-  TextureFilter filter;
-  DOCUMENT("The maximum anisotropic filtering level to use.");
-  uint32_t maxAnisotropy = 0;
-  DOCUMENT("The maximum mip level that can be used.");
-  float maxLOD = 0.0f;
-  DOCUMENT("The minimum mip level that can be used.");
-  float minLOD = 0.0f;
-  DOCUMENT("A bias to apply to the calculated mip level before sampling.");
-  float mipLODBias = 0.0f;
-
-  DOCUMENT(R"(Check if the border color is used in this D3D11 sampler.
-
-:return: ``True`` if the border color is used, ``False`` otherwise.
-:rtype: bool
-)");
-  bool UseBorder() const
-  {
-    return addressU == AddressMode::ClampBorder || addressV == AddressMode::ClampBorder ||
-           addressW == AddressMode::ClampBorder;
-  }
-};
-
-DOCUMENT("Describes a constant buffer binding.");
-struct ConstantBuffer
-{
-  DOCUMENT("");
-  ConstantBuffer() = default;
-  ConstantBuffer(const ConstantBuffer &) = default;
-  ConstantBuffer &operator=(const ConstantBuffer &) = default;
-
-  bool operator==(const ConstantBuffer &o) const
-  {
-    return resourceId == o.resourceId && vecOffset == o.vecOffset && vecCount == o.vecCount;
-  }
-  bool operator<(const ConstantBuffer &o) const
-  {
-    if(!(resourceId == o.resourceId))
-      return resourceId < o.resourceId;
-    if(!(vecOffset == o.vecOffset))
-      return vecOffset < o.vecOffset;
-    if(!(vecCount == o.vecCount))
-      return vecCount < o.vecCount;
-    return false;
-  }
-  DOCUMENT("The :class:`ResourceId` of the buffer.");
-  ResourceId resourceId;
-
-  DOCUMENT(R"(The offset of the buffer binding, in units of ``float4`` (16 bytes).
-
-If the capture isn't using the D3D11.1 binding methods, this offset will be 0.
-)");
-  uint32_t vecOffset = 0;
-
-  DOCUMENT(R"(The size of the buffer binding, in units of ``float4`` (16 bytes).
-
-If the capture isn't using the D3D11.1 binding methods, this offset will be 4096 (64 kiB).
-)");
-  uint32_t vecCount = 0;
-};
-
-DOCUMENT("Describes a D3D11 shader stage.");
 struct Shader
 {
   DOCUMENT("");
@@ -429,47 +269,23 @@ struct Shader
   Shader(const Shader &) = default;
   Shader &operator=(const Shader &) = default;
 
-  DOCUMENT("The :class:`ResourceId` of the shader itself.");
+  DOCUMENT(R"(The :class:`ResourceId` of the shader itself.
+
+:type: ResourceId
+)");
   ResourceId resourceId;
 
   DOCUMENT(R"(The reflection data for this shader.
 
 :type: ShaderReflection
 )");
-  ShaderReflection *reflection = NULL;
-  DOCUMENT(R"(The bindpoint mapping data to match :data:`reflection`.
+  const ShaderReflection *reflection = NULL;
 
-:type: ShaderBindpointMapping
+  DOCUMENT(R"(A :class:`ShaderStage` identifying which stage this shader is bound to.
+
+:type: ShaderStage
 )");
-  ShaderBindpointMapping bindpointMapping;
-
-  DOCUMENT("A :class:`ShaderStage` identifying which stage this shader is bound to.");
   ShaderStage stage = ShaderStage::Vertex;
-
-  DOCUMENT(R"(The bound SRVs.
-
-:type: List[D3D11View]
-)");
-  rdcarray<View> srvs;
-
-  DOCUMENT(R"(The bound UAVs - only valid for the compute stage, other stages pull the UAVs from
-the :data:`D3D11OutputMerger`.
-
-:type: List[D3D11View]
-)");
-  rdcarray<View> uavs;
-
-  DOCUMENT(R"(The bound samplers.
-
-:type: List[D3D11Sampler]
-)");
-  rdcarray<Sampler> samplers;
-
-  DOCUMENT(R"(The bound constant buffers.
-
-:type: List[D3D11ConstantBuffer]
-)");
-  rdcarray<ConstantBuffer> constantBuffers;
 
   DOCUMENT(R"(The bound class instance names.
 
@@ -478,7 +294,12 @@ the :data:`D3D11OutputMerger`.
   rdcarray<rdcstr> classInstances;
 };
 
-DOCUMENT("Describes a binding on the D3D11 stream-out stage.");
+DOCUMENT(R"(
+D3D11StreamOutBind()
+D3D11StreamOutBind(other: D3D11StreamOutBind)
+
+Describes a binding on the D3D11 stream-out stage.
+)");
 struct StreamOutBind
 {
   DOCUMENT("");
@@ -498,14 +319,29 @@ struct StreamOutBind
       return byteOffset < o.byteOffset;
     return false;
   }
-  DOCUMENT("The :class:`ResourceId` of the buffer.");
+  DOCUMENT(R"(The :class:`ResourceId` of the buffer.
+
+:type: ResourceId
+)");
   ResourceId resourceId;
 
-  DOCUMENT("The byte offset of the stream-output binding.");
+  DOCUMENT(R"(The byte offset of the stream-output binding.
+
+:type: int
+)");
   uint32_t byteOffset = 0;
 };
 
-DOCUMENT("Describes the stream-out stage bindings.");
+DOCUMENT(R"(
+D3D11StreamOut()
+D3D11StreamOut(other: D3D11StreamOut)
+
+Describes the stream-out stage bindings.
+
+.. data:: NoRasterization
+
+  Value for :data:`rasterizedStream` that indicates no stream is being rasterized.
+)");
 struct StreamOut
 {
   DOCUMENT("");
@@ -518,9 +354,25 @@ struct StreamOut
 :type: List[D3D11StreamOutBind]
 )");
   rdcarray<StreamOutBind> outputs;
+
+  DOCUMENT(R"(Which stream-out stream is being used for rasterization.
+
+If the value is :data:`NoRasterization` then no stream has been selected for rasterization.
+
+:type: int
+)");
+  uint32_t rasterizedStream = 0;
+
+  // D3D11_SO_NO_RASTERIZED_STREAM
+  static const uint32_t NoRasterization = ~0U;
 };
 
-DOCUMENT("Describes a rasterizer state object.");
+DOCUMENT(R"(
+D3D11RasterizerState()
+D3D11RasterizerState(other: D3D11RasterizerState)
+
+Describes a rasterizer state object.
+)");
 struct RasterizerState
 {
   DOCUMENT("");
@@ -528,43 +380,82 @@ struct RasterizerState
   RasterizerState(const RasterizerState &) = default;
   RasterizerState &operator=(const RasterizerState &) = default;
 
-  DOCUMENT("The :class:`ResourceId` of the rasterizer state object.");
+  DOCUMENT(R"(The :class:`ResourceId` of the rasterizer state object.
+
+:type: ResourceId
+)");
   ResourceId resourceId;
-  DOCUMENT("The polygon :class:`FillMode`.");
+  DOCUMENT(R"(The polygon :class:`FillMode`.
+
+:type: FillMode
+)");
   FillMode fillMode = FillMode::Solid;
-  DOCUMENT("The polygon :class:`CullMode`.");
+  DOCUMENT(R"(The polygon :class:`CullMode`.
+
+:type: CullMode
+)");
   CullMode cullMode = CullMode::NoCull;
   DOCUMENT(R"(``True`` if counter-clockwise polygons are front-facing.
 ``False`` if clockwise polygons are front-facing.
+
+:type: bool
 )");
   bool frontCCW = false;
-  DOCUMENT("The fixed depth bias value to apply to z-values.");
+  DOCUMENT(R"(The fixed depth bias value to apply to z-values.
+
+:type: int
+)");
   int32_t depthBias = 0;
   DOCUMENT(R"(The clamp value for calculated depth bias from :data:`depthBias` and
 :data:`slopeScaledDepthBias`
+
+:type: float
 )");
   float depthBiasClamp = 0.0f;
-  DOCUMENT("The slope-scaled depth bias value to apply to z-values.");
+  DOCUMENT(R"(The slope-scaled depth bias value to apply to z-values.
+
+:type: float
+)");
   float slopeScaledDepthBias = 0.0f;
-  DOCUMENT("``True`` if pixels outside of the near and far depth planes should be clipped.");
+  DOCUMENT(R"(``True`` if pixels outside of the near and far depth planes should be clipped.
+
+:type: bool
+)");
   bool depthClip = false;
-  DOCUMENT("``True`` if the scissor test should be applied.");
+  DOCUMENT(R"(``True`` if the scissor test should be applied.
+
+:type: bool
+)");
   bool scissorEnable = false;
-  DOCUMENT("``True`` if the quadrilateral MSAA algorithm should be used on MSAA targets.");
+  DOCUMENT(R"(``True`` if the quadrilateral MSAA algorithm should be used on MSAA targets.
+
+:type: bool
+)");
   bool multisampleEnable = false;
-  DOCUMENT(
-      "``True`` if lines should be anti-aliased. Ignored if :data:`multisampleEnable` is "
-      "``False``.");
+  DOCUMENT(R"(``True`` if lines should be anti-aliased. Ignored if :data:`multisampleEnable` is  ``False``.
+
+:type: bool
+)");
   bool antialiasedLines = false;
   DOCUMENT(R"(A sample count to force rasterization to when UAV rendering or rasterizing, or 0 to
 not force any sample count.
+
+:type: int
 )");
   uint32_t forcedSampleCount = 0;
-  DOCUMENT("The current :class:`ConservativeRaster` mode.");
+  DOCUMENT(R"(The current :class:`ConservativeRaster` mode.
+
+:type: ConservativeRaster
+)");
   ConservativeRaster conservativeRasterization = ConservativeRaster::Disabled;
 };
 
-DOCUMENT("Describes the rasterization state of the D3D11 pipeline.");
+DOCUMENT(R"(
+D3D11Rasterizer()
+D3D11Rasterizer(other: D3D11Rasterizer)
+
+Describes the rasterization state of the D3D11 pipeline.
+)");
 struct Rasterizer
 {
   DOCUMENT("");
@@ -591,7 +482,12 @@ struct Rasterizer
   RasterizerState state;
 };
 
-DOCUMENT("Describes a depth-stencil state object.");
+DOCUMENT(R"(
+D3D11DepthStencilState()
+D3D11DepthStencilState(other: D3D11DepthStencilState)
+
+Describes a depth-stencil state object.
+)");
 struct DepthStencilState
 {
   DOCUMENT("");
@@ -599,15 +495,30 @@ struct DepthStencilState
   DepthStencilState(const DepthStencilState &) = default;
   DepthStencilState &operator=(const DepthStencilState &) = default;
 
-  DOCUMENT("The :class:`ResourceId` of the depth-stencil state object.");
+  DOCUMENT(R"(The :class:`ResourceId` of the depth-stencil state object.
+
+:type: ResourceId
+)");
   ResourceId resourceId;
-  DOCUMENT("``True`` if depth testing should be performed.");
+  DOCUMENT(R"(``True`` if depth testing should be performed.
+
+:type: bool
+)");
   bool depthEnable = false;
-  DOCUMENT("The :class:`CompareFunction` to use for testing depth values.");
+  DOCUMENT(R"(The :class:`CompareFunction` to use for testing depth values.
+
+:type: CompareFunction
+)");
   CompareFunction depthFunction = CompareFunction::AlwaysTrue;
-  DOCUMENT("``True`` if depth values should be written to the depth target.");
+  DOCUMENT(R"(``True`` if depth values should be written to the depth target.
+
+:type: bool
+)");
   bool depthWrites = false;
-  DOCUMENT("``True`` if stencil operations should be performed.");
+  DOCUMENT(R"(``True`` if stencil operations should be performed.
+
+:type: bool
+)");
   bool stencilEnable = false;
 
   DOCUMENT(R"(The stencil state for front-facing polygons.
@@ -623,7 +534,12 @@ struct DepthStencilState
   StencilFace backFace;
 };
 
-DOCUMENT("Describes a blend state object.");
+DOCUMENT(R"(
+D3D11BlendState()
+D3D11BlendState(other: D3D11BlendState)
+
+Describes a blend state object.
+)");
 struct BlendState
 {
   DOCUMENT("");
@@ -631,14 +547,22 @@ struct BlendState
   BlendState(const BlendState &) = default;
   BlendState &operator=(const BlendState &) = default;
 
-  DOCUMENT("The :class:`ResourceId` of the blend state object.");
+  DOCUMENT(R"(The :class:`ResourceId` of the blend state object.
+
+:type: ResourceId
+)");
   ResourceId resourceId;
 
-  DOCUMENT("``True`` if alpha-to-coverage should be used when blending to an MSAA target.");
+  DOCUMENT(R"(``True`` if alpha-to-coverage should be used when blending to an MSAA target.
+
+:type: bool
+)");
   bool alphaToCoverage = false;
   DOCUMENT(R"(``True`` if independent blending for each target should be used.
 
 ``False`` if the first blend should be applied to all targets.
+
+:type: bool
 )");
   bool independentBlend = false;
 
@@ -653,11 +577,19 @@ struct BlendState
 :type: Tuple[float,float,float,float]
 )");
   rdcfixedarray<float, 4> blendFactor = {1.0f, 1.0f, 1.0f, 1.0f};
-  DOCUMENT("The mask determining which samples are written to.");
+  DOCUMENT(R"(The mask determining which samples are written to.
+
+:type: int
+)");
   uint32_t sampleMask = ~0U;
 };
 
-DOCUMENT("Describes the current state of the output-merger stage of the D3D11 pipeline.");
+DOCUMENT(R"(
+D3D11OutputMerger()
+D3D11OutputMerger(other: D3D11OutputMerger)
+
+Describes the current state of the output-merger stage of the D3D11 pipeline.
+)");
 struct OutputMerger
 {
   DOCUMENT("");
@@ -679,31 +611,39 @@ struct OutputMerger
 
   DOCUMENT(R"(The bound render targets.
 
-:type: List[D3D11View]
+:type: List[Descriptor]
 )");
-  rdcarray<View> renderTargets;
+  rdcarray<Descriptor> renderTargets;
 
-  DOCUMENT("Which slot in the output targets is the first UAV.");
+  DOCUMENT(R"(Which slot in the output targets is the first UAV.
+
+:type: int
+)");
   uint32_t uavStartSlot = 0;
-
-  DOCUMENT(R"(The bound UAVs.
-
-:type: List[D3D11View]
-)");
-  rdcarray<View> uavs;
 
   DOCUMENT(R"(The currently bound depth-stencil target.
 
-:type: D3D11View
+:type: Descriptor
 )");
-  View depthTarget;
-  DOCUMENT("``True`` if depth access to the depth-stencil target is read-only.");
+  Descriptor depthTarget;
+  DOCUMENT(R"(``True`` if depth access to the depth-stencil target is read-only.
+
+:type: bool
+)");
   bool depthReadOnly = false;
-  DOCUMENT("``True`` if stencil access to the depth-stencil target is read-only.");
+  DOCUMENT(R"(``True`` if stencil access to the depth-stencil target is read-only.
+
+:type: bool
+)");
   bool stencilReadOnly = false;
 };
 
-DOCUMENT("Describes the current state of predicated rendering.");
+DOCUMENT(R"(
+D3D11Predication()
+D3D11Predication(other: D3D11Predication)
+
+Describes the current state of D3D11 predicated rendering.
+)");
 struct Predication
 {
   DOCUMENT("");
@@ -711,17 +651,28 @@ struct Predication
   Predication(const Predication &) = default;
   Predication &operator=(const Predication &) = default;
 
-  DOCUMENT("The :class:`ResourceId` of the active predicate.");
+  DOCUMENT(R"(The :class:`ResourceId` of the active predicate.
+
+:type: ResourceId
+)");
   ResourceId resourceId;
 
-  DOCUMENT("The value to go along with the predicate.");
+  DOCUMENT(R"(The value to go along with the predicate.
+
+:type: bool
+)");
   bool value = false;
 
-  DOCUMENT("``True`` if the current predicate would render.");
+  DOCUMENT(R"(``True`` if the current predicate would render.
+
+:type: bool
+)");
   bool isPassing = false;
 };
 
-DOCUMENT("The full current D3D11 pipeline state.");
+DOCUMENT(R"(
+The full current D3D11 pipeline state.
+)");
 struct State
 {
 #if !defined(RENDERDOC_EXPORTS)
@@ -767,6 +718,24 @@ struct State
 )");
   Shader computeShader;
 
+  DOCUMENT(R"(The virtual descriptor storage.
+
+:type: ResourceId
+)");
+  ResourceId descriptorStore;
+
+  DOCUMENT(R"(The number of descriptors in the virtual descriptor storage.
+
+:type: int
+)");
+  uint32_t descriptorCount = 0;
+
+  DOCUMENT(R"(The byte size of a descriptor in the virtual descriptor storage.
+
+:type: int
+)");
+  uint32_t descriptorByteSize = 0;
+
   DOCUMENT(R"(The stream-out pipeline stage.
 
 :type: D3D11StreamOut
@@ -798,9 +767,6 @@ DECLARE_REFLECTION_STRUCT(D3D11Pipe::Layout);
 DECLARE_REFLECTION_STRUCT(D3D11Pipe::VertexBuffer);
 DECLARE_REFLECTION_STRUCT(D3D11Pipe::IndexBuffer);
 DECLARE_REFLECTION_STRUCT(D3D11Pipe::InputAssembly);
-DECLARE_REFLECTION_STRUCT(D3D11Pipe::View);
-DECLARE_REFLECTION_STRUCT(D3D11Pipe::Sampler);
-DECLARE_REFLECTION_STRUCT(D3D11Pipe::ConstantBuffer);
 DECLARE_REFLECTION_STRUCT(D3D11Pipe::Shader);
 DECLARE_REFLECTION_STRUCT(D3D11Pipe::StreamOutBind);
 DECLARE_REFLECTION_STRUCT(D3D11Pipe::StreamOut);

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2020-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -32,7 +32,10 @@ RD_TEST(GL_Discard_Zoo, OpenGLGraphicsTest)
 
   uint32_t greens10_2[300 * 300];
 
-  void SetDebugName(GLuint t, std::string name) { glObjectLabel(GL_TEXTURE, t, -1, name.c_str()); }
+  void SetDebugName(GLuint t, std::string name)
+  {
+    glObjectLabel(GL_TEXTURE, t, -1, name.c_str());
+  }
   void Clear(GLuint t)
   {
     GLenum fmt = GL_NONE;

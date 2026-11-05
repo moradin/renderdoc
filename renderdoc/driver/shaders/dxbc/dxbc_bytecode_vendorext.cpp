@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2021 Baldur Karlsson
+ * Copyright (c) 2021-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -102,8 +102,7 @@ DX12Op convert(DX11Op op)
     case DX11Op::Max3U: return DX12Op::Max3U;
     case DX11Op::Max3F: return DX12Op::Max3F;
     case DX11Op::BaryCoord: return DX12Op::BaryCoord;
-    case DX11Op::VtxParam:
-      return DX12Op::VtxParam;
+    case DX11Op::VtxParam: return DX12Op::VtxParam;
     // others match up exactly
     default: return DX12Op(op);
   }
@@ -870,8 +869,7 @@ void Program::PostprocessVendorExtensions()
       switch(state)
       {
         case InstructionState::Broken:
-        case InstructionState::AMDUAVAtomic:
-          break;
+        case InstructionState::AMDUAVAtomic: break;
         // in Nothing an increment marks the beginning of an instruction of some type
         case InstructionState::Nothing:
         {

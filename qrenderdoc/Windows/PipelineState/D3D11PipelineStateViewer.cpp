@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2016-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,6 +29,7 @@
 #include <QScrollBar>
 #include <QXmlStreamWriter>
 #include "Code/Resources.h"
+#include "Widgets/ComputeDebugSelector.h"
 #include "Widgets/Extended/RDHeaderView.h"
 #include "flowlayout/FlowLayout.h"
 #include "toolwindowmanager/ToolWindowManager.h"
@@ -63,10 +64,10 @@ struct D3D11ViewTag
   };
 
   D3D11ViewTag() : type(SRV), index(0) {}
-  D3D11ViewTag(ResType t, int i, const D3D11Pipe::View &r) : type(t), index(i), res(r) {}
+  D3D11ViewTag(ResType t, uint32_t i, const Descriptor &d) : type(t), index(i), desc(d) {}
   ResType type;
-  int index;
-  D3D11Pipe::View res;
+  uint32_t index;
+  Descriptor desc;
 };
 
 Q_DECLARE_METATYPE(D3D11ViewTag);
@@ -77,12 +78,19 @@ D3D11PipelineStateViewer::D3D11PipelineStateViewer(ICaptureContext &ctx,
 {
   ui->setupUi(this);
 
+  m_ComputeDebugSelector = new ComputeDebugSelector(this);
+
   const QIcon &action = Icons::action();
   const QIcon &action_hover = Icons::action_hover();
 
   RDLabel *objectLabels[] = {
-      ui->vsShader, ui->hsShader, ui->dsShader,   ui->gsShader,
-      ui->psShader, ui->csShader, ui->iaBytecode,
+      ui->iaBytecode,
+
+      ui->vsShader,      ui->hsShader,      ui->dsShader,
+      ui->gsShader,      ui->psShader,      ui->csShader,
+
+      ui->vsShaderDebug, ui->hsShaderDebug, ui->dsShaderDebug,
+      ui->gsShaderDebug, ui->psShaderDebug, ui->csShaderDebug,
   };
 
   QToolButton *viewButtons[] = {
@@ -120,21 +128,28 @@ D3D11PipelineStateViewer::D3D11PipelineStateViewer(ICaptureContext &ctx,
       ui->vsClasses, ui->hsClasses, ui->dsClasses, ui->gsClasses, ui->psClasses, ui->csClasses,
   };
 
-  // setup FlowLayout for CS shader group, with debugging controls
-  {
-    QLayout *oldLayout = ui->csShaderGroup->layout();
+  // setup FlowLayout for shader groups
+  QWidget *shaderGroups[] = {
+      ui->vsShaderGroup, ui->hsShaderGroup, ui->dsShaderGroup,
+      ui->gsShaderGroup, ui->psShaderGroup, ui->csShaderGroup,
+  };
 
-    QObjectList childs = ui->csShaderGroup->children();
+  // setup FlowLayout for shader groups
+  for(QWidget *shaderGroup : shaderGroups)
+  {
+    QLayout *oldLayout = shaderGroup->layout();
+
+    QObjectList childs = shaderGroup->children();
     childs.removeOne((QObject *)oldLayout);
 
     delete oldLayout;
 
-    FlowLayout *csShaderFlow = new FlowLayout(ui->csShaderGroup, -1, 3, 3);
+    FlowLayout *shaderFlow = new FlowLayout(shaderGroup, -1, 3, 3);
 
     for(QObject *o : childs)
-      csShaderFlow->addWidget(qobject_cast<QWidget *>(o));
+      shaderFlow->addWidget(qobject_cast<QWidget *>(o));
 
-    ui->csShaderGroup->setLayout(csShaderFlow);
+    shaderGroup->setLayout(shaderFlow);
   }
 
   for(QToolButton *b : viewButtons)
@@ -147,6 +162,9 @@ D3D11PipelineStateViewer::D3D11PipelineStateViewer(ICaptureContext &ctx,
     b->setForegroundRole(QPalette::ToolTipText);
     b->setMinimumSizeHint(QSize(250, 0));
   }
+
+  QObject::connect(m_ComputeDebugSelector, &ComputeDebugSelector::beginDebug, this,
+                   &D3D11PipelineStateViewer::computeDebugSelector_beginDebug);
 
   for(QToolButton *b : editButtons)
     QObject::connect(b, &QToolButton::clicked, &m_Common, &PipelineStateViewer::shaderEdit_clicked);
@@ -203,9 +221,8 @@ D3D11PipelineStateViewer::D3D11PipelineStateViewer(ICaptureContext &ctx,
     RDHeaderView *header = new RDHeaderView(Qt::Horizontal, this);
     ui->iaLayouts->setHeader(header);
 
-    ui->iaLayouts->setColumns({tr("Slot"), tr("Semantic"), tr("Index"), tr("Format"),
-                               tr("Input Slot"), tr("Offset"), tr("Class"), tr("Step Rate"),
-                               tr("Go")});
+    ui->iaLayouts->setColumns({tr("Slot"), tr("Semantic"), tr("Index"), tr("Format"), tr("Input Slot"),
+                               tr("Offset"), tr("Class"), tr("Step Rate"), tr("Go")});
     header->setColumnStretchHints({1, 4, 2, 3, 2, 2, 1, 1, -1});
 
     ui->iaLayouts->setClearSelectionOnFocusLoss(true);
@@ -264,7 +281,7 @@ D3D11PipelineStateViewer::D3D11PipelineStateViewer(ICaptureContext &ctx,
     RDHeaderView *header = new RDHeaderView(Qt::Horizontal, this);
     cbuffer->setHeader(header);
 
-    cbuffer->setColumns({tr("Slot"), tr("Buffer"), tr("Vec4 Range"), tr("Size"), tr("Go")});
+    cbuffer->setColumns({tr("Slot"), tr("Buffer"), tr("Byte Range"), tr("Size"), tr("Go")});
     header->setColumnStretchHints({1, 2, 3, 3, -1});
 
     cbuffer->setHoverIconColumn(4, action, action_hover);
@@ -333,9 +350,8 @@ D3D11PipelineStateViewer::D3D11PipelineStateViewer(ICaptureContext &ctx,
     RDHeaderView *header = new RDHeaderView(Qt::Horizontal, this);
     ui->targetOutputs->setHeader(header);
 
-    ui->targetOutputs->setColumns({tr("Slot"), tr("Resource"), tr("Type"), tr("Width"),
-                                   tr("Height"), tr("Depth"), tr("Array Size"), tr("Format"),
-                                   tr("Go")});
+    ui->targetOutputs->setColumns({tr("Slot"), tr("Resource"), tr("Type"), tr("Width"), tr("Height"),
+                                   tr("Depth"), tr("Array Size"), tr("Format"), tr("Go")});
     header->setColumnStretchHints({2, 4, 2, 1, 1, 1, 1, 3, -1});
 
     ui->targetOutputs->setHoverIconColumn(8, action, action_hover);
@@ -392,12 +408,25 @@ D3D11PipelineStateViewer::D3D11PipelineStateViewer(ICaptureContext &ctx,
 
   ui->pipeFlow->setStages(
       {
-          lit("IA"), lit("VS"), lit("HS"), lit("DS"), lit("GS"), lit("RS"), lit("PS"), lit("OM"),
+          lit("IA"),
+          lit("VS"),
+          lit("HS"),
+          lit("DS"),
+          lit("GS"),
+          lit("RS"),
+          lit("PS"),
+          lit("OM"),
           lit("CS"),
       },
       {
-          tr("Input Assembler"), tr("Vertex Shader"), tr("Hull Shader"), tr("Domain Shader"),
-          tr("Geometry Shader"), tr("Rasterizer"), tr("Pixel Shader"), tr("Output Merger"),
+          tr("Input Assembler"),
+          tr("Vertex Shader"),
+          tr("Hull Shader"),
+          tr("Domain Shader"),
+          tr("Geometry Shader"),
+          tr("Rasterizer"),
+          tr("Pixel Shader"),
+          tr("Output Merger"),
           tr("Compute Shader"),
       });
 
@@ -412,13 +441,6 @@ D3D11PipelineStateViewer::D3D11PipelineStateViewer(ICaptureContext &ctx,
 
   ui->csUAVs->setFont(Formatter::PreferredFont());
   ui->gsStreamOut->setFont(Formatter::PreferredFont());
-
-  ui->groupX->setFont(Formatter::PreferredFont());
-  ui->groupY->setFont(Formatter::PreferredFont());
-  ui->groupZ->setFont(Formatter::PreferredFont());
-  ui->threadX->setFont(Formatter::PreferredFont());
-  ui->threadY->setFont(Formatter::PreferredFont());
-  ui->threadZ->setFont(Formatter::PreferredFont());
 
   ui->vsShader->setFont(Formatter::PreferredFont());
   ui->vsResources->setFont(Formatter::PreferredFont());
@@ -464,6 +486,7 @@ D3D11PipelineStateViewer::D3D11PipelineStateViewer(ICaptureContext &ctx,
 D3D11PipelineStateViewer::~D3D11PipelineStateViewer()
 {
   delete ui;
+  delete m_ComputeDebugSelector;
 }
 
 void D3D11PipelineStateViewer::OnCaptureLoaded()
@@ -480,7 +503,34 @@ void D3D11PipelineStateViewer::OnCaptureClosed()
 
 void D3D11PipelineStateViewer::OnEventChanged(uint32_t eventId)
 {
-  setState();
+  m_Ctx.Replay().AsyncInvoke([this](IReplayController *r) {
+    const D3D11Pipe::State *state = r->GetD3D11PipelineState();
+    ResourceId descriptorStore = state->descriptorStore;
+    DescriptorRange range;
+    range.offset = 0;
+    range.descriptorSize = state->descriptorByteSize;
+    range.count = state->descriptorCount;
+    // D3D11 doesn't need the descriptor type, it has internal type information
+    range.type = DescriptorType::Unknown;
+
+    rdcarray<DescriptorRange> ranges = {range};
+
+    rdcarray<DescriptorLogicalLocation> locations =
+        r->GetDescriptorLocations(descriptorStore, ranges);
+    rdcarray<Descriptor> descriptors = r->GetDescriptors(descriptorStore, ranges);
+    rdcarray<SamplerDescriptor> samplerDescriptors =
+        r->GetSamplerDescriptors(descriptorStore, ranges);
+
+    // we only write to m_Locations etc on the GUI thread so we know there's no race here.
+    GUIInvoke::call(this,
+                    [this, locations = std::move(locations), descriptors = std::move(descriptors),
+                     samplerDescriptors = std::move(samplerDescriptors)]() {
+                      m_Locations = locations;
+                      m_Descriptors = descriptors;
+                      m_SamplerDescriptors = samplerDescriptors;
+                      setState();
+                    });
+  });
 }
 
 void D3D11PipelineStateViewer::SelectPipelineStage(PipelineStage stage)
@@ -507,7 +557,7 @@ ResourceId D3D11PipelineStateViewer::GetResource(RDTreeWidgetItem *item)
   else if(tag.canConvert<D3D11ViewTag>())
   {
     D3D11ViewTag viewTag = tag.value<D3D11ViewTag>();
-    return viewTag.res.resourceResourceId;
+    return viewTag.desc.resource;
   }
   else if(tag.canConvert<D3D11VBIBTag>())
   {
@@ -521,31 +571,7 @@ ResourceId D3D11PipelineStateViewer::GetResource(RDTreeWidgetItem *item)
     if(stage == NULL)
       return ResourceId();
 
-    int cb = tag.value<int>();
-
-    int cbufIdx = -1;
-
-    for(int i = 0; i < stage->bindpointMapping.constantBlocks.count(); i++)
-    {
-      if(stage->bindpointMapping.constantBlocks[i].bind == cb)
-      {
-        cbufIdx = i;
-        break;
-      }
-    }
-
-    if(cbufIdx == -1)
-    {
-      // unused cbuffer, open regular buffer viewer
-      if(cb >= stage->constantBuffers.count())
-        return ResourceId();
-
-      const D3D11Pipe::ConstantBuffer &bind = stage->constantBuffers[cb];
-
-      return bind.resourceId;
-    }
-
-    return m_Ctx.CurPipelineState().GetConstantBuffer(stage->stage, cbufIdx, 0).resourceId;
+    return FindDescriptor(stage->stage, DescriptorCategory::ConstantBlock, tag.value<uint32_t>()).resource;
   }
 
   return ResourceId();
@@ -572,8 +598,7 @@ void D3D11PipelineStateViewer::setEmptyRow(RDTreeWidgetItem *node)
   node->setForegroundColor(QColor(0, 0, 0));
 }
 
-bool D3D11PipelineStateViewer::HasImportantViewParams(const D3D11Pipe::View &view,
-                                                      TextureDescription *tex)
+bool D3D11PipelineStateViewer::HasImportantViewParams(const Descriptor &view, TextureDescription *tex)
 {
   // we don't count 'upgrade typeless to typed' as important, we just display the typed format
   // in the row since there's no real hidden important information there. The formats can't be
@@ -586,16 +611,15 @@ bool D3D11PipelineStateViewer::HasImportantViewParams(const D3D11Pipe::View &vie
   // in the case of the swapchain case, types can be different and it won't have shown
   // up as taking the view's format because the swapchain already has one. Make sure to mark it
   // as important
-  if(view.viewFormat.compType != CompType::Typeless && view.viewFormat != tex->format)
+  if(view.format.compType != CompType::Typeless && view.format != tex->format)
     return true;
 
   return false;
 }
 
-bool D3D11PipelineStateViewer::HasImportantViewParams(const D3D11Pipe::View &view,
-                                                      BufferDescription *buf)
+bool D3D11PipelineStateViewer::HasImportantViewParams(const Descriptor &view, BufferDescription *buf)
 {
-  if(view.firstElement > 0 || view.numElements * view.elementByteSize < buf->length)
+  if(view.byteOffset > 0 || view.byteSize < buf->length)
     return true;
 
   return false;
@@ -609,15 +633,15 @@ void D3D11PipelineStateViewer::setViewDetails(RDTreeWidgetItem *node, const D3D1
 
   QString text;
 
-  const D3D11Pipe::View &res = view.res;
+  const Descriptor &desc = view.desc;
 
   bool viewdetails = false;
 
-  if(res.viewFormat != tex->format)
+  if(desc.format != tex->format)
   {
     text += tr("The texture is format %1, the view treats it as %2.\n")
                 .arg(tex->format.Name())
-                .arg(res.viewFormat.Name());
+                .arg(desc.format.Name());
 
     viewdetails = true;
   }
@@ -630,31 +654,49 @@ void D3D11PipelineStateViewer::setViewDetails(RDTreeWidgetItem *node, const D3D1
       text += tr("Stencil component is read-only\n");
   }
 
-  if(tex->mips > 1 && (tex->mips != res.numMips || res.firstMip > 0))
+  if(tex->mips > 1 && (tex->mips != desc.numMips || desc.firstMip > 0))
   {
-    if(res.numMips == 1)
+    if(desc.numMips == 1)
       text +=
-          tr("The texture has %1 mips, the view covers mip %2.\n").arg(tex->mips).arg(res.firstMip);
+          tr("The texture has %1 mips, the view covers mip %2.\n").arg(tex->mips).arg(desc.firstMip);
     else
       text += tr("The texture has %1 mips, the view covers mips %2-%3.\n")
                   .arg(tex->mips)
-                  .arg(res.firstMip)
-                  .arg(res.firstMip + res.numMips - 1);
+                  .arg(desc.firstMip)
+                  .arg(desc.firstMip + desc.numMips - 1);
 
     viewdetails = true;
   }
 
-  if(tex->arraysize > 1 && (tex->arraysize != res.numSlices || res.firstSlice > 0))
+  if(tex->arraysize > 1 && (tex->arraysize != desc.numSlices || desc.firstSlice > 0))
   {
-    if(res.numSlices == 1)
+    if(desc.numSlices == 1)
       text += tr("The texture has %1 array slices, the view covers slice %2.\n")
                   .arg(tex->arraysize)
-                  .arg(res.firstSlice);
+                  .arg(desc.firstSlice);
     else
       text += tr("The texture has %1 array slices, the view covers slices %2-%3.\n")
                   .arg(tex->arraysize)
-                  .arg(res.firstSlice)
-                  .arg(res.firstSlice + res.numSlices);
+                  .arg(desc.firstSlice)
+                  .arg(desc.firstSlice + desc.numSlices - 1);
+
+    viewdetails = true;
+  }
+
+  uint32_t effectiveDepth = qMax(1U, tex->depth >> desc.firstMip);
+
+  if(effectiveDepth > 1 &&
+     ((effectiveDepth != desc.numSlices && desc.numSlices > 0) || desc.firstSlice > 0))
+  {
+    if(desc.numSlices == 1)
+      text += tr("The texture has %1 3D slices at first mip, the view covers slice %2.\n")
+                  .arg(effectiveDepth)
+                  .arg(desc.firstSlice);
+    else
+      text += tr("The texture has %1 3D slices at first mip, the view covers slices %2-%3.\n")
+                  .arg(effectiveDepth)
+                  .arg(desc.firstSlice)
+                  .arg(desc.firstSlice + desc.numSlices - 1);
 
     viewdetails = true;
   }
@@ -664,10 +706,7 @@ void D3D11PipelineStateViewer::setViewDetails(RDTreeWidgetItem *node, const D3D1
   node->setToolTip(text);
 
   if(viewdetails)
-  {
-    node->setBackgroundColor(QColor(127, 255, 212));
-    node->setForegroundColor(QColor(0, 0, 0));
-  }
+    node->setBackgroundColor(m_Common.GetViewDetailsColor());
 }
 
 void D3D11PipelineStateViewer::setViewDetails(RDTreeWidgetItem *node, const D3D11ViewTag &view,
@@ -678,18 +717,17 @@ void D3D11PipelineStateViewer::setViewDetails(RDTreeWidgetItem *node, const D3D1
 
   QString text;
 
-  const D3D11Pipe::View &res = view.res;
+  const Descriptor &desc = view.desc;
 
-  if((res.firstElement * res.elementByteSize) > 0 ||
-     (res.numElements * res.elementByteSize) < buf->length)
+  if(desc.byteOffset > 0 || desc.byteSize < buf->length)
   {
     text += tr("The view covers bytes %1-%2 (%3 elements).\nThe buffer is %4 bytes in length (%5 "
-               "elements).")
-                .arg(res.firstElement * res.elementByteSize)
-                .arg((res.firstElement + res.numElements) * res.elementByteSize)
-                .arg(res.numElements)
+               "elements).\n")
+                .arg(desc.byteOffset)
+                .arg(desc.byteOffset + desc.byteSize)
+                .arg(desc.byteSize / desc.elementByteSize)
                 .arg(buf->length)
-                .arg(buf->length / res.elementByteSize);
+                .arg(buf->length / desc.elementByteSize);
   }
   else
   {
@@ -697,15 +735,14 @@ void D3D11PipelineStateViewer::setViewDetails(RDTreeWidgetItem *node, const D3D1
   }
 
   node->setToolTip(text);
-  node->setBackgroundColor(QColor(127, 255, 212));
-  node->setForegroundColor(QColor(0, 0, 0));
+  node->setBackgroundColor(m_Common.GetViewDetailsColor());
 }
 
 void D3D11PipelineStateViewer::addResourceRow(const D3D11ViewTag &view,
-                                              const ShaderResource *shaderInput,
-                                              const Bindpoint *map, RDTreeWidget *resources)
+                                              const ShaderResource *shaderInput, bool usedSlot,
+                                              RDTreeWidget *resources)
 {
-  const D3D11Pipe::View &r = view.res;
+  const Descriptor &desc = view.desc;
 
   bool viewDetails = false;
 
@@ -713,8 +750,7 @@ void D3D11PipelineStateViewer::addResourceRow(const D3D11ViewTag &view,
     viewDetails = m_Ctx.CurD3D11PipelineState()->outputMerger.depthReadOnly ||
                   m_Ctx.CurD3D11PipelineState()->outputMerger.stencilReadOnly;
 
-  bool filledSlot = (r.resourceResourceId != ResourceId());
-  bool usedSlot = (map && map->used);
+  bool filledSlot = (desc.resource != ResourceId());
 
   // if a target is set to RTVs or DSV, it is implicitly used
   if(filledSlot)
@@ -739,7 +775,7 @@ void D3D11PipelineStateViewer::addResourceRow(const D3D11ViewTag &view,
       w = h = d = a = 0;
     }
 
-    TextureDescription *tex = m_Ctx.GetTexture(r.resourceResourceId);
+    TextureDescription *tex = m_Ctx.GetTexture(desc.resource);
 
     if(tex)
     {
@@ -755,14 +791,14 @@ void D3D11PipelineStateViewer::addResourceRow(const D3D11ViewTag &view,
         typeName += QFormatStr(" %1x").arg(tex->msSamp);
       }
 
-      if(tex->format != r.viewFormat)
-        format = tr("Viewed as %1").arg(r.viewFormat.Name());
+      if(tex->format != desc.format)
+        format = tr("Viewed as %1").arg(desc.format.Name());
 
-      if(HasImportantViewParams(r, tex))
+      if(HasImportantViewParams(desc, tex))
         viewDetails = true;
     }
 
-    BufferDescription *buf = m_Ctx.GetBuffer(r.resourceResourceId);
+    BufferDescription *buf = m_Ctx.GetBuffer(desc.resource);
 
     if(buf)
     {
@@ -773,48 +809,48 @@ void D3D11PipelineStateViewer::addResourceRow(const D3D11ViewTag &view,
       format = QString();
       typeName = QFormatStr("%1Buffer").arg(view.type == D3D11ViewTag::UAV ? lit("RW") : QString());
 
-      if(r.bufferFlags & D3DBufferViewFlags::Raw)
+      if(desc.flags & DescriptorFlags::RawBuffer)
       {
         typeName = QFormatStr("%1ByteAddressBuffer")
                        .arg(view.type == D3D11ViewTag::UAV ? lit("RW") : QString());
       }
-      else if(r.elementByteSize > 0 && r.viewFormat.type == ResourceFormatType::Undefined)
+      else if(desc.elementByteSize > 0 && desc.format.type == ResourceFormatType::Undefined)
       {
         // for structured buffers, display how many 'elements' there are in the buffer
         typeName = QFormatStr("%1StructuredBuffer[%2]")
                        .arg(view.type == D3D11ViewTag::UAV ? lit("RW") : QString())
-                       .arg(buf->length / r.elementByteSize);
+                       .arg(buf->length / desc.elementByteSize);
       }
 
-      if(r.counterResourceId != ResourceId())
+      if(desc.secondary != ResourceId())
       {
-        typeName += tr(" (%1: %2)").arg(ToQStr(r.counterResourceId)).arg(r.bufferStructCount);
+        typeName += tr(" (%1: %2)").arg(ToQStr(desc.secondary)).arg(desc.bufferStructCount);
       }
 
       // get the buffer type, whether it's just a basic type or a complex struct
       if(shaderInput && !shaderInput->isTexture)
       {
-        if(r.viewFormat.compType == CompType::Typeless)
+        if(desc.format.compType == CompType::Typeless)
         {
-          if(!shaderInput->variableType.members.empty())
-            format = lit("struct ") + shaderInput->variableType.descriptor.name;
+          if(shaderInput->variableType.baseType == VarType::Struct)
+            format = lit("struct ") + shaderInput->variableType.name;
           else
-            format = shaderInput->variableType.descriptor.name;
+            format = shaderInput->variableType.name;
         }
         else
         {
-          format = r.viewFormat.Name();
+          format = desc.format.Name();
         }
       }
 
-      if(HasImportantViewParams(r, buf))
+      if(HasImportantViewParams(desc, buf))
         viewDetails = true;
     }
 
-    QVariant name = r.resourceResourceId;
+    QVariant name = desc.resource;
 
     if(viewDetails)
-      name = tr("%1 viewed by %2").arg(ToQStr(r.resourceResourceId)).arg(ToQStr(r.viewResourceId));
+      name = tr("%1 viewed by %2").arg(ToQStr(desc.resource)).arg(ToQStr(desc.view));
 
     RDTreeWidgetItem *node =
         new RDTreeWidgetItem({slotname, name, typeName, w, h, d, a, format, QString()});
@@ -839,6 +875,142 @@ void D3D11PipelineStateViewer::addResourceRow(const D3D11ViewTag &view,
   }
 }
 
+void D3D11PipelineStateViewer::addSamplerRow(const SamplerDescriptor &descriptor, uint32_t reg,
+                                             const ShaderSampler *shaderBind, bool usedSlot,
+                                             RDTreeWidget *samplers)
+{
+  bool filledSlot = descriptor.object != ResourceId();
+
+  if(showNode(usedSlot, filledSlot))
+  {
+    QString slotname = QString::number(reg);
+
+    if(shaderBind && !shaderBind->name.empty())
+      slotname += lit(": ") + shaderBind->name;
+
+    QString borderColor = QFormatStr("%1, %2, %3, %4")
+                              .arg(descriptor.borderColorValue.floatValue[0])
+                              .arg(descriptor.borderColorValue.floatValue[1])
+                              .arg(descriptor.borderColorValue.floatValue[2])
+                              .arg(descriptor.borderColorValue.floatValue[3]);
+
+    QString addressing;
+
+    QString addPrefix;
+    QString addVal;
+
+    QString addr[] = {ToQStr(descriptor.addressU, GraphicsAPI::D3D11),
+                      ToQStr(descriptor.addressV, GraphicsAPI::D3D11),
+                      ToQStr(descriptor.addressW, GraphicsAPI::D3D11)};
+
+    // arrange like either UVW: WRAP or UV: WRAP, W: CLAMP
+    for(int a = 0; a < 3; a++)
+    {
+      const QString str[] = {lit("U"), lit("V"), lit("W")};
+      QString prefix = str[a];
+
+      if(a == 0 || addr[a] == addr[a - 1])
+      {
+        addPrefix += prefix;
+      }
+      else
+      {
+        addressing += QFormatStr("%1: %2, ").arg(addPrefix).arg(addVal);
+
+        addPrefix = prefix;
+      }
+      addVal = addr[a];
+    }
+
+    addressing += addPrefix + lit(": ") + addVal;
+
+    if(descriptor.UseBorder())
+      addressing += QFormatStr("<%1>").arg(borderColor);
+
+    QString filter = ToQStr(descriptor.filter);
+
+    if(descriptor.maxAnisotropy > 1)
+      filter += QFormatStr(" %1x").arg(descriptor.maxAnisotropy);
+
+    if(descriptor.filter.filter == FilterFunction::Comparison)
+      filter += QFormatStr(" (%1)").arg(ToQStr(descriptor.compareFunction));
+    else if(descriptor.filter.filter != FilterFunction::Normal)
+      filter += QFormatStr(" (%1)").arg(ToQStr(descriptor.filter.filter));
+
+    RDTreeWidgetItem *node = new RDTreeWidgetItem(
+        {slotname, descriptor.object, addressing, filter,
+         QFormatStr("%1 - %2")
+             .arg(descriptor.minLOD == -FLT_MAX ? lit("0") : QString::number(descriptor.minLOD))
+             .arg(descriptor.maxLOD == FLT_MAX ? lit("FLT_MAX") : QString::number(descriptor.maxLOD)),
+         descriptor.mipBias});
+
+    if(!filledSlot)
+      setEmptyRow(node);
+
+    if(!usedSlot)
+      setInactiveRow(node);
+
+    samplers->addTopLevelItem(node);
+  }
+}
+
+void D3D11PipelineStateViewer::addCBufferRow(const Descriptor &descriptor, uint32_t reg,
+                                             const ConstantBlock *shaderBind, bool usedSlot,
+                                             RDTreeWidget *cbuffers)
+{
+  bool filledSlot = descriptor.resource != ResourceId();
+  if(showNode(usedSlot, filledSlot))
+  {
+    uint64_t length = 0;
+    int numvars = shaderBind ? shaderBind->variables.count() : 0;
+    uint32_t bytesize = shaderBind ? shaderBind->byteSize : 0;
+
+    BufferDescription *buf = m_Ctx.GetBuffer(descriptor.resource);
+
+    if(buf)
+      length = buf->length;
+
+    length = qMin(length, descriptor.byteSize);
+
+    QString slotname = QString::number(reg);
+
+    if(shaderBind && !shaderBind->name.empty())
+      slotname += lit(": ") + shaderBind->name;
+
+    QString sizestr;
+    if(bytesize == (uint32_t)length)
+      sizestr = tr("%1 Variables, %2 bytes")
+                    .arg(numvars)
+                    .arg(Formatter::HumanFormat(length, Formatter::OffsetSize));
+    else
+      sizestr = tr("%1 Variables, %2 bytes needed, %3 provided")
+                    .arg(numvars)
+                    .arg(Formatter::HumanFormat(bytesize, Formatter::OffsetSize))
+                    .arg(Formatter::HumanFormat(length, Formatter::OffsetSize));
+
+    if(length < bytesize)
+      filledSlot = false;
+
+    QString vecrange = QFormatStr("%1 - %2")
+                           .arg(Formatter::HumanFormat(descriptor.byteOffset, Formatter::OffsetSize))
+                           .arg(Formatter::HumanFormat(descriptor.byteOffset + descriptor.byteSize,
+                                                       Formatter::OffsetSize));
+
+    RDTreeWidgetItem *node =
+        new RDTreeWidgetItem({slotname, descriptor.resource, vecrange, sizestr, QString()});
+
+    node->setTag(QVariant::fromValue(reg));
+
+    if(!filledSlot)
+      setEmptyRow(node);
+
+    if(!usedSlot)
+      setInactiveRow(node);
+
+    cbuffers->addTopLevelItem(node);
+  }
+}
+
 bool D3D11PipelineStateViewer::showNode(bool usedSlot, bool filledSlot)
 {
   const bool showUnused = ui->showUnused->isChecked();
@@ -855,6 +1027,39 @@ bool D3D11PipelineStateViewer::showNode(bool usedSlot, bool filledSlot)
   // it's empty, and we have "show empty"
   if(showEmpty && !filledSlot)
     return true;
+
+  return false;
+}
+
+const Descriptor &D3D11PipelineStateViewer::FindDescriptor(ShaderStage stage,
+                                                           DescriptorCategory category, uint32_t reg)
+{
+  const ShaderStageMask mask = MaskForStage(stage);
+  // locations for D3D11 descriptors should have an accurate category for us to look up
+  for(size_t i = 0; i < m_Locations.size(); i++)
+  {
+    if((m_Locations[i].stageMask & mask) && m_Locations[i].category == category &&
+       m_Locations[i].fixedBindNumber == reg)
+    {
+      return m_Descriptors[i];
+    }
+  }
+
+  static Descriptor empty;
+  return empty;
+}
+
+bool D3D11PipelineStateViewer::HasAccess(ShaderStage stage, DescriptorCategory category,
+                                         uint32_t index)
+{
+  for(const DescriptorAccess &access : m_Ctx.CurPipelineState().GetDescriptorAccess())
+  {
+    if(access.stage == stage && CategoryForDescriptorType(access.type) == category &&
+       access.index == index)
+    {
+      return true;
+    }
+  }
 
   return false;
 }
@@ -893,11 +1098,12 @@ const D3D11Pipe::Shader *D3D11PipelineStateViewer::stageForSender(QWidget *widge
   return NULL;
 }
 
-void D3D11PipelineStateViewer::clearShaderState(RDLabel *shader, RDTreeWidget *tex,
-                                                RDTreeWidget *samp, RDTreeWidget *cbuffer,
-                                                RDTreeWidget *sub)
+void D3D11PipelineStateViewer::clearShaderState(RDLabel *shader, RDLabel *shaderDebug,
+                                                RDTreeWidget *tex, RDTreeWidget *samp,
+                                                RDTreeWidget *cbuffer, RDTreeWidget *sub)
 {
   shader->setText(ToQStr(ResourceId()));
+  shaderDebug->setText(QString());
   tex->clear();
   samp->clear();
   sub->clear();
@@ -915,12 +1121,18 @@ void D3D11PipelineStateViewer::clearState()
   ui->topology->setText(QString());
   ui->topologyDiagram->setPixmap(QPixmap());
 
-  clearShaderState(ui->vsShader, ui->vsResources, ui->vsSamplers, ui->vsCBuffers, ui->vsClasses);
-  clearShaderState(ui->gsShader, ui->gsResources, ui->gsSamplers, ui->gsCBuffers, ui->gsClasses);
-  clearShaderState(ui->hsShader, ui->hsResources, ui->hsSamplers, ui->hsCBuffers, ui->hsClasses);
-  clearShaderState(ui->dsShader, ui->dsResources, ui->dsSamplers, ui->dsCBuffers, ui->dsClasses);
-  clearShaderState(ui->psShader, ui->psResources, ui->psSamplers, ui->psCBuffers, ui->psClasses);
-  clearShaderState(ui->csShader, ui->csResources, ui->csSamplers, ui->csCBuffers, ui->csClasses);
+  clearShaderState(ui->vsShader, ui->vsShaderDebug, ui->vsResources, ui->vsSamplers, ui->vsCBuffers,
+                   ui->vsClasses);
+  clearShaderState(ui->gsShader, ui->gsShaderDebug, ui->gsResources, ui->gsSamplers, ui->gsCBuffers,
+                   ui->gsClasses);
+  clearShaderState(ui->hsShader, ui->hsShaderDebug, ui->hsResources, ui->hsSamplers, ui->hsCBuffers,
+                   ui->hsClasses);
+  clearShaderState(ui->dsShader, ui->dsShaderDebug, ui->dsResources, ui->dsSamplers, ui->dsCBuffers,
+                   ui->dsClasses);
+  clearShaderState(ui->psShader, ui->psShaderDebug, ui->psResources, ui->psSamplers, ui->psCBuffers,
+                   ui->psClasses);
+  clearShaderState(ui->csShader, ui->csShaderDebug, ui->csResources, ui->csSamplers, ui->csCBuffers,
+                   ui->csClasses);
 
   QToolButton *shaderButtons[] = {
       ui->vsShaderViewButton,   ui->hsShaderViewButton, ui->dsShaderViewButton,
@@ -982,253 +1194,38 @@ void D3D11PipelineStateViewer::clearState()
 
   ui->predicateGroup->setVisible(false);
 
-  {
-    ui->groupX->setEnabled(false);
-    ui->groupY->setEnabled(false);
-    ui->groupZ->setEnabled(false);
-
-    ui->threadX->setEnabled(false);
-    ui->threadY->setEnabled(false);
-    ui->threadZ->setEnabled(false);
-
-    ui->debugThread->setEnabled(false);
-  }
+  ui->computeDebugSelector->setEnabled(false);
 }
 
 void D3D11PipelineStateViewer::setShaderState(const D3D11Pipe::Shader &stage, RDLabel *shader,
-                                              RDTreeWidget *resources, RDTreeWidget *samplers,
-                                              RDTreeWidget *cbuffers, RDTreeWidget *classes)
+                                              RDLabel *shaderDebug, RDTreeWidget *resources,
+                                              RDTreeWidget *samplers, RDTreeWidget *cbuffers,
+                                              RDTreeWidget *classes)
 {
-  ShaderReflection *shaderDetails = stage.reflection;
-  const ShaderBindpointMapping &mapping = stage.bindpointMapping;
+  const ShaderReflection *shaderDetails = stage.reflection;
 
-  QString shText = ToQStr(stage.resourceId);
+  shader->setText(ToQStr(stage.resourceId));
 
   if(shaderDetails && !shaderDetails->debugInfo.files.empty())
   {
-    shText += QFormatStr(": %1() - %2")
-                  .arg(shaderDetails->entryPoint)
-                  .arg(QFileInfo(shaderDetails->debugInfo.files[0].filename).fileName());
+    const ShaderDebugInfo &dbg = shaderDetails->debugInfo;
+    int entryFile = qMax(0, dbg.entryLocation.fileIndex);
+
+    QString entryName = dbg.entrySourceName;
+    TruncateStringFromEnd(entryName);
+
+    QString filename = QFileInfo(dbg.files[entryFile].filename).fileName();
+    TruncateStringFromEnd(filename);
+
+    QString shText = QFormatStr("%1() - %2").arg(entryName).arg(filename);
+    shaderDebug->show();
+    shaderDebug->setText(shText);
   }
-
-  shader->setText(shText);
-
-  int vs = 0;
-
-  vs = resources->verticalScrollBar()->value();
-  resources->beginUpdate();
-  resources->clear();
-  for(int i = 0; i < stage.srvs.count(); i++)
+  else
   {
-    const ShaderResource *shaderInput = NULL;
-    const Bindpoint *map = NULL;
-
-    if(shaderDetails)
-    {
-      for(int b = 0; b < shaderDetails->readOnlyResources.count(); b++)
-      {
-        const ShaderResource &res = shaderDetails->readOnlyResources[b];
-        const Bindpoint &bind = mapping.readOnlyResources[b];
-
-        if(bind.bind == i)
-        {
-          shaderInput = &res;
-          map = &bind;
-          break;
-        }
-      }
-    }
-
-    addResourceRow(D3D11ViewTag(D3D11ViewTag::SRV, i, stage.srvs[i]), shaderInput, map, resources);
-  }
-  resources->clearSelection();
-  resources->endUpdate();
-  resources->verticalScrollBar()->setValue(vs);
-
-  vs = samplers->verticalScrollBar()->value();
-  samplers->beginUpdate();
-  samplers->clear();
-  for(int i = 0; i < stage.samplers.count(); i++)
-  {
-    const D3D11Pipe::Sampler &s = stage.samplers[i];
-
-    const ShaderSampler *shaderInput = NULL;
-    const Bindpoint *map = NULL;
-
-    if(shaderDetails)
-    {
-      for(int b = 0; b < shaderDetails->samplers.count(); b++)
-      {
-        const ShaderSampler &res = shaderDetails->samplers[b];
-        const Bindpoint &bind = mapping.samplers[b];
-
-        if(bind.bind == i)
-        {
-          shaderInput = &res;
-          map = &bind;
-          break;
-        }
-      }
-    }
-
-    bool filledSlot = s.resourceId != ResourceId();
-    bool usedSlot = (map && map->used);
-
-    if(showNode(usedSlot, filledSlot))
-    {
-      QString slotname = QString::number(i);
-
-      if(shaderInput && !shaderInput->name.empty())
-        slotname += lit(": ") + shaderInput->name;
-
-      QString borderColor = QFormatStr("%1, %2, %3, %4")
-                                .arg(s.borderColor[0])
-                                .arg(s.borderColor[1])
-                                .arg(s.borderColor[2])
-                                .arg(s.borderColor[3]);
-
-      QString addressing;
-
-      QString addPrefix;
-      QString addVal;
-
-      QString addr[] = {ToQStr(s.addressU, GraphicsAPI::D3D11),
-                        ToQStr(s.addressV, GraphicsAPI::D3D11),
-                        ToQStr(s.addressW, GraphicsAPI::D3D11)};
-
-      // arrange like either UVW: WRAP or UV: WRAP, W: CLAMP
-      for(int a = 0; a < 3; a++)
-      {
-        const QString str[] = {lit("U"), lit("V"), lit("W")};
-        QString prefix = str[a];
-
-        if(a == 0 || addr[a] == addr[a - 1])
-        {
-          addPrefix += prefix;
-        }
-        else
-        {
-          addressing += QFormatStr("%1: %2, ").arg(addPrefix).arg(addVal);
-
-          addPrefix = prefix;
-        }
-        addVal = addr[a];
-      }
-
-      addressing += addPrefix + lit(": ") + addVal;
-
-      if(s.UseBorder())
-        addressing += QFormatStr("<%1>").arg(borderColor);
-
-      QString filter = ToQStr(s.filter);
-
-      if(s.maxAnisotropy > 1)
-        filter += QFormatStr(" %1x").arg(s.maxAnisotropy);
-
-      if(s.filter.filter == FilterFunction::Comparison)
-        filter += QFormatStr(" (%1)").arg(ToQStr(s.compareFunction));
-      else if(s.filter.filter != FilterFunction::Normal)
-        filter += QFormatStr(" (%1)").arg(ToQStr(s.filter.filter));
-
-      RDTreeWidgetItem *node = new RDTreeWidgetItem(
-          {slotname, s.resourceId, addressing, filter,
-           QFormatStr("%1 - %2")
-               .arg(s.minLOD == -FLT_MAX ? lit("0") : QString::number(s.minLOD))
-               .arg(s.maxLOD == FLT_MAX ? lit("FLT_MAX") : QString::number(s.maxLOD)),
-           s.mipLODBias});
-
-      if(!filledSlot)
-        setEmptyRow(node);
-
-      if(!usedSlot)
-        setInactiveRow(node);
-
-      samplers->addTopLevelItem(node);
-    }
+    shaderDebug->hide();
   }
 
-  samplers->clearSelection();
-  samplers->endUpdate();
-  samplers->verticalScrollBar()->setValue(vs);
-
-  vs = cbuffers->verticalScrollBar()->value();
-  cbuffers->beginUpdate();
-  cbuffers->clear();
-  for(int i = 0; i < stage.constantBuffers.count(); i++)
-  {
-    const D3D11Pipe::ConstantBuffer &b = stage.constantBuffers[i];
-
-    const ConstantBlock *shaderCBuf = NULL;
-    const Bindpoint *map = NULL;
-
-    if(shaderDetails)
-    {
-      for(int cb = 0; cb < shaderDetails->constantBlocks.count(); cb++)
-      {
-        const ConstantBlock &cbuf = shaderDetails->constantBlocks[cb];
-        const Bindpoint &bind = mapping.constantBlocks[cb];
-
-        if(bind.bind == i)
-        {
-          shaderCBuf = &cbuf;
-          map = &bind;
-          break;
-        }
-      }
-    }
-
-    bool filledSlot = b.resourceId != ResourceId();
-    bool usedSlot = (map && map->used);
-
-    if(showNode(usedSlot, filledSlot))
-    {
-      ulong length = 0;
-      int numvars = shaderCBuf ? shaderCBuf->variables.count() : 0;
-      uint32_t bytesize = shaderCBuf ? shaderCBuf->byteSize : 0;
-
-      BufferDescription *buf = m_Ctx.GetBuffer(b.resourceId);
-
-      if(buf)
-        length = buf->length;
-
-      QString slotname = QString::number(i);
-
-      if(shaderCBuf && !shaderCBuf->name.empty())
-        slotname += lit(": ") + shaderCBuf->name;
-
-      QString sizestr;
-      if(bytesize == (uint32_t)length)
-        sizestr = tr("%1 Variables, %2 bytes").arg(numvars).arg(length);
-      else
-        sizestr =
-            tr("%1 Variables, %2 bytes needed, %3 provided").arg(numvars).arg(bytesize).arg(length);
-
-      if(length < bytesize)
-        filledSlot = false;
-
-      QString vecrange = QFormatStr("%1 - %2").arg(b.vecOffset).arg(b.vecOffset + b.vecCount);
-
-      RDTreeWidgetItem *node =
-          new RDTreeWidgetItem({slotname, b.resourceId, vecrange, sizestr, QString()});
-
-      node->setTag(QVariant::fromValue(i));
-
-      if(!filledSlot)
-        setEmptyRow(node);
-
-      if(!usedSlot)
-        setInactiveRow(node);
-
-      cbuffers->addTopLevelItem(node);
-    }
-  }
-  cbuffers->clearSelection();
-  cbuffers->endUpdate();
-  cbuffers->verticalScrollBar()->setValue(vs);
-
-  vs = classes->verticalScrollBar()->value();
-  classes->beginUpdate();
-  classes->clear();
   for(int i = 0; i < stage.classInstances.count(); i++)
   {
     QString interfaceName = lit("Interface %1").arg(i);
@@ -1238,11 +1235,6 @@ void D3D11PipelineStateViewer::setShaderState(const D3D11Pipe::Shader &stage, RD
 
     classes->addTopLevelItem(new RDTreeWidgetItem({i, interfaceName, stage.classInstances[i]}));
   }
-  classes->clearSelection();
-  classes->endUpdate();
-  classes->verticalScrollBar()->setValue(vs);
-
-  classes->parentWidget()->setVisible(!stage.classInstances.empty());
 }
 
 void D3D11PipelineStateViewer::setState()
@@ -1268,10 +1260,12 @@ void D3D11PipelineStateViewer::setState()
 
     if(state.inputAssembly.bytecode && !state.inputAssembly.bytecode->debugInfo.files.empty())
     {
-      layout +=
-          QFormatStr(": %1() - %2")
-              .arg(state.inputAssembly.bytecode->entryPoint)
-              .arg(QFileInfo(state.inputAssembly.bytecode->debugInfo.files[0].filename).fileName());
+      const ShaderDebugInfo &dbg = state.inputAssembly.bytecode->debugInfo;
+      int entryFile = qMax(0, dbg.entryLocation.fileIndex);
+
+      layout += QFormatStr(": %1() - %2")
+                    .arg(state.inputAssembly.bytecode->entryPoint)
+                    .arg(QFileInfo(dbg.files[entryFile].filename).fileName());
     }
 
     ui->iaBytecode->setText(layout);
@@ -1377,7 +1371,7 @@ void D3D11PipelineStateViewer::setState()
     int i = 0;
     for(const D3D11Pipe::Layout &l : state.inputAssembly.layouts)
     {
-      QString byteOffs = QString::number(l.byteOffset);
+      QString byteOffs = Formatter::HumanFormat(l.byteOffset, Formatter::OffsetSize);
 
       // D3D11 specific value
       if(l.byteOffset == ~0U)
@@ -1464,10 +1458,14 @@ void D3D11PipelineStateViewer::setState()
       if(buf)
         length = buf->length;
 
-      RDTreeWidgetItem *node = new RDTreeWidgetItem(
-          {tr("Index"), state.inputAssembly.indexBuffer.resourceId,
-           state.inputAssembly.indexBuffer.byteStride, state.inputAssembly.indexBuffer.byteOffset,
-           (qulonglong)length, QString()});
+      RDTreeWidgetItem *node = new RDTreeWidgetItem({
+          tr("Index"),
+          state.inputAssembly.indexBuffer.resourceId,
+          Formatter::HumanFormat(state.inputAssembly.indexBuffer.byteStride, Formatter::OffsetSize),
+          Formatter::HumanFormat(state.inputAssembly.indexBuffer.byteOffset, Formatter::OffsetSize),
+          Formatter::HumanFormat(length, Formatter::OffsetSize),
+          QString(),
+      });
 
       QString iformat;
 
@@ -1552,7 +1550,14 @@ void D3D11PipelineStateViewer::setState()
       RDTreeWidgetItem *node = NULL;
 
       if(filledSlot)
-        node = new RDTreeWidgetItem({i, v.resourceId, v.byteStride, v.byteOffset, length, QString()});
+        node = new RDTreeWidgetItem({
+            i,
+            v.resourceId,
+            Formatter::HumanFormat(v.byteStride, Formatter::OffsetSize),
+            Formatter::HumanFormat(v.byteOffset, Formatter::OffsetSize),
+            Formatter::HumanFormat(length, Formatter::OffsetSize),
+            QString(),
+        });
       else
         node =
             new RDTreeWidgetItem({i, tr("No Buffer Set"), lit("-"), lit("-"), lit("-"), QString()});
@@ -1582,19 +1587,6 @@ void D3D11PipelineStateViewer::setState()
   ui->iaBuffers->endUpdate();
   ui->iaBuffers->verticalScrollBar()->setValue(vs);
 
-  setShaderState(state.vertexShader, ui->vsShader, ui->vsResources, ui->vsSamplers, ui->vsCBuffers,
-                 ui->vsClasses);
-  setShaderState(state.geometryShader, ui->gsShader, ui->gsResources, ui->gsSamplers,
-                 ui->gsCBuffers, ui->gsClasses);
-  setShaderState(state.hullShader, ui->hsShader, ui->hsResources, ui->hsSamplers, ui->hsCBuffers,
-                 ui->hsClasses);
-  setShaderState(state.domainShader, ui->dsShader, ui->dsResources, ui->dsSamplers, ui->dsCBuffers,
-                 ui->dsClasses);
-  setShaderState(state.pixelShader, ui->psShader, ui->psResources, ui->psSamplers, ui->psCBuffers,
-                 ui->psClasses);
-  setShaderState(state.computeShader, ui->csShader, ui->csResources, ui->csSamplers, ui->csCBuffers,
-                 ui->csClasses);
-
   QToolButton *shaderButtons[] = {
       ui->vsShaderViewButton, ui->hsShaderViewButton, ui->dsShaderViewButton,
       ui->gsShaderViewButton, ui->psShaderViewButton, ui->csShaderViewButton,
@@ -1613,44 +1605,240 @@ void D3D11PipelineStateViewer::setState()
 
     b->setEnabled(stage->reflection != NULL);
 
-    m_Common.SetupShaderEditButton(b, ResourceId(), stage->resourceId, stage->bindpointMapping,
-                                   stage->reflection);
+    m_Common.SetupShaderEditButton(b, ResourceId(), stage->resourceId, stage->reflection);
   }
 
   ui->iaBytecodeViewButton->setEnabled(true);
 
-  vs = ui->csUAVs->verticalScrollBar()->value();
-  ui->csUAVs->beginUpdate();
-  ui->csUAVs->clear();
-  for(int i = 0; i < state.computeShader.uavs.count(); i++)
+  ////////////////////////////////////////////////
+  // Main iteration over descriptor storage
+
+  bool targets[32] = {};
+
   {
-    const ShaderResource *shaderInput = NULL;
-    const Bindpoint *map = NULL;
+    ScopedTreeUpdater restorers[] = {
+        // VS
+        ui->vsResources,
+        ui->vsSamplers,
+        ui->vsCBuffers,
+        ui->vsClasses,
+        // GS
+        ui->gsResources,
+        ui->gsSamplers,
+        ui->gsCBuffers,
+        ui->gsClasses,
+        // HS
+        ui->hsResources,
+        ui->hsSamplers,
+        ui->hsCBuffers,
+        ui->hsClasses,
+        // DS
+        ui->dsResources,
+        ui->dsSamplers,
+        ui->dsCBuffers,
+        ui->dsClasses,
+        // PS
+        ui->psResources,
+        ui->psSamplers,
+        ui->psCBuffers,
+        ui->psClasses,
+        // CS
+        ui->csResources,
+        ui->csSamplers,
+        ui->csCBuffers,
+        ui->csClasses,
+        ui->csUAVs,
+        // OM - we handle this here since it overlaps with the shader-based UAVs
+        ui->targetOutputs,
+    };
 
-    const D3D11Pipe::Shader &cs = state.computeShader;
-
-    if(cs.reflection)
+    rdcarray<Descriptor> outputs = m_Ctx.CurPipelineState().GetOutputTargets();
+    for(uint32_t i = 0; i < outputs.size(); i++)
     {
-      for(int b = 0; b < cs.reflection->readWriteResources.count(); b++)
-      {
-        const ShaderResource &res = cs.reflection->readWriteResources[b];
-        const Bindpoint &bind = cs.bindpointMapping.readWriteResources[b];
+      addResourceRow(D3D11ViewTag(D3D11ViewTag::OMTarget, i, outputs[i]), NULL, false,
+                     ui->targetOutputs);
 
-        if(bind.bind == i)
+      if(outputs[i].resource != ResourceId())
+        targets[i] = true;
+    }
+
+    setShaderState(state.vertexShader, ui->vsShader, ui->vsShaderDebug, ui->vsResources,
+                   ui->vsSamplers, ui->vsCBuffers, ui->vsClasses);
+    setShaderState(state.geometryShader, ui->gsShader, ui->gsShaderDebug, ui->gsResources,
+                   ui->gsSamplers, ui->gsCBuffers, ui->gsClasses);
+    setShaderState(state.hullShader, ui->hsShader, ui->hsShaderDebug, ui->hsResources,
+                   ui->hsSamplers, ui->hsCBuffers, ui->hsClasses);
+    setShaderState(state.domainShader, ui->dsShader, ui->dsShaderDebug, ui->dsResources,
+                   ui->dsSamplers, ui->dsCBuffers, ui->dsClasses);
+    setShaderState(state.pixelShader, ui->psShader, ui->psShaderDebug, ui->psResources,
+                   ui->psSamplers, ui->psCBuffers, ui->psClasses);
+    setShaderState(state.computeShader, ui->csShader, ui->csShaderDebug, ui->csResources,
+                   ui->csSamplers, ui->csCBuffers, ui->csClasses);
+
+    const ShaderReflection *shaderRefls[NumShaderStages];
+    RDTreeWidget *resources[] = {
+        ui->vsResources, ui->hsResources, ui->dsResources,
+        ui->gsResources, ui->psResources, ui->csResources,
+    };
+    RDTreeWidget *samplers[] = {
+        ui->vsSamplers, ui->hsSamplers, ui->dsSamplers,
+        ui->gsSamplers, ui->psSamplers, ui->csSamplers,
+    };
+    RDTreeWidget *cbuffers[] = {
+        ui->vsCBuffers, ui->hsCBuffers, ui->dsCBuffers,
+        ui->gsCBuffers, ui->psCBuffers, ui->csCBuffers,
+    };
+
+    for(ShaderStage stage : values<ShaderStage>())
+      shaderRefls[(uint32_t)stage] = m_Ctx.CurPipelineState().GetShaderReflection(stage);
+
+    for(uint32_t i = 0; i < m_Locations.size(); i++)
+    {
+      // expect only one stage per location
+      ShaderStage stage = FirstStageForMask(m_Locations[i].stageMask);
+      uint32_t reg = m_Locations[i].fixedBindNumber;
+
+      bool usedSlot = false;
+
+      if(m_Locations[i].category == DescriptorCategory::ConstantBlock)
+      {
+        const ConstantBlock *shaderBind = NULL;
+
+        if(shaderRefls[(uint32_t)stage])
         {
-          shaderInput = &res;
-          map = &bind;
-          break;
+          for(int b = 0; b < shaderRefls[(uint32_t)stage]->constantBlocks.count(); b++)
+          {
+            const ConstantBlock &res = shaderRefls[(uint32_t)stage]->constantBlocks[b];
+
+            if(res.fixedBindNumber == reg)
+            {
+              shaderBind = &res;
+              usedSlot = HasAccess(stage, m_Locations[i].category, b);
+              break;
+            }
+          }
+        }
+
+        Descriptor b = m_Descriptors[i];
+
+        addCBufferRow(b, reg, shaderBind, usedSlot, cbuffers[(uint32_t)stage]);
+      }
+      else if(m_Locations[i].category == DescriptorCategory::Sampler)
+      {
+        const ShaderSampler *shaderBind = NULL;
+
+        if(shaderRefls[(uint32_t)stage])
+        {
+          for(int b = 0; b < shaderRefls[(uint32_t)stage]->samplers.count(); b++)
+          {
+            const ShaderSampler &res = shaderRefls[(uint32_t)stage]->samplers[b];
+
+            if(res.fixedBindNumber == reg)
+            {
+              shaderBind = &res;
+              usedSlot = HasAccess(stage, m_Locations[i].category, b);
+              break;
+            }
+          }
+        }
+
+        addSamplerRow(m_SamplerDescriptors[i], reg, shaderBind, usedSlot, samplers[(uint32_t)stage]);
+      }
+      else if(m_Locations[i].category == DescriptorCategory::ReadOnlyResource)
+      {
+        const ShaderResource *shaderBind = NULL;
+
+        if(shaderRefls[(uint32_t)stage])
+        {
+          for(int b = 0; b < shaderRefls[(uint32_t)stage]->readOnlyResources.count(); b++)
+          {
+            const ShaderResource &res = shaderRefls[(uint32_t)stage]->readOnlyResources[b];
+
+            if(res.fixedBindNumber == reg)
+            {
+              shaderBind = &res;
+              usedSlot = HasAccess(stage, m_Locations[i].category, b);
+              break;
+            }
+          }
+        }
+
+        addResourceRow(D3D11ViewTag(D3D11ViewTag::SRV, reg, m_Descriptors[i]), shaderBind, usedSlot,
+                       resources[(uint32_t)stage]);
+      }
+      else if(m_Locations[i].category == DescriptorCategory::ReadWriteResource)
+      {
+        const ShaderResource *shaderBind = NULL;
+
+        if(stage == ShaderStage::Compute)
+        {
+          if(shaderRefls[(uint32_t)stage])
+          {
+            for(int b = 0; b < shaderRefls[(uint32_t)stage]->readWriteResources.count(); b++)
+            {
+              const ShaderResource &res = shaderRefls[(uint32_t)stage]->readWriteResources[b];
+
+              if(res.fixedBindNumber == reg)
+              {
+                shaderBind = &res;
+                usedSlot = HasAccess(stage, m_Locations[i].category, b);
+                break;
+              }
+            }
+          }
+
+          addResourceRow(D3D11ViewTag(D3D11ViewTag::UAV, reg, m_Descriptors[i]), shaderBind,
+                         usedSlot, ui->csUAVs);
+        }
+        else
+        {
+          // skip any descriptors from before the first valid OM UAV
+          if(reg < state.outputMerger.uavStartSlot)
+            continue;
+
+          // only iterate UAV descriptors from the pixel shader stage - they will be duplicated
+          // per-stage and below we iterate over every stage
+          if(stage != ShaderStage::Pixel)
+            continue;
+
+          // any non-CS shader can use these. When that's not supported (Before feature level 11.1)
+          // this search will just boil down to only PS.
+          // When multiple stages use the UAV, we allow the last stage to 'win' and define its type,
+          // although it would be very surprising if the types were actually different anyway.
+          for(const ShaderReflection *refl : shaderRefls)
+          {
+            if(refl && refl->stage != ShaderStage::Compute)
+            {
+              for(int b = 0; b < refl->readWriteResources.count(); b++)
+              {
+                const ShaderResource &res = refl->readWriteResources[b];
+
+                if(res.fixedBindNumber == reg)
+                {
+                  shaderBind = &res;
+                  usedSlot = HasAccess(stage, m_Locations[i].category, b);
+                  break;
+                }
+              }
+            }
+          }
+
+          addResourceRow(D3D11ViewTag(D3D11ViewTag::UAV, reg, m_Descriptors[i]), shaderBind,
+                         usedSlot, ui->targetOutputs);
         }
       }
     }
 
-    addResourceRow(D3D11ViewTag(D3D11ViewTag::UAV, i, state.computeShader.uavs[i]), shaderInput,
-                   map, ui->csUAVs);
+    addResourceRow(D3D11ViewTag(D3D11ViewTag::OMDepth, 0, m_Ctx.CurPipelineState().GetDepthTarget()),
+                   NULL, true, ui->targetOutputs);
+
+    ui->vsClasses->parentWidget()->setVisible(ui->vsClasses->topLevelItemCount() > 0);
+    ui->hsClasses->parentWidget()->setVisible(ui->hsClasses->topLevelItemCount() > 0);
+    ui->dsClasses->parentWidget()->setVisible(ui->dsClasses->topLevelItemCount() > 0);
+    ui->gsClasses->parentWidget()->setVisible(ui->gsClasses->topLevelItemCount() > 0);
+    ui->psClasses->parentWidget()->setVisible(ui->psClasses->topLevelItemCount() > 0);
+    ui->csClasses->parentWidget()->setVisible(ui->csClasses->topLevelItemCount() > 0);
   }
-  ui->csUAVs->clearSelection();
-  ui->csUAVs->endUpdate();
-  ui->csUAVs->verticalScrollBar()->setValue(vs);
 
   bool streamoutSet = false;
   vs = ui->gsStreamOut->verticalScrollBar()->value();
@@ -1671,8 +1859,13 @@ void D3D11PipelineStateViewer::setState()
       if(buf)
         length = buf->length;
 
-      RDTreeWidgetItem *node =
-          new RDTreeWidgetItem({i, s.resourceId, length, s.byteOffset, QString()});
+      RDTreeWidgetItem *node = new RDTreeWidgetItem({
+          i,
+          s.resourceId,
+          Formatter::HumanFormat(length, Formatter::OffsetSize),
+          Formatter::HumanFormat(s.byteOffset, Formatter::OffsetSize),
+          QString(),
+      });
 
       node->setTag(QVariant::fromValue(s.resourceId));
 
@@ -1783,78 +1976,30 @@ void D3D11PipelineStateViewer::setState()
   ////////////////////////////////////////////////
   // Output Merger
 
-  bool targets[32] = {};
-
-  vs = ui->targetOutputs->verticalScrollBar()->value();
-  ui->targetOutputs->beginUpdate();
-  ui->targetOutputs->clear();
-  {
-    for(int i = 0; i < state.outputMerger.renderTargets.count(); i++)
-    {
-      addResourceRow(D3D11ViewTag(D3D11ViewTag::OMTarget, i, state.outputMerger.renderTargets[i]),
-                     NULL, NULL, ui->targetOutputs);
-
-      if(state.outputMerger.renderTargets[i].resourceResourceId != ResourceId())
-        targets[i] = true;
-    }
-
-    for(int i = 0; i < state.outputMerger.uavs.count(); i++)
-    {
-      const ShaderResource *shaderInput = NULL;
-      const Bindpoint *map = NULL;
-
-      // any non-CS shader can use these. When that's not supported (Before feature level 11.1)
-      // this search will just boil down to only PS.
-      // When multiple stages use the UAV, we allow the last stage to 'win' and define its type,
-      // although it would be very surprising if the types were actually different anyway.
-      const D3D11Pipe::Shader *nonCS[] = {&state.vertexShader, &state.domainShader, &state.hullShader,
-                                          &state.geometryShader, &state.pixelShader};
-      for(const D3D11Pipe::Shader *stage : nonCS)
-      {
-        if(stage->reflection)
-        {
-          for(int b = 0; b < stage->reflection->readWriteResources.count(); b++)
-          {
-            const ShaderResource &res = stage->reflection->readWriteResources[b];
-            const Bindpoint &bind = stage->bindpointMapping.readWriteResources[b];
-
-            if(bind.bind == i + (int)state.outputMerger.uavStartSlot)
-            {
-              shaderInput = &res;
-              map = &bind;
-              break;
-            }
-          }
-        }
-      }
-      addResourceRow(D3D11ViewTag(D3D11ViewTag::UAV, i + (int)state.outputMerger.uavStartSlot,
-                                  state.outputMerger.uavs[i]),
-                     shaderInput, map, ui->targetOutputs);
-    }
-
-    addResourceRow(D3D11ViewTag(D3D11ViewTag::OMDepth, 0, state.outputMerger.depthTarget), NULL,
-                   NULL, ui->targetOutputs);
-  }
-  ui->targetOutputs->clearSelection();
-  ui->targetOutputs->endUpdate();
-  ui->targetOutputs->verticalScrollBar()->setValue(vs);
-
   vs = ui->blends->verticalScrollBar()->value();
   ui->blends->beginUpdate();
   ui->blends->clear();
   {
+    bool independent = state.outputMerger.blendState.independentBlend;
     int i = 0;
     for(const ColorBlend &blend : state.outputMerger.blendState.blends)
     {
-      bool filledSlot = (blend.enabled || targets[i]);
+      bool filledSlot = true;
       bool usedSlot = (targets[i]);
+
+      if(!independent)
+        usedSlot = i == 0;
 
       if(showNode(usedSlot, filledSlot))
       {
         RDTreeWidgetItem *node = NULL;
 
+        QString slotName = QString::number(i);
+        if(!independent)
+          slotName = i == 0 ? tr("All") : lit("-");
+
         node = new RDTreeWidgetItem(
-            {i, blend.enabled ? tr("True") : tr("False"),
+            {slotName, blend.enabled ? tr("True") : tr("False"),
 
              ToQStr(blend.colorBlend.source), ToQStr(blend.colorBlend.destination),
              ToQStr(blend.colorBlend.operation),
@@ -1869,9 +2014,6 @@ void D3D11PipelineStateViewer::setState()
                  .arg((blend.writeMask & 0x2) == 0 ? lit("_") : lit("G"))
                  .arg((blend.writeMask & 0x4) == 0 ? lit("_") : lit("B"))
                  .arg((blend.writeMask & 0x8) == 0 ? lit("_") : lit("A"))});
-
-        if(!filledSlot)
-          setEmptyRow(node);
 
         if(!usedSlot)
           setInactiveRow(node);
@@ -1904,8 +2046,17 @@ void D3D11PipelineStateViewer::setState()
   {
     ui->depthEnabled->setPixmap(tick);
     ui->depthFunc->setText(ToQStr(state.outputMerger.depthStencilState.depthFunction));
-    ui->depthWrite->setPixmap(state.outputMerger.depthStencilState.depthWrites ? tick : cross);
-    ui->depthWrite->setText(QString());
+
+    if(state.outputMerger.depthReadOnly)
+    {
+      ui->depthWrite->setPixmap(QPixmap());
+      ui->depthWrite->setText(tr("Read-Only DSV"));
+    }
+    else
+    {
+      ui->depthWrite->setPixmap(state.outputMerger.depthStencilState.depthWrites ? tick : cross);
+      ui->depthWrite->setText(QString());
+    }
   }
   else
   {
@@ -1918,8 +2069,18 @@ void D3D11PipelineStateViewer::setState()
   ui->stencilEnabled->setPixmap(state.outputMerger.depthStencilState.stencilEnable ? tick : cross);
   m_Common.SetStencilLabelValue(
       ui->stencilReadMask, (uint8_t)state.outputMerger.depthStencilState.frontFace.compareMask);
-  m_Common.SetStencilLabelValue(ui->stencilWriteMask,
-                                (uint8_t)state.outputMerger.depthStencilState.frontFace.writeMask);
+
+  if(state.outputMerger.stencilReadOnly)
+  {
+    ui->stencilWriteMask->setText(tr("Read-Only DSV"));
+    ui->stencilWriteMask->setToolTip(QString());
+  }
+  else
+  {
+    m_Common.SetStencilLabelValue(
+        ui->stencilWriteMask, (uint8_t)state.outputMerger.depthStencilState.frontFace.writeMask);
+  }
+
   m_Common.SetStencilLabelValue(ui->stencilRef,
                                 (uint8_t)state.outputMerger.depthStencilState.frontFace.reference);
 
@@ -1939,61 +2100,54 @@ void D3D11PipelineStateViewer::setState()
   ui->stencils->endUpdate();
 
   // set up thread debugging inputs
-  if(m_Ctx.APIProps().shaderDebugging && state.computeShader.reflection &&
-     state.computeShader.reflection->debugInfo.debuggable && action &&
-     (action->flags & ActionFlags::Dispatch))
+  bool enableDebug = m_Ctx.APIProps().shaderDebugging && state.computeShader.reflection &&
+                     state.computeShader.reflection->debugInfo.debuggable && action &&
+                     (action->flags & ActionFlags::Dispatch);
+  if(enableDebug)
   {
-    ui->groupX->setEnabled(true);
-    ui->groupY->setEnabled(true);
-    ui->groupZ->setEnabled(true);
+    // Validate dispatch/threadgroup dimensions
+    enableDebug &= action->dispatchDimension[0] > 0;
+    enableDebug &= action->dispatchDimension[1] > 0;
+    enableDebug &= action->dispatchDimension[2] > 0;
 
-    ui->threadX->setEnabled(true);
-    ui->threadY->setEnabled(true);
-    ui->threadZ->setEnabled(true);
+    const rdcfixedarray<uint32_t, 3> &threadDims =
+        (action->dispatchThreadsDimension[0] == 0)
+            ? state.computeShader.reflection->dispatchThreadsDimension
+            : action->dispatchThreadsDimension;
+    enableDebug &= threadDims[0] > 0;
+    enableDebug &= threadDims[1] > 0;
+    enableDebug &= threadDims[2] > 0;
+  }
 
-    ui->debugThread->setEnabled(true);
+  if(enableDebug)
+  {
+    ui->computeDebugSelector->setEnabled(true);
 
     // set maximums for CS debugging
-    ui->groupX->setMaximum((int)action->dispatchDimension[0] - 1);
-    ui->groupY->setMaximum((int)action->dispatchDimension[1] - 1);
-    ui->groupZ->setMaximum((int)action->dispatchDimension[2] - 1);
+    m_ComputeDebugSelector->SetThreadBounds(
+        action->dispatchDimension, (action->dispatchThreadsDimension[0] == 0)
+                                       ? state.computeShader.reflection->dispatchThreadsDimension
+                                       : action->dispatchThreadsDimension);
 
-    if(action->dispatchThreadsDimension[0] == 0)
-    {
-      ui->threadX->setMaximum((int)state.computeShader.reflection->dispatchThreadsDimension[0] - 1);
-      ui->threadY->setMaximum((int)state.computeShader.reflection->dispatchThreadsDimension[1] - 1);
-      ui->threadZ->setMaximum((int)state.computeShader.reflection->dispatchThreadsDimension[2] - 1);
-    }
-    else
-    {
-      ui->threadX->setMaximum((int)action->dispatchThreadsDimension[0] - 1);
-      ui->threadY->setMaximum((int)action->dispatchThreadsDimension[1] - 1);
-      ui->threadZ->setMaximum((int)action->dispatchThreadsDimension[2] - 1);
-    }
-
-    ui->debugThread->setToolTip(QString());
+    ui->computeDebugSelector->setToolTip(
+        tr("Debug this compute shader by specifying group/thread ID or dispatch ID"));
   }
   else
   {
-    ui->groupX->setEnabled(false);
-    ui->groupY->setEnabled(false);
-    ui->groupZ->setEnabled(false);
-
-    ui->threadX->setEnabled(false);
-    ui->threadY->setEnabled(false);
-    ui->threadZ->setEnabled(false);
-
-    ui->debugThread->setEnabled(false);
+    ui->computeDebugSelector->setEnabled(false);
 
     if(!m_Ctx.APIProps().shaderDebugging)
-      ui->debugThread->setToolTip(tr("This API does not support shader debugging"));
+      ui->computeDebugSelector->setToolTip(tr("This API does not support shader debugging"));
     else if(!action || !(action->flags & ActionFlags::Dispatch))
-      ui->debugThread->setToolTip(tr("No dispatch selected"));
+      ui->computeDebugSelector->setToolTip(tr("No dispatch selected"));
     else if(!state.computeShader.reflection)
-      ui->debugThread->setToolTip(tr("No compute shader bound"));
+      ui->computeDebugSelector->setToolTip(tr("No compute shader bound"));
     else if(!state.computeShader.reflection->debugInfo.debuggable)
-      ui->debugThread->setToolTip(tr("This shader doesn't support debugging: %1")
-                                      .arg(state.computeShader.reflection->debugInfo.debugStatus));
+      ui->computeDebugSelector->setToolTip(
+          tr("This shader doesn't support debugging: %1")
+              .arg(state.computeShader.reflection->debugInfo.debugStatus));
+    else
+      ui->computeDebugSelector->setToolTip(tr("Invalid dispatch/threadgroup dimensions."));
   }
 
   // highlight the appropriate stages in the flowchart
@@ -2057,9 +2211,9 @@ void D3D11PipelineStateViewer::resource_itemActivated(RDTreeWidgetItem *item, in
   else if(tag.canConvert<D3D11ViewTag>())
   {
     D3D11ViewTag view = tag.value<D3D11ViewTag>();
-    tex = m_Ctx.GetTexture(view.res.resourceResourceId);
-    buf = m_Ctx.GetBuffer(view.res.resourceResourceId);
-    typeCast = view.res.viewFormat.compType;
+    tex = m_Ctx.GetTexture(view.desc.resource);
+    buf = m_Ctx.GetBuffer(view.desc.resource);
+    typeCast = view.desc.format.compType;
   }
 
   if(tex)
@@ -2085,7 +2239,7 @@ void D3D11PipelineStateViewer::resource_itemActivated(RDTreeWidgetItem *item, in
   {
     D3D11ViewTag view;
 
-    view.res.resourceResourceId = buf->resourceId;
+    view.desc.resource = buf->resourceId;
 
     if(tag.canConvert<D3D11ViewTag>())
       view = tag.value<D3D11ViewTag>();
@@ -2093,10 +2247,10 @@ void D3D11PipelineStateViewer::resource_itemActivated(RDTreeWidgetItem *item, in
     uint64_t offs = 0;
     uint64_t size = buf->length;
 
-    if(view.res.resourceResourceId != ResourceId())
+    if(view.desc.resource != ResourceId())
     {
-      offs = uint64_t(view.res.firstElement) * view.res.elementByteSize;
-      size = uint64_t(view.res.numElements) * view.res.elementByteSize;
+      offs = view.desc.byteOffset;
+      size = view.desc.byteSize;
     }
     else
     {
@@ -2120,7 +2274,7 @@ void D3D11PipelineStateViewer::resource_itemActivated(RDTreeWidgetItem *item, in
 
     const ShaderResource *shaderRes = NULL;
 
-    int bind = view.index;
+    uint32_t reg = view.index;
 
     // for OM UAVs these can be bound to any non-CS stage, so make sure
     // we have the right shader details for it.
@@ -2135,15 +2289,13 @@ void D3D11PipelineStateViewer::resource_itemActivated(RDTreeWidgetItem *item, in
       const D3D11Pipe::Shader *nonCS[] = {&state.vertexShader, &state.domainShader, &state.hullShader,
                                           &state.geometryShader, &state.pixelShader};
 
-      bind += state.outputMerger.uavStartSlot;
-
       for(const D3D11Pipe::Shader *searchstage : nonCS)
       {
         if(searchstage->reflection)
         {
           for(const ShaderResource &res : searchstage->reflection->readWriteResources)
           {
-            if(!res.isTexture && res.bindPoint == bind)
+            if(!res.isTexture && res.fixedBindNumber == reg)
             {
               stage = searchstage;
               break;
@@ -2159,14 +2311,9 @@ void D3D11PipelineStateViewer::resource_itemActivated(RDTreeWidgetItem *item, in
                                                      ? stage->reflection->readOnlyResources
                                                      : stage->reflection->readWriteResources;
 
-      const rdcarray<Bindpoint> &bindArray = view.type == D3D11ViewTag::SRV
-                                                 ? stage->bindpointMapping.readOnlyResources
-                                                 : stage->bindpointMapping.readWriteResources;
-
       for(const ShaderResource &res : resArray)
       {
-        if(!res.isTexture && res.bindPoint < bindArray.count() &&
-           bindArray[res.bindPoint].bind == bind)
+        if(!res.isTexture && res.fixedBindNumber == reg)
         {
           shaderRes = &res;
           break;
@@ -2176,13 +2323,14 @@ void D3D11PipelineStateViewer::resource_itemActivated(RDTreeWidgetItem *item, in
 
     if(shaderRes)
     {
-      format = BufferFormatter::GetBufferFormatString(*shaderRes, view.res.viewFormat, offs);
+      format = BufferFormatter::GetBufferFormatString(PackingRules::D3DUAV(), stage->resourceId,
+                                                      *shaderRes, view.desc.format);
 
-      if(view.res.bufferFlags & D3DBufferViewFlags::Raw)
+      if(view.desc.flags & DescriptorFlags::RawBuffer)
         format = lit("xint");
     }
 
-    IBufferViewer *viewer = m_Ctx.ViewBuffer(offs, size, view.res.resourceResourceId, format);
+    IBufferViewer *viewer = m_Ctx.ViewBuffer(offs, size, view.desc.resource, format);
 
     m_Ctx.AddDockWindow(viewer->Widget(), DockReference::AddTo, this);
   }
@@ -2197,38 +2345,30 @@ void D3D11PipelineStateViewer::cbuffer_itemActivated(RDTreeWidgetItem *item, int
 
   QVariant tag = item->tag();
 
-  if(!tag.canConvert<int>())
+  if(!tag.canConvert<uint32_t>())
     return;
 
-  int cb = tag.value<int>();
+  uint32_t reg = tag.value<uint32_t>();
 
-  int cbufIdx = -1;
-
-  for(int i = 0; i < stage->bindpointMapping.constantBlocks.count(); i++)
+  uint32_t index = ~0U;
+  if(stage->reflection)
   {
-    if(stage->bindpointMapping.constantBlocks[i].bind == cb)
-    {
-      cbufIdx = i;
-      break;
-    }
+    for(uint32_t i = 0; i < stage->reflection->constantBlocks.size(); i++)
+      if(stage->reflection->constantBlocks[i].fixedBindNumber == reg)
+        index = i;
   }
 
-  if(cbufIdx == -1)
+  if(index == ~0U)
   {
-    // unused cbuffer, open regular buffer viewer
-    if(cb >= stage->constantBuffers.count())
-      return;
+    const Descriptor &desc = FindDescriptor(stage->stage, DescriptorCategory::ConstantBlock, reg);
 
-    const D3D11Pipe::ConstantBuffer &bind = stage->constantBuffers[cb];
-
-    IBufferViewer *viewer = m_Ctx.ViewBuffer(bind.vecOffset * sizeof(float) * 4,
-                                             bind.vecCount * sizeof(float) * 4, bind.resourceId);
+    IBufferViewer *viewer = m_Ctx.ViewBuffer(desc.byteOffset, desc.byteSize, desc.resource);
 
     m_Ctx.AddDockWindow(viewer->Widget(), DockReference::AddTo, this);
     return;
   }
 
-  IConstantBufferPreviewer *prev = m_Ctx.ViewConstantBuffer(stage->stage, cbufIdx, 0);
+  IBufferViewer *prev = m_Ctx.ViewConstantBuffer(stage->stage, index, 0);
 
   m_Ctx.AddDockWindow(prev->Widget(), DockReference::TransientPopupArea, this, 0.3f);
 }
@@ -2379,7 +2519,7 @@ void D3D11PipelineStateViewer::vertex_leave(QEvent *e)
 
 void D3D11PipelineStateViewer::shaderView_clicked()
 {
-  ShaderReflection *shaderDetails = NULL;
+  const ShaderReflection *shaderDetails = NULL;
 
   QWidget *sender = qobject_cast<QWidget *>(QObject::sender());
   if(sender == ui->iaBytecode || sender == ui->iaBytecodeViewButton)
@@ -2411,7 +2551,7 @@ void D3D11PipelineStateViewer::shaderSave_clicked()
   if(stage == NULL)
     return;
 
-  ShaderReflection *shaderDetails = stage->reflection;
+  const ShaderReflection *shaderDetails = stage->reflection;
 
   if(stage->resourceId == ResourceId())
     return;
@@ -2419,8 +2559,8 @@ void D3D11PipelineStateViewer::shaderSave_clicked()
   m_Common.SaveShaderFile(shaderDetails);
 }
 
-QVariantList D3D11PipelineStateViewer::exportViewHTML(const D3D11Pipe::View &view, int i,
-                                                      ShaderReflection *refl,
+QVariantList D3D11PipelineStateViewer::exportViewHTML(const Descriptor &view, uint32_t reg,
+                                                      const ShaderReflection *refl,
                                                       const QString &extraParams)
 {
   const ShaderResource *shaderInput = NULL;
@@ -2431,7 +2571,7 @@ QVariantList D3D11PipelineStateViewer::exportViewHTML(const D3D11Pipe::View &vie
   {
     for(const ShaderResource &bind : refl->readOnlyResources)
     {
-      if(bind.bindPoint == i)
+      if(bind.fixedBindNumber == reg)
       {
         shaderInput = &bind;
         break;
@@ -2439,7 +2579,7 @@ QVariantList D3D11PipelineStateViewer::exportViewHTML(const D3D11Pipe::View &vie
     }
     for(const ShaderResource &bind : refl->readWriteResources)
     {
-      if(bind.bindPoint == i)
+      if(bind.fixedBindNumber == reg)
       {
         shaderInput = &bind;
         rw = true;
@@ -2448,19 +2588,18 @@ QVariantList D3D11PipelineStateViewer::exportViewHTML(const D3D11Pipe::View &vie
     }
   }
 
-  QString name = view.resourceResourceId == ResourceId()
-                     ? tr("Empty")
-                     : QString(m_Ctx.GetResourceName(view.resourceResourceId));
+  QString name =
+      view.resource == ResourceId() ? tr("Empty") : QString(m_Ctx.GetResourceName(view.resource));
   QString typeName = tr("Unknown");
   QString format = tr("Unknown");
   uint64_t w = 1;
   uint32_t h = 1, d = 1;
   uint32_t a = 0;
 
-  QString viewFormat = view.viewFormat.Name();
+  QString viewFormat = view.format.Name();
 
-  TextureDescription *tex = m_Ctx.GetTexture(view.resourceResourceId);
-  BufferDescription *buf = m_Ctx.GetBuffer(view.resourceResourceId);
+  TextureDescription *tex = m_Ctx.GetTexture(view.resource);
+  BufferDescription *buf = m_Ctx.GetBuffer(view.resource);
 
   QString viewParams;
 
@@ -2492,10 +2631,10 @@ QVariantList D3D11PipelineStateViewer::exportViewHTML(const D3D11Pipe::View &vie
     h = 0;
     d = 0;
     a = 0;
-    format = view.viewFormat.Name();
+    format = view.format.Name();
     typeName = lit("Buffer");
 
-    if(view.bufferFlags & D3DBufferViewFlags::Raw)
+    if(view.flags & DescriptorFlags::RawBuffer)
     {
       typeName = rw ? lit("RWByteAddressBuffer") : lit("ByteAddressBuffer");
     }
@@ -2507,30 +2646,30 @@ QVariantList D3D11PipelineStateViewer::exportViewHTML(const D3D11Pipe::View &vie
                      .arg(buf->length / view.elementByteSize);
     }
 
-    if(view.bufferFlags & D3DBufferViewFlags::Append || view.bufferFlags & D3DBufferViewFlags::Counter)
+    if(view.flags & DescriptorFlags::AppendBuffer || view.flags & DescriptorFlags::CounterBuffer)
     {
       typeName += tr(" (Count: %1)").arg(view.bufferStructCount);
     }
 
     if(shaderInput && !shaderInput->isTexture)
     {
-      if(view.viewFormat.compType == CompType::Typeless)
+      if(view.format.compType == CompType::Typeless)
       {
-        if(!shaderInput->variableType.members.isEmpty())
-          viewFormat = format = lit("struct ") + shaderInput->variableType.descriptor.name;
+        if(shaderInput->variableType.baseType == VarType::Struct)
+          viewFormat = format = lit("struct ") + shaderInput->variableType.name;
         else
-          viewFormat = format = shaderInput->variableType.descriptor.name;
+          viewFormat = format = shaderInput->variableType.name;
       }
       else
       {
-        format = view.viewFormat.Name();
+        format = view.format.Name();
       }
     }
 
-    viewParams = tr("First Element: %1, Num Elements %2, Flags %3")
-                     .arg(view.firstElement)
-                     .arg(view.numElements)
-                     .arg(ToQStr(view.bufferFlags));
+    viewParams = tr("Byte Offset: %1, Byte Size %2, Flags %3")
+                     .arg(view.byteOffset)
+                     .arg(view.byteSize)
+                     .arg(ToQStr(view.flags));
   }
 
   if(viewParams.isEmpty())
@@ -2538,8 +2677,8 @@ QVariantList D3D11PipelineStateViewer::exportViewHTML(const D3D11Pipe::View &vie
   else
     viewParams += lit(", ") + extraParams;
 
-  return {i, name, ToQStr(view.type), typeName, (qulonglong)w, h,
-          d, a,    viewFormat,        format,   viewParams};
+  return {reg,    name,      ToQStr(view.textureType), typeName, (qulonglong)w, h, d, a, viewFormat,
+          format, viewParams};
 }
 
 void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe::InputAssembly &ia)
@@ -2563,8 +2702,9 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
     }
 
     m_Common.exportHTMLTable(
-        xml, {tr("Slot"), tr("Semantic Name"), tr("Semantic Index"), tr("Format"), tr("Input Slot"),
-              tr("Byte Offset"), tr("Per Instance"), tr("Instance Data Step Rate")},
+        xml,
+        {tr("Slot"), tr("Semantic Name"), tr("Semantic Index"), tr("Format"), tr("Input Slot"),
+         tr("Byte Offset"), tr("Per Instance"), tr("Instance Data Step Rate")},
         rows);
   }
 
@@ -2638,7 +2778,7 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
 
 void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe::Shader &sh)
 {
-  ShaderReflection *shaderDetails = sh.reflection;
+  const ShaderReflection *shaderDetails = sh.reflection;
 
   {
     xml.writeStartElement(lit("h3"));
@@ -2654,9 +2794,12 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
 
     if(shaderDetails && !shaderDetails->debugInfo.files.isEmpty())
     {
+      const ShaderDebugInfo &dbg = shaderDetails->debugInfo;
+      int entryFile = qMax(0, dbg.entryLocation.fileIndex);
+
       shadername = QFormatStr("%1() - %2")
                        .arg(shaderDetails->entryPoint)
-                       .arg(QFileInfo(shaderDetails->debugInfo.files[0].filename).fileName());
+                       .arg(QFileInfo(dbg.files[entryFile].filename).fileName());
     }
 
     xml.writeStartElement(lit("p"));
@@ -2674,19 +2817,35 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
 
     QList<QVariantList> rows;
 
-    for(int i = 0; i < sh.srvs.count(); i++)
+    // do a plain search here, this is not super efficient but it's simpler
+    for(uint32_t i = 0; i < m_Locations.size(); i++)
     {
-      if(sh.srvs[i].viewResourceId == ResourceId())
+      if(!(m_Locations[i].stageMask & MaskForStage(sh.stage)))
         continue;
 
-      rows.push_back(exportViewHTML(sh.srvs[i], i, shaderDetails, QString()));
+      if(m_Locations[i].category != DescriptorCategory::ReadOnlyResource)
+        continue;
+
+      if(m_Descriptors[i].view == ResourceId())
+        continue;
+
+      rows.push_back(exportViewHTML(m_Descriptors[i], m_Locations[i].fixedBindNumber, shaderDetails,
+                                    QString()));
     }
 
     m_Common.exportHTMLTable(xml,
                              {
-                                 tr("Slot"), tr("Name"), tr("View Type"), tr("Resource Type"),
-                                 tr("Width"), tr("Height"), tr("Depth"), tr("Array Size"),
-                                 tr("View Format"), tr("Resource Format"), tr("View Parameters"),
+                                 tr("Slot"),
+                                 tr("Name"),
+                                 tr("View Type"),
+                                 tr("Resource Type"),
+                                 tr("Width"),
+                                 tr("Height"),
+                                 tr("Depth"),
+                                 tr("Array Size"),
+                                 tr("View Format"),
+                                 tr("Resource Format"),
+                                 tr("View Parameters"),
                              },
                              rows);
   }
@@ -2699,19 +2858,35 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
 
     QList<QVariantList> rows;
 
-    for(int i = 0; i < sh.uavs.count(); i++)
+    // do a plain search here, this is not super efficient but it's simpler
+    for(uint32_t i = 0; i < m_Locations.size(); i++)
     {
-      if(sh.uavs[i].viewResourceId == ResourceId())
+      if(!(m_Locations[i].stageMask & MaskForStage(sh.stage)))
         continue;
 
-      rows.push_back(exportViewHTML(sh.uavs[i], i, shaderDetails, QString()));
+      if(m_Locations[i].category != DescriptorCategory::ReadWriteResource)
+        continue;
+
+      if(m_Descriptors[i].view == ResourceId())
+        continue;
+
+      rows.push_back(exportViewHTML(m_Descriptors[i], m_Locations[i].fixedBindNumber, shaderDetails,
+                                    QString()));
     }
 
     m_Common.exportHTMLTable(xml,
                              {
-                                 tr("Slot"), tr("Name"), tr("View Type"), tr("Resource Type"),
-                                 tr("Width"), tr("Height"), tr("Depth"), tr("Array Size"),
-                                 tr("View Format"), tr("Resource Format"), tr("View Parameters"),
+                                 tr("Slot"),
+                                 tr("Name"),
+                                 tr("View Type"),
+                                 tr("Resource Type"),
+                                 tr("Width"),
+                                 tr("Height"),
+                                 tr("Depth"),
+                                 tr("Array Size"),
+                                 tr("View Format"),
+                                 tr("Resource Format"),
+                                 tr("View Parameters"),
                              },
                              rows);
   }
@@ -2723,18 +2898,20 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
 
     QList<QVariantList> rows;
 
-    for(int i = 0; i < sh.samplers.count(); i++)
-    {
-      const D3D11Pipe::Sampler &s = sh.samplers[i];
+    const rdcarray<UsedDescriptor> &samplers = m_Ctx.CurPipelineState().GetSamplers(sh.stage);
 
-      if(s.resourceId == ResourceId())
+    for(int i = 0; i < samplers.count(); i++)
+    {
+      const SamplerDescriptor &s = samplers[i].sampler;
+
+      if(s.object == ResourceId())
         continue;
 
       QString borderColor = QFormatStr("%1, %2, %3, %4")
-                                .arg(s.borderColor[0])
-                                .arg(s.borderColor[1])
-                                .arg(s.borderColor[2])
-                                .arg(s.borderColor[3]);
+                                .arg(s.borderColorValue.floatValue[0])
+                                .arg(s.borderColorValue.floatValue[1])
+                                .arg(s.borderColorValue.floatValue[2])
+                                .arg(s.borderColorValue.floatValue[3]);
 
       QString addressing;
 
@@ -2768,16 +2945,22 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
 
       rows.push_back({i, addressing, borderColor, ToQStr(s.compareFunction), ToQStr(s.filter),
                       s.maxAnisotropy, s.minLOD == -FLT_MAX ? lit("0") : QString::number(s.minLOD),
-                      s.maxLOD == FLT_MAX ? lit("FLT_MAX") : QString::number(s.maxLOD), s.mipLODBias});
+                      s.maxLOD == FLT_MAX ? lit("FLT_MAX") : QString::number(s.maxLOD), s.mipBias});
     }
 
-    m_Common.exportHTMLTable(
-        xml,
-        {
-            tr("Slot"), tr("Addressing"), tr("Border Colour"), tr("Comparison"), tr("Filter"),
-            tr("Max Anisotropy"), tr("Min LOD"), tr("Max LOD"), tr("Mip Bias"),
-        },
-        rows);
+    m_Common.exportHTMLTable(xml,
+                             {
+                                 tr("Slot"),
+                                 tr("Addressing"),
+                                 tr("Border Colour"),
+                                 tr("Comparison"),
+                                 tr("Filter"),
+                                 tr("Max Anisotropy"),
+                                 tr("Min LOD"),
+                                 tr("Max LOD"),
+                                 tr("Mip Bias"),
+                             },
+                             rows);
   }
 
   {
@@ -2787,38 +2970,41 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
 
     QList<QVariantList> rows;
 
-    for(int i = 0; i < sh.constantBuffers.count(); i++)
-    {
-      ConstantBlock *shaderCBuf = NULL;
+    const rdcarray<UsedDescriptor> &cblocks = m_Ctx.CurPipelineState().GetConstantBlocks(sh.stage);
 
-      if(sh.constantBuffers[i].resourceId == ResourceId())
+    for(int i = 0; i < cblocks.count(); i++)
+    {
+      const ConstantBlock *shaderCBuf = NULL;
+
+      if(cblocks[i].descriptor.resource == ResourceId())
         continue;
 
-      if(shaderDetails && i < shaderDetails->constantBlocks.count() &&
-         !shaderDetails->constantBlocks[i].name.isEmpty())
-        shaderCBuf = &shaderDetails->constantBlocks[i];
+      if(shaderDetails && cblocks[i].access.index < shaderDetails->constantBlocks.count() &&
+         !shaderDetails->constantBlocks[cblocks[i].access.index].name.isEmpty())
+        shaderCBuf = &shaderDetails->constantBlocks[cblocks[i].access.index];
 
-      QString name = m_Ctx.GetResourceName(sh.constantBuffers[i].resourceId);
+      QString name = m_Ctx.GetResourceName(cblocks[i].descriptor.resource);
       uint64_t length = 1;
       int numvars = shaderCBuf ? shaderCBuf->variables.count() : 0;
       uint32_t byteSize = shaderCBuf ? shaderCBuf->byteSize : 0;
 
-      if(sh.constantBuffers[i].resourceId == ResourceId())
+      if(cblocks[i].descriptor.resource == ResourceId())
       {
         name = tr("Empty");
         length = 0;
       }
 
-      BufferDescription *buf = m_Ctx.GetBuffer(sh.constantBuffers[i].resourceId);
+      BufferDescription *buf = m_Ctx.GetBuffer(cblocks[i].descriptor.resource);
       if(buf)
         length = buf->length;
 
-      rows.push_back({i, name, sh.constantBuffers[i].vecOffset, sh.constantBuffers[i].vecCount,
-                      numvars, byteSize, (qulonglong)length});
+      rows.push_back({i, name, (qulonglong)cblocks[i].descriptor.byteOffset,
+                      (qulonglong)cblocks[i].descriptor.byteSize, numvars, byteSize,
+                      (qulonglong)length});
     }
 
     m_Common.exportHTMLTable(xml,
-                             {tr("Slot"), tr("Buffer"), tr("Vector Offset"), tr("Vector Count"),
+                             {tr("Slot"), tr("Buffer"), tr("Byte Offset"), tr("Byte Range"),
                               tr("Number of Variables"), tr("Bytes Needed"), tr("Bytes Provided")},
                              rows);
   }
@@ -2843,7 +3029,9 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
 
     m_Common.exportHTMLTable(xml,
                              {
-                                 tr("Slot"), tr("Interface Name"), tr("Instance Name"),
+                                 tr("Slot"),
+                                 tr("Interface Name"),
+                                 tr("Instance Name"),
                              },
                              rows);
   }
@@ -2899,13 +3087,13 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
     xml.writeEndElement();
 
     m_Common.exportHTMLTable(
-        xml, {tr("Scissor Enable"), tr("Line AA Enable"), tr("Multisample Enable"),
-              tr("Forced Sample Count"), tr("Conservative Raster")},
+        xml,
+        {tr("Scissor Enable"), tr("Line AA Enable"), tr("Multisample Enable"),
+         tr("Forced Sample Count"), tr("Conservative Raster")},
         {rs.state.scissorEnable ? tr("Yes") : tr("No"),
          rs.state.antialiasedLines ? tr("Yes") : tr("No"),
          rs.state.multisampleEnable ? tr("Yes") : tr("No"), rs.state.forcedSampleCount,
-         rs.state.conservativeRasterization != ConservativeRaster::Disabled ? tr("Yes")
-                                                                            : tr("No")});
+         rs.state.conservativeRasterization != ConservativeRaster::Disabled ? tr("Yes") : tr("No")});
 
     xml.writeStartElement(lit("p"));
     xml.writeEndElement();
@@ -2933,8 +3121,9 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
       i++;
     }
 
-    m_Common.exportHTMLTable(xml, {tr("Slot"), tr("X"), tr("Y"), tr("Width"), tr("Height"),
-                                   tr("Min Depth"), tr("Max Depth"), tr("Enabled")},
+    m_Common.exportHTMLTable(xml,
+                             {tr("Slot"), tr("X"), tr("Y"), tr("Width"), tr("Height"),
+                              tr("Min Depth"), tr("Max Depth"), tr("Enabled")},
                              rows);
   }
 
@@ -2971,12 +3160,14 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
                               .arg(om.blendState.blendFactor[2], 0, 'f', 2)
                               .arg(om.blendState.blendFactor[3], 0, 'f', 2);
 
-    m_Common.exportHTMLTable(xml, {tr("Independent Blend Enable"), tr("Alpha to Coverage"),
-                                   tr("Sample Mask"), tr("Blend Factor")},
+    m_Common.exportHTMLTable(xml,
+                             {tr("Independent Blend Enable"), tr("Alpha to Coverage"),
+                              tr("Sample Mask"), tr("Blend Factor")},
                              {
                                  om.blendState.independentBlend ? tr("Yes") : tr("No"),
                                  om.blendState.alphaToCoverage ? tr("Yes") : tr("No"),
-                                 Formatter::Format(om.blendState.sampleMask, true), blendFactor,
+                                 Formatter::Format(om.blendState.sampleMask, true),
+                                 blendFactor,
                              });
 
     xml.writeStartElement(lit("h3"));
@@ -2985,6 +3176,7 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
 
     QList<QVariantList> rows;
 
+    bool independent = om.blendState.independentBlend;
     int i = 0;
     for(const ColorBlend &b : om.blendState.blends)
     {
@@ -2997,7 +3189,11 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
                          .arg((b.writeMask & 0x4) == 0 ? lit("_") : lit("B"))
                          .arg((b.writeMask & 0x8) == 0 ? lit("_") : lit("A"));
 
-      rows.push_back({i, b.enabled ? tr("Yes") : tr("No"),
+      QString slotName = QString::number(i);
+      if(!independent)
+        slotName = i == 0 ? tr("All") : lit("-");
+
+      rows.push_back({slotName, b.enabled ? tr("Yes") : tr("No"),
                       b.logicOperationEnabled ? tr("Yes") : tr("No"), ToQStr(b.colorBlend.source),
                       ToQStr(b.colorBlend.destination), ToQStr(b.colorBlend.operation),
                       ToQStr(b.alphaBlend.source), ToQStr(b.alphaBlend.destination),
@@ -3006,15 +3202,21 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
       i++;
     }
 
-    m_Common.exportHTMLTable(
-        xml,
-        {
-            tr("Slot"), tr("Blend Enable"), tr("Logic Enable"), tr("Blend Source"),
-            tr("Blend Destination"), tr("Blend Operation"), tr("Alpha Blend Source"),
-            tr("Alpha Blend Destination"), tr("Alpha Blend Operation"), tr("Logic Operation"),
-            tr("Write Mask"),
-        },
-        rows);
+    m_Common.exportHTMLTable(xml,
+                             {
+                                 tr("Slot"),
+                                 tr("Blend Enable"),
+                                 tr("Logic Enable"),
+                                 tr("Blend Source"),
+                                 tr("Blend Destination"),
+                                 tr("Blend Operation"),
+                                 tr("Alpha Blend Source"),
+                                 tr("Alpha Blend Destination"),
+                                 tr("Alpha Blend Operation"),
+                                 tr("Logic Operation"),
+                                 tr("Write Mask"),
+                             },
+                             rows);
   }
 
   {
@@ -3043,8 +3245,9 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
     xml.writeStartElement(lit("p"));
     xml.writeEndElement();
 
-    m_Common.exportHTMLTable(xml, {tr("Face"), tr("Function"), tr("Pass Operation"),
-                                   tr("Fail Operation"), tr("Depth Fail Operation")},
+    m_Common.exportHTMLTable(xml,
+                             {tr("Face"), tr("Function"), tr("Pass Operation"),
+                              tr("Fail Operation"), tr("Depth Fail Operation")},
                              {
                                  {tr("Front"), ToQStr(om.depthStencilState.frontFace.function),
                                   ToQStr(om.depthStencilState.frontFace.passOperation),
@@ -3064,53 +3267,80 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
 
     QList<QVariantList> rows;
 
-    for(int i = 0; i < om.renderTargets.count(); i++)
+    rdcarray<Descriptor> rts = m_Ctx.CurPipelineState().GetOutputTargets();
+    for(int i = 0; i < rts.count(); i++)
     {
-      if(om.renderTargets[i].viewResourceId == ResourceId())
+      if(rts[i].view == ResourceId())
         continue;
 
-      rows.push_back(exportViewHTML(om.renderTargets[i], i, NULL, QString()));
+      rows.push_back(exportViewHTML(rts[i], i, NULL, QString()));
     }
 
     m_Common.exportHTMLTable(xml,
                              {
-                                 tr("Slot"), tr("Name"), tr("View Type"), tr("Resource Type"),
-                                 tr("Width"), tr("Height"), tr("Depth"), tr("Array Size"),
-                                 tr("View Format"), tr("Resource Format"), tr("View Parameters"),
+                                 tr("Slot"),
+                                 tr("Name"),
+                                 tr("View Type"),
+                                 tr("Resource Type"),
+                                 tr("Width"),
+                                 tr("Height"),
+                                 tr("Depth"),
+                                 tr("Array Size"),
+                                 tr("View Format"),
+                                 tr("Resource Format"),
+                                 tr("View Parameters"),
                              },
                              rows);
   }
 
-  if(!om.uavs.isEmpty() && om.uavs[0].viewResourceId != ResourceId())
   {
-    xml.writeStartElement(lit("h3"));
-    xml.writeCharacters(tr("Unordered Access Views"));
-    xml.writeEndElement();
-
     QList<QVariantList> rows;
 
-    uint32_t i = 0;
-
-    for(; i < om.uavStartSlot; i++)
-      rows.push_back({i, tr("Empty"), QString(), QString(), QString(), QString(), 0, 0, 0, 0,
-                      QString(), QString(), QString()});
-
-    for(; i < (uint32_t)om.renderTargets.count(); i++)
+    // do a plain search here, this is not super efficient but it's simpler
+    for(uint32_t i = 0; i < m_Locations.size(); i++)
     {
-      if(om.uavs[i - om.uavStartSlot].viewResourceId == ResourceId())
+      // only look for PS UAVs
+      if(m_Locations[i].category != DescriptorCategory::ReadWriteResource ||
+         !(m_Locations[i].stageMask & ShaderStageMask::Pixel))
         continue;
 
-      rows.push_back(exportViewHTML(om.uavs[i - om.uavStartSlot], i,
+      if(m_Descriptors[i].view == ResourceId())
+        continue;
+
+      // skip any descriptors from before the first valid OM UAV
+      if(m_Locations[i].fixedBindNumber < om.uavStartSlot)
+        continue;
+
+      rows.push_back(exportViewHTML(m_Descriptors[i], m_Locations[i].fixedBindNumber,
                                     m_Ctx.CurD3D11PipelineState()->pixelShader.reflection, QString()));
     }
 
-    m_Common.exportHTMLTable(xml,
-                             {
-                                 tr("Slot"), tr("Name"), tr("View Type"), tr("Resource Type"),
-                                 tr("Width"), tr("Height"), tr("Depth"), tr("Array Size"),
-                                 tr("View Format"), tr("Resource Format"), tr("View Parameters"),
-                             },
-                             rows);
+    if(!rows.isEmpty())
+    {
+      xml.writeStartElement(lit("h3"));
+      xml.writeCharacters(tr("Unordered Access Views"));
+      xml.writeEndElement();
+
+      for(uint32_t i = 0; i < om.uavStartSlot; i++)
+        rows.insert(0, {i, tr("Empty"), QString(), QString(), QString(), QString(), 0, 0, 0, 0,
+                        QString(), QString(), QString()});
+
+      m_Common.exportHTMLTable(xml,
+                               {
+                                   tr("Slot"),
+                                   tr("Name"),
+                                   tr("View Type"),
+                                   tr("Resource Type"),
+                                   tr("Width"),
+                                   tr("Height"),
+                                   tr("Depth"),
+                                   tr("Array Size"),
+                                   tr("View Format"),
+                                   tr("Resource Format"),
+                                   tr("View Parameters"),
+                               },
+                               rows);
+    }
   }
 
   {
@@ -3129,13 +3359,21 @@ void D3D11PipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const D3D11Pipe
     else if(om.stencilReadOnly)
       extra = tr("Stencil Read-Only");
 
-    rows.push_back(exportViewHTML(om.depthTarget, 0, NULL, extra));
+    rows.push_back(exportViewHTML(m_Ctx.CurPipelineState().GetDepthTarget(), 0, NULL, extra));
 
     m_Common.exportHTMLTable(xml,
                              {
-                                 tr("Slot"), tr("Name"), tr("View Type"), tr("Resource Type"),
-                                 tr("Width"), tr("Height"), tr("Depth"), tr("Array Size"),
-                                 tr("View Format"), tr("Resource Format"), tr("View Parameters"),
+                                 tr("Slot"),
+                                 tr("Name"),
+                                 tr("View Type"),
+                                 tr("Resource Type"),
+                                 tr("Width"),
+                                 tr("Height"),
+                                 tr("Depth"),
+                                 tr("Array Size"),
+                                 tr("View Format"),
+                                 tr("Resource Format"),
+                                 tr("View Parameters"),
                              },
                              rows);
   }
@@ -3200,8 +3438,9 @@ void D3D11PipelineStateViewer::on_meshView_clicked()
   ToolWindowManager::raiseToolWindow(m_Ctx.GetMeshPreview()->Widget());
 }
 
-void D3D11PipelineStateViewer::on_debugThread_clicked()
+void D3D11PipelineStateViewer::on_computeDebugSelector_clicked()
 {
+  // Check whether debugging is valid for this event before showing the dialog
   if(!m_Ctx.IsCaptureLoaded())
     return;
 
@@ -3210,44 +3449,45 @@ void D3D11PipelineStateViewer::on_debugThread_clicked()
   if(!action)
     return;
 
-  ShaderReflection *shaderDetails = m_Ctx.CurD3D11PipelineState()->computeShader.reflection;
-  const ShaderBindpointMapping &bindMapping =
-      m_Ctx.CurD3D11PipelineState()->computeShader.bindpointMapping;
+  const ShaderReflection *shaderDetails =
+      m_Ctx.CurPipelineState().GetShaderReflection(ShaderStage::Compute);
 
   if(!shaderDetails)
     return;
 
-  uint32_t groupdim[3] = {};
+  RDDialog::show(m_ComputeDebugSelector);
+}
 
-  for(int i = 0; i < 3; i++)
-    groupdim[i] = action->dispatchDimension[i];
+void D3D11PipelineStateViewer::computeDebugSelector_beginDebug(
+    const rdcfixedarray<uint32_t, 3> &group, const rdcfixedarray<uint32_t, 3> &thread)
+{
+  const ActionDescription *action = m_Ctx.CurAction();
 
-  uint32_t threadsdim[3] = {};
-  for(int i = 0; i < 3; i++)
-    threadsdim[i] = action->dispatchThreadsDimension[i];
+  if(!action)
+    return;
 
-  if(threadsdim[0] == 0)
-  {
-    for(int i = 0; i < 3; i++)
-      threadsdim[i] = shaderDetails->dispatchThreadsDimension[i];
-  }
+  const ShaderReflection *shaderDetails =
+      m_Ctx.CurPipelineState().GetShaderReflection(ShaderStage::Compute);
+
+  if(!shaderDetails)
+    return;
 
   struct threadSelect
   {
     rdcfixedarray<uint32_t, 3> g;
     rdcfixedarray<uint32_t, 3> t;
-  } thread = {
+  } debugThread = {
       // g[]
-      {(uint32_t)ui->groupX->value(), (uint32_t)ui->groupY->value(), (uint32_t)ui->groupZ->value()},
+      {group[0], group[1], group[2]},
       // t[]
-      {(uint32_t)ui->threadX->value(), (uint32_t)ui->threadY->value(), (uint32_t)ui->threadZ->value()},
+      {thread[0], thread[1], thread[2]},
   };
 
   bool done = false;
   ShaderDebugTrace *trace = NULL;
 
-  m_Ctx.Replay().AsyncInvoke([&trace, &done, thread](IReplayController *r) {
-    trace = r->DebugThread(thread.g, thread.t);
+  m_Ctx.Replay().AsyncInvoke([&trace, &done, debugThread](IReplayController *r) {
+    trace = r->DebugThread(debugThread.g, debugThread.t);
 
     if(trace->debugger == NULL)
     {
@@ -3259,12 +3499,12 @@ void D3D11PipelineStateViewer::on_debugThread_clicked()
   });
 
   QString debugContext = lit("Group [%1,%2,%3] Thread [%4,%5,%6]")
-                             .arg(thread.g[0])
-                             .arg(thread.g[1])
-                             .arg(thread.g[2])
-                             .arg(thread.t[0])
-                             .arg(thread.t[1])
-                             .arg(thread.t[2]);
+                             .arg(group[0])
+                             .arg(group[1])
+                             .arg(group[2])
+                             .arg(thread[0])
+                             .arg(thread[1])
+                             .arg(thread[2]);
 
   // wait a short while before displaying the progress dialog (which won't show if we're already
   // done by the time we reach it)
@@ -3282,8 +3522,8 @@ void D3D11PipelineStateViewer::on_debugThread_clicked()
   }
 
   // viewer takes ownership of the trace
-  IShaderViewer *s =
-      m_Ctx.DebugShader(&bindMapping, shaderDetails, ResourceId(), trace, debugContext);
+  IShaderViewer *s = m_Ctx.DebugShader(
+      shaderDetails, m_Ctx.CurPipelineState().GetComputePipelineObject(), trace, debugContext);
 
   m_Ctx.AddDockWindow(s->Widget(), DockReference::AddTo, this);
 }

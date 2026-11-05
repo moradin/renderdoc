@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,6 +24,10 @@
 
 #define CHECKER_UBO
 
+#if defined(VULKAN) && defined(USE_MULTIVIEW)
+#extension GL_EXT_multiview : require
+#endif
+
 #include "glsl_ubos.h"
 
 // for GLES compatibility where we must match blit.vert
@@ -33,6 +37,11 @@ IO_LOCATION(0) out vec4 color_out;
 
 void main(void)
 {
+#if defined(VULKAN) && defined(USE_MULTIVIEW)
+  if(gl_ViewIndex != checker.TargetView && checker.TargetView >= 0)
+    discard;
+#endif
+
   vec2 RectRelativePos = gl_FragCoord.xy - checker.RectPosition;
 
   // if we have a border, and our pos is inside the border, return inner color

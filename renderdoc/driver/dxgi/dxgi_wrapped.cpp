@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2015-2026 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -237,7 +237,7 @@ WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain *real, HWND w, ID3
   {
     Keyboard::AddInputWindow(WindowingSystem::Win32, wnd);
 
-    RenderDoc::Inst().AddFrameCapturer(m_pDevice->GetFrameCapturerDevice(), wnd,
+    RenderDoc::Inst().AddFrameCapturer(DeviceOwnedWindow(m_pDevice->GetFrameCapturerDevice(), wnd),
                                        m_pDevice->GetFrameCapturer());
   }
 
@@ -254,7 +254,7 @@ WrappedIDXGISwapChain4::~WrappedIDXGISwapChain4()
   {
     Keyboard::RemoveInputWindow(WindowingSystem::Win32, wnd);
 
-    RenderDoc::Inst().RemoveFrameCapturer(m_pDevice->GetFrameCapturerDevice(), wnd);
+    RenderDoc::Inst().RemoveFrameCapturer(DeviceOwnedWindow(m_pDevice->GetFrameCapturerDevice(), wnd));
   }
 
   m_pDevice->ReleaseSwapchainResources(this, 0, NULL, NULL);
@@ -529,6 +529,12 @@ HRESULT WrappedIDXGISwapChain4::GetDevice(
       *ppDevice = this;
       AddRef();
     }
+    else if(riid == __uuidof(IDXGIDevice) || riid == __uuidof(IDXGIDevice1) ||
+            riid == __uuidof(IDXGIDevice2) || riid == __uuidof(IDXGIDevice3) ||
+            riid == __uuidof(IDXGIDevice4))
+    {
+      return m_pDevice->QueryInterface(riid, ppDevice);
+    }
     else if(!HandleWrap("GetDevice", riid, ppDevice))
     {
       // can probably get away with returning the real result here,
@@ -619,16 +625,20 @@ WrappedIDXGIOutput6::~WrappedIDXGIOutput6()
 HRESULT STDMETHODCALLTYPE WrappedIDXGIOutput6::FindClosestMatchingMode(
     const DXGI_MODE_DESC *pModeToMatch, DXGI_MODE_DESC *pClosestMatch, IUnknown *pConcernedDevice)
 {
-  ID3DDevice *wrapDevice = GetD3DDevice(pConcernedDevice);
-
-  if(wrapDevice)
-    return m_pReal->FindClosestMatchingMode(pModeToMatch, pClosestMatch,
-                                            wrapDevice->GetRealIUnknown());
-
   if(pConcernedDevice)
+  {
+    ID3DDevice *wrapDevice = GetD3DDevice(pConcernedDevice);
+
+    if(wrapDevice)
+      return m_pReal->FindClosestMatchingMode(pModeToMatch, pClosestMatch,
+                                              wrapDevice->GetRealIUnknown());
+
     RDCERR("Unrecognised device in FindClosestMatchingMode()");
 
-  return E_INVALIDARG;
+    return E_INVALIDARG;
+  }
+
+  return m_pReal->FindClosestMatchingMode(pModeToMatch, pClosestMatch, NULL);
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGIOutput6::TakeOwnership(IUnknown *pDevice, BOOL Exclusive)
@@ -646,16 +656,20 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIOutput6::TakeOwnership(IUnknown *pDevice, 
 HRESULT STDMETHODCALLTYPE WrappedIDXGIOutput6::FindClosestMatchingMode1(
     const DXGI_MODE_DESC1 *pModeToMatch, DXGI_MODE_DESC1 *pClosestMatch, IUnknown *pConcernedDevice)
 {
-  ID3DDevice *wrapDevice = GetD3DDevice(pConcernedDevice);
-
-  if(wrapDevice)
-    return m_pReal1->FindClosestMatchingMode1(pModeToMatch, pClosestMatch,
-                                              wrapDevice->GetRealIUnknown());
-
   if(pConcernedDevice)
+  {
+    ID3DDevice *wrapDevice = GetD3DDevice(pConcernedDevice);
+
+    if(wrapDevice)
+      return m_pReal1->FindClosestMatchingMode1(pModeToMatch, pClosestMatch,
+                                                wrapDevice->GetRealIUnknown());
+
     RDCERR("Unrecognised device in FindClosestMatchingMode1()");
 
-  return E_INVALIDARG;
+    return E_INVALIDARG;
+  }
+
+  return m_pReal1->FindClosestMatchingMode1(pModeToMatch, pClosestMatch, NULL);
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGIOutput6::GetDisplaySurfaceData1(IDXGIResource *pDestination)

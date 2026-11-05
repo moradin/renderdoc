@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2019-2021 Baldur Karlsson
+ * Copyright (c) 2017-2026 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,9 +34,397 @@
 #include "common/formatting.h"
 #include "common/globalconfig.h"
 #include "common/timing.h"
+#include "core/rdcbytetrie.h"
 #include "os/os_specific.h"
 
 #include "catch/catch.hpp"
+
+struct TrieValue
+{
+  TrieValue() : id() {}
+  TrieValue(uint32_t id) : id(id) {}
+
+  bool operator==(const TrieValue &o) const { return id == o.id; }
+
+  uint32_t id;
+  uint16_t _trie;
+};
+
+template <>
+rdcstr DoStringise<TrieValue>(const TrieValue &v)
+{
+  return DoStringise(v.id);
+}
+
+using KV = rdcpair<bytebuf, TrieValue>;
+
+template <typename inner>
+void TestInsert()
+{
+  rdcarray<inner> vec;
+  vec.insert(0, {});
+  REQUIRE(vec.size() == 0);
+  vec.insert(0, vec);
+  REQUIRE(vec.size() == 0);
+  vec.insert(0, NULL, 0);
+  REQUIRE(vec.size() == 0);
+  vec.insert(0, 5);
+  REQUIRE(vec.size() == 1);
+  CHECK(vec[0] == 5);
+
+  vec.insert(0, {6, 3, 13});
+  REQUIRE(vec.size() == 4);
+  CHECK(vec[0] == 6);
+  CHECK(vec[1] == 3);
+  CHECK(vec[2] == 13);
+  CHECK(vec[3] == 5);
+
+  vec.insert(0, 9);
+
+  REQUIRE(vec.size() == 5);
+  CHECK(vec[0] == 9);
+  CHECK(vec[1] == 6);
+  CHECK(vec[2] == 3);
+  CHECK(vec[3] == 13);
+  CHECK(vec[4] == 5);
+
+  vec.insert(3, 8);
+
+  REQUIRE(vec.size() == 6);
+  CHECK(vec[0] == 9);
+  CHECK(vec[1] == 6);
+  CHECK(vec[2] == 3);
+  CHECK(vec[3] == 8);
+  CHECK(vec[4] == 13);
+  CHECK(vec[5] == 5);
+
+  vec.insert(6, 4);
+
+  REQUIRE(vec.size() == 7);
+  CHECK(vec[0] == 9);
+  CHECK(vec[1] == 6);
+  CHECK(vec[2] == 3);
+  CHECK(vec[3] == 8);
+  CHECK(vec[4] == 13);
+  CHECK(vec[5] == 5);
+  CHECK(vec[6] == 4);
+
+  vec.insert(3, {20, 21});
+
+  REQUIRE(vec.size() == 9);
+  CHECK(vec[0] == 9);
+  CHECK(vec[1] == 6);
+  CHECK(vec[2] == 3);
+  CHECK(vec[3] == 20);
+  CHECK(vec[4] == 21);
+  CHECK(vec[5] == 8);
+  CHECK(vec[6] == 13);
+  CHECK(vec[7] == 5);
+  CHECK(vec[8] == 4);
+
+  // insert a large amount of data to ensure this doesn't read off start/end of vector
+  rdcarray<inner> largedata;
+  largedata.resize(100000);
+  largedata.front() = inner(100);
+  largedata.back() = inner(101);
+
+  vec.insert(4, largedata);
+
+  REQUIRE(vec.size() == 9 + largedata.size());
+  CHECK(vec[0] == 9);
+  CHECK(vec[1] == 6);
+  CHECK(vec[2] == 3);
+  CHECK(vec[3] == 20);
+  CHECK(vec[4] == 100);
+  CHECK(vec[4 + largedata.size() - 1] == 101);
+  CHECK(vec[4 + largedata.size()] == 21);
+  CHECK(vec[5 + largedata.size()] == 8);
+  CHECK(vec[6 + largedata.size()] == 13);
+  CHECK(vec[7 + largedata.size()] == 5);
+  CHECK(vec[8 + largedata.size()] == 4);
+
+  vec.clear();
+
+  REQUIRE(vec.size() == 0);
+
+  vec.insert(0, {6, 8, 10, 14, 16});
+
+  REQUIRE(vec.size() == 5);
+  CHECK(vec[0] == 6);
+  CHECK(vec[1] == 8);
+  CHECK(vec[2] == 10);
+  CHECK(vec[3] == 14);
+  CHECK(vec[4] == 16);
+
+  vec.insert(4, {20, 9, 9, 14, 7, 13, 10, 1, 1, 45});
+
+  REQUIRE(vec.size() == 15);
+  CHECK(vec[0] == 6);
+  CHECK(vec[1] == 8);
+  CHECK(vec[2] == 10);
+  CHECK(vec[3] == 14);
+  CHECK(vec[4] == 20);
+  CHECK(vec[5] == 9);
+  CHECK(vec[6] == 9);
+  CHECK(vec[7] == 14);
+  CHECK(vec[8] == 7);
+  CHECK(vec[9] == 13);
+  CHECK(vec[10] == 10);
+  CHECK(vec[11] == 1);
+  CHECK(vec[12] == 1);
+  CHECK(vec[13] == 45);
+  CHECK(vec[14] == 16);
+}
+
+template <typename inner>
+static void TestErase()
+{
+  rdcarray<inner> vec = {6, 3, 13, 5};
+
+  vec.erase(2);
+
+  REQUIRE(vec.size() == 3);
+  REQUIRE(vec.capacity() >= 4);
+  CHECK(vec[0] == 6);
+  CHECK(vec[1] == 3);
+  CHECK(vec[2] == 5);
+
+  // do some empty/invalid erases
+  vec.erase(2, 0);
+
+  REQUIRE(vec.size() == 3);
+  REQUIRE(vec.capacity() >= 4);
+  CHECK(vec[0] == 6);
+  CHECK(vec[1] == 3);
+  CHECK(vec[2] == 5);
+
+  vec.erase(200, 5);
+
+  REQUIRE(vec.size() == 3);
+  REQUIRE(vec.capacity() >= 4);
+  CHECK(vec[0] == 6);
+  CHECK(vec[1] == 3);
+  CHECK(vec[2] == 5);
+
+  vec.insert(2, {0, 1});
+
+  REQUIRE(vec.size() == 5);
+  CHECK(vec[0] == 6);
+  CHECK(vec[1] == 3);
+  CHECK(vec[2] == 0);
+  CHECK(vec[3] == 1);
+  CHECK(vec[4] == 5);
+
+  vec.erase(0);
+
+  REQUIRE(vec.size() == 4);
+  CHECK(vec[0] == 3);
+  CHECK(vec[1] == 0);
+  CHECK(vec[2] == 1);
+  CHECK(vec[3] == 5);
+
+  vec.erase(vec.size() - 1);
+
+  REQUIRE(vec.size() == 3);
+  CHECK(vec[0] == 3);
+  CHECK(vec[1] == 0);
+  CHECK(vec[2] == 1);
+
+  vec.erase(0, 3);
+
+  REQUIRE(vec.size() == 0);
+
+  vec = {5, 6, 3, 9, 1, 0};
+
+  vec.erase(2, 3);
+  REQUIRE(vec.size() == 3);
+  CHECK(vec[0] == 5);
+  CHECK(vec[1] == 6);
+  CHECK(vec[2] == 0);
+
+  vec = {5, 6, 3, 9, 1, 0};
+
+  vec.erase(3, 3);
+  REQUIRE(vec.size() == 3);
+  CHECK(vec[0] == 5);
+  CHECK(vec[1] == 6);
+  CHECK(vec[2] == 3);
+
+  vec = {5, 6, 3, 9, 1, 0};
+
+  vec.erase(3, 100);
+  REQUIRE(vec.size() == 3);
+  CHECK(vec[0] == 5);
+  CHECK(vec[1] == 6);
+  CHECK(vec[2] == 3);
+}
+
+template <typename inner>
+static void TestRemove()
+{
+  rdcarray<inner> vec = {6, 3, 9, 6, 6, 3, 5, 15, 5};
+
+  vec.removeOne(3);
+
+  REQUIRE(vec.size() == 8);
+  CHECK(vec[0] == 6);
+  CHECK(vec[1] == 9);
+  CHECK(vec[2] == 6);
+  CHECK(vec[3] == 6);
+  CHECK(vec[4] == 3);
+  CHECK(vec[5] == 5);
+  CHECK(vec[6] == 15);
+  CHECK(vec[7] == 5);
+
+  vec.removeOne(3);
+
+  REQUIRE(vec.size() == 7);
+  CHECK(vec[0] == 6);
+  CHECK(vec[1] == 9);
+  CHECK(vec[2] == 6);
+  CHECK(vec[3] == 6);
+  CHECK(vec[4] == 5);
+  CHECK(vec[5] == 15);
+  CHECK(vec[6] == 5);
+
+  vec.removeOne(3);
+
+  REQUIRE(vec.size() == 7);
+  CHECK(vec[0] == 6);
+  CHECK(vec[1] == 9);
+  CHECK(vec[2] == 6);
+  CHECK(vec[3] == 6);
+  CHECK(vec[4] == 5);
+  CHECK(vec[5] == 15);
+  CHECK(vec[6] == 5);
+
+  vec.removeOneIf([](const int &el) { return (el % 3) == 0; });
+
+  REQUIRE(vec.size() == 6);
+  CHECK(vec[0] == 9);
+  CHECK(vec[1] == 6);
+  CHECK(vec[2] == 6);
+  CHECK(vec[3] == 5);
+  CHECK(vec[4] == 15);
+  CHECK(vec[5] == 5);
+
+  vec.removeIf([](const int &el) { return (el % 3) == 0; });
+
+  REQUIRE(vec.size() == 2);
+  CHECK(vec[0] == 5);
+  CHECK(vec[1] == 5);
+}
+
+template <typename inner>
+static void TestBasic()
+{
+  rdcarray<inner> test;
+  const rdcarray<inner> &constTest = test;
+
+  CHECK(test.size() == 0);
+  CHECK(test.capacity() == 0);
+  CHECK(test.empty());
+  CHECK(test.isEmpty());
+  CHECK(test.begin() == test.end());
+
+  CHECK(constTest.size() == 0);
+  CHECK(constTest.capacity() == 0);
+  CHECK(constTest.empty());
+  CHECK(constTest.isEmpty());
+  CHECK(constTest.begin() == constTest.end());
+
+  test.clear();
+
+  CHECK(test.size() == 0);
+  CHECK(test.capacity() == 0);
+  CHECK(test.empty());
+  CHECK(test.isEmpty());
+  CHECK(test.begin() == test.end());
+
+  test.push_back(5);
+
+  CHECK(test.size() == 1);
+  CHECK(test.capacity() >= 1);
+  CHECK_FALSE(test.empty());
+  CHECK_FALSE(test.isEmpty());
+  CHECK(test.begin() != test.end());
+  CHECK(test.begin() + 1 == test.end());
+
+  test.push_back(10);
+
+  CHECK(test.front() == 5);
+  CHECK(test.back() == 10);
+  CHECK(test.size() == 2);
+  CHECK(test.capacity() >= 2);
+  CHECK_FALSE(test.empty());
+  CHECK_FALSE(test.isEmpty());
+  CHECK(test.begin() + 2 == test.end());
+
+  CHECK(constTest.front() == 5);
+  CHECK(constTest.back() == 10);
+  CHECK(constTest.size() == 2);
+  CHECK(constTest.capacity() >= 2);
+  CHECK_FALSE(constTest.empty());
+  CHECK_FALSE(constTest.isEmpty());
+  CHECK(constTest.begin() + 2 == constTest.end());
+
+  int sum = 0;
+  for(int x : test)
+    sum += x;
+
+  CHECK(sum == 15);
+
+  test.clear();
+
+  CHECK(test.size() == 0);
+  CHECK(test.capacity() >= 2);
+  CHECK(test.empty());
+  CHECK(test.isEmpty());
+  CHECK(test.begin() == test.end());
+
+  test = {4, 1, 77, 6, 0, 8, 20, 934};
+
+  CHECK(test.size() == 8);
+  CHECK(test.capacity() >= 8);
+  CHECK_FALSE(test.empty());
+  CHECK_FALSE(test.isEmpty());
+  CHECK(test.begin() + 8 == test.end());
+
+  sum = 0;
+  for(int x : test)
+    sum += x;
+
+  CHECK(sum == 1050);
+
+  CHECK(test[2] == 77);
+
+  test[2] = 10;
+
+  CHECK(test[2] == 10);
+
+  test.reserve(100);
+
+  CHECK(test.size() == 8);
+  CHECK(test.capacity() >= 100);
+  CHECK_FALSE(test.empty());
+  CHECK_FALSE(test.isEmpty());
+  CHECK(test.begin() + 8 == test.end());
+
+  int x = test.takeAt(2);
+
+  CHECK(test.size() == 7);
+  CHECK(x == 10);
+  CHECK(test[2] == 6);
+
+  rdcarray<inner> other = {1, 2, 3};
+
+  test.append(other);
+
+  CHECK(test.size() == 10);
+  CHECK(test[7] == 1);
+  CHECK(test[8] == 2);
+  CHECK(test[9] == 3);
+}
 
 static int32_t constructor = 0;
 static int32_t moveConstructor = 0;
@@ -46,6 +434,61 @@ static int32_t destructor = 0;
 static int32_t movedDestructor = 0;
 static int32_t copyAssignment = 0;
 static int32_t moveAssignment = 0;
+
+struct NonTrivial
+{
+  NonTrivial() {}
+  NonTrivial(int v) : val(v) {}
+  ~NonTrivial()
+  {
+    // check for double deletion or out of bounds deletion
+    for(size_t i = 0; i < ARRAY_COUNT(validMarker); i++)
+    {
+      CHECK(validMarker[i] == 1234567);
+      validMarker[i] = 7654321;
+    }
+  }
+  int val = 6;
+
+  operator int() const { return val; }
+  bool operator==(const int o) const { return val == o; }
+
+  bool operator==(const NonTrivial &o) const { return val == o.val; }
+  bool operator<(const NonTrivial &o) const { return val > o.val; }
+
+private:
+  int validMarker[4] = {1234567, 1234567, 1234567, 1234567};
+};
+
+template <>
+rdcstr DoStringise(const NonTrivial &el)
+{
+  return "NonTrivial{" + DoStringise(el.val) + "}";
+}
+
+struct MoveTrasher : public NonTrivial
+{
+  MoveTrasher() {}
+  MoveTrasher(int v) : NonTrivial(v) {}
+  MoveTrasher(const MoveTrasher &v) : NonTrivial(v) { val = v.val; }
+  MoveTrasher(MoveTrasher &&v)
+  {
+    // trash on move
+    val = v.val;
+    v.val = -111111;
+  }
+  MoveTrasher &operator=(const MoveTrasher &v)
+  {
+    val = v.val;
+    return *this;
+  }
+};
+
+template <>
+rdcstr DoStringise(const MoveTrasher &el)
+{
+  return "MoveTrasher{" + DoStringise(el.val) + "}";
+}
 
 struct ConstructorCounter
 {
@@ -105,83 +548,65 @@ TEST_CASE("Test array type", "[basictypes]")
   destructor = 0;
   movedDestructor = 0;
 
-  SECTION("Basic test")
+  SECTION("Basic test - int")
   {
-    rdcarray<int> test;
+    TestBasic<int>();
+  }
 
-    CHECK(test.size() == 0);
-    CHECK(test.capacity() == 0);
-    CHECK(test.empty());
-    CHECK(test.isEmpty());
-    CHECK(test.begin() == test.end());
+  SECTION("Basic test - NonTrivial")
+  {
+    TestBasic<NonTrivial>();
+  }
 
-    test.clear();
+  SECTION("Basic test - MoveTrasher")
+  {
+    TestBasic<MoveTrasher>();
+  }
 
-    CHECK(test.size() == 0);
-    CHECK(test.capacity() == 0);
-    CHECK(test.empty());
-    CHECK(test.isEmpty());
-    CHECK(test.begin() == test.end());
+  SECTION("insert - int")
+  {
+    TestInsert<int>();
+  }
 
-    test.push_back(5);
+  SECTION("insert - NonTrivial")
+  {
+    TestInsert<NonTrivial>();
+  }
 
-    CHECK(test.size() == 1);
-    CHECK(test.capacity() >= 1);
-    CHECK_FALSE(test.empty());
-    CHECK_FALSE(test.isEmpty());
-    CHECK(test.begin() != test.end());
-    CHECK(test.begin() + 1 == test.end());
+  SECTION("insert - MoveTrasher")
+  {
+    TestInsert<MoveTrasher>();
+  }
 
-    test.push_back(10);
+  SECTION("erase - int")
+  {
+    TestErase<int>();
+  }
 
-    CHECK(test.size() == 2);
-    CHECK(test.capacity() >= 2);
-    CHECK_FALSE(test.empty());
-    CHECK_FALSE(test.isEmpty());
-    CHECK(test.begin() + 2 == test.end());
+  SECTION("erase - NonTrivial")
+  {
+    TestErase<NonTrivial>();
+  }
 
-    int sum = 0;
-    for(int x : test)
-      sum += x;
+  SECTION("erase - MoveTrasher")
+  {
+    TestErase<MoveTrasher>();
+  }
 
-    CHECK(sum == 15);
+  SECTION("removeOne / removeOneIf / removeIf- int")
+  {
+    TestRemove<int>();
+  }
 
-    test.clear();
+  SECTION("removeOne / removeOneIf / removeIf- NonTrivial")
+  {
+    TestRemove<NonTrivial>();
+  }
 
-    CHECK(test.size() == 0);
-    CHECK(test.capacity() >= 2);
-    CHECK(test.empty());
-    CHECK(test.isEmpty());
-    CHECK(test.begin() == test.end());
-
-    test = {4, 1, 77, 0, 0, 8, 20, 934};
-
-    CHECK(test.size() == 8);
-    CHECK(test.capacity() >= 8);
-    CHECK_FALSE(test.empty());
-    CHECK_FALSE(test.isEmpty());
-    CHECK(test.begin() + 8 == test.end());
-
-    sum = 0;
-    for(int x : test)
-      sum += x;
-
-    CHECK(sum == 1044);
-
-    CHECK(test[2] == 77);
-
-    test[2] = 10;
-
-    CHECK(test[2] == 10);
-
-    test.reserve(100);
-
-    CHECK(test.size() == 8);
-    CHECK(test.capacity() >= 100);
-    CHECK_FALSE(test.empty());
-    CHECK_FALSE(test.isEmpty());
-    CHECK(test.begin() + 8 == test.end());
-  };
+  SECTION("removeOne / removeOneIf / removeIf- MoveTrasher")
+  {
+    TestErase<MoveTrasher>();
+  }
 
   SECTION("Test constructing/assigning from other types")
   {
@@ -246,240 +671,7 @@ TEST_CASE("Test array type", "[basictypes]")
       CHECK(ass[2] == 4);
       CHECK(ass[3] == 5);
     };
-  };
-
-  SECTION("insert")
-  {
-    rdcarray<int> vec;
-    vec.insert(0, {});
-    REQUIRE(vec.size() == 0);
-    vec.insert(0, vec);
-    REQUIRE(vec.size() == 0);
-    vec.insert(0, NULL, 0);
-    REQUIRE(vec.size() == 0);
-    vec.insert(0, 5);
-    REQUIRE(vec.size() == 1);
-    CHECK(vec[0] == 5);
-
-    vec.insert(0, {6, 3, 13});
-    REQUIRE(vec.size() == 4);
-    CHECK(vec[0] == 6);
-    CHECK(vec[1] == 3);
-    CHECK(vec[2] == 13);
-    CHECK(vec[3] == 5);
-
-    vec.insert(0, 9);
-
-    REQUIRE(vec.size() == 5);
-    CHECK(vec[0] == 9);
-    CHECK(vec[1] == 6);
-    CHECK(vec[2] == 3);
-    CHECK(vec[3] == 13);
-    CHECK(vec[4] == 5);
-
-    vec.insert(3, 8);
-
-    REQUIRE(vec.size() == 6);
-    CHECK(vec[0] == 9);
-    CHECK(vec[1] == 6);
-    CHECK(vec[2] == 3);
-    CHECK(vec[3] == 8);
-    CHECK(vec[4] == 13);
-    CHECK(vec[5] == 5);
-
-    vec.insert(6, 4);
-
-    REQUIRE(vec.size() == 7);
-    CHECK(vec[0] == 9);
-    CHECK(vec[1] == 6);
-    CHECK(vec[2] == 3);
-    CHECK(vec[3] == 8);
-    CHECK(vec[4] == 13);
-    CHECK(vec[5] == 5);
-    CHECK(vec[6] == 4);
-
-    vec.insert(3, {20, 21});
-
-    REQUIRE(vec.size() == 9);
-    CHECK(vec[0] == 9);
-    CHECK(vec[1] == 6);
-    CHECK(vec[2] == 3);
-    CHECK(vec[3] == 20);
-    CHECK(vec[4] == 21);
-    CHECK(vec[5] == 8);
-    CHECK(vec[6] == 13);
-    CHECK(vec[7] == 5);
-    CHECK(vec[8] == 4);
-
-    // insert a large amount of data to ensure this doesn't read off start/end of vector
-    rdcarray<int> largedata;
-    largedata.resize(100000);
-
-    vec.insert(4, largedata);
-
-    REQUIRE(vec.size() == 9 + largedata.size());
-    CHECK(vec[0] == 9);
-    CHECK(vec[1] == 6);
-    CHECK(vec[2] == 3);
-    CHECK(vec[3] == 20);
-    CHECK(vec[4 + largedata.size()] == 21);
-    CHECK(vec[5 + largedata.size()] == 8);
-    CHECK(vec[6 + largedata.size()] == 13);
-    CHECK(vec[7 + largedata.size()] == 5);
-    CHECK(vec[8 + largedata.size()] == 4);
-
-    vec.clear();
-
-    REQUIRE(vec.size() == 0);
-
-    vec.insert(0, {6, 8, 10, 14, 16});
-
-    REQUIRE(vec.size() == 5);
-    CHECK(vec[0] == 6);
-    CHECK(vec[1] == 8);
-    CHECK(vec[2] == 10);
-    CHECK(vec[3] == 14);
-    CHECK(vec[4] == 16);
-
-    vec.insert(4, {20, 9, 9, 14, 7, 13, 10, 1, 1, 45});
-
-    REQUIRE(vec.size() == 15);
-    CHECK(vec[0] == 6);
-    CHECK(vec[1] == 8);
-    CHECK(vec[2] == 10);
-    CHECK(vec[3] == 14);
-    CHECK(vec[4] == 20);
-    CHECK(vec[5] == 9);
-    CHECK(vec[6] == 9);
-    CHECK(vec[7] == 14);
-    CHECK(vec[8] == 7);
-    CHECK(vec[9] == 13);
-    CHECK(vec[10] == 10);
-    CHECK(vec[11] == 1);
-    CHECK(vec[12] == 1);
-    CHECK(vec[13] == 45);
-    CHECK(vec[14] == 16);
-  };
-
-  SECTION("erase")
-  {
-    rdcarray<int> vec = {6, 3, 13, 5};
-
-    vec.erase(2);
-
-    REQUIRE(vec.size() == 3);
-    REQUIRE(vec.capacity() >= 4);
-    CHECK(vec[0] == 6);
-    CHECK(vec[1] == 3);
-    CHECK(vec[2] == 5);
-
-    vec.insert(2, {0, 1});
-
-    REQUIRE(vec.size() == 5);
-    CHECK(vec[0] == 6);
-    CHECK(vec[1] == 3);
-    CHECK(vec[2] == 0);
-    CHECK(vec[3] == 1);
-    CHECK(vec[4] == 5);
-
-    vec.erase(0);
-
-    REQUIRE(vec.size() == 4);
-    CHECK(vec[0] == 3);
-    CHECK(vec[1] == 0);
-    CHECK(vec[2] == 1);
-    CHECK(vec[3] == 5);
-
-    vec.erase(vec.size() - 1);
-
-    REQUIRE(vec.size() == 3);
-    CHECK(vec[0] == 3);
-    CHECK(vec[1] == 0);
-    CHECK(vec[2] == 1);
-
-    vec.erase(0, 3);
-
-    REQUIRE(vec.size() == 0);
-
-    vec = {5, 6, 3, 9, 1, 0};
-
-    vec.erase(2, 3);
-    REQUIRE(vec.size() == 3);
-    CHECK(vec[0] == 5);
-    CHECK(vec[1] == 6);
-    CHECK(vec[2] == 0);
-
-    vec = {5, 6, 3, 9, 1, 0};
-
-    vec.erase(3, 3);
-    REQUIRE(vec.size() == 3);
-    CHECK(vec[0] == 5);
-    CHECK(vec[1] == 6);
-    CHECK(vec[2] == 3);
-
-    vec = {5, 6, 3, 9, 1, 0};
-
-    vec.erase(3, 100);
-    REQUIRE(vec.size() == 3);
-    CHECK(vec[0] == 5);
-    CHECK(vec[1] == 6);
-    CHECK(vec[2] == 3);
-  };
-
-  SECTION("removeOne / removeOneIf / removeIf")
-  {
-    rdcarray<int> vec = {6, 3, 9, 6, 6, 3, 5, 15, 5};
-
-    vec.removeOne(3);
-
-    REQUIRE(vec.size() == 8);
-    CHECK(vec[0] == 6);
-    CHECK(vec[1] == 9);
-    CHECK(vec[2] == 6);
-    CHECK(vec[3] == 6);
-    CHECK(vec[4] == 3);
-    CHECK(vec[5] == 5);
-    CHECK(vec[6] == 15);
-    CHECK(vec[7] == 5);
-
-    vec.removeOne(3);
-
-    REQUIRE(vec.size() == 7);
-    CHECK(vec[0] == 6);
-    CHECK(vec[1] == 9);
-    CHECK(vec[2] == 6);
-    CHECK(vec[3] == 6);
-    CHECK(vec[4] == 5);
-    CHECK(vec[5] == 15);
-    CHECK(vec[6] == 5);
-
-    vec.removeOne(3);
-
-    REQUIRE(vec.size() == 7);
-    CHECK(vec[0] == 6);
-    CHECK(vec[1] == 9);
-    CHECK(vec[2] == 6);
-    CHECK(vec[3] == 6);
-    CHECK(vec[4] == 5);
-    CHECK(vec[5] == 15);
-    CHECK(vec[6] == 5);
-
-    vec.removeOneIf([](const int &el) { return (el % 3) == 0; });
-
-    REQUIRE(vec.size() == 6);
-    CHECK(vec[0] == 9);
-    CHECK(vec[1] == 6);
-    CHECK(vec[2] == 6);
-    CHECK(vec[3] == 5);
-    CHECK(vec[4] == 15);
-    CHECK(vec[5] == 5);
-
-    vec.removeIf([](const int &el) { return (el % 3) == 0; });
-
-    REQUIRE(vec.size() == 2);
-    CHECK(vec[0] == 5);
-    CHECK(vec[1] == 5);
-  };
+  }
 
   SECTION("resize_for_index")
   {
@@ -516,7 +708,95 @@ TEST_CASE("Test array type", "[basictypes]")
 
     CHECK(test.size() == 10);
     CHECK(test.capacity() >= 10);
+  }
+
+  SECTION("Comparison test with trivial type")
+  {
+    rdcarray<int> test;
+    rdcarray<int> test2;
+
+    test = {1, 2, 3, 4, 5, 6};
+    test2 = {1, 2, 3, 5, 6, 6};
+
+    CHECK(test < test2);
+    CHECK(test != test2);
+    CHECK_FALSE(test2 < test);
+
+    test2[3]--;
+    test2[4]--;
+
+    CHECK(test == test2);
+
+    test.pop_back();
+
+    // smaller arrays are considered less-than if all elements are equal
+    CHECK(test < test2);
+    CHECK_FALSE(test2 < test);
+    CHECK_FALSE(test == test2);
+
+    // if however one of the common prefix is greater, that's not true
+    test[0] += 10;
+    CHECK(test2 < test);
+    CHECK_FALSE(test < test2);
+    CHECK_FALSE(test == test2);
+
+    // ensure in the case of comparing different sized arrays we don't read off the end of one
+    rdcarray<int> emptyTest;
+
+    CHECK(emptyTest < test);
+    CHECK_FALSE(test < emptyTest);
+    CHECK_FALSE(test == test2);
   };
+
+  SECTION("Comparison test with non-trivial type")
+  {
+    rdcarray<NonTrivial> test;
+    rdcarray<NonTrivial> test2;
+
+    test.push_back(NonTrivial(1));
+    test.push_back(NonTrivial(2));
+    test.push_back(NonTrivial(3));
+    test.push_back(NonTrivial(4));
+    test.push_back(NonTrivial(5));
+    test.push_back(NonTrivial(6));
+
+    test2.push_back(NonTrivial(1));
+    test2.push_back(NonTrivial(2));
+    test2.push_back(NonTrivial(3));
+    test2.push_back(NonTrivial(3));
+    test2.push_back(NonTrivial(4));
+    test2.push_back(NonTrivial(6));
+
+    // order is reversed because custom NonTrivial < is reversed
+    CHECK(test < test2);
+    CHECK(test != test2);
+    CHECK_FALSE(test2 < test);
+
+    test2[3].val++;
+    test2[4].val++;
+
+    CHECK(test == test2);
+
+    test.pop_back();
+
+    // smaller arrays are considered less-than if all elements are equal
+    CHECK(test < test2);
+    CHECK_FALSE(test2 < test);
+    CHECK_FALSE(test == test2);
+
+    // if however one of the common prefix is greater, that's not true
+    test[0].val -= 10;
+    CHECK(test2 < test);
+    CHECK_FALSE(test < test2);
+    CHECK_FALSE(test == test2);
+
+    // ensure in the case of comparing different sized arrays we don't read off the end of one
+    rdcarray<NonTrivial> emptyTest;
+
+    CHECK(emptyTest < test);
+    CHECK_FALSE(test < emptyTest);
+    CHECK_FALSE(test == test2);
+  }
 
   SECTION("Check construction")
   {
@@ -913,6 +1193,30 @@ TEST_CASE("Test array type", "[basictypes]")
     CHECK(copyAssignment == 0);
     CHECK(moveAssignment == 0);
 
+    // insert an element at an invalid offset, this should do nothing
+    test.insert(100, &tmp, 1);
+
+    CHECK(test.size() == 6);
+    CHECK(valueConstructor == 4);
+    CHECK(copyConstructor == 2);
+    CHECK(moveConstructor == 6);
+    CHECK(destructor == 6);
+    CHECK(movedDestructor == 6);
+    CHECK(copyAssignment == 0);
+    CHECK(moveAssignment == 0);
+
+    // self-assignment should also do nothing
+    test = test;
+
+    CHECK(test.size() == 6);
+    CHECK(valueConstructor == 4);
+    CHECK(copyConstructor == 2);
+    CHECK(moveConstructor == 6);
+    CHECK(destructor == 6);
+    CHECK(movedDestructor == 6);
+    CHECK(copyAssignment == 0);
+    CHECK(moveAssignment == 0);
+
     // insert an element at 0, allowing it to move
     test.insert(4, ConstructorCounter(55));
 
@@ -936,6 +1240,108 @@ TEST_CASE("Test array type", "[basictypes]")
     CHECK(movedDestructor == 12);
     CHECK(copyAssignment == 0);
     CHECK(moveAssignment == 0);
+
+    test[1].value = 10;
+
+    CHECK(test[0].value == 9);
+    CHECK(test[1].value == 10);
+    CHECK(test[2].value == 5);
+    CHECK(test[3].value == 55);
+    CHECK(test[4].value == 25);
+    CHECK(test[5].value == 35);
+
+    // this should move
+    test.push_back(std::move(test[0]));
+
+    CHECK(test.back().value == 9);
+    CHECK(test.size() == 7);
+    CHECK(valueConstructor == 5);
+    CHECK(copyConstructor == 2);
+    CHECK(moveConstructor == 13);
+    CHECK(destructor == 13);
+    CHECK(movedDestructor == 12);
+    CHECK(copyAssignment == 0);
+    CHECK(moveAssignment == 0);
+
+    // insert by moving at the end, this will only do the one move construct from [1] to [7]
+    test.insert(7, std::move(test[1]));
+
+    CHECK(test[7].value == 10);
+    CHECK(test.size() == 8);
+    CHECK(valueConstructor == 5);
+    CHECK(copyConstructor == 2);
+    CHECK(moveConstructor == 14);
+    CHECK(destructor == 13);
+    CHECK(movedDestructor == 12);
+    CHECK(copyAssignment == 0);
+    CHECK(moveAssignment == 0);
+
+    // insert with some moves required to shuffle up values, but the move itself still happens from
+    // the same element (lower to higher index)
+    test.insert(5, std::move(test[2]));
+
+    CHECK(test[5].value == 5);
+    CHECK(test.size() == 9);
+    CHECK(valueConstructor == 5);
+    CHECK(copyConstructor == 2);
+    CHECK(moveConstructor == 18);
+    CHECK(destructor == 16);
+    CHECK(movedDestructor == 15);
+    CHECK(copyAssignment == 0);
+    CHECK(moveAssignment == 0);
+
+    // insert with some moves required to shuffle up values, plus the move itself happens from one
+    // of the moved elements
+    test.insert(7, std::move(test[8]));
+
+    CHECK(test[7].value == 10);
+    CHECK(test.size() == 10);
+    CHECK(valueConstructor == 5);
+    CHECK(copyConstructor == 2);
+    CHECK(moveConstructor == 21);
+    CHECK(destructor == 18);
+    CHECK(movedDestructor == 17);
+    CHECK(copyAssignment == 0);
+    CHECK(moveAssignment == 0);
+
+    // invalid move insert
+    test.insert(100, std::move(test[8]));
+
+    CHECK(test[7].value == 10);
+    CHECK(test.size() == 10);
+    CHECK(valueConstructor == 5);
+    CHECK(copyConstructor == 2);
+    CHECK(moveConstructor == 21);
+    CHECK(destructor == 18);
+    CHECK(movedDestructor == 17);
+    CHECK(copyAssignment == 0);
+    CHECK(moveAssignment == 0);
+
+    // move append
+    rdcarray<ConstructorCounter> other = {1, 2, 3};
+
+    CHECK(valueConstructor == 8);
+    CHECK(copyConstructor == 5);
+    CHECK(moveConstructor == 21);
+    CHECK(destructor == 21);
+    CHECK(movedDestructor == 17);
+    CHECK(copyAssignment == 0);
+    CHECK(moveAssignment == 0);
+
+    test.append(std::move(other));
+
+    CHECK(valueConstructor == 8);
+    CHECK(copyConstructor == 5);
+    CHECK(moveConstructor == 24);
+    CHECK(destructor == 24);
+    CHECK(movedDestructor == 20);
+    CHECK(copyAssignment == 0);
+    CHECK(moveAssignment == 0);
+
+    CHECK(test.size() == 13);
+    CHECK(test[10].value == 1);
+    CHECK(test[11].value == 2);
+    CHECK(test[12].value == 3);
   };
 };
 
@@ -1082,7 +1488,6 @@ TEST_CASE("Test string type", "[basictypes][string]")
   SECTION("Assigning a string to itself")
   {
     auto lambda = [](rdcstr test) {
-
       // create a version without doing self-insertion
       rdcstr test2 = test;
 
@@ -1109,7 +1514,6 @@ TEST_CASE("Test string type", "[basictypes][string]")
   SECTION("Inserting from string into itself")
   {
     auto lambda = [](rdcstr test) {
-
       // create a version without doing self-insertion
       rdcstr test2 = test;
 
@@ -1791,6 +2195,12 @@ TEST_CASE("Test string type", "[basictypes][string]")
     CHECK_FALSE(test == rdcinflexiblestr("Hello, World!"));
     CHECK_FALSE(test.empty());
 
+    CHECK(test.beginsWith("Hello"));
+    CHECK(test.beginsWith(""));
+    CHECK_FALSE(test.beginsWith(NULL));
+    CHECK_FALSE(test.beginsWith("Hello!"));
+    CHECK_FALSE(test.beginsWith("Hello, World!!"));
+
     rdcstr str = test;
 
     CHECK(str == "Hello, World");
@@ -2002,10 +2412,23 @@ TEST_CASE("Test flatmap type", "[basictypes][flatmap]")
     CHECK(test.find(5)->second == "foo");
   };
 
+  SECTION("empty_map")
+  {
+    rdcflatmap<uint32_t, uint32_t> unsorted;
+    CHECK(unsorted.begin() == unsorted.end());
+    CHECK(unsorted.find(0) == unsorted.end());
+
+    rdcflatmap<uint32_t, uint32_t, 0> sorted;
+    CHECK(sorted.begin() == sorted.end());
+    CHECK(sorted.find(0) == sorted.end());
+  }
+}
+
+TEST_CASE("Test sorted flatmap type", "[basictypes][sortedflatmap]")
+{
   SECTION("upper_bound")
   {
-    // set SortThreshold to 0 to force sorted semantics always
-    rdcflatmap<uint32_t, rdcstr, 0> test;
+    rdcsortedflatmap<uint32_t, rdcstr> test;
 
     test[5] = "foo";
     test[7] = "bar";
@@ -2048,6 +2471,13 @@ TEST_CASE("Test flatmap type", "[basictypes][flatmap]")
     it = test.upper_bound(8);
     CHECK(it == test.end());
   };
+
+  SECTION("empty_map")
+  {
+    rdcsortedflatmap<uint32_t, uint32_t> sortedflatmap;
+    CHECK(sortedflatmap.lower_bound(1) == 0);
+    CHECK(sortedflatmap.upper_bound(2) == 0);
+  }
 };
 
 union foo
@@ -2062,6 +2492,7 @@ TEST_CASE("Test rdcfixedarray type", "[basictypes][rdcfixedarray]")
   SECTION("Basic test")
   {
     rdcfixedarray<int32_t, 8> test = {};
+    const rdcfixedarray<int32_t, 8> &constTest = test;
 
     CHECK(test.size() == 8);
     CHECK(test.byteSize() == 32);
@@ -2075,10 +2506,29 @@ TEST_CASE("Test rdcfixedarray type", "[basictypes][rdcfixedarray]")
     CHECK(!test.contains(2));
     CHECK(test.indexOf(8) == 5);
     CHECK(test.indexOf(9) == -1);
-
     CHECK(test[0] == 4);
     CHECK(test[2] == 77);
     CHECK(test[4] == 0);
+    CHECK(test.front() == 4);
+    CHECK(test.back() == 934);
+    CHECK(test.data()[0] == 4);
+    CHECK(test.data()[2] == 77);
+    CHECK(test.begin() != test.end());
+    CHECK(test.begin() + 8 == test.end());
+
+    CHECK(constTest.contains(1));
+    CHECK(!constTest.contains(2));
+    CHECK(constTest.indexOf(8) == 5);
+    CHECK(constTest.indexOf(9) == -1);
+    CHECK(constTest[0] == 4);
+    CHECK(constTest[2] == 77);
+    CHECK(constTest[4] == 0);
+    CHECK(constTest.front() == 4);
+    CHECK(constTest.back() == 934);
+    CHECK(constTest.data()[0] == 4);
+    CHECK(constTest.data()[2] == 77);
+    CHECK(constTest.begin() != constTest.end());
+    CHECK(constTest.begin() + 8 == constTest.end());
 
     int sum = 0;
     for(int x : test)
@@ -2097,6 +2547,40 @@ TEST_CASE("Test rdcfixedarray type", "[basictypes][rdcfixedarray]")
       sum += x;
 
     CHECK(sum == 1045);
+
+    rdcfixedarray<int32_t, 8> test2 = {1, 2, 3, 4};
+
+    CHECK(test2[0] == 1);
+    CHECK(test2[1] == 2);
+    CHECK(test2[2] == 3);
+    CHECK(test2[3] == 4);
+    CHECK(test2[4] == 0);
+    CHECK(test2[5] == 0);
+    CHECK(test2[6] == 0);
+    CHECK(test2[7] == 0);
+
+    int32_t arr[8] = {5, 6, 7, 8};
+
+    test2 = arr;
+
+    CHECK(test2[0] == 5);
+    CHECK(test2[1] == 6);
+    CHECK(test2[2] == 7);
+    CHECK(test2[3] == 8);
+    CHECK(test2[4] == 0);
+    CHECK(test2[5] == 0);
+    CHECK(test2[6] == 0);
+    CHECK(test2[7] == 0);
+
+    CHECK(test < test2);
+    CHECK_FALSE(test2 < test);
+    CHECK_FALSE(test == test2);
+    CHECK(test != test2);
+
+    test2[0] = 3;
+
+    CHECK(test2 < test);
+    CHECK_FALSE(test < test2);
   };
 
   SECTION("Test of rdcfixedarray of ResourceId")
@@ -2124,5 +2608,432 @@ TEST_CASE("Test rdcfixedarray type", "[basictypes][rdcfixedarray]")
     CHECK(u.u32v[0] == 0);
   };
 };
+
+void Permute(rdcarray<uint32_t> &order, size_t l, rdcarray<rdcarray<uint32_t>> &permutations)
+{
+  if(l == order.size())
+    permutations.push_back(order);
+
+  for(size_t i = l; i < order.size(); ++i)
+  {
+    uint32_t temp = order[l];
+    order[l] = order[i];
+    order[i] = temp;
+
+    Permute(order, l + 1, permutations);
+
+    temp = order[l];
+    order[l] = order[i];
+    order[i] = temp;
+  }
+}
+
+template <typename container>
+void CheckKeyValues(container &trie, KV *keyVals, size_t numKeyVals, const bytebuf &missing)
+{
+  for(size_t i = 0; i <= numKeyVals; i++)
+  {
+    // check all keys added so far are contained and lookup if so
+    for(size_t j = 0; j < numKeyVals; j++)
+    {
+      if(j < i)
+      {
+        CHECK(trie.contains(keyVals[j].first));
+        CHECK(trie.lookup(keyVals[j].first) == keyVals[j].second);
+      }
+      else
+      {
+        CHECK_FALSE(trie.contains(keyVals[j].first));
+      }
+    }
+
+    CHECK_FALSE(trie.contains(missing));
+    CHECK(trie.lookup(missing) == TrieValue());
+
+    // add the key
+    if(i < numKeyVals)
+      CHECK(trie.insert(keyVals[i].first, keyVals[i].second));
+  }
+
+  // duplicate insertion is fine
+  CHECK(trie.insert(keyVals[0].first, keyVals[0].second));
+
+  CHECK(trie.lookup(keyVals[0].first) == keyVals[0].second);
+
+  // differing values is the problem
+  EXPECT_ERROR();
+
+  CHECK_FALSE(trie.insert(keyVals[0].first, keyVals[0].second.id + 1));
+
+  CHECK(DID_ERROR_HAPPEN());
+
+  CHECK(trie.lookup(keyVals[0].first) == keyVals[0].second);
+}
+
+TEST_CASE("Test rdcbytetrie type", "[basictypes][rdcbytetrie]")
+{
+  rdcbytetrie<TrieValue> trie;
+
+  trie.SetStrictErrorChecking(true);
+
+  SECTION("Simple lookups")
+  {
+    KV keyVals[] = {
+        {{1, 1}, 1},
+        {{1, 2}, 2},
+        {{3, 2}, 3},
+    };
+    bytebuf d = {1, 3};
+
+    CheckKeyValues(trie, keyVals, ARRAY_COUNT(keyVals), d);
+  }
+
+  SECTION("different sized keys, expanding length")
+  {
+    KV keyVals[] = {
+        //
+        {{1}, TrieValue(1)},
+        //
+        {{1, 2}, TrieValue(2)},
+        //
+        {{1, 2, 3}, TrieValue(3)},
+        //
+        {{1, 2, 4}, TrieValue(4)},
+        //
+        {{2, 1, 1}, TrieValue(5)},
+        //
+        {{2, 1, 6}, TrieValue(6)},
+        //
+        {{2, 1, 6, 9, 9}, TrieValue(7)},
+    };
+    bytebuf d = {1, 3};
+
+    CheckKeyValues(trie, keyVals, ARRAY_COUNT(keyVals), d);
+  }
+
+  SECTION("different sized keys, contracting length")
+  {
+    KV keyVals[] = {
+        //
+        {{1, 1, 1, 2, 3}, TrieValue(1)},
+        //
+        {{1, 1, 1}, TrieValue(8)},
+        //
+        {{1, 1, 1, 2, 4}, TrieValue(2)},
+        //
+        {{1, 1, 1, 3}, TrieValue(3)},
+        //
+        {{1, 2}, TrieValue(4)},
+        //
+        {{2, 1, 1}, TrieValue(5)},
+        //
+        {{2, 1, 6}, TrieValue(6)},
+        //
+        {{1}, TrieValue(7)},
+    };
+    bytebuf d = {1, 3};
+
+    CheckKeyValues(trie, keyVals, ARRAY_COUNT(keyVals), d);
+  }
+
+  SECTION("Varying key size with common prefixes, adding in all possible orders")
+  {
+    // Create keys in chunks of two identical bytes
+    rdcarray<KV> rawKeyVals;
+    uint32_t id = 1;
+    for(uint32_t i = 0; i < 2; ++i)
+    {
+      for(uint32_t j = 0; j < 2; ++j)
+      {
+        for(uint32_t k = 0; k < 2; ++k)
+        {
+          bytebuf key;
+          key.push_back((byte)(1 + i));
+          key.push_back((byte)(1 + i));
+          key.push_back((byte)(1 + i + j));
+          key.push_back((byte)(1 + i + j));
+          if(k > 0)
+          {
+            key.push_back((byte)(1 + i + j + k));
+            key.push_back((byte)(1 + i + j + k));
+          }
+          KV kv;
+          kv.first = key;
+          kv.second = TrieValue(id);
+          rawKeyVals.push_back(kv);
+          ++id;
+        }
+      }
+    }
+
+    // Insert the keys in all possible orders
+    size_t countKeys = rawKeyVals.size();
+    rdcarray<uint32_t> baseOrder;
+    baseOrder.resize(countKeys);
+    for(uint32_t i = 0; i < countKeys; ++i)
+      baseOrder[i] = i;
+
+    // Eight keys is approx 40,000 permutations
+    rdcarray<rdcarray<uint32_t>> permutations;
+    Permute(baseOrder, 0, permutations);
+
+    for(const rdcarray<uint32_t> &order : permutations)
+    {
+      rdcarray<KV> keyVals;
+      keyVals.resize(countKeys);
+      for(uint32_t i = 0; i < countKeys; ++i)
+      {
+        uint32_t idx = order[i];
+        keyVals[i] = rawKeyVals[idx];
+      }
+      rdcbytetrie<TrieValue> t;
+      // Add all the keys
+      for(size_t i = 0; i < countKeys; i++)
+        CHECK(t.insert(keyVals[i].first, keyVals[i].second));
+
+      // check all keys are contained
+      for(size_t j = 0; j < countKeys; j++)
+      {
+        CHECK(t.contains(keyVals[j].first));
+        CHECK(t.lookup(keyVals[j].first) == keyVals[j].second);
+      }
+    }
+  }
+
+  SECTION("Invalid key size")
+  {
+    bytebuf a;
+
+    a.resize(512);
+
+    TrieValue val(1);
+
+    EXPECT_ERROR();
+    CHECK_FALSE(trie.contains(a));
+    CHECK(DID_ERROR_HAPPEN());
+
+    EXPECT_ERROR();
+    CHECK_FALSE(trie.insert(a, val));
+    CHECK(DID_ERROR_HAPPEN());
+
+    EXPECT_ERROR();
+    CHECK_FALSE(trie.contains(a));
+    CHECK(DID_ERROR_HAPPEN());
+  }
+
+  SECTION("long common prefix with last byte varying")
+  {
+    bytebuf keys[80];
+    TrieValue vals[80];
+
+    keys[0].fill(200, 1);
+    for(uint8_t i = 1; i < 80; i++)
+      keys[i] = keys[0];
+
+    for(uint8_t i = 0; i < 80; i++)
+      keys[i].push_back(2 + i);
+
+    for(uint8_t i = 0; i < 80; i++)
+      CHECK_FALSE(trie.contains(keys[i]));
+
+    for(uint8_t i = 0; i < 80; i++)
+    {
+      vals[i] = 5 + i;
+      CHECK(trie.insert(keys[i], vals[i]));
+    }
+
+    for(uint8_t i = 0; i < 80; i++)
+    {
+      CHECK(trie.contains(keys[i]));
+      CHECK(trie.lookup(keys[i]) == vals[i]);
+    }
+  }
+
+  SECTION("first byte varying with long suffix")
+  {
+    bytebuf keys[80];
+    TrieValue vals[80];
+
+    for(uint8_t i = 0; i < 80; i++)
+    {
+      keys[i].fill(200, 1);
+      keys[i].insert(0, 2 + i);
+    }
+
+    for(uint8_t i = 0; i < 80; i++)
+      CHECK_FALSE(trie.contains(keys[i]));
+
+    for(uint8_t i = 0; i < 80; i++)
+    {
+      vals[i] = 5 + i;
+      CHECK(trie.insert(keys[i], vals[i]));
+    }
+
+    for(uint8_t i = 0; i < 80; i++)
+    {
+      CHECK(trie.contains(keys[i]));
+      CHECK(trie.lookup(keys[i]) == vals[i]);
+    }
+  }
+
+  SECTION("middle varying byte with medium prefix/suffix")
+  {
+    bytebuf keys[80];
+    TrieValue vals[80];
+
+    for(uint8_t i = 0; i < 80; i++)
+    {
+      keys[i].fill(200, 1);
+      keys[i].insert(100, 2 + i);
+    }
+
+    for(uint8_t i = 0; i < 80; i++)
+      CHECK_FALSE(trie.contains(keys[i]));
+
+    for(uint8_t i = 0; i < 80; i++)
+    {
+      vals[i] = 5 + i;
+      CHECK(trie.insert(keys[i], vals[i]));
+    }
+
+    for(uint8_t i = 0; i < 80; i++)
+    {
+      CHECK(trie.contains(keys[i]));
+      CHECK(trie.lookup(keys[i]) == vals[i]);
+    }
+  }
+
+  SECTION("middle shared sequences with prefix/suffix")
+  {
+    bytebuf keys[80];
+    TrieValue vals[80];
+
+    for(uint8_t i = 0; i < 80; i++)
+    {
+      keys[i].fill(150, 1);
+      keys[i].insert(100, i >> 3);
+      keys[i].insert(101, i >> 3);
+
+      keys[i].insert(102, i >> 2);
+      keys[i].insert(103, i >> 2);
+
+      keys[i].insert(104, i);
+    }
+
+    for(uint8_t i = 0; i < 80; i++)
+      CHECK_FALSE(trie.contains(keys[i]));
+
+    for(uint8_t i = 0; i < 80; i++)
+    {
+      vals[i] = 5 + i;
+      CHECK(trie.insert(keys[i], vals[i]));
+    }
+
+    for(uint8_t i = 0; i < 80; i++)
+    {
+      CHECK(trie.contains(keys[i]));
+      CHECK(trie.lookup(keys[i]) == vals[i]);
+    }
+  }
+
+  SECTION("'real' descriptors of palletised indices")
+  {
+    rdcarray<KV> keyVals;
+
+    struct indices
+    {
+      uint32_t a : 20;
+      uint32_t b : 12;
+    };
+
+    bytebuf k;
+    k.resize(sizeof(indices));
+    indices *i = (indices *)k.data();
+
+    for(uint32_t b = 0; b < 2000; b += 50 + (rand() & 0x3f))
+    {
+      for(uint32_t a = 0; a < 1000000; a += 1000 + (rand() & 0x3fff))
+      {
+        i->a = a;
+        i->b = b;
+
+        keyVals.push_back({k, TrieValue(b + a)});
+      }
+    }
+
+    CheckKeyValues(trie, keyVals.data(), keyVals.size(), bytebuf());
+  }
+
+  SECTION("'real' descriptors of pointer + size")
+  {
+    rdcarray<KV> keyVals;
+
+    struct pointerSize
+    {
+      uint64_t ptr;
+      uint64_t sz;
+    };
+
+    bytebuf k;
+    k.resize(sizeof(pointerSize));
+    pointerSize *p = (pointerSize *)k.data();
+
+    for(uint32_t b = 0; b < 0xfffff; b += 0x8000 + (rand() & 0xfff))
+    {
+      for(uint32_t a = 0; a < 0xfffffff; a += 0x600000 + (rand() & 0xfffff))
+      {
+        p->ptr = 0xdeadbeef + a;
+        p->sz = 0xf00b + b;
+
+        keyVals.push_back({k, TrieValue(b + a)});
+      }
+    }
+
+    CheckKeyValues(trie, keyVals.data(), keyVals.size(), bytebuf());
+  }
+
+  SECTION("'real' descriptors which are large with pointer + size")
+  {
+    rdcarray<KV> keyVals;
+
+    struct pointerSize
+    {
+      uint64_t padding1;
+      uint64_t padding2;
+      uint64_t ptr;
+      uint64_t padding3;
+      uint32_t sz;
+      uint32_t padding4;
+      uint64_t padding5;
+      uint64_t padding6;
+      uint64_t padding7;
+    };
+
+    bytebuf k;
+    k.resize(sizeof(pointerSize));
+    pointerSize *p = (pointerSize *)k.data();
+
+    p->padding1 = 0xDBBAE716BAB4;
+    p->padding2 = 0x3F097C6CC886;
+    p->padding3 = 0xD8D877E8012C;
+    p->padding4 = 0xFB97503B;
+    p->padding5 = 0x43C5E4856EED;
+    p->padding6 = 0x530E8ACF5452;
+    p->padding7 = 0x93D8819988A2;
+
+    for(uint32_t b = 0; b < 0xfffff; b += 0x8000 + (rand() & 0xfff))
+    {
+      for(uint32_t a = 0; a < 0xfffffff; a += 0x600000 + (rand() & 0xfffff))
+      {
+        p->ptr = 0xdeadbeef + a;
+        p->sz = 0xf00b + b;
+
+        keyVals.push_back({k, TrieValue(b + a)});
+      }
+    }
+
+    CheckKeyValues(trie, keyVals.data(), keyVals.size(), bytebuf());
+  }
+}
 
 #endif    // ENABLED(ENABLE_UNIT_TESTS)
