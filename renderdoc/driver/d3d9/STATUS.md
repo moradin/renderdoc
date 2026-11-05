@@ -30,12 +30,12 @@ The Windows test reports this file refers to (`d3d9_*.md`, with their screenshot
   D3DPOOL_DEFAULT reference), and for crashes after Reset (stale back buffer or depth stencil
   wrappers).
 - The D3DPERF marker hooks moved to the D3D11 project upstream. They now share `d3d9.dll` with our
-  device creation hooks; check that markers still show up in D3D11 captures of apps that use them.
-  `D3D11_D3DPERF_Markers` draws inside D3DPERF regions and a marker, with no D3D9 device, and
-  `util/test/d3d11_d3dperf_check.py capture.rdc` checks the capture's action tree. Its log prints
-  what the D3DPERF functions returned; that should be the same natively and under RenderDoc, since
-  `D3D11_Refcount_Check` relies on `D3DPERF_EndEvent`'s return value, so run that test under
-  RenderDoc too. Not run on Windows yet.
+  device creation hooks. `D3D11_D3DPERF_Markers` draws inside D3DPERF regions and a marker, with no
+  D3D9 device, and `util/test/d3d11_d3dperf_check.py capture.rdc` checks the capture's action tree.
+  Tested in `d3d9_formats_d3dperf_test.md`: the markers nest as drawn and keep their colours, and
+  upstream's `D3D11_Refcount_Check` passes under RenderDoc. The D3DPERF functions return different
+  values under RenderDoc (BeginEvent 0 where native returns -1); that's upstream's D3D11 hook, and
+  the refcount test doesn't depend on it.
 - Toggling the overlay in a real game shouldn't change anything in the scene. The overlay saves and
   restores only the state it changes; that's tested with `D3D9_Frame_Start_State` and the wrapping
   checks, but not yet in a game.
@@ -426,9 +426,18 @@ Known gaps:
 - Custom display shaders aren't supported: `GetCustomShaderEncodings` is empty, so the texture
   viewer doesn't list or offer to create any. The overlays are in phase 3e (below).
 - P8 and A8P8 show their indices, not the palette colours.
-- ATI2 is decoded with its first block as red, like BC5. Some tools swap ATI2's channels;
-  `D3D9_Texture_Formats` checks it against what the GPU samples (see "Checking texture formats"
-  below). Not run on Windows yet.
+- (Fixed after `d3d9_formats_d3dperf_test.md`.) ATI2 was decoded like BC5, with the first half of
+  each block as red. D3D9 samples the second half as red and the first as green, so the decode and
+  `GetTextureData` (which describes ATI2 as BC5) now swap the halves.
+- (Fixed after `d3d9_formats_d3dperf_test.md`.) Drivers report ATI1 and ATI2's lock Pitch as one byte
+  per pixel column (16 for a 16 wide level), less than a row of their blocks, while the GPU reads the
+  blocks tightly packed. Capture copied only Pitch bytes of each row, so most of the texture was
+  lost. Reading, recording and writing locks of these now use the size of a row of blocks when the
+  reported Pitch is smaller (`D3D9LockedRowPitch`). Locks of part of an ATI1/ATI2 level aren't
+  tested: where the runtime puts the region's first block isn't known.
+- (Fixed after `d3d9_formats_d3dperf_test.md`.) DXT2-5 colours were decoded on the CPU with DXT1's
+  3-colour palette when the first endpoint isn't bigger, which only DXT1 has. This affected pick
+  pixel and the texture viewer's values, not the GPU sampling at replay.
 - D32 depth is read back to 24 bits and described as D32_FLOAT by 3a, so its raw data in the
   buffer view of the texture looks wrong, though display and pick pixel are right. D24FS8 and
   D3DMULTISAMPLE_NONMASKABLE depth stencils can't be read, so they don't display.
@@ -485,13 +494,20 @@ every texel.
   samples them (L8 samples as LLL1 and decodes as L001), so the script maps decoded channels to
   sampled ones per format. ATI1 compares red only, and ATI2 red and green: a swapped ATI2 shows as
   `decoded r = GPU g` and `decoded g = GPU r`. P8, A8P8, YUY2 and UYVY aren't compared (palette
-  indices, and YUV decoded as Cr, Y, Cb), only printed. The tolerance is 0.01, 0.02 for the block
-  formats and 1e-5 for float formats.
+  indices, and YUV decoded as Cr, Y, Cb), only printed. The tolerance is 0.01, 0.03 for the block
+  formats (NVIDIA's DXT green and BC4/BC5 6-value mode differ from the spec's interpolation by up to
+  0.024) and 1e-5 for float formats.
 - the render target at replay with the reference, which checks the capture reproduces each
   texture's data and the GPU samples it the same way at replay.
 
 It ends with the passed, failed and uncompared formats, the formats the GPU doesn't support, and
-the render target result. Not run on Windows yet.
+the render target result.
+
+The first run (`d3d9_formats_d3dperf_test.md`, RTX 4070 Ti, 31 formats supported) passed 25 formats
+and failed DXT2-5, ATI1 and ATI2, and the render target at replay differed for ATI1 and ATI2. The
+three causes above (ATI2's channel order, ATI1/ATI2 lock pitch, DXT2-5's palette) are fixed, and
+the demo now writes ATI1/ATI2 rows tightly packed too. Not retested yet. Decoding the demo's DXT2-5
+data with the new code matches that run's GPU reference within 0.02.
 
 ## Pipeline state (phase 3c)
 

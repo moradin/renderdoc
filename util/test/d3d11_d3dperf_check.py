@@ -40,7 +40,7 @@ def tree(actions, sdfile, colours):
             continue
         if a.flags & rd.ActionFlags.Drawcall:
             out.append('Draw')
-        elif a.flags & (rd.ActionFlags.PushPopMarker | rd.ActionFlags.SetMarker) or a.children:
+        elif a.flags & (rd.ActionFlags.PushMarker | rd.ActionFlags.SetMarker) or a.children:
             name = a.GetName(sdfile)
             c = a.markerColor
             colours[name] = (c.x, c.y, c.z)

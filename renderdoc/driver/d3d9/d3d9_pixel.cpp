@@ -340,6 +340,34 @@ bool DecodePair(D3DFORMAT format, const byte *p, FloatVector &a, FloatVector &b)
   }
 }
 
+// The colour half of a DXT2-5 block, into rgba's red, green and blue. These always use the
+// 4-colour palette, whichever endpoint is bigger. The compressonator decoders switch to DXT1's
+// 3-colour palette with transparent black when c0 <= c1, which GPUs don't do for these formats.
+void DecodeColours4(const byte *p, byte rgba[64])
+{
+  const uint16_t c0 = uint16_t(p[0] | (p[1] << 8)), c1 = uint16_t(p[2] | (p[3] << 8));
+  const uint32_t bits = uint32_t(p[4] | (p[5] << 8) | (p[6] << 16) | (p[7] << 24));
+
+  const auto expand = [](uint16_t c, byte out[3]) {
+    const uint32_t r = (c >> 11) & 0x1f, g = (c >> 5) & 0x3f, b = c & 0x1f;
+    out[0] = byte((r << 3) | (r >> 2));
+    out[1] = byte((g << 2) | (g >> 4));
+    out[2] = byte((b << 3) | (b >> 2));
+  };
+
+  byte palette[4][3];
+  expand(c0, palette[0]);
+  expand(c1, palette[1]);
+  for(int c = 0; c < 3; c++)
+  {
+    palette[2][c] = byte((2 * palette[0][c] + palette[1][c] + 1) / 3);
+    palette[3][c] = byte((palette[0][c] + 2 * palette[1][c] + 1) / 3);
+  }
+
+  for(int i = 0; i < 16; i++)
+    memcpy(&rgba[i * 4], palette[(bits >> (i * 2)) & 0x3], 3);
+}
+
 // 4x4 blocks: fills 16 texels, row by row
 bool DecodeBlock(D3DFORMAT format, const byte *p, FloatVector texels[16])
 {
@@ -348,9 +376,15 @@ bool DecodeBlock(D3DFORMAT format, const byte *p, FloatVector texels[16])
   {
     case D3DFMT_DXT1: DecompressBlockBC1(p, rgba, NULL); break;
     case D3DFMT_DXT2:
-    case D3DFMT_DXT3: DecompressBlockBC2(p, rgba, NULL); break;
+    case D3DFMT_DXT3:
+      DecompressBlockBC2(p, rgba, NULL);
+      DecodeColours4(p + 8, rgba);
+      break;
     case D3DFMT_DXT4:
-    case D3DFMT_DXT5: DecompressBlockBC3(p, rgba, NULL); break;
+    case D3DFMT_DXT5:
+      DecompressBlockBC3(p, rgba, NULL);
+      DecodeColours4(p + 8, rgba);
+      break;
     case MAKEFOURCC('A', 'T', 'I', '1'):
     {
       byte r[16] = {};
@@ -359,10 +393,15 @@ bool DecodeBlock(D3DFORMAT format, const byte *p, FloatVector texels[16])
         texels[i] = FloatVector(UNorm(r[i], 8), 0.0f, 0.0f, 1.0f);
       return true;
     }
+    // D3D9 samples ATI2's second half as red and its first as green, the other way around from
+    // BC5. ReadSubresource's data is in D3D9's order, so swap the halves to decode it as BC5.
     case MAKEFOURCC('A', 'T', 'I', '2'):
     {
+      byte swapped[16];
+      memcpy(swapped, p + 8, 8);
+      memcpy(swapped + 8, p, 8);
       byte r[16] = {}, g[16] = {};
-      DecompressBlockBC5(p, r, g, NULL);
+      DecompressBlockBC5(swapped, r, g, NULL);
       for(int i = 0; i < 16; i++)
         texels[i] = FloatVector(UNorm(r[i], 8), UNorm(g[i], 8), 0.0f, 1.0f);
       return true;

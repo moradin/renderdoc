@@ -67,6 +67,12 @@ struct D3D9FormatBlock
 
 D3D9FormatBlock D3D9GetFormatBlock(D3DFORMAT format);
 
+// The row pitch of memory locked with Pitch, for a level width pixels wide. Drivers report ATI1
+// and ATI2's Pitch as one byte per pixel column (16 for 16 pixels), less than a row of their
+// blocks, but the GPU reads their blocks tightly packed, one row of blocks after another, and
+// apps have to write them that way. So for those this is the size of a row of blocks.
+uint32_t D3D9LockedRowPitch(D3DFORMAT format, uint32_t width, uint32_t pitch);
+
 // Part of an object's contents. For textures and surfaces the region is in pixels, for buffers in
 // bytes (with Height and Depth 1). Data holds RowCount rows of RowPitch bytes for each slice.
 struct D3D9SubresourceData

@@ -198,13 +198,21 @@ D3DFORMAT TextureFormat(WrappedD3D9Object *obj)
   return desc.Format;
 }
 
-// An X format's unused bits hold whatever was last written there, usually 0. RenderDoc describes
-// these formats with alpha in those bits (B8G8R8X8 reads its X as alpha too), so they're set to
-// what sampling the texture returns: 1.
-void SetUnusedAlpha(D3DFORMAT format, bytebuf &data)
+// Changes data where D3D9's layout differs from the format RenderDoc describes it with:
+// - An X format's unused bits hold whatever was last written there, usually 0. RenderDoc describes
+//   these formats with alpha in those bits (B8G8R8X8 reads its X as alpha too), so they're set to
+//   what sampling the texture returns: 1.
+// - ATI2 is described as BC5, but D3D9 samples the second half of each block as red and the first
+//   as green, so the halves are swapped.
+void MatchDescribedFormat(D3DFORMAT format, bytebuf &data)
 {
   switch((DWORD)format)
   {
+    case MAKEFOURCC('A', 'T', 'I', '2'):
+      for(size_t i = 0; i + 15 < data.size(); i += 16)
+        for(size_t j = 0; j < 8; j++)
+          std::swap(data[i + j], data[i + j + 8]);
+      break;
     case D3DFMT_X8R8G8B8:
     case D3DFMT_X8B8G8R8:
       for(size_t i = 0; i + 3 < data.size(); i += 4)
@@ -578,7 +586,7 @@ void D3D9Replay::GetTextureData(ResourceId tex, const Subresource &sub,
 
   data.swap(contents.Data);
 
-  SetUnusedAlpha(TextureFormat(obj), data);
+  MatchDescribedFormat(TextureFormat(obj), data);
 
   if(params.remap == RemapTexture::NoRemap)
     return;

@@ -137,6 +137,20 @@ uint32_t BlocksFor(uint32_t pixels, uint32_t blockSize)
 {
   return (pixels + blockSize - 1) / blockSize;
 }
+};
+
+uint32_t D3D9LockedRowPitch(D3DFORMAT format, uint32_t width, uint32_t pitch)
+{
+  if(format == MAKEFOURCC('A', 'T', 'I', '1') || format == MAKEFOURCC('A', 'T', 'I', '2'))
+  {
+    const D3D9FormatBlock block = D3D9GetFormatBlock(format);
+    return RDCMAX(pitch, BlocksFor(width, block.Width) * block.Bytes);
+  }
+  return pitch;
+}
+
+namespace
+{
 
 bool IsLockableDepth(D3DFORMAT format)
 {
@@ -197,6 +211,8 @@ bool WriteShadow(bytebuf &shadow, D3DFORMAT format, uint32_t width, uint32_t hei
   D3D9FormatBlock block = D3D9GetFormatBlock(format);
   if(block.Bytes == 0 || src == NULL)
     return false;
+
+  srcRowPitch = D3D9LockedRowPitch(format, width, srcRowPitch);
 
   const uint32_t rowPitch = BlocksFor(width, block.Width) * block.Bytes;
   const uint32_t rowCount = BlocksFor(height, block.Height);
@@ -402,7 +418,8 @@ rdcstr LockSurface(IDirect3DSurface9 *surf, const D3DSURFACE_DESC &desc, D3D9Sub
 
   sub.Width = desc.Width;
   sub.Height = desc.Height;
-  D3D9CopyFromLocked(sub, desc.Format, locked.pBits, (uint32_t)locked.Pitch, 0);
+  D3D9CopyFromLocked(sub, desc.Format, locked.pBits,
+                     D3D9LockedRowPitch(desc.Format, desc.Width, (uint32_t)locked.Pitch), 0);
 
   surf->UnlockRect();
   return rdcstr();
@@ -765,7 +782,9 @@ void WrappedD3DDevice9::ReadContents(WrappedD3D9Object *obj, D3D9InitialContents
             {
               sub.Width = levelDesc.Width;
               sub.Height = levelDesc.Height;
-              D3D9CopyFromLocked(sub, levelDesc.Format, locked.pBits, (uint32_t)locked.Pitch, 0);
+              D3D9CopyFromLocked(
+                  sub, levelDesc.Format, locked.pBits,
+                  D3D9LockedRowPitch(levelDesc.Format, levelDesc.Width, (uint32_t)locked.Pitch), 0);
               if(cube)
                 cubeTex->UnlockRect((D3DCUBEMAP_FACES)face, level);
               else
@@ -1287,7 +1306,9 @@ bool WrappedD3DDevice9::OnUnlock(WrappedD3D9Object *obj, UINT face, UINT level)
   data.Width = info.Region.Right - info.Region.Left;
   data.Height = info.Region.Bottom - info.Region.Top;
   data.Depth = info.Region.Back - info.Region.Front;
-  D3D9CopyFromLocked(data, format, info.Data, info.RowPitch, info.SlicePitch);
+  D3D9CopyFromLocked(data, format, info.Data,
+                     D3D9LockedRowPitch(format, whole.Right - whole.Left, info.RowPitch),
+                     info.SlicePitch);
 
   {
     USE_SCRATCH_SERIALISER();

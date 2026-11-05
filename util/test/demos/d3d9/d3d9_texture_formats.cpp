@@ -280,11 +280,18 @@ float4 main(float2 uv : TEXCOORD0) : COLOR0
         continue;
       }
 
+      // Drivers report ATI1 and ATI2's Pitch as one byte per pixel column, less than a row of
+      // their blocks, but the GPU reads the blocks tightly packed
+      const UINT rowBytes = (texSize / info.blockW) * info.blockBytes;
+      UINT pitch = (UINT)lr.Pitch;
+      if(info.fmt == (D3DFORMAT)MAKEFOURCC('A', 'T', 'I', '1') ||
+         info.fmt == (D3DFORMAT)MAKEFOURCC('A', 'T', 'I', '2'))
+        pitch = std::max(pitch, rowBytes);
+
       // the same data on every run, for each format in the list whichever are supported
       rngState = 0x12345678u + uint32_t(&info - formats) * 0x9E3779B9u;
       for(UINT row = 0; row < texSize / info.blockH; row++)
-        FillRow((byte *)lr.pBits + row * lr.Pitch, (texSize / info.blockW) * info.blockBytes,
-                info.fill);
+        FillRow((byte *)lr.pBits + row * pitch, rowBytes, info.fill);
 
       e.tex->UnlockRect(0);
 

@@ -781,7 +781,8 @@ rdcstr WrappedD3DDevice9::WriteSurface(IDirect3DSurface9 *surf, const D3D9Subres
     D3DLOCKED_RECT locked = {};
     if(SUCCEEDED(surf->LockRect(&locked, whole ? NULL : &rect, 0)) && locked.pBits)
     {
-      CopyToLocked(sub, (byte *)locked.pBits, (uint32_t)locked.Pitch, 0);
+      CopyToLocked(sub, (byte *)locked.pBits,
+                   D3D9LockedRowPitch(desc.Format, desc.Width, (uint32_t)locked.Pitch), 0);
       surf->UnlockRect();
       return rdcstr();
     }
@@ -799,7 +800,8 @@ rdcstr WrappedD3DDevice9::WriteSurface(IDirect3DSurface9 *surf, const D3D9Subres
     hr = sysmem->LockRect(&locked, NULL, 0);
     if(SUCCEEDED(hr))
     {
-      CopyToLocked(sub, (byte *)locked.pBits, (uint32_t)locked.Pitch, 0);
+      CopyToLocked(sub, (byte *)locked.pBits,
+                   D3D9LockedRowPitch(desc.Format, sub.Width, (uint32_t)locked.Pitch), 0);
       sysmem->UnlockRect();
     }
   }

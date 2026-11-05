@@ -62,8 +62,6 @@ Known limitations of what works:
 - **Texture Viewer**:
   - Multisampled colour targets are only shown resolved.
   - P8 and A8P8 textures show their palette indices, not the colours.
-  - ATI2's channel order hasn't been checked against what the GPU samples. `D3D9_Texture_Formats`
-    checks it, but hasn't been run on Windows yet.
   - Block compressed (DXT) textures can only be saved as DDS.
 - **Mesh Viewer, VS Out**:
   - `texldl` in vertex shaders always point samples.
@@ -84,9 +82,6 @@ Not tested yet:
 - **32-bit programs.** All testing used 64-bit builds of the test programs.
 - **Other GPUs.** All testing was on one NVIDIA GPU (RTX 4070 Ti).
 - **Remote replay.** It probably won't display textures.
-- **D3DPERF markers in D3D11 captures.** Upstream moved its D3DPERF hooks into the D3D11 driver, and
-  they now share `d3d9.dll` with this fork's device hooks. `D3D11_D3DPERF_Markers` checks it, but
-  hasn't been run on Windows yet.
 
 ### Changes outside the D3D9 driver
 

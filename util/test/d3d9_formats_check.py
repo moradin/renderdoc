@@ -64,9 +64,10 @@ FLOAT_FORMATS = ['R16F', 'G16R16F', 'A16B16G16R16F', 'R32F', 'G32R32F', 'A32B32G
 
 
 def tolerance(name):
-    # block decoders round their interpolated colours differently from GPUs
+    # block decoders round their interpolated colours differently from GPUs: NVIDIA's DXT green and
+    # its BC4/BC5 6-value mode differ from the D3D spec's interpolation by up to 0.024
     if name in BLOCK_FORMATS:
-        return 0.02
+        return 0.03
     if name in FLOAT_FORMATS:
         return 1e-5
     return 0.01
@@ -104,6 +105,10 @@ def find_formats(actions, sdfile, out, unsupported):
     return out
 
 
+def get_texture(controller, resid):
+    return next(t for t in controller.GetTextures() if t.resourceId == resid)
+
+
 def fmtv(v):
     return '(' + ', '.join('{:.6g}'.format(x) for x in v) + ')'
 
@@ -116,7 +121,7 @@ def check_format(controller, name, draw, ref):
         print('FAIL {}: no texture bound at event {}'.format(name, draw.eventId))
         return False
     tex = reads[0].descriptor.resource
-    desc = controller.GetTexture(tex)
+    desc = get_texture(controller, tex)
 
     decoded = []
     for y in range(ref['h']):
@@ -173,7 +178,7 @@ def check_replay_target(controller, found, refs):
     if not targets:
         print('FAIL replay render target: none bound at event {}'.format(draw.eventId))
         return False
-    desc = controller.GetTexture(targets[0])
+    desc = get_texture(controller, targets[0])
     data = bytes(controller.GetTextureData(targets[0], rd.Subresource(0, 0, 0)))
     if len(data) != desc.width * desc.height * 16:
         print('FAIL replay render target: {} bytes for {}x{} {}'.format(
