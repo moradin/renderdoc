@@ -25,10 +25,6 @@ The Windows test reports this file refers to (`d3d9_*.md`, with their screenshot
 
 Open items from the last test round:
 
-- ATI2's decode now gives blue 1, as the GPU samples it (`ff8a6dd08`). Not retested. To check it,
-  run `d3d9_formats_check.py` on a `D3D9_Texture_Formats` capture: the ATI2 line should read
-  "compared r,g,b". Then pick ATI2 texel 0,0 in the texture viewer, which should give about
-  0.659, 0.486, 1, 1.
 - Locks of part of an ATI1/ATI2 level aren't tested (see the texture viewer's known gaps).
 
 The plan, in order. The estimates are working days at the pace so far, from when the coding and
@@ -485,8 +481,9 @@ Known gaps:
   each block as red. D3D9 samples the second half as red and the first as green, so the decode and
   `GetTextureData` (which describes ATI2 as BC5) now swap the halves. Retested in
   `d3d9_formats_retest.md`: passed. That retest found the decode gave blue 0 where the GPU samples 1;
-  the decode now gives 1 (not retested). `GetTextureData`'s data, and so a saved DDS, is still BC5
-  and has blue 0.
+  the decode now gives 1 (`ff8a6dd08`). Retested in `d3d9_formats_retest.md` ("ff8a6dd08: ATI2
+  blue"): passed, with blue compared, and the texture viewer picks 0.658824, 0.486275, 1, 1 at
+  texel 0,0. `GetTextureData`'s data, and so a saved DDS, is still BC5 and has blue 0.
 - (Fixed after `d3d9_formats_d3dperf_test.md`.) Drivers report ATI1 and ATI2's lock Pitch as one byte
   per pixel column (16 for a 16 wide level), less than a row of their blocks, while the GPU reads the
   blocks tightly packed. Capture copied only Pitch bytes of each row, so most of the texture was
@@ -569,7 +566,8 @@ three causes above (ATI2's channel order, ATI1/ATI2 lock pitch, DXT2-5's palette
 the demo now writes ATI1/ATI2 rows tightly packed too. The retest (`d3d9_formats_retest.md`)
 passed all 31 formats and the render target at replay, and the reference the demo writes under
 RenderDoc is byte-identical to the native one. ATI2's blue wasn't compared then; it is now, and
-the decode's blue changed from 0 to 1 to match the GPU, which isn't retested.
+the decode's blue changed from 0 to 1 to match the GPU. The retest of that (same report, section
+"ff8a6dd08: ATI2 blue") passed all 31 formats with ATI2's r, g and b compared.
 
 ## Pipeline state (phase 3c)
 

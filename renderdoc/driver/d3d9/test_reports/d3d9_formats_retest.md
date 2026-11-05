@@ -214,3 +214,77 @@ D3DPERF markers in the D3D11 capture: PASS
 | `zoom_ati2_tex.png`, `zoom_ati2_tex_statusbar.png` | ATI2 in the texture viewer, and its pick at 0,0 |
 | `zoom_ati1_tex.png`, `zoom_ati1_tex_statusbar.png` | ATI1 in the texture viewer, and its pick at 0,0 |
 | `zoom_rt.png`, `zoom_rt_statusbar.png` | The render target at event 158, and its pick at 2,42 |
+
+## ff8a6dd08: ATI2 blue
+
+I pulled ff8a6dd08 and rebuilt `renderdoc.sln`, Development x64, with exit code 0. I didn't rebuild the demos, since they are unchanged.
+
+| # | Item | Result |
+|---|---|---|
+| 1 | `d3d9_formats_check.py` on `D3D9_Texture_Formats_frame14903.rdc` with `d3d9_formats_retest\D3D9_Texture_Formats_reference.txt` | **PASS**: 31 of 31 formats, and the replay render target passes. The ATI2 line now reads "compared r,g,b". |
+| 2 | qrenderdoc: ATI2 (Texture 43, event 134) at texel 0,0 | **0.658824, 0.486275, 1.000000, 1.000000**: blue is now 1, as expected |
+
+### `d3d9_formats_check.py`
+
+The script is the committed one, with no local patches. It exited 0. The full output (also in `d3d9_formats_check_output_ff8a6dd08.txt`):
+
+```
+Reference E:\Projects\renderdoc\renderdoc\driver\d3d9\test_reports\d3d9_formats_retest\D3D9_Texture_Formats_reference.txt: 31 formats
+PASS A8R8G8B8       256 texels, max diff 0.000000 (B8G8R8A8_UNORM, compared r,g,b,a)
+PASS X8R8G8B8       256 texels, max diff 0.000000 (B8G8R8A8_UNORM, compared r,g,b,a)
+PASS R5G6B5         256 texels, max diff 0.002801 (B5G6R5_UNORM, compared r,g,b,a)
+PASS X1R5G5B5       256 texels, max diff 0.002657 (B5G5R5A1_UNORM, compared r,g,b,a)
+PASS A1R5G5B5       256 texels, max diff 0.002657 (B5G5R5A1_UNORM, compared r,g,b,a)
+PASS A4R4G4B4       256 texels, max diff 0.000000 (B4G4R4A4_UNORM, compared r,g,b,a)
+PASS A8             256 texels, max diff 0.000000 (A8_UNORM, compared r,g,b,a)
+PASS A2B10G10R10    256 texels, max diff 0.000000 (R10G10B10A2_UNORM, compared r,g,b,a)
+PASS G16R16         256 texels, max diff 0.000000 (R16G16_UNORM, compared r,g,a)
+PASS A2R10G10B10    256 texels, max diff 0.000000 (B10G10R10A2_UNORM, compared r,g,b,a)
+PASS A16B16G16R16   256 texels, max diff 0.000000 (R16G16B16A16_UNORM, compared r,g,b,a)
+PASS L8             256 texels, max diff 0.000000 (R8_UNORM, compared r,r=g,r=b,a)
+PASS A8L8           256 texels, max diff 0.000000 (R8G8_UNORM, compared r,r=g,r=b,g=a)
+PASS V8U8           256 texels, max diff 0.000000 (R8G8_SNORM, compared r,g,a)
+PASS X8L8V8U8       256 texels, max diff 0.000000 (Undefined, compared r,g,b,a)
+PASS Q8W8V8U8       256 texels, max diff 0.000000 (R8G8B8A8_SNORM, compared r,g,b,a)
+PASS V16U16         256 texels, max diff 0.000000 (R16G16_SNORM, compared r,g,a)
+PASS L16            256 texels, max diff 0.000000 (R16_UNORM, compared r,r=g,r=b,a)
+PASS DXT1           256 texels, max diff 0.019608 (BC1_UNORM, compared r,g,b,a)
+PASS DXT2           256 texels, max diff 0.015686 (BC2_UNORM, compared r,g,b,a)
+PASS DXT3           256 texels, max diff 0.019608 (BC2_UNORM, compared r,g,b,a)
+PASS DXT4           256 texels, max diff 0.011765 (BC3_UNORM, compared r,g,b,a)
+PASS DXT5           256 texels, max diff 0.019608 (BC3_UNORM, compared r,g,b,a)
+PASS ATI1           256 texels, max diff 0.007874 (BC4_UNORM, compared r)
+PASS ATI2           256 texels, max diff 0.024857 (BC5_UNORM, compared r,g,b)
+PASS R16F           256 texels, max diff 0.000000 (R16_FLOAT, compared r,a)
+PASS G16R16F        256 texels, max diff 0.000000 (R16G16_FLOAT, compared r,g,a)
+PASS A16B16G16R16F  256 texels, max diff 0.000000 (R16G16B16A16_FLOAT, compared r,g,b,a)
+PASS R32F           256 texels, max diff 0.000000 (R32_FLOAT, compared r,a)
+PASS G32R32F        256 texels, max diff 0.000000 (R32G32_FLOAT, compared r,g,a)
+PASS A32B32G32R32F  256 texels, max diff 0.000000 (R32G32B32A32_FLOAT, compared r,g,b,a)
+PASS replay render target matches the native one for all 31 formats (max diff 5e-09)
+
+31 formats passed, 0 failed, 0 not compared
+Not supported by the GPU: R8G8B8 (CheckDeviceFormat), R3G3B2 (CheckDeviceFormat), A8R3G3B2 (CheckDeviceFormat), X4R4G4B4 (CheckDeviceFormat), A8B8G8R8 (CheckDeviceFormat), X8B8G8R8 (CheckDeviceFormat), A8P8 (CheckDeviceFormat), P8 (CheckDeviceFormat), A4L4 (CheckDeviceFormat), L6V5U5 (CheckDeviceFormat), A2W10V10U10 (CheckDeviceFormat), CxV8U8 (CheckDeviceFormat), Q16W16V16U16 (CheckDeviceFormat), UYVY (CheckDeviceFormat), YUY2 (CheckDeviceFormat), R8G8_B8G8 (CheckDeviceFormat), G8R8_G8B8 (CheckDeviceFormat)
+Replay render target: PASS
+
+[exit code 0]
+log C:\Users\Balazs\AppData\Local\Temp\RenderDoc\RenderDoc_2026.11.05_21.42.23.log
+```
+
+Compared with this report's section 1 run, only the ATI2 line changed, apart from the reference path and the log name. It now reads "compared r,g,b" (it was "compared r,g"). Its max diff stays 0.024857, so blue adds no difference: it matches the reference's 1 exactly.
+
+### ATI2 pick in qrenderdoc
+
+I used the same UI driver as in section 3, on the same capture: `event 134`, then I opened the pixel shader's input in the texture viewer and went to 0,0.
+
+- **The texture:** ResourceId 43, "Texture 43", `16x16 1 mips - BC5_UNORM`.
+- **PickPixel from the UI's Python, at 0,0:** **0.658824, 0.486275, 1.000000, 1.000000**. Last round it gave blue 0.000000.
+- **The texture viewer's status bar:** the right-click pick reads `0, 0: 0.65882, 0.48627`. It only shows two channels for a BC5 texture, so blue doesn't appear there. Crop: `zoom_ati2_tex_statusbar_ff8a6dd08.png`.
+- **Against the render target:** the value now agrees with the render target at 2,42 (0.65736, 0.48403, 1.00, 1.00, from section 3) in all four channels. Red and green are within 0.0015 and 0.0022; blue and alpha are equal.
+
+New files in `d3d9_formats_retest\`:
+
+| File | What it is |
+|---|---|
+| `d3d9_formats_check_output_ff8a6dd08.txt` | The check script's full output on ff8a6dd08 |
+| `zoom_ati2_tex_statusbar_ff8a6dd08.png` | ATI2's status bar pick at 0,0 on ff8a6dd08 |
