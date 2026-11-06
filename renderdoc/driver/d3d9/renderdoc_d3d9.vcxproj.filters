@@ -96,6 +96,9 @@
     <ClCompile Include="d3d9_pixel.cpp">
       <Filter>Replay</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9_counters.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
     <ClCompile Include="d3d9_overlay.cpp">
       <Filter>Replay</Filter>
     </ClCompile>

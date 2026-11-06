@@ -37,7 +37,9 @@ The detailed status, with how each part works and how it was tested, is in
   - shader model 1 to 3 disassembly, which matches fxc's;
   - shader reflection from the constant table, and the constant viewers;
   - the Mesh Viewer's VS In and VS Out, for vertex shaders 1.1 to 3.0 and fixed function vertex
-    processing. RenderDoc works out the VS Out data on the CPU.
+    processing. RenderDoc works out the VS Out data on the CPU;
+  - GPU durations (the Event Browser's Duration column) and samples passed, in the Performance
+    Counter Viewer too.
 - Replay, and reading back depth stencils during capture, need a shader model 3 GPU.
 
 ### What's missing
@@ -48,7 +50,7 @@ Not implemented:
 - pixel history;
 - shader editing and replacement, including "Edit Generated Stub";
 - custom display shaders in the Texture Viewer;
-- GPU performance counters;
+- GPU counters other than duration and samples passed: D3D9 has no pipeline statistics query;
 - resource usage: the resource context menu's usage list is empty for D3D9;
 - debug messages from the D3D9 debug runtime;
 - the quad overdraw overlays, since D3D9 has no UAVs.
@@ -68,6 +70,8 @@ Known limitations of what works:
   - Fixed function processing doesn't handle N-patches, user clip planes, displacement mapping or
     more than 8 lights.
   - A vs_3_0 shader that packs two semantics into one output register shows only one of them.
+- **GPU durations** depend on the GPU's clocks when they're measured, as on D3D11. With an idle GPU
+  they came out up to 13 times longer than natively on the test machine.
 - **Overlays**:
   - Pixels that the pixel shader discards or gives a new depth show as plain pass or fail.
   - Alpha test is ignored.

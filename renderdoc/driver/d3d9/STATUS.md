@@ -36,7 +36,7 @@ the testing were on separate machines.
 | 2 | ~~**32-bit programs:** an x86 build that captures 32-bit programs, replayed in the x64 UI, then fixing what breaks~~ | 1-1.5 | Done, see "32-bit programs" below. Nothing in the driver needed fixing. A real 32-bit game is still to test |
 | 2b | **Memory at capture:** cap the copies of textures uploaded to D3DPOOL_DEFAULT, spill them to disk, or keep them only while a capture is pending | 0.5-1 | Matters mostly for 32-bit games |
 | 3 | **Small features** | 2-3 | |
-| | GPU duration and samples passed counters (timestamp and occlusion queries) | 0.5 | |
+| | ~~GPU duration and samples passed counters (timestamp and occlusion queries)~~ | 0.5 | Done, see "GPU counters" below |
 | | Resource usage list (what each event binds, recorded during replay) | 0.5 | |
 | | Debug messages | 0.5 | The D3D9 debug runtime doesn't run on Windows 8 and later, so report failed calls (`D3DERR_INVALIDCALL` and similar) instead |
 | | Custom display shaders in the texture viewer | 0.5-1 | Needs a documented SM3 binding layout. Shares compile code with step 4 |
@@ -117,6 +117,7 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Capture_Edge_Cases` | The markers, and at the start of the frame: the automatic, multisampled (each sample), D16 and INTZ depth stencils texel by texel, the texture locked across Present, and the surface drawn with GDI |
 | `D3D9_Reset_Capture` | Both captures: frame 30's has only "After the reset" and a blue clear, the triggered one only "Frame" and a red clear |
 | `D3D9_Wrapping_Check`, `D3D9Ex_Wrapping_Check` | The demo's own checks (in its log), and that the capture loads and replays |
+| `D3D9_Counters` | The GPU duration and samples passed counters: each draw's samples passed against what the demo's own occlusion queries counted natively (2048, 0, 1024, 120000, 1, and 1024 for a 4x multisampled 16x16 square), a duration for every action, the full screen heavy draw's against the demo's own timestamps (within 4x either way), and that the replay is back at the event it was at afterwards |
 | `D3D11_D3DPERF_Markers` | `d3d11_d3dperf_check.py`: the markers nest as drawn, with their colours |
 
 What they don't cover:
@@ -175,6 +176,40 @@ Not tested:
   and step 2b.
 - **32-bit replay:** the x86 qrenderdoc.
 - **Global process hooking.**
+
+## GPU counters
+
+`d3d9_counters.cpp` gives the event browser's Duration column and the performance counter viewer
+two counters, `EventGPUDuration` and `SamplesPassed`, under "D3D9 Built-in":
+- **How:** as on D3D11. For each action that isn't a marker, the frame is replayed up to it without
+  it, then the action alone is replayed between two `D3DQUERYTYPE_TIMESTAMP` queries and inside a
+  `D3DQUERYTYPE_OCCLUSION` query. One `TIMESTAMPDISJOINT` and one `TIMESTAMPFREQ` query cover the
+  whole fetch. The queries are made on the real device, so they aren't resources of the capture.
+- **Which actions:** every one that isn't a marker, so clears, copies and Present get a duration
+  too. Each partial replay ends the scene it started, so the second timestamp comes after the
+  action's `EndScene`.
+- **Afterwards** the frame is replayed to the event the replay controller was last at. D3D9's
+  texture viewer and pixel picking read the live device, so they'd otherwise show the end of the
+  frame.
+- **Which counters:** a counter is only offered if the GPU supports its queries (checked once with
+  `CreateQuery(type, NULL)`). D3D9 has no pipeline statistics query: `VERTEXSTATS`, `PIPELINETIMINGS`
+  and the other timing queries are optional, and aren't offered. NVIDIA's driver 32.0.16.1088
+  supports none of them, 32-bit or 64-bit (checked with `CreateQuery(type, NULL)` natively).
+- **Failures** give -1 for a duration and `0xFFFFFFFFFFFFFFFF` for a sample count, as on D3D11. A
+  query that doesn't answer within about 10 seconds (a lost device) counts as failed.
+
+Limitations:
+- **Durations depend on the GPU's clocks when they're fetched.** A fetch is too little work to raise
+  them, so with an idle GPU every duration comes out several times longer. On the RTX 4070 Ti the
+  heavy draw of `D3D9_Counters` takes 0.84-0.88 ms at 2835 MHz (P0, the GPU busy with something else) and
+  4.5-11.9 ms with the GPU idle at 210 MHz (P8), in qrenderdoc and from Python alike. Natively it
+  takes 0.91-0.97 ms. D3D11's counters are measured the same way.
+- **Resolution:** NVIDIA's timestamp frequency is 100 MHz, but its timestamps step in about 1 µs,
+  so short draws read 0 or about 1 µs.
+
+Tested in `d3d9_step3.md`: `D3D9_Counters` passes on x64 and x86, with the app's own occlusion and
+timestamp queries nested around RenderDoc's at replay. In qrenderdoc the event browser's Duration
+column and the performance counter viewer show both counters.
 
 ## Needs testing
 
@@ -1344,6 +1379,7 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
   event list, writing contents.
 - `d3d9_overlay.cpp` - the texture viewer's overlays, `IsRenderOutput` and `GetPassEvents` (phase
   3e).
+- `d3d9_counters.cpp` - the GPU duration and samples passed counters.
 - `d3d9_resources.*` - the wrapper base class and the resource wrappers. The comment at the top of
   `d3d9_resources.h` describes the lifetime model (external vs internal references, who holds real
   references, child objects).

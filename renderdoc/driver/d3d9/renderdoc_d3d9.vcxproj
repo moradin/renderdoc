@@ -105,6 +105,7 @@
     <ClCompile Include="d3d9_shaders.cpp" />
     <ClCompile Include="d3d9_common.cpp" />
     <ClCompile Include="d3d9_contents.cpp" />
+    <ClCompile Include="d3d9_counters.cpp" />
     <ClCompile Include="d3d9_debug.cpp" />
     <ClCompile Include="d3d9_depth.cpp" />
     <ClCompile Include="d3d9_device.cpp" />

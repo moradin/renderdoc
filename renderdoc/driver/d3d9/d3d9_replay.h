@@ -54,6 +54,7 @@ struct PostVSResult;
 // - the texture viewer's overlays and the pass events: d3d9_overlay.cpp (phase 3e)
 // - post-transform vertices for the mesh viewer, computed on the CPU: d3d9_postvs.cpp, with
 //   d3d9_vs_emulate.cpp and d3d9_ffp_vertex.cpp (phase 3e)
+// - the GPU duration and samples passed counters: d3d9_counters.cpp
 class D3D9Replay final : public IReplayDriver
 {
 public:
@@ -450,6 +451,14 @@ private:
   // the fixed function pipeline's reflection at a draw, for its output signature
   const ShaderReflection *GetFFPReflection(uint32_t eventId, const D3D9DeviceState &state);
   void ClearPostVSCache();
+
+  // GPU counters: d3d9_counters.cpp. A D3D9Counters mask of the queries the GPU supports, checked
+  // the first time it's asked.
+  uint32_t SupportedCounters();
+  bool m_CountersChecked = false;
+  uint32_t m_SupportedCounters = 0;
+  // the event the replay controller last replayed to, so FetchCounters can go back to it
+  uint32_t m_ReplayedEvent = 0;
 
   // pipeline state, see d3d9_pipestate.cpp
   void CreatePipelineStateResources();

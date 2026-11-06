@@ -497,6 +497,7 @@ RDResult D3D9Replay::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuf
 void D3D9Replay::ReplayLog(uint32_t endEventID, ReplayLogType replayType)
 {
   ClearReplayCaches();
+  m_ReplayedEvent = endEventID;
   m_pDevice->ReplayLog(0, endEventID, replayType);
 }
 
@@ -689,23 +690,6 @@ void D3D9Replay::ClearReplayCache()
 
 void D3D9Replay::ReloadShaderDebugInformation()
 {
-}
-
-rdcarray<GPUCounter> D3D9Replay::EnumerateCounters()
-{
-  return {};
-}
-
-CounterDescription D3D9Replay::DescribeCounter(GPUCounter counterID)
-{
-  CounterDescription ret = {};
-  ret.counter = counterID;
-  return ret;
-}
-
-rdcarray<CounterResult> D3D9Replay::FetchCounters(const rdcarray<GPUCounter> &counterID)
-{
-  return {};
 }
 
 rdcarray<PixelModification> D3D9Replay::PixelHistory(rdcarray<EventUsage> events, ResourceId target,
