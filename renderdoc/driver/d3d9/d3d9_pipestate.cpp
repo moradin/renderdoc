@@ -22,10 +22,12 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+#include <algorithm>
 #include "d3d9_device.h"
 #include "d3d9_replay.h"
 #include "d3d9_resources.h"
 #include "d3d9_state.h"
+#include "d3d9_vs_emulate.h"
 
 // The D3D9 pipeline state (D3D9Pipe::State) and the descriptors the replay controller and the UI
 // see, built from the replay device's current state:
@@ -723,8 +725,10 @@ APIProperties D3D9Replay::GetAPIProperties()
 
 rdcarray<EventUsage> D3D9Replay::GetUsage(ResourceId id)
 {
-  // usage isn't tracked yet
-  return {};
+  auto it = m_ResourceUses.find(id);
+  if(it == m_ResourceUses.end())
+    return {};
+  return it->second;
 }
 
 void D3D9Replay::SetPipelineStates(D3D11Pipe::State *d3d11, D3D12Pipe::State *d3d12,
@@ -1431,6 +1435,105 @@ rdcarray<DescriptorAccess> D3D9Replay::GetDescriptorAccess(uint32_t eventId)
   }
 
   return ret;
+}
+
+// Resource usage
+// --------------
+// Recorded as the capture loads, the way D3D11 does, so the device's state is what each event saw:
+// - draws (AddDrawUsage): the streams the vertex declaration reads, the index buffer for indexed
+//   draws, the textures each stage samples and the constants it reads (as GetDescriptorAccess
+//   finds them, so with reflection only the samplers and register sets the shader uses), the
+//   bound render targets, and the depth stencil when the depth or stencil test is on.
+//   DrawPrimitiveUP and DrawIndexedPrimitiveUP read the application's memory rather than the
+//   bound buffers, and ProcessVertices reads the streams through the vertex shader and writes its
+//   destination buffer (StreamOut) without rasterising.
+// - clears, ColorFill, copies, resolves and GenerateMipSubLevels, by the device where they're
+//   loaded (d3d9_device_serialise.cpp, AddCopyAction).
+// - CPU writes: Unlock inside the frame, and GDI drawing and GetFrontBufferData, whose contents
+//   are in the capture.
+// Render targets count as written whatever the colour write mask, as on D3D11.
+
+void D3D9Replay::AddUsage(ResourceId id, uint32_t eventId, ResourceUsage usage)
+{
+  if(id != ResourceId())
+    m_ResourceUses[id].push_back(EventUsage(eventId, usage));
+}
+
+void D3D9Replay::AddDrawUsage(uint32_t eventId, ActionFlags flags, D3D9DrawSource source,
+                              const ResourceId (&targets)[D3D9_NUM_RENDER_TARGETS], ResourceId depth)
+{
+  IDirect3DDevice9 *dev = m_pDevice->GetReal();
+  const D3D9ObjectBindings &bind = m_pDevice->GetBindings();
+
+  const bool rasterised = source != D3D9DrawSource::ProcessVertices;
+
+  if(source != D3D9DrawSource::UserPointer)
+  {
+    rdcarray<D3D9Emu::InputElement> elements;
+    ReadVertexElements(elements);
+    bool streamUsed[D3D9_NUM_STREAMS] = {};
+    for(const D3D9Emu::InputElement &el : elements)
+      if(el.stream < D3D9_NUM_STREAMS)
+        streamUsed[el.stream] = true;
+    for(uint32_t s = 0; s < D3D9_NUM_STREAMS; s++)
+      if(streamUsed[s])
+        AddUsage(WrappedID(bind.streams[s].buffer), eventId, ResourceUsage::VertexBuffer);
+
+    if(source == D3D9DrawSource::Buffers && (flags & ActionFlags::Indexed))
+      AddUsage(WrappedID(bind.indices), eventId, ResourceUsage::IndexBuffer);
+  }
+
+  for(const DescriptorAccess &access : GetDescriptorAccess(eventId))
+  {
+    if(!rasterised && access.stage != ShaderStage::Vertex)
+      continue;
+
+    if(access.byteOffset >= D3D9Descriptor_Constants)
+    {
+      uint32_t idx = access.byteOffset - D3D9Descriptor_Constants;
+      if(idx < ARRAY_COUNT(m_ConstantUses))
+        m_ConstantUses[idx].push_back(eventId);
+    }
+    else if(access.byteOffset < D3D9_NUM_TEXTURE_SLOTS)
+    {
+      AddUsage(WrappedID(bind.textures[access.byteOffset]), eventId,
+               access.stage == ShaderStage::Vertex ? ResourceUsage::VS_Resource
+                                                   : ResourceUsage::PS_Resource);
+    }
+  }
+
+  if(!rasterised)
+    return;
+
+  for(uint32_t i = 0; i < D3D9_NUM_RENDER_TARGETS; i++)
+    AddUsage(targets[i], eventId, ResourceUsage::ColorTarget);
+
+  DWORD zenable = D3DZB_FALSE, stencil = FALSE;
+  dev->GetRenderState(D3DRS_ZENABLE, &zenable);
+  dev->GetRenderState(D3DRS_STENCILENABLE, &stencil);
+  if(zenable != D3DZB_FALSE || stencil)
+    AddUsage(depth, eventId, ResourceUsage::DepthStencilTarget);
+}
+
+void D3D9Replay::FinishUsage()
+{
+  for(uint32_t i = 0; i < ARRAY_COUNT(m_ConstantUses); i++)
+  {
+    const ResourceUsage usage =
+        i < D3D9Constants_Count ? ResourceUsage::VS_Constants : ResourceUsage::PS_Constants;
+    for(uint32_t eventId : m_ConstantUses[i])
+      AddUsage(m_ConstantsBuffers[i], eventId, usage);
+    m_ConstantUses[i].clear();
+  }
+
+  // a resource bound in several places, or read by several samplers, is listed once per event and
+  // usage
+  for(auto it = m_ResourceUses.begin(); it != m_ResourceUses.end(); ++it)
+  {
+    rdcarray<EventUsage> &v = it->second;
+    std::sort(v.begin(), v.end());
+    v.erase(std::unique(v.begin(), v.end()) - v.begin(), ~0U);
+  }
 }
 
 rdcarray<DescriptorLogicalLocation> D3D9Replay::GetDescriptorLocations(

@@ -1,0 +1,1130 @@
+
+## Tests running for RenderDoc Version 1.48 (6c5362e1e74695662d2f399bb85479f2bf417cdb) ##
+
+
+## On Windows-11-10.0.26300-SP0 ##
+
+
+## With serial test runners ##
+
+// plat=Windows-11-10.0.26300-SP0 git=6c5362e1e74695662d2f399bb85479f2bf417cdb
+.. Demos running from E:\Projects\renderdoc\util\test\demos_x86.exe
+.. 0 driver: 6 NVIDIA GeForce RTX 4070 Ti 32.0.16.1088
+.. 1 driver: 6 NVIDIA GeForce RTX 4070 Ti 32.0.16.1088
+.. 2 driver: 6 4.6.0 NVIDIA 610.88 / NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2 / NVIDIA Corporation
+.. 3 driver: 6 NVIDIA GeForce RTX 4070 Ti 610.88.0
+.. 4 driver: 0 
+// driver=4.6.0 NVIDIA 610.88 / NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2 / NVIDIA Corporation
+.. Running tests matching '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_AMD_Shader_Extensions as Couldn't load AGS dll
+.. Skipping D3D11_Annotations as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Buffer_Truncation as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_CBuffer_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Counters as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Deferred_Map as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Discard_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Draw_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Empty_Capture as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Feature_Level_9 as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Frame0 as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Large_Buffer as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Leak_Check as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Mesh_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Overlay_Test as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Parameter_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_PrimitiveID as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Primitive_Restart as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Refcount_Check as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Resource_Lifetimes as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Shader_Editing as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Shader_ISA as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Shader_Linkage_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Simple_Triangle as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Stream_Out as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Stripped_Shaders as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Swapchain_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Untyped_Backbuffer_Descriptor as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Vertex_Attr_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D12_AMD_Shader_Extensions as Test D3D12_AMD_Shader_Extensions not in compiled tests
+.. Skipping D3D12_Annotations as Test D3D12_Annotations not in compiled tests
+.. Skipping D3D12_Blend_Pixel_History as Test D3D12_Blend not in compiled tests
+.. Skipping D3D12_Buffer_Truncation as Test D3D12_Buffer_Truncation not in compiled tests
+.. Skipping D3D12_CBuffer_Zoo as Test D3D12_CBuffer_Zoo not in compiled tests
+.. Skipping D3D12_Compute_Only as Test D3D12_Compute_Only not in compiled tests
+.. Skipping D3D12_Counters as Test D3D12_Simple_Triangle not in compiled tests
+.. Skipping D3D12_Descriptor_Indexing as Test D3D12_Descriptor_Indexing not in compiled tests
+.. Skipping D3D12_Discard_Zoo as Test D3D12_Discard_Zoo not in compiled tests
+.. Skipping D3D12_Draw_Zoo as Test D3D12_Draw_Zoo not in compiled tests
+.. Skipping D3D12_Empty_Capture as Test D3D12_Empty_Capture not in compiled tests
+.. Skipping D3D12_Existing_Heap as Test D3D12_Existing_Heap not in compiled tests
+.. Skipping D3D12_Frame0 as Test D3D12_Simple_Triangle not in compiled tests
+.. Skipping D3D12_Large_Buffer as Test D3D12_Large_Buffer not in compiled tests
+.. Skipping D3D12_Leak_Check as Test D3D12_Leak_Check not in compiled tests
+.. Skipping D3D12_List_Alloc_Tests as Test D3D12_List_Alloc_Tests not in compiled tests
+.. Skipping D3D12_List_Types as Test D3D12_List_Types not in compiled tests
+.. Skipping D3D12_Map_PlacedAlias as Test D3D12_Map_PlacedAlias not in compiled tests
+.. Skipping D3D12_Memory_Overlap as Test D3D12_Memory_Overlap not in compiled tests
+.. Skipping D3D12_Mesh_Shader as Test D3D12_Mesh_Shader not in compiled tests
+.. Skipping D3D12_Mesh_Zoo as Test D3D12_Mesh_Zoo not in compiled tests
+.. Skipping D3D12_Multi_Wait_Before_Signal as Renderdoc does not yet adequately reorder capture replay
+.. Skipping D3D12_Overlay_Test as Test D3D12_Overlay_Test not in compiled tests
+.. Skipping D3D12_Parameter_Zoo as Test D3D12_Parameter_Zoo not in compiled tests
+.. Skipping D3D12_Predication as Test D3D12_Predication not in compiled tests
+.. Skipping D3D12_PrimitiveID as Test D3D12_PrimitiveID not in compiled tests
+.. Skipping D3D12_RGP_Capture as Test D3D12_Simple_Triangle not in compiled tests
+.. Skipping D3D12_Reflection_Zoo as Test D3D12_Reflection_Zoo not in compiled tests
+.. Skipping D3D12_RenderTarget_Binds as Test D3D12_RenderTarget_Binds not in compiled tests
+.. Skipping D3D12_Render_Pass as Test D3D12_Render_Pass not in compiled tests
+.. Skipping D3D12_Resource_Lifetimes as Test D3D12_Resource_Lifetimes not in compiled tests
+.. Skipping D3D12_Resource_Mapping_Zoo as Test D3D12_Resource_Mapping_Zoo not in compiled tests
+.. Skipping D3D12_Shader_DebugData_Zoo as Test D3D12_Shader_DebugData_Zoo not in compiled tests
+.. Skipping D3D12_Shader_Editing as Test D3D12_Shader_Editing not in compiled tests
+.. Skipping D3D12_Shader_ISA as Test D3D12_Shader_ISA not in compiled tests
+.. Skipping D3D12_Shader_Linkage_Zoo as Test D3D12_Shader_Linkage_Zoo not in compiled tests
+.. Skipping D3D12_Sharing as Test D3D12_Sharing not in compiled tests
+.. Skipping D3D12_Simple_Triangle as Test D3D12_Simple_Triangle not in compiled tests
+.. Skipping D3D12_Stripped_Shaders as Test D3D12_Stripped_Shaders not in compiled tests
+.. Skipping D3D12_Swapchain_Zoo as Test D3D12_Swapchain_Zoo not in compiled tests
+.. Skipping D3D12_Untyped_Backbuffer_Descriptor as Test D3D12_Untyped_Backbuffer_Descriptor not in compiled tests
+.. Skipping D3D12_VRS as Test D3D12_VRS not in compiled tests
+.. Skipping D3D12_Vertex_Attr_Zoo as Test D3D12_Vertex_Attr_Zoo not in compiled tests
+.. Skipping D3D12_Vertex_UAV as Test D3D12_Vertex_UAV not in compiled tests
+.. Skipping D3D12_Write_Subresource as Test D3D12_Write_Subresource not in compiled tests
+.. Skipping GL_Annotations as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Buffer_Resizing as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Buffer_Spam as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Buffer_Truncation as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Buffer_Updates as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_CBuffer_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Counters as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_DX_Interop as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Depth_Bounds as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Discard_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Draw_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Empty_Capture as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Entry_Points as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Frame0 as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Large_Buffer as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Leak_Check as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Marker_Test as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Mesh_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Multithread_Rendering as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Overlay_Test as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Parameter_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Per_Type_Tex_Units as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Queries_In_Use as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Renderbuffer_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Resource_Lifetimes as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Separable_Geometry_Shaders as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Shader_Editing as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Shader_ISA as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Simple_Triangle as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_State_Trashing as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Unshared_Context as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_VAO_0 as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Vertex_Attr_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping VK_Adv_CBuffer_Zoo as Test VK_Adv_CBuffer_Zoo not in compiled tests
+.. Skipping VK_Annotations as Test VK_Annotations not in compiled tests
+.. Skipping VK_Blend_Pixel_History as Test VK_Blend not in compiled tests
+.. Skipping VK_Buffer_Truncation as Test VK_Buffer_Truncation not in compiled tests
+.. Skipping VK_CBuffer_Zoo as Test VK_CBuffer_Zoo not in compiled tests
+.. Skipping VK_Compute_Only as Test VK_Compute_Only not in compiled tests
+.. Skipping VK_Counters as Test VK_Counters not in compiled tests
+.. Skipping VK_Custom_Resolve as Test VK_Custom_Resolve not in compiled tests
+.. Skipping VK_Dedicated_Allocation as Test VK_Dedicated_Allocation not in compiled tests
+.. Skipping VK_Descriptor_Buffer as Test VK_Descriptor_Buffer not in compiled tests
+.. Skipping VK_Descriptor_Indexing as Test VK_Descriptor_Indexing not in compiled tests
+.. Skipping VK_Descriptor_Reuse as Test VK_Descriptor_Reuse not in compiled tests
+.. Skipping VK_Descriptor_Variable_Count as Test VK_Descriptor_Variable_Count not in compiled tests
+.. Skipping VK_Device_Address_Commands as Test VK_Device_Address_Commands not in compiled tests
+.. Skipping VK_Discard_Zoo as Test VK_Discard_Zoo not in compiled tests
+.. Skipping VK_Draw_Zoo as Test VK_Draw_Zoo not in compiled tests
+.. Skipping VK_Dynamic_Rendering as Test VK_Dynamic_Rendering not in compiled tests
+.. Skipping VK_Empty_Capture as Test VK_Empty_Capture not in compiled tests
+.. Skipping VK_Extended_Dynamic_State as Test VK_Extended_Dynamic_State not in compiled tests
+.. Skipping VK_Frame0 as Test VK_Simple_Triangle not in compiled tests
+.. Skipping VK_Graphics_Pipeline as Test VK_Graphics_Pipeline not in compiled tests
+.. Skipping VK_Image_Layouts as Test VK_Image_Layouts not in compiled tests
+.. Skipping VK_Imageless_Framebuffer as Test VK_Imageless_Framebuffer not in compiled tests
+.. Skipping VK_Indirect as Test VK_Indirect not in compiled tests
+.. Skipping VK_Int8_IBuffer as Test VK_Int8_IBuffer not in compiled tests
+.. Skipping VK_KHR_Buffer_Address as Test VK_KHR_Buffer_Address not in compiled tests
+.. Skipping VK_Large_Buffer as Test VK_Large_Buffer not in compiled tests
+.. Skipping VK_Large_Descriptor_Sets as Test VK_Large_Descriptor_Sets not in compiled tests
+.. Skipping VK_Leak_Check as Test VK_Leak_Check not in compiled tests
+.. Skipping VK_Line_Raster as Test VK_Line_Raster not in compiled tests
+.. Skipping VK_Load_Store_None as Test VK_Load_Store_None not in compiled tests
+.. Skipping VK_Mesh_Shader as Test VK_Mesh_Shader not in compiled tests
+.. Skipping VK_Mesh_Zoo as Test VK_Mesh_Zoo not in compiled tests
+.. Skipping VK_Misaligned_Dirty as Test VK_Misaligned_Dirty not in compiled tests
+.. Skipping VK_Multi_Entry as Test VK_Multi_Entry not in compiled tests
+.. Skipping VK_Multi_View as Test VK_Multi_View not in compiled tests
+.. Skipping VK_Overlay_Test as Test VK_Overlay_Test not in compiled tests
+.. Skipping VK_Parameter_Zoo as Test VK_Parameter_Zoo not in compiled tests
+.. Skipping VK_Postponed as Test VK_Postponed not in compiled tests
+.. Skipping VK_Query_Pool as Test VK_Query_Pool not in compiled tests
+.. Skipping VK_RGP_Capture as Test VK_Simple_Triangle not in compiled tests
+.. Skipping VK_Ray_Query as Test VK_Ray_Query not in compiled tests
+.. Skipping VK_Read_Before_Overwrite as Test VK_Read_Before_Overwrite not in compiled tests
+.. Skipping VK_Resource_Lifetimes as Test VK_Resource_Lifetimes not in compiled tests
+.. Skipping VK_Resource_Usage as Test VK_Resource_Usage not in compiled tests
+.. Skipping VK_Robustness2 as Test VK_Robustness2 not in compiled tests
+.. Skipping VK_SPIRV_13_Shaders as Test VK_SPIRV_13_Shaders not in compiled tests
+.. Skipping VK_Sample_Locations as Test VK_Sample_Locations not in compiled tests
+.. Skipping VK_Secondary_CmdBuf as Test VK_Secondary_CmdBuf not in compiled tests
+.. Skipping VK_Shader_Editing as Test VK_Shader_Editing not in compiled tests
+.. Skipping VK_Shader_ISA as Test VK_Shader_ISA not in compiled tests
+.. Skipping VK_Shader_Printf as Test VK_Shader_Printf not in compiled tests
+.. Skipping VK_Simple_Triangle as Test VK_Simple_Triangle not in compiled tests
+.. Skipping VK_Spec_Constants as Test VK_Spec_Constants not in compiled tests
+.. Skipping VK_Stripped_Shaders as Test VK_Stripped_Shaders not in compiled tests
+.. Skipping VK_Synchronization_2 as Test VK_Synchronization_2 not in compiled tests
+.. Skipping VK_VRS as Test VK_VRS not in compiled tests
+.. Skipping VK_VS_Max_Desc_Set as Test VK_VS_Max_Desc_Set not in compiled tests
+.. Skipping VK_Validation_Use as Test VK_Validation_Use not in compiled tests
+.. Skipping VK_Vertex_Attr_Zoo as Test VK_Vertex_Attr_Zoo not in compiled tests
+.. Skipping D3D11_Groupshared as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Pixel_History as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Shader_Debug_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Texture_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D11_Workgroup_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping D3D12_Execute_Indirect as Test D3D12_Execute_Indirect not in compiled tests
+.. Skipping D3D12_Groupshared as Test D3D12_Groupshared not in compiled tests
+.. Skipping D3D12_Pixel_History as Test D3D12_Pixel_History not in compiled tests
+.. Skipping D3D12_Shader_Debug_Zoo as Test D3D12_Shader_Debug_Zoo not in compiled tests
+.. Skipping D3D12_Subgroup_Zoo as Test D3D12_Subgroup_Zoo not in compiled tests
+.. Skipping D3D12_Texture_Zoo as Test D3D12_Texture_Zoo not in compiled tests
+.. Skipping D3D12_Workgroup_Zoo as Test D3D12_Workgroup_Zoo not in compiled tests
+.. Skipping GL_Callstacks as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Pixel_History as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping GL_Shader_Debug_Zoo as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping GL_Texture_Zoo as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping Iter_Test as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping Repeat_Load as it doesn't match '^D3D9|D3D11_D3DPERF'
+.. Skipping VK_Groupshared as Test VK_Groupshared not in compiled tests
+.. Skipping VK_Pixel_History as Test VK_Pixel_History not in compiled tests
+.. Skipping VK_Shader_Debug_Zoo as Test VK_Shader_Debug_Zoo not in compiled tests
+.. Skipping VK_Subgroup_Zoo as Test VK_Subgroup_Zoo not in compiled tests
+.. Skipping VK_Texture_Zoo as Test VK_Texture_Zoo not in compiled tests
+.. Skipping VK_Workgroup_Zoo as Test VK_Workgroup_Zoo not in compiled tests
+>> Test D3D9_Wrapping_Check
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x86.exe' cmd:'D3D9_Wrapping_Check --log E:\Projects\renderdoc\util\test\tmp\D3D9_Wrapping_Check\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Wrapping_Check'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:75 Log: Checking device-owned objects
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:131 Log: Checking child objects
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:200 Log: Checking bindings
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:211 Log: Observation: bound texture refcount 1
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:257 Log: Observation: GetRenderTarget on an unbound slot returns 88760866
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:310 Log: Observation: declaration after SetFVF: hr 0, non-NULL, stable
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:316 Log: Observation: FVF declaration has 3 elements
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:348 Log: Checking state blocks
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:411 Log: Observation: D3DSBT_PIXELSTATE ignores textures
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:415 Log: Observation: D3DSBT_VERTEXSTATE ignores textures
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:426 Log: Observation: D3DSBT_VERTEXSTATE restores the vertex declaration
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:437 Log: Observation: while recording, GetTexture returns the previous texture
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:463 Log: Checking operations on wrapped objects
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:546 Log: Checking refcounts
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:556 Log: Observation: device refcount 2 -> 3 after creating a texture
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:562 Log: Observation: texture refcount with its surface held: 3
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:564 Log: Observation: surface Release() returned 2
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:569 Log: Observation: device refcount back to 2
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:574 Log: Checking Reset
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:75 Log: Checking device-owned objects
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:632 Log: All checks passed
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:75 Log: Checking device-owned objects
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:131 Log: Checking child objects
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:200 Log: Checking bindings
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:211 Log: Observation: bound texture refcount 1
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:257 Log: Observation: GetRenderTarget on an unbound slot returns 88760866
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:310 Log: Observation: declaration after SetFVF: hr 0, non-NULL, stable
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:316 Log: Observation: FVF declaration has 3 elements
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:348 Log: Checking state blocks
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:411 Log: Observation: D3DSBT_PIXELSTATE ignores textures
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:415 Log: Observation: D3DSBT_VERTEXSTATE ignores textures
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:426 Log: Observation: D3DSBT_VERTEXSTATE restores the vertex declaration
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:437 Log: Observation: while recording, GetTexture returns the previous texture
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:463 Log: Checking operations on wrapped objects
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:546 Log: Checking refcounts
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:556 Log: Observation: device refcount 2 -> 3 after creating a texture
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:562 Log: Observation: texture refcount with its surface held: 3
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:564 Log: Observation: surface Release() returned 2
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:569 Log: Observation: device refcount back to 2
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:574 Log: Checking Reset
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:75 Log: Checking device-owned objects
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:632 Log: All checks passed
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    ** Replayed to each of the 2 actions
+    .. Test D3D9_Wrapping_Check ran in 0:00:03.984338
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D9_Wrapping_Check
+>> Test D3D9_Texture_Formats
+    .. Running D3D9_Texture_Formats natively for 3 frames
+    >> Raw Native run output
+    << Raw Native run output
+    ** The native run's log has no errors (0 warnings)
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x86.exe' cmd:'D3D9_Texture_Formats --log E:\Projects\renderdoc\util\test\tmp\D3D9_Texture_Formats\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Texture_Formats'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: R8G8B8 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: R3G3B2 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: A8R3G3B2 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: X4R4G4B4 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: A8B8G8R8 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: X8B8G8R8 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: A8P8 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: P8 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: A4L4 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: L6V5U5 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: A2W10V10U10 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: CxV8U8 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: Q16W16V16U16 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: UYVY (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: YUY2 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: R8G8_B8G8 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: G8R8_G8B8 (CheckDeviceFormat)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:300 Log: 31 formats supported, 17 not
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:175 Log: Wrote the reference to E:\Projects\renderdoc\util\test\tmp/D3D9_Texture_Formats/D3D9_Texture_Formats_reference_rdoc.txt
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: R8G8B8 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: R3G3B2 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: A8R3G3B2 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: X4R4G4B4 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: A8B8G8R8 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: X8B8G8R8 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: A8P8 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: P8 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: A4L4 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: L6V5U5 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: A2W10V10U10 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: CxV8U8 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: Q16W16V16U16 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: UYVY (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: YUY2 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: R8G8_B8G8 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:299 Log: Not supported: G8R8_G8B8 (CheckDeviceFormat)
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:300 Log: 31 formats supported, 17 not
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_formats.cpp:175 Log: Wrote the reference to E:\Projects\renderdoc\util\test\tmp/D3D9_Texture_Formats/D3D9_Texture_Formats_reference_rdoc.txt
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    ** The reference written under RenderDoc is identical to the native one (293903 bytes)
+    .. Reference E:\Projects\renderdoc\util\test\tmp\D3D9_Texture_Formats\D3D9_Texture_Formats_reference.txt: 31 formats
+    .. PASS A8R8G8B8       256 texels, max diff 0.000000 (B8G8R8A8_UNORM, compared r,g,b,a)
+    .. PASS X8R8G8B8       256 texels, max diff 0.000000 (B8G8R8A8_UNORM, compared r,g,b,a)
+    .. PASS R5G6B5         256 texels, max diff 0.002801 (B5G6R5_UNORM, compared r,g,b,a)
+    .. PASS X1R5G5B5       256 texels, max diff 0.002657 (B5G5R5A1_UNORM, compared r,g,b,a)
+    .. PASS A1R5G5B5       256 texels, max diff 0.002657 (B5G5R5A1_UNORM, compared r,g,b,a)
+    .. PASS A4R4G4B4       256 texels, max diff 0.000000 (B4G4R4A4_UNORM, compared r,g,b,a)
+    .. PASS A8             256 texels, max diff 0.000000 (A8_UNORM, compared r,g,b,a)
+    .. PASS A2B10G10R10    256 texels, max diff 0.000000 (R10G10B10A2_UNORM, compared r,g,b,a)
+    .. PASS G16R16         256 texels, max diff 0.000000 (R16G16_UNORM, compared r,g,a)
+    .. PASS A2R10G10B10    256 texels, max diff 0.000000 (B10G10R10A2_UNORM, compared r,g,b,a)
+    .. PASS A16B16G16R16   256 texels, max diff 0.000000 (R16G16B16A16_UNORM, compared r,g,b,a)
+    .. PASS L8             256 texels, max diff 0.000000 (R8_UNORM, compared r,r=g,r=b,a)
+    .. PASS A8L8           256 texels, max diff 0.000000 (R8G8_UNORM, compared r,r=g,r=b,g=a)
+    .. PASS V8U8           256 texels, max diff 0.000000 (R8G8_SNORM, compared r,g,a)
+    .. PASS X8L8V8U8       256 texels, max diff 0.000000 (Undefined, compared r,g,b,a)
+    .. PASS Q8W8V8U8       256 texels, max diff 0.000000 (R8G8B8A8_SNORM, compared r,g,b,a)
+    .. PASS V16U16         256 texels, max diff 0.000000 (R16G16_SNORM, compared r,g,a)
+    .. PASS L16            256 texels, max diff 0.000000 (R16_UNORM, compared r,r=g,r=b,a)
+    .. PASS DXT1           256 texels, max diff 0.019608 (BC1_UNORM, compared r,g,b,a)
+    .. PASS DXT2           256 texels, max diff 0.015686 (BC2_UNORM, compared r,g,b,a)
+    .. PASS DXT3           256 texels, max diff 0.019608 (BC2_UNORM, compared r,g,b,a)
+    .. PASS DXT4           256 texels, max diff 0.011765 (BC3_UNORM, compared r,g,b,a)
+    .. PASS DXT5           256 texels, max diff 0.019608 (BC3_UNORM, compared r,g,b,a)
+    .. PASS ATI1           256 texels, max diff 0.007874 (BC4_UNORM, compared r)
+    .. PASS ATI2           256 texels, max diff 0.024857 (BC5_UNORM, compared r,g,b)
+    .. PASS R16F           256 texels, max diff 0.000000 (R16_FLOAT, compared r,a)
+    .. PASS G16R16F        256 texels, max diff 0.000000 (R16G16_FLOAT, compared r,g,a)
+    .. PASS A16B16G16R16F  256 texels, max diff 0.000000 (R16G16B16A16_FLOAT, compared r,g,b,a)
+    .. PASS R32F           256 texels, max diff 0.000000 (R32_FLOAT, compared r,a)
+    .. PASS G32R32F        256 texels, max diff 0.000000 (R32G32_FLOAT, compared r,g,a)
+    .. PASS A32B32G32R32F  256 texels, max diff 0.000000 (R32G32B32A32_FLOAT, compared r,g,b,a)
+    .. PASS replay render target matches the native one for all 31 formats (max diff 5e-09)
+    .. 
+    .. 31 formats passed, 0 failed, 0 not compared
+    .. Not supported by the GPU: R8G8B8 (CheckDeviceFormat), R3G3B2 (CheckDeviceFormat), A8R3G3B2 (CheckDeviceFormat), X4R4G4B4 (CheckDeviceFormat), A8B8G8R8 (CheckDeviceFormat), X8B8G8R8 (CheckDeviceFormat), A8P8 (CheckDeviceFormat), P8 (CheckDeviceFormat), A4L4 (CheckDeviceFormat), L6V5U5 (CheckDeviceFormat), A2W10V10U10 (CheckDeviceFormat), CxV8U8 (CheckDeviceFormat), Q16W16V16U16 (CheckDeviceFormat), UYVY (CheckDeviceFormat), YUY2 (CheckDeviceFormat), R8G8_B8G8 (CheckDeviceFormat), G8R8_G8B8 (CheckDeviceFormat)
+    .. Replay render target: PASS
+    ** The formats check passed
+    .. Test D3D9_Texture_Formats ran in 0:00:04.138876
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D9_Texture_Formats
+>> Test D3D9_Simple_Triangle
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x86.exe' cmd:'D3D9_Simple_Triangle --log E:\Projects\renderdoc\util\test\tmp\D3D9_Simple_Triangle\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Simple_Triangle'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    ** Picked value at 200,150 in Backbuffer 17 is as expected
+    ** Picked value at 200,90 in Backbuffer 17 is as expected
+    ** Picked value at 120,210 in Backbuffer 17 is as expected
+    ** Picked value at 280,210 in Backbuffer 17 is as expected
+    ** Picked value at 120,150 in Backbuffer 17 is as expected
+    ** Picked value at 280,150 in Backbuffer 17 is as expected
+    ** Picked value at 200,240 in Backbuffer 17 is as expected
+    ** Picked value at 200,60 in Backbuffer 17 is as expected
+    ** Simple triangle is as expected
+    ** Picked value at 60,270 in Backbuffer 17 is as expected
+    ** Picked value at 340,264 in Backbuffer 17 is as expected
+  saved E:\Projects\renderdoc\util\test\tmp\D3D9_Simple_Triangle\saved.png with SaveTexture, alpha 255-255
+    ** SaveTexture writes the back buffer opaque
+    .. pipelineType 4 localRenderer 4
+    .. 
+    .. Event 11:
+    ..   topology 5 (PipeState: 5)
+    ..   declaration Vertex Declaration 18 fvf 0x0
+    ..     stream 0 +0   POSITION0 FLOAT3 (R32G32B32_FLOAT) DEFAULT
+    ..     stream 0 +12  COLOR0 FLOAT4 (R32G32B32A32_FLOAT) DEFAULT
+    ..     stream 0 +28  TEXCOORD0 FLOAT2 (R32G32_FLOAT) DEFAULT
+    ..     stream 0: Vertex Buffer 21 offset 0 stride 36 freq 1
+    ..     PipeState input POSITION slot 0 +0 R32G32B32_FLOAT used True
+    ..     PipeState input COLOR slot 0 +12 R32G32B32A32_FLOAT used True
+    ..     PipeState input TEXCOORD slot 0 +28 R32G32_FLOAT used True
+    ..   0: Vertex Shader 19 vs_3_0 reflection yes
+    ..     256 float constants (4096 bytes read), c0 = (0.0, 0.0, 0.0, 0.0)
+    ..     16 int constants (256 bytes read)
+    ..     16 bool constants (64 bytes read)
+    ..     constant block 0 -> VS float constants (c#)
+    ..     constant block 0 length 0: same 1 variables (1 non-zero)
+    ..   4: Pixel Shader 20 ps_3_0 reflection yes
+    ..     224 float constants (3584 bytes read), c0 = (0.0, 0.0, 0.0, 0.0)
+    ..     16 int constants (256 bytes read)
+    ..     16 bool constants (64 bytes read)
+    ..   fog False NONE NONE
+    ..   raster fill 0 cull 0 viewport 400.0x300.0 at 0.0,0.0 depth 0.0-1.0 scissor False
+    ..   depth False write True func 3 stencil False two-sided False
+    ..   blend False 1 0 0 separate alpha False mask 0xf alpha test False 1 0 srgb False
+    ..   rt0: Backbuffer 17 mip 0 slice 0 B8G8R8A8_UNORM
+    ..   depth: Auto Depth Stencil 16
+    ..   PipeState output targets: ['Backbuffer 17', '-', '-', '-']
+    .. 
+    .. Event 19:
+    ..   topology 5 (PipeState: 5)
+    ..   declaration - fvf 0x44
+    ..     stream 0 +0   POSITIONT0 FLOAT4 (R32G32B32A32_FLOAT) DEFAULT
+    ..     stream 0 +16  COLOR0 D3DCOLOR (B8G8R8A8_UNORM) DEFAULT
+    ..     stream 0: DrawPrimitiveUP vertices offset 0 stride 20 freq 1
+    ..     PipeState input POSITIONT slot 0 +0 R32G32B32A32_FLOAT used True
+    ..     PipeState input COLOR slot 0 +16 B8G8R8A8_UNORM used True
+    ..   0: -  reflection yes
+    ..   4: -  reflection no
+    ..     reads - (index 0, descriptor 0)
+    ..   stage 0: color SELECTARG1(DIFFUSE, CURRENT) alpha SELECTARG1(TEXTURE, CURRENT)
+    ..   lighting False lights 0 transforms ['VIEW', 'PROJECTION', 'TEXTURE0', 'TEXTURE1', 'TEXTURE2', 'TEXTURE3', 'TEXTURE4', 'TEXTURE5', 'TEXTURE6', 'TEXTURE7', 'WORLD']
+    ..   fog False NONE NONE
+    ..   raster fill 0 cull 0 viewport 400.0x300.0 at 0.0,0.0 depth 0.0-1.0 scissor False
+    ..   depth False write True func 3 stencil False two-sided False
+    ..   blend False 1 0 0 separate alpha False mask 0xf alpha test False 1 0 srgb False
+    ..   rt0: Backbuffer 17 mip 0 slice 0 B8G8R8A8_UNORM
+    ..   depth: Auto Depth Stencil 16
+    ..   PipeState output targets: ['Backbuffer 17', '-', '-', '-']
+    .. 
+    .. Event 30:
+    ..   topology 5 (PipeState: 5)
+    ..   declaration Vertex Declaration 18 fvf 0x0
+    ..     stream 0 +0   POSITION0 FLOAT3 (R32G32B32_FLOAT) DEFAULT
+    ..     stream 0 +12  COLOR0 FLOAT4 (R32G32B32A32_FLOAT) DEFAULT
+    ..     stream 0 +28  TEXCOORD0 FLOAT2 (R32G32_FLOAT) DEFAULT
+    ..     stream 0: Vertex Buffer 23 offset 0 stride 36 freq 1
+    ..     PipeState input POSITION slot 0 +0 R32G32B32_FLOAT used True
+    ..     PipeState input COLOR slot 0 +12 R32G32B32A32_FLOAT used True
+    ..     PipeState input TEXCOORD slot 0 +28 R32G32_FLOAT used True
+    ..   0: Vertex Shader 19 vs_3_0 reflection yes
+    ..     256 float constants (4096 bytes read), c0 = (0.0, 0.0, 0.0, 0.0)
+    ..     16 int constants (256 bytes read)
+    ..     16 bool constants (64 bytes read)
+    ..     constant block 0 -> VS float constants (c#)
+    ..     constant block 0 length 0: same 1 variables (1 non-zero)
+    ..   4: Pixel Shader 22 ps_3_0 reflection yes
+    ..     224 float constants (3584 bytes read), c0 = (0.0, 0.0, 0.0, 0.0)
+    ..     16 int constants (256 bytes read)
+    ..     16 bool constants (64 bytes read)
+    ..     constant block 0 -> PS float constants (c#)
+    ..     constant block 0 length 0: same 3 variables (3 non-zero)
+    ..     constant block 1 -> PS integer constants (i#)
+    ..     constant block 1 length 0: same 1 variables (1 non-zero)
+    ..     constant block 2 -> PS boolean constants (b#)
+    ..     constant block 2 length 0: same 1 variables (1 non-zero)
+    ..   fog False NONE NONE
+    ..   raster fill 0 cull 0 viewport 400.0x300.0 at 0.0,0.0 depth 0.0-1.0 scissor False
+    ..   depth False write True func 3 stencil False two-sided False
+    ..   blend False 1 0 0 separate alpha False mask 0xf alpha test False 1 0 srgb False
+    ..   rt0: Backbuffer 17 mip 0 slice 0 B8G8R8A8_UNORM
+    ..   depth: Auto Depth Stencil 16
+    ..   PipeState output targets: ['Backbuffer 17', '-', '-', '-']
+    .. 
+    .. GetCBufferVariableContents length 0 matched the descriptor size everywhere
+    ** The pipeline state check passed
+    ** The pixel shader has its float, int and bool constant blocks
+    ** The fixed function draw has no shaders and FVF 0x44
+    ** Replayed to each of the 11 actions
+    ** Recompressed and re-imported capture files are identical
+    .. Test D3D9_Simple_Triangle ran in 0:00:03.976686
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D9_Simple_Triangle
+>> Test D3D9_Resource_Usage
+    .. Running D3D9_Resource_Usage natively for 3 frames
+    >> Raw Native run output
+    << Raw Native run output
+    ** The native run's log has no errors (0 warnings)
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x86.exe' cmd:'D3D9_Resource_Usage --log E:\Projects\renderdoc\util\test\tmp\D3D9_Resource_Usage\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Resource_Usage'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_resource_usage.cpp:192 Log: After the clears render target 0 is 0xff0000 and render target 1 0xff0000
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_resource_usage.cpp:334 Log: A colour Clear with two render targets bound clears the second
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_resource_usage.cpp:192 Log: After the clears render target 0 is 0xff0000 and render target 1 0xff0000
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_resource_usage.cpp:334 Log: A colour Clear with two render targets bound clears the second
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    ** The demo found the same natively and under RenderDoc: {'Clear clears render target 1': 1, 'Vertex texture fetch': 1, 'Autogen mipmaps': 1, 'Multisampling': 1}
+    ** Natively a colour Clear clears both bound render targets, as RenderDoc records
+    .. Events: clear 5, shader draw 31, non-indexed 35, fixed function 52, StretchRect 67, GetRenderTargetData 70, ColorFill 73, UpdateTexture 77, Unlocks 8 and 11
+    ** UpdateTexture's source and destination are CopySrc and CopyDst
+    ** sampled pixel texture (8x8): 31 PS_Resource, 35 PS_Resource
+    ** unsampled pixel texture (12x12): unused
+    ** texture after a disabled stage (28x28): unused
+    ** locked texture (44x44): 11 CPUWrite
+    ** stream 0 (1024 bytes): 31 VertexBuffer, 35 VertexBuffer
+    ** stream 1 (1152 bytes): 8 CPUWrite, 31 VertexBuffer, 35 VertexBuffer
+    ** unused stream 2 (1280 bytes): unused
+    ** index buffer (640 bytes): 31 IndexBuffer
+    ** render target 0 (64x32): 5 Clear, 31 ColorTarget, 35 ColorTarget, 52 ColorTarget, 67 CopySrc
+    ** render target 1 (64x32): 5 Clear, 31 ColorTarget, 35 ColorTarget
+    ** depth stencil (72x40): 5 Clear, 31 DepthStencilTarget
+    ** StretchRect destination (64x44): 67 CopyDst, 70 CopySrc, 73 Clear
+    ** VS float constants: 31 VS_Constants, 35 VS_Constants
+    ** PS float constants: 31 PS_Constants, 35 PS_Constants
+    ** VS integer constants: unused
+    ** VS boolean constants: unused
+    ** PS integer constants: unused
+    ** PS boolean constants: unused
+    ** GetRenderTargetData destination (64x44): 70 CopyDst
+    ** D24S8 back buffer or depth (400x300): 85 Clear
+    ** B8G8R8A8_UNORM back buffer or depth (400x300): 85 Clear
+    ** vertex texture (4x4): 31 VS_Resource, 35 VS_Resource
+    ** texture of the fixed function draws (20x20): 52 PS_Resource, 57 PS_Resource
+    ** multisampled target (40x40): 57 ColorTarget, 64 ResolveSrc
+    ** resolve destination (40x40): 64 ResolveDst
+    ** autogen mip texture (128x128): 80 Clear, 81 GenMips
+    ** Recompressed and re-imported capture files are identical
+    .. Test D3D9_Resource_Usage ran in 0:00:04.182789
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D9_Resource_Usage
+>> Test D3D9_Resource_Contents
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x86.exe' cmd:'D3D9_Resource_Contents --log E:\Projects\renderdoc\util\test\tmp\D3D9_Resource_Contents\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Resource_Contents'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_resource_contents.cpp:188 Log: UpdateTexture copied only the dirty region
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_resource_contents.cpp:188 Log: UpdateTexture copied only the dirty region
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    ** The managed texture level 0 is as expected
+    ** The managed texture level 1 is as expected
+    ** The managed texture level 2 is as expected
+    ** The managed texture level 3 is as expected
+    ** The default pool texture level 0 is as expected
+    ** The default pool texture level 1 is as expected
+    ** The system memory surface is as expected
+    ** The render target texture is as expected
+    ** The multisampled render target is as expected
+    ** The cube texture face 0 is as expected
+    ** The cube texture face 1 is as expected
+    ** The cube texture face 2 is as expected
+    ** The cube texture face 3 is as expected
+    ** The cube texture face 4 is as expected
+    ** The cube texture face 5 is as expected
+    ** The volume texture slice 0 is as expected
+    ** The volume texture slice 1 is as expected
+    ** The volume texture slice 2 is as expected
+    ** The volume texture slice 3 is as expected
+    ** The recycled texture (0xFF040404) is as expected
+    ** Every region the frames alternate has the previous frame's 0xFF00FF00
+    ** The managed vertex buffer has the default triangle
+    ** The write-only default pool index buffer holds 0, 1, 2
+    ** Picked value at 200,200 in Backbuffer 17 is as expected
+    ** Replayed to each of the 11 actions
+    .. Test D3D9_Resource_Contents ran in 0:00:03.768989
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D9_Resource_Contents
+>> Test D3D9_Reset_Capture
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x86.exe' cmd:'D3D9_Reset_Capture --log E:\Projects\renderdoc\util\test\tmp\D3D9_Reset_Capture\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Reset_Capture'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+    .. Retrieved 2 captures, of frames [4294967295, 61]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    ** The in-app capture of frame 30 has the markers ['After the reset']
+    ** Picked value at 10,10 in Backbuffer 23 is as expected
+    ** Picked value at 200,150 in Backbuffer 23 is as expected
+    ** Picked value at 200,90 in Backbuffer 23 is as expected
+    ** Picked value at 120,210 in Backbuffer 23 is as expected
+    ** Picked value at 280,210 in Backbuffer 23 is as expected
+    ** Picked value at 120,150 in Backbuffer 23 is as expected
+    ** Picked value at 280,150 in Backbuffer 23 is as expected
+    ** Picked value at 200,240 in Backbuffer 23 is as expected
+    ** Picked value at 200,60 in Backbuffer 23 is as expected
+    ** Simple triangle is as expected
+    ** Replayed to each of the 4 actions
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    ** The triggered capture has the markers ['Frame']
+    ** Picked value at 10,10 in Backbuffer 25 is as expected
+    ** Picked value at 200,150 in Backbuffer 25 is as expected
+    ** Picked value at 200,90 in Backbuffer 25 is as expected
+    ** Picked value at 120,210 in Backbuffer 25 is as expected
+    ** Picked value at 280,210 in Backbuffer 25 is as expected
+    ** Picked value at 120,150 in Backbuffer 25 is as expected
+    ** Picked value at 280,150 in Backbuffer 25 is as expected
+    ** Picked value at 200,240 in Backbuffer 25 is as expected
+    ** Picked value at 200,60 in Backbuffer 25 is as expected
+    ** Simple triangle is as expected
+    ** Replayed to each of the 5 actions
+    .. Test D3D9_Reset_Capture ran in 0:00:03.987233
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D9_Reset_Capture
+>> Test D3D9_Overlay_Test
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x86.exe' cmd:'D3D9_Overlay_Test --log E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Overlay_Test'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    .. 
+    .. Depth Test:
+    ..   event 32, target ResourceId::17 (400x300)
+    ..   PASS the draw failed the depth test in the top half (setup grey): (0.098, 0.098, 0.098, 1.000)
+    ..   PASS and passed in the bottom (green): (0.000, 0.498, 0.000, 1.000)
+    ..   PASS Depth Test 1: overlay texture exists
+    ..   PASS Depth Test 1: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Depth_Test_1.png
+    ..   PASS Drawcall inside at (70, 90) is (0.800, 0.100, 0.800, 1.000): got (0.800, 0.098, 0.800, 1.000)
+    ..   PASS Drawcall outside at (200, 291) is (0.000, 0.000, 0.000, 0.500): got (0.000, 0.000, 0.000, 0.502)
+    ..   PASS Depth Test 2: overlay texture exists
+    ..   PASS Depth Test 2: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Depth_Test_2.png
+    ..   PASS Wireframe inside at (40, 90) is (0.784, 1.000, 0.000, 0.000): got (0.784, 1.000, 0.000, 0.000)
+    ..   PASS Wireframe has the left edge near x=20: (0.784, 1.000, 0.000, 0.000) (0.784, 1.000, 0.000, 0.000) (0.784, 1.000, 0.000, 1.000) (0.784, 1.000, 0.000, 0.000) (0.784, 1.000, 0.000, 0.000)
+    ..   PASS Depth Test 3: overlay texture exists
+    ..   PASS Depth Test 3: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Depth_Test_3.png
+    ..   PASS Depth fails in the top half at (70, 90) is (1.000, 0.000, 0.000, 1.000): got (1.000, 0.000, 0.000, 1.000)
+    ..   PASS Depth passes in the bottom half at (70, 210) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+    ..   PASS Depth outside the draw at (200, 291) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+    ..   PASS Depth Test 4: overlay texture exists
+    ..   PASS Depth Test 4: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Depth_Test_4.png
+    ..   PASS Stencil with the test off passes at (70, 90) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+    ..   PASS Depth Test 12: overlay texture exists
+    ..   PASS Depth Test 12: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Depth_Test_12.png
+    ..   PASS 12 is transparent: 0 non-zero bytes
+    ..   PASS Depth Test 11: overlay texture exists
+    ..   PASS Depth Test 11: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Depth_Test_11.png
+    ..   PASS 11 is transparent: 0 non-zero bytes
+    ..   PASS Depth Test 14: overlay texture exists
+    ..   PASS Depth Test 14: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Depth_Test_14.png
+    ..   PASS TriangleSizeDraw fails the depth test in the top half at (70, 90) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+    ..   PASS TriangleSizeDraw in the bottom half at (70, 210) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+    ..   PASS TriangleSizeDraw outside the draw at (200, 291) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+    ..   PASS Depth Test 13: overlay texture exists
+    ..   PASS Depth Test 13: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Depth_Test_13.png
+    ..   PASS TriangleSizePass has the setup draw in the top half at (70, 90) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+    ..   PASS TriangleSizePass in the bottom half at (70, 210) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+    ..   PASS TriangleSizePass outside the pass at (200, 291) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+    ..   PASS the overlays left the target as it was: 0 of 480000 bytes differ
+    .. 
+    .. Depth Bias:
+    ..   event 39, target ResourceId::17 (400x300)
+    ..   PASS the draw failed in the top half (setup grey): (0.098, 0.098, 0.098, 1.000)
+    ..   PASS Depth Bias 3: overlay texture exists
+    ..   PASS Depth Bias 3: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Depth_Bias_3.png
+    ..   PASS Depth fails in the top half at (190, 90) is (1.000, 0.000, 0.000, 1.000): got (1.000, 0.000, 0.000, 1.000)
+    ..   PASS Depth passes in the bottom half at (190, 210) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+    .. 
+    .. Stencil Test:
+    ..   event 47, target ResourceId::17 (400x300)
+    ..   PASS Stencil Test 4: overlay texture exists
+    ..   PASS Stencil Test 4: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Stencil_Test_4.png
+    ..   PASS Stencil passes in the top half at (320, 90) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+    ..   PASS Stencil fails in the bottom half at (320, 210) is (1.000, 0.000, 0.000, 1.000): got (1.000, 0.000, 0.000, 1.000)
+    ..   PASS Stencil Test 3: overlay texture exists
+    ..   PASS Stencil Test 3: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Stencil_Test_3.png
+    ..   PASS Depth with ZENABLE off passes at (320, 210) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+    ..   PASS ClearBeforeDraw returns an overlay texture
+    ..   PASS ClearBeforeDraw cleared what the setup draw drew: (0.000, 0.000, 1.000, 1.000)
+    ..   PASS ClearBeforeDraw kept the draw: (0.498, 0.000, 0.498, 1.000)
+    ..   PASS ClearBeforePass returns an overlay texture
+    ..   PASS ClearBeforePass replayed the setup draw: (0.098, 0.098, 0.098, 1.000)
+    ..   PASS ClearBeforePass cleared the background: (0.000, 0.000, 1.000, 1.000)
+    ..   PASS turning the clear off puts the background back: (0.200, 0.200, 0.200, 1.000)
+    .. 
+    .. Backface Cull:
+    ..   event 52, target ResourceId::17 (400x300)
+    ..   PASS Backface Cull 5: overlay texture exists
+    ..   PASS Backface Cull 5: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Backface_Cull_5.png
+    ..   PASS the front face at (100, 240) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+    ..   PASS the back face at (300, 240) is (1.000, 0.000, 0.000, 1.000): got (1.000, 0.000, 0.000, 1.000)
+    ..   PASS outside at (200, 90) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+    .. 
+    .. Viewport Scissor:
+    ..   event 63, target ResourceId::17 (400x300)
+    ..   PASS Viewport Scissor 6: overlay texture exists
+    ..   PASS Viewport Scissor 6: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Viewport_Scissor_6.png
+    ..   PASS inside the scissor rect at (300, 225) is (0.080, 0.680, 0.360, 0.760): got (0.078, 0.678, 0.361, 0.761)
+    ..   PASS scissored out at (220, 285) is (0.680, 0.080, 0.360, 0.760): got (0.678, 0.078, 0.361, 0.761)
+    ..   PASS outside the viewport at (100, 75) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+    ..   PASS the viewport's border at (201, 225) is (0.100, 0.100, 0.100, 1.000): got (0.098, 0.098, 0.098, 1.000)
+    ..   PASS the scissor rect's border is black or white: (1.000, 1.000, 1.000, 1.000)
+    ..   PASS Viewport Scissor 14: overlay texture exists
+    ..   PASS Viewport Scissor 14: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Viewport_Scissor_14.png
+    ..   PASS TriangleSizeDraw inside the scissor rect at (300, 225) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+    ..   PASS TriangleSizeDraw scissored out at (220, 285) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+    ..   PASS TriangleSizeDraw outside the viewport at (100, 225) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+    .. 
+    .. Triangle Size:
+    ..   event 71, target ResourceId::17 (400x300)
+    ..   expected ramp entries: 2 for 10.0 pixels, 1 for 24.0 pixels, 3 for 7.0 pixels
+    ..   PASS Triangle Size 14: overlay texture exists
+    ..   PASS Triangle Size 14: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Triangle_Size_14.png
+    ..   PASS TriangleSizeDraw of a 10.0 pixel triangle at (41, 277) is (0.251, 0.000, 0.753, 1.000): got (0.251, 0.000, 0.753, 1.000)
+    ..   PASS TriangleSizeDraw of a 24.0 pixel triangle at (45, 279) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+    ..   PASS TriangleSizeDraw of a 7.0 pixel triangle at (48, 277) is (0.000, 0.251, 1.000, 1.000): got (0.000, 0.251, 1.000, 1.000)
+    ..   PASS TriangleSizeDraw outside the strip at (42, 282) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+    ..   PASS TriangleSizeDraw leaves out the earlier draws at (70, 210) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+    ..   PASS Triangle Size 1: overlay texture exists
+    ..   PASS Triangle Size 1: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Triangle_Size_1.png
+    ..   PASS TriangleSizeDraw covers what Drawcall does: 42 pixels covered, 0 differ
+    ..   PASS TriangleSizeDraw only has ramp colours: 0 pixels aren't
+    ..   PASS Triangle Size 13: overlay texture exists
+    ..   PASS Triangle Size 13: overlay is 400x300 A8R8G8B8: 480000 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_Triangle_Size_13.png
+    ..   PASS TriangleSizePass of a 10.0 pixel triangle at (41, 277) is (0.251, 0.000, 0.753, 1.000): got (0.251, 0.000, 0.753, 1.000)
+    ..   PASS TriangleSizePass of a 24.0 pixel triangle at (45, 279) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+    ..   PASS TriangleSizePass of a 7.0 pixel triangle at (48, 277) is (0.000, 0.251, 1.000, 1.000): got (0.000, 0.251, 1.000, 1.000)
+    ..   PASS TriangleSizePass has the Depth Test draw at (70, 210) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+    ..   PASS TriangleSizePass outside the pass at (42, 282) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+    .. 
+    .. MSAA:
+    ..   event 82, target ResourceId::22 (256x256)
+    ..   PASS the MSAA target is multisampled: 4 samples
+    ..   PASS MSAA 3: overlay texture exists
+    ..   PASS MSAA 3: overlay is 256x256 A8R8G8B8: 262144 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_MSAA_3.png
+    ..   PASS Depth passes inside the triangle at (128, 180) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+    ..   PASS Depth outside the triangle at (20, 20) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+    ..   PASS MSAA 1: overlay texture exists
+    ..   PASS MSAA 1: overlay is 256x256 A8R8G8B8: 262144 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_MSAA_1.png
+    ..   PASS Drawcall inside the triangle at (128, 180) is (0.800, 0.100, 0.800, 1.000): got (0.800, 0.098, 0.800, 1.000)
+    ..   PASS MSAA 14: overlay texture exists
+    ..   PASS MSAA 14: overlay is 256x256 A8R8G8B8: 262144 bytes
+    ..   saved E:\Projects\renderdoc\util\test\tmp\D3D9_Overlay_Test\overlay_MSAA_14.png
+    ..   PASS TriangleSizeDraw inside the triangle at (128, 180) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+    ..   PASS TriangleSizeDraw outside the triangle at (20, 20) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+    .. 
+    .. 101 passed, 0 failed
+    ** The overlay check passed
+    .. Test D3D9_Overlay_Test ran in 0:00:04.231733
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D9_Overlay_Test
+>> Test D3D9_Mesh_Output
+    .. Running D3D9_Mesh_Output natively for 3 frames
+    >> Raw Native run output
+    << Raw Native run output
+    ** The native run's log has no errors (0 warnings)
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x86.exe' cmd:'D3D9_Mesh_Output --log E:\Projects\renderdoc\util\test\tmp\D3D9_Mesh_Output\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Mesh_Output'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_mesh_output.cpp:1467 Log: Wrote the reference to E:\Projects\renderdoc\util\test\tmp/D3D9_Mesh_Output/D3D9_Mesh_Output_reference_rdoc.txt
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_mesh_output.cpp:1467 Log: Wrote the reference to E:\Projects\renderdoc\util\test\tmp/D3D9_Mesh_Output/D3D9_Mesh_Output_reference_rdoc.txt
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    ** The reference written under RenderDoc is identical to the native one (51443 bytes)
+    .. Reference E:\Projects\renderdoc\util\test\tmp\D3D9_Mesh_Output\D3D9_Mesh_Output_reference.txt: 15 draws, viewport [0.0, 0.0, 400.0, 300.0, 0.0, 1.0]
+    .. PASS FFP transform (VS In 6 vertices, VS Out 6 rows (6 unique), unproject True)
+    .. PASS FFP directional light (VS In 24 vertices, VS Out 24 rows (9 unique), unproject True, 24 rows checked against the GPU)
+    .. PASS FFP point light (VS In 24 vertices, VS Out 24 rows (9 unique), unproject True, 24 rows checked against the GPU)
+    .. PASS FFP spot light (VS In 24 vertices, VS Out 24 rows (9 unique), unproject True, 24 rows checked against the GPU)
+    .. PASS FFP texgen and fog (VS In 24 vertices, VS Out 24 rows (9 unique), unproject True)
+    .. PASS FFP point size (VS In 6 vertices, VS Out 6 rows (6 unique), unproject True, 6 rows checked against the GPU)
+    .. PASS FFP vertex blending (VS In 6 vertices, VS Out 6 rows (6 unique), unproject True, 6 rows checked against the GPU)
+    .. PASS FFP indexed vertex blending (VS In 6 vertices, VS Out 6 rows (6 unique), unproject True, 6 rows checked against the GPU)
+    .. PASS FFP XYZRHW DrawPrimitiveUP (VS In 4 vertices, VS Out 4 rows (4 unique), unproject False)
+    .. PASS FFP XYZRHW DrawPrimitiveUP VS In (112 vertex bytes, stride 28)
+    .. PASS FFP DrawIndexedPrimitiveUP (VS In 24 vertices, VS Out 24 rows (9 unique), unproject True)
+    .. PASS FFP DrawIndexedPrimitiveUP VS In (324 vertex bytes, stride 36, 48 index bytes)
+    .. PASS vs_1_1 (VS In 24 vertices, VS Out 24 rows (9 unique), unproject True)
+    .. PASS vs_2_0 flow control (VS In 9 vertices, VS Out 9 rows (9 unique), unproject True)
+    .. PASS vs_3_0 loops and texldl (VS In 24 vertices, VS Out 24 rows (9 unique), unproject True)
+    .. PASS vs_3_0 instancing (VS In 6 vertices, VS Out 6 rows (4 unique), unproject True)
+    .. PASS vs_2_0 DrawPrimitiveUP (VS In 9 vertices, VS Out 9 rows (9 unique), unproject True)
+    .. PASS vs_2_0 DrawPrimitiveUP VS In (324 vertex bytes, stride 36)
+    .. 
+    .. 18 passed, 0 failed, 0 skipped (no reference)
+    ** The mesh output check passed
+    .. Test D3D9_Mesh_Output ran in 0:00:04.451038
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D9_Mesh_Output
+>> Test D3D9_Frame_Start_State
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x86.exe' cmd:'D3D9_Frame_Start_State --log E:\Projects\renderdoc\util\test\tmp\D3D9_Frame_Start_State\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Frame_Start_State'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_frame_start_state.cpp:175 Log: Running on a pure device
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_frame_start_state.cpp:73 Log: Shader constants above c127 survived the first frames
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_frame_start_state.cpp:175 Log: Running on a pure device
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_frame_start_state.cpp:73 Log: Shader constants above c127 survived the first frames
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    ** Picked value at 200,150 in Backbuffer 17 is as expected
+    ** Picked value at 200,90 in Backbuffer 17 is as expected
+    ** Picked value at 120,210 in Backbuffer 17 is as expected
+    ** Picked value at 280,210 in Backbuffer 17 is as expected
+    ** Picked value at 120,150 in Backbuffer 17 is as expected
+    ** Picked value at 280,150 in Backbuffer 17 is as expected
+    ** Picked value at 200,240 in Backbuffer 17 is as expected
+    ** Picked value at 200,60 in Backbuffer 17 is as expected
+    ** Simple triangle is as expected
+    ** D3DRS_AMBIENT and D3DRS_STENCILREF are as the demo set them
+    ** VS float constants [10, 138, 200] are as the demo set them
+    ** PS float constants [20, 148, 180] are as the demo set them
+    .. pipelineType 4 localRenderer 4
+    .. 
+    .. Event 10:
+    ..   topology 5 (PipeState: 5)
+    ..   declaration Vertex Declaration 18 fvf 0x0
+    ..     stream 0 +0   POSITION0 FLOAT3 (R32G32B32_FLOAT) DEFAULT
+    ..     stream 0 +12  COLOR0 FLOAT4 (R32G32B32A32_FLOAT) DEFAULT
+    ..     stream 0 +28  TEXCOORD0 FLOAT2 (R32G32_FLOAT) DEFAULT
+    ..     stream 0: Vertex Buffer 21 offset 0 stride 36 freq 1
+    ..     PipeState input POSITION slot 0 +0 R32G32B32_FLOAT used True
+    ..     PipeState input COLOR slot 0 +12 R32G32B32A32_FLOAT used True
+    ..     PipeState input TEXCOORD slot 0 +28 R32G32_FLOAT used True
+    ..   0: Vertex Shader 19 vs_3_0 reflection yes
+    ..     256 float constants (4096 bytes read), c0 = (0.0, 0.0, 0.0, 0.0)
+    ..     16 int constants (256 bytes read)
+    ..     16 bool constants (64 bytes read)
+    ..     constant block 0 -> VS float constants (c#)
+    ..     constant block 0 length 0: same 1 variables (1 non-zero)
+    ..   4: Pixel Shader 20 ps_3_0 reflection yes
+    ..     224 float constants (3584 bytes read), c0 = (0.0, 0.0, 0.0, 0.0)
+    ..     16 int constants (256 bytes read)
+    ..     16 bool constants (64 bytes read)
+    ..   fog False NONE NONE
+    ..   raster fill 0 cull 0 viewport 400.0x300.0 at 0.0,0.0 depth 0.0-1.0 scissor False
+    ..   depth False write True func 3 stencil False two-sided False
+    ..   blend False 1 0 0 separate alpha False mask 0xf alpha test False 1 0 srgb False
+    ..   rt0: Backbuffer 17 mip 0 slice 0 B8G8R8A8_UNORM
+    ..   depth: Auto Depth Stencil 16
+    ..   PipeState output targets: ['Backbuffer 17', '-', '-', '-']
+    .. 
+    .. Event 16:
+    ..   topology 5 (PipeState: 5)
+    ..   declaration - fvf 0x44
+    ..     stream 0 +0   POSITIONT0 FLOAT4 (R32G32B32A32_FLOAT) DEFAULT
+    ..     stream 0 +16  COLOR0 D3DCOLOR (B8G8R8A8_UNORM) DEFAULT
+    ..     stream 0: DrawPrimitiveUP vertices offset 0 stride 20 freq 1
+    ..     PipeState input POSITIONT slot 0 +0 R32G32B32A32_FLOAT used True
+    ..     PipeState input COLOR slot 0 +16 B8G8R8A8_UNORM used True
+    ..   0: -  reflection yes
+    ..   4: -  reflection no
+    ..     reads - (index 0, descriptor 0)
+    ..   stage 0: color SELECTARG1(DIFFUSE, CURRENT) alpha SELECTARG1(TEXTURE, CURRENT)
+    ..   lighting False lights 2 transforms ['VIEW', 'PROJECTION', 'TEXTURE0', 'TEXTURE1', 'TEXTURE2', 'TEXTURE3', 'TEXTURE4', 'TEXTURE5', 'TEXTURE6', 'TEXTURE7', 'WORLD', 'WORLDMATRIX(5)']
+    ..   fog False NONE NONE
+    ..   raster fill 0 cull 0 viewport 400.0x300.0 at 0.0,0.0 depth 0.0-1.0 scissor False
+    ..   depth False write True func 3 stencil False two-sided False
+    ..   blend False 1 0 0 separate alpha False mask 0xf alpha test False 1 0 srgb False
+    ..   rt0: Backbuffer 17 mip 0 slice 0 B8G8R8A8_UNORM
+    ..   depth: Auto Depth Stencil 16
+    ..   PipeState output targets: ['Backbuffer 17', '-', '-', '-']
+    .. 
+    .. GetCBufferVariableContents length 0 matched the descriptor size everywhere
+    ** The pipeline state check passed
+    ** Recompressed and re-imported capture files are identical
+    .. Test D3D9_Frame_Start_State ran in 0:00:03.900397
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D9_Frame_Start_State
+>> Test D3D9_Counters
+    .. Running D3D9_Counters natively for 3 frames
+    >> Raw Native run output
+    << Raw Native run output
+    ** The native run's log has no errors (0 warnings)
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x86.exe' cmd:'D3D9_Counters --log E:\Projects\renderdoc\util\test\tmp\D3D9_Counters\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Counters'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_counters.cpp:337 Log: Wrote the occlusion query counts to E:\Projects\renderdoc\util\test\tmp/D3D9_Counters/D3D9_Counters_reference_rdoc.txt:
+Scissored quad	2048
+Hidden quad	0
+Half hidden quad	1024
+Heavy quad	120000
+Single pixel quad	1
+Multisampled quad	1024
+
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_counters.cpp:337 Log: Wrote the occlusion query counts to E:\Projects\renderdoc\util\test\tmp/D3D9_Counters/D3D9_Counters_reference_rdoc.txt:
+        Scissored quad	2048
+        Hidden quad	0
+        Half hidden quad	1024
+        Heavy quad	120000
+        Single pixel quad	1
+        Multisampled quad	1024
+        
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    ** The GPU's counts are the same natively and under RenderDoc: {'Scissored quad': 2048, 'Hidden quad': 0, 'Half hidden quad': 1024, 'Heavy quad': 120000, 'Single pixel quad': 1, 'Multisampled quad': 1024}
+    ** The counters enumerated are ['GPU Duration', 'Samples Passed']
+    ** The counters are described with their units and types
+    ** Picked value at 20,20 in Backbuffer 17 is as expected
+    ** After fetching the counters the back buffer is as it was at the first draw
+    .. 3 IDirect3DDevice9::Clear: 0.00 us, 0 samples
+    .. 20 IDirect3DDevice9::DrawPrimitive: 1.03 us, 2048 samples
+    .. 28 IDirect3DDevice9::DrawPrimitive: 0.00 us, 0 samples
+    .. 36 IDirect3DDevice9::DrawPrimitive: 1.02 us, 1024 samples
+    .. 49 IDirect3DDevice9::DrawPrimitive: 881.66 us, 120000 samples
+    .. 60 IDirect3DDevice9::DrawPrimitive: 1.03 us, 1 samples
+    .. 72 IDirect3DDevice9::DrawPrimitive: 1.02 us, 1024 samples
+    .. 76 IDirect3DDevice9::StretchRect: 7.17 us, 0 samples
+    .. 79 IDirect3DDevice9::Present: 0.00 us, 0 samples
+    ** Each of the 9 actions has a duration and a sample count
+    ** 'Scissored quad' passed 2048 samples, as natively
+    ** 'Hidden quad' passed 0 samples, as natively
+    ** 'Half hidden quad' passed 1024 samples, as natively
+    ** 'Heavy quad' passed 120000 samples, as natively
+    ** 'Single pixel quad' passed 1 samples, as natively
+    ** 'Multisampled quad' passed 1024 samples, as natively
+    ** The heavy quad took 881.66 us, the single pixel one 1.03 us
+    .. Natively the heavy quad took 961.54 us at its fastest, with a timestamp frequency of 100000000 Hz
+    ** The heavy quad's duration at replay is 0.92 times the native one
+    ** A second fetch gives the same sample counts
+    ** Recompressed and re-imported capture files are identical
+    .. Test D3D9_Counters ran in 0:00:04.295203
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D9_Counters
+>> Test D3D9_Capture_Edge_Cases
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x86.exe' cmd:'D3D9_Capture_Edge_Cases --log E:\Projects\renderdoc\util\test\tmp\D3D9_Capture_Edge_Cases\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Capture_Edge_Cases'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    ** The Depth, Multisampled and State blocks markers are there
+    ** The automatic depth stencil is as expected
+    ** The multisampled depth stencil sample 0 is as expected
+    ** The multisampled depth stencil sample 1 is as expected
+    ** The multisampled depth stencil sample 2 is as expected
+    ** The multisampled depth stencil sample 3 is as expected
+    ** The D16 depth stencil is as expected
+    ** The INTZ depth texture is as expected
+    ** The texture locked across Present is as expected
+    ** The surface drawn with GDI is as expected
+    ** Replayed to each of the 16 actions
+    .. Test D3D9_Capture_Edge_Cases ran in 0:00:04.398141
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D9_Capture_Edge_Cases
+>> Test D3D9Ex_Wrapping_Check
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x86.exe' cmd:'D3D9Ex_Wrapping_Check --log E:\Projects\renderdoc\util\test\tmp\D3D9Ex_Wrapping_Check\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9Ex_Wrapping_Check'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9Ex test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:75 Log: Checking device-owned objects
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:131 Log: Checking child objects
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:200 Log: Checking bindings
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:211 Log: Observation: bound texture refcount 1
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:257 Log: Observation: GetRenderTarget on an unbound slot returns 88760866
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:310 Log: Observation: declaration after SetFVF: hr 0, non-NULL, stable
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:316 Log: Observation: FVF declaration has 3 elements
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:348 Log: Checking state blocks
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:411 Log: Observation: D3DSBT_PIXELSTATE ignores textures
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:415 Log: Observation: D3DSBT_VERTEXSTATE ignores textures
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:426 Log: Observation: D3DSBT_VERTEXSTATE restores the vertex declaration
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:437 Log: Observation: while recording, GetTexture returns the previous texture
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:463 Log: Checking operations on wrapped objects
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:546 Log: Checking refcounts
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:556 Log: Observation: device refcount 3 -> 4 after creating a texture
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:562 Log: Observation: texture refcount with its surface held: 3
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:564 Log: Observation: surface Release() returned 2
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:569 Log: Observation: device refcount back to 3
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:574 Log: Checking Reset
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:75 Log: Checking device-owned objects
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:632 Log: All checks passed
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9Ex test on NVIDIA GeForce RTX 4070 Ti
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:75 Log: Checking device-owned objects
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:131 Log: Checking child objects
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:200 Log: Checking bindings
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:211 Log: Observation: bound texture refcount 1
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:257 Log: Observation: GetRenderTarget on an unbound slot returns 88760866
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:310 Log: Observation: declaration after SetFVF: hr 0, non-NULL, stable
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:316 Log: Observation: FVF declaration has 3 elements
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:348 Log: Checking state blocks
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:411 Log: Observation: D3DSBT_PIXELSTATE ignores textures
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:415 Log: Observation: D3DSBT_VERTEXSTATE ignores textures
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:426 Log: Observation: D3DSBT_VERTEXSTATE restores the vertex declaration
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:437 Log: Observation: while recording, GetTexture returns the previous texture
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:463 Log: Checking operations on wrapped objects
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:546 Log: Checking refcounts
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:556 Log: Observation: device refcount 3 -> 4 after creating a texture
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:562 Log: Observation: texture refcount with its surface held: 3
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:564 Log: Observation: surface Release() returned 2
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:569 Log: Observation: device refcount back to 3
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:574 Log: Checking Reset
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:75 Log: Checking device-owned objects
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_wrapping_check.h:632 Log: All checks passed
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    ** Replayed to each of the 2 actions
+    .. Test D3D9Ex_Wrapping_Check ran in 0:00:03.751643
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D9Ex_Wrapping_Check
+>> Test D3D11_D3DPERF_Markers
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x86.exe' cmd:'D3D11_D3DPERF_Markers --log E:\Projects\renderdoc\util\test\tmp\D3D11_D3DPERF_Markers\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D11_D3DPERF_Markers'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\d3d11\d3d11_test.cpp:319 Log: Running D3D11 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d11\d3d11_d3dperf_markers.cpp:126 Log: D3DPERF returns: BeginEvent 0, nested BeginEvent 0, nested EndEvent -1, EndEvent -1
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d11\d3d11_test.cpp:319 Log: Running D3D11 test on NVIDIA GeForce RTX 4070 Ti
+        E:\Projects\renderdoc\util\test\demos\d3d11\d3d11_d3dperf_markers.cpp:126 Log: D3DPERF returns: BeginEvent 0, nested BeginEvent 0, nested EndEvent -1, EndEvent -1
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    .. pipelineType 0
+    .. Markers and draws (clears and Present left out):
+    ..   D3DPERF region
+    ..     Draw
+    ..     D3DPERF marker
+    ..     D3DPERF nested region
+    ..       Draw
+    ..   Draw
+    ..   Annotation region
+    ..     Draw
+    .. Colour of D3DPERF region: (1, 0, 0) (the demo set (1.0, 0.0, 0.0))
+    .. Colour of D3DPERF marker: (0, 1, 0) (the demo set (0.0, 1.0, 0.0))
+    .. Colour of D3DPERF nested region: (0, 0, 1) (the demo set (0.0, 0.0, 1.0))
+    .. 
+    .. D3DPERF markers in the D3D11 capture: PASS
+    ** The D3DPERF markers check passed
+    .. Test D3D11_D3DPERF_Markers ran in 0:00:03.937359
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D11_D3DPERF_Markers
+>> Raw  RenderDoc log
+<< Raw  RenderDoc log
+// total=204 fail=0 skip=191 time=61
+
+## Tests complete summary: 13 passed out of 13 run from 204 total in 0:01:01.292072 ##
+

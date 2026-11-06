@@ -490,7 +490,10 @@ RDResult D3D9Replay::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuf
 {
   RDResult ret = m_pDevice->ReadLogInitialisation(rdc, storeStructuredBuffers);
   if(ret == ResultCode::Succeeded)
+  {
     CreatePipelineStateResources();
+    FinishUsage();
+  }
   return ret;
 }
 

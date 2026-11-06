@@ -794,9 +794,12 @@ private:
   void ReplayBeginScene();
   void ReplayEndScene();
   void ApplyReplayDeviceState(const D3D9DeviceState &state);
-  void AddDrawAction(ActionFlags flags, uint32_t numIndices, uint32_t indexOffset,
-                     int32_t baseVertex, uint32_t vertexOffset);
+  void AddDrawAction(ActionFlags flags, uint32_t numIndices, uint32_t indexOffset, int32_t baseVertex,
+                     uint32_t vertexOffset, D3D9DrawSource source = D3D9DrawSource::Buffers);
   void AddCopyAction(ActionFlags flags, IUnknown *source, IUnknown *dest);
+  // resource usage at the current event, recorded while loading (D3D9Replay::GetUsage)
+  void AddUsage(ResourceId id, ResourceUsage usage);
+  void AddDrawUsage(ActionFlags flags, D3D9DrawSource source);
   ResourceId ContentsTextureID(IUnknown *obj);
   // the first back buffer of a swapchain, described as a resource even if the capture never used it
   ResourceId ReplayBackBufferID(IDirect3DSwapChain9 *swap);

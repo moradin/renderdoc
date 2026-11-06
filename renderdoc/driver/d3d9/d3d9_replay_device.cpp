@@ -619,7 +619,8 @@ void WrappedD3DDevice9::AddAction(const ActionDescription &a)
 }
 
 void WrappedD3DDevice9::AddDrawAction(ActionFlags flags, uint32_t numIndices, uint32_t indexOffset,
-                                      int32_t baseVertex, uint32_t vertexOffset)
+                                      int32_t baseVertex, uint32_t vertexOffset,
+                                      D3D9DrawSource source)
 {
   if(!IsLoading(m_State))
     return;
@@ -645,6 +646,8 @@ void WrappedD3DDevice9::AddDrawAction(ActionFlags flags, uint32_t numIndices, ui
     }
   }
 
+  AddDrawUsage(action.flags, source);
+
   AddAction(action);
 }
 
@@ -667,7 +670,49 @@ void WrappedD3DDevice9::AddCopyAction(ActionFlags flags, IUnknown *source, IUnkn
   if(dst && dst->GetContainer() && dst->GetContainer()->GetResourceType() != Resource_SwapChain)
     action.copyDestinationSubresource = Subresource(dst->GetChildLevel(), dst->GetChildFace());
 
+  // without a source the data came from the CPU: GDI drawing, or what was on the screen
+  if(source == NULL)
+  {
+    AddUsage(action.copyDestination, ResourceUsage::CPUWrite);
+  }
+  else if(flags & ActionFlags::Resolve)
+  {
+    AddUsage(action.copySource, ResourceUsage::ResolveSrc);
+    AddUsage(action.copyDestination, ResourceUsage::ResolveDst);
+  }
+  else if(action.copySource == action.copyDestination)
+  {
+    // between two levels or faces of one texture
+    AddUsage(action.copySource, ResourceUsage::Copy);
+  }
+  else
+  {
+    AddUsage(action.copySource, ResourceUsage::CopySrc);
+    AddUsage(action.copyDestination, ResourceUsage::CopyDst);
+  }
+
   AddAction(action);
+}
+
+void WrappedD3DDevice9::AddUsage(ResourceId id, ResourceUsage usage)
+{
+  // only calls inside the frame have events
+  if(!IsLoading(m_State) || m_Replay == NULL || id == ResourceId() || m_CurEventID == 0)
+    return;
+
+  m_Replay->AddUsage(id, m_CurEventID, usage);
+}
+
+void WrappedD3DDevice9::AddDrawUsage(ActionFlags flags, D3D9DrawSource source)
+{
+  if(!IsLoading(m_State) || m_Replay == NULL || m_CurEventID == 0)
+    return;
+
+  ResourceId targets[D3D9_NUM_RENDER_TARGETS];
+  for(uint32_t i = 0; i < D3D9_NUM_RENDER_TARGETS; i++)
+    targets[i] = SurfaceTextureID(m_RenderTargets[i]);
+
+  m_Replay->AddDrawUsage(m_CurEventID, flags, source, targets, SurfaceTextureID(m_DepthStencil));
 }
 
 const APIEvent &WrappedD3DDevice9::GetEvent(uint32_t eventId)

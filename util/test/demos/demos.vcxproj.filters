@@ -205,6 +205,9 @@
     <ClCompile Include="d3d9\d3d9_overlay_test.cpp">
       <Filter>D3D9\demos</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9\d3d9_resource_usage.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
     <ClCompile Include="d3d9\d3d9_mesh_output.cpp">
       <Filter>D3D9\demos</Filter>
     </ClCompile>

@@ -39,7 +39,8 @@ The detailed status, with how each part works and how it was tested, is in
   - the Mesh Viewer's VS In and VS Out, for vertex shaders 1.1 to 3.0 and fixed function vertex
     processing. RenderDoc works out the VS Out data on the CPU;
   - GPU durations (the Event Browser's Duration column) and samples passed, in the Performance
-    Counter Viewer too.
+    Counter Viewer too;
+  - resource usage: the Resource Inspector's usage list and the timeline's usage markers.
 - Replay, and reading back depth stencils during capture, need a shader model 3 GPU.
 
 ### What's missing
@@ -51,7 +52,6 @@ Not implemented:
 - shader editing and replacement, including "Edit Generated Stub";
 - custom display shaders in the Texture Viewer;
 - GPU counters other than duration and samples passed: D3D9 has no pipeline statistics query;
-- resource usage: the resource context menu's usage list is empty for D3D9;
 - debug messages from the D3D9 debug runtime;
 - the quad overdraw overlays, since D3D9 has no UAVs.
 

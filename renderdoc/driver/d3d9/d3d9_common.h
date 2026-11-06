@@ -91,6 +91,19 @@ inline DWORD D3D9SlotToSampler(uint32_t slot)
 #define IsReplayingAndReading() (ser.IsReading() && IsReplayMode(m_State))
 
 // The parameters to device creation. Stored in the DriverInit chunk.
+// where a draw's vertices come from, for its resource usage
+enum class D3D9DrawSource
+{
+  // the bound streams (and the index buffer, for indexed draws)
+  Buffers,
+  // DrawPrimitiveUP and DrawIndexedPrimitiveUP: the application's memory, not the bound buffers
+  UserPointer,
+  // DrawRectPatch and DrawTriPatch: the bound streams, without an index buffer
+  Patch,
+  // ProcessVertices: the bound streams through the vertex shader into a buffer, nothing rasterised
+  ProcessVertices,
+};
+
 struct D3D9InitParams
 {
   UINT Adapter = D3DADAPTER_DEFAULT;

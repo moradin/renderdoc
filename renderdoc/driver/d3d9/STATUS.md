@@ -37,7 +37,7 @@ the testing were on separate machines.
 | 2b | **Memory at capture:** cap the copies of textures uploaded to D3DPOOL_DEFAULT, spill them to disk, or keep them only while a capture is pending | 0.5-1 | Matters mostly for 32-bit games |
 | 3 | **Small features** | 2-3 | |
 | | ~~GPU duration and samples passed counters (timestamp and occlusion queries)~~ | 0.5 | Done, see "GPU counters" below |
-| | Resource usage list (what each event binds, recorded during replay) | 0.5 | |
+| | ~~Resource usage list (what each event binds, recorded during replay)~~ | 0.5 | Done, see "Resource usage" below |
 | | Debug messages | 0.5 | The D3D9 debug runtime doesn't run on Windows 8 and later, so report failed calls (`D3DERR_INVALIDCALL` and similar) instead |
 | | Custom display shaders in the texture viewer | 0.5-1 | Needs a documented SM3 binding layout. Shares compile code with step 4 |
 | 4 | **Shader editing and replacement**, including Edit Generated Stub | 1.5-2 | HLSL through d3dcompiler_47 for SM2/3. Assembly for SM1, since current compilers can't target ps_1_x. The stub comes from the constant table |
@@ -118,6 +118,7 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Reset_Capture` | Both captures: frame 30's has only "After the reset" and a blue clear, the triggered one only "Frame" and a red clear |
 | `D3D9_Wrapping_Check`, `D3D9Ex_Wrapping_Check` | The demo's own checks (in its log), and that the capture loads and replays |
 | `D3D9_Counters` | The GPU duration and samples passed counters: each draw's samples passed against what the demo's own occlusion queries counted natively (2048, 0, 1024, 120000, 1, and 1024 for a 4x multisampled 16x16 square), a duration for every action, the full screen heavy draw's against the demo's own timestamps (within 4x either way), and that the replay is back at the event it was at afterwards |
+| `D3D9_Resource_Usage` | Every texture, surface, buffer and constants pseudo buffer's usage against the exact list it should have: sampled and unsampled textures (a pixel sampler the shader doesn't read, a texture after a disabled fixed function stage), a vertex texture, used and unused streams, the index buffer only at the indexed draw, UP draws reading no buffers, both MRT targets, depth only with the depth test on, clears (both bound targets, as natively), StretchRect, a resolve, GetRenderTargetData, ColorFill, UpdateTexture, GenerateMipSubLevels and Unlock inside the frame |
 | `D3D11_D3DPERF_Markers` | `d3d11_d3dperf_check.py`: the markers nest as drawn, with their colours |
 
 What they don't cover:
@@ -210,6 +211,45 @@ Limitations:
 Tested in `d3d9_step3.md`: `D3D9_Counters` passes on x64 and x86, with the app's own occlusion and
 timestamp queries nested around RenderDoc's at replay. In qrenderdoc the event browser's Duration
 column and the performance counter viewer show both counters.
+
+## Resource usage
+
+`GetUsage` lists, for each texture, surface and buffer, the events that use it and how. It drives
+the Resource Inspector's "Usage in Frame" list, the timeline's usage markers for the texture being
+viewed, and later pixel history. It's recorded while the capture loads, as on D3D11, from the
+state the device has at each event (`d3d9_pipestate.cpp`, "Resource usage"):
+
+| Event | Usage |
+|---|---|
+| Draws | `VertexBuffer` for the streams the vertex declaration reads (not other bound streams), `IndexBuffer` for indexed draws, `VS_Resource`/`PS_Resource` for the textures each stage samples, `VS_Constants`/`PS_Constants` on the constants pseudo buffers, `ColorTarget` for each bound render target, `DepthStencilTarget` when the depth or stencil test is on |
+| `DrawPrimitiveUP`, `DrawIndexedPrimitiveUP` | as draws, but no vertex or index buffers: they read the application's memory |
+| `DrawRectPatch`, `DrawTriPatch` | as draws, without an index buffer |
+| `ProcessVertices` | the streams, the vertex shader's textures and constants, and `StreamOut` for the destination buffer |
+| `Clear` | `Clear` on every bound render target for a colour clear, and on the depth stencil for a depth or stencil clear |
+| `ColorFill` | `Clear` |
+| `StretchRect`, `UpdateSurface`, `UpdateTexture`, `GetRenderTargetData` | `CopySrc` and `CopyDst`, or `Copy` within one texture. A `StretchRect` from a multisampled surface is `ResolveSrc` and `ResolveDst` |
+| `GenerateMipSubLevels` | `GenMips` |
+| `Unlock` inside the frame, GDI drawing (`ReleaseDC`), `GetFrontBufferData` | `CPUWrite` |
+
+Decisions:
+- **Which textures a stage samples** comes from `GetDescriptorAccess`, so with reflection only the
+  samplers a shader declares count, and without a pixel shader the texture stages up to the first
+  disabled one. A texture bound to an unused sampler isn't listed.
+- **Surfaces** are listed under the texture that owns them, as the texture viewer shows them.
+- **Render targets** count as written whatever `COLORWRITEENABLE` says, as on D3D11. The depth
+  stencil only counts when `ZENABLE` or `STENCILENABLE` is on, since D3D9 programs often leave one
+  bound with the tests off.
+- **A colour Clear clears every bound render target.** `D3D9_Resource_Usage` checks that natively
+  first: with two targets bound, both turn the clear colour. (Bound targets of different sizes make
+  the Clear fail altogether, which is how the demo first found it.)
+- **The constants pseudo buffers** are created after loading, so their uses are kept by index and
+  added then.
+
+Tested in `d3d9_step3.md`: `D3D9_Resource_Usage` passes on x64 and x86, and in qrenderdoc the
+Resource Inspector and the timeline show the uses.
+
+Not covered: `ProcessVertices`, the patch draws, `UpdateSurface`, GDI drawing and
+`GetFrontBufferData` aren't in the test; they share the code paths of the calls that are.
 
 ## Needs testing
 
@@ -761,7 +801,7 @@ Known gaps:
   bytecode wasn't kept), it can't be viewed or saved from the panel, all bound textures count as used, every vertex element counts as used, and the
   constants rows open the raw registers in the buffer viewer (`float4 c;`, `int4 i;`, `uint b;` per
   row) instead of the shader's variables.
-- `GetUsage` isn't implemented, so the resource context menu's usage list is empty.
+- (Implemented in step 3: `GetUsage`, see "Resource usage".)
 - The buffers' sizes are the register counts `D3D9FetchDeviceState` found at load time: the
   device's VS float constants (256 with hardware vertex processing, 8192 for software vertex
   processing devices while in software mode), 224 PS float constants on SM3 hardware, 16 int and
@@ -1380,6 +1420,7 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
 - `d3d9_overlay.cpp` - the texture viewer's overlays, `IsRenderOutput` and `GetPassEvents` (phase
   3e).
 - `d3d9_counters.cpp` - the GPU duration and samples passed counters.
+- `d3d9_pipestate.cpp` also records resource usage while loading (`AddDrawUsage`, `GetUsage`).
 - `d3d9_resources.*` - the wrapper base class and the resource wrappers. The comment at the top of
   `d3d9_resources.h` describes the lifetime model (external vs internal references, who holds real
   references, child objects).

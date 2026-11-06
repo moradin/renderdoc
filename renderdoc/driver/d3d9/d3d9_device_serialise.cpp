@@ -167,12 +167,16 @@ bool WrappedD3DDevice9::Serialise_Clear(SerialiserType &ser, DWORD Count, CONST 
       {
         action.flags |= ActionFlags::ClearColor;
         action.copyDestination = SurfaceTextureID(m_RenderTargets[0]);
+        // a colour clear clears every bound render target, as D3D9_Resource_Usage checks natively
+        for(uint32_t i = 0; i < D3D9_NUM_RENDER_TARGETS; i++)
+          AddUsage(SurfaceTextureID(m_RenderTargets[i]), ResourceUsage::Clear);
       }
       if(Flags & (D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL))
       {
         action.flags |= ActionFlags::ClearDepthStencil;
         if(action.copyDestination == ResourceId())
           action.copyDestination = SurfaceTextureID(m_DepthStencil);
+        AddUsage(SurfaceTextureID(m_DepthStencil), ResourceUsage::Clear);
       }
       AddAction(action);
     }
@@ -613,6 +617,8 @@ bool WrappedD3DDevice9::Serialise_ProcessVertices(SerialiserType &ser, UINT SrcS
       action.vertexOffset = SrcStartIndex;
       action.numInstances = 1;
       action.copyDestination = GetResID(pDestBuffer);
+      AddDrawUsage(action.flags, D3D9DrawSource::ProcessVertices);
+      AddUsage(action.copyDestination, ResourceUsage::StreamOut);
       AddAction(action);
     }
   }
@@ -903,7 +909,7 @@ bool WrappedD3DDevice9::Serialise_DrawRectPatch(SerialiserType &ser, UINT Handle
     ReplayBeginScene();
     DrawRectPatch(Handle, pNumSegs, pRectPatchInfo);
 
-    AddDrawAction(ActionFlags::NoFlags, 0, 0, 0, 0);
+    AddDrawAction(ActionFlags::NoFlags, 0, 0, 0, 0, D3D9DrawSource::Patch);
   }
 
   return true;
@@ -928,7 +934,7 @@ bool WrappedD3DDevice9::Serialise_DrawTriPatch(SerialiserType &ser, UINT Handle,
     ReplayBeginScene();
     DrawTriPatch(Handle, pNumSegs, pTriPatchInfo);
 
-    AddDrawAction(ActionFlags::NoFlags, 0, 0, 0, 0);
+    AddDrawAction(ActionFlags::NoFlags, 0, 0, 0, 0, D3D9DrawSource::Patch);
   }
 
   return true;
@@ -1084,6 +1090,7 @@ bool WrappedD3DDevice9::Serialise_ColorFill(SerialiserType &ser, IDirect3DSurfac
       ActionDescription action;
       action.flags = ActionFlags::Clear | ActionFlags::ClearColor;
       action.copyDestination = ContentsTextureID(pSurface);
+      AddUsage(action.copyDestination, ResourceUsage::Clear);
       AddAction(action);
     }
   }
@@ -1232,6 +1239,7 @@ bool WrappedD3DDevice9::Serialise_BaseTexture_GenerateMipSubLevels(SerialiserTyp
       ActionDescription action;
       action.flags = ActionFlags::GenMips;
       action.copyDestination = GetResID(pTexture);
+      AddUsage(action.copyDestination, ResourceUsage::GenMips);
       AddAction(action);
     }
   }
@@ -2264,7 +2272,7 @@ bool WrappedD3DDevice9::Serialise_DrawPrimitiveUP(SerialiserType &ser,
     }
 
     AddDrawAction(ActionFlags::NoFlags, VertexCountForPrimitives(PrimitiveType, PrimitiveCount), 0,
-                  0, 0);
+                  0, 0, D3D9DrawSource::UserPointer);
   }
 
   return true;
@@ -2326,7 +2334,7 @@ bool WrappedD3DDevice9::Serialise_DrawIndexedPrimitiveUP(
     }
 
     AddDrawAction(ActionFlags::Indexed, VertexCountForPrimitives(PrimitiveType, PrimitiveCount), 0,
-                  0, 0);
+                  0, 0, D3D9DrawSource::UserPointer);
   }
 
   return true;

@@ -67,6 +67,13 @@ public:
   // (d3d9_shaders.cpp)
   void AddShader(ResourceId id, const uint32_t *tokens, size_t numTokens);
 
+  // resource usage, recorded by the device as the capture loads (d3d9_pipestate.cpp)
+  void AddUsage(ResourceId id, uint32_t eventId, ResourceUsage usage);
+  // what the draw at eventId reads and writes, from the device's state. targets and depth are the
+  // bound render targets and depth stencil, as the IDs the texture viewer knows them by.
+  void AddDrawUsage(uint32_t eventId, ActionFlags flags, D3D9DrawSource source,
+                    const ResourceId (&targets)[D3D9_NUM_RENDER_TARGETS], ResourceId depth);
+
   void Shutdown();
 
   APIProperties GetAPIProperties();
@@ -472,6 +479,12 @@ private:
   Topology GetEventTopology(uint32_t eventId);
 
   D3D9Pipe::State *m_D3D9PipelineState = NULL;
+  // each resource's usage, by event, sorted once the capture has loaded
+  std::map<ResourceId, rdcarray<EventUsage>> m_ResourceUses;
+  // the events using each constants pseudo buffer, kept until their IDs exist
+  // (CreatePipelineStateResources runs after loading)
+  rdcarray<uint32_t> m_ConstantUses[6];
+  void FinishUsage();
   // the virtual descriptor store the bindings are presented in
   ResourceId m_DescriptorStore;
   // pseudo buffers for the shader constants: VS float, int, bool, then PS float, int, bool. Their

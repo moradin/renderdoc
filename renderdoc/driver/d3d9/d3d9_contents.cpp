@@ -1500,7 +1500,10 @@ bool WrappedD3DDevice9::Serialise_Unlock(SerialiserType &ser, Iface *pResource, 
   SERIALISE_CHECK_READ_ERRORS();
 
   if(IsReplayingAndReading())
+  {
     WriteContents(GetWrappedObject(pResource), Contents);
+    AddUsage(ContentsTextureID(pResource), ResourceUsage::CPUWrite);
+  }
 
   return true;
 }
