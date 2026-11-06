@@ -84,7 +84,32 @@ class D3D9_Test(rdtest.TestCase):
 
     def check_capture(self):
         self.check_demo_log(self.demo_log_path())
+        self.check_capture_bitness(self.cap)
         self.check_d3d9_capture()
+
+    @staticmethod
+    def demos_bitness():
+        """'32-bit' or '64-bit', from the PE header of the demos binary the tests run."""
+        with open(rdtest.get_demos_binary(), 'rb') as f:
+            data = f.read(4096)
+        pe = struct.unpack_from('<I', data, 0x3C)[0]
+        machine = struct.unpack_from('<H', data, pe + 4)[0]
+        if machine == 0x14C:
+            return '32-bit'
+        if machine == 0x8664:
+            return '64-bit'
+        raise rdtest.TestFailureException(f"The demos binary's machine type is 0x{machine:X}")
+
+    def check_capture_bitness(self, cap: rd.CaptureFile):
+        """
+        Checks that the capture came from a process of the demos binary's bitness, so that a run
+        with --demos-binary demos_x86.exe really tested capturing a 32-bit program.
+        """
+        ident = cap.RecordedMachineIdent()
+        want = self.demos_bitness()
+        if want not in ident:
+            raise rdtest.TestFailureException(f"The capture was made on '{ident}', expected a {want} process")
+        rdtest.log.success(f"The capture was made by a {want} process ({ident.strip()})")
 
     def check_d3d9_capture(self):
         raise NotImplementedError("D3D9 tests implement check_d3d9_capture()")

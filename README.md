@@ -77,9 +77,11 @@ Known limitations of what works:
 - **Memory at capture**: the copies of default pool texture uploads take as much memory as the
   textures themselves.
 
+32-bit programs are captured by the x86 build and replayed in the 64-bit UI, as for D3D11. The
+test programs pass the same tests in 32-bit, but no real 32-bit game has been tried yet.
+
 Not tested yet:
 
-- **32-bit programs.** All testing used 64-bit builds of the test programs.
 - **Other GPUs.** All testing was on one NVIDIA GPU (RTX 4070 Ti).
 - **Remote replay.** It probably won't display textures.
 
@@ -103,12 +105,14 @@ Not tested yet:
   `tests/D3D11` share a base class, `rdtest/shared/D3D9_Test.py`, which `rdtest/__init__.py`
   imports. Nothing else in upstream's framework changed. Two helpers run it on a local Windows
   build: `build_pymodule_py3.ps1` and `run_tests_local.py`.
+- **Test programs** (`util/test/demos/demos.vcxproj`): the 32-bit build leaves out the Vulkan and
+  D3D12 tests, which no longer compile for 32-bit upstream either.
 
 ### Building the fork
 
 Build [renderdoc.sln](renderdoc.sln) as upstream's [Compiling.md](docs/CONTRIBUTING/Compiling.md)
 describes. D3D9 support is part of `renderdoc.dll`, so nothing extra is needed. It has been tested
-in the x64 Development build.
+in the x64 Development build. Capturing 32-bit programs needs the x86 build as well, next to it.
 
 To test it:
 
@@ -120,7 +124,8 @@ To test it:
   ```
   `run_tests.py` needs Python 3.7 or later, and the build's own module is for qrenderdoc's bundled
   Python 3.6, so the first line builds one for the installed Python. STATUS.md lists the tests and
-  what they check.
+  what they check. With both solutions also built for x86, `run_tests_local.py --x86` runs them on
+  the 32-bit test programs.
 - The test programs are the `D3D9_*` and `D3D9Ex_*` tests in
   [util/test/demos](util/test/demos/d3d9), and `D3D11_D3DPERF_Markers` for the D3DPERF hooks
   the fork shares with the D3D11 driver.

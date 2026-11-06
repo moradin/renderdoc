@@ -472,6 +472,14 @@
     <ClInclude Include="win32\win32_platform.h" />
     <ClInclude Include="win32\win32_window.h" />
   </ItemGroup>
+  <!-- The 32-bit build leaves out the Vulkan and D3D12 demos, which no longer compile for 32-bit
+       (VMA's handle casts, annotations taking handles as void *, size_t comparisons). The 32-bit
+       build is for testing 32-bit D3D9 and D3D11 programs. -->
+  <ItemGroup Condition="'$(Platform)'=='Win32'">
+    <ClCompile Update="vk\**\*.cpp;d3d12\**\*.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </ClCompile>
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

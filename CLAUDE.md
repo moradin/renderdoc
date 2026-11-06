@@ -39,9 +39,11 @@ the coding and the testing.
 - **Demos:** `util/test/demos.sln`, Development x64. This builds `util/test/demos_x64.exe`.
   - The D3D9 demos are in `util/test/demos/d3d9/`.
   - `D3D11_D3DPERF_Markers` is in `util/test/demos/d3d11/`.
+- **32-bit:** both solutions also build Development x86, into `Win32\Development` and
+  `util/test/demos_x86.exe`. The x64 build captures 32-bit programs through the x86 one.
 - **Formatting:** format changed C++ files with clang-format 15. Upstream's CI checks this with
   `util/clang_format_all.sh`.
-- **Builds must stay clean:** keep both solutions at 0 errors and 0 warnings.
+- **Builds must stay clean:** keep both solutions at 0 errors and 0 warnings, for x64 and x86.
 - **Unit tests:** run `x64\Development\renderdoccmd.exe test unit "[d3d9]"` for the shader
   bytecode, reflection and vertex emulation tests. These are Catch tests in `d3d9_*.cpp`.
 
@@ -62,6 +64,10 @@ The machine is Windows 11 with an RTX 4070 Ti.
    - `run_tests_local.py` stops `run_tests.py` asking to register the Vulkan layer, which the
      installed RenderDoc in Program Files owns. D3D9 and D3D11 tests don't use the layer.
    - Add a test, or a check to an existing one, for each fix and feature.
+   - For changes to the capture side, also run them on the 32-bit demos (about a minute more):
+     build both solutions Development x86 too, then
+     `python util\test\run_tests_local.py --x86 -t "^D3D9|D3D11_D3DPERF"`. The 64-bit build still
+     replays; the x86 one only captures. Replay-only changes need just the x64 run.
 2. **Check the UI.** For anything that shows in the UI, check it in `qrenderdoc.exe` as well, and
    take screenshots.
 

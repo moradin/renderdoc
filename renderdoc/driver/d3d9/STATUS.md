@@ -33,7 +33,7 @@ the testing were on separate machines.
 | # | Work | Estimate | Notes |
 |---|---|---|---|
 | 1 | ~~**Automated tests:** turn the `util/test/d3d9_*_check.py` scripts into tests in upstream's framework (`util/test/rdtest`, `util/test/tests/`), so that `run_tests.py` runs the demos, captures them and checks them~~ | 1 | Done, see "Automated tests" below. Run them after every change |
-| 2 | **32-bit programs:** an x86 build that captures 32-bit programs, replayed in the x64 UI, then fixing what breaks | 1-1.5 | The most useful for real use, since most D3D9 games are 32-bit |
+| 2 | ~~**32-bit programs:** an x86 build that captures 32-bit programs, replayed in the x64 UI, then fixing what breaks~~ | 1-1.5 | Done, see "32-bit programs" below. Nothing in the driver needed fixing. A real 32-bit game is still to test |
 | 2b | **Memory at capture:** cap the copies of textures uploaded to D3DPOOL_DEFAULT, spill them to disk, or keep them only while a capture is pending | 0.5-1 | Matters mostly for 32-bit games |
 | 3 | **Small features** | 2-3 | |
 | | GPU duration and samples passed counters (timestamp and occlusion queries) | 0.5 | |
@@ -125,11 +125,56 @@ What they don't cover:
   (`renderdoccmd test unit "[d3d9]"`) cover the parser and disassembler.
 - `GetFrontBufferData`'s surface (it holds whatever was on the screen) and the recorded state
   block's contents, which were checked in the XML export.
-- 32-bit builds (step 2).
 
 First run (`d3d9_automated_tests.md`): all 11 passed in under a minute. Upstream's D3D11 tests,
 run to check the framework change, passed apart from `D3D11_Shader_ISA`, which needs AMD's driver
 (`atidxx64.dll`) for its AMDIL target and can't pass on this NVIDIA machine.
+
+`--x86` runs the same tests on the 32-bit demos, with `renderdoc.sln` and `demos.sln` also built for
+x86 (see "32-bit programs"):
+
+```
+python util\test\run_tests_local.py --x86 -t "^D3D9|D3D11_D3DPERF"
+```
+
+`D3D9_Test` checks that each capture's recorded machine (`RecordedMachineIdent`) has the bitness of
+the demos binary it ran, from the binary's PE header.
+
+## 32-bit programs
+
+32-bit D3D9 programs are captured by the x86 build and replayed by the x64 one, as upstream does for
+D3D11:
+- The x64 build can't inject into a 32-bit process. `win32_process.cpp` hands the launch to the
+  32-bit `renderdoccmd.exe`, which injects the 32-bit `renderdoc.dll`.
+- A development build finds that in `Win32\<config>` next to `x64\<config>`; an installed one has
+  it in `x86\`. So testing 32-bit programs needs `renderdoc.sln` built for both.
+- Captures have the same format from both: window handles are serialised as 64-bit values, and
+  nothing serialised is pointer-sized.
+
+Tested in `d3d9_x86.md`:
+- **Builds:** `renderdoc.sln` builds for x86 with 0 warnings.
+- **Unit tests:** the `[d3d9]` tests pass as 32-bit code, with the same counts as x64.
+- **Automated tests:** all 11 pass against the 32-bit demos (`--x86`), each capture recorded as
+  `Windows x86 32-bit`.
+- **UI:** the x64 qrenderdoc launches, captures and opens a 32-bit demo, with the texture viewer,
+  pipeline state and mesh viewer correct.
+
+Nothing in the driver needed changing.
+
+The 32-bit demos leave out upstream's Vulkan and D3D12 demos (`demos.vcxproj`), which no longer
+compile for 32-bit.
+
+Native references from the two architectures:
+- **`D3D9_Texture_Formats`:** identical.
+- **`D3D9_Mesh_Output`:** a few vertex shader colour outputs differ by 1/255. Those references come
+  from `ProcessVertices`, which runs on the CPU in the 32-bit or 64-bit `d3d9.dll`, and the two
+  round differently. Each run is checked against its own reference.
+
+Not tested:
+- **A real 32-bit game near its address space limit:** see the memory item under "Needs testing"
+  and step 2b.
+- **32-bit replay:** the x86 qrenderdoc.
+- **Global process hooking.**
 
 ## Needs testing
 
@@ -158,7 +203,8 @@ run to check the framework change, passed apart from `D3D11_Shader_ISA`, which n
   replaced by the initial contents anyway.
 - Sampler 256 (`D3DDMAPSAMPLER`) reads back `ADDRESSU` 0xBAADCAFE natively. It's recorded as read.
 - Capture time and memory use with resource contents in a real game. Contents are read during the
-  captured frame, and the shadow copies (below) cost memory in 32-bit games.
+  captured frame, and the shadow copies (below) cost memory in 32-bit games. Capturing 32-bit
+  programs works (`d3d9_x86.md`), but only with the demos, which use little memory.
 
 ## Known gaps in resource contents
 

@@ -61,5 +61,6 @@ class D3D9_Reset_Capture(rdtest.D3D9_Test):
         self.cap.Shutdown()
         self.cap, self.controller = rdtest.open_capture(self.second_capture, opts=self.get_replay_options())
         self.sdfile = self.controller.GetStructuredFile()
+        self.check_capture_bitness(self.cap)
         self.check_api()
         self.check_frame('The triggered capture', ['Frame'], RED)
