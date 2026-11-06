@@ -483,7 +483,7 @@ TextureDescription D3D9Replay::GetTexture(ResourceId id)
 
 rdcarray<DebugMessage> D3D9Replay::GetDebugMessages()
 {
-  return {};
+  return m_pDevice->GetDebugMessages();
 }
 
 RDResult D3D9Replay::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBuffers)

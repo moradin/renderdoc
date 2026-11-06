@@ -199,6 +199,9 @@
     <ClCompile Include="d3d9\d3d9_counters.cpp">
       <Filter>D3D9\demos</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9\d3d9_failed_calls.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
     <ClCompile Include="d3d9\d3d9_frame_start_state.cpp">
       <Filter>D3D9\demos</Filter>
     </ClCompile>

@@ -108,6 +108,8 @@ HRESULT WrappedD3DQuery9::Issue(DWORD dwIssueFlags)
   HRESULT hr = m_pReal->Issue(dwIssueFlags);
   if(SUCCEEDED(hr))
     m_pDevice->OnQueryIssue(this, dwIssueFlags);
+  else
+    m_pDevice->RecordFailedCall(hr, "IDirect3DQuery9::Issue", this);
   return hr;
 }
 
@@ -425,6 +427,10 @@ HRESULT WrappedD3DStateBlock9::Capture()
     m_pDevice->CaptureBindings(m_Bindings, m_Mask);
     m_pDevice->OnStateBlockCapture(this);
   }
+  else
+  {
+    m_pDevice->RecordFailedCall(hr, "IDirect3DStateBlock9::Capture", this);
+  }
   return hr;
 }
 
@@ -435,6 +441,10 @@ HRESULT WrappedD3DStateBlock9::Apply()
   {
     m_pDevice->ApplyBindings(m_Bindings, m_Mask);
     m_pDevice->OnStateBlockApply(this);
+  }
+  else
+  {
+    m_pDevice->RecordFailedCall(hr, "IDirect3DStateBlock9::Apply", this);
   }
   return hr;
 }

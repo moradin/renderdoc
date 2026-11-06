@@ -2442,6 +2442,45 @@ INSTANTIATE_FUNCTION_SERIALISED(HRESULT, WrappedD3DDevice9, SwapChain_Present,
                                 CONST RECT *pDestRect, HWND hDestWindowOverride,
                                 CONST RGNDATA *pDirtyRegion, DWORD dwFlags);
 
+template <typename SerialiserType>
+bool WrappedD3DDevice9::Serialise_FailedCall(SerialiserType &ser, rdcstr Function, HRESULT hr,
+                                             ResourceId Object, D3D9Chunk Parameters)
+{
+  // the event's name says which call it was, so only the result is in its summary
+  SERIALISE_ELEMENT(Function);
+  SERIALISE_ELEMENT_LOCAL(Result, (D3D9Result)hr).Important();
+  // the object a call on an object was made on, hidden for device calls. It's only in the capture
+  // if the frame used it otherwise.
+  SERIALISE_ELEMENT(Object);
+  if(Object == ResourceId())
+    ser.Hidden();
+  // the chunk whose Serialise_ function wrote the call's parameters after this, or Max if there are
+  // none
+  SERIALISE_ELEMENT(Parameters).Hidden();
+
+  bool ok = true;
+  if(ser.IsReading() && Parameters != D3D9Chunk::Max)
+    ReadFailedCallParameters(ser, Parameters, ok);
+  if(!ok)
+    return false;
+
+  SERIALISE_CHECK_READ_ERRORS();
+
+  // named after the call, so that the event list shows which call failed
+  if(ser.IsReading() && ser.ExportStructure())
+    ser.GetStructuredFile().chunks.back()->name = Function + " (failed)";
+
+  // nothing is replayed, since the call did nothing when it failed. The chunk is an event of its
+  // own, so the message points to where the call was made.
+  if(IsReplayingAndReading() && IsLoading(m_State))
+    AddFailedCallMessage(MessageSource::API, Function, (HRESULT)Result);
+
+  return true;
+}
+
+INSTANTIATE_FUNCTION_SERIALISED(void, WrappedD3DDevice9, FailedCall, rdcstr Function, HRESULT hr,
+                                ResourceId Object, D3D9Chunk Parameters);
+
 ///////////////////////////////////////////////////////////////////////////////
 // reading captures
 
@@ -2534,6 +2573,7 @@ bool WrappedD3DDevice9::ProcessChunk(ReadSerialiser &ser, D3D9Chunk chunk)
     case D3D9Chunk::D3DPERF_BeginEvent: return Serialise_D3DPERF_BeginEvent(ser, {}, {});
     case D3D9Chunk::D3DPERF_EndEvent: return Serialise_D3DPERF_EndEvent(ser);
     case D3D9Chunk::D3DPERF_SetMarker: return Serialise_D3DPERF_SetMarker(ser, {}, {});
+    case D3D9Chunk::FailedCall: return Serialise_FailedCall(ser, {}, {}, {}, {});
     case D3D9Chunk::CreateTexture:
       return Serialise_CreateTexture(ser, {}, {}, {}, {}, {}, {}, {}, {});
     case D3D9Chunk::CreateVolumeTexture:

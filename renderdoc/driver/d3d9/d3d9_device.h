@@ -86,6 +86,23 @@ public:
   template <typename SerialiseFunc>
   void RecordCreation(WrappedD3D9Object *obj, D3D9Chunk chunk, SerialiseFunc serialise,
                       WrappedD3D9Object *parent = NULL);
+  // RecordCreation if the creation succeeded, RecordFailedCall with the same parameters if it failed
+  template <typename SerialiseFunc>
+  void RecordCreated(HRESULT hr, WrappedD3D9Object *obj, D3D9Chunk chunk, SerialiseFunc serialise,
+                     WrappedD3D9Object *parent = NULL);
+
+  // Failed calls. D3D9's debug runtime doesn't run on Windows 8 and later, so a call the runtime
+  // rejected is often the only sign of a mistake. While capturing, one is recorded into the frame
+  // as a FailedCall chunk: the call's name and result, then the parameters its own chunk would have
+  // had, written by serialiseParams. The replay shows them as the event's parameters and reports
+  // the failure as a debug message, but doesn't make the call. While loading, a call that fails on
+  // replay is reported too. See d3d9_device.cpp.
+  template <typename SerialiseFunc>
+  void RecordFailedCall(HRESULT hr, D3D9Chunk call, SerialiseFunc serialiseParams);
+  // the same for a call without parameters to record: a call on an object (a lock, say), or a
+  // creation whose parameters might not be safe to read once it failed. A call on an object
+  // records the object, and adds it to the capture so that it shows by name.
+  void RecordFailedCall(HRESULT hr, const rdcstr &function, WrappedD3D9Object *object = NULL);
 
   // records for objects created on first use by their containers
   void RecordSurfaceLevel(WrappedD3DTexture9 *tex, UINT level, WrappedD3DSurface9 *surf);
@@ -171,6 +188,8 @@ public:
     m_ReplayWindow = window;
   }
   D3D9Replay *GetReplay() const { return m_Replay; }
+  // the failed calls found while loading, see RecordFailedCall. Returned once, as on D3D11.
+  rdcarray<DebugMessage> GetDebugMessages();
   void ReplayLog(uint32_t startEventID, uint32_t endEventID, ReplayLogType replayType);
   const ActionDescription *GetAction(uint32_t eventId);
   // a DrawPrimitiveUP or DrawIndexedPrimitiveUP event's data, or NULL for other events
@@ -402,6 +421,9 @@ public:
   bool Serialise_D3DPERF_EndEvent(SerialiserType &ser);
   template <typename SerialiserType>
   bool Serialise_D3DPERF_SetMarker(SerialiserType &ser, D3DCOLOR col, rdcstr Name);
+  template <typename SerialiserType>
+  bool Serialise_FailedCall(SerialiserType &ser, rdcstr Function, HRESULT hr, ResourceId Object,
+                            D3D9Chunk Parameters);
   template <typename SerialiserType>
   bool Serialise_Texture_AddDirtyRect(SerialiserType &ser, IDirect3DTexture9 *pTexture,
                                       CONST RECT *pDirtyRect);
@@ -949,6 +971,12 @@ private:
 
   // replay
   D3D9Replay *m_Replay = NULL;
+  // failed calls, see RecordFailedCall
+  bool FailedCallNeedsChunk(HRESULT hr, const rdcstr &function);
+  void ReadFailedCallParameters(ReadSerialiser &ser, D3D9Chunk params, bool &ok);
+  void ReadFailedCallParameters(WriteSerialiser &ser, D3D9Chunk params, bool &ok) {}
+  void AddFailedCallMessage(MessageSource source, const rdcstr &function, HRESULT hr);
+  rdcarray<DebugMessage> m_DebugMessages;
   std::map<uint32_t, D3D9UserPrimitiveData> m_UserPrimitives;
   HWND m_ReplayWindow = NULL;
   ResourceId m_NextWrapperID;
@@ -1056,6 +1084,31 @@ void WrappedD3DDevice9::RecordCreation(WrappedD3D9Object *obj, D3D9Chunk chunk,
   // anything could happen to the contents before a capture, so they always need reading
   if(D3D9HasContents(obj))
     m_ResourceManager->MarkDirtyResource(obj->GetResourceID());
+}
+
+template <typename SerialiseFunc>
+void WrappedD3DDevice9::RecordCreated(HRESULT hr, WrappedD3D9Object *obj, D3D9Chunk chunk,
+                                      SerialiseFunc serialise, WrappedD3D9Object *parent)
+{
+  if(SUCCEEDED(hr))
+    RecordCreation(obj, chunk, serialise, parent);
+  else
+    RecordFailedCall(hr, chunk, serialise);
+}
+
+template <typename SerialiseFunc>
+void WrappedD3DDevice9::RecordFailedCall(HRESULT hr, D3D9Chunk call, SerialiseFunc serialiseParams)
+{
+  const rdcstr function = ToStr(call);
+  if(!FailedCallNeedsChunk(hr, function))
+    return;
+
+  SCOPED_LOCK(m_D3DLock);
+  WriteSerialiser &ser = m_ScratchSerialiser;
+  SCOPED_SERIALISE_CHUNK(D3D9Chunk::FailedCall);
+  Serialise_FailedCall(ser, function, hr, ResourceId(), call);
+  serialiseParams(ser);
+  m_FrameRecord->AddChunk(scope.Get());
 }
 
 ////////////////////////////////////////////////////////////////////////////

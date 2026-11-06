@@ -219,3 +219,138 @@ On a `D3D9_Resource_Usage` capture, at the shader draw, viewing render target 0:
 
 `ProcessVertices`, `DrawRectPatch`/`DrawTriPatch`, `UpdateSurface`, GDI drawing and
 `GetFrontBufferData` aren't in the demo. They go through the same functions as the calls that are.
+
+## 3. Debug messages for failed calls
+
+D3D9's debug runtime doesn't run on Windows 8 and later, so the messages are the calls the runtime
+rejected. A call that fails while capturing is recorded as a `FailedCall` chunk with its name,
+result and parameters. On replay it's an event of its own, named after the call with "(failed)",
+and a debug message at that event. STATUS.md's "Debug messages" has how it works and what's
+covered.
+
+Tested on top of b184fa7dc, with the changes in the commit that adds this section.
+
+### What the runtime rejects, natively
+
+The first version of the demo tried calls that look invalid. Natively, on this machine:
+
+| Call | Result |
+|---|---|
+| `SetRenderTarget(4, ...)` | `D3DERR_INVALIDCALL` |
+| `SetRenderTarget` with a texture's surface that isn't a render target | `D3DERR_INVALIDCALL` |
+| `SetDepthStencilSurface` with a colour render target | `D3DERR_INVALIDCALL` |
+| `SetVertexShaderConstantF(300, ...)`, `SetPixelShaderConstantF(224, ...)` | `D3DERR_INVALIDCALL` |
+| `EndScene` without `BeginScene`, a second `BeginScene` | `D3DERR_INVALIDCALL` |
+| `StretchRect` with a source rect bigger than the surface | `D3DERR_INVALIDCALL` |
+| `ColorFill` on a managed texture's surface | `D3DERR_INVALIDCALL` |
+| `UpdateTexture` between two default pool textures | `D3DERR_INVALIDCALL` |
+| `GetRenderTargetData` into a smaller surface | `D3DERR_INVALIDCALL` |
+| `LockRect` on a level the texture doesn't have | `D3DERR_INVALIDCALL` |
+| `CreateTexture(0, 0, ...)` | `D3DERR_INVALIDCALL` |
+| `SetTexture(300, ...)`, `SetSamplerState(300, ...)`, `SetRenderState(1000, ...)`, `SetStreamSource(16, ...)` | S_OK |
+| `SetStreamSource` with an offset of 2 | S_OK |
+| `Issue(D3DISSUE_BEGIN)` on an event query | S_OK |
+| `UnlockRect` on a texture that isn't locked | S_OK |
+| `DrawIndexedPrimitive` without an index buffer | `D3DERR_INVALIDCALL` on frame 0, S_OK from frame 1 |
+| `Clear` with two render targets of different sizes (64x32 with 32x32, 32x32 with 64x32, 64x32 with 64x36) | S_OK |
+| `Clear` with a depth stencil smaller than the render target | S_OK |
+
+The run that made the out of range `SetTexture`, `SetSamplerState`, `SetRenderState` and
+`SetStreamSource` calls ended with heap corruption (exit code 0xC0000374), so the demo doesn't make
+them now. Which of them caused it wasn't narrowed down.
+
+The draw without an index buffer is why the demo now warns if a call's result changes between
+frames: the capture is of frame 5, and the reference file has frame 0's results. That draw was
+taken out.
+
+**Something unexpected, about step 2.** While writing `D3D9_Resource_Usage`, a Clear with targets
+of 64x32 and 64x36 seemed to fail (section 2). Here the same sizes clear without an error, so that
+failure had another cause, which wasn't tracked down. STATUS.md's "Resource usage" is corrected.
+
+### The test: `D3D9_Failed_Calls`
+
+The demo makes 18 calls, each in a marker of its own: the 13 that fail natively and 5 that
+succeed (the four Clears and the `UnlockRect`). It writes each one's result on frame 0, natively and
+under RenderDoc. The test checks:
+
+- the results are the same under RenderDoc;
+- each call that failed has exactly one message, at an event inside its marker, which is named
+  after the call with "(failed)" and has the result and the HRESULT as the message's ID;
+- some parameters: the render target index, the constants' start register and count, the
+  StretchRect source rect, the texture's width and levels;
+- a failed lock records its texture, and the texture is in the capture;
+- a failed call's constants aren't read;
+- the calls that succeeded have no message and no failed event, and there are no other messages;
+- `GetDebugMessages` returns the messages only once;
+- the triangle drawn after the failed calls replays.
+
+The x64 run (`d3d9_step3/failed_run_x64.txt`):
+
+```
+** All 18 calls returned the same natively and under RenderDoc
+.. Natively 13 calls failed: SetRenderTarget index 4 (8876086C), SetRenderTarget without render target usage (8876086C), SetDepthStencilSurface with a colour target (8876086C), SetVertexShaderConstantF past the end (8876086C), SetPixelShaderConstantF past the end (8876086C), EndScene without BeginScene (8876086C), BeginScene twice (8876086C), StretchRect outside the source (8876086C), ColorFill on a managed texture (8876086C), UpdateTexture between default pool textures (8876086C), GetRenderTargetData into a different size (8876086C), LockRect on a missing level (8876086C), CreateTexture with zero size (8876086C)
+.. and 5 succeeded: Clear with a smaller second target, Clear with a bigger second target, Clear with a taller second target, Clear with a smaller depth stencil, UnlockRect without a lock
+.. 13 debug messages:
+** SetRenderTarget index 4: event 31 IDirect3DDevice9::SetRenderTarget (failed) with Function, Result, Object, Parameters, RenderTargetIndex, pRenderTarget: IDirect3DDevice9::SetRenderTarget returned D3DERR_INVALIDCALL (0x8876086C) when it was captured, so it isn't replayed.
+** SetRenderTarget without render target usage: event 34 IDirect3DDevice9::SetRenderTarget (failed) with ...
+** SetDepthStencilSurface with a colour target: event 37 IDirect3DDevice9::SetDepthStencilSurface (failed) with ...
+** SetVertexShaderConstantF past the end: event 42 IDirect3DDevice9::SetVertexShaderConstantF (failed) with Function, Result, Object, Parameters, StartRegister, pConstantData, Vector4fCount: ...
+** SetPixelShaderConstantF past the end: event 45 IDirect3DDevice9::SetPixelShaderConstantF (failed) with ...
+** EndScene without BeginScene: event 48 IDirect3DDevice9::EndScene (failed) with Function, Result, Object, Parameters: ...
+** BeginScene twice: event 52 IDirect3DDevice9::BeginScene (failed) with ...
+** StretchRect outside the source: event 65 IDirect3DDevice9::StretchRect (failed) with Function, Result, Object, Parameters, pSourceSurface, pSourceRect, pDestSurface, pDestRect, Filter: ...
+** ColorFill on a managed texture: event 68 IDirect3DDevice9::ColorFill (failed) with ...
+** UpdateTexture between default pool textures: event 71 IDirect3DDevice9::UpdateTexture (failed) with ...
+** GetRenderTargetData into a different size: event 74 IDirect3DDevice9::GetRenderTargetData (failed) with ...
+** LockRect on a missing level: event 77 IDirect3DTexture9::LockRect (failed) with Function, Result, Object, Parameters: IDirect3DTexture9::LockRect returned D3DERR_INVALIDCALL (0x8876086C) when it was captured, so it isn't replayed.
+** CreateTexture with zero size: event 82 IDirect3DDevice9::CreateTexture (failed) with Function, Result, Object, Parameters, Width, Height, Levels, Usage, Format, Pool, pTexture: ...
+** SetRenderTarget index 4: RenderTargetIndex is 4
+** SetVertexShaderConstantF past the end: StartRegister is 300
+** SetVertexShaderConstantF past the end: Vector4fCount is 1
+** SetPixelShaderConstantF past the end: StartRegister is 224
+** StretchRect outside the source: pSourceRect.right is 128
+** CreateTexture with zero size: Width is 0
+** CreateTexture with zero size: Levels is 1
+** LockRect on a missing level: the failed call records the 8x8 texture Texture 29
+** SetVertexShaderConstantF past the end: pConstantData isn't read
+** Picked value at 199,149 in Backbuffer 17 is as expected
+** The triangle after the failed calls replays
+** Recompressed and re-imported capture files are identical
+```
+
+(The lines shortened with "..." end with the same message as the first, for their call.) The
+`Object` and `Parameters` fields are hidden in the UI where they say nothing (see below). The x86
+run gives the same lines apart from the capture's bitness. Both runs: 14 of 14 tests passed
+(`d3d9_step3/failed_run_x64.txt`, `d3d9_step3/failed_run_x86.txt`). The unit tests
+(`renderdoccmd test unit "[d3d9]"`) pass, 6057 assertions in 13 test cases.
+
+The results the test checks came from the GPU: which calls fail, and their HRESULTs, natively and
+under RenderDoc. The messages, the events and the parameters are RenderDoc's.
+
+### In the UI
+
+On a 64-bit `D3D9_Failed_Calls` capture:
+- **Errors and Warnings** lists the 13 messages with their events, source API, severity High, the
+  category and the HRESULT as the ID, and the status bar says "Capture has 13 issues"
+  (`d3d9_step3/failed_1_errors_window.png`).
+- **API Inspector**, at the failed StretchRect: "StretchRect (failed)(D3DERR_INVALIDCALL)", with
+  the function, the result and the call's parameters. The source and destination show as Render
+  Target 22 and 23 (`d3d9_step3/failed_2_stretchrect.png`).
+- **API Inspector**, at the failed LockRect: the texture shows as Texture 29
+  (`d3d9_step3/failed_3_lockrect.png`).
+
+Two changes came from looking at the UI:
+- The summary in the API Inspector listed the function as well as the result, which repeats the
+  event's name, so only the result is in it now.
+- A device call showed "Object: No Resource", so the object is hidden when there isn't one. A
+  failed lock's texture first showed as "Unknown Resource 28", since nothing else in the frame used
+  it, so a failed call on an object now adds the object to the capture.
+
+### Not covered
+
+- No call in the tests fails only on replay, so the RuntimeWarning messages for those are untested.
+- Failed creations other than `CreateTexture`, failed calls on objects other than `LockRect`, and
+  failed draws aren't in the test. No draw failed reliably natively.
+- A resource that only a failed device call's parameters use isn't in the capture, and shows as
+  "Unknown Resource" (not the case in the test, where the StretchRect's surfaces are used
+  elsewhere).

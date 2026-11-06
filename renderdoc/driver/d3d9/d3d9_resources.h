@@ -163,6 +163,8 @@ void D3D9AfterLock(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *
 bool D3D9BeforeUnlock(WrappedD3D9Object *obj, UINT face, UINT level);
 void D3D9AfterUnlock(WrappedD3D9Object *obj, bool recorded);
 void D3D9AddDirtyRegion(WrappedD3D9Object *obj, UINT face, const D3DBOX *box);
+// a call on obj that failed, see WrappedD3DDevice9::RecordFailedCall
+void D3D9CallFailed(WrappedD3D9Object *obj, HRESULT hr, const char *function);
 
 // a RECT as a box one slice deep, NULL for NULL
 inline const D3DBOX *D3D9RectToBox(const RECT *rect, D3DBOX &box)
@@ -562,6 +564,10 @@ public:
     HRESULT hr = this->m_pReal->Lock(OffsetToLock, SizeToLock, ppbData, Flags);
     if(SUCCEEDED(hr) && ppbData)
       D3D9AfterLock(this, 0, 0, &region, Flags, *ppbData, SizeToLock, SizeToLock);
+    if(FAILED(hr))
+      D3D9CallFailed(this, hr,
+                     ResType == Resource_VertexBuffer ? "IDirect3DVertexBuffer9::Lock"
+                                                      : "IDirect3DIndexBuffer9::Lock");
     return hr;
   }
   HRESULT STDMETHODCALLTYPE Unlock()
@@ -569,6 +575,10 @@ public:
     const bool recorded = D3D9BeforeUnlock(this, 0, 0);
     HRESULT hr = this->m_pReal->Unlock();
     D3D9AfterUnlock(this, recorded);
+    if(FAILED(hr))
+      D3D9CallFailed(this, hr,
+                     ResType == Resource_VertexBuffer ? "IDirect3DVertexBuffer9::Unlock"
+                                                      : "IDirect3DIndexBuffer9::Unlock");
     return hr;
   }
   HRESULT STDMETHODCALLTYPE GetDesc(DescType *pDesc) { return this->m_pReal->GetDesc(pDesc); }

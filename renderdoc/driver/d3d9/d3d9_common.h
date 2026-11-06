@@ -242,10 +242,21 @@ enum class D3D9Chunk : uint32_t
   D3DPERF_EndEvent,
   D3DPERF_SetMarker,
 
+  // a call that failed while capturing, with its result and parameters, shown on replay as a
+  // debug message rather than replayed. See WrappedD3DDevice9::RecordFailedCall.
+  FailedCall,
+
   Max,
 };
 
 DECLARE_REFLECTION_ENUM(D3D9Chunk);
+
+// an HRESULT, serialised as one so that it shows by name (D3DERR_INVALIDCALL and so on)
+enum class D3D9Result : uint32_t
+{
+};
+
+DECLARE_REFLECTION_ENUM(D3D9Result);
 
 // Interfaces are serialised as the ResourceId of their wrapper
 #define SERIALISE_D3D9_INTERFACES()                 \

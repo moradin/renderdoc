@@ -1705,6 +1705,11 @@ void D3D9AddDirtyRegion(WrappedD3D9Object *obj, UINT face, const D3DBOX *box)
   obj->GetWrappedDevice()->OnAddDirtyRegion(obj, face, box);
 }
 
+void D3D9CallFailed(WrappedD3D9Object *obj, HRESULT hr, const char *function)
+{
+  obj->GetWrappedDevice()->RecordFailedCall(hr, function, obj);
+}
+
 HRESULT WrappedD3DSurface9::LockRect(D3DLOCKED_RECT *pLockedRect, CONST RECT *pRect, DWORD Flags)
 {
   D3DBOX box;
@@ -1713,6 +1718,8 @@ HRESULT WrappedD3DSurface9::LockRect(D3DLOCKED_RECT *pLockedRect, CONST RECT *pR
   HRESULT hr = m_pReal->LockRect(pLockedRect, pRect, Flags);
   if(SUCCEEDED(hr) && pLockedRect)
     D3D9AfterLock(this, 0, 0, region, Flags, pLockedRect->pBits, (UINT)pLockedRect->Pitch, 0);
+  if(FAILED(hr))
+    D3D9CallFailed(this, hr, "IDirect3DSurface9::LockRect");
   return hr;
 }
 
@@ -1721,6 +1728,8 @@ HRESULT WrappedD3DSurface9::UnlockRect()
   const bool recorded = D3D9BeforeUnlock(this, 0, 0);
   HRESULT hr = m_pReal->UnlockRect();
   D3D9AfterUnlock(this, recorded);
+  if(FAILED(hr))
+    D3D9CallFailed(this, hr, "IDirect3DSurface9::UnlockRect");
   return hr;
 }
 
@@ -1739,6 +1748,8 @@ HRESULT WrappedD3DVolume9::LockBox(D3DLOCKED_BOX *pLockedVolume, CONST D3DBOX *p
   if(SUCCEEDED(hr) && pLockedVolume)
     D3D9AfterLock(this, 0, 0, pBox, Flags, pLockedVolume->pBits, (UINT)pLockedVolume->RowPitch,
                   (UINT)pLockedVolume->SlicePitch);
+  if(FAILED(hr))
+    D3D9CallFailed(this, hr, "IDirect3DVolume9::LockBox");
   return hr;
 }
 
@@ -1747,6 +1758,8 @@ HRESULT WrappedD3DVolume9::UnlockBox()
   const bool recorded = D3D9BeforeUnlock(this, 0, 0);
   HRESULT hr = m_pReal->UnlockBox();
   D3D9AfterUnlock(this, recorded);
+  if(FAILED(hr))
+    D3D9CallFailed(this, hr, "IDirect3DVolume9::UnlockBox");
   return hr;
 }
 
@@ -1759,6 +1772,8 @@ HRESULT WrappedD3DTexture9::LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, CO
   HRESULT hr = m_pReal->LockRect(Level, pLockedRect, pRect, Flags);
   if(SUCCEEDED(hr) && pLockedRect)
     D3D9AfterLock(this, 0, Level, region, Flags, pLockedRect->pBits, (UINT)pLockedRect->Pitch, 0);
+  if(FAILED(hr))
+    D3D9CallFailed(this, hr, "IDirect3DTexture9::LockRect");
   return hr;
 }
 
@@ -1767,6 +1782,8 @@ HRESULT WrappedD3DTexture9::UnlockRect(UINT Level)
   const bool recorded = D3D9BeforeUnlock(this, 0, Level);
   HRESULT hr = m_pReal->UnlockRect(Level);
   D3D9AfterUnlock(this, recorded);
+  if(FAILED(hr))
+    D3D9CallFailed(this, hr, "IDirect3DTexture9::UnlockRect");
   return hr;
 }
 
@@ -1791,6 +1808,8 @@ HRESULT WrappedD3DCubeTexture9::LockRect(D3DCUBEMAP_FACES FaceType, UINT Level,
   if(SUCCEEDED(hr) && pLockedRect)
     D3D9AfterLock(this, (UINT)FaceType, Level, region, Flags, pLockedRect->pBits,
                   (UINT)pLockedRect->Pitch, 0);
+  if(FAILED(hr))
+    D3D9CallFailed(this, hr, "IDirect3DCubeTexture9::LockRect");
   return hr;
 }
 
@@ -1799,6 +1818,8 @@ HRESULT WrappedD3DCubeTexture9::UnlockRect(D3DCUBEMAP_FACES FaceType, UINT Level
   const bool recorded = D3D9BeforeUnlock(this, (UINT)FaceType, Level);
   HRESULT hr = m_pReal->UnlockRect(FaceType, Level);
   D3D9AfterUnlock(this, recorded);
+  if(FAILED(hr))
+    D3D9CallFailed(this, hr, "IDirect3DCubeTexture9::UnlockRect");
   return hr;
 }
 
@@ -1821,6 +1842,8 @@ HRESULT WrappedD3DVolumeTexture9::LockBox(UINT Level, D3DLOCKED_BOX *pLockedVolu
   if(SUCCEEDED(hr) && pLockedVolume)
     D3D9AfterLock(this, 0, Level, pBox, Flags, pLockedVolume->pBits, (UINT)pLockedVolume->RowPitch,
                   (UINT)pLockedVolume->SlicePitch);
+  if(FAILED(hr))
+    D3D9CallFailed(this, hr, "IDirect3DVolumeTexture9::LockBox");
   return hr;
 }
 
@@ -1829,6 +1852,8 @@ HRESULT WrappedD3DVolumeTexture9::UnlockBox(UINT Level)
   const bool recorded = D3D9BeforeUnlock(this, 0, Level);
   HRESULT hr = m_pReal->UnlockBox(Level);
   D3D9AfterUnlock(this, recorded);
+  if(FAILED(hr))
+    D3D9CallFailed(this, hr, "IDirect3DVolumeTexture9::UnlockBox");
   return hr;
 }
 

@@ -38,7 +38,7 @@ the testing were on separate machines.
 | 3 | **Small features** | 2-3 | |
 | | ~~GPU duration and samples passed counters (timestamp and occlusion queries)~~ | 0.5 | Done, see "GPU counters" below |
 | | ~~Resource usage list (what each event binds, recorded during replay)~~ | 0.5 | Done, see "Resource usage" below |
-| | Debug messages | 0.5 | The D3D9 debug runtime doesn't run on Windows 8 and later, so report failed calls (`D3DERR_INVALIDCALL` and similar) instead |
+| | ~~Debug messages: the D3D9 debug runtime doesn't run on Windows 8 and later, so report failed calls (`D3DERR_INVALIDCALL` and similar) instead~~ | 0.5 | Done, see "Debug messages" below |
 | | Custom display shaders in the texture viewer | 0.5-1 | Needs a documented SM3 binding layout. Shares compile code with step 4 |
 | 4 | **Shader editing and replacement**, including Edit Generated Stub | 1.5-2 | HLSL through d3dcompiler_47 for SM2/3. Assembly for SM1, since current compilers can't target ps_1_x. The stub comes from the constant table |
 | 5 | **Shader debugging** | 5-8 | The biggest item |
@@ -119,6 +119,7 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Wrapping_Check`, `D3D9Ex_Wrapping_Check` | The demo's own checks (in its log), and that the capture loads and replays |
 | `D3D9_Counters` | The GPU duration and samples passed counters: each draw's samples passed against what the demo's own occlusion queries counted natively (2048, 0, 1024, 120000, 1, and 1024 for a 4x multisampled 16x16 square), a duration for every action, the full screen heavy draw's against the demo's own timestamps (within 4x either way), and that the replay is back at the event it was at afterwards |
 | `D3D9_Resource_Usage` | Every texture, surface, buffer and constants pseudo buffer's usage against the exact list it should have: sampled and unsampled textures (a pixel sampler the shader doesn't read, a texture after a disabled fixed function stage), a vertex texture, used and unused streams, the index buffer only at the indexed draw, UP draws reading no buffers, both MRT targets, depth only with the depth test on, clears (both bound targets, as natively), StretchRect, a resolve, GetRenderTargetData, ColorFill, UpdateTexture, GenerateMipSubLevels and Unlock inside the frame |
+| `D3D9_Failed_Calls` | Debug messages for failed calls. The 18 calls give the same results natively and under RenderDoc, and each of the 13 that fail natively has exactly one message, at its own event inside its marker, with the HRESULT as its ID. The event is named after the call ("(failed)") and its result is `D3DERR_INVALIDCALL`. Some parameters are checked: render target index 4, start register 300 or 224, a source rect 128 wide, a texture 0 wide. A failed lock records its texture, which is in the capture, and a failed call's constants aren't read. The 5 calls that succeed natively (3 Clears with targets of different sizes, one with a smaller depth stencil, and an UnlockRect without a lock) have no message, there are no other messages, they're returned only once, and the triangle drawn after the failed calls replays |
 | `D3D11_D3DPERF_Markers` | `d3d11_d3dperf_check.py`: the markers nest as drawn, with their colours |
 
 What they don't cover:
@@ -240,8 +241,11 @@ Decisions:
   stencil only counts when `ZENABLE` or `STENCILENABLE` is on, since D3D9 programs often leave one
   bound with the tests off.
 - **A colour Clear clears every bound render target.** `D3D9_Resource_Usage` checks that natively
-  first: with two targets bound, both turn the clear colour. (Bound targets of different sizes make
-  the Clear fail altogether, which is how the demo first found it.)
+  first: with two targets bound, both turn the clear colour. (While writing that demo, a Clear with
+  targets of different sizes seemed to fail. `D3D9_Failed_Calls` found that it succeeds natively
+  with either target the wider one, with a taller second target (64x36 and 64x32, the sizes that
+  seemed to fail), and with a depth stencil smaller than the target. So that failure had another
+  cause, which wasn't tracked down.)
 - **The constants pseudo buffers** are created after loading, so their uses are kept by index and
   added then.
 
@@ -250,6 +254,61 @@ Resource Inspector and the timeline show the uses.
 
 Not covered: `ProcessVertices`, the patch draws, `UpdateSurface`, GDI drawing and
 `GetFrontBufferData` aren't in the test; they share the code paths of the calls that are.
+
+## Debug messages
+
+D3D9's debug runtime doesn't run on Windows 8 and later, so there are no API messages to collect.
+What the runtime does do is reject some invalid calls with an error, and those are reported
+instead.
+
+A call that fails while capturing is recorded into the frame as a `FailedCall` chunk
+(`RecordFailedCall` in `d3d9_device.h`). On replay:
+- it's an event named after the call, such as `IDirect3DDevice9::StretchRect (failed)`, with the
+  call's name, its result (`D3DERR_INVALIDCALL` and so on) and its parameters;
+- the Errors and Warnings window has a message at that event: "IDirect3DDevice9::StretchRect
+  returned D3DERR_INVALIDCALL (0x8876086C) when it was captured, so it isn't replayed." The source
+  is API, the severity High, the ID the HRESULT, and the category comes from the call (state
+  setting, execution, resource manipulation or state creation, as D3D11's debug layer has them).
+
+This covers every device call recorded into the frame, creations made mid-frame, locks and
+unlocks, `IDirect3DQuery9::Issue` and state block `Capture` and `Apply`.
+
+Decisions:
+- **The call isn't replayed.** A D3D9 call that fails doesn't do anything.
+- **Parameters** are written by the call's own `Serialise_` function, after the name and result.
+  On replay that function reads them back with the state set so that it doesn't replay anything
+  (`ReadFailedCallParameters`).
+- **Arrays sized by the call's own counts aren't read:** shader constants, UP draws' vertex and
+  index data, `Clear`'s rects and the convolution kernel. The runtime may have rejected the call
+  because a count was wrong, and reading that much of the application's memory could crash. Their
+  counts are still there.
+- **Name and result only** for shader creation (the bytecode might not parse), state block
+  creation, `EndStateBlock` and `CreateAdditionalSwapChain`.
+- **Calls on objects** (locks, unlocks, `Issue`, `Capture`, `Apply`) record the object, and add it
+  to the capture so it shows by name. Resources in a failed device call's parameters aren't added:
+  one that only failed calls use shows as "Unknown Resource".
+- **A call that fails on replay**, having succeeded when captured, gets a message too while the
+  capture loads ("... on replay, though it succeeded when captured.", source RuntimeWarning).
+- **Messages are returned once**, as on D3D11.
+- **`Present`** isn't covered: it ends the frame before the real call is made.
+
+What the runtime doesn't check, natively on the test machine, so these give no message:
+- `SetTexture(300, ...)`, `SetSamplerState(300, ...)`, `SetRenderState((D3DRENDERSTATETYPE)1000,
+  ...)` and `SetStreamSource(16, ...)` return S_OK. The first native run of the demo, which made
+  them, ended with heap corruption (0xC0000374), so the demo doesn't make them now. Which call
+  caused it wasn't narrowed down.
+- An unaligned stream offset, and `Issue(D3DISSUE_BEGIN)` on an event query, return S_OK.
+- `DrawIndexedPrimitive` without an index buffer fails on the first frame and returns S_OK from
+  the second on. `D3D9_Failed_Calls` warns if any call's result changes between frames, since the
+  capture is of a later frame than the one whose results it writes.
+- `UnlockRect` on a texture that isn't locked returns S_OK.
+
+Tested in `d3d9_step3.md`: `D3D9_Failed_Calls` passes on x64 and x86, and qrenderdoc shows the
+messages, the failed calls' parameters, and a failed lock's texture by name.
+
+Not covered: no call in the tests fails on replay only, so those messages are untested. Failed
+creations other than `CreateTexture`, failed calls on objects other than `LockRect`, and failed
+draws aren't in the test either; the draws because no draw failed reliably natively.
 
 ## Needs testing
 
@@ -1421,6 +1480,8 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
   3e).
 - `d3d9_counters.cpp` - the GPU duration and samples passed counters.
 - `d3d9_pipestate.cpp` also records resource usage while loading (`AddDrawUsage`, `GetUsage`).
+- Failed calls: `RecordFailedCall` (`d3d9_device.h`, `d3d9_device.cpp`), the `RECORD_FAILED_CALL`
+  macros in `d3d9_device_wrap.cpp`, and `Serialise_FailedCall` in `d3d9_device_serialise.cpp`.
 - `d3d9_resources.*` - the wrapper base class and the resource wrappers. The comment at the top of
   `d3d9_resources.h` describes the lifetime model (external vs internal references, who holds real
   references, child objects).

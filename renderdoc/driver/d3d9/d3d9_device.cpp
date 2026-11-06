@@ -1063,6 +1063,94 @@ void WrappedD3DDevice9::RecordBackBuffer(WrappedD3DSwapChain9 *swap, UINT index,
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+// failed calls, see RecordFailedCall in d3d9_device.h
+
+bool WrappedD3DDevice9::FailedCallNeedsChunk(HRESULT hr, const rdcstr &function)
+{
+  if(SUCCEEDED(hr))
+    return false;
+
+  if(IsActiveCapturing(m_State))
+    return true;
+
+  // a call replayed for the frame, which succeeded when it was captured since failed calls aren't
+  // replayed. The replay's own calls go to the real device, not through the wrappers.
+  if(IsLoading(m_State) && m_CurEventID > 0)
+    AddFailedCallMessage(MessageSource::RuntimeWarning, function, hr);
+
+  return false;
+}
+
+void WrappedD3DDevice9::RecordFailedCall(HRESULT hr, const rdcstr &function, WrappedD3D9Object *object)
+{
+  if(!FailedCallNeedsChunk(hr, function))
+    return;
+
+  SCOPED_LOCK(m_D3DLock);
+  WriteSerialiser &ser = m_ScratchSerialiser;
+  SCOPED_SERIALISE_CHUNK(D3D9Chunk::FailedCall);
+  Serialise_FailedCall(ser, function, hr, object ? object->GetResourceID() : ResourceId(),
+                       D3D9Chunk::Max);
+  m_FrameRecord->AddChunk(scope.Get());
+  if(object)
+    MarkReferenced(object->GetWrappedUnknown(), eFrameRef_Read);
+}
+
+void WrappedD3DDevice9::ReadFailedCallParameters(ReadSerialiser &ser, D3D9Chunk params, bool &ok)
+{
+  // the call's own Serialise_ function reads them, in a state where it doesn't replay anything
+  CaptureState state = m_State;
+  m_State = CaptureState::StructuredExport;
+  ok = ProcessChunk(ser, params);
+  m_State = state;
+}
+
+static MessageCategory FailedCallCategory(const rdcstr &function)
+{
+  const int32_t sep = function.find("::");
+  const rdcstr name = sep >= 0 ? function.substr(sep + 2) : function;
+
+  // as D3D11's debug layer categorises them
+  if(name.beginsWith("Create"))
+    return MessageCategory::State_Creation;
+  if(name.beginsWith("Draw") || name.beginsWith("Clear") || name.beginsWith("Present") ||
+     name.beginsWith("ProcessVertices") || name.beginsWith("DeletePatch") ||
+     name.beginsWith("BeginScene") || name.beginsWith("EndScene"))
+    return MessageCategory::Execution;
+  if(name.beginsWith("Set") || name.beginsWith("LightEnable") ||
+     name.beginsWith("MultiplyTransform") || name.find("StateBlock") >= 0)
+    return MessageCategory::State_Setting;
+  // copies, locks, fills and mip generation
+  return MessageCategory::Resource_Manipulation;
+}
+
+void WrappedD3DDevice9::AddFailedCallMessage(MessageSource source, const rdcstr &function, HRESULT hr)
+{
+  DebugMessage msg;
+  msg.eventId = m_CurEventID;
+  msg.messageID = (uint32_t)hr;
+  msg.source = source;
+  msg.category = FailedCallCategory(function);
+  msg.severity = MessageSeverity::High;
+  if(source == MessageSource::API)
+    msg.description =
+        StringFormat::Fmt("%s returned %s (0x%08X) when it was captured, so it isn't replayed.",
+                          function.c_str(), ToStr((D3D9Result)hr).c_str(), (uint32_t)hr);
+  else
+    msg.description =
+        StringFormat::Fmt("%s returned %s (0x%08X) on replay, though it succeeded when captured.",
+                          function.c_str(), ToStr((D3D9Result)hr).c_str(), (uint32_t)hr);
+  m_DebugMessages.push_back(msg);
+}
+
+rdcarray<DebugMessage> WrappedD3DDevice9::GetDebugMessages()
+{
+  rdcarray<DebugMessage> ret;
+  ret.swap(m_DebugMessages);
+  return ret;
+}
+
+///////////////////////////////////////////////////////////////////////////////
 // calls on other objects that are recorded into the frame
 
 #define RECORD_OBJECT_CALL(chunk, obj, refType, ...) \

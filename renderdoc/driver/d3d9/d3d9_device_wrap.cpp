@@ -54,6 +54,22 @@
     m_FrameRecord->AddChunk(scope.Get());     \
   }
 
+// a call that failed is recorded as a FailedCall chunk, with the parameters its own chunk would
+// have had (see RecordFailedCall). Arrays whose size comes from the call's counts are left out,
+// passed as NULL: the runtime might have rejected the call because a count was wrong, and reading
+// that much of the application's memory could crash. The caller doesn't hold the lock.
+#define RECORD_FAILED_CALL(hr, chunk, ...)                             \
+  if(FAILED(hr))                                                       \
+    RecordFailedCall(hr, D3D9Chunk::chunk, [&](WriteSerialiser &ser) { \
+      CONCAT(Serialise_, chunk)(ser, __VA_ARGS__);                     \
+    });
+
+#define RECORD_FAILED_CALL0(hr, chunk)                                 \
+  if(FAILED(hr))                                                       \
+    RecordFailedCall(hr, D3D9Chunk::chunk, [&](WriteSerialiser &ser) { \
+      CONCAT(Serialise_, chunk)(ser);                                  \
+    });
+
 ///////////////////////////////////////////////////////////////////////////////
 // Methods passed straight through to the real device, or that only record themselves
 
@@ -138,6 +154,8 @@ HRESULT __stdcall WrappedD3DDevice9::BeginScene()
     RECORD_FRAME_CHUNK0(BeginScene);
   }
 
+  RECORD_FAILED_CALL0(ret, BeginScene);
+
   return ret;
 }
 
@@ -151,6 +169,8 @@ HRESULT __stdcall WrappedD3DDevice9::EndScene()
     SCOPED_LOCK(m_D3DLock);
     RECORD_FRAME_CHUNK0(EndScene);
   }
+
+  RECORD_FAILED_CALL0(ret, EndScene);
 
   return ret;
 }
@@ -169,6 +189,8 @@ HRESULT __stdcall WrappedD3DDevice9::Clear(DWORD Count, CONST D3DRECT *pRects, D
     MarkRenderTargetsReferenced();
   }
 
+  RECORD_FAILED_CALL(ret, Clear, Count, NULL, Flags, Color, Z, Stencil);
+
   return ret;
 }
 
@@ -183,6 +205,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetTransform(D3DTRANSFORMSTATETYPE State,
     SCOPED_LOCK(m_D3DLock);
     RECORD_STATE_CHUNK(SetTransform, State, pMatrix);
   }
+
+  RECORD_FAILED_CALL(ret, SetTransform, State, pMatrix);
 
   return ret;
 }
@@ -204,6 +228,8 @@ HRESULT __stdcall WrappedD3DDevice9::MultiplyTransform(D3DTRANSFORMSTATETYPE Sta
     RECORD_STATE_CHUNK(MultiplyTransform, State, pMatrix);
   }
 
+  RECORD_FAILED_CALL(ret, MultiplyTransform, State, pMatrix);
+
   return ret;
 }
 
@@ -217,6 +243,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetViewport(CONST D3DVIEWPORT9 *pViewport)
     SCOPED_LOCK(m_D3DLock);
     RECORD_STATE_CHUNK(SetViewport, pViewport);
   }
+
+  RECORD_FAILED_CALL(ret, SetViewport, pViewport);
 
   return ret;
 }
@@ -236,6 +264,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetMaterial(CONST D3DMATERIAL9 *pMaterial)
     SCOPED_LOCK(m_D3DLock);
     RECORD_STATE_CHUNK(SetMaterial, pMaterial);
   }
+
+  RECORD_FAILED_CALL(ret, SetMaterial, pMaterial);
 
   return ret;
 }
@@ -260,6 +290,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetLight(DWORD Index, CONST D3DLIGHT9 *pLig
     }
   }
 
+  RECORD_FAILED_CALL(ret, SetLight, Index, pLight);
+
   return ret;
 }
 
@@ -283,6 +315,8 @@ HRESULT __stdcall WrappedD3DDevice9::LightEnable(DWORD Index, BOOL Enable)
     }
   }
 
+  RECORD_FAILED_CALL(ret, LightEnable, Index, Enable);
+
   return ret;
 }
 
@@ -301,6 +335,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetClipPlane(DWORD Index, CONST float *pPla
     SCOPED_LOCK(m_D3DLock);
     RECORD_STATE_CHUNK(SetClipPlane, Index, pPlane);
   }
+
+  RECORD_FAILED_CALL(ret, SetClipPlane, Index, pPlane);
 
   return ret;
 }
@@ -321,6 +357,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetRenderState(D3DRENDERSTATETYPE State, DW
     RECORD_STATE_CHUNK(SetRenderState, State, Value);
   }
 
+  RECORD_FAILED_CALL(ret, SetRenderState, State, Value);
+
   return ret;
 }
 
@@ -339,6 +377,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetClipStatus(CONST D3DCLIPSTATUS9 *pClipSt
     SCOPED_LOCK(m_D3DLock);
     RECORD_FRAME_CHUNK(SetClipStatus, pClipStatus);
   }
+
+  RECORD_FAILED_CALL(ret, SetClipStatus, pClipStatus);
 
   return ret;
 }
@@ -366,6 +406,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetTextureStageState(DWORD Stage,
     RECORD_STATE_CHUNK(SetTextureStageState, Stage, Type, Value);
   }
 
+  RECORD_FAILED_CALL(ret, SetTextureStageState, Stage, Type, Value);
+
   return ret;
 }
 
@@ -386,6 +428,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetSamplerState(DWORD Sampler, D3DSAMPLERST
     SCOPED_LOCK(m_D3DLock);
     RECORD_STATE_CHUNK(SetSamplerState, Sampler, Type, Value);
   }
+
+  RECORD_FAILED_CALL(ret, SetSamplerState, Sampler, Type, Value);
 
   return ret;
 }
@@ -411,6 +455,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetPaletteEntries(UINT PaletteNumber,
     }
   }
 
+  RECORD_FAILED_CALL(ret, SetPaletteEntries, PaletteNumber, pEntries);
+
   return ret;
 }
 
@@ -429,6 +475,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetCurrentTexturePalette(UINT PaletteNumber
     SCOPED_LOCK(m_D3DLock);
     RECORD_STATE_CHUNK(SetCurrentTexturePalette, PaletteNumber);
   }
+
+  RECORD_FAILED_CALL(ret, SetCurrentTexturePalette, PaletteNumber);
 
   return ret;
 }
@@ -449,6 +497,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetScissorRect(CONST RECT *pRect)
     RECORD_STATE_CHUNK(SetScissorRect, pRect);
   }
 
+  RECORD_FAILED_CALL(ret, SetScissorRect, pRect);
+
   return ret;
 }
 
@@ -468,6 +518,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetSoftwareVertexProcessing(BOOL bSoftware)
     RECORD_FRAME_CHUNK(SetSoftwareVertexProcessing, bSoftware);
   }
 
+  RECORD_FAILED_CALL(ret, SetSoftwareVertexProcessing, bSoftware);
+
   return ret;
 }
 
@@ -486,6 +538,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetNPatchMode(float nSegments)
     SCOPED_LOCK(m_D3DLock);
     RECORD_STATE_CHUNK(SetNPatchMode, nSegments);
   }
+
+  RECORD_FAILED_CALL(ret, SetNPatchMode, nSegments);
 
   return ret;
 }
@@ -509,6 +563,8 @@ HRESULT __stdcall WrappedD3DDevice9::DrawPrimitive(D3DPRIMITIVETYPE PrimitiveTyp
     MarkDrawReferenced();
   }
 
+  RECORD_FAILED_CALL(ret, DrawPrimitive, PrimitiveType, StartVertex, PrimitiveCount);
+
   return ret;
 }
 
@@ -531,6 +587,9 @@ HRESULT __stdcall WrappedD3DDevice9::DrawIndexedPrimitive(D3DPRIMITIVETYPE Primi
     MarkDrawReferenced();
   }
 
+  RECORD_FAILED_CALL(ret, DrawIndexedPrimitive, PrimitiveType, BaseVertexIndex, MinVertexIndex,
+                     NumVertices, startIndex, primCount);
+
   return ret;
 }
 
@@ -552,6 +611,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetVertexShaderConstantF(UINT StartRegister
     SCOPED_LOCK(m_D3DLock);
     RECORD_STATE_CHUNK(SetVertexShaderConstantF, StartRegister, pConstantData, Vector4fCount);
   }
+
+  RECORD_FAILED_CALL(ret, SetVertexShaderConstantF, StartRegister, NULL, Vector4fCount);
 
   return ret;
 }
@@ -577,6 +638,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetVertexShaderConstantI(UINT StartRegister
     RECORD_STATE_CHUNK(SetVertexShaderConstantI, StartRegister, pConstantData, Vector4iCount);
   }
 
+  RECORD_FAILED_CALL(ret, SetVertexShaderConstantI, StartRegister, NULL, Vector4iCount);
+
   return ret;
 }
 
@@ -600,6 +663,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetVertexShaderConstantB(UINT StartRegister
     RECORD_STATE_CHUNK(SetVertexShaderConstantB, StartRegister, pConstantData, BoolCount);
   }
 
+  RECORD_FAILED_CALL(ret, SetVertexShaderConstantB, StartRegister, NULL, BoolCount);
+
   return ret;
 }
 
@@ -619,6 +684,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetStreamSourceFreq(UINT StreamNumber, UINT
     SCOPED_LOCK(m_D3DLock);
     RECORD_STATE_CHUNK(SetStreamSourceFreq, StreamNumber, Setting);
   }
+
+  RECORD_FAILED_CALL(ret, SetStreamSourceFreq, StreamNumber, Setting);
 
   return ret;
 }
@@ -641,6 +708,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetPixelShaderConstantF(UINT StartRegister,
     SCOPED_LOCK(m_D3DLock);
     RECORD_STATE_CHUNK(SetPixelShaderConstantF, StartRegister, pConstantData, Vector4fCount);
   }
+
+  RECORD_FAILED_CALL(ret, SetPixelShaderConstantF, StartRegister, NULL, Vector4fCount);
 
   return ret;
 }
@@ -665,6 +734,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetPixelShaderConstantI(UINT StartRegister,
     RECORD_STATE_CHUNK(SetPixelShaderConstantI, StartRegister, pConstantData, Vector4iCount);
   }
 
+  RECORD_FAILED_CALL(ret, SetPixelShaderConstantI, StartRegister, NULL, Vector4iCount);
+
   return ret;
 }
 
@@ -687,6 +758,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetPixelShaderConstantB(UINT StartRegister,
     SCOPED_LOCK(m_D3DLock);
     RECORD_STATE_CHUNK(SetPixelShaderConstantB, StartRegister, pConstantData, BoolCount);
   }
+
+  RECORD_FAILED_CALL(ret, SetPixelShaderConstantB, StartRegister, NULL, BoolCount);
 
   return ret;
 }
@@ -711,6 +784,8 @@ HRESULT __stdcall WrappedD3DDevice9::DrawRectPatch(UINT Handle, CONST float *pNu
     MarkDrawReferenced();
   }
 
+  RECORD_FAILED_CALL(ret, DrawRectPatch, Handle, pNumSegs, pRectPatchInfo);
+
   return ret;
 }
 
@@ -728,6 +803,8 @@ HRESULT __stdcall WrappedD3DDevice9::DrawTriPatch(UINT Handle, CONST float *pNum
     MarkDrawReferenced();
   }
 
+  RECORD_FAILED_CALL(ret, DrawTriPatch, Handle, pNumSegs, pTriPatchInfo);
+
   return ret;
 }
 
@@ -741,6 +818,8 @@ HRESULT __stdcall WrappedD3DDevice9::DeletePatch(UINT Handle)
     SCOPED_LOCK(m_D3DLock);
     RECORD_FRAME_CHUNK(DeletePatch, Handle);
   }
+
+  RECORD_FAILED_CALL(ret, DeletePatch, Handle);
 
   return ret;
 }
@@ -758,6 +837,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetConvolutionMonoKernel(UINT width, UINT h
     SCOPED_LOCK(m_D3DLock);
     RECORD_FRAME_CHUNK(SetConvolutionMonoKernel, width, height, rows, columns);
   }
+
+  RECORD_FAILED_CALL(ret, SetConvolutionMonoKernel, width, height, NULL, NULL);
 
   return ret;
 }
@@ -882,6 +963,8 @@ HRESULT __stdcall WrappedD3DDevice9::CreateAdditionalSwapChain(
     *pSwapChain = NULL;
   }
 
+  if(FAILED(hr))
+    RecordFailedCall(hr, ToStr(D3D9Chunk::CreateAdditionalSwapChain));
   return hr;
 }
 
@@ -988,11 +1071,10 @@ HRESULT __stdcall WrappedD3DDevice9::CreateTexture(UINT Width, UINT Height, UINT
   HRESULT hr =
       m_device->CreateTexture(Width, Height, Levels, Usage, Format, Pool, &real, pSharedHandle);
   WrapCreated<WrappedD3DTexture9>(hr, real, ppTexture, this);
-  if(SUCCEEDED(hr) && *ppTexture)
-    RecordCreation(GetWrappedObject(*ppTexture), D3D9Chunk::CreateTexture, [&](WriteSerialiser &ser) {
-      Serialise_CreateTexture(ser, Width, Height, Levels, Usage, Format, Pool, ppTexture,
-                              pSharedHandle);
-    });
+  RecordCreated(hr, GetWrappedObject(*ppTexture), D3D9Chunk::CreateTexture, [&](WriteSerialiser &ser) {
+    Serialise_CreateTexture(ser, Width, Height, Levels, Usage, Format, Pool, ppTexture,
+                            pSharedHandle);
+  });
   return hr;
 }
 
@@ -1010,12 +1092,11 @@ HRESULT __stdcall WrappedD3DDevice9::CreateVolumeTexture(UINT Width, UINT Height
   HRESULT hr = m_device->CreateVolumeTexture(Width, Height, Depth, Levels, Usage, Format, Pool,
                                              &real, pSharedHandle);
   WrapCreated<WrappedD3DVolumeTexture9>(hr, real, ppVolumeTexture, this);
-  if(SUCCEEDED(hr) && *ppVolumeTexture)
-    RecordCreation(GetWrappedObject(*ppVolumeTexture), D3D9Chunk::CreateVolumeTexture,
-                   [&](WriteSerialiser &ser) {
-                     Serialise_CreateVolumeTexture(ser, Width, Height, Depth, Levels, Usage, Format,
-                                                   Pool, ppVolumeTexture, pSharedHandle);
-                   });
+  RecordCreated(hr, GetWrappedObject(*ppVolumeTexture), D3D9Chunk::CreateVolumeTexture,
+                [&](WriteSerialiser &ser) {
+                  Serialise_CreateVolumeTexture(ser, Width, Height, Depth, Levels, Usage, Format,
+                                                Pool, ppVolumeTexture, pSharedHandle);
+                });
   return hr;
 }
 
@@ -1031,12 +1112,11 @@ HRESULT __stdcall WrappedD3DDevice9::CreateCubeTexture(UINT EdgeLength, UINT Lev
   HRESULT hr =
       m_device->CreateCubeTexture(EdgeLength, Levels, Usage, Format, Pool, &real, pSharedHandle);
   WrapCreated<WrappedD3DCubeTexture9>(hr, real, ppCubeTexture, this);
-  if(SUCCEEDED(hr) && *ppCubeTexture)
-    RecordCreation(GetWrappedObject(*ppCubeTexture), D3D9Chunk::CreateCubeTexture,
-                   [&](WriteSerialiser &ser) {
-                     Serialise_CreateCubeTexture(ser, EdgeLength, Levels, Usage, Format, Pool,
-                                                 ppCubeTexture, pSharedHandle);
-                   });
+  RecordCreated(hr, GetWrappedObject(*ppCubeTexture), D3D9Chunk::CreateCubeTexture,
+                [&](WriteSerialiser &ser) {
+                  Serialise_CreateCubeTexture(ser, EdgeLength, Levels, Usage, Format, Pool,
+                                              ppCubeTexture, pSharedHandle);
+                });
   return hr;
 }
 
@@ -1051,11 +1131,10 @@ HRESULT __stdcall WrappedD3DDevice9::CreateVertexBuffer(UINT Length, DWORD Usage
   IDirect3DVertexBuffer9 *real = NULL;
   HRESULT hr = m_device->CreateVertexBuffer(Length, Usage, FVF, Pool, &real, pSharedHandle);
   WrapCreated<WrappedD3DVertexBuffer9>(hr, real, ppVertexBuffer, this);
-  if(SUCCEEDED(hr) && *ppVertexBuffer)
-    RecordCreation(
-        GetWrappedObject(*ppVertexBuffer), D3D9Chunk::CreateVertexBuffer, [&](WriteSerialiser &ser) {
-          Serialise_CreateVertexBuffer(ser, Length, Usage, FVF, Pool, ppVertexBuffer, pSharedHandle);
-        });
+  RecordCreated(
+      hr, GetWrappedObject(*ppVertexBuffer), D3D9Chunk::CreateVertexBuffer, [&](WriteSerialiser &ser) {
+        Serialise_CreateVertexBuffer(ser, Length, Usage, FVF, Pool, ppVertexBuffer, pSharedHandle);
+      });
   return hr;
 }
 
@@ -1070,11 +1149,10 @@ HRESULT __stdcall WrappedD3DDevice9::CreateIndexBuffer(UINT Length, DWORD Usage,
   IDirect3DIndexBuffer9 *real = NULL;
   HRESULT hr = m_device->CreateIndexBuffer(Length, Usage, Format, Pool, &real, pSharedHandle);
   WrapCreated<WrappedD3DIndexBuffer9>(hr, real, ppIndexBuffer, this);
-  if(SUCCEEDED(hr) && *ppIndexBuffer)
-    RecordCreation(
-        GetWrappedObject(*ppIndexBuffer), D3D9Chunk::CreateIndexBuffer, [&](WriteSerialiser &ser) {
-          Serialise_CreateIndexBuffer(ser, Length, Usage, Format, Pool, ppIndexBuffer, pSharedHandle);
-        });
+  RecordCreated(
+      hr, GetWrappedObject(*ppIndexBuffer), D3D9Chunk::CreateIndexBuffer, [&](WriteSerialiser &ser) {
+        Serialise_CreateIndexBuffer(ser, Length, Usage, Format, Pool, ppIndexBuffer, pSharedHandle);
+      });
   return hr;
 }
 
@@ -1092,12 +1170,11 @@ HRESULT __stdcall WrappedD3DDevice9::CreateRenderTarget(UINT Width, UINT Height,
   HRESULT hr = m_device->CreateRenderTarget(Width, Height, Format, MultiSample, MultisampleQuality,
                                             Lockable, &real, pSharedHandle);
   WrapCreated<WrappedD3DSurface9>(hr, real, ppSurface, this);
-  if(SUCCEEDED(hr) && *ppSurface)
-    RecordCreation(
-        GetWrappedObject(*ppSurface), D3D9Chunk::CreateRenderTarget, [&](WriteSerialiser &ser) {
-          Serialise_CreateRenderTarget(ser, Width, Height, Format, MultiSample, MultisampleQuality,
-                                       Lockable, ppSurface, pSharedHandle);
-        });
+  RecordCreated(
+      hr, GetWrappedObject(*ppSurface), D3D9Chunk::CreateRenderTarget, [&](WriteSerialiser &ser) {
+        Serialise_CreateRenderTarget(ser, Width, Height, Format, MultiSample, MultisampleQuality,
+                                     Lockable, ppSurface, pSharedHandle);
+      });
   return hr;
 }
 
@@ -1113,13 +1190,12 @@ HRESULT __stdcall WrappedD3DDevice9::CreateDepthStencilSurface(
   HRESULT hr = m_device->CreateDepthStencilSurface(
       Width, Height, Format, MultiSample, MultisampleQuality, Discard, &real, pSharedHandle);
   WrapCreated<WrappedD3DSurface9>(hr, real, ppSurface, this);
-  if(SUCCEEDED(hr) && *ppSurface)
-    RecordCreation(GetWrappedObject(*ppSurface), D3D9Chunk::CreateDepthStencilSurface,
-                   [&](WriteSerialiser &ser) {
-                     Serialise_CreateDepthStencilSurface(ser, Width, Height, Format, MultiSample,
-                                                         MultisampleQuality, Discard, ppSurface,
-                                                         pSharedHandle);
-                   });
+  RecordCreated(hr, GetWrappedObject(*ppSurface), D3D9Chunk::CreateDepthStencilSurface,
+                [&](WriteSerialiser &ser) {
+                  Serialise_CreateDepthStencilSurface(ser, Width, Height, Format, MultiSample,
+                                                      MultisampleQuality, Discard, ppSurface,
+                                                      pSharedHandle);
+                });
   return hr;
 }
 
@@ -1135,12 +1211,11 @@ HRESULT __stdcall WrappedD3DDevice9::CreateOffscreenPlainSurface(UINT Width, UIN
   HRESULT hr =
       m_device->CreateOffscreenPlainSurface(Width, Height, Format, Pool, &real, pSharedHandle);
   WrapCreated<WrappedD3DSurface9>(hr, real, ppSurface, this);
-  if(SUCCEEDED(hr) && *ppSurface)
-    RecordCreation(GetWrappedObject(*ppSurface), D3D9Chunk::CreateOffscreenPlainSurface,
-                   [&](WriteSerialiser &ser) {
-                     Serialise_CreateOffscreenPlainSurface(ser, Width, Height, Format, Pool,
-                                                           ppSurface, pSharedHandle);
-                   });
+  RecordCreated(hr, GetWrappedObject(*ppSurface), D3D9Chunk::CreateOffscreenPlainSurface,
+                [&](WriteSerialiser &ser) {
+                  Serialise_CreateOffscreenPlainSurface(ser, Width, Height, Format, Pool, ppSurface,
+                                                        pSharedHandle);
+                });
   return hr;
 }
 
@@ -1160,12 +1235,11 @@ HRESULT WrappedD3DDevice9::CreateRenderTargetEx(UINT Width, UINT Height, D3DFORM
   HRESULT hr = m_deviceEx->CreateRenderTargetEx(
       Width, Height, Format, MultiSample, MultisampleQuality, Lockable, &real, pSharedHandle, Usage);
   WrapCreated<WrappedD3DSurface9>(hr, real, ppSurface, this);
-  if(SUCCEEDED(hr) && *ppSurface)
-    RecordCreation(
-        GetWrappedObject(*ppSurface), D3D9Chunk::CreateRenderTargetEx, [&](WriteSerialiser &ser) {
-          Serialise_CreateRenderTargetEx(ser, Width, Height, Format, MultiSample, MultisampleQuality,
-                                         Lockable, ppSurface, pSharedHandle, Usage);
-        });
+  RecordCreated(
+      hr, GetWrappedObject(*ppSurface), D3D9Chunk::CreateRenderTargetEx, [&](WriteSerialiser &ser) {
+        Serialise_CreateRenderTargetEx(ser, Width, Height, Format, MultiSample, MultisampleQuality,
+                                       Lockable, ppSurface, pSharedHandle, Usage);
+      });
   return hr;
 }
 
@@ -1183,12 +1257,11 @@ HRESULT WrappedD3DDevice9::CreateOffscreenPlainSurfaceEx(UINT Width, UINT Height
   HRESULT hr = m_deviceEx->CreateOffscreenPlainSurfaceEx(Width, Height, Format, Pool, &real,
                                                          pSharedHandle, Usage);
   WrapCreated<WrappedD3DSurface9>(hr, real, ppSurface, this);
-  if(SUCCEEDED(hr) && *ppSurface)
-    RecordCreation(GetWrappedObject(*ppSurface), D3D9Chunk::CreateOffscreenPlainSurfaceEx,
-                   [&](WriteSerialiser &ser) {
-                     Serialise_CreateOffscreenPlainSurfaceEx(ser, Width, Height, Format, Pool,
-                                                             ppSurface, pSharedHandle, Usage);
-                   });
+  RecordCreated(hr, GetWrappedObject(*ppSurface), D3D9Chunk::CreateOffscreenPlainSurfaceEx,
+                [&](WriteSerialiser &ser) {
+                  Serialise_CreateOffscreenPlainSurfaceEx(ser, Width, Height, Format, Pool,
+                                                          ppSurface, pSharedHandle, Usage);
+                });
   return hr;
 }
 
@@ -1208,13 +1281,12 @@ HRESULT WrappedD3DDevice9::CreateDepthStencilSurfaceEx(UINT Width, UINT Height, 
   HRESULT hr = m_deviceEx->CreateDepthStencilSurfaceEx(
       Width, Height, Format, MultiSample, MultisampleQuality, Discard, &real, pSharedHandle, Usage);
   WrapCreated<WrappedD3DSurface9>(hr, real, ppSurface, this);
-  if(SUCCEEDED(hr) && *ppSurface)
-    RecordCreation(GetWrappedObject(*ppSurface), D3D9Chunk::CreateDepthStencilSurfaceEx,
-                   [&](WriteSerialiser &ser) {
-                     Serialise_CreateDepthStencilSurfaceEx(ser, Width, Height, Format, MultiSample,
-                                                           MultisampleQuality, Discard, ppSurface,
-                                                           pSharedHandle, Usage);
-                   });
+  RecordCreated(hr, GetWrappedObject(*ppSurface), D3D9Chunk::CreateDepthStencilSurfaceEx,
+                [&](WriteSerialiser &ser) {
+                  Serialise_CreateDepthStencilSurfaceEx(ser, Width, Height, Format, MultiSample,
+                                                        MultisampleQuality, Discard, ppSurface,
+                                                        pSharedHandle, Usage);
+                });
   return hr;
 }
 
@@ -1238,6 +1310,8 @@ HRESULT __stdcall WrappedD3DDevice9::UpdateSurface(IDirect3DSurface9 *pSourceSur
     MarkReferenced(pDestinationSurface, eFrameRef_PartialWrite);
   }
 
+  RECORD_FAILED_CALL(hr, UpdateSurface, pSourceSurface, pSourceRect, pDestinationSurface, pDestPoint);
+
   return hr;
 }
 
@@ -1258,6 +1332,8 @@ HRESULT __stdcall WrappedD3DDevice9::UpdateTexture(IDirect3DBaseTexture9 *pSourc
     MarkReferenced(pDestinationTexture, eFrameRef_PartialWrite);
   }
 
+  RECORD_FAILED_CALL(hr, UpdateTexture, pSourceTexture, pDestinationTexture);
+
   return hr;
 }
 
@@ -1274,6 +1350,8 @@ HRESULT __stdcall WrappedD3DDevice9::GetRenderTargetData(IDirect3DSurface9 *pRen
     MarkReferenced(pRenderTarget, eFrameRef_Read);
     MarkReferenced(pDestSurface, eFrameRef_PartialWrite);
   }
+
+  RECORD_FAILED_CALL(hr, GetRenderTargetData, pRenderTarget, pDestSurface);
 
   return hr;
 }
@@ -1305,6 +1383,8 @@ HRESULT __stdcall WrappedD3DDevice9::StretchRect(IDirect3DSurface9 *pSourceSurfa
     MarkReferenced(pDestSurface, eFrameRef_PartialWrite);
   }
 
+  RECORD_FAILED_CALL(hr, StretchRect, pSourceSurface, pSourceRect, pDestSurface, pDestRect, Filter);
+
   return hr;
 }
 
@@ -1320,6 +1400,8 @@ HRESULT __stdcall WrappedD3DDevice9::ColorFill(IDirect3DSurface9 *pSurface, CONS
     RECORD_FRAME_CHUNK(ColorFill, pSurface, pRect, color);
     MarkReferenced(pSurface, eFrameRef_PartialWrite);
   }
+
+  RECORD_FAILED_CALL(hr, ColorFill, pSurface, pRect, color);
 
   return hr;
 }
@@ -1342,6 +1424,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetRenderTarget(DWORD RenderTargetIndex,
     RECORD_FRAME_CHUNK(SetRenderTarget, RenderTargetIndex, pRenderTarget);
     MarkReferenced(pRenderTarget, eFrameRef_PartialWrite);
   }
+
+  RECORD_FAILED_CALL(hr, SetRenderTarget, RenderTargetIndex, pRenderTarget);
 
   return hr;
 }
@@ -1373,6 +1457,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetDepthStencilSurface(IDirect3DSurface9 *p
     RECORD_FRAME_CHUNK(SetDepthStencilSurface, pNewZStencil);
     MarkReferenced(pNewZStencil, eFrameRef_PartialWrite);
   }
+
+  RECORD_FAILED_CALL(hr, SetDepthStencilSurface, pNewZStencil);
 
   return hr;
 }
@@ -1409,6 +1495,8 @@ HRESULT __stdcall WrappedD3DDevice9::CreateStateBlock(D3DSTATEBLOCKTYPE Type,
     *ppSB = NULL;
   }
 
+  if(FAILED(hr))
+    RecordFailedCall(hr, ToStr(D3D9Chunk::CreateStateBlock));
   return hr;
 }
 
@@ -1513,6 +1601,8 @@ HRESULT __stdcall WrappedD3DDevice9::EndStateBlock(IDirect3DStateBlock9 **ppSB)
     MarkReferenced(*ppSB, eFrameRef_PartialWrite);
   }
 
+  if(FAILED(hr))
+    RecordFailedCall(hr, ToStr(D3D9Chunk::EndStateBlock));
   return hr;
 }
 
@@ -1553,6 +1643,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetTexture(DWORD Stage, IDirect3DBaseTextur
     MarkReferenced(pTexture, eFrameRef_Read);
   }
 
+  RECORD_FAILED_CALL(hr, SetTexture, Stage, pTexture);
+
   return hr;
 }
 
@@ -1579,6 +1671,9 @@ HRESULT __stdcall WrappedD3DDevice9::DrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveT
                        VertexStreamZeroStride);
     MarkDrawReferenced();
   }
+
+  RECORD_FAILED_CALL(hr, DrawPrimitiveUP, PrimitiveType, PrimitiveCount, NULL,
+                     VertexStreamZeroStride);
 
   return hr;
 }
@@ -1610,6 +1705,9 @@ HRESULT __stdcall WrappedD3DDevice9::DrawIndexedPrimitiveUP(
     MarkDrawReferenced();
   }
 
+  RECORD_FAILED_CALL(hr, DrawIndexedPrimitiveUP, PrimitiveType, MinVertexIndex, NumVertices,
+                     PrimitiveCount, NULL, IndexDataFormat, NULL, VertexStreamZeroStride);
+
   return hr;
 }
 
@@ -1633,6 +1731,9 @@ HRESULT __stdcall WrappedD3DDevice9::ProcessVertices(UINT SrcStartIndex, UINT De
     MarkDrawReferenced();
   }
 
+  RECORD_FAILED_CALL(hr, ProcessVertices, SrcStartIndex, DestIndex, VertexCount, pDestBuffer,
+                     pVertexDecl, Flags);
+
   return hr;
 }
 
@@ -1645,11 +1746,10 @@ HRESULT __stdcall WrappedD3DDevice9::CreateVertexDeclaration(CONST D3DVERTEXELEM
   IDirect3DVertexDeclaration9 *real = NULL;
   HRESULT hr = m_device->CreateVertexDeclaration(pVertexElements, &real);
   WrapCreated<WrappedD3DVertexDeclaration9>(hr, real, ppDecl, this);
-  if(SUCCEEDED(hr) && *ppDecl)
-    RecordCreation(GetWrappedObject(*ppDecl), D3D9Chunk::CreateVertexDeclaration,
-                   [&](WriteSerialiser &ser) {
-                     Serialise_CreateVertexDeclaration(ser, pVertexElements, ppDecl);
-                   });
+  RecordCreated(hr, GetWrappedObject(*ppDecl), D3D9Chunk::CreateVertexDeclaration,
+                [&](WriteSerialiser &ser) {
+                  Serialise_CreateVertexDeclaration(ser, pVertexElements, ppDecl);
+                });
   return hr;
 }
 
@@ -1671,6 +1771,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetVertexDeclaration(IDirect3DVertexDeclara
     RECORD_STATE_CHUNK(SetVertexDeclaration, pDecl);
     MarkReferenced(pDecl, eFrameRef_Read);
   }
+
+  RECORD_FAILED_CALL(hr, SetVertexDeclaration, pDecl);
 
   return hr;
 }
@@ -1735,6 +1837,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetFVF(DWORD FVF)
     RECORD_STATE_CHUNK(SetFVF, FVF);
   }
 
+  RECORD_FAILED_CALL(hr, SetFVF, FVF);
+
   return hr;
 }
 
@@ -1751,6 +1855,10 @@ HRESULT __stdcall WrappedD3DDevice9::CreateVertexShader(CONST DWORD *pFunction,
     RecordCreation(
         GetWrappedObject(*ppShader), D3D9Chunk::CreateVertexShader,
         [&](WriteSerialiser &ser) { Serialise_CreateVertexShader(ser, pFunction, ppShader); });
+
+  // only the name and result: the bytecode might not parse when creation failed
+  if(FAILED(hr))
+    RecordFailedCall(hr, ToStr(D3D9Chunk::CreateVertexShader));
   return hr;
 }
 
@@ -1772,6 +1880,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetVertexShader(IDirect3DVertexShader9 *pSh
     RECORD_STATE_CHUNK(SetVertexShader, pShader);
     MarkReferenced(pShader, eFrameRef_Read);
   }
+
+  RECORD_FAILED_CALL(hr, SetVertexShader, pShader);
 
   return hr;
 }
@@ -1806,6 +1916,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetStreamSource(UINT StreamNumber,
     RECORD_STATE_CHUNK(SetStreamSource, StreamNumber, pStreamData, OffsetInBytes, Stride);
     MarkReferenced(pStreamData, eFrameRef_Read);
   }
+
+  RECORD_FAILED_CALL(hr, SetStreamSource, StreamNumber, pStreamData, OffsetInBytes, Stride);
 
   return hr;
 }
@@ -1845,6 +1957,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetIndices(IDirect3DIndexBuffer9 *pIndexDat
     MarkReferenced(pIndexData, eFrameRef_Read);
   }
 
+  RECORD_FAILED_CALL(hr, SetIndices, pIndexData);
+
   return hr;
 }
 
@@ -1871,6 +1985,10 @@ HRESULT __stdcall WrappedD3DDevice9::CreatePixelShader(CONST DWORD *pFunction,
     RecordCreation(
         GetWrappedObject(*ppShader), D3D9Chunk::CreatePixelShader,
         [&](WriteSerialiser &ser) { Serialise_CreatePixelShader(ser, pFunction, ppShader); });
+
+  // only the name and result, as for vertex shaders
+  if(FAILED(hr))
+    RecordFailedCall(hr, ToStr(D3D9Chunk::CreatePixelShader));
   return hr;
 }
 
@@ -1892,6 +2010,8 @@ HRESULT __stdcall WrappedD3DDevice9::SetPixelShader(IDirect3DPixelShader9 *pShad
     RECORD_STATE_CHUNK(SetPixelShader, pShader);
     MarkReferenced(pShader, eFrameRef_Read);
   }
+
+  RECORD_FAILED_CALL(hr, SetPixelShader, pShader);
 
   return hr;
 }
@@ -1915,9 +2035,8 @@ HRESULT __stdcall WrappedD3DDevice9::CreateQuery(D3DQUERYTYPE Type, IDirect3DQue
   IDirect3DQuery9 *real = NULL;
   HRESULT hr = m_device->CreateQuery(Type, &real);
   WrapCreated<WrappedD3DQuery9>(hr, real, ppQuery, this);
-  if(SUCCEEDED(hr) && *ppQuery)
-    RecordCreation(GetWrappedObject(*ppQuery), D3D9Chunk::CreateQuery,
-                   [&](WriteSerialiser &ser) { Serialise_CreateQuery(ser, Type, ppQuery); });
+  RecordCreated(hr, GetWrappedObject(*ppQuery), D3D9Chunk::CreateQuery,
+                [&](WriteSerialiser &ser) { Serialise_CreateQuery(ser, Type, ppQuery); });
   return hr;
 }
 
@@ -1941,6 +2060,9 @@ HRESULT WrappedD3DDevice9::ComposeRects(IDirect3DSurface9 *pSrc, IDirect3DSurfac
     MarkReferenced(pSrcRectDescs, eFrameRef_Read);
     MarkReferenced(pDstRectDescs, eFrameRef_Read);
   }
+
+  RECORD_FAILED_CALL(hr, ComposeRects, pSrc, pDst, pSrcRectDescs, NumRects, pDstRectDescs,
+                     Operation, Xoffset, Yoffset);
 
   return hr;
 }
