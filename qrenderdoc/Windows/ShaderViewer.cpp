@@ -5955,7 +5955,44 @@ void ShaderViewer::snippet_constants()
 
   QString text;
 
-  if(encoding == ShaderEncoding::GLSL)
+  if(encoding == ShaderEncoding::HLSL && m_Ctx.APIProps().pipelineType == GraphicsAPI::D3D9)
+  {
+    // D3D9's custom shaders are ps_3_0, with their own texture types
+    text = lit(R"(
+/////////////////////////////////////
+//            Constants            //
+/////////////////////////////////////
+
+// which sampler type holds the data (see the resources snippet). Possible values on D3D9:
+// RD_TextureType_2D
+// RD_TextureType_3D
+// RD_TextureType_Cube
+// RD_TextureType_Depth (2D, depth in red)
+// RD_TextureType_DepthStencil (2D, depth in red and stencil in green)
+uint RD_TextureType();
+
+// the sample the data is from: -numSamples for a resolved multisampled render target
+int RD_SelectedSample();
+
+uint RD_SelectedSliceFace();
+
+uint RD_SelectedMip();
+
+// xyz = width, height, depth (6 for a cube). w = # mips
+uint4 RD_TexDim();
+
+// YUY2 and UYVY are decoded to (V, Y, U) at full rate, other formats give 0
+uint4 RD_YUVDownsampleRate();
+uint4 RD_YUVAChannels();
+
+// a pair with minimum and maximum selected range values
+float2 RD_SelectedRange();
+
+/////////////////////////////////////
+
+)");
+  }
+  else if(encoding == ShaderEncoding::GLSL)
   {
     text = lit(R"(
 /////////////////////////////////////
@@ -6070,7 +6107,20 @@ void ShaderViewer::snippet_samplers()
 {
   ShaderEncoding encoding = currentEncoding();
 
-  if(encoding == ShaderEncoding::HLSL || encoding == ShaderEncoding::Slang)
+  if(encoding == ShaderEncoding::HLSL && m_Ctx.APIProps().pipelineType == GraphicsAPI::D3D9)
+  {
+    insertSnippet(lit(R"(
+/////////////////////////////////////
+//            Samplers             //
+/////////////////////////////////////
+
+// D3D9's samplers come with their texture, see the resources snippet. They filter with POINT.
+
+/////////////////////////////////////
+
+)"));
+  }
+  else if(encoding == ShaderEncoding::HLSL || encoding == ShaderEncoding::Slang)
   {
     insertSnippet(lit(R"(
 /////////////////////////////////////
@@ -6113,7 +6163,25 @@ void ShaderViewer::snippet_resources()
   ShaderEncoding encoding = currentEncoding();
   GraphicsAPI api = m_Ctx.APIProps().localRenderer;
 
-  if(encoding == ShaderEncoding::HLSL || encoding == ShaderEncoding::Slang)
+  if(encoding == ShaderEncoding::HLSL && m_Ctx.APIProps().pipelineType == GraphicsAPI::D3D9)
+  {
+    insertSnippet(lit(R"(
+/////////////////////////////////////
+//           Resources             //
+/////////////////////////////////////
+
+// D3D9 binds the texture to every sampler of the matching type: sampler2D for
+// RD_TextureType_2D, _Depth and _DepthStencil, samplerCUBE for _Cube, sampler3D for _3D.
+// Sample the selected mip with tex2Dlod(texDisplayTex2D, float4(uv.xy, 0, RD_SelectedMip())).
+sampler2D texDisplayTex2D : register(RD_FLOAT_2D_BINDING);
+samplerCUBE texDisplayTexCube : register(RD_FLOAT_CUBE_BINDING);
+sampler3D texDisplayTex3D : register(RD_FLOAT_3D_BINDING);
+
+/////////////////////////////////////
+
+)"));
+  }
+  else if(encoding == ShaderEncoding::HLSL || encoding == ShaderEncoding::Slang)
   {
     insertSnippet(lit(R"(
 /////////////////////////////////////

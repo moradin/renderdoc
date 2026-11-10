@@ -42,7 +42,9 @@ The detailed status, with how each part works and how it was tested, is in
     Counter Viewer too;
   - resource usage: the Resource Inspector's usage list and the timeline's usage markers;
   - debug messages for calls that failed when they were captured, in the Errors and Warnings
-    window, with the failed call as an event of its own.
+    window, with the failed call as an event of its own;
+  - custom display shaders in the Texture Viewer, as ps_3_0 HLSL with D3D9's own bindings (see
+    `docs/how/how_custom_visualisation.rst`).
 - Replay, and reading back depth stencils during capture, need a shader model 3 GPU.
 
 ### What's missing
@@ -52,7 +54,6 @@ Not implemented:
 - shader debugging;
 - pixel history;
 - shader editing and replacement, including "Edit Generated Stub";
-- custom display shaders in the Texture Viewer;
 - GPU counters other than duration and samples passed: D3D9 has no pipeline statistics query;
 - messages from the D3D9 debug runtime, which doesn't run on Windows 8 and later. Only the calls
   the runtime rejects are reported;
@@ -73,6 +74,8 @@ Known limitations of what works:
   - Fixed function processing doesn't handle N-patches, user clip planes, displacement mapping or
     more than 8 lights.
   - A vs_3_0 shader that packs two semantics into one output register shows only one of them.
+- **Custom display shaders** are ps_3_0: the texture is in a sampler with point filtering, not a
+  texture object, and the older `RENDERDOC_` globals aren't filled.
 - **Debug messages** only come from calls that returned an error. The runtime doesn't check many
   mistakes: an out of range texture stage, sampler, render state or stream returns S_OK.
 - **GPU durations** depend on the GPU's clocks when they're measured, as on D3D11. With an idle GPU
@@ -107,6 +110,8 @@ Not tested yet:
 - **D3DPERF hooks**: upstream's hooks in the D3D11 driver also pass the markers on to D3D9 devices.
 - **AMD shader ISA**: no GCN targets are offered for D3D9 shaders, since AMD's plugins can't
   compile them.
+- **Custom shader snippets**: the shader editor inserts D3D9's own constants, samplers and
+  resources snippets for D3D9 captures, and the custom visualisation docs have a D3D9 section.
 - **Core**: `InitialiseReplay` waits for the GPU enumeration thread it started on a previous call.
   Before this fix, calling it twice in one process (as Python scripts inside qrenderdoc do) could
   run two enumerations at once and crash while a capture loaded. Upstream has this bug too.

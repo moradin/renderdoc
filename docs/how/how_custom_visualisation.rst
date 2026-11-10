@@ -342,6 +342,29 @@ As with the samplers, these textures are bound by slot and not by name, so while
 .. note::
   YUV textures may have additional planes bound as separate textures - for D3D this is ``texDisplayYUVArray`` and for Vulkan it's ``texYUVArray`` above. Whether to use these planes or not is specified in the texture dimension variables.
 
+D3D9
+----
+
+D3D9 captures take HLSL compiled as ``ps_3_0`` (or ``ps_3_0`` bytecode), which has no texture objects, constant buffers or integer loads, so the resources and samplers above aren't available:
+
+.. highlight:: c++
+.. code:: c++
+
+  sampler2D texDisplayTex2D : register(RD_FLOAT_2D_BINDING);
+  samplerCUBE texDisplayTexCube : register(RD_FLOAT_CUBE_BINDING);
+  sampler3D texDisplayTex3D : register(RD_FLOAT_3D_BINDING);
+
+  float4 main(float4 pos : SV_Position, float4 uv : TEXCOORD0) : SV_Target0
+  {
+    return tex2Dlod(texDisplayTex2D, float4(uv.xy, 0, RD_SelectedMip()));
+  }
+
+* The texture is bound to every sampler of the matching type that the shader declares, with point filtering: ``sampler2D`` when ``RD_TextureType()`` is ``RD_TextureType_2D``, ``RD_TextureType_Depth`` or ``RD_TextureType_DepthStencil``, ``samplerCUBE`` for ``RD_TextureType_Cube`` and ``sampler3D`` for ``RD_TextureType_3D``. The binding macros are a suggestion, ``Texture2D`` and ``SamplerState`` pairs work too.
+* The texture type says which sampler holds the data, not the texture's own type. Textures the texture viewer has to decode on the CPU (depth stencils, system memory and managed textures, and formats like P8, ATI1 or YUY2) are bound as a 2D texture of the selected subresource. Depth stencils have depth in red and stencil in green. Multisampled render targets are resolved.
+* The sampled values are what a D3D9 shader would get: ``L8`` samples as ``(L, L, L, 1)``, where the texture viewer shows it as red.
+* ``SV_Position`` is ``VPOS``, which has D3D9's pixel centres at integer co-ordinates rather than ``.5``.
+* The ``RD_`` functions are filled from constants that the compiler places. Other globals are 0. The older ``RENDERDOC_`` globals aren't supported.
+
 See Also
 --------
 

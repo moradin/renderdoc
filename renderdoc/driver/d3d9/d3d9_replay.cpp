@@ -746,14 +746,6 @@ IReplayDriver *D3D9Replay::MakeDummyDriver()
   return new DummyDriver(this, {}, m_pDevice->DetachStructuredFile(), {});
 }
 
-void D3D9Replay::BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &source,
-                                   const rdcstr &entry, const ShaderCompileFlags &compileFlags,
-                                   ShaderStage type, ResourceId &id, rdcstr &errors)
-{
-  id = ResourceId();
-  errors = "Custom shaders aren't supported for D3D9 captures yet";
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // output windows, as swapchains on the real device
 

@@ -231,6 +231,7 @@
     <ClCompile Include="d3d9\d3d9ex_wrapping_check.cpp" />
     <ClCompile Include="d3d9\d3d9_capture_edge_cases.cpp" />
     <ClCompile Include="d3d9\d3d9_counters.cpp" />
+    <ClCompile Include="d3d9\d3d9_custom_shaders.cpp" />
     <ClCompile Include="d3d9\d3d9_failed_calls.cpp" />
     <ClCompile Include="d3d9\d3d9_frame_start_state.cpp" />
     <ClCompile Include="d3d9\d3d9_overlay_test.cpp" />

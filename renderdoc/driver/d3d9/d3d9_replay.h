@@ -211,15 +211,18 @@ public:
                   const MeshDisplay &cfg);
   bool RenderTexture(TextureDisplay cfg);
 
-  void SetCustomShaderIncludes(const rdcarray<rdcstr> &directories) {}
+  // custom display shaders, in d3d9_customshader.cpp
+  void SetCustomShaderIncludes(const rdcarray<rdcstr> &directories);
   void BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &source, const rdcstr &entry,
                          const ShaderCompileFlags &compileFlags, ShaderStage type, ResourceId &id,
                          rdcstr &errors);
-  // custom display shaders aren't supported, so none are offered
-  rdcarray<ShaderEncoding> GetCustomShaderEncodings() { return {}; }
-  rdcarray<ShaderSourcePrefix> GetCustomShaderSourcePrefixes() { return {}; }
-  ResourceId ApplyCustomShader(TextureDisplay &display) { return ResourceId(); }
-  void FreeCustomShader(ResourceId id) {}
+  rdcarray<ShaderEncoding> GetCustomShaderEncodings()
+  {
+    return {ShaderEncoding::D3D9Bytecode, ShaderEncoding::HLSL};
+  }
+  rdcarray<ShaderSourcePrefix> GetCustomShaderSourcePrefixes();
+  ResourceId ApplyCustomShader(TextureDisplay &display);
+  void FreeCustomShader(ResourceId id);
 
   void RenderCheckerboard(FloatVector dark, FloatVector light);
 
@@ -406,6 +409,32 @@ private:
 
   bool InitOverlayRender();
   void ReleaseOverlay();
+
+  //////////////////////////////
+  // Custom display shaders: d3d9_customshader.cpp
+
+  struct CustomShader
+  {
+    // through the wrapped device, so it has a ResourceId
+    IDirect3DPixelShader9 *shader = NULL;
+    // the samplers it declares, and the constants it uses
+    D3D9BC::ShaderInfo info;
+  };
+  std::map<ResourceId, CustomShader> m_CustomShaders;
+  rdcarray<rdcstr> m_CustomShaderIncludes;
+
+  // what a custom shader draws into, created through the wrapped device like the overlay texture:
+  // A16B16G16R16F, the size and mips of the texture being viewed
+  struct CustomOutput
+  {
+    IDirect3DTexture9 *tex = NULL;
+    ResourceId id;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t mips = 0;
+  } m_CustomOutput;
+
+  void ReleaseCustomShaders();
   // the overlays that clear the targets and replay the draws, and the ones that draw the event
   // again into overlaySurf (the overlay texture's subresource for targetSurf, both real)
   ResourceId RenderClearBeforeOverlay(const TextureDescription &texDesc, FloatVector clearCol,

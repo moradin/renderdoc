@@ -39,7 +39,7 @@ the testing were on separate machines.
 | | ~~GPU duration and samples passed counters (timestamp and occlusion queries)~~ | 0.5 | Done, see "GPU counters" below |
 | | ~~Resource usage list (what each event binds, recorded during replay)~~ | 0.5 | Done, see "Resource usage" below |
 | | ~~Debug messages: the D3D9 debug runtime doesn't run on Windows 8 and later, so report failed calls (`D3DERR_INVALIDCALL` and similar) instead~~ | 0.5 | Done, see "Debug messages" below |
-| | Custom display shaders in the texture viewer | 0.5-1 | Needs a documented SM3 binding layout. Shares compile code with step 4 |
+| | ~~Custom display shaders in the texture viewer~~ | 0.5-1 | Done, see "Custom display shaders" below |
 | 4 | **Shader editing and replacement**, including Edit Generated Stub | 1.5-2 | HLSL through d3dcompiler_47 for SM2/3. Assembly for SM1, since current compilers can't target ps_1_x. The stub comes from the constant table |
 | 5 | **Shader debugging** | 5-8 | The biggest item |
 | | Vertex shaders | 1.5-2 | Builds on the interpreter in `d3d9_vs_emulate.cpp`, adding per-step states and variable changes |
@@ -120,6 +120,7 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Counters` | The GPU duration and samples passed counters: each draw's samples passed against what the demo's own occlusion queries counted natively (2048, 0, 1024, 120000, 1, and 1024 for a 4x multisampled 16x16 square), a duration for every action, the full screen heavy draw's against the demo's own timestamps (within 4x either way), and that the replay is back at the event it was at afterwards |
 | `D3D9_Resource_Usage` | Every texture, surface, buffer and constants pseudo buffer's usage against the exact list it should have: sampled and unsampled textures (a pixel sampler the shader doesn't read, a texture after a disabled fixed function stage), a vertex texture, used and unused streams, the index buffer only at the indexed draw, UP draws reading no buffers, both MRT targets, depth only with the depth test on, clears (both bound targets, as natively), StretchRect, a resolve, GetRenderTargetData, ColorFill, UpdateTexture, GenerateMipSubLevels and Unlock inside the frame |
 | `D3D9_Failed_Calls` | Debug messages for failed calls. The 18 calls give the same results natively and under RenderDoc, and each of the 13 that fail natively has exactly one message, at its own event inside its marker, with the HRESULT as its ID. The event is named after the call ("(failed)") and its result is `D3DERR_INVALIDCALL`. Some parameters are checked: render target index 4, start register 300 or 224, a source rect 128 wide, a texture 0 wide. A failed lock records its texture, which is in the capture, and a failed call's constants aren't read. The 5 calls that succeed natively (3 Clears with targets of different sizes, one with a smaller depth stencil, and an UnlockRect without a lock) have no message, there are no other messages, they're returned only once, and the triangle drawn after the failed calls replays |
+| `D3D9_Custom_Shaders` | Custom display shaders. The demo samples each of its textures natively with a ps_3_0 shader and writes what the GPU returned; the test builds the same shader as a custom shader and checks its output against that at 6 texels of every subresource: a default pool 2D texture with 3 mips, a managed one (decoded on the CPU), L8 (sampled as L, L, L, 1), a cube and a volume texture with 2 mips, a render target surface, and a D24S8 depth stencil (depth and stencil from its clears). `SV_Position` and `TEXCOORD0` match the native draw. The prefix's values (`RD_TexDim`, the mip, slice, sample and type, the range) are checked for each texture, a global the prefix doesn't fill is 0, `Texture2D` and `SamplerState` sample like `sampler2D`, the UI's template builds, and a shader with an error or for ps_2_0 doesn't |
 | `D3D11_D3DPERF_Markers` | `d3d11_d3dperf_check.py`: the markers nest as drawn, with their colours |
 
 What they don't cover:
@@ -309,6 +310,54 @@ messages, the failed calls' parameters, and a failed lock's texture by name.
 Not covered: no call in the tests fails on replay only, so those messages are untested. Failed
 creations other than `CreateTexture`, failed calls on objects other than `LockRect`, and failed
 draws aren't in the test either; the draws because no draw failed reliably natively.
+
+## Custom display shaders
+
+The texture viewer's custom shaders (`d3d9_customshader.cpp`), as on D3D11: the user's pixel shader
+is drawn over the viewed subresource into a texture of RenderDoc's own, which the texture viewer
+shows, picks and saves instead. That texture is A16B16G16R16F with the viewed texture's size and
+mips, created through the wrapped device like the overlay texture so that it has a ResourceId.
+
+D3D9 has no texture objects, constant buffers or integer loads, so D3D9's custom shaders are HLSL
+compiled as ps_3_0 (or ps_3_0 bytecode), with their own prefix (`GetCustomShaderSourcePrefixes`):
+- **The texture is in a sampler.** It's the texture the texture viewer itself samples
+  (`GetDisplaySource`): the application's texture where that can be sampled directly, a copy of a
+  render target surface, or the subresource decoded on the CPU into a 2D A32B32G32R32F texture.
+  RenderDoc binds it to every sampler the shader declares with the matching type (`sampler2D` for
+  2D data, `samplerCUBE` for a cube texture, `sampler3D` for a volume), read from the bytecode's
+  `dcl` instructions, with point filtering and clamping. The prefix names `s0`, `s1` and `s2`
+  (`RD_FLOAT_2D_BINDING` and so on), but HLSL's `Texture2D` and `SamplerState` pairs work too,
+  though fxc gives them a sampler register of its own.
+- **`RD_TextureType()` says which sampler holds the data**, not the texture's type: 2D, 3D or Cube,
+  or Depth and DepthStencil for depth stencils, which are decoded to 2D with depth in red and
+  stencil in green. A cube face or volume slice that has to be decoded is 2D.
+- **The `RD_` functions read float4 constants** that the compiler places, found by name in the
+  shader's constant table. Every other constant is 0, as D3D11 leaves the `$Globals` it doesn't
+  recognise. ps_3_0 only converts a float it knows is positive to `uint`, so the prefix's
+  functions use `max(x, 0)` first.
+- **The vertex shader is the texture viewer's**, which now writes all of `TEXCOORD0` (z and w 0).
+  `SV_Position` is `VPOS` on ps_3_0, which has pixel centres at integer coordinates, where D3D11's
+  are at .5.
+- **`RD_SelectedSample()`** is -samples for a multisampled render target, which is resolved, and
+  the selected sample for a multisampled depth stencil (the first for "average").
+- **YUY2 and UYVY** are decoded to (V, Y, U) at full rate, so `RD_YUVDownsampleRate()` is (1, 1, 1,
+  8) and `RD_YUVAChannels()` (1, 2, 0, 255) for them, and 0 for other formats.
+- **The prefix ends with `#line 1`**, so compile errors give the line in the user's file.
+- **The older `RENDERDOC_` globals** that D3D11 fills by name aren't supported.
+
+The sampled values are what a D3D9 shader gets, not what the texture viewer shows: L8 samples as
+(L, L, L, 1) where the texture viewer shows (L, 0, 0, 1), and sRGB isn't decoded
+(`D3DSAMP_SRGBTEXTURE` is off). Decoded textures have the values the texture viewer shows.
+
+qrenderdoc's shader editor inserts D3D9 snippets (constants, samplers, resources) for D3D9
+captures, and `docs/how/how_custom_visualisation.rst` has a D3D9 section.
+
+Tested in `d3d9_step3.md`: `D3D9_Custom_Shaders` passes, and in qrenderdoc a custom shader shows a
+texture's alpha and a depth stencil's stencil, and the editor inserts the D3D9 snippets.
+
+Not covered: multisampled textures, YUV formats and textures decoded because of their format (P8,
+ATI1 and so on) aren't in the test; they go through the same decoded path as the managed texture
+and the depth stencil.
 
 ## Needs testing
 
@@ -713,8 +762,8 @@ Known gaps:
   presented as pseudo buffers, see "Mesh output" below.)
 - Multisampled colour targets are only shown resolved, whichever sample is picked. Multisampled
   depth stencils show each sample.
-- Custom display shaders aren't supported: `GetCustomShaderEncodings` is empty, so the texture
-  viewer doesn't list or offer to create any. The overlays are in phase 3e (below).
+- (Since step 3.) Custom display shaders are supported, see "Custom display shaders". The
+  overlays are in phase 3e (below).
 - P8 and A8P8 show their indices, not the palette colours.
 - (Fixed after `d3d9_formats_d3dperf_test.md`.) ATI2 was decoded like BC5, with the first half of
   each block as red. D3D9 samples the second half as red and the first as green, so the decode and
@@ -1482,6 +1531,8 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
 - `d3d9_pipestate.cpp` also records resource usage while loading (`AddDrawUsage`, `GetUsage`).
 - Failed calls: `RecordFailedCall` (`d3d9_device.h`, `d3d9_device.cpp`), the `RECORD_FAILED_CALL`
   macros in `d3d9_device_wrap.cpp`, and `Serialise_FailedCall` in `d3d9_device_serialise.cpp`.
+- `d3d9_customshader.cpp` - the texture viewer's custom display shaders: their prefix, building
+  them and drawing them.
 - `d3d9_resources.*` - the wrapper base class and the resource wrappers. The comment at the top of
   `d3d9_resources.h` describes the lifetime model (external vs internal references, who holds real
   references, child objects).

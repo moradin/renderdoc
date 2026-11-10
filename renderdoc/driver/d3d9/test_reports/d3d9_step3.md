@@ -354,3 +354,114 @@ Two changes came from looking at the UI:
 - A resource that only a failed device call's parameters use isn't in the capture, and shows as
   "Unknown Resource" (not the case in the test, where the StretchRect's surfaces are used
   elsewhere).
+
+## 4. Custom display shaders
+
+The texture viewer's custom shaders: a ps_3_0 pixel shader the user writes is drawn over the
+viewed subresource, and the texture viewer shows the result. STATUS.md's "Custom display shaders"
+has how it works, the bindings and the decisions.
+
+Tested on top of 119840b39, with the changes in the commit that adds this section.
+
+### What the compiler and the GPU do
+
+Before writing the prefix, fxc (d3dcompiler_47) was tried on what D3D11's custom shaders use, for
+ps_3_0:
+
+- The texture viewer's template, `float4 main(float4 pos : SV_Position, float4 uv : TEXCOORD0) :
+  SV_Target0`, compiles: `SV_Position` becomes `vPos` and `SV_Target0` `oC0`.
+- `Texture2D` with `SamplerState` compiles, but fxc ignores their registers and puts the pair in a
+  sampler of its own (`s1` for `register(t2)` and `register(s0)`). That's why the texture is bound
+  to every declared sampler of its type, rather than at fixed registers.
+- `Texture2DArray` doesn't compile ("Unsupported texture type for ps_3_0").
+- A `cbuffer` of `uint4`s compiles to float constants, and globals the compiler places go around
+  ones with explicit registers.
+- **Unexpected:** `(uint)` of a float constant doesn't compile ("in ps_3_0 uints can only be used
+  with known-positive values"). The demo's first build hit this; the prefix's functions use
+  `max(x, 0)` first, which compiles.
+
+Natively, the demo's position shader showed that `vPos` is at integer pixel coordinates (0 for the
+first pixel, D3D11's `SV_Position` gives 0.5), and that `TEXCOORD0`'s z and w are 0 when the vertex
+shader writes them so, as the texture viewer's now does.
+
+### The test: `D3D9_Custom_Shaders`
+
+The demo makes a texture of each kind the texture viewer samples differently, each with a size of
+its own: a default pool A8R8G8B8 2D texture with 3 mips (sampled directly), a managed one with 2
+mips (decoded on the CPU), an L8 texture (sampled as L, L, L, 1), a cube and a volume texture with 2
+mips, a render target surface (which the texture viewer copies into a texture) and a D24S8 depth
+stencil (decoded). Before the first frame it draws each subresource natively with a ps_3_0 shader
+that samples the selected mip and face or slice, with the `RD_` functions defined from its own
+constants, and writes what the GPU returned at 6 texels to a reference file, with the shader. The
+depth stencil can't be sampled, so its reference is the depth and stencil it's cleared to.
+
+The test builds that shader with RenderDoc's prefix as a custom shader, applies it to each
+subresource and picks the output at the same texels. It also checks:
+- the position shader against the native draw over a 16x8 target;
+- the prefix's values for each texture, at its last mip and a face or slice other than 0:
+  `RD_TexDim`, the mip, slice, sample and texture type, the selected range, the YUV values (0), and
+  that a global the prefix doesn't fill is 0;
+- that `Texture2D` and `SamplerState` sample the same as `sampler2D`;
+- that the UI's template builds, and that a shader with an error, or with `/T ps_2_0`, doesn't and
+  says why. The error is on line 1 of the shader: the prefix ends with `#line 1`, so the line
+  numbers the editor shows are the user's own. Without it the first run's error was on line 88.
+
+The x64 run (`d3d9_step3/custom_run_x64.txt`):
+
+```
+** The capture was made by a 64-bit process (Windows x86 64-bit)
+** HLSL and D3D9 bytecode are accepted, with an HLSL prefix
+** The UI template shader builds
+** A shader with an error doesn't build: E:\Projects\renderdoc\util\test\main.hlsl(1,37-45): error X3004: undeclared identifier 'undefined'
+** A shader for another profile doesn't build: D3D9 custom display shaders are compiled as ps_3_0, the profile ps_2_0 can't be used
+** The sample shader builds
+** The position shader builds
+** The constants shader builds
+** The Texture2D and SamplerState shader builds
+** Default 2D: 18 texels match the GPU's native sampling
+** Managed 2D: 12 texels match the GPU's native sampling
+** L8: 6 texels match the GPU's native sampling
+** Cube: 72 texels match the GPU's native sampling
+** Volume: 36 texels match the GPU's native sampling
+** Render Target: 6 texels match the GPU's native sampling
+** Depth: 4 texels match the GPU's native sampling
+** Position: 6 texels match the GPU's native sampling
+** Default 2D mip 2 slice 0: TexDim [64.0, 32.0, 1.0, 3.0], mip/slice/sample/type [2.0, 0.0, 0.0, 2.0], range [0.125, 0.75], a global the prefix doesn't fill is 0
+** Managed 2D mip 1 slice 0: TexDim [48.0, 24.0, 1.0, 2.0], mip/slice/sample/type [1.0, 0.0, 0.0, 2.0], range [0.125, 0.75], a global the prefix doesn't fill is 0
+** L8 mip 0 slice 0: TexDim [16.0, 8.0, 1.0, 1.0], mip/slice/sample/type [0.0, 0.0, 0.0, 2.0], range [0.125, 0.75], a global the prefix doesn't fill is 0
+** Cube mip 1 slice 3: TexDim [16.0, 16.0, 6.0, 2.0], mip/slice/sample/type [1.0, 3.0, 0.0, 8.0], range [0.125, 0.75], a global the prefix doesn't fill is 0
+** Volume mip 1 slice 1: TexDim [16.0, 8.0, 4.0, 2.0], mip/slice/sample/type [1.0, 1.0, 0.0, 3.0], range [0.125, 0.75], a global the prefix doesn't fill is 0
+** Render Target mip 0 slice 0: TexDim [40.0, 20.0, 1.0, 1.0], mip/slice/sample/type [0.0, 0.0, 0.0, 2.0], range [0.125, 0.75], a global the prefix doesn't fill is 0
+** Depth mip 0 slice 0: TexDim [40.0, 20.0, 1.0, 1.0], mip/slice/sample/type [0.0, 0.0, 0.0, 5.0], range [0.125, 0.75], a global the prefix doesn't fill is 0
+** Texture2D and SamplerState sample the same as sampler2D
+```
+
+The x86 run, which captures the 32-bit demo, gives the same lines apart from the capture's bitness
+and the error's line (it ran before `#line 1` was added; the x64 run above is after, and adding it
+changed only the prefix). Both runs: 15 of 15 tests passed (`d3d9_step3/custom_run_x64.txt`, `d3d9_step3/custom_run_x86.txt`).
+The unit tests (`renderdoccmd test unit "[d3d9]"`) pass, 6057 assertions in 13 test cases.
+
+The reference values came from the GPU, apart from the depth stencil's, which are its clear values.
+The custom shader's output is RenderDoc's draw on the GPU, read back with pick pixel.
+
+### In the UI
+
+On a 64-bit `D3D9_Custom_Shaders` capture, with a custom shader in qrenderdoc's settings folder
+that shows a colour texture's alpha, or a depth stencil's stencil, in grey (the file was deleted
+afterwards):
+- The default pool texture with Channels set to Custom and the shader selected
+  (`d3d9_step3/custom_1_alpha.png`): its alpha, which falls by 8 a texel to the right and 4 a texel
+  down and wraps, as the demo fills it.
+- The depth stencil (`d3d9_step3/custom_2_stencil.png`): stencil 7 on the left half (nearly
+  black) and 200 on the right, as cleared.
+- The shader editor, after inserting the constants and resources snippets
+  (`d3d9_step3/custom_3_snippets.png`): D3D9's texture types and the `sampler2D`, `samplerCUBE` and
+  `sampler3D` declarations, rather than D3D11's texture arrays. The prefix with those snippets
+  compiles with fxc.
+
+### Not covered
+
+- Multisampled textures, so `RD_SelectedSample()`'s values for them are untested.
+- YUV formats and textures decoded because of their format (P8, ATI1 and so on). They take the
+  decoded path that the managed texture and the depth stencil test.
+- Picking and saving the custom shader's output in the UI, beyond the test's pick pixel.

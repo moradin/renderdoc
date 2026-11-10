@@ -66,14 +66,15 @@ float4 halfPixel : register(c1);
 struct v2f
 {
   float4 pos : POSITION;
-  float2 uv : TEXCOORD0;
+  float4 uv : TEXCOORD0;
 };
 
 v2f main(float4 pos : POSITION)
 {
   v2f OUT;
   OUT.pos = float4(posScale.xy + pos.xy * posScale.zw - float2(1.0f, -1.0f) + halfPixel.xy, 0, 1);
-  OUT.uv = float2(pos.x, -pos.y);
+  // all four components, for custom display shaders that take a float4
+  OUT.uv = float4(pos.x, -pos.y, 0.0f, 0.0f);
   return OUT;
 }
 )";
@@ -634,6 +635,7 @@ void D3D9Replay::ReleaseDebugRender()
   m_SurfaceCopies.clear();
 
   ReleaseOverlay();
+  ReleaseCustomShaders();
 
   m_Debug.Release();
 }
@@ -933,9 +935,6 @@ bool D3D9Replay::RenderTexture(TextureDisplay cfg)
   OutputTarget target;
   if(!GetOutputTarget(target) || !InitDebugRender())
     return false;
-
-  if(cfg.customShaderId != ResourceId())
-    RDCWARN("Custom display shaders aren't supported for D3D9 captures yet");
 
   TextureDescription tex = GetTexture(cfg.resourceId);
   if(tex.resourceId == ResourceId())
