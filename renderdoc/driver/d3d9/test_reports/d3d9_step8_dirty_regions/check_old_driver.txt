@@ -1,0 +1,9 @@
+capture section version 1
+event 3: the 2D texture, with two rects dirty since the last frame: FAIL, 227 texels wrong, first mip 0 slice 0 at 8,0: 0xFF00FF00, expected 0xFF0000FF
+event 4: the cube texture, with two rects on face 1 (copied as the box around them) and all of face 2: FAIL, 271 texels wrong, first mip 0 slice 0 at 0,0: 0xFF00FF00, expected 0xFF203040
+event 5: the volume texture, with two boxes dirty: FAIL, 220 texels wrong, first mip 0 slice 0 at 4,0: 0xFF00FF00, expected 0xFF0000FF
+event 6: the texture with nothing dirty: FAIL, 64 texels wrong, first mip 0 slice 0 at 0,0: 0xFF00FF00, expected 0xFF203040
+event 7: the texture with 6 dirty rects: FAIL, 58 texels wrong, first mip 0 slice 0 at 1,0: 0xFF00FF00, expected 0xFF0000FF
+event 8: the texture with 7 dirty rects, which make all of it dirty: PASS, 0 texels wrong
+event 13: the 2D texture, with the frame's lock dirty (not the D3DLOCK_NO_DIRTY_UPDATE one or level 1's): FAIL, 16 texels wrong, first mip 0 slice 0 at 12,0: 0xFFFFFF00, expected 0xFF00FF00
+7 UpdateTexture calls, 856 texels wrong in all

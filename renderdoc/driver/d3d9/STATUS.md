@@ -50,7 +50,7 @@ the testing were on separate machines.
 | 8 | **Limitations worth fixing**, in this order, before steps 5 and 6 | 3-4 | |
 | | ~~Alpha test and discard in the overlays~~ | 1 | Done, see "Overlays" below (`d3d9_step8_overlays.md`). Alpha tested and clipped geometry (foliage, fences, sprites) is everywhere in D3D9 games |
 | | ~~Saving DXT textures as PNG~~ | 0.5 | Done, see "Texture viewer" below (`d3d9_step8_dxt_png.md`). Most game textures are DXT |
-| | Saving UpdateTexture dirty regions in captures | 0.5 | Texture streaming. Changes the capture format |
+| | ~~Saving UpdateTexture dirty regions in captures~~ | 0.5 | Done, see "Dirty regions" below (`d3d9_step8_dirty_regions.md`). Texture streaming. Changed the capture format to version 0x2 |
 | | vs_3_0 outputs that pack two semantics into one register | 0.5 | |
 | | `texldl` filtering | 0.5 | Early SM3 GPUs could only point sample vertex textures, so many games do |
 | | D24 at a depth of 0.375 | 0.25 | Check with ZFUNC EQUAL and adjust. One depth value, which only matters to an EQUAL test |
@@ -114,6 +114,7 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Mesh_Output` | `d3d9_mesh_check.py` against the native run's reference (a draw without a reference fails), and that the reference written under RenderDoc is byte-identical to the native one |
 | `D3D9_Overlay_Test` | `d3d9_overlay_check.py`, with the overlays saved in the test's tmp folder. Includes alpha tested, clipped and oDepth draws, whose Depth overlay has to be green exactly where the draw wrote |
 | `D3D9_Resource_Contents` | Every object's contents at the start of the frame, as listed under "Checking `D3D9_Resource_Contents` captures": each level, face and slice texel by texel, the previous frame's colour in every region the frames alternate, the vertex and write-only index buffers, and each face and slice of the DXT1 cube and volume textures saved as a PNG. Then the triangle drawn from them |
+| `D3D9_Dirty_Regions` | What UpdateTexture copies. The demo checks on the GPU, natively and under RenderDoc, that each frame's copies take exactly the dirty regions (in its log). The test checks at each of the frame's 7 UpdateTexture calls that the destination changed exactly in those regions, at each mip, cube face and volume slice: two rects of a 2D texture dirty when the frame starts, two rects on a cube face (copied as the box around them) and a whole face, two volume boxes, no rects, 6 rects, 7 rects (all of it), and a lock in the frame with D3DLOCK_NO_DIRTY_UPDATE beside one without. And the default pool textures' initial contents, from our shadow copies of what earlier frames copied |
 | `D3D9_Capture_Edge_Cases` | The markers, and at the start of the frame: the automatic, multisampled (each sample), D16 and INTZ depth stencils texel by texel, the texture locked across Present, and the surface drawn with GDI |
 | `D3D9_Reset_Capture` | Both captures: frame 30's has only "After the reset" and a blue clear, the triggered one only "Frame" and a red clear |
 | `D3D9_Wrapping_Check`, `D3D9Ex_Wrapping_Check` | The demo's own checks (in its log), and that the capture loads and replays |
@@ -497,10 +498,46 @@ vs_3_sw), which `/T` takes but nothing tested.
   ends can't be read and gets a note.
 - The back buffer's initial contents include the overlay text, since the overlay is drawn into
   the back buffer before the Present the capture starts at.
-- UpdateTexture copies the source's dirty region, which we track but don't store in captures yet.
-  At replay the source's dirty region is whatever writing its initial contents and the frame's
-  locks made dirty, which can be more than the capture's, so an in-frame UpdateTexture can copy more
-  than it did.
+- UpdateTexture copies the source's dirty region: see "Dirty regions" below.
+
+### Dirty regions
+
+UpdateTexture copies only the part of the source the runtime considers dirty, then clears it. That
+part grows with locks of level 0 (without D3DLOCK_NO_DIRTY_UPDATE), including locks through the
+level's surface, and with AddDirtyRect and AddDirtyBox; a new texture is entirely dirty. Texture
+streaming relies on it. We track it for every texture (`D3D9DirtyRegion` in `d3d9_contents.h`):
+- for the shadow copies of D3DPOOL_DEFAULT textures, which take what UpdateTexture copies;
+- in captures, from version 0x2 (step 8): the initial contents of a D3DPOOL_SYSTEMMEM texture,
+  which is the only kind UpdateTexture copies from, hold its dirty region as the frame started.
+  Anything that changes the region during the frame (a lock, AddDirtyRect, UpdateTexture from it)
+  reads the initial contents first, so they have the region before the change.
+
+At replay, after writing a system memory texture's initial contents (which makes it all dirty),
+`SetDirtyRegions` clears the region with an UpdateTexture into a scratch D3DPOOL_DEFAULT texture
+holding just the smallest level, then adds the captured boxes back with AddDirtyRect and
+AddDirtyBox. A texture whose captured region is all of it skips the clear. Locks in the frame that
+had D3DLOCK_NO_DIRTY_UPDATE are written back with it, so they don't add to the region either.
+
+How the runtime keeps the region, measured on Windows 11 with the RTX 4070 Ti (the probe is in
+`d3d9_step8_dirty_regions/probe`), and what we copy:
+- **2D and volume textures** keep up to 6 rects or boxes, as they were added: the same rect twice,
+  or a rect inside another, counts twice. The 7th makes the whole texture dirty. Before step 8 we
+  kept the box around them, so our shadows took texels the GPU never received.
+- **Cube faces** each keep one rect, which grows to cover everything added to the face. 7 rects on
+  a face copy the box around them, not the whole face.
+- **Mips:** each rect is scaled to the level, rounding outwards (level 1 of (10,12)-(13,15) is
+  (5,6)-(7,8)). Locks of other levels don't add to the region.
+- **Read-only locks** of level 0 don't add to it, which the initial contents rely on: they lock
+  system memory textures read-only.
+
+Captures from before step 8 (version 0x1) still open. They have no dirty regions, so their system
+memory textures replay entirely dirty, as before.
+
+Tested in `d3d9_step8_dirty_regions.md` with `D3D9_Dirty_Regions`: passed, and the demo's GPU
+checks agree natively and under RenderDoc, x64 and x86. Not checked: whether anything else adds to
+the region, such as GetDC on level 0 or GetRenderTargetData into a level of a system memory
+texture. They aren't tracked. Formats a D3DPOOL_DEFAULT texture can't have can't be cleared at
+replay (a warning is logged), and their textures stay entirely dirty.
 
 ## Checking `D3D9_Resource_Contents` captures
 
@@ -737,7 +774,8 @@ Known gaps:
 - Default pool volume textures that can't be made dynamic can't be written or read.
 - Textures replay made dynamic are the destination of any in-frame UpdateTexture and UpdateSurface
   calls. That's allowed as far as I know, but hasn't been tried.
-- In-frame UpdateTexture copies the dirty region replay has (see above).
+- (Fixed in step 8: in-frame UpdateTexture copies the dirty region the capture had, see "Dirty
+  regions".)
 - D24FS8 and D3DMULTISAMPLE_NONMASKABLE depth stencils aren't written back (they weren't read
   either), and the 0.375 D24 value lands one level off.
 - (Fixed in 3b: output window screenshots, `GetOutputWindowData`, are implemented.)

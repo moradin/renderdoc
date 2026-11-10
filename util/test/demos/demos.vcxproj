@@ -238,6 +238,7 @@
     <ClCompile Include="d3d9\d3d9_overlay_test.cpp" />
     <ClCompile Include="d3d9\d3d9_resource_usage.cpp" />
     <ClCompile Include="d3d9\d3d9_mesh_output.cpp" />
+    <ClCompile Include="d3d9\d3d9_dirty_regions.cpp" />
     <ClCompile Include="d3d9\d3d9_resource_contents.cpp" />
     <ClCompile Include="d3d9\d3d9_reset_capture.cpp" />
     <ClCompile Include="d3d9\d3d9_simple_triangle.cpp" />

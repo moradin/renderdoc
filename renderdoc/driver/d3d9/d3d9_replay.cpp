@@ -1106,7 +1106,7 @@ RDResult D3D9_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IRepla
   wrappedD3D->Release();
 
   D3D9Replay *replay = new D3D9Replay(wrapped, d3d, wnd);
-  wrapped->SetReplay(replay, wnd);
+  wrapped->SetReplay(replay, wnd, ver);
 
   *driver = replay;
   return ResultCode::Succeeded;

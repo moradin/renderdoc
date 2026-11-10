@@ -806,7 +806,8 @@ bool IsLockableDepth(D3DFORMAT format)
 }
 };
 
-rdcstr WrappedD3DDevice9::WriteSurface(IDirect3DSurface9 *surf, const D3D9SubresourceData &sub)
+rdcstr WrappedD3DDevice9::WriteSurface(IDirect3DSurface9 *surf, const D3D9SubresourceData &sub,
+                                       DWORD lockFlags)
 {
   if(sub.Data.empty())
     return rdcstr();
@@ -824,7 +825,7 @@ rdcstr WrappedD3DDevice9::WriteSurface(IDirect3DSurface9 *surf, const D3D9Subres
   if(desc.MultiSampleType == D3DMULTISAMPLE_NONE)
   {
     D3DLOCKED_RECT locked = {};
-    if(SUCCEEDED(surf->LockRect(&locked, whole ? NULL : &rect, 0)) && locked.pBits)
+    if(SUCCEEDED(surf->LockRect(&locked, whole ? NULL : &rect, lockFlags)) && locked.pBits)
     {
       CopyToLocked(sub, (byte *)locked.pBits,
                    D3D9LockedRowPitch(desc.Format, desc.Width, (uint32_t)locked.Pitch), 0);
@@ -878,14 +879,15 @@ rdcstr WrappedD3DDevice9::WriteSurface(IDirect3DSurface9 *surf, const D3D9Subres
   return err;
 }
 
-rdcstr WrappedD3DDevice9::WriteVolume(IDirect3DVolume9 *vol, const D3D9SubresourceData &sub)
+rdcstr WrappedD3DDevice9::WriteVolume(IDirect3DVolume9 *vol, const D3D9SubresourceData &sub,
+                                      DWORD lockFlags)
 {
   if(sub.Data.empty())
     return rdcstr();
 
   D3DBOX box = {sub.X, sub.Y, sub.X + sub.Width, sub.Y + sub.Height, sub.Z, sub.Z + sub.Depth};
   D3DLOCKED_BOX locked = {};
-  HRESULT hr = vol->LockBox(&locked, &box, 0);
+  HRESULT hr = vol->LockBox(&locked, &box, lockFlags);
   if(FAILED(hr) || locked.pBits == NULL)
     return StringFormat::Fmt("Couldn't lock the volume to write its contents: %s", ToStr(hr).c_str());
 
@@ -894,7 +896,8 @@ rdcstr WrappedD3DDevice9::WriteVolume(IDirect3DVolume9 *vol, const D3D9Subresour
   return rdcstr();
 }
 
-void WrappedD3DDevice9::WriteContents(WrappedD3D9Object *obj, const D3D9SubresourceData &sub)
+void WrappedD3DDevice9::WriteContents(WrappedD3D9Object *obj, const D3D9SubresourceData &sub,
+                                      DWORD lockFlags)
 {
   if(obj == NULL)
     return;
@@ -927,7 +930,7 @@ void WrappedD3DDevice9::WriteContents(WrappedD3D9Object *obj, const D3D9Subresou
       IDirect3DSurface9 *surf = NULL;
       if(SUCCEEDED(((WrappedD3DTexture9 *)obj)->GetReal()->GetSurfaceLevel(sub.Level, &surf)) && surf)
       {
-        err = WriteSurface(surf, sub);
+        err = WriteSurface(surf, sub, lockFlags);
         surf->Release();
       }
       break;
@@ -940,7 +943,7 @@ void WrappedD3DDevice9::WriteContents(WrappedD3D9Object *obj, const D3D9Subresou
                        ->GetCubeMapSurface((D3DCUBEMAP_FACES)sub.Face, sub.Level, &surf)) &&
          surf)
       {
-        err = WriteSurface(surf, sub);
+        err = WriteSurface(surf, sub, lockFlags);
         surf->Release();
       }
       break;
@@ -951,19 +954,121 @@ void WrappedD3DDevice9::WriteContents(WrappedD3D9Object *obj, const D3D9Subresou
       if(SUCCEEDED(((WrappedD3DVolumeTexture9 *)obj)->GetReal()->GetVolumeLevel(sub.Level, &vol)) &&
          vol)
       {
-        err = WriteVolume(vol, sub);
+        err = WriteVolume(vol, sub, lockFlags);
         vol->Release();
       }
       break;
     }
-    case Resource_Surface: err = WriteSurface(((WrappedD3DSurface9 *)obj)->GetReal(), sub); break;
-    case Resource_Volume: err = WriteVolume(((WrappedD3DVolume9 *)obj)->GetReal(), sub); break;
+    case Resource_Surface:
+      err = WriteSurface(((WrappedD3DSurface9 *)obj)->GetReal(), sub, lockFlags);
+      break;
+    case Resource_Volume:
+      err = WriteVolume(((WrappedD3DVolume9 *)obj)->GetReal(), sub, lockFlags);
+      break;
     default: break;
   }
 
   if(!err.empty())
     RDCWARN("Couldn't write the contents of %s: %s", ToStr(obj->GetResourceID()).c_str(),
             err.c_str());
+}
+
+void WrappedD3DDevice9::SetDirtyRegions(WrappedD3D9Object *obj, const rdcarray<D3D9DirtyRegion> &dirty)
+{
+  const D3D9ResourceType type = obj->GetResourceType();
+  if(type != Resource_Texture && type != Resource_CubeTexture && type != Resource_VolumeTexture)
+    return;
+
+  // Creating the texture, writing its contents and replaying the frame before have all added to
+  // its dirty region. If any of the captured region is smaller than the whole texture, the region
+  // is cleared first. Only UpdateTexture clears it, so this updates a scratch texture that has
+  // just the smallest level: extra source levels are skipped, the region is cleared anyway.
+  bool clear = false;
+  for(const D3D9DirtyRegion &d : dirty)
+    clear |= !d.Whole;
+
+  HRESULT hr = S_OK;
+
+  if(clear)
+  {
+    IDirect3DBaseTexture9 *src = NULL, *scratch = NULL;
+    if(type == Resource_Texture)
+    {
+      IDirect3DTexture9 *tex = ((WrappedD3DTexture9 *)obj)->GetReal();
+      D3DSURFACE_DESC desc = {};
+      tex->GetLevelDesc(tex->GetLevelCount() - 1, &desc);
+      IDirect3DTexture9 *t = NULL;
+      hr = m_device->CreateTexture(desc.Width, desc.Height, 1, 0, desc.Format, D3DPOOL_DEFAULT, &t,
+                                   NULL);
+      src = tex;
+      scratch = t;
+    }
+    else if(type == Resource_CubeTexture)
+    {
+      IDirect3DCubeTexture9 *tex = ((WrappedD3DCubeTexture9 *)obj)->GetReal();
+      D3DSURFACE_DESC desc = {};
+      tex->GetLevelDesc(tex->GetLevelCount() - 1, &desc);
+      IDirect3DCubeTexture9 *t = NULL;
+      hr = m_device->CreateCubeTexture(desc.Width, 1, 0, desc.Format, D3DPOOL_DEFAULT, &t, NULL);
+      src = tex;
+      scratch = t;
+    }
+    else
+    {
+      IDirect3DVolumeTexture9 *tex = ((WrappedD3DVolumeTexture9 *)obj)->GetReal();
+      D3DVOLUME_DESC desc = {};
+      tex->GetLevelDesc(tex->GetLevelCount() - 1, &desc);
+      IDirect3DVolumeTexture9 *t = NULL;
+      hr = m_device->CreateVolumeTexture(desc.Width, desc.Height, desc.Depth, 1, 0, desc.Format,
+                                         D3DPOOL_DEFAULT, &t, NULL);
+      src = tex;
+      scratch = t;
+    }
+
+    if(SUCCEEDED(hr))
+      hr = m_device->UpdateTexture(src, scratch);
+    SAFE_RELEASE(scratch);
+
+    if(FAILED(hr))
+    {
+      RDCWARN(
+          "Couldn't clear the dirty region of %s, so UpdateTexture from it copies all of it: %s",
+          ToStr(obj->GetResourceID()).c_str(), ToStr(hr).c_str());
+      return;
+    }
+  }
+
+  for(uint32_t face = 0; face < dirty.size() && face < 6; face++)
+  {
+    const D3D9DirtyRegion &d = dirty[face];
+
+    // the whole texture as one NULL box, or each box as it was added
+    rdcarray<const D3DBOX *> boxes;
+    if(d.Whole)
+      boxes.push_back(NULL);
+    for(const D3DBOX &b : d.Boxes)
+      boxes.push_back(&b);
+
+    for(const D3DBOX *box : boxes)
+    {
+      RECT rect = {};
+      if(box)
+        rect = {(LONG)box->Left, (LONG)box->Top, (LONG)box->Right, (LONG)box->Bottom};
+
+      if(type == Resource_Texture)
+        hr = ((WrappedD3DTexture9 *)obj)->GetReal()->AddDirtyRect(box ? &rect : NULL);
+      else if(type == Resource_CubeTexture)
+        hr = ((WrappedD3DCubeTexture9 *)obj)
+                 ->GetReal()
+                 ->AddDirtyRect((D3DCUBEMAP_FACES)face, box ? &rect : NULL);
+      else
+        hr = ((WrappedD3DVolumeTexture9 *)obj)->GetReal()->AddDirtyBox(box);
+
+      if(FAILED(hr))
+        RDCWARN("Couldn't set the dirty region of %s face %u: %s",
+                ToStr(obj->GetResourceID()).c_str(), face, ToStr(hr).c_str());
+    }
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////

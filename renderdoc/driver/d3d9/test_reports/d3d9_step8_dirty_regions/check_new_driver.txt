@@ -1,0 +1,9 @@
+capture section version 2
+event 3: the 2D texture, with two rects dirty since the last frame: PASS, 0 texels wrong
+event 4: the cube texture, with two rects on face 1 (copied as the box around them) and all of face 2: PASS, 0 texels wrong
+event 5: the volume texture, with two boxes dirty: PASS, 0 texels wrong
+event 6: the texture with nothing dirty: PASS, 0 texels wrong
+event 7: the texture with 6 dirty rects: PASS, 0 texels wrong
+event 8: the texture with 7 dirty rects, which make all of it dirty: PASS, 0 texels wrong
+event 13: the 2D texture, with the frame's lock dirty (not the D3DLOCK_NO_DIRTY_UPDATE one or level 1's): PASS, 0 texels wrong
+7 UpdateTexture calls, 0 texels wrong in all

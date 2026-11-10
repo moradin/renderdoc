@@ -29,7 +29,7 @@
 
 bool D3D9InitParams::IsSupportedVersion(uint64_t ver)
 {
-  return ver == CurrentVersion;
+  return ver >= 0x1 && ver <= CurrentVersion;
 }
 
 template <class SerialiserType>

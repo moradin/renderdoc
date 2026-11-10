@@ -220,6 +220,9 @@
     <ClCompile Include="d3d9\d3d9_mesh_output.cpp">
       <Filter>D3D9\demos</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9\d3d9_dirty_regions.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
     <ClCompile Include="d3d9\d3d9_resource_contents.cpp">
       <Filter>D3D9\demos</Filter>
     </ClCompile>

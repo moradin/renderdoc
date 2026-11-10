@@ -1,0 +1,104 @@
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 1: 1 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 2: 2 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 3: 3 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 4: 4 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 5: 5 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 6: 6 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 7: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 8: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 9: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 10: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 11: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 12: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 13: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 14: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 15: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 16: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 17: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 18: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 19: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 20: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 21: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 22: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 23: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 24: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 25: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 26: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 27: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 28: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 29: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 30: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 31: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 32: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 33: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 34: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 35: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 36: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 37: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 38: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 39: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode adddirty n 40: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 1: 1 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 2: 2 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 3: 3 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 4: 4 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 5: 5 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 6: 6 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 7: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 8: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 9: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 10: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 11: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 12: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 13: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 14: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 15: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 16: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 17: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 18: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 19: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 20: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 21: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 22: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 23: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 24: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 25: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 26: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 27: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 28: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 29: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 30: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 31: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 32: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 33: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 34: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 35: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 36: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 37: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 38: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 39: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:104 Log: mode lock n 40: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:128 Log: identical n 5: 1 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:128 Log: identical n 6: 1 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:128 Log: identical n 7: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:128 Log: identical n 8: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:150 Log: big then 6 inside: 4096 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:187 Log: cube: see dynamic variant
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:224 Log: cube dynamic (hr 0) 4+4 rects: face 0 25 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:224 Log: cube dynamic (hr 0) 4+4 rects: face 1 25 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:224 Log: cube dynamic (hr 0) 4+4 rects: face 2 0 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:224 Log: cube dynamic (hr 0) 4+4 rects: face 3 0 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:224 Log: cube dynamic (hr 0) 4+4 rects: face 4 0 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:224 Log: cube dynamic (hr 0) 4+4 rects: face 5 0 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:259 Log: volume (hr 0) n 5 boxes: 5 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:259 Log: volume (hr 0) n 6 boxes: 6 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:259 Log: volume (hr 0) n 7 boxes: 1024 texels copied
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:302 Log: cube 1+0 rects: per face 1 0 0 0 0 0
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:302 Log: cube 2+0 rects: per face 27 0 0 0 0 0
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:302 Log: cube 3+0 rects: per face 85 0 0 0 0 0
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:302 Log: cube 6+0 rects: per face 451 0 0 0 0 0
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:302 Log: cube 7+0 rects: per face 637 0 0 0 0 0
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:302 Log: cube 3+3 rects: per face 85 85 0 0 0 0
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:302 Log: cube 4+3 rects: per face 175 85 0 0 0 0
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_probe.cpp:323 Log: surface lock of level 0 2x2: 4 texels copied

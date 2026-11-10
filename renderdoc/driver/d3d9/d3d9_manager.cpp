@@ -77,6 +77,8 @@ uint64_t D3D9ResourceManager::GetSize_InitialState(ResourceId id, const D3D9Init
       ret += 64 + sub.Data.size() + WriteSerialiser::GetChunkAlignment();
     // a generous estimate of a whole device state
     ret += data.data->StateBlock.size() * 256 * 1024;
+    for(const D3D9DirtyRegion &dirty : data.data->Dirty)
+      ret += 16 + dirty.Boxes.size() * sizeof(D3DBOX);
   }
 
   return ret;
@@ -141,4 +143,8 @@ void D3D9ResourceManager::Apply_InitialState(IUnknown *live, D3D9InitialContents
 
   for(const D3D9SubresourceData &sub : data.data->Subresources)
     m_Device->WriteContents(obj, sub);
+
+  // after the contents, whose writes made the texture dirty
+  if(!data.data->Dirty.empty())
+    m_Device->SetDirtyRegions(obj, data.data->Dirty);
 }

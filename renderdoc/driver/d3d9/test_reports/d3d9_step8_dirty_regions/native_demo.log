@@ -1,0 +1,2 @@
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_regions.cpp:547 Log: UpdateTexture copied the dirty regions in all 11 frames

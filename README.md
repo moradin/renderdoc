@@ -90,8 +90,8 @@ Known limitations of what works:
   pixels that the pixel shader discards or the alpha test rejects, as on the other APIs. The depth,
   stencil, backface and viewport/scissor overlays leave those pixels out.
 - **Replay**:
-  - An UpdateTexture inside the frame can copy more than it did at capture, because the source's
-    dirty region isn't saved.
+  - In captures made by builds before UpdateTexture's dirty regions were saved, an UpdateTexture
+    inside the frame can copy more than it did at capture. Those captures still open.
 - **Memory at capture**: the copies of default pool texture uploads take as much memory as the
   textures themselves.
 

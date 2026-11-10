@@ -1,0 +1,60 @@
+>> Test D3D9_Dirty_Regions
+    .. Running D3D9_Dirty_Regions natively for 12 frames
+    >> Raw Native run output
+    << Raw Native run output
+    ** The native run's log has no errors (0 warnings)
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x86.exe' cmd:'D3D9_Dirty_Regions --log E:\Projects\renderdoc\util\test\tmp\D3D9_Dirty_Regions\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Dirty_Regions'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_regions.cpp:547 Log: UpdateTexture copied the dirty regions in all 11 frames
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_dirty_regions.cpp:547 Log: UpdateTexture copied the dirty regions in all 11 frames
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 32-bit process (Windows x86 32-bit)
+    ** The native run logged 'UpdateTexture copied the dirty regions in all'
+    ** The run under RenderDoc logged 'UpdateTexture copied the dirty regions in all'
+    ** The 2D texture's initial contents, mip 0 is as expected
+    ** The 2D texture's initial contents, mip 1 is as expected
+    ** The initial contents of the cube texture, with two rects on face 1 (copied as the box around them) and all of face 2: mip 0 slice 0 is as expected
+    ** The initial contents of the cube texture, with two rects on face 1 (copied as the box around them) and all of face 2: mip 0 slice 1 is as expected
+    ** The initial contents of the cube texture, with two rects on face 1 (copied as the box around them) and all of face 2: mip 0 slice 2 is as expected
+    ** The initial contents of the cube texture, with two rects on face 1 (copied as the box around them) and all of face 2: mip 0 slice 3 is as expected
+    ** The initial contents of the cube texture, with two rects on face 1 (copied as the box around them) and all of face 2: mip 0 slice 4 is as expected
+    ** The initial contents of the cube texture, with two rects on face 1 (copied as the box around them) and all of face 2: mip 0 slice 5 is as expected
+    ** The initial contents of the volume texture, with two boxes dirty: mip 0 slice 0 is as expected
+    ** The initial contents of the volume texture, with two boxes dirty: mip 0 slice 1 is as expected
+    ** The initial contents of the volume texture, with two boxes dirty: mip 0 slice 2 is as expected
+    ** The initial contents of the volume texture, with two boxes dirty: mip 0 slice 3 is as expected
+    ** The initial contents of the texture with nothing dirty: mip 0 slice 0 is as expected
+    ** The initial contents of the texture with 6 dirty rects: mip 0 slice 0 is as expected
+    ** The initial contents of the texture with 7 dirty rects, which make all of it dirty: mip 0 slice 0 is as expected
+    ** Every region has the previous frame's colour
+    ** UpdateTexture (event 3) of the 2D texture, with two rects dirty since the last frame: mip 0 slice 0 is as expected
+    ** UpdateTexture (event 3) of the 2D texture, with two rects dirty since the last frame: mip 1 slice 0 is as expected
+    ** UpdateTexture (event 4) of the cube texture, with two rects on face 1 (copied as the box around them) and all of face 2: mip 0 slice 0 is as expected
+    ** UpdateTexture (event 4) of the cube texture, with two rects on face 1 (copied as the box around them) and all of face 2: mip 0 slice 1 is as expected
+    ** UpdateTexture (event 4) of the cube texture, with two rects on face 1 (copied as the box around them) and all of face 2: mip 0 slice 2 is as expected
+    ** UpdateTexture (event 4) of the cube texture, with two rects on face 1 (copied as the box around them) and all of face 2: mip 0 slice 3 is as expected
+    ** UpdateTexture (event 4) of the cube texture, with two rects on face 1 (copied as the box around them) and all of face 2: mip 0 slice 4 is as expected
+    ** UpdateTexture (event 4) of the cube texture, with two rects on face 1 (copied as the box around them) and all of face 2: mip 0 slice 5 is as expected
+    ** UpdateTexture (event 5) of the volume texture, with two boxes dirty: mip 0 slice 0 is as expected
+    ** UpdateTexture (event 5) of the volume texture, with two boxes dirty: mip 0 slice 1 is as expected
+    ** UpdateTexture (event 5) of the volume texture, with two boxes dirty: mip 0 slice 2 is as expected
+    ** UpdateTexture (event 5) of the volume texture, with two boxes dirty: mip 0 slice 3 is as expected
+    ** UpdateTexture (event 6) of the texture with nothing dirty: mip 0 slice 0 is as expected
+    ** UpdateTexture (event 7) of the texture with 6 dirty rects: mip 0 slice 0 is as expected
+    ** UpdateTexture (event 8) of the texture with 7 dirty rects, which make all of it dirty: mip 0 slice 0 is as expected
+    ** UpdateTexture (event 13) of the 2D texture, with the frame's lock dirty (not the D3DLOCK_NO_DIRTY_UPDATE one or level 1's): mip 0 slice 0 is as expected
+    ** UpdateTexture (event 13) of the 2D texture, with the frame's lock dirty (not the D3DLOCK_NO_DIRTY_UPDATE one or level 1's): mip 1 slice 0 is as expected
+    ** Replayed to each of the 57 actions
+    .. Test D3D9_Dirty_Regions ran in 0:00:04.151480
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D9_Dirty_Regions

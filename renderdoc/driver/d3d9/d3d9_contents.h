@@ -112,6 +112,32 @@ struct D3D9StateBlockContents
 
 DECLARE_REFLECTION_STRUCT(D3D9StateBlockContents);
 
+// The level-0 region the runtime considers dirty, which UpdateTexture copies and then clears.
+// Locks on level 0 (without D3DLOCK_NO_DIRTY_UPDATE) and AddDirtyRect/AddDirtyBox add to it, and a
+// new texture is entirely dirty. How the runtime keeps it was measured on Windows 11 (see
+// d3d9_step8_dirty_regions.md):
+// * 2D and volume textures keep up to 6 boxes, as they were added: overlapping, nested or the same
+//   box again, each counts. The 7th makes the whole texture dirty.
+// * Each cube face keeps one box, which grows to cover every box added to the face.
+struct D3D9DirtyRegion
+{
+  // when set, the whole texture is dirty and Boxes isn't used
+  bool Whole = true;
+  // otherwise what's dirty. Empty when nothing is.
+  rdcarray<D3DBOX> Boxes;
+
+  // box is NULL for the whole texture
+  void Add(const D3DBOX *box, bool cubeFace);
+  void Clear()
+  {
+    Whole = false;
+    Boxes.clear();
+  }
+  bool IsDirty() const { return Whole || !Boxes.empty(); }
+};
+
+DECLARE_REFLECTION_STRUCT(D3D9DirtyRegion);
+
 // The contents of an object when the frame started.
 struct D3D9InitialContentsData
 {
@@ -121,6 +147,10 @@ struct D3D9InitialContentsData
   rdcarray<D3D9StateBlockContents> StateBlock;
   // why contents are missing, if they are
   rdcstr Note;
+  // for system memory textures, the dirty region of each face (one for 2D and volume textures),
+  // which is what an UpdateTexture from it copies. Replay sets it after writing the contents.
+  // Empty for other objects, and in captures before version 0x2.
+  rdcarray<D3D9DirtyRegion> Dirty;
 };
 
 DECLARE_REFLECTION_STRUCT(D3D9InitialContentsData);
@@ -134,23 +164,6 @@ void D3D9CopyFromLocked(D3D9SubresourceData &dst, D3DFORMAT format, const void *
 // copied to system memory if it's a render target (resolving it if it's multisampled)
 rdcstr D3D9ReadSurfaceContents(IDirect3DDevice9 *dev, IDirect3DSurface9 *surf,
                                D3D9SubresourceData &sub);
-
-// A level-0 region the runtime considers dirty, for UpdateTexture. Locks on level 0 and
-// AddDirtyRect/AddDirtyBox grow it, UpdateTexture clears it. A new texture is entirely dirty.
-struct D3D9DirtyRegion
-{
-  bool Dirty = true;
-  // when set, the whole texture is dirty and Box isn't used
-  bool Whole = true;
-  D3DBOX Box = {};
-
-  void Add(const D3DBOX *box);
-  void Clear()
-  {
-    Dirty = false;
-    Whole = false;
-  }
-};
 
 // An outstanding lock
 struct D3D9LockInfo

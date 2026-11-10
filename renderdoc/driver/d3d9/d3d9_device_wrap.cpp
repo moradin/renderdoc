@@ -1318,6 +1318,8 @@ HRESULT __stdcall WrappedD3DDevice9::UpdateSurface(IDirect3DSurface9 *pSourceSur
 HRESULT __stdcall WrappedD3DDevice9::UpdateTexture(IDirect3DBaseTexture9 *pSourceTexture,
                                                    IDirect3DBaseTexture9 *pDestinationTexture)
 {
+  // the source's dirty region, part of its initial contents, is cleared
+  PrepareForWrite(pSourceTexture);
   PrepareForWrite(pDestinationTexture);
   HRESULT hr = m_device->UpdateTexture(Unwrap(pSourceTexture), Unwrap(pDestinationTexture));
 

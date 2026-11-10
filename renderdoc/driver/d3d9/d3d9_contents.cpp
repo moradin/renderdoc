@@ -172,35 +172,43 @@ void AddNote(D3D9InitialContentsData &contents, const rdcstr &note)
   contents.Note += note;
 }
 
-// the level-0 region of a dirty region, scaled to a level and aligned to the format's blocks
-bool DirtyRegionAtLevel(const D3D9DirtyRegion &dirty, uint32_t level, D3DFORMAT format,
-                        uint32_t width, uint32_t height, uint32_t depth, D3DBOX &box)
+// the boxes of a dirty region at a level: the level-0 boxes scaled to it, rounding outwards, and
+// aligned to the format's blocks
+rdcarray<D3DBOX> DirtyBoxesAtLevel(const D3D9DirtyRegion &dirty, uint32_t level, D3DFORMAT format,
+                                   uint32_t width, uint32_t height, uint32_t depth)
 {
-  if(!dirty.Dirty)
-    return false;
+  rdcarray<D3DBOX> ret;
 
   if(dirty.Whole)
   {
-    box = {0, 0, width, height, 0, depth};
-    return true;
+    ret.push_back({0, 0, width, height, 0, depth});
+    return ret;
   }
 
   const uint32_t scale = (1U << level) - 1;
-  box.Left = dirty.Box.Left >> level;
-  box.Top = dirty.Box.Top >> level;
-  box.Front = dirty.Box.Front >> level;
-  box.Right = RDCMIN((dirty.Box.Right + scale) >> level, width);
-  box.Bottom = RDCMIN((dirty.Box.Bottom + scale) >> level, height);
-  box.Back = RDCMIN((dirty.Box.Back + scale) >> level, depth);
+  const D3D9FormatBlock block = D3D9GetFormatBlock(format);
 
-  // locks of block-compressed formats must cover whole blocks
-  D3D9FormatBlock block = D3D9GetFormatBlock(format);
-  box.Left -= box.Left % block.Width;
-  box.Top -= box.Top % block.Height;
-  box.Right = RDCMIN(BlocksFor(box.Right, block.Width) * block.Width, width);
-  box.Bottom = RDCMIN(BlocksFor(box.Bottom, block.Height) * block.Height, height);
+  for(const D3DBOX &dirtyBox : dirty.Boxes)
+  {
+    D3DBOX box;
+    box.Left = dirtyBox.Left >> level;
+    box.Top = dirtyBox.Top >> level;
+    box.Front = dirtyBox.Front >> level;
+    box.Right = RDCMIN((dirtyBox.Right + scale) >> level, width);
+    box.Bottom = RDCMIN((dirtyBox.Bottom + scale) >> level, height);
+    box.Back = RDCMIN((dirtyBox.Back + scale) >> level, depth);
 
-  return box.Left < box.Right && box.Top < box.Bottom && box.Front < box.Back;
+    // locks of block-compressed formats must cover whole blocks
+    box.Left -= box.Left % block.Width;
+    box.Top -= box.Top % block.Height;
+    box.Right = RDCMIN(BlocksFor(box.Right, block.Width) * block.Width, width);
+    box.Bottom = RDCMIN(BlocksFor(box.Bottom, block.Height) * block.Height, height);
+
+    if(box.Left < box.Right && box.Top < box.Bottom && box.Front < box.Back)
+      ret.push_back(box);
+  }
+
+  return ret;
 }
 
 // writes a region of a level into its shadow, creating the shadow if needed. Returns false if the
@@ -537,31 +545,31 @@ void D3D9CopyFromLocked(D3D9SubresourceData &dst, D3DFORMAT format, const void *
              srcBytes + size_t(z) * srcSlicePitch + size_t(r) * srcRowPitch, copyBytes);
 }
 
-void D3D9DirtyRegion::Add(const D3DBOX *box)
+void D3D9DirtyRegion::Add(const D3DBOX *box, bool cubeFace)
 {
-  if(box == NULL)
+  if(Whole)
+    return;
+
+  if(box == NULL || (!cubeFace && Boxes.size() == 6))
   {
-    Dirty = Whole = true;
+    Whole = true;
+    Boxes.clear();
     return;
   }
 
-  if(Dirty && Whole)
-    return;
-
-  if(!Dirty)
+  if(cubeFace && !Boxes.empty())
   {
-    Box = *box;
-    Dirty = true;
-    Whole = false;
+    D3DBOX &b = Boxes[0];
+    b.Left = RDCMIN(b.Left, box->Left);
+    b.Top = RDCMIN(b.Top, box->Top);
+    b.Front = RDCMIN(b.Front, box->Front);
+    b.Right = RDCMAX(b.Right, box->Right);
+    b.Bottom = RDCMAX(b.Bottom, box->Bottom);
+    b.Back = RDCMAX(b.Back, box->Back);
     return;
   }
 
-  Box.Left = RDCMIN(Box.Left, box->Left);
-  Box.Top = RDCMIN(Box.Top, box->Top);
-  Box.Front = RDCMIN(Box.Front, box->Front);
-  Box.Right = RDCMAX(Box.Right, box->Right);
-  Box.Bottom = RDCMAX(Box.Bottom, box->Bottom);
-  Box.Back = RDCMAX(Box.Back, box->Back);
+  Boxes.push_back(*box);
 }
 
 template <class SerialiserType>
@@ -581,6 +589,15 @@ void DoSerialise(SerialiserType &ser, D3D9SubresourceData &el)
 }
 
 INSTANTIATE_SERIALISE_TYPE(D3D9SubresourceData);
+
+template <class SerialiserType>
+void DoSerialise(SerialiserType &ser, D3D9DirtyRegion &el)
+{
+  SERIALISE_MEMBER(Whole);
+  SERIALISE_MEMBER(Boxes);
+}
+
+INSTANTIATE_SERIALISE_TYPE(D3D9DirtyRegion);
 
 template <class SerialiserType>
 void DoSerialise(SerialiserType &ser, D3D9StateBlockContents &el)
@@ -605,6 +622,10 @@ void DoSerialise(SerialiserType &ser, D3D9InitialContentsData &el)
   SERIALISE_MEMBER(Subresources);
   SERIALISE_MEMBER(StateBlock);
   SERIALISE_MEMBER(Note);
+  if(ser.VersionAtLeast(0x2))
+  {
+    SERIALISE_MEMBER(Dirty);
+  }
 }
 
 INSTANTIATE_SERIALISE_TYPE(D3D9InitialContentsData);
@@ -667,6 +688,11 @@ void WrappedD3DDevice9::ReadContents(WrappedD3D9Object *obj, D3D9InitialContents
         cubeTex->GetLevelDesc(0, &desc);
       else
         tex->GetLevelDesc(0, &desc);
+
+      // Only a system memory texture can be UpdateTexture's source, which copies its dirty region.
+      // This is read before anything in the frame changes the region (see OnLock).
+      if(desc.Pool == D3DPOOL_SYSTEMMEM && obj->HasContentsTracking())
+        contents.Dirty.assign(obj->GetContents().Dirty, faces);
 
       if(IsShadowed(desc.Pool, desc.Usage))
       {
@@ -811,6 +837,9 @@ void WrappedD3DDevice9::ReadContents(WrappedD3D9Object *obj, D3D9InitialContents
 
       D3DVOLUME_DESC desc = {};
       tex->GetLevelDesc(0, &desc);
+
+      if(desc.Pool == D3DPOOL_SYSTEMMEM && obj->HasContentsTracking())
+        contents.Dirty.assign(obj->GetContents().Dirty, 1);
 
       const bool shadowed = IsShadowed(desc.Pool, desc.Usage);
 
@@ -1039,30 +1068,30 @@ void WrappedD3DDevice9::UpdateShadowFromTexture(IDirect3DBaseTexture9 *pSourceTe
           else
             dstTex->GetLevelDesc(level, &levelDesc);
 
-          D3DBOX box;
-          if(!DirtyRegionAtLevel(srcContents.Dirty[face], srcLevel, levelDesc.Format,
-                                 levelDesc.Width, levelDesc.Height, 1, box))
-            continue;
-
-          RECT rect = {(LONG)box.Left, (LONG)box.Top, (LONG)box.Right, (LONG)box.Bottom};
-          D3DLOCKED_RECT locked = {};
-          HRESULT hr = cube ? srcCube->LockRect((D3DCUBEMAP_FACES)face, srcLevel, &locked, &rect,
-                                                D3DLOCK_READONLY)
-                            : srcTex->LockRect(srcLevel, &locked, &rect, D3DLOCK_READONLY);
-          if(FAILED(hr))
+          for(const D3DBOX &box :
+              DirtyBoxesAtLevel(srcContents.Dirty[face], srcLevel, levelDesc.Format,
+                                levelDesc.Width, levelDesc.Height, 1))
           {
-            RDCWARN("Couldn't read UpdateTexture source for the shadow of %s: %s",
-                    ToStr(dst->GetResourceID()).c_str(), ToStr(hr).c_str());
-            continue;
+            RECT rect = {(LONG)box.Left, (LONG)box.Top, (LONG)box.Right, (LONG)box.Bottom};
+            D3DLOCKED_RECT locked = {};
+            HRESULT hr = cube ? srcCube->LockRect((D3DCUBEMAP_FACES)face, srcLevel, &locked, &rect,
+                                                  D3DLOCK_READONLY)
+                              : srcTex->LockRect(srcLevel, &locked, &rect, D3DLOCK_READONLY);
+            if(FAILED(hr))
+            {
+              RDCWARN("Couldn't read UpdateTexture source for the shadow of %s: %s",
+                      ToStr(dst->GetResourceID()).c_str(), ToStr(hr).c_str());
+              continue;
+            }
+
+            WriteShadow(shadow[face * dstLevels + level], levelDesc.Format, levelDesc.Width,
+                        levelDesc.Height, 1, box, locked.pBits, (uint32_t)locked.Pitch, 0);
+
+            if(cube)
+              srcCube->UnlockRect((D3DCUBEMAP_FACES)face, srcLevel);
+            else
+              srcTex->UnlockRect(srcLevel);
           }
-
-          WriteShadow(shadow[face * dstLevels + level], levelDesc.Format, levelDesc.Width,
-                      levelDesc.Height, 1, box, locked.pBits, (uint32_t)locked.Pitch, 0);
-
-          if(cube)
-            srcCube->UnlockRect((D3DCUBEMAP_FACES)face, srcLevel);
-          else
-            srcTex->UnlockRect(srcLevel);
         }
       }
       break;
@@ -1091,25 +1120,24 @@ void WrappedD3DDevice9::UpdateShadowFromTexture(IDirect3DBaseTexture9 *pSourceTe
         D3DVOLUME_DESC levelDesc = {};
         dstTex->GetLevelDesc(level, &levelDesc);
 
-        D3DBOX box;
-        if(!DirtyRegionAtLevel(srcContents.Dirty[0], srcLevel, levelDesc.Format, levelDesc.Width,
-                               levelDesc.Height, levelDesc.Depth, box))
-          continue;
-
-        D3DLOCKED_BOX locked = {};
-        HRESULT hr = srcTex->LockBox(srcLevel, &locked, &box, D3DLOCK_READONLY);
-        if(FAILED(hr))
+        for(const D3DBOX &box : DirtyBoxesAtLevel(srcContents.Dirty[0], srcLevel, levelDesc.Format,
+                                                  levelDesc.Width, levelDesc.Height, levelDesc.Depth))
         {
-          RDCWARN("Couldn't read UpdateTexture source for the shadow of %s: %s",
-                  ToStr(dst->GetResourceID()).c_str(), ToStr(hr).c_str());
-          continue;
+          D3DLOCKED_BOX locked = {};
+          HRESULT hr = srcTex->LockBox(srcLevel, &locked, &box, D3DLOCK_READONLY);
+          if(FAILED(hr))
+          {
+            RDCWARN("Couldn't read UpdateTexture source for the shadow of %s: %s",
+                    ToStr(dst->GetResourceID()).c_str(), ToStr(hr).c_str());
+            continue;
+          }
+
+          WriteShadow(shadow[level], levelDesc.Format, levelDesc.Width, levelDesc.Height,
+                      levelDesc.Depth, box, locked.pBits, (uint32_t)locked.RowPitch,
+                      (uint32_t)locked.SlicePitch);
+
+          srcTex->UnlockBox(srcLevel);
         }
-
-        WriteShadow(shadow[level], levelDesc.Format, levelDesc.Width, levelDesc.Height,
-                    levelDesc.Depth, box, locked.pBits, (uint32_t)locked.RowPitch,
-                    (uint32_t)locked.SlicePitch);
-
-        srcTex->UnlockBox(srcLevel);
       }
       break;
     }
@@ -1218,15 +1246,16 @@ void WrappedD3DDevice9::OnLock(WrappedD3D9Object *obj, UINT face, UINT level, co
   WrappedD3D9Object *owner = ContentsOwner(obj, ownerFace, ownerLevel);
   const D3D9ResourceType type = owner->GetResourceType();
 
+  // first, since the initial contents include the dirty region as the frame started
+  PrepareForWrite(owner);
+
   // the runtime only records dirty regions for locks on level 0
   if((type == Resource_Texture || type == Resource_CubeTexture || type == Resource_VolumeTexture) &&
      ownerLevel == 0 && ownerFace < 6 && (flags & D3DLOCK_NO_DIRTY_UPDATE) == 0)
   {
     SCOPED_LOCK(m_D3DLock);
-    owner->GetContents().Dirty[ownerFace].Add(region);
+    owner->GetContents().Dirty[ownerFace].Add(region, type == Resource_CubeTexture);
   }
-
-  PrepareForWrite(owner);
 }
 
 void WrappedD3DDevice9::OnLocked(WrappedD3D9Object *obj, UINT face, UINT level, const D3DBOX *region,
@@ -1343,10 +1372,13 @@ bool WrappedD3DDevice9::OnUnlock(WrappedD3D9Object *obj, UINT face, UINT level)
 
 void WrappedD3DDevice9::OnAddDirtyRegion(WrappedD3D9Object *obj, UINT face, const D3DBOX *box)
 {
+  // the initial contents include the dirty region as the frame started
+  PrepareForWrite(obj);
+
   SCOPED_LOCK(m_D3DLock);
 
   if(face < 6)
-    obj->GetContents().Dirty[face].Add(box);
+    obj->GetContents().Dirty[face].Add(box, obj->GetResourceType() == Resource_CubeTexture);
 
   if(!IsActiveCapturing(m_State))
     return;
@@ -1501,7 +1533,8 @@ bool WrappedD3DDevice9::Serialise_Unlock(SerialiserType &ser, Iface *pResource, 
 
   if(IsReplayingAndReading())
   {
-    WriteContents(GetWrappedObject(pResource), Contents);
+    // a lock that didn't add to the dirty region doesn't at replay either
+    WriteContents(GetWrappedObject(pResource), Contents, Flags & D3DLOCK_NO_DIRTY_UPDATE);
     AddUsage(ContentsTextureID(pResource), ResourceUsage::CPUWrite);
   }
 

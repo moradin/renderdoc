@@ -115,7 +115,9 @@ struct D3D9InitParams
   D3DADAPTER_IDENTIFIER9 AdapterIdentifier = {};
 
   // check if a frame capture section version is supported
-  static const uint64_t CurrentVersion = 0x1;
+  // 0x1: the first version
+  // 0x2: initial contents hold system memory textures' dirty regions (D3D9InitialContentsData)
+  static const uint64_t CurrentVersion = 0x2;
   static bool IsSupportedVersion(uint64_t ver);
 };
 

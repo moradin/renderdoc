@@ -182,10 +182,11 @@ public:
   // replay, see d3d9_replay_device.cpp
 
   // window is the hidden window the capture's swapchains present to
-  void SetReplay(D3D9Replay *replay, HWND window)
+  void SetReplay(D3D9Replay *replay, HWND window, uint64_t sectionVersion)
   {
     m_Replay = replay;
     m_ReplayWindow = window;
+    m_SectionVersion = sectionVersion;
   }
   D3D9Replay *GetReplay() const { return m_Replay; }
   // the failed calls found while loading, see RecordFailedCall. Returned once, as on D3D11.
@@ -227,8 +228,11 @@ public:
   ResourceId SurfaceTextureID(IDirect3DSurface9 *surf);
 
   // writes a subresource's data to obj (which holds the contents, or is a texture level or volume
-  // level whose face and level are 0 in sub)
-  void WriteContents(WrappedD3D9Object *obj, const D3D9SubresourceData &sub);
+  // level whose face and level are 0 in sub). lockFlags are added to the flags of any lock, for
+  // D3DLOCK_NO_DIRTY_UPDATE.
+  void WriteContents(WrappedD3D9Object *obj, const D3D9SubresourceData &sub, DWORD lockFlags = 0);
+  // sets a system memory texture's dirty regions (one per cube face), which UpdateTexture copies
+  void SetDirtyRegions(WrappedD3D9Object *obj, const rdcarray<D3D9DirtyRegion> &dirty);
   // sets the device to the state block's values and captures them into it
   void ApplyStateBlockContents(WrappedD3DStateBlock9 *sb, const D3D9StateBlockContents &contents);
   // reads one subresource of a texture, standalone surface or buffer, rows packed. face is the
@@ -825,8 +829,8 @@ private:
   ResourceId ContentsTextureID(IUnknown *obj);
   // the first back buffer of a swapchain, described as a resource even if the capture never used it
   ResourceId ReplayBackBufferID(IDirect3DSwapChain9 *swap);
-  rdcstr WriteSurface(IDirect3DSurface9 *surf, const D3D9SubresourceData &sub);
-  rdcstr WriteVolume(IDirect3DVolume9 *vol, const D3D9SubresourceData &sub);
+  rdcstr WriteSurface(IDirect3DSurface9 *surf, const D3D9SubresourceData &sub, DWORD lockFlags);
+  rdcstr WriteVolume(IDirect3DVolume9 *vol, const D3D9SubresourceData &sub, DWORD lockFlags);
   // writing depth stencils that can't be locked, see d3d9_depth.cpp
   rdcstr WriteDepthStencil(IDirect3DSurface9 *realDS, const D3D9SubresourceData &sub);
   bool InitDepthWrite(rdcstr &err);
