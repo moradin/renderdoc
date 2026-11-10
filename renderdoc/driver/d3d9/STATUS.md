@@ -46,14 +46,14 @@ the testing were on separate machines.
 | | Pixel shaders | 3-5 | Needs a new interpreter covering ps_1_x's texture addressing instructions, inputs worked out on the CPU from VS Out, sampling on the GPU, and 2x2 quads for derivatives, `vPos` and `vFace` |
 | | Source-level debugging from `D3DXSHADER_DEBUG` debug info | +1 | Optional |
 | 6 | **Pixel history:** which draws touched the pixel (occlusion queries per event), which primitive wrote it (drawing one primitive at a time, since D3D9 has no primitive ID), values before and after (`GetRenderTargetData`), depth (the existing bisection), and debugging the pixel (step 5) | 3-5 | |
-| 7 | **Remote replay:** display textures through the proxy | 1-2 | Mostly mapping D3D9 formats onto the proxy's D3D11 textures |
-| 8 | **Limitations worth fixing** | 3-4 | |
-| | `texldl` filtering | 0.5 | |
+| 7 | **Remote replay:** display textures through the proxy | 1-2 | Parked: not worth it for now. Mostly mapping D3D9 formats onto the proxy's D3D11 textures |
+| 8 | **Limitations worth fixing**, in this order, before steps 5 and 6 | 3-4 | |
+| | ~~Alpha test and discard in the overlays~~ | 1 | Done, see "Overlays" below (`d3d9_step8_overlays.md`). Alpha tested and clipped geometry (foliage, fences, sprites) is everywhere in D3D9 games |
+| | Saving DXT textures as PNG | 0.5 | Most game textures are DXT |
+| | Saving UpdateTexture dirty regions in captures | 0.5 | Texture streaming. Changes the capture format |
 | | vs_3_0 outputs that pack two semantics into one register | 0.5 | |
-| | Alpha test and discard in the overlays | 1 | |
-| | Saving UpdateTexture dirty regions in captures | 0.5 | Changes the capture format |
-| | D24 at a depth of 0.375 | 0.25 | Check with ZFUNC EQUAL and adjust |
-| | Saving DXT textures as PNG | 0.5 | |
+| | `texldl` filtering | 0.5 | Early SM3 GPUs could only point sample vertex textures, so many games do |
+| | D24 at a depth of 0.375 | 0.25 | Check with ZFUNC EQUAL and adjust. One depth value, which only matters to an EQUAL test |
 | | P8 palettes | 0.5 | Low value, since current GPUs don't create P8 textures |
 
 Left out on purpose:
@@ -112,7 +112,7 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Frame_Start_State` | The triangles, render states, and VS/PS float constants (c10, c20, c200, c180, and zero c138, c148) set before the first frame, the pipeline state check, the export round trip |
 | `D3D9_Texture_Formats` | `d3d9_formats_check.py` against the native run's reference, and that the reference written under RenderDoc is byte-identical to the native one |
 | `D3D9_Mesh_Output` | `d3d9_mesh_check.py` against the native run's reference (a draw without a reference fails), and that the reference written under RenderDoc is byte-identical to the native one |
-| `D3D9_Overlay_Test` | `d3d9_overlay_check.py`, with the overlays saved in the test's tmp folder |
+| `D3D9_Overlay_Test` | `d3d9_overlay_check.py`, with the overlays saved in the test's tmp folder. Includes alpha tested, clipped and oDepth draws, whose Depth overlay has to be green exactly where the draw wrote |
 | `D3D9_Resource_Contents` | Every object's contents at the start of the frame, as listed under "Checking `D3D9_Resource_Contents` captures": each level, face and slice texel by texel, the previous frame's colour in every region the frames alternate, the vertex and write-only index buffers. Then the triangle drawn from them |
 | `D3D9_Capture_Edge_Cases` | The markers, and at the start of the frame: the automatic, multisampled (each sample), D16 and INTZ depth stencils texel by texel, the texture locked across Present, and the surface drawn with GDI |
 | `D3D9_Reset_Capture` | Both captures: frame 30's has only "After the reset" and a blue clear, the triggered one only "Frame" and a red clear |
@@ -1166,13 +1166,27 @@ How it works:
 - The replay controller calls `RenderOverlay` with the frame replayed up to the event without its
   draw, and replays the draw after it (as for D3D11). The draw overlays save the state
   (`SaveReplayDrawState`), bind the overlay as render target 0 (1-3 unbound) with the
-  application's depth stencil, and replay the draw (`eReplay_OnlyDraw`) once or twice with a
-  constant colour pixel shader and some render states changed. Every pass has ZWRITEENABLE FALSE,
-  a stencil write mask of 0 and KEEP stencil ops, so the depth stencil isn't touched and every
-  test sees what the draw saw. Alpha test, blending, fog and sRGB writes are off and
-  COLORWRITEENABLE is 0xF. Then the state is restored, so the controller's replay of the draw
-  does what it did. `DrawPrimitiveUP` and `DrawIndexedPrimitiveUP` replay the same way, from the
+  application's depth stencil, and replay the draw (`eReplay_OnlyDraw`) once or twice with some
+  render states changed. Every pass has ZWRITEENABLE FALSE, a stencil write mask of 0 and KEEP
+  stencil ops, so the depth stencil isn't touched and every test sees what the draw saw. Fog and
+  sRGB writes are off. Then the state is restored, so the controller's replay of the draw does
+  what it did. `DrawPrimitiveUP` and `DrawIndexedPrimitiveUP` replay the same way, from the
   vertices in their chunk.
+  - Drawcall and Wireframe draw with a constant colour pixel shader, alpha test and blending off
+    and COLORWRITEENABLE 0xF, as on the other APIs.
+  - The pass and fail overlays (Depth, Stencil, BackfaceCull, ViewportScissor) keep the
+    application's pixel shader (or fixed function pixel processing) and alpha test, so pixels it
+    discards (texkill, `clip`) or alpha tests away show as not drawn, and the depth test uses the
+    shader's oDepth, which is what the draw does natively. (Added in step 8: until then they
+    used the constant colour shader with alpha test off, so those pixels showed as drawn, and
+    the depth test used the rasterised depth. Tested in `d3d9_step8_overlays.md`: passed.) The shader's colour can't be replaced, so the
+    overlay is cleared to white and the passes draw with ZERO/ZERO blending (BLENDOP ADD) and a
+    colour write mask: the "everything" pass clears alpha, the "passing" pass red and green. That
+    leaves (1,1,1,1) where nothing was drawn, (1,1,1,0) where the draw failed and (0,0,1,0)
+    where it passed. `ResolveMaskPasses` turns that into transparent, red and green with three
+    full screen quads that blend with the destination: red = R × (1 − A), green and blue =
+    (1 − G or B) × (1 − A) (BLENDOP SUBTRACT), then alpha = 1 − A. On a multisampled target this
+    happens per sample before the resolve.
   - Drawcall: (0.8, 0.1, 0.8) over a (0, 0, 0, 0.5) background, solid, with no culling, depth,
     stencil or scissor.
   - Wireframe: D3DFILL_WIREFRAME, no culling, depth or stencil, the application's scissor, in
@@ -1231,11 +1245,11 @@ Known gaps:
   interpreter can't run, or a very big draw, shows nothing or takes a while (the mesh output's
   known gaps apply). Positions that differ from the GPU's in the last bits can change which
   pixels on a triangle's edge are covered.
-- The constant colour shader replaces the application's pixel shader, so pixels it would discard
-  (texkill, clip) or whose depth it would change (oDepth) show as the rasterised primitive passes
-  or fails. D3D11 handles oDepth with an extra stencil pass on a copy of the depth stencil; there's
-  no copy here.
-- Alpha test is off in the overlay passes, so alpha tested pixels show as drawn.
+- Highlight drawcall, wireframe and triangle size still show the whole rasterised primitive,
+  including what the pixel shader or alpha test leaves out, as on the other APIs.
+- In the pass and fail overlays, a pixel the shader or alpha test leaves out shows as not drawn,
+  whether or not it would have passed the test the overlay shows. There's no colour for "drawn
+  but discarded".
 - D3D9 has no depth clip control, so geometry clipped by the near and far planes isn't shown the
   way D3D11 shows it.
 - A depth stencil smaller than the target (which D3D9 doesn't allow anyway) is left out, so the
@@ -1293,6 +1307,12 @@ Decisions:
 - The shaders are HLSL compiled with D3DCompile on first use, like the texture viewer's
   (`D3D9CompileDebugShader` exposes its compile helper). The overlays need shader model 3
   hardware, like the texture viewer.
+- The pass and fail overlays get the application's discards and oDepth from blending, rather
+  than by patching its shader to output a constant colour (which would need rewriting every
+  shader model's output, ps_1_x's r0 included) or by marking passing pixels in the stencil (which
+  would need a copy of the depth stencil, as D3D11 makes for oDepth, and D3D9 can't copy depth
+  stencils). Blending works for fixed function too, and on multisampled targets. It needs
+  BLENDOP SUBTRACT and destination alpha blend factors, which every shader model 3 GPU has.
 
 ### Checking the overlays
 
@@ -1318,6 +1338,10 @@ checks (the demo's layout is at the top of `d3d9_overlay_test.cpp`):
   pixels may differ, on edges) and all have ramp colours; TriangleSizePass also has the
   "Depth Test" quad. "MSAA": inside the triangle.
 - the target is the same after rendering overlays as before.
+- "Alpha Test" (fixed function, alpha test), "Discard" (`clip`) and "Shader Depth" (`oDepth`): the
+  Depth overlay at four points, Backface Cull and Stencil at two, and the Depth overlay green on
+  exactly the pixels the draw changed in the target (read before and after its event). The old
+  overlay code fails these 13 checks (`d3d9_step8_overlays.md`).
 - ClearBeforeDraw and ClearBeforePass change the back buffer (to the blue background colour where
   nothing in the draw or pass drew), and turning them off puts it back.
 

@@ -40,6 +40,17 @@
 // - "Triangle Size": a fixed function triangle strip of three small triangles, in pixels from
 //   (int(0.1 * width), int(0.92 * height)), where no other draw is: (0,0) (0,4) (5,0) (12,4)
 //   (8.5,0), so the triangles have areas of 10, 24 and 7 pixels.
+// The next three are drawn over the earlier quads, with ZFUNC LESS against the depths they left:
+// 0.5 in the top half, and in the bottom half 0.7 at x 0.05-0.3, 0.55 at x 0.35-0.6 and 1.0 at
+// x 0.65-0.95. Each is in a colour none of the earlier draws used.
+// - "Alpha Test": a fixed function quad at x 0.05-0.3, y 0.1-0.9, depth 0.6, whose diffuse alpha
+//   goes from 0 on the left to 1 on the right, with ALPHAFUNC GREATEREQUAL 0x80. Its left half is
+//   alpha tested away, its right half fails in the top half and passes in the bottom.
+// - "Discard": a vs_3_0 quad at x 0.35-0.6, y 0.1-0.9, depth 0.52, whose ps_3_0 shader clips
+//   its left half (u < 0.5). The right half fails in the top half and passes in the bottom.
+// - "Shader Depth": a vs_3_0 quad at x 0.65-0.95, y 0.1-0.9, depth 0.7, whose ps_3_0 shader writes
+//   a depth of 0.3, so it passes everywhere, where the quad's own depth would fail in the top
+//   half.
 // - "MSAA": a 256x256 4x multisampled target and depth stencil, cleared, then a fixed function
 //   triangle (128,20) (236,236) (20,236) at depth 0.5 with ZFUNC LESS. Skipped without 4x MSAA.
 RD_TEST(D3D9_Overlay_Test, D3D9GraphicsTest)
@@ -47,8 +58,48 @@ RD_TEST(D3D9_Overlay_Test, D3D9GraphicsTest)
   static constexpr const char *Description =
       "Draws for checking the texture viewer's overlays: a depth test that fails and passes, one "
       "that only fails because of the depth bias, a stencil test, backface culling, a viewport "
-      "with a scissor rect, small triangles of known areas, and a multisampled target. Each is in "
-      "its own marker.";
+      "with a scissor rect, small triangles of known areas, an alpha test, a pixel shader that "
+      "discards, one that writes depth, and a multisampled target. Each is in its own marker.";
+
+  std::string DiscardPixel = R"EOSHADER(
+
+struct v2f
+{
+	float4 col : COLOR0;
+	float2 uv : TEXCOORD0;
+};
+
+float4 main(v2f IN) : COLOR0
+{
+	clip(IN.uv.x - 0.5f);
+	return IN.col;
+}
+
+)EOSHADER";
+
+  std::string DepthPixel = R"EOSHADER(
+
+struct v2f
+{
+	float4 col : COLOR0;
+	float2 uv : TEXCOORD0;
+};
+
+struct ps_out
+{
+	float4 col : COLOR0;
+	float depth : DEPTH;
+};
+
+ps_out main(v2f IN)
+{
+	ps_out OUT;
+	OUT.col = IN.col;
+	OUT.depth = 0.3f;
+	return OUT;
+}
+
+)EOSHADER";
 
   struct FFVertex
   {
@@ -101,11 +152,16 @@ RD_TEST(D3D9_Overlay_Test, D3D9GraphicsTest)
 
     IDirect3DVertexShader9Ptr vs = CreateVS(vsblob);
     IDirect3DPixelShader9Ptr ps = CreatePS(psblob);
+    IDirect3DPixelShader9Ptr discardPS = CreatePS(Compile(DiscardPixel, "main", "ps_3_0"));
+    IDirect3DPixelShader9Ptr depthPS = CreatePS(Compile(DepthPixel, "main", "ps_3_0"));
 
-    // the depth test quad (x 0.05-0.3, y 0.1-0.9 in the window), then a quad covering the viewport
-    DefaultA2V quads[12];
+    // the depth test quad (x 0.05-0.3, y 0.1-0.9 in the window), a quad covering the viewport, the
+    // discard quad (x 0.35-0.6) and the shader depth quad (x 0.65-0.95)
+    DefaultA2V quads[24];
     ClipQuad(quads, -0.9f, 0.8f, -0.4f, -0.8f, 0.7f, Vec4f(0.0f, 0.5f, 0.0f, 1.0f));
     ClipQuad(quads + 6, -1.0f, 1.0f, 1.0f, -1.0f, 0.5f, Vec4f(0.5f, 0.5f, 0.0f, 1.0f));
+    ClipQuad(quads + 12, -0.3f, 0.8f, 0.2f, -0.8f, 0.52f, Vec4f(1.0f, 0.0f, 0.0f, 1.0f));
+    ClipQuad(quads + 18, 0.3f, 0.8f, 0.9f, -0.8f, 0.7f, Vec4f(0.0f, 0.0f, 1.0f, 1.0f));
     IDirect3DVertexBuffer9Ptr vb = MakeVB(quads, sizeof(quads));
 
     const bool msaaSupported =
@@ -237,6 +293,42 @@ RD_TEST(D3D9_Overlay_Test, D3D9GraphicsTest)
         };
         dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 3, strip, sizeof(FFVertex));
       }
+      popMarker();
+
+      dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+      dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESS);
+
+      pushMarker("Alpha Test");
+      {
+        SetFixedFunction();
+        const float x0 = 0.05f * w - 0.5f, x1 = 0.3f * w - 0.5f;
+        const float y0 = 0.1f * h - 0.5f, y1 = 0.9f * h - 0.5f;
+        const FFVertex verts[4] = {
+            {x0, y0, 0.6f, 1.0f, D3DCOLOR_ARGB(0, 255, 128, 0)},
+            {x1, y0, 0.6f, 1.0f, D3DCOLOR_ARGB(255, 255, 128, 0)},
+            {x0, y1, 0.6f, 1.0f, D3DCOLOR_ARGB(0, 255, 128, 0)},
+            {x1, y1, 0.6f, 1.0f, D3DCOLOR_ARGB(255, 255, 128, 0)},
+        };
+        dev->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
+        dev->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
+        dev->SetRenderState(D3DRS_ALPHAREF, 0x80);
+        dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, verts, sizeof(FFVertex));
+        dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+      }
+      popMarker();
+
+      dev->SetVertexDeclaration(defaultDecl);
+      dev->SetStreamSource(0, vb, 0, sizeof(DefaultA2V));
+      dev->SetVertexShader(vs);
+
+      pushMarker("Discard");
+      dev->SetPixelShader(discardPS);
+      dev->DrawPrimitive(D3DPT_TRIANGLELIST, 12, 2);
+      popMarker();
+
+      pushMarker("Shader Depth");
+      dev->SetPixelShader(depthPS);
+      dev->DrawPrimitive(D3DPT_TRIANGLELIST, 18, 2);
       popMarker();
 
       if(msaaRT && msaaDepth)

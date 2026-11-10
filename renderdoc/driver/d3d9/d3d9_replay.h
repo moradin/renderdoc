@@ -474,6 +474,9 @@ private:
   // target resolved into it), and in ds the depth stencil they test against, or NULL
   IDirect3DSurface9 *OverlayDrawTarget(IDirect3DSurface9 *targetSurf, IDirect3DSurface9 *overlaySurf,
                                        uint32_t eventId, IDirect3DSurface9 *&ds);
+  // turns what the pass and fail overlays' passes wrote into the bound width x height target into
+  // their colours
+  void ResolveMaskPasses(UINT width, UINT height);
 
   // Post-transform vertices (phase 3e): d3d9_postvs.cpp
 

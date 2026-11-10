@@ -417,6 +417,62 @@ def check_capture(controller, base):
                      tri_size_colour(0.1 * W * H))
             c.expect(oid, 'TriangleSizePass outside the pass', bx + 2, by + 6, NONE)
 
+    # Alpha Test, Discard and Shader Depth: quads whose pixel shader or alpha test leaves pixels
+    # out, or changes their depth. The pass and fail overlays draw with the application's pixel
+    # shader and alpha test, so what they show as passing is what the draw wrote: every pixel the
+    # Depth overlay has in green has to be one the draw changed, and the other way round.
+    def what_changed(draw):
+        controller.SetFrameEvent(draw.eventId - 1, True)
+        before = bytes(controller.GetTextureData(target, rd.Subresource(0, 0, 0)))
+        controller.SetFrameEvent(draw.eventId, True)
+        after = bytes(controller.GetTextureData(target, rd.Subresource(0, 0, 0)))
+        return [before[i:i + 4] != after[i:i + 4] for i in range(0, min(len(before), len(after)), 4)]
+
+    def check_written(name, oid, changed):
+        data = bytes(controller.GetTextureData(oid, rd.Subresource(0, 0, 0)))
+        # BGRA: green is (0, 255, 0, 255)
+        green = [data[i:i + 4] == b'\x00\xff\x00\xff' for i in range(0, len(data), 4)]
+        differ = sum(g != c for g, c in zip(green, changed))
+        check('{}: green where the draw wrote, and only there'.format(name),
+              len(green) == len(changed) and sum(changed) > 0 and differ == 0,
+              '{} pixels written, {} green, {} differ'.format(sum(changed), sum(green), differ))
+
+    quads = {
+        # the quad's left and right edges in fractions of the window, and what the Depth overlay
+        # shows in its left and right halves, top and bottom
+        'Alpha Test': (0.05, 0.3, [NONE, NONE, RED, GREEN]),
+        'Discard': (0.35, 0.6, [NONE, NONE, RED, GREEN]),
+        'Shader Depth': (0.65, 0.95, [GREEN, GREEN, GREEN, GREEN]),
+    }
+    for name, (x0, x1, expected) in quads.items():
+        draw = find_marker_draw(roots, sdfile, name)
+        target, tex = at(name)
+        if not target:
+            continue
+        W, H = tex.width, tex.height
+        left, right = (x0 + 0.25 * (x1 - x0)) * W, (x0 + 0.75 * (x1 - x0)) * W
+        points = [(left, 0.3 * H), (left, 0.7 * H), (right, 0.3 * H), (right, 0.7 * H)]
+        labels = ['left top', 'left bottom', 'right top', 'right bottom']
+        changed = what_changed(draw)
+
+        oid = c.overlay(target, rd.DebugOverlay.Depth, name, W, H)
+        if oid:
+            for p, label, col in zip(points, labels, expected):
+                c.expect(oid, 'Depth ' + label, *p, col)
+            check_written(name + ' Depth', oid, changed)
+
+        # with the depth test left on, as the application has it
+        oid = c.overlay(target, rd.DebugOverlay.BackfaceCull, name, W, H)
+        if oid:
+            for p, label, col in zip(points[1::2], labels[1::2], expected[1::2]):
+                c.expect(oid, 'BackfaceCull ' + label, *p, col)
+
+        # the stencil test is off, so whatever's drawn passes
+        oid = c.overlay(target, rd.DebugOverlay.Stencil, name, W, H)
+        if oid:
+            for p, label, col in zip(points[0::2], labels[0::2], expected[0::2]):
+                c.expect(oid, 'Stencil ' + label, *p, NONE if col == NONE else GREEN)
+
     # MSAA: a 256x256 4x target with a triangle (128,20) (236,236) (20,236)
     target, tex = at('MSAA')
     if target:

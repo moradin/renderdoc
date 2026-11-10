@@ -85,9 +85,9 @@ Known limitations of what works:
   mistakes: an out of range texture stage, sampler, render state or stream returns S_OK.
 - **GPU durations** depend on the GPU's clocks when they're measured, as on D3D11. With an idle GPU
   they came out up to 13 times longer than natively on the test machine.
-- **Overlays**:
-  - Pixels that the pixel shader discards or gives a new depth show as plain pass or fail.
-  - Alpha test is ignored.
+- **Overlays**: highlight drawcall, wireframe and triangle size show the whole primitive, including
+  pixels that the pixel shader discards or the alpha test rejects, as on the other APIs. The depth,
+  stencil, backface and viewport/scissor overlays leave those pixels out.
 - **Replay**:
   - An UpdateTexture inside the frame can copy more than it did at capture, because the source's
     dirty region isn't saved.

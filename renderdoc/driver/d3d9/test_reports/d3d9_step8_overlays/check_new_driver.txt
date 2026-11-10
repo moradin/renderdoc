@@ -1,0 +1,208 @@
+
+Depth Test:
+  event 32, target ResourceId::17 (400x300)
+  PASS the draw failed the depth test in the top half (setup grey): (0.098, 0.098, 0.098, 1.000)
+  PASS and passed in the bottom (green): (0.000, 0.498, 0.000, 1.000)
+  PASS Depth Test 1: overlay texture exists
+  PASS Depth Test 1: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Depth_Test_1.png
+  PASS Drawcall inside at (70, 90) is (0.800, 0.100, 0.800, 1.000): got (0.800, 0.098, 0.800, 1.000)
+  PASS Drawcall outside at (200, 291) is (0.000, 0.000, 0.000, 0.500): got (0.000, 0.000, 0.000, 0.502)
+  PASS Depth Test 2: overlay texture exists
+  PASS Depth Test 2: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Depth_Test_2.png
+  PASS Wireframe inside at (40, 90) is (0.784, 1.000, 0.000, 0.000): got (0.784, 1.000, 0.000, 0.000)
+  PASS Wireframe has the left edge near x=20: (0.784, 1.000, 0.000, 0.000) (0.784, 1.000, 0.000, 0.000) (0.784, 1.000, 0.000, 1.000) (0.784, 1.000, 0.000, 0.000) (0.784, 1.000, 0.000, 0.000)
+  PASS Depth Test 3: overlay texture exists
+  PASS Depth Test 3: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Depth_Test_3.png
+  PASS Depth fails in the top half at (70, 90) is (1.000, 0.000, 0.000, 1.000): got (1.000, 0.000, 0.000, 1.000)
+  PASS Depth passes in the bottom half at (70, 210) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS Depth outside the draw at (200, 291) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS Depth Test 4: overlay texture exists
+  PASS Depth Test 4: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Depth_Test_4.png
+  PASS Stencil with the test off passes at (70, 90) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS Depth Test 12: overlay texture exists
+  PASS Depth Test 12: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Depth_Test_12.png
+  PASS 12 is transparent: 0 non-zero bytes
+  PASS Depth Test 11: overlay texture exists
+  PASS Depth Test 11: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Depth_Test_11.png
+  PASS 11 is transparent: 0 non-zero bytes
+  PASS Depth Test 14: overlay texture exists
+  PASS Depth Test 14: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Depth_Test_14.png
+  PASS TriangleSizeDraw fails the depth test in the top half at (70, 90) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS TriangleSizeDraw in the bottom half at (70, 210) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+  PASS TriangleSizeDraw outside the draw at (200, 291) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS Depth Test 13: overlay texture exists
+  PASS Depth Test 13: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Depth_Test_13.png
+  PASS TriangleSizePass has the setup draw in the top half at (70, 90) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+  PASS TriangleSizePass in the bottom half at (70, 210) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+  PASS TriangleSizePass outside the pass at (200, 291) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS the overlays left the target as it was: 0 of 480000 bytes differ
+
+Depth Bias:
+  event 39, target ResourceId::17 (400x300)
+  PASS the draw failed in the top half (setup grey): (0.098, 0.098, 0.098, 1.000)
+  PASS Depth Bias 3: overlay texture exists
+  PASS Depth Bias 3: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Depth_Bias_3.png
+  PASS Depth fails in the top half at (190, 90) is (1.000, 0.000, 0.000, 1.000): got (1.000, 0.000, 0.000, 1.000)
+  PASS Depth passes in the bottom half at (190, 210) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+
+Stencil Test:
+  event 47, target ResourceId::17 (400x300)
+  PASS Stencil Test 4: overlay texture exists
+  PASS Stencil Test 4: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Stencil_Test_4.png
+  PASS Stencil passes in the top half at (320, 90) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS Stencil fails in the bottom half at (320, 210) is (1.000, 0.000, 0.000, 1.000): got (1.000, 0.000, 0.000, 1.000)
+  PASS Stencil Test 3: overlay texture exists
+  PASS Stencil Test 3: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Stencil_Test_3.png
+  PASS Depth with ZENABLE off passes at (320, 210) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS ClearBeforeDraw returns an overlay texture
+  PASS ClearBeforeDraw cleared what the setup draw drew: (0.000, 0.000, 1.000, 1.000)
+  PASS ClearBeforeDraw kept the draw: (0.498, 0.000, 0.498, 1.000)
+  PASS ClearBeforePass returns an overlay texture
+  PASS ClearBeforePass replayed the setup draw: (0.098, 0.098, 0.098, 1.000)
+  PASS ClearBeforePass cleared the background: (0.000, 0.000, 1.000, 1.000)
+  PASS turning the clear off puts the background back: (0.200, 0.200, 0.200, 1.000)
+
+Backface Cull:
+  event 52, target ResourceId::17 (400x300)
+  PASS Backface Cull 5: overlay texture exists
+  PASS Backface Cull 5: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Backface_Cull_5.png
+  PASS the front face at (100, 240) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS the back face at (300, 240) is (1.000, 0.000, 0.000, 1.000): got (1.000, 0.000, 0.000, 1.000)
+  PASS outside at (200, 90) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+
+Viewport Scissor:
+  event 63, target ResourceId::17 (400x300)
+  PASS Viewport Scissor 6: overlay texture exists
+  PASS Viewport Scissor 6: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Viewport_Scissor_6.png
+  PASS inside the scissor rect at (300, 225) is (0.080, 0.680, 0.360, 0.760): got (0.078, 0.678, 0.361, 0.761)
+  PASS scissored out at (220, 285) is (0.680, 0.080, 0.360, 0.760): got (0.678, 0.078, 0.361, 0.761)
+  PASS outside the viewport at (100, 75) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS the viewport's border at (201, 225) is (0.100, 0.100, 0.100, 1.000): got (0.098, 0.098, 0.098, 1.000)
+  PASS the scissor rect's border is black or white: (1.000, 1.000, 1.000, 1.000)
+  PASS Viewport Scissor 14: overlay texture exists
+  PASS Viewport Scissor 14: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Viewport_Scissor_14.png
+  PASS TriangleSizeDraw inside the scissor rect at (300, 225) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+  PASS TriangleSizeDraw scissored out at (220, 285) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS TriangleSizeDraw outside the viewport at (100, 225) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+
+Triangle Size:
+  event 71, target ResourceId::17 (400x300)
+  expected ramp entries: 2 for 10.0 pixels, 1 for 24.0 pixels, 3 for 7.0 pixels
+  PASS Triangle Size 14: overlay texture exists
+  PASS Triangle Size 14: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Triangle_Size_14.png
+  PASS TriangleSizeDraw of a 10.0 pixel triangle at (41, 277) is (0.251, 0.000, 0.753, 1.000): got (0.251, 0.000, 0.753, 1.000)
+  PASS TriangleSizeDraw of a 24.0 pixel triangle at (45, 279) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+  PASS TriangleSizeDraw of a 7.0 pixel triangle at (48, 277) is (0.000, 0.251, 1.000, 1.000): got (0.000, 0.251, 1.000, 1.000)
+  PASS TriangleSizeDraw outside the strip at (42, 282) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS TriangleSizeDraw leaves out the earlier draws at (70, 210) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS Triangle Size 1: overlay texture exists
+  PASS Triangle Size 1: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Triangle_Size_1.png
+  PASS TriangleSizeDraw covers what Drawcall does: 42 pixels covered, 0 differ
+  PASS TriangleSizeDraw only has ramp colours: 0 pixels aren't
+  PASS Triangle Size 13: overlay texture exists
+  PASS Triangle Size 13: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Triangle_Size_13.png
+  PASS TriangleSizePass of a 10.0 pixel triangle at (41, 277) is (0.251, 0.000, 0.753, 1.000): got (0.251, 0.000, 0.753, 1.000)
+  PASS TriangleSizePass of a 24.0 pixel triangle at (45, 279) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+  PASS TriangleSizePass of a 7.0 pixel triangle at (48, 277) is (0.000, 0.251, 1.000, 1.000): got (0.000, 0.251, 1.000, 1.000)
+  PASS TriangleSizePass has the Depth Test draw at (70, 210) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+  PASS TriangleSizePass outside the pass at (42, 282) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+
+Alpha Test:
+  event 82, target ResourceId::17 (400x300)
+  PASS Alpha Test 3: overlay texture exists
+  PASS Alpha Test 3: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Alpha_Test_3.png
+  PASS Depth left top at (45, 90) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS Depth left bottom at (45, 210) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS Depth right top at (95, 90) is (1.000, 0.000, 0.000, 1.000): got (1.000, 0.000, 0.000, 1.000)
+  PASS Depth right bottom at (95, 210) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS Alpha Test Depth: green where the draw wrote, and only there: 6000 pixels written, 6000 green, 0 differ
+  PASS Alpha Test 5: overlay texture exists
+  PASS Alpha Test 5: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Alpha_Test_5.png
+  PASS BackfaceCull left bottom at (45, 210) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS BackfaceCull right bottom at (95, 210) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS Alpha Test 4: overlay texture exists
+  PASS Alpha Test 4: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Alpha_Test_4.png
+  PASS Stencil left top at (45, 90) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS Stencil right top at (95, 90) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+
+Discard:
+  event 90, target ResourceId::17 (400x300)
+  PASS Discard 3: overlay texture exists
+  PASS Discard 3: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Discard_3.png
+  PASS Depth left top at (165, 90) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS Depth left bottom at (165, 210) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS Depth right top at (215, 90) is (1.000, 0.000, 0.000, 1.000): got (1.000, 0.000, 0.000, 1.000)
+  PASS Depth right bottom at (215, 210) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS Discard Depth: green where the draw wrote, and only there: 5880 pixels written, 5880 green, 0 differ
+  PASS Discard 5: overlay texture exists
+  PASS Discard 5: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Discard_5.png
+  PASS BackfaceCull left bottom at (165, 210) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS BackfaceCull right bottom at (215, 210) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS Discard 4: overlay texture exists
+  PASS Discard 4: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Discard_4.png
+  PASS Stencil left top at (165, 90) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS Stencil right top at (215, 90) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+
+Shader Depth:
+  event 94, target ResourceId::17 (400x300)
+  PASS Shader Depth 3: overlay texture exists
+  PASS Shader Depth 3: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Shader_Depth_3.png
+  PASS Depth left top at (290, 90) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS Depth left bottom at (290, 210) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS Depth right top at (350, 90) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS Depth right bottom at (350, 210) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS Shader Depth Depth: green where the draw wrote, and only there: 28800 pixels written, 28800 green, 0 differ
+  PASS Shader Depth 5: overlay texture exists
+  PASS Shader Depth 5: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Shader_Depth_5.png
+  PASS BackfaceCull left bottom at (290, 210) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS BackfaceCull right bottom at (350, 210) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS Shader Depth 4: overlay texture exists
+  PASS Shader Depth 4: overlay is 400x300 A8R8G8B8: 480000 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_Shader_Depth_4.png
+  PASS Stencil left top at (290, 90) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS Stencil right top at (350, 90) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+
+MSAA:
+  event 105, target ResourceId::24 (256x256)
+  PASS the MSAA target is multisampled: 4 samples
+  PASS MSAA 3: overlay texture exists
+  PASS MSAA 3: overlay is 256x256 A8R8G8B8: 262144 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_MSAA_3.png
+  PASS Depth passes inside the triangle at (128, 180) is (0.000, 1.000, 0.000, 1.000): got (0.000, 1.000, 0.000, 1.000)
+  PASS Depth outside the triangle at (20, 20) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+  PASS MSAA 1: overlay texture exists
+  PASS MSAA 1: overlay is 256x256 A8R8G8B8: 262144 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_MSAA_1.png
+  PASS Drawcall inside the triangle at (128, 180) is (0.800, 0.100, 0.800, 1.000): got (0.800, 0.098, 0.800, 1.000)
+  PASS MSAA 14: overlay texture exists
+  PASS MSAA 14: overlay is 256x256 A8R8G8B8: 262144 bytes
+  saved C:/Users/Balazs/AppData/Local/Temp/claude/90f834f7a055dbe2/a648b5f7-d682-4d16-a0ea-7456b36dec91/scratchpad/step8/neg/overlay_MSAA_14.png
+  PASS TriangleSizeDraw inside the triangle at (128, 180) is (0.251, 0.000, 0.251, 1.000): got (0.251, 0.000, 0.251, 1.000)
+  PASS TriangleSizeDraw outside the triangle at (20, 20) is (0.000, 0.000, 0.000, 0.000): got (0.000, 0.000, 0.000, 0.000)
+
+146 passed, 0 failed

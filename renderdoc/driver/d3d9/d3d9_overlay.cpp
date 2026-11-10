@@ -47,6 +47,14 @@
 // * D3D9 only links a ps_3_0 pixel shader with a vs_3_0 vertex shader, and ps_3_0 can't be used
 //   with fixed function vertex processing or vs_1_1-vs_2_x, so the constant colour shader is
 //   ps_3_0 for vs_3_0 draws and ps_2_0 for the others.
+// * The pass and fail overlays (backface cull, viewport and scissor, depth and stencil) keep the
+//   application's pixel shader and alpha test, unlike D3D11's, so that pixels the shader discards
+//   (texkill, clip) or the alpha test rejects show as not drawn, and the depth test uses the
+//   shader's oDepth. The shader's colour can't be replaced, so the passes only clear channels of
+//   a white target, with ZERO/ZERO blending and the colour write mask: alpha where the draw drew,
+//   red and green where it passed. ResolveMaskPasses then turns that into red and green with
+//   blending. Highlight drawcall and wireframe still draw the whole primitive in a constant
+//   colour, as on the other APIs.
 // * The clear before pass and clear before draw overlays clear the application's targets and
 //   replay the draws, so they change the targets themselves (the overlay texture stays
 //   transparent), as on the other APIs. The replay controller replays again when they're turned
@@ -824,11 +832,19 @@ ResourceId D3D9Replay::RenderDrawOverlay(IDirect3DSurface9 *targetSurf,
   }
 
   // the application's states the overlays use
-  DWORD appCull = D3DCULL_CCW, appScissor = FALSE, appZEnable = D3DZB_TRUE, appStencil = FALSE;
+  DWORD appCull = D3DCULL_CCW, appScissor = FALSE, appZEnable = D3DZB_TRUE, appStencil = FALSE,
+        appAlphaTest = FALSE;
   dev->GetRenderState(D3DRS_CULLMODE, &appCull);
   dev->GetRenderState(D3DRS_SCISSORTESTENABLE, &appScissor);
   dev->GetRenderState(D3DRS_ZENABLE, &appZEnable);
   dev->GetRenderState(D3DRS_STENCILENABLE, &appStencil);
+  dev->GetRenderState(D3DRS_ALPHATESTENABLE, &appAlphaTest);
+
+  // The pass and fail overlays draw with the application's pixel shader and alpha test (see
+  // DrawMaskPass), the others with a constant colour.
+  const bool passFail = overlay == DebugOverlay::BackfaceCull ||
+                        overlay == DebugOverlay::ViewportScissor ||
+                        overlay == DebugOverlay::Depth || overlay == DebugOverlay::Stencil;
 
   D3DSURFACE_DESC targetDesc = {};
   targetSurf->GetDesc(&targetDesc);
@@ -871,6 +887,9 @@ ResourceId D3D9Replay::RenderDrawOverlay(IDirect3DSurface9 *targetSurf,
       background = ToD3DColor(0.0f, 0.0f, 0.0f, 0.5f);
     else if(overlay == DebugOverlay::Wireframe)
       background = ToD3DColor(200.0f / 255.0f, 1.0f, 0.0f, 0.0f);
+    else if(passFail)
+      // the passes clear channels of it, and ResolveMaskPasses turns it into the colours
+      background = 0xFFFFFFFF;
 
     const D3DVIEWPORT9 full = {0, 0, targetDesc.Width, targetDesc.Height, 0.0f, 1.0f};
     dev->SetViewport(&full);
@@ -884,12 +903,36 @@ ResourceId D3D9Replay::RenderDrawOverlay(IDirect3DSurface9 *targetSurf,
   dev->SetScissorRect(&state.ScissorRect);
   dev->SetRenderState(D3DRS_SCISSORTESTENABLE, appScissor);
 
-  dev->SetPixelShader(BoundVertexShaderMajor(dev) >= 3 ? m_Overlay.colourPS3 : m_Overlay.colourPS2);
+  if(passFail)
+  {
+    // the application's pixel shader stays bound, and its alpha test on
+    dev->SetRenderState(D3DRS_ALPHATESTENABLE, appAlphaTest);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ZERO);
+    dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ZERO);
+    dev->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+  }
+  else
+  {
+    dev->SetPixelShader(BoundVertexShaderMajor(dev) >= 3 ? m_Overlay.colourPS3 : m_Overlay.colourPS2);
+  }
 
   auto drawPass = [&](float r, float g, float b, float a) {
     const float colour[4] = {r, g, b, a};
     dev->SetPixelShaderConstantF(0, colour, 1);
     m_pDevice->ReplayLog(0, eventId, eReplay_OnlyDraw);
+  };
+
+  // what the draw writes, in the pass and fail overlays: everything it draws clears alpha, and
+  // what passes the test clears red and green too (see ResolveMaskPasses)
+  auto drawAll = [&]() {
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_ALPHA);
+    m_pDevice->ReplayLog(0, eventId, eReplay_OnlyDraw);
+  };
+  auto drawPassing = [&]() {
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN);
+    m_pDevice->ReplayLog(0, eventId, eReplay_OnlyDraw);
+    ResolveMaskPasses(targetDesc.Width, targetDesc.Height);
   };
 
   const DWORD noDepth = D3DZB_FALSE;
@@ -923,9 +966,9 @@ ResourceId D3D9Replay::RenderDrawOverlay(IDirect3DSurface9 *targetSurf,
 
       // everything in red, then what isn't culled in green
       dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-      drawPass(1.0f, 0.0f, 0.0f, 1.0f);
+      drawAll();
       dev->SetRenderState(D3DRS_CULLMODE, appCull);
-      drawPass(0.0f, 1.0f, 0.0f, 1.0f);
+      drawPassing();
       break;
     }
     case DebugOverlay::ViewportScissor:
@@ -937,9 +980,9 @@ ResourceId D3D9Replay::RenderDrawOverlay(IDirect3DSurface9 *targetSurf,
 
       // the draw without the scissor test in red, then with it in green
       dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
-      drawPass(1.0f, 0.0f, 0.0f, 1.0f);
+      drawAll();
       dev->SetRenderState(D3DRS_SCISSORTESTENABLE, appScissor);
-      drawPass(0.0f, 1.0f, 0.0f, 1.0f);
+      drawPassing();
 
       // then the viewport, and the scissor rect, as D3D11 shows them
       const bool ownScene = SUCCEEDED(dev->BeginScene());
@@ -993,10 +1036,10 @@ ResourceId D3D9Replay::RenderDrawOverlay(IDirect3DSurface9 *targetSurf,
       // with the test off) everything passes. The depth bias states are the application's.
       dev->SetRenderState(D3DRS_ZENABLE, noDepth);
       dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-      drawPass(1.0f, 0.0f, 0.0f, 1.0f);
+      drawAll();
       dev->SetRenderState(D3DRS_ZENABLE, ds ? appZEnable : noDepth);
       dev->SetRenderState(D3DRS_CULLMODE, appCull);
-      drawPass(0.0f, 1.0f, 0.0f, 1.0f);
+      drawPassing();
       break;
     }
     case DebugOverlay::Stencil:
@@ -1007,10 +1050,10 @@ ResourceId D3D9Replay::RenderDrawOverlay(IDirect3DSurface9 *targetSurf,
       // stencil functions, reference and read mask
       dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
       dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-      drawPass(1.0f, 0.0f, 0.0f, 1.0f);
+      drawAll();
       dev->SetRenderState(D3DRS_STENCILENABLE, ds ? appStencil : FALSE);
       dev->SetRenderState(D3DRS_CULLMODE, appCull);
-      drawPass(0.0f, 1.0f, 0.0f, 1.0f);
+      drawPassing();
       break;
     }
     default: RDCERR("Unexpected overlay %s", ToStr(overlay).c_str()); break;
@@ -1031,6 +1074,63 @@ ResourceId D3D9Replay::RenderDrawOverlay(IDirect3DSurface9 *targetSurf,
   m_pDevice->RestoreReplayDrawState(state);
 
   return m_Overlay.id;
+}
+
+void D3D9Replay::ResolveMaskPasses(UINT width, UINT height)
+{
+  IDirect3DDevice9 *dev = m_pDevice->GetReal();
+
+  // The bound target started out white (1,1,1,1). Everything the draw drew has alpha 0, and what
+  // passed has red and green 0 too:
+  //   not drawn (1,1,1,1) -> transparent (0,0,0,0)
+  //   failed    (1,1,1,0) -> red         (1,0,0,1)
+  //   passed    (0,0,1,0) -> green       (0,1,0,1)
+  // Blending gives each channel from its own value and alpha, in three full screen quads:
+  //   red = R * (1 - A), green and blue = (1 - G or B) * (1 - A), alpha = 1 - A
+  // Alpha changes last, since the others read it. On a multisampled target this works on each
+  // sample, and the edges come out partly covered when they're resolved.
+  const bool ownScene = SUCCEEDED(dev->BeginScene());
+
+  D3D9SetDebugDrawState(dev);
+  dev->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
+  dev->SetVertexShader(m_Overlay.quadVS);
+  dev->SetPixelShader(m_Overlay.colourPS3);
+  dev->SetVertexDeclaration(m_Debug.quadDecl);
+  dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+
+  const D3DVIEWPORT9 full = {0, 0, width, height, 0.0f, 1.0f};
+  dev->SetViewport(&full);
+
+  struct Step
+  {
+    DWORD mask;
+    float colour;
+    D3DBLEND src, dst;
+    D3DBLENDOP op;
+  };
+  const Step steps[] = {
+      // R * (1 - A)
+      {D3DCOLORWRITEENABLE_RED, 0.0f, D3DBLEND_ZERO, D3DBLEND_INVDESTALPHA, D3DBLENDOP_ADD},
+      // 1 * (1 - A) - G * (1 - A), and the same for blue
+      {D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE, 1.0f, D3DBLEND_INVDESTALPHA,
+       D3DBLEND_INVDESTALPHA, D3DBLENDOP_SUBTRACT},
+      // 1 - A
+      {D3DCOLORWRITEENABLE_ALPHA, 1.0f, D3DBLEND_ONE, D3DBLEND_ONE, D3DBLENDOP_SUBTRACT},
+  };
+
+  for(const Step &step : steps)
+  {
+    const float colour[4] = {step.colour, step.colour, step.colour, step.colour};
+    dev->SetPixelShaderConstantF(0, colour, 1);
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE, step.mask);
+    dev->SetRenderState(D3DRS_SRCBLEND, step.src);
+    dev->SetRenderState(D3DRS_DESTBLEND, step.dst);
+    dev->SetRenderState(D3DRS_BLENDOP, step.op);
+    dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, ViewportQuad, sizeof(Vec4f));
+  }
+
+  if(ownScene)
+    dev->EndScene();
 }
 
 IDirect3DSurface9 *D3D9Replay::OverlayDrawTarget(IDirect3DSurface9 *targetSurf,
