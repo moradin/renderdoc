@@ -960,6 +960,135 @@ QString PipelineStateViewer::GenerateHLSLStub(const ShaderReflection *shaderDeta
   return hlsl;
 }
 
+// The HLSL profile to compile a D3D9 shader's stub with: its own shader model, from the version
+// token, since vs_3_0 and ps_3_0 only work with each other. d3dcompiler_47 can't compile ps_1_x, so
+// those are ps_2_0, which works with every vertex shader model but 3_0, as ps_1_x does.
+static QString D3D9StubProfile(const ShaderReflection *shaderDetails)
+{
+  const bytebuf &bytes = shaderDetails->rawBytes;
+  const uint32_t minor = bytes.size() >= 4 ? bytes[0] : 0;
+  const uint32_t major = bytes.size() >= 4 ? bytes[1] : 3;
+
+  if(shaderDetails->stage == ShaderStage::Vertex)
+  {
+    if(major <= 1)
+      return lit("vs_1_1");
+    if(major == 2)
+      return minor ? lit("vs_2_a") : lit("vs_2_0");
+    return lit("vs_3_0");
+  }
+
+  if(major == 2 && minor != 0)
+    return lit("ps_2_a");
+  return major >= 3 ? lit("ps_3_0") : lit("ps_2_0");
+}
+
+QString PipelineStateViewer::GenerateD3D9HLSLStub(const ShaderReflection *shaderDetails,
+                                                  const QString &profile)
+{
+  QString hlsl =
+      lit("// HLSL stub generated from the shader's constant table and signature, for %1 (the\n"
+          "// profile is /T in the compile options).\n"
+          "// The constants and samplers are in the registers the shader used. Ones named by\n"
+          "// register (c#, i#, b#) aren't in its constant table: they're registers it reads, or\n"
+          "// literals it defines.\n\n")
+          .arg(profile);
+
+  QString structs;
+  QString globals;
+
+  // D3D9's constant tables have no struct names, so structs are named after their variable
+  std::function<QString(const ShaderConstantType &, const QString &)> typeName;
+  typeName = [&](const ShaderConstantType &type, const QString &name) -> QString {
+    if(type.baseType != VarType::Struct)
+    {
+      QString ret = type.name;
+      if(type.rows > 1 && type.RowMajor())
+        ret = lit("row_major ") + ret;
+      return ret;
+    }
+
+    QString structName = name + lit("_struct");
+    QString members;
+    for(const ShaderConstant &m : type.members)
+    {
+      members += lit("\t%1 %2").arg(typeName(m.type, structName + lit("_") + m.name)).arg(m.name);
+      if(m.type.elements > 1)
+        members += lit("[%1]").arg(m.type.elements);
+      members += lit(";\n");
+    }
+    structs += lit("struct %1 {\n%2};\n\n").arg(structName).arg(members);
+    return structName;
+  };
+
+  for(const ConstantBlock &block : shaderDetails->constantBlocks)
+  {
+    // the block's bind number is its register set: float, integer or boolean
+    const QChar regChar = block.fixedBindNumber == 1   ? QLatin1Char('i')
+                          : block.fixedBindNumber == 2 ? QLatin1Char('b')
+                                                       : QLatin1Char('c');
+    const uint32_t stride = block.fixedBindNumber == 2 ? 4 : 16;
+
+    for(const ShaderConstant &v : block.variables)
+    {
+      globals += lit("%1 %2").arg(typeName(v.type, v.name)).arg(v.name);
+      if(v.type.elements > 1)
+        globals += lit("[%1]").arg(v.type.elements);
+      globals += lit(" : register(%1%2);\n").arg(regChar).arg(v.byteOffset / stride);
+    }
+  }
+
+  for(const ShaderResource &res : shaderDetails->readOnlyResources)
+  {
+    QString type = lit("sampler2D");
+    if(res.textureType == TextureType::Texture1D)
+      type = lit("sampler1D");
+    else if(res.textureType == TextureType::Texture3D)
+      type = lit("sampler3D");
+    else if(res.textureType == TextureType::TextureCube)
+      type = lit("samplerCUBE");
+
+    globals += lit("%1 %2").arg(type).arg(res.name);
+    if(res.bindArraySize > 1)
+      globals += lit("[%1]").arg(res.bindArraySize);
+    globals += lit(" : register(s%1);\n").arg(res.fixedBindNumber);
+  }
+
+  auto signature = [](const rdcarray<SigParameter> &sigs) {
+    QString ret;
+    for(const SigParameter &sig : sigs)
+    {
+      QString semantic = sig.semanticName;
+      if(sig.semanticIndex > 0)
+        semantic += QString::number(sig.semanticIndex);
+      QString name = !sig.varName.isEmpty() ? QString(sig.varName) : semantic.toLower();
+      ret += lit("\t%1 %2 : %3;\n").arg(TypeString(sig)).arg(name).arg(semantic);
+    }
+    return ret;
+  };
+
+  const QString inputs = signature(shaderDetails->inputSignature);
+  const QString outputs = signature(shaderDetails->outputSignature);
+
+  hlsl += structs + globals + lit("\n");
+
+  if(!inputs.isEmpty())
+    hlsl += lit("struct INPUT {\n%1};\n\n").arg(inputs);
+  hlsl += lit("struct OUTPUT {\n%1};\n\n").arg(outputs);
+
+  hlsl += lit("OUTPUT main(%1)\n"
+              "{\n"
+              "\tOUTPUT OUT = (OUTPUT)0;\n"
+              "\n"
+              "\t// ...\n"
+              "\n"
+              "\treturn OUT;\n"
+              "}\n")
+              .arg(inputs.isEmpty() ? QString() : lit("INPUT IN"));
+
+  return hlsl;
+}
+
 void PipelineStateViewer::shaderEdit_clicked()
 {
   QToolButton *sender = qobject_cast<QToolButton *>(QObject::sender());
@@ -1104,8 +1233,55 @@ void PipelineStateViewer::SetupShaderEditButton(QToolButton *button, ResourceId 
     menu->addAction(action);
   }
 
+  // D3D9 bytecode has no source. Its disassembly assembles back to the same shader, so that's
+  // first, then an HLSL stub from its constant table.
+  if(shaderDetails->encoding == ShaderEncoding::D3D9Bytecode)
+  {
+    QAction *disasm = new QAction(tr("Edit Disassembly"), menu);
+    disasm->setIcon(Icons::page_white_edit());
+
+    QObject::connect(disasm, &QAction::triggered, [this, pipelineId, shaderId, shaderDetails]() {
+      m_Ctx.Replay().AsyncInvoke([this, pipelineId, shaderId, shaderDetails](IReplayController *r) {
+        rdcstr text = r->DisassembleShader(pipelineId, shaderDetails, "");
+
+        GUIInvoke::call(this, [this, shaderId, shaderDetails, text]() {
+          rdcstrpairs files;
+          files.push_back(rdcpair<rdcstr, rdcstr>(
+              "disassembly.asm",
+              tr("// Assembled with d3dcompiler_47's D3DAssemble. Comments aren't kept, so a\n"
+                 "// constant table below is lost and the constants are named by register.\n") +
+                  QString(text)));
+
+          EditShader(shaderId, shaderDetails->stage, shaderDetails->entryPoint,
+                     ShaderCompileFlags(), KnownShaderTool::Unknown, ShaderEncoding::D3D9Asm, files);
+        });
+      });
+    });
+
+    menu->addAction(disasm);
+
+    QAction *stub = new QAction(tr("Edit Generated Stub"), menu);
+    stub->setIcon(Icons::page_white_edit());
+
+    QObject::connect(stub, &QAction::triggered, [this, shaderId, shaderDetails]() {
+      const QString profile = D3D9StubProfile(shaderDetails);
+
+      rdcstrpairs files;
+      files.push_back(rdcpair<rdcstr, rdcstr>("decompiled_stub.hlsl",
+                                              GenerateD3D9HLSLStub(shaderDetails, profile)));
+
+      ShaderCompileFlags flags;
+      flags.flags.push_back({"@cmdline", lit("/T %1").arg(profile)});
+
+      EditShader(shaderId, shaderDetails->stage, shaderDetails->entryPoint, flags,
+                 KnownShaderTool::Unknown, ShaderEncoding::HLSL, files);
+    });
+
+    menu->addAction(stub);
+  }
+
   // if all else fails we can generate a stub for editing. Skip this for GLSL as it always has
-  // source above which is preferred, and for D3D9 bytecode which has no stub or pseudocode.
+  // source above which is preferred, and for D3D9 bytecode which has its own above.
   if(shaderDetails->encoding != ShaderEncoding::GLSL &&
      shaderDetails->encoding != ShaderEncoding::D3D9Bytecode)
   {
@@ -1531,6 +1707,7 @@ bool PipelineStateViewer::SaveShaderFile(const ShaderReflection *shader)
     case ShaderEncoding::DXIL: filter = tr("DXIL Shader files (*.dxbc)"); break;
     case ShaderEncoding::Slang: filter = tr("Slang Shader files (*.slang)"); break;
     case ShaderEncoding::D3D9Bytecode: filter = tr("D3D9 Shader files (*.fxo)"); break;
+    case ShaderEncoding::D3D9Asm: filter = tr("D3D9 assembly files (*.asm)"); break;
     case ShaderEncoding::Unknown:
     case ShaderEncoding::Count: filter = tr("All files (*.*)"); break;
   }

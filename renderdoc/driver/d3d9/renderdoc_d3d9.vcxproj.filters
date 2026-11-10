@@ -102,6 +102,9 @@
     <ClCompile Include="d3d9_customshader.cpp">
       <Filter>Replay</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9_shaderedit.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
     <ClCompile Include="d3d9_overlay.cpp">
       <Filter>Replay</Filter>
     </ClCompile>

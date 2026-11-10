@@ -922,11 +922,14 @@ void D3D9Replay::SavePipelineState(uint32_t eventId)
     {
       D3D9Pipe::Shader &sh = *dst[s];
       sh.stage = stages[s];
-      sh.resourceId = s == 0 ? WrappedID(bind.vs) : WrappedID(bind.ps);
+      // an edited shader is bound in place of the original. The original's ID is shown, as on
+      // D3D11, with what's bound's reflection.
+      const ResourceId bound = s == 0 ? WrappedID(bind.vs) : WrappedID(bind.ps);
+      sh.resourceId = m_pDevice->GetResourceManager()->GetUnreplacedID(bound);
       sh.shaderModel = s == 0 ? ShaderModelName(bind.vs, NULL) : ShaderModelName(NULL, bind.ps);
 
-      if(sh.resourceId != ResourceId())
-        sh.reflection = GetShader(ResourceId(), sh.resourceId, ShaderEntryPoint("main", sh.stage));
+      if(bound != ResourceId())
+        sh.reflection = GetShader(ResourceId(), bound, ShaderEntryPoint("main", sh.stage));
       // fixed function vertex processing gets a reflection with its outputs, for the mesh viewer
       else if(s == 0)
         sh.reflection = GetFFPReflection(eventId, state);

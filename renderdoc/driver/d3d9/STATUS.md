@@ -40,7 +40,7 @@ the testing were on separate machines.
 | | ~~Resource usage list (what each event binds, recorded during replay)~~ | 0.5 | Done, see "Resource usage" below |
 | | ~~Debug messages: the D3D9 debug runtime doesn't run on Windows 8 and later, so report failed calls (`D3DERR_INVALIDCALL` and similar) instead~~ | 0.5 | Done, see "Debug messages" below |
 | | ~~Custom display shaders in the texture viewer~~ | 0.5-1 | Done, see "Custom display shaders" below |
-| 4 | **Shader editing and replacement**, including Edit Generated Stub | 1.5-2 | HLSL through d3dcompiler_47 for SM2/3. Assembly for SM1, since current compilers can't target ps_1_x. The stub comes from the constant table |
+| 4 | ~~**Shader editing and replacement**, including Edit Generated Stub~~ | 1.5-2 | Done, see "Shader editing" below |
 | 5 | **Shader debugging** | 5-8 | The biggest item |
 | | Vertex shaders | 1.5-2 | Builds on the interpreter in `d3d9_vs_emulate.cpp`, adding per-step states and variable changes |
 | | Pixel shaders | 3-5 | Needs a new interpreter covering ps_1_x's texture addressing instructions, inputs worked out on the CPU from VS Out, sampling on the GPU, and 2x2 quads for derivatives, `vPos` and `vFace` |
@@ -121,6 +121,7 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Resource_Usage` | Every texture, surface, buffer and constants pseudo buffer's usage against the exact list it should have: sampled and unsampled textures (a pixel sampler the shader doesn't read, a texture after a disabled fixed function stage), a vertex texture, used and unused streams, the index buffer only at the indexed draw, UP draws reading no buffers, both MRT targets, depth only with the depth test on, clears (both bound targets, as natively), StretchRect, a resolve, GetRenderTargetData, ColorFill, UpdateTexture, GenerateMipSubLevels and Unlock inside the frame |
 | `D3D9_Failed_Calls` | Debug messages for failed calls. The 18 calls give the same results natively and under RenderDoc, and each of the 13 that fail natively has exactly one message, at its own event inside its marker, with the HRESULT as its ID. The event is named after the call ("(failed)") and its result is `D3DERR_INVALIDCALL`. Some parameters are checked: render target index 4, start register 300 or 224, a source rect 128 wide, a texture 0 wide. A failed lock records its texture, which is in the capture, and a failed call's constants aren't read. The 5 calls that succeed natively (3 Clears with targets of different sizes, one with a smaller depth stencil, and an UnlockRect without a lock) have no message, there are no other messages, they're returned only once, and the triangle drawn after the failed calls replays |
 | `D3D9_Custom_Shaders` | Custom display shaders. The demo samples each of its textures natively with a ps_3_0 shader and writes what the GPU returned; the test builds the same shader as a custom shader and checks its output against that at 6 texels of every subresource: a default pool 2D texture with 3 mips, a managed one (decoded on the CPU), L8 (sampled as L, L, L, 1), a cube and a volume texture with 2 mips, a render target surface, and a D24S8 depth stencil (depth and stencil from its clears). `SV_Position` and `TEXCOORD0` match the native draw. The prefix's values (`RD_TexDim`, the mip, slice, sample and type, the range) are checked for each texture, a global the prefix doesn't fill is 0, `Texture2D` and `SamplerState` sample like `sampler2D`, the UI's template builds, and a shader with an error or for ps_2_0 doesn't |
+| `D3D9_Shader_Editing` | Shader editing. The demo draws nine quads with vs_1_1, vs_2_0 and vs_3_0, ps_1_1, ps_1_4, ps_2_0 and ps_3_0 shaders, bound when the frame starts, by a state block recorded before the frame, by `Set*Shader`, created during the frame, shared by two draws, and with fixed function pixel processing; natively it draws the scene with each of 10 edits in place of the original and writes what the GPU drew at 36 texels. The test builds each edit (HLSL, assembly or bytecode), replaces the original and checks the texels against the GPU's, checks the pipeline state (the original's ID, the edit's reflection) and, for vertex shaders, VS Out; then removes it and checks the original is back. Every shader's disassembly assembles back to the same instructions. Errors (HLSL, assembly, ps_1_x HLSL, a profile or bytecode of the other stage, bytecode with no end token, other stages) are reported, HLSL with no profile is shader model 3, a pixel shader doesn't replace a vertex shader, and freeing a replacement removes it |
 | `D3D11_D3DPERF_Markers` | `d3d11_d3dperf_check.py`: the markers nest as drawn, with their colours |
 
 What they don't cover:
@@ -358,6 +359,65 @@ texture's alpha and a depth stencil's stencil, and the editor inserts the D3D9 s
 Not covered: multisampled textures, YUV formats and textures decoded because of their format (P8,
 ATI1 and so on) aren't in the test; they go through the same decoded path as the managed texture
 and the depth stencil.
+
+## Shader editing
+
+Editing a shader from the pipeline state, as on D3D11 (`d3d9_shaderedit.cpp`): `BuildTargetShader`
+creates a shader through the wrapped device, so it has a ResourceId, and `ReplaceResource` has the
+resource manager return it in place of the original. Every way a shader gets bound on replay looks
+it up by ID there: replayed `Set*Shader` calls, the bindings in `BeginCaptureFrame`, and state
+blocks' initial contents (`ApplyStateBlockContents`). State blocks created or captured during the
+frame record what replay bound, which is the replacement. Nothing else in the replay needed
+changing for it.
+
+- **What can be built** (`GetTargetShaderEncodings`, `BuildShaderBytecode`):
+  - HLSL, compiled by d3dcompiler_47 for the profile given with `/T`, or vs_3_0 / ps_3_0 without
+    one. It compiles vs_1_1 to vs_3_0 and ps_2_0 to ps_3_0. It doesn't compile ps_1_x (error
+    X3539).
+  - D3D9 assembly, a new encoding (`ShaderEncoding::D3D9Asm`), assembled by d3dcompiler_47's
+    `D3DAssemble`, which takes every model, ps_1_x included. It isn't declared in d3dcompiler.h, but
+    d3dcompiler_47 exports it; the signature is Wine's.
+  - D3D9 bytecode, as given.
+  - Whatever is built has to parse completely with a version token of the right stage, since the
+    runtime reads bytecode up to its end token with no length. Other stages are an error.
+- **The pipeline state** reports the original's ID with the replacement's reflection, as D3D11
+  does, so the shader viewer and the constants show the edited shader's registers.
+- **Mesh output** runs the replacement's bytecode, since it looks the bound shader up by its ID;
+  the cache is cleared when a replacement is added or removed.
+- **A shader only replaces a shader of the same stage.** `ReplaceResource` ignores anything else
+  (with a warning), since the replacement is bound with the original's `Set*Shader`.
+- **`FreeTargetResource`** removes the replacement first, and then only releases the shader after
+  the next replay. Releasing it straight away, after a replay that drew with it, made NVIDIA's
+  driver read freed memory in the next replay's first draw (see `d3d9_step4.md`); the cause inside
+  the driver wasn't found. The reflection is kept, the replay controller may still point to it.
+- Custom display shaders build through `BuildShaderBytecode` too.
+
+In qrenderdoc the D3D9 pipeline state has an Edit button for each shader, with:
+- **Edit Disassembly**, the default: the shader's disassembly as D3D9 assembly. It's in fxc's
+  format, so it assembles back to the same instructions. Comments aren't kept, so the constant
+  table is lost and the edited shader's constants are named by register.
+- **Edit Generated Stub**: HLSL from the reflection (`PipelineStateViewer::GenerateD3D9HLSLStub`):
+  the constants and samplers at the registers the shader used, structs named after their variable
+  (D3D9 constant tables have no struct names), `row_major` matrices, and input and output structs
+  with D3D9 semantics. The compile options have `/T` with the shader's own model from its version
+  token, since vs_3_0 and ps_3_0 only work with each other; ps_1_x becomes ps_2_0 and 2_x becomes
+  2_a. Constants named by register can be literals the shader defines, which the stub can't tell
+  from registers it reads.
+
+The shader editor highlights D3D9 assembly like HLSL (its comments are `//`), says it can't
+insert snippets into it, and saves it as `.asm`. `docs/how/how_edit_shader.rst` has a D3D9
+section.
+
+Tested in `d3d9_step4.md`: `D3D9_Shader_Editing` passes on x64 and x86, and in qrenderdoc an edited
+ps_1_1 disassembly is applied and drawn, and the stub compiles unchanged for each of the demo's
+shader models.
+
+Not covered: shaders from real games, which may have no constant table or come from other
+compilers; predicates and the rarer instructions in the assembly round trip (every shader in the D3D9
+tests' captures assembles back the same, `D3D9_Mesh_Output`'s loops, relative addressing and
+`texldl` included, but none uses predicates); structs and
+matrices in the stub (the demo's shaders have none); software vertex processing shaders (vs_2_sw,
+vs_3_sw), which `/T` takes but nothing tested.
 
 ## Needs testing
 
@@ -915,7 +975,7 @@ Known gaps:
   processing devices while in software mode), 224 PS float constants on SM3 hardware, 16 int and
   16 bool (2048 VS ones in software mode). Reading them always returns what the device has at the
   time, so a capture that switches software vertex processing mid-frame can read a different size.
-- Shader editing isn't offered (D3D9 can't build replacement shaders yet).
+- (Since step 4.) Shader editing is offered, see "Shader editing".
 - Remote replay presents `localRenderer` D3D9, which has no proxy texture support, so remote
   replay of D3D9 captures probably won't display textures.
 - `SetLOD` on managed textures isn't reflected in the descriptors' first mip.
@@ -1049,10 +1109,9 @@ Known gaps:
 - The constant table's default values are read as the type's components packed together, as Wine
   does; that hasn't been checked against a real table, nor have integer and boolean defaults.
 - Without a constant table, how far a relatively addressed constant array goes is a guess.
-- No shader debugging, editing (`BuildTargetShader`) or source-level debug info.
-  `GetTargetShaderEncodings` is empty and the "Edit Generated Stub" option is left out for
-  D3D9 bytecode. AMD's GCN ISA disassembly isn't offered either: AMD's plugins only take
-  DXBC/DXIL, SPIR-V and GLSL.
+- No shader debugging or source-level debug info. (Editing was added in step 4, see "Shader
+  editing".) AMD's GCN ISA disassembly isn't offered: AMD's plugins only take DXBC/DXIL, SPIR-V
+  and GLSL.
 - `channelUsedMask` is approximate for instructions that aren't per component.
 
 Tested: the unit tests in `d3d9_bytecode.cpp` and `d3d9_shader_reflect.cpp` (Catch, `[d3d9]`)
@@ -1533,6 +1592,8 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
   macros in `d3d9_device_wrap.cpp`, and `Serialise_FailedCall` in `d3d9_device_serialise.cpp`.
 - `d3d9_customshader.cpp` - the texture viewer's custom display shaders: their prefix, building
   them and drawing them.
+- `d3d9_shaderedit.cpp` - shader editing: building shaders from HLSL, assembly or bytecode
+  (`BuildShaderBytecode`, which custom shaders use too) and replacing the application's.
 - `d3d9_resources.*` - the wrapper base class and the resource wrappers. The comment at the top of
   `d3d9_resources.h` describes the lifetime model (external vs internal references, who holds real
   references, child objects).

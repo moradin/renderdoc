@@ -250,6 +250,7 @@ D3D9Replay::D3D9Replay(WrappedD3DDevice9 *device, IDirect3D9Ex *d3d, HWND hidden
 void D3D9Replay::Shutdown()
 {
   ReleaseDebugRender();
+  ReleaseTargetShaders();
 
   for(auto it = m_OutputWindows.begin(); it != m_OutputWindows.end(); ++it)
     it->second.Release();
@@ -502,6 +503,8 @@ void D3D9Replay::ReplayLog(uint32_t endEventID, ReplayLogType replayType)
   ClearReplayCaches();
   m_ReplayedEvent = endEventID;
   m_pDevice->ReplayLog(0, endEventID, replayType);
+  // shaders that stopped replacing one before this replay (FreeTargetResource)
+  ReleaseFreedTargetShaders();
 }
 
 SDFile *D3D9Replay::GetStructuredFile()
@@ -659,31 +662,6 @@ void D3D9Replay::GetTextureData(ResourceId tex, const Subresource &sub,
   }
 
   data.swap(converted);
-}
-
-void D3D9Replay::BuildTargetShader(ShaderEncoding sourceEncoding, const bytebuf &source,
-                                   const rdcstr &entry, const ShaderCompileFlags &compileFlags,
-                                   ShaderStage type, ResourceId &id, rdcstr &errors)
-{
-  id = ResourceId();
-  errors = "Editing D3D9 shaders isn't supported yet";
-}
-
-rdcarray<ShaderEncoding> D3D9Replay::GetTargetShaderEncodings()
-{
-  return {};
-}
-
-void D3D9Replay::ReplaceResource(ResourceId from, ResourceId to)
-{
-}
-
-void D3D9Replay::RemoveReplacement(ResourceId id)
-{
-}
-
-void D3D9Replay::FreeTargetResource(ResourceId id)
-{
 }
 
 void D3D9Replay::ClearReplayCache()

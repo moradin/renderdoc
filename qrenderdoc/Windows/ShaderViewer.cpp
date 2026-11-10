@@ -1645,8 +1645,11 @@ ScintillaEdit *ShaderViewer::AddFileScintilla(const QString &name, const QString
 {
   ScintillaEdit *scintilla =
       MakeEditor(lit("scintilla") + name, text,
-                 encoding == ShaderEncoding::HLSL || encoding == ShaderEncoding::Slang ? SCLEX_HLSL
-                                                                                       : SCLEX_GLSL);
+                 // D3D9 assembly's comments are //, like the disassembly view's
+                 encoding == ShaderEncoding::HLSL || encoding == ShaderEncoding::Slang ||
+                         encoding == ShaderEncoding::D3D9Asm
+                     ? SCLEX_HLSL
+                     : SCLEX_GLSL);
   scintilla->setReadOnly(true);
   scintilla->setWindowTitle(name);
   ((QWidget *)scintilla)->setProperty("name", name);
@@ -6099,6 +6102,10 @@ float2 RD_SelectedRange();
   {
     text = lit("; Can't insert snippets for SPIR-V ASM");
   }
+  else if(encoding == ShaderEncoding::D3D9Asm)
+  {
+    text = lit("// Can't insert snippets for D3D9 assembly");
+  }
 
   insertSnippet(text);
 }
@@ -6155,6 +6162,10 @@ layout(binding = RD_LINEAR_SAMPLER_BINDING) uniform sampler linearSampler;
   else if(encoding == ShaderEncoding::SPIRVAsm || encoding == ShaderEncoding::OpenGLSPIRVAsm)
   {
     insertSnippet(lit("; Can't insert snippets for SPIR-V ASM"));
+  }
+  else if(encoding == ShaderEncoding::D3D9Asm)
+  {
+    insertSnippet(lit("// Can't insert snippets for D3D9 assembly"));
   }
 }
 
@@ -6280,6 +6291,10 @@ layout (binding = RD_UINT_2DMS_BINDING) uniform usampler2DMS texUInt2DMS;
   else if(encoding == ShaderEncoding::SPIRVAsm || encoding == ShaderEncoding::OpenGLSPIRVAsm)
   {
     insertSnippet(lit("; Can't insert snippets for SPIR-V ASM"));
+  }
+  else if(encoding == ShaderEncoding::D3D9Asm)
+  {
+    insertSnippet(lit("// Can't insert snippets for D3D9 assembly"));
   }
 }
 

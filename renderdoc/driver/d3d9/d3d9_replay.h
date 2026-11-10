@@ -435,6 +435,25 @@ private:
   } m_CustomOutput;
 
   void ReleaseCustomShaders();
+
+  //////////////////////////////
+  // Shader editing: d3d9_shaderedit.cpp
+
+  // HLSL compiled for profile (or the one in flags' /T), D3D9 assembly assembled, or bytecode as
+  // given, checked to parse as a shader of the given stage. False with errors set when it fails.
+  static bool BuildShaderBytecode(ShaderEncoding encoding, const bytebuf &source,
+                                  const rdcstr &entry, const ShaderCompileFlags &flags,
+                                  const rdcstr &profile, const rdcarray<rdcstr> &includeDirs,
+                                  ShaderStage stage, rdcarray<DWORD> &bytecode, rdcstr &errors);
+
+  // the shaders BuildTargetShader made, created through the wrapped device
+  std::map<ResourceId, IUnknown *> m_TargetShaders;
+  // ones freed while they were replacing a shader, released after the next replay
+  rdcarray<IUnknown *> m_FreedTargetShaders;
+
+  void ReleaseTargetShaders();
+  void ReleaseFreedTargetShaders();
+
   // the overlays that clear the targets and replay the draws, and the ones that draw the event
   // again into overlaySurf (the overlay texture's subresource for targetSurf, both real)
   ResourceId RenderClearBeforeOverlay(const TextureDescription &texDesc, FloatVector clearCol,

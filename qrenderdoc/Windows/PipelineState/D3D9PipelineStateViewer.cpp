@@ -323,6 +323,16 @@ void D3D9PipelineStateViewer::setupShaderPage(Page page, ShaderWidgets &widgets)
   widgets.view->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
   widgets.view->setAutoRaise(true);
 
+  // the menu is filled by PipelineStateViewer::SetupShaderEditButton, and clicking runs its first
+  // option
+  widgets.edit = new QToolButton(row);
+  widgets.edit->setText(tr("Edit"));
+  widgets.edit->setToolTip(tr("Edit Shader"));
+  widgets.edit->setIcon(Icons::page_white_edit());
+  widgets.edit->setPopupMode(QToolButton::MenuButtonPopup);
+  widgets.edit->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  widgets.edit->setAutoRaise(true);
+
   widgets.save = new QToolButton(row);
   widgets.save->setText(tr("Save"));
   widgets.save->setIcon(Icons::save());
@@ -332,6 +342,7 @@ void D3D9PipelineStateViewer::setupShaderPage(Page page, ShaderWidgets &widgets)
   layout->addWidget(new QLabel(tr("Shader:"), row));
   layout->addWidget(widgets.shader, 1);
   layout->addWidget(widgets.view);
+  layout->addWidget(widgets.edit);
   layout->addWidget(widgets.save);
 
   m_PageLayouts[page]->addWidget(row);
@@ -340,6 +351,8 @@ void D3D9PipelineStateViewer::setupShaderPage(Page page, ShaderWidgets &widgets)
                    &D3D9PipelineStateViewer::shaderView_clicked);
   QObject::connect(widgets.shader, &RDLabel::clicked, this,
                    &D3D9PipelineStateViewer::shaderView_clicked);
+  QObject::connect(widgets.edit, &QToolButton::clicked, &m_Common,
+                   &PipelineStateViewer::shaderEdit_clicked);
   QObject::connect(widgets.save, &QToolButton::clicked, this,
                    &D3D9PipelineStateViewer::shaderSave_clicked);
 
@@ -495,6 +508,7 @@ void D3D9PipelineStateViewer::clearState()
   {
     w.shader->setText(tr("Unbound Shader"));
     w.view->setEnabled(false);
+    w.edit->setEnabled(false);
     w.save->setEnabled(false);
   }
 }
@@ -560,7 +574,10 @@ void D3D9PipelineStateViewer::setShaderState(const D3D9Pipe::Shader &sh,
   // columns), but nothing to view or save
   const bool hasShader = refl != NULL && sh.resourceId != ResourceId();
   widgets.view->setEnabled(hasShader);
+  widgets.edit->setEnabled(hasShader);
   widgets.save->setEnabled(hasShader);
+  if(hasShader)
+    m_Common.SetupShaderEditButton(widgets.edit, ResourceId(), sh.resourceId, refl);
 
   // textures and sampler states
   {
@@ -1116,8 +1133,8 @@ const D3D9Pipe::Shader *D3D9PipelineStateViewer::stageForSender(QWidget *widget)
   for(int s = 0; s < 2; s++)
   {
     const ShaderWidgets &w = m_Shaders[s];
-    if(widget == w.shader || widget == w.view || widget == w.save || widget == w.textures ||
-       widget == w.samplers || widget == w.constants)
+    if(widget == w.shader || widget == w.view || widget == w.edit || widget == w.save ||
+       widget == w.textures || widget == w.samplers || widget == w.constants)
       return stages[s];
   }
 

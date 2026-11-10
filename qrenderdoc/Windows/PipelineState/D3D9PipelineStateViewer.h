@@ -99,6 +99,7 @@ private:
   {
     RDLabel *shader = NULL;
     QToolButton *view = NULL;
+    QToolButton *edit = NULL;
     QToolButton *save = NULL;
     RDTreeWidget *textures = NULL;
     RDTreeWidget *samplers = NULL;

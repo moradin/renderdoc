@@ -1099,6 +1099,7 @@ rdcstr DoStringise(const ShaderEncoding &el)
     STRINGISE_ENUM_CLASS_NAMED(OpenGLSPIRVAsm, "SPIR-V Asm (OpenGL)");
     STRINGISE_ENUM_CLASS(Slang);
     STRINGISE_ENUM_CLASS_NAMED(D3D9Bytecode, "D3D9 Bytecode");
+    STRINGISE_ENUM_CLASS_NAMED(D3D9Asm, "D3D9 Assembly");
   }
   END_ENUM_STRINGISE();
 }

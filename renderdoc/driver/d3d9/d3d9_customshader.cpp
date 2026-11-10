@@ -22,8 +22,6 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-#include "driver/dx/official/d3dcompiler.h"
-#include "driver/shaders/dxbc/dxbc_compile.h"
 #include "driver/shaders/dxbc/dxbc_container.h"
 #include "d3d9_device.h"
 #include "d3d9_replay.h"
@@ -253,65 +251,27 @@ void D3D9Replay::BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf 
     return;
   }
 
-  rdcarray<DWORD> bytecode;
-
-  if(sourceEncoding == ShaderEncoding::HLSL)
+  // D3D9 only links ps_3_0 with the texture viewer's vs_3_0
+  rdcstr profile = DXBC::GetProfile(compileFlags);
+  if(sourceEncoding == ShaderEncoding::HLSL && !profile.empty() && profile != "ps_3_0")
   {
-    // D3D9 only links ps_3_0 with the texture viewer's vs_3_0
-    rdcstr profile = DXBC::GetProfile(compileFlags);
-    if(!profile.empty() && profile != "ps_3_0")
-    {
-      errors = StringFormat::Fmt(
-          "D3D9 custom display shaders are compiled as ps_3_0, the profile %s can't be used",
-          profile.c_str());
-      return;
-    }
-
-    HMODULE d3dcompiler = GetD3DCompiler();
-    pD3DCompile compile = d3dcompiler ? (pD3DCompile)GetProcAddress(d3dcompiler, "D3DCompile") : NULL;
-    if(compile == NULL)
-    {
-      errors = "Couldn't load D3DCompile from d3dcompiler_47.dll";
-      return;
-    }
-
-    EmbeddedD3DIncluder includer(m_CustomShaderIncludes, {});
-
-    ID3DBlob *code = NULL, *compileErrors = NULL;
-    HRESULT hr = compile(source.data(), source.size(), "main.hlsl", NULL, &includer,
-                         entry.empty() ? "main" : entry.c_str(), "ps_3_0",
-                         DXBC::DecodeFlags(compileFlags), 0, &code, &compileErrors);
-
-    if(compileErrors)
-      errors.assign((const char *)compileErrors->GetBufferPointer(), compileErrors->GetBufferSize());
-
-    if(SUCCEEDED(hr) && code)
-    {
-      bytecode.resize(code->GetBufferSize() / sizeof(DWORD));
-      memcpy(bytecode.data(), code->GetBufferPointer(), bytecode.byteSize());
-    }
-    else if(errors.empty())
-    {
-      errors = StringFormat::Fmt("Couldn't compile the shader: %s", ToStr(hr).c_str());
-    }
-
-    SAFE_RELEASE(code);
-    SAFE_RELEASE(compileErrors);
-
-    if(bytecode.empty())
-      return;
+    errors = StringFormat::Fmt(
+        "D3D9 custom display shaders are compiled as ps_3_0, the profile %s can't be used",
+        profile.c_str());
+    return;
   }
-  else if(sourceEncoding == ShaderEncoding::D3D9Bytecode)
-  {
-    bytecode.resize(source.size() / sizeof(DWORD));
-    memcpy(bytecode.data(), source.data(), bytecode.byteSize());
-  }
-  else
+
+  if(sourceEncoding != ShaderEncoding::HLSL && sourceEncoding != ShaderEncoding::D3D9Bytecode)
   {
     errors =
         StringFormat::Fmt("D3D9 custom display shaders can't be %s", ToStr(sourceEncoding).c_str());
     return;
   }
+
+  rdcarray<DWORD> bytecode;
+  if(!BuildShaderBytecode(sourceEncoding, source, entry, compileFlags, "ps_3_0",
+                          m_CustomShaderIncludes, ShaderStage::Pixel, bytecode, errors))
+    return;
 
   CustomShader custom;
   custom.info.Init(ResourceId(), (const uint32_t *)bytecode.data(), bytecode.size());

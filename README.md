@@ -44,7 +44,10 @@ The detailed status, with how each part works and how it was tested, is in
   - debug messages for calls that failed when they were captured, in the Errors and Warnings
     window, with the failed call as an event of its own;
   - custom display shaders in the Texture Viewer, as ps_3_0 HLSL with D3D9's own bindings (see
-    `docs/how/how_custom_visualisation.rst`).
+    `docs/how/how_custom_visualisation.rst`);
+  - shader editing and replacement, from the disassembly (every shader model, through
+    d3dcompiler_47's assembler) or an HLSL stub made from the constant table (see
+    `docs/how/how_edit_shader.rst`).
 - Replay, and reading back depth stencils during capture, need a shader model 3 GPU.
 
 ### What's missing
@@ -53,7 +56,6 @@ Not implemented:
 
 - shader debugging;
 - pixel history;
-- shader editing and replacement, including "Edit Generated Stub";
 - GPU counters other than duration and samples passed: D3D9 has no pipeline statistics query;
 - messages from the D3D9 debug runtime, which doesn't run on Windows 8 and later. Only the calls
   the runtime rejects are reported;
@@ -76,6 +78,9 @@ Known limitations of what works:
   - A vs_3_0 shader that packs two semantics into one output register shows only one of them.
 - **Custom display shaders** are ps_3_0: the texture is in a sampler with point filtering, not a
   texture object, and the older `RENDERDOC_` globals aren't filled.
+- **Shader editing**: an edited disassembly loses the constant table, so the edited shader's
+  constants are named by register. HLSL can't be compiled to ps_1_x, so a ps_1_x shader's HLSL
+  stub is ps_2_0.
 - **Debug messages** only come from calls that returned an error. The runtime doesn't check many
   mistakes: an out of range texture stage, sampler, render state or stream returns S_OK.
 - **GPU durations** depend on the GPU's clocks when they're measured, as on D3D11. With an idle GPU
@@ -112,6 +117,14 @@ Not tested yet:
   compile them.
 - **Custom shader snippets**: the shader editor inserts D3D9's own constants, samplers and
   resources snippets for D3D9 captures, and the custom visualisation docs have a D3D9 section.
+- **Shader editing**:
+  - a new shader encoding, `ShaderEncoding.D3D9Asm` (D3D9 assembly), which counts as text;
+  - the D3D9 pipeline state has an Edit button for each shader, whose menu
+    (`PipelineStateViewer::SetupShaderEditButton`) offers Edit Disassembly and an HLSL Edit
+    Generated Stub made by `GenerateD3D9HLSLStub`;
+  - the shader editor highlights D3D9 assembly like HLSL, says it can't insert snippets into it,
+    and saves it as `.asm`;
+  - the shader editing docs have a D3D9 section.
 - **Core**: `InitialiseReplay` waits for the GPU enumeration thread it started on a previous call.
   Before this fix, calling it twice in one process (as Python scripts inside qrenderdoc do) could
   run two enumerations at once and crash while a capture loaded. Upstream has this bug too.

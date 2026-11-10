@@ -1,0 +1,58 @@
+>> Test D3D9_Shader_Editing
+    .. Running D3D9_Shader_Editing natively for 3 frames
+    >> Raw Native run output
+    << Raw Native run output
+    ** The native run's log has no errors (0 warnings)
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x64.exe' cmd:'D3D9_Shader_Editing --log E:\Projects\renderdoc\util\test\tmp\D3D9_Shader_Editing\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Shader_Editing'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 64-bit process (Windows x86 64-bit)
+    ** Shaders can be built from ['D3D9Bytecode', 'HLSL', 'D3D9Asm']
+    ** Unedited, the 36 texels match the GPU's native rendering
+    ** Frame Start's vs (vs_3_0): its disassembly assembles back to the same instructions
+    ** Frame Start's ps (ps_3_0): its disassembly assembles back to the same instructions
+    ** HLSL 3_0's ps (ps_3_0): its disassembly assembles back to the same instructions
+    ** HLSL 2_0's vs (vs_2_0): its disassembly assembles back to the same instructions
+    ** HLSL 2_0's ps (ps_2_0): its disassembly assembles back to the same instructions
+    ** SM1's vs (vs_1_1): its disassembly assembles back to the same instructions
+    ** SM1's ps (ps_1_1): its disassembly assembles back to the same instructions
+    ** ps_1_4's ps (ps_1_4): its disassembly assembles back to the same instructions
+    ** State Block's ps (ps_2_0): its disassembly assembles back to the same instructions
+    ** In Frame's ps (ps_2_0): its disassembly assembles back to the same instructions
+    ** Frame start ps_3_0, HLSL: the 36 texels match the GPU's native rendering with the edit
+    ** Shared ps_3_0, assembly: the 36 texels match the GPU's native rendering with the edit
+    ** ps_2_0, bytecode: the 36 texels match the GPU's native rendering with the edit
+    ** ps_1_1, assembly: the 36 texels match the GPU's native rendering with the edit
+    ** ps_1_4 as ps_2_0, HLSL: the 36 texels match the GPU's native rendering with the edit
+    ** vs_1_1, assembly: the 36 texels match the GPU's native rendering with the edit
+    ** vs_1_1, assembly: VS Out positions are the edited shader's
+    ** vs_3_0, HLSL: the 36 texels match the GPU's native rendering with the edit
+    ** vs_3_0, HLSL: VS Out positions are the edited shader's
+    ** State block ps_2_0, HLSL: the 36 texels match the GPU's native rendering with the edit
+    ** vs_2_0 with FFP pixel, HLSL: the 36 texels match the GPU's native rendering with the edit
+    ** In-frame ps_2_0, HLSL: the 36 texels match the GPU's native rendering with the edit
+    ** Removing each replacement restores the original rendering
+    ** an HLSL error doesn't build: error X3004: undeclared identifier 'undefined'
+    ** an assembly error doesn't build: error X2005: invalid register 'r99'
+    ** HLSL for ps_1_1 doesn't build: error X3539: ps_1_x is no longer supported; use /Gec in fxc to automatically upgrade to ps_2_0
+    ** a vertex profile for a pixel shader doesn't build: vs_3_0 isn't a pixel shader profile
+    ** vertex shader bytecode for a pixel shader doesn't build: It's a vs_2_0 shader, not a pixel shader
+    ** bytecode with no end token doesn't build: The bytecode doesn't parse: The shader has no end token
+    ** a geometry shader doesn't build: D3D9 only has vertex and pixel shaders
+    ** HLSL with no profile is compiled as ps_3_0
+    ** A pixel shader doesn't replace a vertex shader
+    ** Freeing a replacement shader removes the replacement
+    .. Test D3D9_Shader_Editing ran in 0:00:04.104245
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+<< Test D3D9_Shader_Editing
+## Tests complete summary: 16 passed out of 16 run from 207 total in 0:01:12.437580 ##

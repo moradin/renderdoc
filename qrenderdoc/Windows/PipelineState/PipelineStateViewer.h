@@ -155,6 +155,7 @@ private:
                                const rdcarray<EventUsage> &usage);
 
   QString GenerateHLSLStub(const ShaderReflection *shaderDetails, const QString &entryFunc);
+  QString GenerateD3D9HLSLStub(const ShaderReflection *shaderDetails, const QString &profile);
   IShaderViewer *EditShader(ResourceId id, ShaderStage shaderType, const rdcstr &entry,
                             ShaderCompileFlags compileFlags, KnownShaderTool knownTool,
                             ShaderEncoding shaderEncoding, const rdcstrpairs &files);

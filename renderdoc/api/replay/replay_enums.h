@@ -2061,6 +2061,11 @@ DOCUMENT(R"(Identifies a shader encoding used to pass shader code to an API.
   D3D9 shader bytecode, shader models 1 to 3, as passed to ``CreateVertexShader`` and
   ``CreatePixelShader``. It's a stream of DWORD tokens with no container around it.
 
+.. data:: D3D9Asm
+
+  D3D9 shader assembly, shader models 1 to 3, in the form fxc disassembles :data:`D3D9Bytecode`
+  to and ``D3DAssemble`` assembles.
+
 )");
 enum class ShaderEncoding : uint32_t
 {
@@ -2076,6 +2081,7 @@ enum class ShaderEncoding : uint32_t
   OpenGLSPIRVAsm,
   Slang,
   D3D9Bytecode,
+  D3D9Asm,
   Count,
 };
 
@@ -2271,7 +2277,7 @@ constexpr inline bool IsTextRepresentation(ShaderEncoding encoding)
 {
   return encoding == ShaderEncoding::HLSL || encoding == ShaderEncoding::GLSL ||
          encoding == ShaderEncoding::SPIRVAsm || encoding == ShaderEncoding::OpenGLSPIRVAsm ||
-         encoding == ShaderEncoding::Slang;
+         encoding == ShaderEncoding::Slang || encoding == ShaderEncoding::D3D9Asm;
 }
 
 DOCUMENT(R"(A primitive topology used for processing vertex data.

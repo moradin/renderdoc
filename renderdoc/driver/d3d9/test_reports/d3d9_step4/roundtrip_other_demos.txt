@@ -1,0 +1,27 @@
+D3D9Ex_Wrapping_Check: 0 shaders, 0 assemble back to the same instructions
+D3D9_Capture_Edge_Cases: 0 shaders, 0 assemble back to the same instructions
+D3D9_Counters: 3 shaders, 3 assemble back to the same instructions
+D3D9_Counters: 3 shaders, 3 assemble back to the same instructions
+D3D9_Counters: 3 shaders, 3 assemble back to the same instructions
+D3D9_Custom_Shaders: 2 shaders, 2 assemble back to the same instructions
+D3D9_Failed_Calls: 2 shaders, 2 assemble back to the same instructions
+D3D9_Failed_Calls: 2 shaders, 2 assemble back to the same instructions
+D3D9_Failed_Calls: 2 shaders, 2 assemble back to the same instructions
+D3D9_Frame_Start_State: 2 shaders, 2 assemble back to the same instructions
+D3D9_Frame_Start_State: 2 shaders, 2 assemble back to the same instructions
+D3D9_Frame_Start_State: 2 shaders, 2 assemble back to the same instructions
+D3D9_Mesh_Output: 5 shaders, 5 assemble back to the same instructions
+D3D9_Overlay_Test: 2 shaders, 2 assemble back to the same instructions
+D3D9_Reset_Capture: 2 shaders, 2 assemble back to the same instructions
+D3D9_Reset_Capture: 2 shaders, 2 assemble back to the same instructions
+D3D9_Resource_Contents: 2 shaders, 2 assemble back to the same instructions
+D3D9_Resource_Usage: 2 shaders, 2 assemble back to the same instructions
+D3D9_Resource_Usage: 2 shaders, 2 assemble back to the same instructions
+D3D9_Resource_Usage: 2 shaders, 2 assemble back to the same instructions
+D3D9_Shader_Editing: 10 shaders, 10 assemble back to the same instructions
+D3D9_Simple_Triangle: 3 shaders, 3 assemble back to the same instructions
+D3D9_Simple_Triangle: 3 shaders, 3 assemble back to the same instructions
+D3D9_Simple_Triangle: 3 shaders, 3 assemble back to the same instructions
+D3D9_Texture_Formats: 1 shaders, 1 assemble back to the same instructions
+D3D9_Wrapping_Check: 0 shaders, 0 assemble back to the same instructions
+total 62/62; by model: ps_1_1 1/1, ps_1_4 1/1, ps_2_0 4/4, ps_3_0 28/28, vs_1_1 2/2, vs_2_0 3/3, vs_3_0 23/23
