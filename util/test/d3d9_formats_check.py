@@ -20,6 +20,9 @@
 #   which decoded channel should equal which sampled one. When a format fails it also prints which
 #   sampled channels each decoded channel matches, e.g. "decoded r = GPU g", which shows a channel
 #   order mix-up such as ATI2's red and green swapped.
+# - the texture saved as a PNG (SaveTexture, as File > Save Texture does) with the reference, on the
+#   same channels. The PNG is 8-bit, so values are clamped to 0-1 and allowed one more 1/255 step.
+#   Formats whose decoded channels aren't compared (MAPPING None) aren't saved.
 # - the render target at replay with the reference, which checks the capture reproduces the texture
 #   data and the GPU samples it the same way at replay.
 #
@@ -32,6 +35,8 @@ import os
 import re
 import struct
 import sys
+import tempfile
+import zlib
 
 import renderdoc as rd
 
@@ -175,6 +180,124 @@ def check_format(controller, name, draw, ref):
     return False
 
 
+def read_png(path):
+    # an 8-bit, non-interlaced PNG as SaveTexture writes it, into rows of RGBA lists. Only the
+    # standard library is used, so this runs in qrenderdoc's embedded python too.
+    with open(path, 'rb') as f:
+        data = f.read()
+    if data[:8] != b'\x89PNG\r\n\x1a\n':
+        raise ValueError('not a PNG')
+    pos = 8
+    idat = b''
+    width = height = depth = colour = interlace = None
+    while pos + 8 <= len(data):
+        length, ctype = struct.unpack_from('>I4s', data, pos)
+        body = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if ctype == b'IHDR':
+            width, height, depth, colour, _, _, interlace = struct.unpack('>IIBBBBB', body)
+        elif ctype == b'IDAT':
+            idat += body
+        elif ctype == b'IEND':
+            break
+    channels = {0: 1, 2: 3, 4: 2, 6: 4}.get(colour)
+    if depth != 8 or interlace != 0 or channels is None:
+        raise ValueError('unsupported PNG: depth {} colour type {} interlace {}'.format(
+            depth, colour, interlace))
+
+    raw = zlib.decompress(idat)
+    stride = width * channels
+    prev = bytearray(stride)
+    rows = []
+    p = 0
+    for y in range(height):
+        filt = raw[p]
+        line = bytearray(raw[p + 1:p + 1 + stride])
+        p += 1 + stride
+        for i in range(stride):
+            a = line[i - channels] if i >= channels else 0
+            b = prev[i]
+            c = prev[i - channels] if i >= channels else 0
+            if filt == 1:
+                line[i] = (line[i] + a) & 0xff
+            elif filt == 2:
+                line[i] = (line[i] + b) & 0xff
+            elif filt == 3:
+                line[i] = (line[i] + ((a + b) >> 1)) & 0xff
+            elif filt == 4:
+                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                pred = a if pa <= pb and pa <= pc else (b if pb <= pc else c)
+                line[i] = (line[i] + pred) & 0xff
+        prev = line
+        row = []
+        for x in range(width):
+            px = list(line[x * channels:(x + 1) * channels])
+            if channels <= 2:
+                px = [px[0]] * 3 + px[1:]
+            if len(px) == 3:
+                px.append(255)
+            row.append(px)
+        rows.append(row)
+    return width, height, rows
+
+
+def check_png_save(controller, name, draw, ref, outdir):
+    mapping = MAPPING.get(name, RGBA)
+    if mapping is None:
+        return None
+
+    controller.SetFrameEvent(draw.eventId, True)
+    reads = controller.GetPipelineState().GetReadOnlyResources(rd.ShaderStage.Pixel, True)
+    if not reads:
+        print('FAIL {:14s} PNG save: no texture bound at event {}'.format(name, draw.eventId))
+        return False
+    tex = reads[0].descriptor.resource
+
+    save = rd.TextureSave()
+    save.resourceId = tex
+    save.destType = rd.FileType.PNG
+    save.mip = 0
+    save.slice.sliceIndex = 0
+    save.alpha = rd.AlphaMapping.Preserve
+    path = os.path.join(outdir, 'saved_{}.png'.format(name))
+    if os.path.exists(path):
+        os.remove(path)
+    result = controller.SaveTexture(save, path)
+    if result.code != rd.ResultCode.Succeeded or not os.path.exists(path):
+        print('FAIL {:14s} PNG save: SaveTexture returned {}'.format(name, result.Message()))
+        return False
+
+    try:
+        w, h, rows = read_png(path)
+    except ValueError as e:
+        print("FAIL {:14s} PNG save: couldn't read {}: {}".format(name, path, e))
+        return False
+    if (w, h) != (ref['w'], ref['h']):
+        print('FAIL {:14s} PNG save: {}x{}, the texture is {}x{}'.format(name, w, h, ref['w'], ref['h']))
+        return False
+
+    tol = tolerance(name) + 1.0 / 255.0
+    maxdiff = 0.0
+    bad = []
+    for y in range(h):
+        for x in range(w):
+            got = rows[y][x]
+            s = ref['rows'][y][x]
+            diff = max(abs(got[dc] / 255.0 - min(max(s[sc], 0.0), 1.0)) for dc, sc in mapping)
+            maxdiff = max(maxdiff, diff)
+            if diff > tol:
+                bad.append((x, y))
+
+    if not bad:
+        print('PASS {:14s} PNG save: {} texels, max diff {:.6f}'.format(name, w * h, maxdiff))
+        return True
+    x, y = bad[0]
+    print('FAIL {:14s} PNG save: {} of {} texels differ by more than {:.4f}, max diff {:.6f}'.format(
+        name, len(bad), w * h, tol, maxdiff))
+    print('       first at {},{}: PNG {}, GPU {}'.format(x, y, rows[y][x], fmtv(ref['rows'][y][x])))
+    return False
+
+
 def check_replay_target(controller, found, refs):
     # the render target after the last format's draw holds every format's region
     name, x, y, draw = found[-1]
@@ -251,11 +374,15 @@ def main():
     return 0 if ok else 2
 
 
-def check_capture(controller, refpath):
+def check_capture(controller, refpath, pngdir=None):
     # Checks every format on an open D3D9_Texture_Formats capture against the reference, and the
     # render target at replay. Returns True if everything passed. The D3D9 tests in
-    # util/test/tests/D3D9 call this too.
+    # util/test/tests/D3D9 call this too. The saved PNGs go in pngdir, or a new temporary folder.
     refs = parse_reference(refpath)
+    if pngdir is None:
+        pngdir = tempfile.mkdtemp(prefix='d3d9_formats_png_')
+    if not os.path.isdir(pngdir):
+        os.makedirs(pngdir)
     print('Reference {}: {} formats'.format(refpath, len(refs)))
 
     if controller.GetAPIProperties().pipelineType != rd.GraphicsAPI.D3D9:
@@ -265,6 +392,7 @@ def check_capture(controller, refpath):
     found = find_formats(controller.GetRootActions(), controller.GetStructuredFile(), [], unsupported)
 
     passed, failed, info = [], [], []
+    compared = []
     for name, x, y, draw in found:
         ref = refs.get(name)
         if ref is None:
@@ -278,6 +406,16 @@ def check_capture(controller, refpath):
             continue
         ok = check_format(controller, name, draw, ref)
         (passed if ok is True else failed if ok is False else info).append(name)
+        compared.append((name, draw, ref))
+
+    print('\nSaving each texture as a PNG, to ' + pngdir)
+    png_passed, png_failed = [], []
+    for name, draw, ref in compared:
+        ok = check_png_save(controller, name, draw, ref, pngdir)
+        if ok is True:
+            png_passed.append(name)
+        elif ok is False:
+            png_failed.append(name)
 
     missing = [n for n in refs if n not in [f[0] for f in found]]
     for n in missing:
@@ -290,8 +428,11 @@ def check_capture(controller, refpath):
         len(passed), len(failed), ' (' + ', '.join(failed) + ')' if failed else '', len(info),
         ' (' + ', '.join(info) + ')' if info else ''))
     print('Not supported by the GPU: ' + (', '.join(unsupported) if unsupported else 'none'))
+    print('PNG save: {} passed, {} failed{}'.format(
+        len(png_passed), len(png_failed), ' (' + ', '.join(png_failed) + ')' if png_failed else ''))
     print('Replay render target: ' + ('PASS' if replay_ok else 'FAIL'))
-    return not failed and replay_ok and len(passed) > 0
+    return (not failed and not png_failed and replay_ok and len(passed) > 0 and
+            len(png_passed) > 0)
 
 
 if __name__ == '__main__':

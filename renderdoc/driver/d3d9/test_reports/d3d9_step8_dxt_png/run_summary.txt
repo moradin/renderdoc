@@ -1,0 +1,21 @@
+    .. PASS A8R8G8B8       PNG save: 256 texels, max diff 0.000000
+    .. PASS X8R8G8B8       PNG save: 256 texels, max diff 0.000000
+    .. PASS R5G6B5         PNG save: 256 texels, max diff 0.003922
+    .. PASS X1R5G5B5       PNG save: 256 texels, max diff 0.003922
+    .. PASS A1R5G5B5       PNG save: 256 texels, max diff 0.003922
+    .. PASS A4R4G4B4       PNG save: 256 texels, max diff 0.000000
+    .. PASS A8             PNG save: 256 texels, max diff 0.000000
+    .. PASS A2B10G10R10    PNG save: 256 texels, max diff 0.001955
+    .. PASS G16R16         PNG save: 256 texels, max diff 0.001953
+    .. PASS A2R10G10B10    PNG save: 256 texels, max diff 0.001955
+    .. PASS A16B16G16R16   PNG save: 256 texels, max diff 0.001953
+    .. PASS L8             PNG save: 256 texels, max diff 0.000000
+    .. PASS A8L8           PNG save: 256 texels, max diff 0.000000
+    .. PASS V8U8           PNG save: 256 texels, max diff 0.001945
+    .. PASS X8L8V8U8       PNG save: 256 texels, max diff 0.001945
+    .. PASS Q8W8V8U8       PNG save: 256 texels, max diff 0.001945
+    .. PASS V16U16         PNG save: 256 texels, max diff 0.001952
+    .. PASS L16            PNG save: 256 texels, max diff 0.001938
+    .. PASS DXT1           PNG save: 256 texels, max diff 0.019608
+    .. PASS DXT2           PNG save: 256 texels, max diff 0.015686
+## Tests complete summary: 16 passed out of 16 run from 207 total in 0:01:17.692215 ##

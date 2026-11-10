@@ -49,7 +49,7 @@ the testing were on separate machines.
 | 7 | **Remote replay:** display textures through the proxy | 1-2 | Parked: not worth it for now. Mostly mapping D3D9 formats onto the proxy's D3D11 textures |
 | 8 | **Limitations worth fixing**, in this order, before steps 5 and 6 | 3-4 | |
 | | ~~Alpha test and discard in the overlays~~ | 1 | Done, see "Overlays" below (`d3d9_step8_overlays.md`). Alpha tested and clipped geometry (foliage, fences, sprites) is everywhere in D3D9 games |
-| | Saving DXT textures as PNG | 0.5 | Most game textures are DXT |
+| | ~~Saving DXT textures as PNG~~ | 0.5 | Done, see "Texture viewer" below (`d3d9_step8_dxt_png.md`). Most game textures are DXT |
 | | Saving UpdateTexture dirty regions in captures | 0.5 | Texture streaming. Changes the capture format |
 | | vs_3_0 outputs that pack two semantics into one register | 0.5 | |
 | | `texldl` filtering | 0.5 | Early SM3 GPUs could only point sample vertex textures, so many games do |
@@ -110,10 +110,10 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 |---|---|
 | `D3D9_Simple_Triangle` | The three triangles at replay, including the pixel shader constants one (96, 191, 0), SaveTexture's alpha, the pipeline state at every draw with constants read at length 0 (`d3d9_pipestate_check.py`), the constant blocks and FVF, replaying every action, and the structured export round trip (`check_export`) |
 | `D3D9_Frame_Start_State` | The triangles, render states, and VS/PS float constants (c10, c20, c200, c180, and zero c138, c148) set before the first frame, the pipeline state check, the export round trip |
-| `D3D9_Texture_Formats` | `d3d9_formats_check.py` against the native run's reference, and that the reference written under RenderDoc is byte-identical to the native one |
+| `D3D9_Texture_Formats` | `d3d9_formats_check.py` against the native run's reference: each format's picked texels, each texture saved as a PNG, and the render target at replay. And that the reference written under RenderDoc is byte-identical to the native one |
 | `D3D9_Mesh_Output` | `d3d9_mesh_check.py` against the native run's reference (a draw without a reference fails), and that the reference written under RenderDoc is byte-identical to the native one |
 | `D3D9_Overlay_Test` | `d3d9_overlay_check.py`, with the overlays saved in the test's tmp folder. Includes alpha tested, clipped and oDepth draws, whose Depth overlay has to be green exactly where the draw wrote |
-| `D3D9_Resource_Contents` | Every object's contents at the start of the frame, as listed under "Checking `D3D9_Resource_Contents` captures": each level, face and slice texel by texel, the previous frame's colour in every region the frames alternate, the vertex and write-only index buffers. Then the triangle drawn from them |
+| `D3D9_Resource_Contents` | Every object's contents at the start of the frame, as listed under "Checking `D3D9_Resource_Contents` captures": each level, face and slice texel by texel, the previous frame's colour in every region the frames alternate, the vertex and write-only index buffers, and each face and slice of the DXT1 cube and volume textures saved as a PNG. Then the triangle drawn from them |
 | `D3D9_Capture_Edge_Cases` | The markers, and at the start of the frame: the automatic, multisampled (each sample), D16 and INTZ depth stencils texel by texel, the texture locked across Present, and the surface drawn with GDI |
 | `D3D9_Reset_Capture` | Both captures: frame 30's has only "After the reset" and a blue clear, the triggered one only "Frame" and a red clear |
 | `D3D9_Wrapping_Check`, `D3D9Ex_Wrapping_Check` | The demo's own checks (in its log), and that the capture loads and replays |
@@ -518,6 +518,9 @@ subresources (A8R8G8B8 pixels, so each DWORD is 0xAARRGGBB, stored as bytes BB G
 - multisampled render target (64x64, if 4x MSAA is supported): 0xFF00FFFF.
 - cube texture (4x4): faces 0-5 are 0xFF000010, 0xFF000020 ... 0xFF000060.
 - volume texture (4x4x4): slices 0xFF000100, 0xFF000200, 0xFF000300, 0xFF000400.
+- DXT1 cube texture (4x4, added in step 8): each face one block with both endpoints the same R5G6B5
+  colour, (5 * (face + 1), 63 - 8 * face, 3 * face). DXT1 volume texture (4x4x4): each slice one
+  block of (0, 10 * (z + 1), 31 - 6 * z). The recycled texture is now Texture 44, not 42.
 - managed vertex buffer: the default triangle. Default pool index buffer: 0, 1, 2. This one is
   D3DUSAGE_WRITEONLY, so it shows whether reading those back works.
 - system memory surface (4x4): 0xFF5A5A5A with the previous frame's colour at (1,1)-(3,3).
@@ -648,7 +651,7 @@ loads (the crash is now 1 in 18) and the UI checklist, except for these, now fix
   bits of X8R8G8B8, X8B8G8R8, X1R5G5B5 and X4R4G4B4 to 1, as sampling does. Saving formats other
   than 8-bit RGBA (16-bit, float, luminance, depth) used to log "isn't supported yet" and write
   the data unconverted. They're now converted on the CPU, with the black and white points. Block
-  compressed formats still aren't.
+  compressed formats still weren't (fixed in step 8, see "Texture viewer").
 - The Pipeline State panel showed the Mesh View icon at its full size in the toolbar. It's now
   24x24. The topology diagram sat on the far right, after the declaration; topology and its
   diagram are now on their own left-aligned row above the declaration.
@@ -807,6 +810,16 @@ How it works:
   (R8G8_SNORM), A2W10V10U10 (R10G10B10A2 SNORM) and D15S1 (depth). The rest that RenderDoc has no
   format for (R3G3B2, A8R3G3B2, L6V5U5, X8L8V8U8, UYVY, the RGBG formats) are Undefined with four
   UNORM channels, and still display.
+- Saving as PNG, JPG, BMP, TGA, HDR or EXR (`GetTextureData` with a remap) converts on the CPU,
+  with the black and white points. 8-bit RGBA only has its channels reordered, and other formats
+  RenderDoc describes are converted texel by texel from their raw data. Block compressed (DXT1-5,
+  ATI1, ATI2), Undefined and YUV formats are converted from the decoded texels picking uses
+  (`GetDecoded`), a face or a volume's depth slice at a time, so a saved PNG has the values the
+  texture viewer picks. YUV is saved as (Cr, Y, Cb, 1), not converted to RGB. Before step 8 these
+  formats wrote the compressed data as if it were RGBA, plus whatever memory followed it. Tested in
+  `d3d9_step8_dxt_png.md`: passed, against the GPU's samples. YUV formats weren't tested, since the
+  RTX 4070 Ti doesn't create YUY2 or UYVY textures. Saving as DDS is unchanged: block compressed
+  data is saved as it is.
 - `d3d9_rendermesh.cpp`: `RenderMesh` for the mesh viewer's input data. Positions (and the
   secondary element) are decoded on the CPU with the index buffer expanded, into a vertex buffer of
   our own, cached per draw until the next replay; D3D9 can't declare every vertex format the viewer

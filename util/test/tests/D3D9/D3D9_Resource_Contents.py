@@ -16,6 +16,16 @@ def inside(x, y, x0, y0, x1, y1):
     return x0 <= x < x1 and y0 <= y < y1
 
 
+def colour565(r5, g6, b5):
+    return (r5 << 11) | (g6 << 5) | b5
+
+
+def expand565(c):
+    # R5G6B5 to 8 bits per channel, as GPUs expand DXT endpoints: the top bits repeated
+    r, g, b = (c >> 11) & 0x1f, (c >> 5) & 0x3f, c & 0x1f
+    return [(r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2), 255]
+
+
 # Checks every object's contents at the start of the frame, which are the capture's initial
 # contents as replay wrote them back. The layout is in STATUS.md, "Checking D3D9_Resource_Contents
 # captures", and in the demo.
@@ -87,8 +97,20 @@ class D3D9_Resource_Contents(rdtest.D3D9_Test):
             rows = self.read_dwords(tex, rd.Subresource(0, z, 0))
             self.check_texels(f'The volume texture slice {z}', rows, lambda x, y: 0xFF000000 | (0x100 * (z + 1)))
 
+        # DXT1 cube and volume textures, 4x4: each face and slice one colour, as the demo makes them.
+        # Saving one as a PNG decodes it on the CPU, a face or a depth slice at a time.
+        tex = self.texture_by_name('Cube Texture 36')
+        for face in range(6):
+            want = expand565(colour565(5 * (face + 1), 63 - 8 * face, 3 * face))
+            self.check_saved_png(f'The DXT1 cube texture face {face}', tex, face, want)
+
+        tex = self.texture_by_name('Volume Texture 37')
+        for z in range(4):
+            want = expand565(colour565(0, 10 * (z + 1), 31 - 6 * z))
+            self.check_saved_png(f'The DXT1 volume texture slice {z}', tex, z, want)
+
         # the recycled texture, released in the frame: one colour, from the previous frame
-        rows = self.read_dwords(self.texture_by_name('Texture 42'), rd.Subresource(0, 0, 0))
+        rows = self.read_dwords(self.texture_by_name('Texture 44'), rd.Subresource(0, 0, 0))
         colour = rows[0][0]
         self.check_texels(f'The recycled texture (0x{colour:08X})', rows, lambda x, y: colour)
 
@@ -118,3 +140,26 @@ class D3D9_Resource_Contents(rdtest.D3D9_Test):
         self.check_pixel_value(last_action.copyDestination, 200, 200, [0.0, 1.0, 0.0, 1.0])
 
         self.step_all_actions()
+
+    def check_saved_png(self, what: str, tex: rd.TextureDescription, slice_index: int, want):
+        save = rd.TextureSave()
+        save.resourceId = tex.resourceId
+        save.destType = rd.FileType.PNG
+        save.mip = 0
+        save.slice.sliceIndex = slice_index
+        save.alpha = rd.AlphaMapping.Preserve
+        path = rdtest.get_tmp_path(f'saved_{tex.resourceId}_{slice_index}.png'.replace('::', '_'))
+        result = self.controller.SaveTexture(save, path)
+        if result.code != rd.ResultCode.Succeeded:
+            raise rdtest.TestFailureException(f"{what}: saving as PNG failed: {result.Message()}")
+
+        rows = rdtest.png_load_data(path)
+        if len(rows) != tex.height:
+            raise rdtest.TestFailureException(f"{what}: the PNG has {len(rows)} rows, expected {tex.height}")
+        channels = len(rows[0]) // tex.width
+        for y, row in enumerate(rows):
+            for x in range(tex.width):
+                got = list(row[x * channels:(x + 1) * channels]) + [255] * (4 - channels)
+                if got != want:
+                    raise rdtest.TestFailureException(f"{what}: the PNG's {x},{y} is {got}, expected {want}")
+        rdtest.log.success(f"{what} saved as a PNG is {want}")

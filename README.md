@@ -70,7 +70,8 @@ Known limitations of what works:
 - **Texture Viewer**:
   - Multisampled colour targets are only shown resolved.
   - P8 and A8P8 textures show their palette indices, not the colours.
-  - Block compressed (DXT) textures can only be saved as DDS.
+  - YUY2 and UYVY textures are saved as PNG (and the other image formats) as (Cr, Y, Cb), not
+    converted to RGB.
 - **Mesh Viewer, VS Out**:
   - `texldl` in vertex shaders always point samples.
   - Fixed function processing doesn't handle N-patches, user clip planes, displacement mapping or

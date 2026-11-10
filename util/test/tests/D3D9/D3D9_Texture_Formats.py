@@ -31,4 +31,5 @@ class D3D9_Texture_Formats(rdtest.D3D9_Test):
         rdtest.log.success(f"The reference written under RenderDoc is identical to the native one ({len(native_data)} bytes)")
 
         formats = self.check_script('d3d9_formats_check')
-        self.run_script_check('The formats check', formats.check_capture, self.controller, native)
+        self.run_script_check('The formats check', formats.check_capture, self.controller, native,
+                              rdtest.get_tmp_path('saved_png'))

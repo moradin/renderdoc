@@ -229,6 +229,50 @@ void MatchDescribedFormat(D3DFORMAT format, bytebuf &data)
     default: break;
   }
 }
+
+// GetTextureData's remaps, the same mapping as the texture display, which other APIs remap through.
+// D3D9 has no sRGB formats.
+struct TexelRemap
+{
+  TexelRemap(const GetTextureDataParams &params) : remap(params.remap)
+  {
+    dstFmt.type = ResourceFormatType::Regular;
+    dstFmt.compCount = 4;
+    if(remap == RemapTexture::RGBA8)
+    {
+      dstFmt.compByteWidth = 1;
+      dstFmt.compType = CompType::UNorm;
+    }
+    else
+    {
+      dstFmt.compByteWidth = remap == RemapTexture::RGBA16 ? 2 : 4;
+      dstFmt.compType = CompType::Float;
+    }
+    dstSize = dstFmt.ElementSize();
+
+    blackPoint = params.blackPoint;
+    const float rangeSize = params.whitePoint - params.blackPoint;
+    invRange = rangeSize != 0.0f ? 1.0f / rangeSize : 1.0f;
+  }
+
+  void Encode(FloatVector v, byte *out) const
+  {
+    float *comps = &v.x;
+    for(int c = 0; c < 4; c++)
+    {
+      comps[c] = (comps[c] - blackPoint) * invRange;
+      if(remap == RemapTexture::RGBA8)
+        comps[c] = RDCCLAMP(comps[c], 0.0f, 1.0f);
+    }
+    EncodeFormattedComponents(dstFmt, v, out);
+  }
+
+  RemapTexture remap;
+  ResourceFormat dstFmt;
+  uint32_t dstSize;
+  float blackPoint;
+  float invRange;
+};
 };
 
 D3D9Replay::D3D9Replay(WrappedD3DDevice9 *device, IDirect3D9Ex *d3d, HWND hiddenWindow)
@@ -565,6 +609,36 @@ void D3D9Replay::GetTextureData(ResourceId tex, const Subresource &sub,
 
   const TextureDescription desc = GetTexture(tex);
 
+  // block compressed textures, and the formats RenderDoc can't describe (D3D9MakeResourceFormat),
+  // are remapped from the texels picking decodes (GetDecoded), which match what the GPU samples.
+  // YUV formats are (Cr, Y, Cb, 1), as picked. A volume's mip is returned with all its depth
+  // slices, like its raw data.
+  if(params.remap != RemapTexture::NoRemap &&
+     (desc.format.BlockFormat() || desc.format.type == ResourceFormatType::Undefined ||
+      desc.format.type == ResourceFormatType::YUV8))
+  {
+    const TexelRemap remap(params);
+    const bool volume = obj->GetResourceType() == Resource_VolumeTexture;
+    const uint32_t depth = volume ? RDCMAX(1U, desc.depth >> sub.mip) : 1;
+    for(uint32_t z = 0; z < depth; z++)
+    {
+      const DecodedSubresource &decoded =
+          GetDecoded(tex, Subresource(sub.mip, volume ? z : sub.slice, sub.sample));
+      if(decoded.texels.empty())
+      {
+        RDCWARN("Couldn't decode %s for saving: %s", ToStr(tex).c_str(), decoded.error.c_str());
+        data.clear();
+        return;
+      }
+
+      const size_t offset = data.size();
+      data.resize(offset + decoded.texels.size() * remap.dstSize);
+      for(size_t i = 0; i < decoded.texels.size(); i++)
+        remap.Encode(decoded.texels[i], data.data() + offset + i * remap.dstSize);
+    }
+    return;
+  }
+
   D3D9SubresourceData contents;
   rdcstr err = m_pDevice->ReadSubresource(
       obj, obj->GetResourceType() == Resource_CubeTexture ? sub.slice : 0, sub.mip, contents);
@@ -613,52 +687,27 @@ void D3D9Replay::GetTextureData(ResourceId tex, const Subresource &sub,
     return;
   }
 
-  // everything else is converted texel by texel on the CPU. D3D9 has no sRGB formats, and the depth
-  // formats were put in RenderDoc's layout above.
+  // everything else is converted texel by texel on the CPU. The depth formats were put in
+  // RenderDoc's layout above.
   const uint32_t srcSize = fmt.ElementSize();
-  if(fmt.BlockFormat() || fmt.type == ResourceFormatType::Undefined ||
-     fmt.type == ResourceFormatType::YUV8 || srcSize == 0)
+  if(srcSize == 0)
   {
     RDCWARN("Converting %s textures for saving isn't supported yet", fmt.Name().c_str());
     return;
   }
 
-  ResourceFormat dstFmt;
-  dstFmt.type = ResourceFormatType::Regular;
-  dstFmt.compCount = 4;
-  if(params.remap == RemapTexture::RGBA8)
-  {
-    dstFmt.compByteWidth = 1;
-    dstFmt.compType = CompType::UNorm;
-  }
-  else
-  {
-    dstFmt.compByteWidth = params.remap == RemapTexture::RGBA16 ? 2 : 4;
-    dstFmt.compType = CompType::Float;
-  }
-  const uint32_t dstSize = dstFmt.ElementSize();
-
-  // the same mapping as the texture display, which other APIs remap through
-  const float rangeSize = params.whitePoint - params.blackPoint;
-  const float invRange = rangeSize != 0.0f ? 1.0f / rangeSize : 1.0f;
+  const TexelRemap remap(params);
 
   const size_t count = data.size() / srcSize;
   bytebuf converted;
-  converted.resize(count * dstSize);
+  converted.resize(count * remap.dstSize);
   for(size_t i = 0; i < count; i++)
   {
     FloatVector v = DecodeFormattedComponents(fmt, data.data() + i * srcSize);
     // a missing alpha samples as 1, the decode leaves it 0 for the palette index formats
     if(fmt.type == ResourceFormatType::Regular && fmt.compCount < 4)
       v.w = 1.0f;
-    float *comps = &v.x;
-    for(int c = 0; c < 4; c++)
-    {
-      comps[c] = (comps[c] - params.blackPoint) * invRange;
-      if(params.remap == RemapTexture::RGBA8)
-        comps[c] = RDCCLAMP(comps[c], 0.0f, 1.0f);
-    }
-    EncodeFormattedComponents(dstFmt, v, converted.data() + i * dstSize);
+    remap.Encode(v, converted.data() + i * remap.dstSize);
   }
 
   data.swap(converted);

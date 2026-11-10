@@ -29,7 +29,8 @@ RD_TEST(D3D9_Resource_Contents, D3D9GraphicsTest)
   static constexpr const char *Description =
       "Uses objects in every pool that holds contents a capture must store: managed, default, "
       "dynamic and system memory buffers and textures, a render target texture, a multisampled "
-      "render target, cube and volume textures. Some are partly overwritten every frame with a "
+      "render target, cube and volume textures, and DXT1 cube and volume textures. Some are "
+      "partly overwritten every frame with a "
       "colour that alternates between frames, so a capture's initial contents can be told apart "
       "from what the frame writes. Also checks that UpdateTexture only copies the dirty region.";
 
@@ -70,6 +71,36 @@ RD_TEST(D3D9_Resource_Contents, D3D9GraphicsTest)
       DWORD *row = (DWORD *)((byte *)locked.pBits + y * locked.Pitch);
       for(UINT x = 0; x < width; x++)
         row[x] = colour;
+    }
+  }
+
+  // R5G6B5, as DXT1 stores its endpoints
+  static WORD Colour565(UINT r5, UINT g6, UINT b5)
+  {
+    return WORD((r5 << 11) | (g6 << 5) | b5);
+  }
+  // DXT1 face i and volume slice i, which the test expands to 8 bits the same way
+  static WORD DXTFaceColour(UINT face)
+  {
+    return Colour565(5 * (face + 1), 63 - 8 * face, 3 * face);
+  }
+  static WORD DXTSliceColour(UINT z)
+  {
+    return Colour565(0, 10 * (z + 1), 31 - 6 * z);
+  }
+
+  // fills DXT1 blocks with one colour: both endpoints the colour and every index 0, which every
+  // decoder and GPU decodes exactly
+  static void FillDXT1(byte * bits, UINT pitch, UINT blocksX, UINT blocksY, WORD colour)
+  {
+    for(UINT by = 0; by < blocksY; by++)
+    {
+      for(UINT bx = 0; bx < blocksX; bx++)
+      {
+        WORD *block = (WORD *)(bits + by * pitch + bx * 8);
+        block[0] = block[1] = colour;
+        block[2] = block[3] = 0;
+      }
     }
   }
 
@@ -338,6 +369,43 @@ RD_TEST(D3D9_Resource_Contents, D3D9GraphicsTest)
       TEST_WARN("Volume textures aren't supported, skipping");
     }
 
+    // a DXT1 cube texture and a DXT1 volume texture, each face and slice one colour, only bound.
+    // Saving these as a PNG decodes them a face or a depth slice at a time.
+    IDirect3DCubeTexture9Ptr dxtCubeTex;
+    if(SUCCEEDED(dev->CreateCubeTexture(4, 1, 0, D3DFMT_DXT1, D3DPOOL_MANAGED, &dxtCubeTex, NULL)))
+    {
+      for(UINT face = 0; face < 6; face++)
+      {
+        D3DLOCKED_RECT locked = {};
+        dxtCubeTex->LockRect((D3DCUBEMAP_FACES)face, 0, &locked, NULL, 0);
+        FillDXT1((byte *)locked.pBits, locked.Pitch, 1, 1, DXTFaceColour(face));
+        dxtCubeTex->UnlockRect((D3DCUBEMAP_FACES)face, 0);
+      }
+    }
+    else
+    {
+      TEST_WARN("DXT1 cube textures aren't supported, skipping");
+    }
+
+    IDirect3DVolumeTexture9Ptr dxtVolumeTex;
+    if((caps.TextureCaps & D3DPTEXTURECAPS_VOLUMEMAP) &&
+       SUCCEEDED(d3d->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, 0,
+                                        D3DRTYPE_VOLUMETEXTURE, D3DFMT_DXT1)) &&
+       SUCCEEDED(dev->CreateVolumeTexture(4, 4, 4, 1, 0, D3DFMT_DXT1, D3DPOOL_MANAGED,
+                                          &dxtVolumeTex, NULL)))
+    {
+      D3DLOCKED_BOX locked = {};
+      dxtVolumeTex->LockBox(0, &locked, NULL, 0);
+      for(UINT z = 0; z < 4; z++)
+        FillDXT1((byte *)locked.pBits + z * locked.SlicePitch, locked.RowPitch, 1, 1,
+                 DXTSliceColour(z));
+      dxtVolumeTex->UnlockBox(0);
+    }
+    else
+    {
+      TEST_WARN("DXT1 volume textures aren't supported, skipping");
+    }
+
     // replaced every frame: used, released while still bound, then recreated with a new colour
     IDirect3DTexture9Ptr recycledTex = MakeFilledTexture(4, D3DPOOL_MANAGED, 0xFF000000);
 
@@ -392,12 +460,14 @@ RD_TEST(D3D9_Resource_Contents, D3D9GraphicsTest)
       dev->SetPixelShader(ps);
       dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 3, 0, 1);
 
-      // one textured quad per texture. The cube and volume textures are only bound, on stages
-      // that are disabled.
+      // one textured quad per texture. The cube and volume textures, and the DXT1 ones, are only
+      // bound, on stages that are disabled.
       SetQuadState();
       dev->SetStreamSource(0, dynamicVB, 0, sizeof(QuadVertex));
       dev->SetTexture(1, cubeTex);
       dev->SetTexture(2, volumeTex);
+      dev->SetTexture(3, dxtCubeTex);
+      dev->SetTexture(4, dxtVolumeTex);
 
       IDirect3DBaseTexture9 *quadTextures[numQuads] = {managedTex, defaultTex, rtTex, recycledTex,
                                                        managedTex};
@@ -414,6 +484,8 @@ RD_TEST(D3D9_Resource_Contents, D3D9GraphicsTest)
       dev->SetTexture(0, NULL);
       dev->SetTexture(1, NULL);
       dev->SetTexture(2, NULL);
+      dev->SetTexture(3, NULL);
+      dev->SetTexture(4, NULL);
 
       dev->EndScene();
 
