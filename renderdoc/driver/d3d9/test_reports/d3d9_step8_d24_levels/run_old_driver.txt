@@ -1,0 +1,279 @@
+
+## Tests running for RenderDoc Version 1.48 (1fee69a3227a5beaddd31ad4e3e67120cfef61f5) ##
+
+
+## On Windows-11-10.0.26300-SP0 ##
+
+
+## With serial test runners ##
+
+// plat=Windows-11-10.0.26300-SP0 git=1fee69a3227a5beaddd31ad4e3e67120cfef61f5
+.. Demos running from E:\Projects\renderdoc\util\test\demos_x64.exe
+.. 0 driver: 6 NVIDIA GeForce RTX 4070 Ti 32.0.16.1088
+.. 1 driver: 6 NVIDIA GeForce RTX 4070 Ti 32.0.16.1088
+.. 2 driver: 6 4.6.0 NVIDIA 610.88 / NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2 / NVIDIA Corporation
+.. 3 driver: 6 NVIDIA GeForce RTX 4070 Ti 610.88.0
+.. 4 driver: 0 
+// driver=4.6.0 NVIDIA 610.88 / NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2 / NVIDIA Corporation
+.. Running tests matching '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_AMD_Shader_Extensions as Couldn't load AGS dll
+.. Skipping D3D11_Annotations as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Buffer_Truncation as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_CBuffer_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Counters as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_D3DPERF_Markers as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Deferred_Map as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Discard_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Draw_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Empty_Capture as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Feature_Level_9 as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Frame0 as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Large_Buffer as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Leak_Check as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Mesh_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Overlay_Test as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Parameter_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_PrimitiveID as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Primitive_Restart as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Refcount_Check as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Resource_Lifetimes as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Shader_Editing as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Shader_ISA as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Shader_Linkage_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Simple_Triangle as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Stream_Out as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Stripped_Shaders as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Swapchain_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Untyped_Backbuffer_Descriptor as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Vertex_Attr_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_AMD_Shader_Extensions as Couldn't load AGS dll
+.. Skipping D3D12_Annotations as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Blend_Pixel_History as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Buffer_Truncation as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_CBuffer_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Compute_Only as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Counters as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Descriptor_Indexing as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Discard_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Draw_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Empty_Capture as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Existing_Heap as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Frame0 as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Large_Buffer as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Leak_Check as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_List_Alloc_Tests as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_List_Types as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Map_PlacedAlias as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Memory_Overlap as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Mesh_Shader as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Mesh_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Multi_Wait_Before_Signal as Renderdoc does not yet adequately reorder capture replay
+.. Skipping D3D12_Overlay_Test as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Parameter_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Predication as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_PrimitiveID as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_RGP_Capture as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Reflection_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_RenderTarget_Binds as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Render_Pass as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Resource_Lifetimes as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Resource_Mapping_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Shader_DebugData_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Shader_Editing as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Shader_ISA as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Shader_Linkage_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Sharing as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Simple_Triangle as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Stripped_Shaders as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Swapchain_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Untyped_Backbuffer_Descriptor as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_VRS as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Vertex_Attr_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Vertex_UAV as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Write_Subresource as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9Ex_Wrapping_Check as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9_Counters as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9_Custom_Shaders as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9_Dirty_Regions as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9_Failed_Calls as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9_Frame_Start_State as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9_Mesh_Output as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9_Overlay_Test as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9_Reset_Capture as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9_Resource_Contents as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9_Resource_Usage as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9_Shader_Editing as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9_Simple_Triangle as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9_Texture_Formats as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D9_Wrapping_Check as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Annotations as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Buffer_Resizing as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Buffer_Spam as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Buffer_Truncation as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Buffer_Updates as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_CBuffer_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Counters as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_DX_Interop as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Depth_Bounds as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Discard_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Draw_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Empty_Capture as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Entry_Points as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Frame0 as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Large_Buffer as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Leak_Check as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Marker_Test as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Mesh_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Multithread_Rendering as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Overlay_Test as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Parameter_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Per_Type_Tex_Units as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Queries_In_Use as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Renderbuffer_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Resource_Lifetimes as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Separable_Geometry_Shaders as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Shader_Editing as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Shader_ISA as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Simple_Triangle as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_State_Trashing as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Unshared_Context as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_VAO_0 as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Vertex_Attr_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping VK_Adv_CBuffer_Zoo as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Annotations as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Blend_Pixel_History as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Buffer_Truncation as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_CBuffer_Zoo as Scalar block layout feature 'scalarBlockLayout' not available
+.. Skipping VK_Compute_Only as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Counters as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Custom_Resolve as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Dedicated_Allocation as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Descriptor_Buffer as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Descriptor_Indexing as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Descriptor_Reuse as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Descriptor_Variable_Count as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Device_Address_Commands as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Discard_Zoo as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Draw_Zoo as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Dynamic_Rendering as Descriptor indexing feature 'descriptorBindingPartiallyBound' not available
+.. Skipping VK_Empty_Capture as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Extended_Dynamic_State as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Frame0 as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Graphics_Pipeline as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Image_Layouts as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Imageless_Framebuffer as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Indirect as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Int8_IBuffer as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_KHR_Buffer_Address as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Large_Buffer as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Large_Descriptor_Sets as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Leak_Check as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Line_Raster as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Load_Store_None as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Mesh_Shader as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Mesh_Zoo as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Misaligned_Dirty as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Multi_Entry as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Multi_View as Multiview feature 'multiview' not available
+.. Skipping VK_Overlay_Test as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Parameter_Zoo as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Postponed as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Query_Pool as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_RGP_Capture as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Ray_Query as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Read_Before_Overwrite as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Resource_Lifetimes as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Resource_Usage as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Robustness2 as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_SPIRV_13_Shaders as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Sample_Locations as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Secondary_CmdBuf as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Shader_Editing as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Shader_ISA as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Shader_Printf as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Simple_Triangle as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Spec_Constants as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Stripped_Shaders as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Synchronization_2 as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_VRS as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_VS_Max_Desc_Set as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Validation_Use as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Vertex_Attr_Zoo as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping D3D11_Groupshared as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Pixel_History as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Shader_Debug_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Texture_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D11_Workgroup_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Execute_Indirect as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Groupshared as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Pixel_History as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Shader_Debug_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Subgroup_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Texture_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping D3D12_Workgroup_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Callstacks as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Pixel_History as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping GL_Shader_Debug_Zoo as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping GL_Texture_Zoo as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping Iter_Test as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping Repeat_Load as it doesn't match '^D3D9_Capture_Edge_Cases'
+.. Skipping VK_Groupshared as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Pixel_History as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Shader_Debug_Zoo as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Subgroup_Zoo as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Texture_Zoo as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+.. Skipping VK_Workgroup_Zoo as Couldn't find 'glslc' or 'glslangValidator' in PATH - required for SPIR-V compilation
+>> Test D3D9_Capture_Edge_Cases
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x64.exe' cmd:'D3D9_Capture_Edge_Cases --log E:\Projects\renderdoc\util\test\tmp\D3D9_Capture_Edge_Cases\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+    .. Queuing capture of frame 5
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Capture_Edge_Cases'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_capture_edge_cases.cpp:488 Log: All 4096 depths passed ZFUNC EQUAL natively
+    .. Retrieved 1 captures, of frames [5]
+    >> Raw Process output
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+        E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_capture_edge_cases.cpp:488 Log: All 4096 depths passed ZFUNC EQUAL natively
+    << Raw Process output
+    .. Loading capture
+    .. Checking capture
+    ** The demo's log has no errors (0 warnings)
+    ** The capture was made by a 64-bit process (Windows x86 64-bit)
+    ** The Depth, Multisampled and State blocks markers are there
+    ** The automatic depth stencil is as expected
+    ** The multisampled depth stencil sample 0 is as expected
+    ** The multisampled depth stencil sample 1 is as expected
+    ** The multisampled depth stencil sample 2 is as expected
+    ** The multisampled depth stencil sample 3 is as expected
+    ** The D16 depth stencil is as expected
+    !+ FAILURE in D3D9_Capture_Edge_Cases: The INTZ depth texture: 1024 texels are wrong, the first at 0,0 is 0x5FFFFF0F, expected 0x6000000F
+    >> Section Context
+    .. Current Event: 0
+    << Section Context
+    >> Callstack
+        File "rdtest/shared/D3D9_Test.py", line 249, in check_texels
+            raise rdtest.TestFailureException(
+        File "tests/D3D9/D3D9_Capture_Edge_Cases.py", line 63, in check_d3d9_capture
+            self.check_texels('The INTZ depth texture', rows, lambda x, y: 0x6000000F)
+        File "rdtest/shared/D3D9_Test.py", line 88, in check_capture
+            self.check_d3d9_capture()
+        File "rdtest/testcase.py", line 773, in run
+            self.check_capture()
+        File "rdtest/testcase.py", line 791, in invoketest
+            self.run()
+        File "rdtest/runner.py", line 547, in internal_run_test
+            instance.invoketest(False)
+    << Callstack
+    !- FAILURE
+    >> Raw  RenderDoc log
+    << Raw  RenderDoc log
+    $$ FAILED
+<< Test D3D9_Capture_Edge_Cases
+>> Raw  RenderDoc log
+<< Raw  RenderDoc log
+// total=208 fail=1 skip=207 time=7
+
+## Tests complete summary: 0 passed out of 1 run from 208 total in 0:00:07.123262 ##
+
+.. Failed tests:
+..   - D3D9_Capture_Edge_Cases

@@ -57,13 +57,14 @@ class D3D9_Capture_Edge_Cases(rdtest.D3D9_Test):
         rows, _ = self.depth('Depth Stencil 23')
         self.check_texels('The D16 depth stencil', rows, lambda x, y: 0x7FFF)
 
-        # INTZ, cleared to 0.375 and stencil 0x0F. It reads one below 0.375's nominal level (see
-        # STATUS.md's known gaps).
+        # INTZ, cleared to 0.375 and stencil 0x0F. 0x600000 is 0.375's level.
         if self.get_resource_by_name('Depth Texture 24') is not None:
             rows, _ = self.depth('Depth Texture 24')
-            self.check_texels('The INTZ depth texture', rows, lambda x, y: 0x5FFFFF0F)
+            self.check_texels('The INTZ depth texture', rows, lambda x, y: 0x6000000F)
         else:
             rdtest.log.print("No INTZ texture, the GPU doesn't support it")
+
+        self.check_depth_levels()
 
         # the texture the previous frame locked before Present and unlocked in this one
         rows = self.read_dwords(self.texture_by_name('Texture 31'), rd.Subresource(0, 0, 0))
@@ -81,3 +82,37 @@ class D3D9_Capture_Edge_Cases(rdtest.D3D9_Test):
             raise rdtest.TestFailureException(f"The surface drawn with GDI has both colours: {gdi}")
 
         self.step_all_actions()
+
+    def check_depth_levels(self):
+        # A D24S8 depth stencil with 4096 depths cleared a pixel at a time before the frame, and a
+        # draw testing the same depths against it with ZFUNC EQUAL, green where it passes (natively
+        # all of them, which the demo checks). Replay only passes them all if it wrote each depth
+        # back to the level it had.
+        if self.find_action('Depth levels') is None:
+            rdtest.log.print("No 'Depth levels' marker, the GPU doesn't support R32F textures")
+            return
+
+        draw = self.find_marker_draw('Depth levels')
+
+        # what the capture read: the first 8 depths' levels, which are certain (d * (2^24 - 1)
+        # isn't near half way between two of them), for 0.375, 0.75000006, 0, 1, 0.25, 0.5, 0.75
+        # and 0.33333334. 0.375's and 0.75000006's are the ones the old formula never wrote back.
+        self.set_event(0, True)
+        tex = self.get_texture(draw.depthOut)
+        replay = self.check_script('d3d9_replay_check')
+        values = replay.depth_values(self.controller, tex, 0)
+        if values is None:
+            raise rdtest.TestFailureException(f"Couldn't read the depth levels' depth stencil {draw.depthOut}")
+        expected = [0x60000000, 0xC0000000, 0x00000000, 0xFFFFFF00,
+                    0x40000000, 0x80000000, 0xBFFFFF00, 0x55555500]
+        got = values[0:8]
+        if got != expected:
+            raise rdtest.TestFailureException(
+                "The depth levels' first 8 values are {}, expected {}".format(
+                    ' '.join(f'0x{v:08X}' for v in got), ' '.join(f'0x{v:08X}' for v in expected)))
+        rdtest.log.success("The depth levels' first 8 values are each depth's level")
+
+        self.set_event(draw.eventId, True)
+        target = self.get_texture(draw.outputs[0])
+        rows = self.read_dwords(target, rd.Subresource(0, 0, 0))
+        self.check_texels('The depth levels tested with ZFUNC EQUAL', rows, lambda x, y: 0xFF00FF00)

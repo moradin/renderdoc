@@ -117,7 +117,9 @@ struct D3D9InitParams
   // check if a frame capture section version is supported
   // 0x1: the first version
   // 0x2: initial contents hold system memory textures' dirty regions (D3D9InitialContentsData)
-  static const uint64_t CurrentVersion = 0x2;
+  // 0x3: depth stencils read with the depth test hold each depth's level index, written back with
+  //      another formula (DepthFormula in d3d9_depth.cpp)
+  static const uint64_t CurrentVersion = 0x3;
   static bool IsSupportedVersion(uint64_t ver);
 };
 

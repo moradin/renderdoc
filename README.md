@@ -66,7 +66,6 @@ Known limitations of what works:
 - **Depth stencils**:
   - D24FS8 and `D3DMULTISAMPLE_NONMASKABLE` depth stencils can't be read back at capture.
   - D32 is kept to 24 bits.
-  - Writing D24 back at replay lands one level off for a depth of 0.375.
 - **Texture Viewer**:
   - Multisampled colour targets are only shown resolved.
   - P8 and A8P8 textures show their palette indices, not the colours.

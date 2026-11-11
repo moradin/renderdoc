@@ -53,7 +53,7 @@ the testing were on separate machines.
 | | ~~Saving UpdateTexture dirty regions in captures~~ | 0.5 | Done, see "Dirty regions" below (`d3d9_step8_dirty_regions.md`). Texture streaming. Changed the capture format to version 0x2 |
 | | ~~vs_3_0 outputs that pack two semantics into one register~~ | 0.5 | Done, see "Packed vs_3_0 outputs" below (`d3d9_step8_packed_outputs.md`) |
 | | ~~`texldl` filtering~~ | 0.5 | Done, see "texldl filtering" below (`d3d9_step8_texldl_filtering.md`). Early SM3 GPUs could only point sample vertex textures, so many games do |
-| | D24 at a depth of 0.375 | 0.25 | Check with ZFUNC EQUAL and adjust. One depth value, which only matters to an EQUAL test |
+| | ~~D24 at a depth of 0.375~~ | 0.25 | Done, see "Known gaps in resource contents" below (`d3d9_step8_d24_levels.md`). Two D24 levels were never written back, which only matters to an EQUAL test. Changed the capture format to version 0x3 |
 | | P8 palettes | 0.5 | Low value, since current GPUs don't create P8 textures |
 
 Left out on purpose:
@@ -115,7 +115,7 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Overlay_Test` | `d3d9_overlay_check.py`, with the overlays saved in the test's tmp folder. Includes alpha tested, clipped and oDepth draws, whose Depth overlay has to be green exactly where the draw wrote |
 | `D3D9_Resource_Contents` | Every object's contents at the start of the frame, as listed under "Checking `D3D9_Resource_Contents` captures": each level, face and slice texel by texel, the previous frame's colour in every region the frames alternate, the vertex and write-only index buffers, and each face and slice of the DXT1 cube and volume textures saved as a PNG. Then the triangle drawn from them |
 | `D3D9_Dirty_Regions` | What UpdateTexture copies. The demo checks on the GPU, natively and under RenderDoc, that each frame's copies take exactly the dirty regions (in its log). The test checks at each of the frame's 7 UpdateTexture calls that the destination changed exactly in those regions, at each mip, cube face and volume slice: two rects of a 2D texture dirty when the frame starts, two rects on a cube face (copied as the box around them) and a whole face, two volume boxes, no rects, 6 rects, 7 rects (all of it), and a lock in the frame with D3DLOCK_NO_DIRTY_UPDATE beside one without. And the default pool textures' initial contents, from our shadow copies of what earlier frames copied |
-| `D3D9_Capture_Edge_Cases` | The markers, and at the start of the frame: the automatic, multisampled (each sample), D16 and INTZ depth stencils texel by texel, the texture locked across Present, and the surface drawn with GDI |
+| `D3D9_Capture_Edge_Cases` | The markers, and at the start of the frame: the automatic, multisampled (each sample), D16 and INTZ depth stencils texel by texel, the texture locked across Present, and the surface drawn with GDI. A D24S8 depth stencil cleared to 4096 depths before the frame (including 0.375 and 0.75000006, whose levels the formula before version 0x3 never wrote back), tested in the frame with ZFUNC EQUAL at the same depths: natively all pass (the demo checks), and at replay the draw's target has to be green everywhere. The first 8 values read have to be their depths' levels |
 | `D3D9_Reset_Capture` | Both captures: frame 30's has only "After the reset" and a blue clear, the triggered one only "Frame" and a red clear |
 | `D3D9_Wrapping_Check`, `D3D9Ex_Wrapping_Check` | The demo's own checks (in its log), and that the capture loads and replays |
 | `D3D9_Counters` | The GPU duration and samples passed counters: each draw's samples passed against what the demo's own occlusion queries counted natively (2048, 0, 1024, 120000, 1, and 1024 for a 4x multisampled 16x16 square), a duration for every action, the full screen heavy draw's against the demo's own timestamps (within 4x either way), and that the replay is back at the event it was at afterwards |
@@ -459,20 +459,27 @@ vs_3_sw), which `/T` takes but nothing tested.
   - D24FS8 (its depth is a 20e4 float) and D3DMULTISAMPLE_NONMASKABLE still can't be read, and
     keep a note saying so. D32 is read to 24 bits.
   - It needs shader model 3 and d3dcompiler_47.dll, which RenderDoc ships.
-  - What's stored is the integer l whose depth, computed in the shader as fp32 `l * (1 / max)`,
-    the GPU rounds to the stored level. Replay has to write it back with exactly that formula.
-    Tested on an RTX 4070 Ti, which rounds fragment depths to the format's levels before comparing,
-    and stores Clear's value as one of the levels too: for 848 D16 values (cleared and drawn) the
-    value read back is exact and writing it back gives the same level, and for 424 D24 values
-    (D24S8, D24X8 and INTZ behave the same) writing it back gives the same level in 423. The
-    exception is 0.375: neither 0x5FFFFF nor 0x600000 written back gives its level. If that shows
-    up in games, replay could check what it wrote with ZFUNC EQUAL and nudge the depth.
-  - The integers aren't always the level's index: fp32 `1 / max` rounds up, so for about 70% of D24
-    depths above about 0.4 they're one below it. D16 cleared to 0.5 reads 0x7FFF, which is its
-    level (natively, every depth from 0.49999237 to 0.5 compares EQUAL to it). Computing the depth
-    more precisely (`l * 2^-24 + l * 2^-48`) made it worse near 1.0, as shader adds don't round to
-    nearest. There's no lockable D16 or D24 on that GPU (D16_LOCKABLE fails), so the true bits
-    can't be checked directly.
+  - What's stored is the integer l whose depth, computed in the shader as
+    `(l + (l >= 2^(n-1) ? 1 : 0)) * 2^-n` for n depth bits, the GPU rounds to the stored level.
+    Replay writes it back with exactly that formula. fp32 computes it exactly, and on an RTX 4070
+    Ti, which rounds fragment depths to the format's levels before comparing and stores Clear's
+    value as one of the levels too, it lands on each of D24's 2^24 levels and D16's 2^16 exactly
+    once, in order. So l is the level's index, every level is written back, and the texture viewer
+    shows the level's value. A probe tested every level and 16.7 million drawn and 65,536 cleared
+    depths for D24S8, D24X8 and INTZ, and D16: each read back and written again landed on its
+    level (`d3d9_step8_d24_levels.md`). The GPU converts a depth d to the level nearest
+    `d * (2^n - 1)`, near enough (not exactly: 0.24% of random depths land next to that), and
+    `l * 2^-n` lands on `l - l * 2^-n`, which rounds to l - 1 above half way, hence the 1 added.
+  - (Fixed in step 8.) Until capture version 0x3 the formula was `l * fp32(1 / max)`. fp32
+    `1 / max` rounds up, so for D24 it never reached two levels, 0x600000 (a depth of 0.375) and
+    0xC00000 (0.75000006), which came back one level lower, and its l was one below the level's
+    index for 37.5% of D24's levels. For D16 it gives the same integers as the new formula. Older
+    captures hold those integers, so replay writes them back with the old formula
+    (`DepthFormula` in `d3d9_depth.cpp`); a version 0x2 capture replayed the same as with the old
+    driver. Retested in `d3d9_step8_d24_levels.md`: passed. D16 cleared to 0.5 reads 0x7FFF, its
+    level, as before (the GPU rounds that tie down). There's no lockable D16 or D24 on that GPU
+    (D16_LOCKABLE fails), so the bits stored can't be checked directly, and D15S1, D24X4S4 and
+    D32 aren't supported on it, so the formula is untested for them.
   - Reading needs multisampled R32F render targets for multisampled depth stencils.
   - Replay writes them back with `oDepth` and ZFUNC ALWAYS, and the stencil with a draw per bit
     using REPLACE and a write mask of that bit (`WriteDepthStencil`, phase 3a).
@@ -507,7 +514,8 @@ part grows with locks of level 0 (without D3DLOCK_NO_DIRTY_UPDATE), including lo
 level's surface, and with AddDirtyRect and AddDirtyBox; a new texture is entirely dirty. Texture
 streaming relies on it. We track it for every texture (`D3D9DirtyRegion` in `d3d9_contents.h`):
 - for the shadow copies of D3DPOOL_DEFAULT textures, which take what UpdateTexture copies;
-- in captures, from version 0x2 (step 8): the initial contents of a D3DPOOL_SYSTEMMEM texture,
+- in captures, from version 0x2 (step 8; 0x3 changed how depth stencils are stored, see "Known
+  gaps in resource contents"): the initial contents of a D3DPOOL_SYSTEMMEM texture,
   which is the only kind UpdateTexture copies from, hold its dirty region as the frame started.
   Anything that changes the region during the frame (a lock, AddDirtyRect, UpdateTexture from it)
   reads the initial contents first, so they have the region before the change.
@@ -584,8 +592,12 @@ reading changed the application's state. In a capture:
 - multisampled depth stencil (64x64, if 4x MSAA is supported): Depth 4, one slice per sample. Below
   the diagonal 0x80000033 in every sample, including the top row and left column; above it
   0xFFFFFF00, and pixels on the diagonal differ between slices.
-- D16 surface (32x32): every pixel 0x7FFF. INTZ texture (32x32, if supported): 0x5FFFFF0F (one
-  below 0.375's nominal level, see the known gaps).
+- D16 surface (32x32): every pixel 0x7FFF. INTZ texture (32x32, if supported): 0x6000000F
+  (0.375's level; captures before version 0x3 read 0x5FFFFF0F, see the known gaps).
+- the depth levels' D24S8 depth stencil (64x64, if R32F textures are supported): the first 8
+  pixels 0x60000000, 0xC0000000, 0, 0xFFFFFF00, 0x40000000, 0x80000000, 0xBFFFFF00 and
+  0x55555500 (0.375, 0.75000006, 0, 1, 0.25, 0.5, 0.75 and 0.33333334). At the "Depth levels"
+  draw its 64x64 render target is green (0xFF00FF00) everywhere.
 - the recorded state block: before the frame, its `BeginStateBlock`, `SetRenderState`
   (D3DRS_TEXTUREFACTOR), `SetTexture` and `SetVertexShaderConstantF` chunks come just before its
   `EndStateBlock`. Its initial contents have one StateBlock element with D3DRS_TEXTUREFACTOR
@@ -777,7 +789,8 @@ Known gaps:
 - (Fixed in step 8: in-frame UpdateTexture copies the dirty region the capture had, see "Dirty
   regions".)
 - D24FS8 and D3DMULTISAMPLE_NONMASKABLE depth stencils aren't written back (they weren't read
-  either), and the 0.375 D24 value lands one level off.
+  either). (Fixed in step 8: the 0.375 D24 value landed one level off, see the known gaps in
+  resource contents.)
 - (Fixed in 3b: output window screenshots, `GetOutputWindowData`, are implemented.)
 
 ### Checking replay
@@ -804,7 +817,7 @@ What to look for:
   overlay text. `<capture>_first.png` is the previous frame, with the overlay text.
 - `D3D9_Capture_Edge_Cases`: the depth values at the start of the frame match the ones listed for its
   initial contents above (0x4000005A, 0xBFFFFFA5 and 0xFFFFFF00 for the automatic depth stencil,
-  0x80000033 and 0xFFFFFF00 in each sample of the multisampled one, 0x7FFF for D16, 0x5FFFFF0F for
+  0x80000033 and 0xFFFFFF00 in each sample of the multisampled one, 0x7FFF for D16, 0x6000000F for
   INTZ).
 - RenderDoc's log has no errors, and no "Couldn't write the contents" warnings except for the
   gaps above.
@@ -922,7 +935,7 @@ What to test on Windows (all in the UI unless noted):
 - `D3D9_Capture_Edge_Cases` at the first event: the automatic depth stencil shows depth in red with
   pick pixel values 0.25 / stencil 90 (0x4000005A), 0.75 / 165 (0xBFFFFFA5) and 1.0 / 0
   (0xFFFFFF00); each sample of the multisampled one 0.5 / 51 (0x80000033) and 1.0 / 0; D16 about
-  0.49999 (0x7FFF); INTZ 0.375 / 15 (0x5FFFFF0F). Min/max over the automatic depth stencil gives
+  0.49999 (0x7FFF); INTZ 0.375 / 15 (0x6000000F). Min/max over the automatic depth stencil gives
   0.25 to 1.0 for depth.
 - A real game with DXT, A8L8/L8, float render targets and a depth stencil: compressed textures
   match the game, float targets show values outside 0-1 with the range slider, depth shows with

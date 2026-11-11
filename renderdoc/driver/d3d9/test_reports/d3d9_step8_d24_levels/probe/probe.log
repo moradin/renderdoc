@@ -1,0 +1,339 @@
+start
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+init done
+shaders 00000246932AC540 00000246931438C0 000002469327FA20
+adapter NVIDIA GeForce RTX 4070 Ti, driver 32.0.16.1088
+==== D24S8: 16777216 levels, 4096x4096
+-- formula A l*(1/max) (threshold 1e+30, step 0, scale 5.96046519e-08 / 33800001)
+  shader vs CPU: 0 of 16777216 differ
+  chain: F(l+1) not above F(l) for 2 l of 16777215; first: 8388607 16777214
+  chain failures per 1/16 of the range: 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 1
+  F(l) EQUAL to what it wrote: 0 failures
+  draws: F(l) not EQUAL after read back: 1 of 16777216
+    pixel 3: depth 0.375 (3ec00000) l 6291455 (5fffff) RNE 6291456
+  draws: l differs from round-to-nearest-even(d*max) 4276213, from floor(d*max+0.5) 4276213
+    drawn 0: l 0 (000000)
+    drawn 1: l 16777215 (ffffff)
+    drawn 0.25: l 4194304 (400000)
+    drawn 0.375: l 6291455 (5fffff)
+    drawn 0.5: l 8388608 (800000)
+    drawn 0.75: l 12582911 (bfffff)
+    drawn 0.333333343: l 5592405 (555555)
+    drawn 0.666666687: l 11184810 (aaaaaa)
+  clears: F(l) not EQUAL after read back: 1 of 65536
+    pixel 3: clear 0.375 (3ec00000) l 6291455 (5fffff) RNE 6291456
+  clears: l differs from round-to-nearest-even(d*max) 16627, from floor(d*max+0.5) 16627
+    cleared 0: l 0 (000000)
+    cleared 1: l 16777215 (ffffff)
+    cleared 0.25: l 4194304 (400000)
+    cleared 0.375: l 6291455 (5fffff)
+    cleared 0.5: l 8388608 (800000)
+    cleared 0.75: l 12582911 (bfffff)
+    cleared 0.333333343: l 5592405 (555555)
+    cleared 0.666666687: l 11184810 (aaaaaa)
+-- formula B (l+[l>=half])*2^-n (threshold 8.38861e+06, step 1, scale 5.96046448e-08 / 33800000)
+  shader vs CPU: 0 of 16777216 differ
+  chain: F(l+1) not above F(l) for 0 l of 16777215; first:
+  chain failures per 1/16 of the range: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  F(l) EQUAL to what it wrote: 0 failures
+  draws: F(l) not EQUAL after read back: 0 of 16777216
+  draws: l differs from round-to-nearest-even(d*max) 40376, from floor(d*max+0.5) 40376
+    drawn 0: l 0 (000000)
+    drawn 1: l 16777215 (ffffff)
+    drawn 0.25: l 4194304 (400000)
+    drawn 0.375: l 6291456 (600000)
+    drawn 0.5: l 8388608 (800000)
+    drawn 0.75: l 12582911 (bfffff)
+    drawn 0.333333343: l 5592405 (555555)
+    drawn 0.666666687: l 11184810 (aaaaaa)
+  clears: F(l) not EQUAL after read back: 0 of 65536
+  clears: l differs from round-to-nearest-even(d*max) 160, from floor(d*max+0.5) 160
+    cleared 0: l 0 (000000)
+    cleared 1: l 16777215 (ffffff)
+    cleared 0.25: l 4194304 (400000)
+    cleared 0.375: l 6291456 (600000)
+    cleared 0.5: l 8388608 (800000)
+    cleared 0.75: l 12582911 (bfffff)
+    cleared 0.333333343: l 5592405 (555555)
+    cleared 0.666666687: l 11184810 (aaaaaa)
+-- formula C l*2^-n (threshold 1e+30, step 0, scale 5.96046448e-08 / 33800000)
+  shader vs CPU: 0 of 16777216 differ
+  chain: F(l+1) not above F(l) for 1 l of 16777215; first: 8388608
+  chain failures per 1/16 of the range: 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0
+  F(l) EQUAL to what it wrote: 0 failures
+  draws: F(l) not EQUAL after read back: 2 of 16777216
+    pixel 1: depth 1 (3f800000) l 16777215 (ffffff) RNE 16777215
+    pixel 12588842: depth 1 (3f800000) l 16777215 (ffffff) RNE 16777215
+  draws: l differs from round-to-nearest-even(d*max) 5676523, from floor(d*max+0.5) 5676523
+    drawn 0: l 0 (000000)
+    drawn 1: l 16777215 (ffffff)
+    drawn 0.25: l 4194304 (400000)
+    drawn 0.375: l 6291456 (600000)
+    drawn 0.5: l 8388609 (800001)
+    drawn 0.75: l 12582912 (c00000)
+    drawn 0.333333343: l 5592405 (555555)
+    drawn 0.666666687: l 11184811 (aaaaab)
+  clears: F(l) not EQUAL after read back: 1 of 65536
+    pixel 1: clear 1 (3f800000) l 16777215 (ffffff) RNE 16777215
+  clears: l differs from round-to-nearest-even(d*max) 22135, from floor(d*max+0.5) 22135
+    cleared 0: l 0 (000000)
+    cleared 1: l 16777215 (ffffff)
+    cleared 0.25: l 4194304 (400000)
+    cleared 0.375: l 6291456 (600000)
+    cleared 0.5: l 8388609 (800001)
+    cleared 0.75: l 12582912 (c00000)
+    cleared 0.333333343: l 5592405 (555555)
+    cleared 0.666666687: l 11184811 (aaaaab)
+-- A's l against the level it lands on: lands below l 0, on l 10485761, above l 6291455
+  level 6291456 (600000) is never reached by A; B's depth for it 0.375 (3ec00000)
+  level 12582912 (c00000) is never reached by A; B's depth for it 0.75000006 (3f400001)
+==== D24X8: 16777216 levels, 4096x4096
+-- formula A l*(1/max) (threshold 1e+30, step 0, scale 5.96046519e-08 / 33800001)
+  shader vs CPU: 0 of 16777216 differ
+  chain: F(l+1) not above F(l) for 2 l of 16777215; first: 8388607 16777214
+  chain failures per 1/16 of the range: 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 1
+  F(l) EQUAL to what it wrote: 0 failures
+  draws: F(l) not EQUAL after read back: 1 of 16777216
+    pixel 3: depth 0.375 (3ec00000) l 6291455 (5fffff) RNE 6291456
+  draws: l differs from round-to-nearest-even(d*max) 4276213, from floor(d*max+0.5) 4276213
+    drawn 0: l 0 (000000)
+    drawn 1: l 16777215 (ffffff)
+    drawn 0.25: l 4194304 (400000)
+    drawn 0.375: l 6291455 (5fffff)
+    drawn 0.5: l 8388608 (800000)
+    drawn 0.75: l 12582911 (bfffff)
+    drawn 0.333333343: l 5592405 (555555)
+    drawn 0.666666687: l 11184810 (aaaaaa)
+  clears: F(l) not EQUAL after read back: 1 of 65536
+    pixel 3: clear 0.375 (3ec00000) l 6291455 (5fffff) RNE 6291456
+  clears: l differs from round-to-nearest-even(d*max) 16627, from floor(d*max+0.5) 16627
+    cleared 0: l 0 (000000)
+    cleared 1: l 16777215 (ffffff)
+    cleared 0.25: l 4194304 (400000)
+    cleared 0.375: l 6291455 (5fffff)
+    cleared 0.5: l 8388608 (800000)
+    cleared 0.75: l 12582911 (bfffff)
+    cleared 0.333333343: l 5592405 (555555)
+    cleared 0.666666687: l 11184810 (aaaaaa)
+-- formula B (l+[l>=half])*2^-n (threshold 8.38861e+06, step 1, scale 5.96046448e-08 / 33800000)
+  shader vs CPU: 0 of 16777216 differ
+  chain: F(l+1) not above F(l) for 0 l of 16777215; first:
+  chain failures per 1/16 of the range: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  F(l) EQUAL to what it wrote: 0 failures
+  draws: F(l) not EQUAL after read back: 0 of 16777216
+  draws: l differs from round-to-nearest-even(d*max) 40376, from floor(d*max+0.5) 40376
+    drawn 0: l 0 (000000)
+    drawn 1: l 16777215 (ffffff)
+    drawn 0.25: l 4194304 (400000)
+    drawn 0.375: l 6291456 (600000)
+    drawn 0.5: l 8388608 (800000)
+    drawn 0.75: l 12582911 (bfffff)
+    drawn 0.333333343: l 5592405 (555555)
+    drawn 0.666666687: l 11184810 (aaaaaa)
+  clears: F(l) not EQUAL after read back: 0 of 65536
+  clears: l differs from round-to-nearest-even(d*max) 160, from floor(d*max+0.5) 160
+    cleared 0: l 0 (000000)
+    cleared 1: l 16777215 (ffffff)
+    cleared 0.25: l 4194304 (400000)
+    cleared 0.375: l 6291456 (600000)
+    cleared 0.5: l 8388608 (800000)
+    cleared 0.75: l 12582911 (bfffff)
+    cleared 0.333333343: l 5592405 (555555)
+    cleared 0.666666687: l 11184810 (aaaaaa)
+-- formula C l*2^-n (threshold 1e+30, step 0, scale 5.96046448e-08 / 33800000)
+  shader vs CPU: 0 of 16777216 differ
+  chain: F(l+1) not above F(l) for 1 l of 16777215; first: 8388608
+  chain failures per 1/16 of the range: 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0
+  F(l) EQUAL to what it wrote: 0 failures
+  draws: F(l) not EQUAL after read back: 2 of 16777216
+    pixel 1: depth 1 (3f800000) l 16777215 (ffffff) RNE 16777215
+    pixel 12588842: depth 1 (3f800000) l 16777215 (ffffff) RNE 16777215
+  draws: l differs from round-to-nearest-even(d*max) 5676523, from floor(d*max+0.5) 5676523
+    drawn 0: l 0 (000000)
+    drawn 1: l 16777215 (ffffff)
+    drawn 0.25: l 4194304 (400000)
+    drawn 0.375: l 6291456 (600000)
+    drawn 0.5: l 8388609 (800001)
+    drawn 0.75: l 12582912 (c00000)
+    drawn 0.333333343: l 5592405 (555555)
+    drawn 0.666666687: l 11184811 (aaaaab)
+  clears: F(l) not EQUAL after read back: 1 of 65536
+    pixel 1: clear 1 (3f800000) l 16777215 (ffffff) RNE 16777215
+  clears: l differs from round-to-nearest-even(d*max) 22135, from floor(d*max+0.5) 22135
+    cleared 0: l 0 (000000)
+    cleared 1: l 16777215 (ffffff)
+    cleared 0.25: l 4194304 (400000)
+    cleared 0.375: l 6291456 (600000)
+    cleared 0.5: l 8388609 (800001)
+    cleared 0.75: l 12582912 (c00000)
+    cleared 0.333333343: l 5592405 (555555)
+    cleared 0.666666687: l 11184811 (aaaaab)
+-- A's l against the level it lands on: lands below l 0, on l 10485761, above l 6291455
+  level 6291456 (600000) is never reached by A; B's depth for it 0.375 (3ec00000)
+  level 12582912 (c00000) is never reached by A; B's depth for it 0.75000006 (3f400001)
+==== INTZ: 16777216 levels, 4096x4096
+-- formula A l*(1/max) (threshold 1e+30, step 0, scale 5.96046519e-08 / 33800001)
+  shader vs CPU: 0 of 16777216 differ
+  chain: F(l+1) not above F(l) for 2 l of 16777215; first: 8388607 16777214
+  chain failures per 1/16 of the range: 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 1
+  F(l) EQUAL to what it wrote: 0 failures
+  draws: F(l) not EQUAL after read back: 1 of 16777216
+    pixel 3: depth 0.375 (3ec00000) l 6291455 (5fffff) RNE 6291456
+  draws: l differs from round-to-nearest-even(d*max) 4276213, from floor(d*max+0.5) 4276213
+    drawn 0: l 0 (000000)
+    drawn 1: l 16777215 (ffffff)
+    drawn 0.25: l 4194304 (400000)
+    drawn 0.375: l 6291455 (5fffff)
+    drawn 0.5: l 8388608 (800000)
+    drawn 0.75: l 12582911 (bfffff)
+    drawn 0.333333343: l 5592405 (555555)
+    drawn 0.666666687: l 11184810 (aaaaaa)
+  clears: F(l) not EQUAL after read back: 1 of 65536
+    pixel 3: clear 0.375 (3ec00000) l 6291455 (5fffff) RNE 6291456
+  clears: l differs from round-to-nearest-even(d*max) 16627, from floor(d*max+0.5) 16627
+    cleared 0: l 0 (000000)
+    cleared 1: l 16777215 (ffffff)
+    cleared 0.25: l 4194304 (400000)
+    cleared 0.375: l 6291455 (5fffff)
+    cleared 0.5: l 8388608 (800000)
+    cleared 0.75: l 12582911 (bfffff)
+    cleared 0.333333343: l 5592405 (555555)
+    cleared 0.666666687: l 11184810 (aaaaaa)
+-- formula B (l+[l>=half])*2^-n (threshold 8.38861e+06, step 1, scale 5.96046448e-08 / 33800000)
+  shader vs CPU: 0 of 16777216 differ
+  chain: F(l+1) not above F(l) for 0 l of 16777215; first:
+  chain failures per 1/16 of the range: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  F(l) EQUAL to what it wrote: 0 failures
+  draws: F(l) not EQUAL after read back: 0 of 16777216
+  draws: l differs from round-to-nearest-even(d*max) 40376, from floor(d*max+0.5) 40376
+    drawn 0: l 0 (000000)
+    drawn 1: l 16777215 (ffffff)
+    drawn 0.25: l 4194304 (400000)
+    drawn 0.375: l 6291456 (600000)
+    drawn 0.5: l 8388608 (800000)
+    drawn 0.75: l 12582911 (bfffff)
+    drawn 0.333333343: l 5592405 (555555)
+    drawn 0.666666687: l 11184810 (aaaaaa)
+  clears: F(l) not EQUAL after read back: 0 of 65536
+  clears: l differs from round-to-nearest-even(d*max) 160, from floor(d*max+0.5) 160
+    cleared 0: l 0 (000000)
+    cleared 1: l 16777215 (ffffff)
+    cleared 0.25: l 4194304 (400000)
+    cleared 0.375: l 6291456 (600000)
+    cleared 0.5: l 8388608 (800000)
+    cleared 0.75: l 12582911 (bfffff)
+    cleared 0.333333343: l 5592405 (555555)
+    cleared 0.666666687: l 11184810 (aaaaaa)
+-- formula C l*2^-n (threshold 1e+30, step 0, scale 5.96046448e-08 / 33800000)
+  shader vs CPU: 0 of 16777216 differ
+  chain: F(l+1) not above F(l) for 1 l of 16777215; first: 8388608
+  chain failures per 1/16 of the range: 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0
+  F(l) EQUAL to what it wrote: 0 failures
+  draws: F(l) not EQUAL after read back: 2 of 16777216
+    pixel 1: depth 1 (3f800000) l 16777215 (ffffff) RNE 16777215
+    pixel 12588842: depth 1 (3f800000) l 16777215 (ffffff) RNE 16777215
+  draws: l differs from round-to-nearest-even(d*max) 5676523, from floor(d*max+0.5) 5676523
+    drawn 0: l 0 (000000)
+    drawn 1: l 16777215 (ffffff)
+    drawn 0.25: l 4194304 (400000)
+    drawn 0.375: l 6291456 (600000)
+    drawn 0.5: l 8388609 (800001)
+    drawn 0.75: l 12582912 (c00000)
+    drawn 0.333333343: l 5592405 (555555)
+    drawn 0.666666687: l 11184811 (aaaaab)
+  clears: F(l) not EQUAL after read back: 1 of 65536
+    pixel 1: clear 1 (3f800000) l 16777215 (ffffff) RNE 16777215
+  clears: l differs from round-to-nearest-even(d*max) 22135, from floor(d*max+0.5) 22135
+    cleared 0: l 0 (000000)
+    cleared 1: l 16777215 (ffffff)
+    cleared 0.25: l 4194304 (400000)
+    cleared 0.375: l 6291456 (600000)
+    cleared 0.5: l 8388609 (800001)
+    cleared 0.75: l 12582912 (c00000)
+    cleared 0.333333343: l 5592405 (555555)
+    cleared 0.666666687: l 11184811 (aaaaab)
+-- A's l against the level it lands on: lands below l 0, on l 10485761, above l 6291455
+  level 6291456 (600000) is never reached by A; B's depth for it 0.375 (3ec00000)
+  level 12582912 (c00000) is never reached by A; B's depth for it 0.75000006 (3f400001)
+==== D24X4S4: not supported
+==== D32 (24 bits): not supported
+==== D16: 65536 levels, 256x256
+-- formula A l*(1/max) (threshold 1e+30, step 0, scale 1.52590219e-05 / 37800080)
+  shader vs CPU: 0 of 65536 differ
+  chain: F(l+1) not above F(l) for 0 l of 65535; first:
+  chain failures per 1/16 of the range: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  F(l) EQUAL to what it wrote: 0 failures
+  draws: F(l) not EQUAL after read back: 0 of 65536
+  draws: l differs from round-to-nearest-even(d*max) 5799, from floor(d*max+0.5) 5799
+    drawn 0: l 0 (000000)
+    drawn 1: l 65535 (00ffff)
+    drawn 0.25: l 16384 (004000)
+    drawn 0.375: l 24576 (006000)
+    drawn 0.5: l 32767 (007fff)
+    drawn 0.75: l 49151 (00bfff)
+    drawn 0.333333343: l 21845 (005555)
+    drawn 0.666666687: l 43690 (00aaaa)
+  clears: F(l) not EQUAL after read back: 0 of 65536
+  clears: l differs from round-to-nearest-even(d*max) 5799, from floor(d*max+0.5) 5799
+    cleared 0: l 0 (000000)
+    cleared 1: l 65535 (00ffff)
+    cleared 0.25: l 16384 (004000)
+    cleared 0.375: l 24576 (006000)
+    cleared 0.5: l 32767 (007fff)
+    cleared 0.75: l 49151 (00bfff)
+    cleared 0.333333343: l 21845 (005555)
+    cleared 0.666666687: l 43690 (00aaaa)
+-- formula B (l+[l>=half])*2^-n (threshold 32768, step 1, scale 1.52587891e-05 / 37800000)
+  shader vs CPU: 0 of 65536 differ
+  chain: F(l+1) not above F(l) for 0 l of 65535; first:
+  chain failures per 1/16 of the range: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  F(l) EQUAL to what it wrote: 0 failures
+  draws: F(l) not EQUAL after read back: 0 of 65536
+  draws: l differs from round-to-nearest-even(d*max) 5799, from floor(d*max+0.5) 5799
+    drawn 0: l 0 (000000)
+    drawn 1: l 65535 (00ffff)
+    drawn 0.25: l 16384 (004000)
+    drawn 0.375: l 24576 (006000)
+    drawn 0.5: l 32767 (007fff)
+    drawn 0.75: l 49151 (00bfff)
+    drawn 0.333333343: l 21845 (005555)
+    drawn 0.666666687: l 43690 (00aaaa)
+  clears: F(l) not EQUAL after read back: 0 of 65536
+  clears: l differs from round-to-nearest-even(d*max) 5799, from floor(d*max+0.5) 5799
+    cleared 0: l 0 (000000)
+    cleared 1: l 65535 (00ffff)
+    cleared 0.25: l 16384 (004000)
+    cleared 0.375: l 24576 (006000)
+    cleared 0.5: l 32767 (007fff)
+    cleared 0.75: l 49151 (00bfff)
+    cleared 0.333333343: l 21845 (005555)
+    cleared 0.666666687: l 43690 (00aaaa)
+-- formula C l*2^-n (threshold 1e+30, step 0, scale 1.52587891e-05 / 37800000)
+  shader vs CPU: 0 of 65536 differ
+  chain: F(l+1) not above F(l) for 1 l of 65535; first: 32767
+  chain failures per 1/16 of the range: 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0
+  F(l) EQUAL to what it wrote: 0 failures
+  draws: F(l) not EQUAL after read back: 1 of 65536
+    pixel 1: depth 1 (3f800000) l 65535 (00ffff) RNE 65535
+  draws: l differs from round-to-nearest-even(d*max) 22237, from floor(d*max+0.5) 22237
+    drawn 0: l 0 (000000)
+    drawn 1: l 65535 (00ffff)
+    drawn 0.25: l 16384 (004000)
+    drawn 0.375: l 24576 (006000)
+    drawn 0.5: l 32768 (008000)
+    drawn 0.75: l 49152 (00c000)
+    drawn 0.333333343: l 21845 (005555)
+    drawn 0.666666687: l 43691 (00aaab)
+  clears: F(l) not EQUAL after read back: 1 of 65536
+    pixel 1: clear 1 (3f800000) l 65535 (00ffff) RNE 65535
+  clears: l differs from round-to-nearest-even(d*max) 22237, from floor(d*max+0.5) 22237
+    cleared 0: l 0 (000000)
+    cleared 1: l 65535 (00ffff)
+    cleared 0.25: l 16384 (004000)
+    cleared 0.375: l 24576 (006000)
+    cleared 0.5: l 32768 (008000)
+    cleared 0.75: l 49152 (00c000)
+    cleared 0.333333343: l 21845 (005555)
+    cleared 0.666666687: l 43691 (00aaab)
+-- A's l against the level it lands on: lands below l 0, on l 65536, above l 0
+==== D15S1: not supported

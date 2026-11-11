@@ -1,0 +1,5 @@
+first 8 values at the start of the frame: 0x5FFFFF00 0xBFFFFF00 0x00000000 0xFFFFFF00 0x40000000 0x80000000 0xBFFFFF00 0x55555500
+not green after the ZFUNC EQUAL draw: 2 of 4096 [0, 1]
+  pixel 0: colour 0xFFFF0000, depth stencil value 0x5FFFFF00
+  pixel 1: colour 0xFFFF0000, depth stencil value 0xBFFFFF00
+INTZ (Depth Texture 24) values: [1610612495]
