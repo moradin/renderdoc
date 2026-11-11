@@ -76,7 +76,6 @@ Known limitations of what works:
   - `texldl` in vertex shaders always point samples.
   - Fixed function processing doesn't handle N-patches, user clip planes, displacement mapping or
     more than 8 lights.
-  - A vs_3_0 shader that packs two semantics into one output register shows only one of them.
 - **Custom display shaders** are ps_3_0: the texture is in a sampler with point filtering, not a
   texture object, and the older `RENDERDOC_` globals aren't filled.
 - **Shader editing**: an edited disassembly loses the constant table, so the edited shader's

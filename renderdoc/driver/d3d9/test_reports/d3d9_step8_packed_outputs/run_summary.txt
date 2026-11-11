@@ -1,0 +1,8 @@
+renderdoc_x64 exit 0 warnings 0 errors 0
+demos_x64 exit 0 warnings 0 errors 0
+renderdoc_x86 exit 0 warnings 0 errors 0
+demos_x86 exit 0 warnings 0 errors 0
+All tests passed (6104 assertions in 14 test cases)
+
+## Tests complete summary: 17 passed out of 17 run from 208 total in 0:01:17.666930 ##
+## Tests complete summary: 17 passed out of 17 run from 208 total in 0:01:17.801047 ##

@@ -1,0 +1,112 @@
+hw: VS tc0 o1.xy, tc1 o1.zw                          PS tc0 v0.xy                0 0 -1 -1
+hw: VS tc0 o1.xy, tc1 o1.zw                          PS tc0 v0.zw                -1 -1 0 0
+hw: VS tc0 o1.xy, tc1 o1.zw                          PS tc0 v0                   0 0 0 0
+hw: VS tc0 o1.xy, tc1 o1.zw                          PS tc1 v0.xy                1 2 -1 -1
+hw: VS tc0 o1.xy, tc1 o1.zw                          PS tc1 v0.zw                -1 -1 3 4
+hw: VS tc0 o1.xy, tc1 o1.zw                          PS tc1 v0                   1 2 3 4
+hw: VS tc0 o1.xy, tc1 o1.zw                          PS tc2 v0                   0 0 0 0
+hw: VS tc0 o1.xy, tc1 o1.zw                          PS tc0 v0.xy, tc1 v0.zw     1 2 3 4
+hw: VS tc0 o1.xy, tc1 o1.zw                          PS tc1 v0.xy, tc0 v0.zw     0 0 0 0
+hw: VS tc0 o1.xy, tc1 o1.zw                          PS tc0 v0.xz, tc1 v0.yw     1 2 3 4
+hw: VS tc0 o1.xy, tc1 o1.zw                          PS tc0 v3.xy, tc1 v5.xy     0 0 1 2
+hw: VS tc0 o1.xy, tc1 o1.zw                          PS color0 v0.xyz            1 1 1 -1
+hw: VS tc0 o1.xy, tc1 o1.zw                          PS fog v0.x                 0 -1 -1 -1
+hw: VS tc0 o1.xy, tc1 o1.zw                          PS color0 v0.xyz, fog v1.x  1 1 1 0
+hw: VS tc1 o1.zw, tc0 o1.xy (declared in that order) PS tc0 v0.xy                1 2 -1 -1
+hw: VS tc1 o1.zw, tc0 o1.xy (declared in that order) PS tc0 v0.zw                -1 -1 3 4
+hw: VS tc1 o1.zw, tc0 o1.xy (declared in that order) PS tc0 v0                   1 2 3 4
+hw: VS tc1 o1.zw, tc0 o1.xy (declared in that order) PS tc1 v0.xy                0 0 -1 -1
+hw: VS tc1 o1.zw, tc0 o1.xy (declared in that order) PS tc1 v0.zw                -1 -1 0 0
+hw: VS tc1 o1.zw, tc0 o1.xy (declared in that order) PS tc1 v0                   0 0 0 0
+hw: VS tc1 o1.zw, tc0 o1.xy (declared in that order) PS tc2 v0                   0 0 0 0
+hw: VS tc1 o1.zw, tc0 o1.xy (declared in that order) PS tc0 v0.xy, tc1 v0.zw     0 0 0 0
+hw: VS tc1 o1.zw, tc0 o1.xy (declared in that order) PS tc1 v0.xy, tc0 v0.zw     1 2 3 4
+hw: VS tc1 o1.zw, tc0 o1.xy (declared in that order) PS tc0 v0.xz, tc1 v0.yw     0 0 0 0
+hw: VS tc1 o1.zw, tc0 o1.xy (declared in that order) PS tc0 v3.xy, tc1 v5.xy     1 2 0 0
+hw: VS tc1 o1.zw, tc0 o1.xy (declared in that order) PS color0 v0.xyz            1 1 1 -1
+hw: VS tc1 o1.zw, tc0 o1.xy (declared in that order) PS fog v0.x                 0 -1 -1 -1
+hw: VS tc1 o1.zw, tc0 o1.xy (declared in that order) PS color0 v0.xyz, fog v1.x  1 1 1 0
+hw: VS tc0 o1, tc1 o2 (unpacked)                     PS tc0 v0.xy                1 2 -1 -1
+hw: VS tc0 o1, tc1 o2 (unpacked)                     PS tc0 v0.zw                -1 -1 3 4
+hw: VS tc0 o1, tc1 o2 (unpacked)                     PS tc0 v0                   1 2 3 4
+hw: VS tc0 o1, tc1 o2 (unpacked)                     PS tc1 v0.xy                5 6 -1 -1
+hw: VS tc0 o1, tc1 o2 (unpacked)                     PS tc1 v0.zw                -1 -1 7 8
+hw: VS tc0 o1, tc1 o2 (unpacked)                     PS tc1 v0                   5 6 7 8
+hw: VS tc0 o1, tc1 o2 (unpacked)                     PS tc2 v0                   0 0 0 0
+hw: VS tc0 o1, tc1 o2 (unpacked)                     PS tc0 v0.xy, tc1 v0.zw     5 6 7 8
+hw: VS tc0 o1, tc1 o2 (unpacked)                     PS tc1 v0.xy, tc0 v0.zw     1 2 3 4
+hw: VS tc0 o1, tc1 o2 (unpacked)                     PS tc0 v0.xz, tc1 v0.yw     5 6 7 8
+hw: VS tc0 o1, tc1 o2 (unpacked)                     PS tc0 v3.xy, tc1 v5.xy     1 2 5 6
+hw: VS tc0 o1, tc1 o2 (unpacked)                     PS color0 v0.xyz            1 1 1 -1
+hw: VS tc0 o1, tc1 o2 (unpacked)                     PS fog v0.x                 0 -1 -1 -1
+hw: VS tc0 o1, tc1 o2 (unpacked)                     PS color0 v0.xyz, fog v1.x  1 1 1 0
+hw: VS tc0 o1.xz, tc1 o1.yw                          PS tc0 v0.xy                0 0 -1 -1
+hw: VS tc0 o1.xz, tc1 o1.yw                          PS tc0 v0.zw                -1 -1 0 0
+hw: VS tc0 o1.xz, tc1 o1.yw                          PS tc0 v0                   0 0 0 0
+hw: VS tc0 o1.xz, tc1 o1.yw                          PS tc1 v0.xy                1 2 -1 -1
+hw: VS tc0 o1.xz, tc1 o1.yw                          PS tc1 v0.zw                -1 -1 3 4
+hw: VS tc0 o1.xz, tc1 o1.yw                          PS tc1 v0                   1 2 3 4
+hw: VS tc0 o1.xz, tc1 o1.yw                          PS tc2 v0                   0 0 0 0
+hw: VS tc0 o1.xz, tc1 o1.yw                          PS tc0 v0.xy, tc1 v0.zw     1 2 3 4
+hw: VS tc0 o1.xz, tc1 o1.yw                          PS tc1 v0.xy, tc0 v0.zw     0 0 0 0
+hw: VS tc0 o1.xz, tc1 o1.yw                          PS tc0 v0.xz, tc1 v0.yw     1 2 3 4
+hw: VS tc0 o1.xz, tc1 o1.yw                          PS tc0 v3.xy, tc1 v5.xy     0 0 1 2
+hw: VS tc0 o1.xz, tc1 o1.yw                          PS color0 v0.xyz            1 1 1 -1
+hw: VS tc0 o1.xz, tc1 o1.yw                          PS fog v0.x                 0 -1 -1 -1
+hw: VS tc0 o1.xz, tc1 o1.yw                          PS color0 v0.xyz, fog v1.x  1 1 1 0
+hw: VS tc0 o1.x, tc1 o1.y, tc2 o1.zw                 PS tc0 v0.xy                0 0 -1 -1
+hw: VS tc0 o1.x, tc1 o1.y, tc2 o1.zw                 PS tc0 v0.zw                -1 -1 0 0
+hw: VS tc0 o1.x, tc1 o1.y, tc2 o1.zw                 PS tc0 v0                   0 0 0 0
+hw: VS tc0 o1.x, tc1 o1.y, tc2 o1.zw                 PS tc1 v0.xy                0 0 -1 -1
+hw: VS tc0 o1.x, tc1 o1.y, tc2 o1.zw                 PS tc1 v0.zw                -1 -1 0 0
+hw: VS tc0 o1.x, tc1 o1.y, tc2 o1.zw                 PS tc1 v0                   0 0 0 0
+hw: VS tc0 o1.x, tc1 o1.y, tc2 o1.zw                 PS tc2 v0                   1 2 3 4
+hw: VS tc0 o1.x, tc1 o1.y, tc2 o1.zw                 PS tc0 v0.xy, tc1 v0.zw     0 0 0 0
+hw: VS tc0 o1.x, tc1 o1.y, tc2 o1.zw                 PS tc1 v0.xy, tc0 v0.zw     0 0 0 0
+hw: VS tc0 o1.x, tc1 o1.y, tc2 o1.zw                 PS tc0 v0.xz, tc1 v0.yw     0 0 0 0
+hw: VS tc0 o1.x, tc1 o1.y, tc2 o1.zw                 PS tc0 v3.xy, tc1 v5.xy     0 0 0 0
+hw: VS tc0 o1.x, tc1 o1.y, tc2 o1.zw                 PS color0 v0.xyz            1 1 1 -1
+hw: VS tc0 o1.x, tc1 o1.y, tc2 o1.zw                 PS fog v0.x                 0 -1 -1 -1
+hw: VS tc0 o1.x, tc1 o1.y, tc2 o1.zw                 PS color0 v0.xyz, fog v1.x  1 1 1 0
+hw: VS tc0 o1.xy, tc1 o1.zw, tc2 o2                  PS tc0 v0.xy                0 0 -1 -1
+hw: VS tc0 o1.xy, tc1 o1.zw, tc2 o2                  PS tc0 v0.zw                -1 -1 0 0
+hw: VS tc0 o1.xy, tc1 o1.zw, tc2 o2                  PS tc0 v0                   0 0 0 0
+hw: VS tc0 o1.xy, tc1 o1.zw, tc2 o2                  PS tc1 v0.xy                1 2 -1 -1
+hw: VS tc0 o1.xy, tc1 o1.zw, tc2 o2                  PS tc1 v0.zw                -1 -1 3 4
+hw: VS tc0 o1.xy, tc1 o1.zw, tc2 o2                  PS tc1 v0                   1 2 3 4
+hw: VS tc0 o1.xy, tc1 o1.zw, tc2 o2                  PS tc2 v0                   5 6 7 8
+hw: VS tc0 o1.xy, tc1 o1.zw, tc2 o2                  PS tc0 v0.xy, tc1 v0.zw     1 2 3 4
+hw: VS tc0 o1.xy, tc1 o1.zw, tc2 o2                  PS tc1 v0.xy, tc0 v0.zw     0 0 0 0
+hw: VS tc0 o1.xy, tc1 o1.zw, tc2 o2                  PS tc0 v0.xz, tc1 v0.yw     1 2 3 4
+hw: VS tc0 o1.xy, tc1 o1.zw, tc2 o2                  PS tc0 v3.xy, tc1 v5.xy     0 0 1 2
+hw: VS tc0 o1.xy, tc1 o1.zw, tc2 o2                  PS color0 v0.xyz            1 1 1 -1
+hw: VS tc0 o1.xy, tc1 o1.zw, tc2 o2                  PS fog v0.x                 0 -1 -1 -1
+hw: VS tc0 o1.xy, tc1 o1.zw, tc2 o2                  PS color0 v0.xyz, fog v1.x  1 1 1 0
+hw: VS tc2 o2, tc0 o1.xy, tc1 o3.zw (one each)       PS tc0 v0.xy                1 2 -1 -1
+hw: VS tc2 o2, tc0 o1.xy, tc1 o3.zw (one each)       PS tc0 v0.zw                -1 -1 0 0
+hw: VS tc2 o2, tc0 o1.xy, tc1 o3.zw (one each)       PS tc0 v0                   1 2 0 0
+hw: VS tc2 o2, tc0 o1.xy, tc1 o3.zw (one each)       PS tc1 v0.xy                0 0 -1 -1
+hw: VS tc2 o2, tc0 o1.xy, tc1 o3.zw (one each)       PS tc1 v0.zw                -1 -1 11 12
+hw: VS tc2 o2, tc0 o1.xy, tc1 o3.zw (one each)       PS tc1 v0                   0 0 11 12
+hw: VS tc2 o2, tc0 o1.xy, tc1 o3.zw (one each)       PS tc2 v0                   5 6 7 8
+hw: VS tc2 o2, tc0 o1.xy, tc1 o3.zw (one each)       PS tc0 v0.xy, tc1 v0.zw     0 0 11 12
+hw: VS tc2 o2, tc0 o1.xy, tc1 o3.zw (one each)       PS tc1 v0.xy, tc0 v0.zw     1 2 0 0
+hw: VS tc2 o2, tc0 o1.xy, tc1 o3.zw (one each)       PS tc0 v0.xz, tc1 v0.yw     0 0 11 12
+hw: VS tc2 o2, tc0 o1.xy, tc1 o3.zw (one each)       PS tc0 v3.xy, tc1 v5.xy     1 2 0 0
+hw: VS tc2 o2, tc0 o1.xy, tc1 o3.zw (one each)       PS color0 v0.xyz            1 1 1 -1
+hw: VS tc2 o2, tc0 o1.xy, tc1 o3.zw (one each)       PS fog v0.x                 0 -1 -1 -1
+hw: VS tc2 o2, tc0 o1.xy, tc1 o3.zw (one each)       PS color0 v0.xyz, fog v1.x  1 1 1 0
+hw: VS color0 o1.xyz, fog o1.w                       PS tc0 v0.xy                0 0 -1 -1
+hw: VS color0 o1.xyz, fog o1.w                       PS tc0 v0.zw                -1 -1 0 0
+hw: VS color0 o1.xyz, fog o1.w                       PS tc0 v0                   0 0 0 0
+hw: VS color0 o1.xyz, fog o1.w                       PS tc1 v0.xy                0 0 -1 -1
+hw: VS color0 o1.xyz, fog o1.w                       PS tc1 v0.zw                -1 -1 0 0
+hw: VS color0 o1.xyz, fog o1.w                       PS tc1 v0                   0 0 0 0
+hw: VS color0 o1.xyz, fog o1.w                       PS tc2 v0                   0 0 0 0
+hw: VS color0 o1.xyz, fog o1.w                       PS tc0 v0.xy, tc1 v0.zw     0 0 0 0
+hw: VS color0 o1.xyz, fog o1.w                       PS tc1 v0.xy, tc0 v0.zw     0 0 0 0
+hw: VS color0 o1.xyz, fog o1.w                       PS tc0 v0.xz, tc1 v0.yw     0 0 0 0
+hw: VS color0 o1.xyz, fog o1.w                       PS tc0 v3.xy, tc1 v5.xy     0 0 0 0
+hw: VS color0 o1.xyz, fog o1.w                       PS color0 v0.xyz            1 1 1 -1
+hw: VS color0 o1.xyz, fog o1.w                       PS fog v0.x                 1 -1 -1 -1
+hw: VS color0 o1.xyz, fog o1.w                       PS color0 v0.xyz, fog v1.x  1 1 1 1

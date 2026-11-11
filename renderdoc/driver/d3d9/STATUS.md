@@ -51,7 +51,7 @@ the testing were on separate machines.
 | | ~~Alpha test and discard in the overlays~~ | 1 | Done, see "Overlays" below (`d3d9_step8_overlays.md`). Alpha tested and clipped geometry (foliage, fences, sprites) is everywhere in D3D9 games |
 | | ~~Saving DXT textures as PNG~~ | 0.5 | Done, see "Texture viewer" below (`d3d9_step8_dxt_png.md`). Most game textures are DXT |
 | | ~~Saving UpdateTexture dirty regions in captures~~ | 0.5 | Done, see "Dirty regions" below (`d3d9_step8_dirty_regions.md`). Texture streaming. Changed the capture format to version 0x2 |
-| | vs_3_0 outputs that pack two semantics into one register | 0.5 | |
+| | ~~vs_3_0 outputs that pack two semantics into one register~~ | 0.5 | Done, see "Packed vs_3_0 outputs" below (`d3d9_step8_packed_outputs.md`) |
 | | `texldl` filtering | 0.5 | Early SM3 GPUs could only point sample vertex textures, so many games do |
 | | D24 at a depth of 0.375 | 0.25 | Check with ZFUNC EQUAL and adjust. One depth value, which only matters to an EQUAL test |
 | | P8 palettes | 0.5 | Low value, since current GPUs don't create P8 textures |
@@ -111,7 +111,7 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Simple_Triangle` | The three triangles at replay, including the pixel shader constants one (96, 191, 0), SaveTexture's alpha, the pipeline state at every draw with constants read at length 0 (`d3d9_pipestate_check.py`), the constant blocks and FVF, replaying every action, and the structured export round trip (`check_export`) |
 | `D3D9_Frame_Start_State` | The triangles, render states, and VS/PS float constants (c10, c20, c200, c180, and zero c138, c148) set before the first frame, the pipeline state check, the export round trip |
 | `D3D9_Texture_Formats` | `d3d9_formats_check.py` against the native run's reference: each format's picked texels, each texture saved as a PNG, and the render target at replay. And that the reference written under RenderDoc is byte-identical to the native one |
-| `D3D9_Mesh_Output` | `d3d9_mesh_check.py` against the native run's reference (a draw without a reference fails), and that the reference written under RenderDoc is byte-identical to the native one |
+| `D3D9_Mesh_Output` | `d3d9_mesh_check.py` against the native run's reference (a draw without a reference fails), and that the reference written under RenderDoc is byte-identical to the native one. The "vs_3_0 packed outputs" draw (11 semantics in 5 registers) is also checked against the GPU, read through a pixel shader that declares its inputs as the vertex shader declares its outputs, and its vertex shader output and pixel shader input signatures are checked |
 | `D3D9_Overlay_Test` | `d3d9_overlay_check.py`, with the overlays saved in the test's tmp folder. Includes alpha tested, clipped and oDepth draws, whose Depth overlay has to be green exactly where the draw wrote |
 | `D3D9_Resource_Contents` | Every object's contents at the start of the frame, as listed under "Checking `D3D9_Resource_Contents` captures": each level, face and slice texel by texel, the previous frame's colour in every region the frames alternate, the vertex and write-only index buffers, and each face and slice of the DXT1 cube and volume textures saved as a PNG. Then the triangle drawn from them |
 | `D3D9_Dirty_Regions` | What UpdateTexture copies. The demo checks on the GPU, natively and under RenderDoc, that each frame's copies take exactly the dirty regions (in its log). The test checks at each of the frame's 7 UpdateTexture calls that the destination changed exactly in those regions, at each mip, cube face and volume slice: two rects of a 2D texture dirty when the frame starts, two rects on a cube face (copied as the box around them) and a whole face, two volume boxes, no rects, 6 rects, 7 rects (all of it), and a lock in the frame with D3DLOCK_NO_DIRTY_UPDATE beside one without. And the default pool textures' initial contents, from our shadow copies of what earlier frames copied |
@@ -1147,6 +1147,11 @@ Reflection, which is what phase 3c's pipeline state builds on:
   TEXCOORD#; ps_1_x's texture coordinates are the `t#` its texture instructions fill (or read, in
   ps_1_4), and its output is r0 as COLOR0. `oC#` and `oDepth` are COLOR# and DEPTH. Semantic names
   are D3D9's (POSITION, TEXCOORD, COLOR...), `regIndex` is the register number.
+- A register can be declared with two or more semantics (vs_3_0 outputs and ps_3_0 inputs:
+  `dcl_texcoord0 o1.xy`, `dcl_texcoord1 o1.zw`). Each declaration is an element of its own, in
+  order of register and then first component. `regChannelMask` is the declaration's mask and
+  `compCount` the number of components in it, as DXBC counts them (2 for `.zw`). Before step 8
+  the last declaration replaced the others, and `compCount` went up to the mask's last component.
 - Samplers are in `samplers` and in `readOnlyResources` (ImageSampler), with `fixedBindNumber` the
   sampler register and the constant table's name and array size, or `s#`. The texture type comes
   from the constant table or `dcl_2d`/`dcl_cube`/`dcl_volume`. ps_1_x has neither without a table,
@@ -1426,7 +1431,8 @@ How it works (`d3d9_postvs.cpp`, the comment at its top has more):
   buffer into it. An indexed draw's unique vertices (index + BaseVertexIndex) are each computed
   once, in sorted order, and the index buffer maps the draw's indices to them. Rows are laid out
   as the mesh viewer expects VS Out columns: the position first, then the rest of the vertex
-  shader reflection's output signature in order, each `compCount` floats, packed.
+  shader reflection's output signature in order, each `compCount` floats, packed. An element's
+  floats are the register components its mask names, in order (`o1.zw` gives o1.z and o1.w).
 - The position is clip space (oPos, or the fixed function projection) and the MeshFormat asks to
   unproject it, with near and far planes estimated as D3D11 does. Pretransformed (XYZRHW)
   vertices are output as they were given (`POSITIONT`, still the position system value), with
@@ -1475,11 +1481,42 @@ Known gaps:
 - A shader the interpreter can't run (malformed, or a pixel shader instruction) gives no VS Out
   data, with the reason in the MeshFormat's `status` and the log.
 - Big draws with long shaders are slow, as each vertex is interpreted. Results are cached.
-- Outputs follow the reflection's output signature, which has one element per register: a vs_3_0
-  shader that packs two semantics into one `o#` register (`dcl_texcoord0 o1.xy`,
-  `dcl_texcoord1 o1.zw`) shows only one of them.
+- (Fixed in step 8: a vs_3_0 shader that packs two semantics into one `o#` register showed only
+  one of them. See "Packed vs_3_0 outputs".)
 - The made up fixed function reflections are kept until the replay closes (the replay controller
   holds pointers to them), one per distinct output layout.
+
+### Packed vs_3_0 outputs
+
+A vs_3_0 shader can declare two or more semantics in one output register, each with its own
+components: `dcl_texcoord0 o1.xy` and `dcl_texcoord1 o1.zw`. fxc doesn't do this (it gives each
+semantic a register of its own), but hand-written assembly and other compilers can, and a ps_3_0
+shader can do the same with its inputs. Since step 8 the reflection has an element for each
+declaration (see "Shaders"), and VS Out shows each one with the components its mask names.
+
+What the GPU does with them was measured natively on the RTX 4070 Ti, with a probe that draws a
+point with vertex and pixel shaders declared in different ways and reads back what the pixel
+shader received (`d3d9_step8_packed_outputs/probe`). It depends on how the vertex shader is run:
+- **Hardware vertex processing:** each output register reaches the pixel shader under the *last*
+  semantic declared in it, all four components, in place. The other semantics in the register
+  don't reach the pixel shader (it reads 0, or 1 for a colour). Input registers work the same way:
+  the last semantic declared in a `v#` gets the vertex shader's register of that semantic. So a
+  pixel shader declared like the vertex shader gets every semantic in the right components, but
+  one that declares them differently (TEXCOORD0 in a register of its own, say) doesn't.
+- **Software vertex processing** (the runtime runs the vertex shader): each semantic reaches the
+  pixel shader separately, as the register's components from x up to the last one its mask has,
+  in place, then (0, 0, 0, 1). A pixel shader that reads a semantic in the components the vertex
+  shader declared it in gets it, however its other inputs are declared, except that one
+  declaring TEXCOORD1 in `v0.xy` and TEXCOORD0 in `v0.zw` read 0 for both, whatever the vertex
+  shader did.
+
+Both give a pixel shader declared like the vertex shader each semantic in the components it was
+declared in, so that's what VS Out shows, and what the test compares against. How a mismatched
+pixel shader's inputs link isn't emulated anywhere: nothing in the replay needs it yet, though
+shader debugging (step 5) would. Only an RTX 4070 Ti on Windows 11 was measured.
+
+Tested in `d3d9_step8_packed_outputs.md` with the "vs_3_0 packed outputs" draw of
+`D3D9_Mesh_Output`: passed, against C++ and the GPU, x64 and x86. Not tried with a real game.
 
 ### Decisions
 
@@ -1555,7 +1592,10 @@ The `D3D9_Mesh_Output` test does steps 1 and 2.
    `_reference_rdoc.txt` under RenderDoc), and logs where. Its references come
    from `ProcessVertices` on a second, software vertex processing device for the fixed function,
    vs_1_1 and vs_2_0 draws (screen space), and from C++ for pretransformed vertices, vs_3_0 with
-   texldl and instancing (clip space). Check its log for "Couldn't" or "ProcessVertices failed"
+   texldl, instancing and packed outputs (clip space). The packed outputs draw also has `hw`
+   rows read back from the GPU into a float render target, through a pixel shader that declares
+   its inputs as the vertex shader declares its outputs; `d3d9_mesh_check.py` compares VS Out
+   with them as floats. Check its log for "Couldn't" or "ProcessVertices failed"
    warnings: a draw whose reference failed isn't checked, and counts as a failure.
 2. Capture a frame and run
    `python util\test\d3d9_mesh_check.py capture.rdc path\to\D3D9_Mesh_Output_reference.txt`

@@ -31,6 +31,10 @@
 #include "../win32/win32_window.h"
 #include "d3d9_test.h"
 
+typedef HRESULT(WINAPI *pD3DAssemble)(LPCVOID pSrcData, SIZE_T SrcDataSize, LPCSTR pSourceName,
+                                      const D3D_SHADER_MACRO *pDefines, ID3DInclude *pInclude,
+                                      UINT Flags, ID3DBlob **ppShader, ID3DBlob **ppErrorMsgs);
+
 RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
 {
   static constexpr const char *Description =
@@ -157,6 +161,18 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
     std::vector<std::string> pvOutputs;
     // the expected outputs of a vertex, for draws ProcessVertices can't do, in clip space
     std::function<void(UINT inst, UINT vert, Outputs &out)> reference;
+
+    // vs_3_0 output registers to read back from the GPU (WriteHardwareOutputs): each vertex is
+    // drawn on its own with a ps_3_0 that declares v0 as the vertex shader declares the register,
+    // and writes v0 to a float render target. Each semantic is then the components its mask
+    // names, in order.
+    struct HWRegister
+    {
+      std::string psDcls;
+      // the semantic's key in the reference, and its mask
+      std::vector<std::pair<std::string, std::string>> semantics;
+    };
+    std::vector<HWRegister> hwRegisters;
   };
 
   struct Bound
@@ -407,6 +423,7 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
           fprintf(f, "\n");
         }
       }
+      WriteHardwareOutputs(f, c, rows);
       fprintf(f, "end\n");
       return;
     }
@@ -632,6 +649,102 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
     }
   }
 
+  pD3DAssemble assemble = NULL;
+
+  std::vector<DWORD> Assemble(const std::string &src)
+  {
+    ID3DBlobPtr code, errors;
+    if(!assemble || FAILED(assemble(src.c_str(), src.size(), NULL, NULL, NULL, 0, &code, &errors)))
+    {
+      TEST_ERROR("Couldn't assemble:\n%s\n%s", src.c_str(),
+                 errors ? (const char *)errors->GetBufferPointer() : "");
+      return {};
+    }
+    const DWORD *p = (const DWORD *)code->GetBufferPointer();
+    return std::vector<DWORD>(p, p + code->GetBufferSize() / 4);
+  }
+
+  // a 1x1 float render target for WriteHardwareOutputs, and a copy of it to read
+  IDirect3DSurface9Ptr hwFloatTarget, hwFloatRead;
+
+  // draws vertex v of a case as a point into hwFloatTarget, with a ps_3_0 that has the
+  // declarations dcl (e.g. "dcl_texcoord1 v0.xy") and writes v0's mask to the same components,
+  // zero elsewhere
+  bool ReadVertexOutput(const Case &c, const Bound &b, UINT v, const std::string &dcl,
+                        const char *mask, float out[4])
+  {
+    std::vector<DWORD> tokens = Assemble("ps_3_0\ndef c0, 0, 0, 0, 0\n" + dcl +
+                                         "\nmov r0, c0\nmov r0." + mask + ", v0\nmov oC0, r0\n");
+    IDirect3DPixelShader9Ptr ps;
+    if(tokens.empty() || FAILED(dev->CreatePixelShader(tokens.data(), &ps)))
+      return false;
+
+    IDirect3DSurface9Ptr old;
+    dev->GetRenderTarget(0, &old);
+    dev->SetRenderTarget(0, hwFloatTarget);
+    // something no output here gives
+    dev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(7, 7, 7, 7), 1.0f, 0);
+    Apply(dev, c, b);
+    D3DVIEWPORT9 vp = {0, 0, 1, 1, 0.0f, 1.0f};
+    dev->SetViewport(&vp);
+    dev->SetPixelShader(ps);
+    // a point big enough to cover the one pixel wherever the vertex is in the viewport
+    float size = 4.0f, one = 1.0f;
+    dev->SetRenderState(D3DRS_POINTSIZE, *(DWORD *)&size);
+    dev->SetRenderState(D3DRS_POINTSIZE_MIN, *(DWORD *)&one);
+    dev->BeginScene();
+    dev->DrawPrimitive(D3DPT_POINTLIST, v, 1);
+    dev->EndScene();
+    dev->SetRenderTarget(0, old);
+    dev->SetPixelShader(NULL);
+
+    D3DLOCKED_RECT lr = {};
+    if(FAILED(dev->GetRenderTargetData(hwFloatTarget, hwFloatRead)) ||
+       FAILED(hwFloatRead->LockRect(&lr, NULL, D3DLOCK_READONLY)))
+      return false;
+    // A32B32G32R32F is stored R, G, B, A
+    memcpy(out, lr.pBits, sizeof(float) * 4);
+    hwFloatRead->UnlockRect();
+    return true;
+  }
+
+  // the outputs of a vs_3_0 case as the GPU gives them to a pixel shader that declares its inputs
+  // as the vertex shader declares its outputs
+  void WriteHardwareOutputs(FILE * f, const Case &c, const std::vector<UINT> &rows)
+  {
+    if(c.hwRegisters.empty())
+      return;
+
+    Bound b;
+    if(!hwFloatTarget || c.kind != Case::Indexed || c.instances > 1 || !Bind(dev, c, false, b))
+    {
+      TEST_ERROR("Couldn't read %s's outputs back from the GPU", c.name.c_str());
+      return;
+    }
+
+    fprintf(f, "hwfloat\n");
+    for(size_t r = 0; r < rows.size(); r++)
+    {
+      fprintf(f, "hw 0 %u", (UINT)r);
+      for(const Case::HWRegister &reg : c.hwRegisters)
+      {
+        float val[4] = {};
+        if(!ReadVertexOutput(c, b, rows[r], reg.psDcls, "xyzw", val))
+        {
+          TEST_ERROR("Couldn't read %s back from the GPU", reg.psDcls.c_str());
+          continue;
+        }
+        for(const auto &sem : reg.semantics)
+        {
+          fprintf(f, " %s=", sem.first.c_str());
+          for(size_t i = 0; i < sem.second.size(); i++)
+            fprintf(f, "%s%.9g", i ? "," : "", val[strchr("xyzw", sem.second[i]) - "xyzw"]);
+        }
+      }
+      fprintf(f, "\n");
+    }
+  }
+
   // vs_1_1 tokens: register types, opcodes and parameters
   enum
   {
@@ -752,6 +865,11 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
   {
     if(!Init())
       return 3;
+
+    HMODULE d3dcompiler = LoadLibraryA("d3dcompiler_47.dll");
+    assemble = d3dcompiler ? (pD3DAssemble)GetProcAddress(d3dcompiler, "D3DAssemble") : NULL;
+    if(!assemble)
+      TEST_ERROR("Couldn't load D3DAssemble, leaving out the assembled shaders");
 
     const float W = (float)screenWidth, H = (float)screenHeight;
     const M view = Translate(0.0f, 0.0f, 5.0f);
@@ -1404,6 +1522,131 @@ VOut main(float3 pos : POSITION, float4 col : COLOR0, float4 inst : TEXCOORD1)
       cases.push_back(c);
     }
 
+    // vs_3_0 with two or more semantics in one output register, which fxc doesn't do but
+    // hand-written shaders and other compilers can. Assembled. Every output register is
+    // r0 * a + b, with r0 = (u, v, x, y) of the vertex and a and b literals of its own.
+    const float packA[5][4] = {{1.0f, 2.0f, 3.0f, 4.0f},
+                               {0.25f, 0.125f, 0.0625f, 0.2f},
+                               {-1.0f, 0.5f, 1.5f, -2.0f},
+                               {3.0f, -3.0f, 0.75f, 1.25f},
+                               {0.5f, -0.5f, 0.1f, 0.15f}};
+    const float packB[5][4] = {{0.1f, 0.2f, 0.3f, 0.4f},
+                               {0.5f, 0.6f, 0.4f, 0.5f},
+                               {10.0f, 20.0f, 30.0f, 40.0f},
+                               {-5.0f, -6.0f, -7.0f, -8.0f},
+                               {0.25f, 0.5f, 0.3f, 0.6f}};
+    IDirect3DPixelShader9Ptr packedPS;
+    {
+      Case c;
+      c.name = "vs_3_0 packed outputs";
+      c.verts = grid;
+      c.stride = sizeof(PNCT);
+      c.decl = {
+          {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+          {0, 28, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
+      };
+      c.indices = gridIdx;
+      c.kind = Case::Indexed;
+      c.primCount = 8;
+      c.shader = true;
+
+      std::string vs =
+          "vs_3_0\n"
+          "dcl_position v0\n"
+          "dcl_texcoord v1\n"
+          "dcl_position o0\n"
+          "dcl_texcoord0 o1.xy\n"
+          "dcl_texcoord1 o1.zw\n"
+          "dcl_color0 o2.xyz\n"
+          "dcl_fog o2.w\n"
+          "dcl_texcoord2 o3.x\n"
+          "dcl_texcoord3 o3.yzw\n"
+          "dcl_texcoord4 o4.xz\n"
+          "dcl_texcoord5 o4.yw\n"
+          "dcl_texcoord6 o5.x\n"
+          "dcl_texcoord7 o5.y\n"
+          "dcl_color1 o5.zw\n";
+      for(int i = 0; i < 5; i++)
+      {
+        char line[256];
+        snprintf(line, sizeof(line),
+                 "def c%d, %.9g, %.9g, %.9g, %.9g\ndef c%d, %.9g, %.9g, %.9g, %.9g\n", 4 + i * 2,
+                 packA[i][0], packA[i][1], packA[i][2], packA[i][3], 5 + i * 2, packB[i][0],
+                 packB[i][1], packB[i][2], packB[i][3]);
+        vs += line;
+      }
+      vs += "m4x4 o0, v0, c0\nmov r0.xy, v1\nmov r0.zw, v0.xyxy\n";
+      for(int i = 0; i < 5; i++)
+        vs += "mul r1, r0, c" + std::to_string(4 + i * 2) + "\nadd o" + std::to_string(i + 1) +
+              ", r1, c" + std::to_string(5 + i * 2) + "\n";
+      c.vsTokens = Assemble(vs);
+
+      // and a ps_3_0 that reads some of them packed too, so the pixel shader's inputs are
+      std::vector<DWORD> ps = Assemble(
+          "ps_3_0\n"
+          "dcl_texcoord0 v0.xy\n"
+          "dcl_texcoord1 v0.zw\n"
+          "dcl_texcoord2 v1.x\n"
+          "dcl_texcoord3 v1.yzw\n"
+          "dcl_color0 v2.xyz\n"
+          "def c0, 0.1, 0.05, 0.002, 1\n"
+          "mul r0, v0, c0.y\n"
+          "add r0.xy, r0.xy, r0.zw\n"
+          "mul r1, v1, c0.z\n"
+          "add r1, r1, v2.xyzx\n"
+          "add r0.xy, r0.xy, r1.xy\n"
+          "mov r0.z, r1.z\n"
+          "mov r0.w, c0.w\n"
+          "mov oC0, r0\n");
+      if(!ps.empty())
+        dev->CreatePixelShader(ps.data(), &packedPS);
+
+      M wvp = Transpose(viewProj);
+      IDirect3DPixelShader9 *pps = packedPS;
+      c.state = [wvp, pps](IDirect3DDevice9 *d) {
+        d->SetVertexShaderConstantF(0, wvp.m, 4);
+        d->SetPixelShader(pps);
+      };
+
+      std::vector<byte> verts = grid;
+      M vpm = viewProj;
+      c.reference = [verts, vpm, packA, packB](UINT, UINT v, Outputs &out) {
+        const PNCT &p = ((const PNCT *)verts.data())[v];
+        float pos[4] = {p.pos[0], p.pos[1], p.pos[2], 1.0f}, clip[4];
+        Transform(pos, vpm, clip);
+        out["POSITION.0"] = {clip[0], clip[1], clip[2], clip[3]};
+        const float r0[4] = {p.uv[0], p.uv[1], p.pos[0], p.pos[1]};
+        float o[6][4];
+        for(int i = 0; i < 5; i++)
+          for(int k = 0; k < 4; k++)
+            o[i + 1][k] = r0[k] * packA[i][k] + packB[i][k];
+        // each semantic is its components of the register, in order
+        out["TEXCOORD.0"] = {o[1][0], o[1][1]};
+        out["TEXCOORD.1"] = {o[1][2], o[1][3]};
+        out["COLOR.0"] = {o[2][0], o[2][1], o[2][2]};
+        out["FOG.0"] = {o[2][3]};
+        out["TEXCOORD.2"] = {o[3][0]};
+        out["TEXCOORD.3"] = {o[3][1], o[3][2], o[3][3]};
+        out["TEXCOORD.4"] = {o[4][0], o[4][2]};
+        out["TEXCOORD.5"] = {o[4][1], o[4][3]};
+        out["TEXCOORD.6"] = {o[5][0]};
+        out["TEXCOORD.7"] = {o[5][1]};
+        out["COLOR.1"] = {o[5][2], o[5][3]};
+      };
+      // a colour can share a pixel shader's input register only if every semantic in it is
+      // centroid, which doesn't change a point
+      c.hwRegisters = {
+          {"dcl_texcoord0 v0.xy\ndcl_texcoord1 v0.zw", {{"TEXCOORD.0", "xy"}, {"TEXCOORD.1", "zw"}}},
+          {"dcl_color0_centroid v0.xyz\ndcl_fog_centroid v0.w",
+           {{"COLOR.0", "xyz"}, {"FOG.0", "w"}}},
+          {"dcl_texcoord2 v0.x\ndcl_texcoord3 v0.yzw", {{"TEXCOORD.2", "x"}, {"TEXCOORD.3", "yzw"}}},
+          {"dcl_texcoord4 v0.xz\ndcl_texcoord5 v0.yw", {{"TEXCOORD.4", "xz"}, {"TEXCOORD.5", "yw"}}},
+          {"dcl_texcoord6_centroid v0.x\ndcl_texcoord7_centroid v0.y\ndcl_color1_centroid v0.zw",
+           {{"TEXCOORD.6", "x"}, {"TEXCOORD.7", "y"}, {"COLOR.1", "zw"}}},
+      };
+      cases.push_back(c);
+    }
+
     // a vertex shader with DrawPrimitiveUP
     {
       Case c = cases.back();
@@ -1455,6 +1698,15 @@ VOut main(float3 pos : POSITION, float4 col : COLOR0, float4 inst : TEXCOORD1)
         TEST_WARN("Couldn't create the surfaces to read the hardware's vertices back");
         hwTarget = NULL;
       }
+      // for WriteHardwareOutputs
+      if(FAILED(dev->CreateRenderTarget(1, 1, D3DFMT_A32B32G32R32F, D3DMULTISAMPLE_NONE, 0, FALSE,
+                                        &hwFloatTarget, NULL)) ||
+         FAILED(dev->CreateOffscreenPlainSurface(1, 1, D3DFMT_A32B32G32R32F, D3DPOOL_SYSTEMMEM,
+                                                 &hwFloatRead, NULL)))
+      {
+        TEST_ERROR("Couldn't create the float surfaces to read vertex outputs back");
+        hwFloatTarget = NULL;
+      }
 
       FILE *f = NULL;
       fopen_s(&f, path.c_str(), "w");
@@ -1480,6 +1732,8 @@ VOut main(float3 pos : POSITION, float4 col : COLOR0, float4 inst : TEXCOORD1)
       sw = NULL;
       hwTarget = NULL;
       hwRead = NULL;
+      hwFloatTarget = NULL;
+      hwFloatRead = NULL;
       delete win;
     }
 

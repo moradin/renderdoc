@@ -352,14 +352,24 @@ uint32_t KeyIndex(uint32_t key)
   return key & 0xFFFF;
 }
 
+// a usage declared for (some components of) a register
+struct RegDecl
+{
+  uint8_t mask = 0;
+  DeclUsage usage = DeclUsage::Position;
+  uint32_t usageIndex = 0;
+};
+
 struct RegUsage
 {
   uint8_t read = 0;
   uint8_t written = 0;
   bool declared = false;
+  // the components of all of the register's declarations
   uint8_t declMask = 0;
-  DeclUsage usage = DeclUsage::Position;
-  uint32_t usageIndex = 0;
+  // vs_3_0 outputs and ps_3_0 inputs can have two or more usages in one register, each with its
+  // own components (dcl_texcoord0 o1.xy, dcl_texcoord1 o1.zw), in the order they're declared
+  rdcarray<RegDecl> decls;
   SamplerTextureType textureType = SamplerTextureType::Unknown;
 };
 
@@ -501,8 +511,38 @@ void AddSignature(rdcarray<SigParameter> &sig, const char *semantic, uint32_t se
     mask = 0xF;
   p.regChannelMask = mask;
   p.channelUsedMask = used ? uint8_t(used & mask) : mask;
-  p.compCount = (mask & 0x8) ? 4 : (mask & 0x4) ? 3 : (mask & 0x2) ? 2 : 1;
+  // the components the mask has, as DXBC counts them: dcl_texcoord1 o1.zw is 2 components,
+  // o1.z and o1.w
+  p.compCount =
+      uint8_t(((mask >> 0) & 1) + ((mask >> 1) & 1) + ((mask >> 2) & 1) + ((mask >> 3) & 1));
   sig.push_back(p);
+}
+
+// an element for each of a register's declarations, in the order of their first components
+void AddDeclarations(rdcarray<SigParameter> &sig, const RegUsage &u, uint32_t reg, uint8_t used,
+                     bool vsOutput)
+{
+  auto first = [](uint8_t mask) {
+    for(uint32_t c = 0; c < 4; c++)
+      if(mask & (1 << c))
+        return c;
+    return 0U;
+  };
+
+  rdcarray<RegDecl> decls = u.decls;
+  std::stable_sort(decls.begin(), decls.end(), [&first](const RegDecl &a, const RegDecl &b) {
+    return first(a.mask) < first(b.mask);
+  });
+
+  for(const RegDecl &d : decls)
+  {
+    ShaderBuiltin builtin = ShaderBuiltin::Undefined;
+    if(vsOutput && d.usage == DeclUsage::Position && d.usageIndex == 0)
+      builtin = ShaderBuiltin::Position;
+    else if(vsOutput && d.usage == DeclUsage::PSize)
+      builtin = ShaderBuiltin::PointSize;
+    AddSignature(sig, SemanticName(d.usage), d.usageIndex, reg, d.mask, used, builtin);
+  }
 }
 
 void FinishSignature(rdcarray<SigParameter> &sig)
@@ -858,9 +898,12 @@ void ShaderInfo::BuildReflection(ResourceId id)
     {
       RegUsage &u = regs[RegKey(inst.dst.type, inst.dst.index)];
       u.declared = true;
-      u.declMask = inst.dst.writeMask;
-      u.usage = inst.usage;
-      u.usageIndex = inst.usageIndex;
+      u.declMask |= inst.dst.writeMask;
+      RegDecl d;
+      d.mask = inst.dst.writeMask;
+      d.usage = inst.usage;
+      d.usageIndex = inst.usageIndex;
+      u.decls.push_back(d);
       u.textureType = inst.textureType;
       continue;
     }
@@ -928,22 +971,14 @@ void ShaderInfo::BuildReflection(ResourceId id)
       if(type == RegType::Input)
       {
         if(u.declared)
-          AddSignature(inputs, SemanticName(u.usage), u.usageIndex, index, u.declMask, u.read,
-                       ShaderBuiltin::Undefined);
+          AddDeclarations(inputs, u, index, u.read, false);
         else
           AddSignature(inputs, "UNKNOWN", index, index, 0xF, u.read, ShaderBuiltin::Undefined);
       }
       else if(type == RegType::TexCrdOutOrOutput && version.major >= 3)
       {
-        if(!u.declared)
-          continue;
-        ShaderBuiltin builtin = ShaderBuiltin::Undefined;
-        if(u.usage == DeclUsage::Position && u.usageIndex == 0)
-          builtin = ShaderBuiltin::Position;
-        else if(u.usage == DeclUsage::PSize)
-          builtin = ShaderBuiltin::PointSize;
-        AddSignature(outputs, SemanticName(u.usage), u.usageIndex, index, u.declMask, u.written,
-                     builtin);
+        if(u.declared)
+          AddDeclarations(outputs, u, index, u.written, true);
       }
       else if(version.major < 3 && u.written)
       {
@@ -965,8 +1000,7 @@ void ShaderInfo::BuildReflection(ResourceId id)
       if(version.major >= 3)
       {
         if(type == RegType::Input && u.declared)
-          AddSignature(inputs, SemanticName(u.usage), u.usageIndex, index, u.declMask, u.read,
-                       ShaderBuiltin::Undefined);
+          AddDeclarations(inputs, u, index, u.read, false);
         else if(type == RegType::MiscType && index == 0)
           AddSignature(inputs, "VPOS", 0, index, u.declared ? u.declMask : 0x3, u.read,
                        ShaderBuiltin::Position);
@@ -1819,6 +1853,71 @@ TEST_CASE("D3D9 shader reflection", "[d3d9][shader]")
     CHECK(refl.constantBlocks[0].fixedBindNumber == uint32_t(ConstantSet::Bool));
     CHECK(refl.constantBlocks[0].variables[0].name == "b3");
     CHECK(refl.constantBlocks[0].variables[0].byteOffset == 12);
+
+    // ps_3_0 with two semantics in v0, declared in reverse order, and three in v1:
+    // dcl_texcoord1 v0.zw, dcl_texcoord0 v0.xy, dcl_texcoord2_centroid v1.x,
+    // dcl_texcoord3_centroid v1.y, dcl_color1_centroid v1.zw. Reads v0.xyz and v1.
+    tokens = {
+        VersionToken(true, 3, 0),
+        Inst(Opcode::Dcl, 0, 2),
+        Dcl(DeclUsage::TexCoord, 1),
+        Dst(RegType::Input, 0, 0xC),
+        Inst(Opcode::Dcl, 0, 2),
+        Dcl(DeclUsage::TexCoord, 0),
+        Dst(RegType::Input, 0, 0x3),
+        Inst(Opcode::Dcl, 0, 2),
+        Dcl(DeclUsage::TexCoord, 2),
+        Dst(RegType::Input, 1, 0x1, 0x4),
+        Inst(Opcode::Dcl, 0, 2),
+        Dcl(DeclUsage::TexCoord, 3),
+        Dst(RegType::Input, 1, 0x2, 0x4),
+        Inst(Opcode::Dcl, 0, 2),
+        Dcl(DeclUsage::Color, 1),
+        Dst(RegType::Input, 1, 0xC, 0x4),
+        Inst(Opcode::Add, 0, 3),
+        Dst(RegType::Temp, 0, 0x7),
+        Src(RegType::Input, 0),
+        Src(RegType::Input, 0),
+        Inst(Opcode::Add, 0, 3),
+        Dst(RegType::Temp, 1),
+        Src(RegType::Temp, 0, Swz(0, 1, 2, 2)),
+        Src(RegType::Input, 1),
+        Inst(Opcode::Mov, 0, 2),
+        Dst(RegType::ColorOut, 0),
+        Src(RegType::Temp, 1),
+        EndTok(),
+    };
+    {
+      ShaderInfo packed;
+      packed.Init(ResourceId(), tokens.data(), tokens.size());
+      const ShaderReflection &p = packed.GetReflection();
+      INFO(packed.GetDisassembly().c_str());
+      CHECK(packed.GetProgram().error.empty());
+      REQUIRE(p.inputSignature.size() == 5);
+      CHECK(p.inputSignature[0].semanticIdxName == "TEXCOORD0");
+      CHECK(p.inputSignature[0].regIndex == 0);
+      CHECK(p.inputSignature[0].regChannelMask == 0x3);
+      CHECK(p.inputSignature[0].channelUsedMask == 0x3);
+      CHECK(p.inputSignature[0].compCount == 2);
+      CHECK(p.inputSignature[1].semanticIdxName == "TEXCOORD1");
+      CHECK(p.inputSignature[1].regIndex == 0);
+      CHECK(p.inputSignature[1].regChannelMask == 0xC);
+      // only .z is read
+      CHECK(p.inputSignature[1].channelUsedMask == 0x4);
+      CHECK(p.inputSignature[1].compCount == 2);
+      CHECK(p.inputSignature[2].semanticIdxName == "TEXCOORD2");
+      CHECK(p.inputSignature[2].regIndex == 1);
+      CHECK(p.inputSignature[2].compCount == 1);
+      CHECK(p.inputSignature[3].semanticIdxName == "TEXCOORD3");
+      CHECK(p.inputSignature[3].regChannelMask == 0x2);
+      CHECK(p.inputSignature[4].semanticIdxName == "COLOR1");
+      CHECK(p.inputSignature[4].regChannelMask == 0xC);
+      CHECK(p.inputSignature[4].compCount == 2);
+      // the disassembly keeps every declaration
+      CHECK(packed.GetDisassembly().find("dcl_texcoord1 v0.zw") >= 0);
+      CHECK(packed.GetDisassembly().find("dcl_texcoord v0.xy") >= 0);
+      CHECK(packed.GetDisassembly().find("dcl_color1_centroid v1.zw") >= 0);
+    }
 
     // ps_1_1: texture coordinates from the texture instructions, r0 is the output
     tokens = {

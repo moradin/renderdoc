@@ -1523,8 +1523,14 @@ void RunPostVS(const DrawInputs &draw, uint32_t instance, const VSEmulator *vs,
       {
         const SigParameter &sig = signature[o];
         const Vec4 *reg = OutputRegister(out, vs->GetVersion(), sig);
-        for(uint32_t c = 0; c < sig.compCount; c++)
-          values[c] = reg && c < 4 ? (*reg)[c] : 0.0f;
+        // the register's components the element has, in order: a vs_3_0 register can hold two or
+        // more elements (dcl_texcoord0 o1.xy, dcl_texcoord1 o1.zw)
+        uint32_t c = 0;
+        for(uint32_t comp = 0; comp < 4 && c < sig.compCount; comp++)
+          if(sig.regChannelMask & (1 << comp))
+            values[c++] = reg ? (*reg)[comp] : 0.0f;
+        for(; c < sig.compCount; c++)
+          values[c] = 0.0f;
         memcpy(dst, values, sig.compCount * sizeof(float));
         dst += sig.compCount * sizeof(float);
       }
@@ -1646,9 +1652,10 @@ struct Assembler
               {Dst(RegType::ConstInt, reg), uint32_t(x), uint32_t(y), uint32_t(z), uint32_t(w)});
   }
 
-  Assembler &dcl(DeclUsage usage, uint32_t index, uint32_t reg, RegType type = RegType::Input)
+  Assembler &dcl(DeclUsage usage, uint32_t index, uint32_t reg, RegType type = RegType::Input,
+                 uint32_t mask = 0xF)
   {
-    return op(Opcode::Dcl, {Dcl(usage, index), Dst(type, reg)});
+    return op(Opcode::Dcl, {Dcl(usage, index), Dst(type, reg, mask)});
   }
 
   rdcarray<uint32_t> finish()
@@ -2467,6 +2474,81 @@ TEST_CASE("D3D9 post-transform draws", "[d3d9][vsemu]")
     RunPostVS(draw, 0, &emu, consts, textures, NULL, sig, res);
     CHECK_FALSE(res.status.empty());
   }
+}
+
+TEST_CASE("D3D9 post-transform draws - vs_3_0 outputs packed into one register", "[d3d9][vsemu]")
+{
+  // o1 = v0 + (1, 2, 3, 4) holds TEXCOORD0 in .xy and TEXCOORD1 in .zw, o2 = v0 * 2 holds
+  // TEXCOORD2 in .xz and FOG in .y (declared after TEXCOORD2), and o3 = v0 holds COLOR0 in .yzw
+  Assembler a(3, 0);
+  a.def(0, 1.0f, 2.0f, 3.0f, 4.0f);
+  a.dcl(DeclUsage::Position, 0, 0);
+  a.dcl(DeclUsage::Position, 0, 0, RegType::TexCrdOutOrOutput);
+  a.dcl(DeclUsage::TexCoord, 0, 1, RegType::TexCrdOutOrOutput, 0x3);
+  a.dcl(DeclUsage::TexCoord, 1, 1, RegType::TexCrdOutOrOutput, 0xC);
+  a.dcl(DeclUsage::TexCoord, 2, 2, RegType::TexCrdOutOrOutput, 0x5);
+  a.dcl(DeclUsage::Fog, 0, 2, RegType::TexCrdOutOrOutput, 0x2);
+  a.dcl(DeclUsage::Color, 0, 3, RegType::TexCrdOutOrOutput, 0xE);
+  a.op(Opcode::Mov, {Dst(RegType::TexCrdOutOrOutput, 0), V(0)});
+  a.op(Opcode::Add, {Dst(RegType::TexCrdOutOrOutput, 1), V(0), C(0)});
+  a.op(Opcode::Add, {Dst(RegType::TexCrdOutOrOutput, 2, 0x7), V(0), V(0)});
+  a.op(Opcode::Mov, {Dst(RegType::TexCrdOutOrOutput, 3, 0xE), V(0)});
+  rdcarray<uint32_t> tokens = a.finish();
+
+  ShaderInfo info;
+  info.Init(ResourceId(), tokens.data(), tokens.size());
+  VSEmulator emu;
+  REQUIRE(emu.Init(info.GetProgram()));
+
+  // an element for each declaration, by register then first component
+  const rdcarray<SigParameter> &sig = info.GetReflection().outputSignature;
+  REQUIRE(sig.size() == 6);
+  CHECK(sig[0].semanticIdxName == "POSITION");
+  CHECK(sig[1].semanticIdxName == "TEXCOORD0");
+  CHECK(sig[1].regIndex == 1);
+  CHECK(sig[1].regChannelMask == 0x3);
+  CHECK(sig[1].compCount == 2);
+  CHECK(sig[2].semanticIdxName == "TEXCOORD1");
+  CHECK(sig[2].regIndex == 1);
+  CHECK(sig[2].regChannelMask == 0xC);
+  CHECK(sig[2].compCount == 2);
+  CHECK(sig[3].semanticIdxName == "TEXCOORD2");
+  CHECK(sig[3].regChannelMask == 0x5);
+  CHECK(sig[3].compCount == 2);
+  CHECK(sig[3].channelUsedMask == 0x5);
+  CHECK(sig[4].semanticIdxName == "FOG");
+  CHECK(sig[4].regIndex == 2);
+  CHECK(sig[4].compCount == 1);
+  CHECK(sig[5].semanticIdxName == "COLOR");
+  CHECK(sig[5].regChannelMask == 0xE);
+  CHECK(sig[5].compCount == 3);
+
+  DrawInputs draw;
+  draw.streams.resize(1);
+  float v[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+  draw.streams[0].data.append((const byte *)v, sizeof(v));
+  draw.streams[0].stride = 16;
+  InputElement pos;
+  pos.type = DeclType::Float4;
+  draw.elements = {pos};
+  draw.numVertices = 1;
+
+  VSTexture textures[NumVertexSamplers];
+  VSConstants consts = emu.ApplyLiterals(VSConstants());
+  PostVSResult res;
+  RunPostVS(draw, 0, &emu, consts, textures, NULL, sig, res);
+  INFO(res.status.c_str());
+  REQUIRE(res.status.empty());
+  CHECK(res.stride == (4 + 2 + 2 + 2 + 1 + 3) * 4);
+  rdcarray<float> f;
+  f.resize(res.stride / 4);
+  memcpy(f.data(), res.vertexData.data(), res.stride);
+  CHECK(f == rdcarray<float>({10.0f, 20.0f, 30.0f, 40.0f,    // POSITION
+                              11.0f, 22.0f,                  // TEXCOORD0: o1.xy
+                              33.0f, 44.0f,                  // TEXCOORD1: o1.zw
+                              20.0f, 60.0f,                  // TEXCOORD2: o2.xz
+                              40.0f,                         // FOG: o2.y
+                              20.0f, 30.0f, 40.0f}));        // COLOR: o3.yzw
 }
 
 #endif    // ENABLED(ENABLE_UNIT_TESTS)
