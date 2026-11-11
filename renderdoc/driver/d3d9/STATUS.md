@@ -54,7 +54,7 @@ the testing were on separate machines.
 | | ~~vs_3_0 outputs that pack two semantics into one register~~ | 0.5 | Done, see "Packed vs_3_0 outputs" below (`d3d9_step8_packed_outputs.md`) |
 | | ~~`texldl` filtering~~ | 0.5 | Done, see "texldl filtering" below (`d3d9_step8_texldl_filtering.md`). Early SM3 GPUs could only point sample vertex textures, so many games do |
 | | ~~D24 at a depth of 0.375~~ | 0.25 | Done, see "Known gaps in resource contents" below (`d3d9_step8_d24_levels.md`). Two D24 levels were never written back, which only matters to an EQUAL test. Changed the capture format to version 0x3 |
-| | P8 palettes | 0.5 | Low value, since current GPUs don't create P8 textures |
+| | P8 palettes | 0.5 | Parked: not worth it, since current GPUs can't sample P8 or A8P8. On the RTX 4070 Ti, P8 and A8P8 textures can only be made in D3DPOOL_SCRATCH, and offscreen plain surfaces in any pool, so nothing on it ever samples them. A quick probe found the reference rasterizer (`d3dref9.dll`, D3DDEVTYPE_REF) does: the colour comes from the current palette, and alpha from `peFlags` (P8, fixed function only; ps_2_0 gave 1) or the texture (A8P8). That device could be the native reference if this is picked up. `SetCurrentTexturePalette` with a number above 65535 crashes inside d3d9 |
 
 Left out on purpose:
 
