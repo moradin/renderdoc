@@ -78,9 +78,20 @@ enum class TexAddress : uint32_t
   MirrorOnce = 5,
 };
 
+// D3DTEXTUREFILTERTYPE. Sampling treats every filter above Point as Linear: texldl has no
+// derivatives for anisotropic filtering, and the GPU filtered those as Linear.
+enum class TexFilter : uint32_t
+{
+  None = 0,
+  Point = 1,
+  Linear = 2,
+  Anisotropic = 3,
+};
+
 // A texture a vs_3_0 shader samples with texldl, decoded to the values sampling returns (missing
-// channels already filled the way D3D9 fills them). Sampling is point sampling at the nearest mip
-// level to the given LOD, whatever the sampler's filters are.
+// channels already filled the way D3D9 fills them, and sRGB already converted when the sampler
+// reads it as sRGB). SampleLevel filters as a GPU's hardware vertex processing does, measured
+// natively (see STATUS.md, "texldl filtering").
 struct VSTexture
 {
   D3D9BC::SamplerTextureType type = D3D9BC::SamplerTextureType::Tex2D;
@@ -101,9 +112,15 @@ struct VSTexture
   // D3DSAMP_MAXMIPLEVEL: the most detailed level that can be used
   uint32_t maxMipLevel = 0;
   float mipLODBias = 0.0f;
+  TexFilter magFilter = TexFilter::Point;
+  TexFilter minFilter = TexFilter::Point;
+  TexFilter mipFilter = TexFilter::None;
 
   bool Bound() const { return !levels.empty(); }
   Vec4 SampleLevel(const Vec4 &coord, float lod) const;
+
+private:
+  Vec4 SampleTexels(uint32_t level, const Vec4 &coord, bool linear) const;
 };
 
 enum

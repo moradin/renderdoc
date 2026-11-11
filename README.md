@@ -73,7 +73,8 @@ Known limitations of what works:
   - YUY2 and UYVY textures are saved as PNG (and the other image formats) as (Cr, Y, Cb), not
     converted to RGB.
 - **Mesh Viewer, VS Out**:
-  - `texldl` in vertex shaders always point samples.
+  - `texldl` filters as one GPU's hardware vertex processing was measured to (an RTX 4070 Ti),
+    within a 256th or two. Software vertex processing filters differently, which isn't emulated.
   - Fixed function processing doesn't handle N-patches, user clip planes, displacement mapping or
     more than 8 lights.
 - **Custom display shaders** are ps_3_0: the texture is in a sampler with point filtering, not a

@@ -1,0 +1,6 @@
+vs_3_0 packed outputs: 24 rows, worst |C++ - GPU| 3.8e-06, tolerance None
+   per semantic {'COLOR.0': 6e-08, 'COLOR.1': 6e-08, 'FOG.0': 6e-08, 'TEXCOORD.0': 2.4e-07, 'TEXCOORD.1': 4.8e-07, 'TEXCOORD.2': 9.5e-07, 'TEXCOORD.3': 3.8e-06, 'TEXCOORD.4': 4.8e-07, 'TEXCOORD.5': 9.5e-07, 'TEXCOORD.6': 0.0, 'TEXCOORD.7': 0.0}
+   worst at row (0, 0) TEXCOORD.3 GPU [20.0, 28.5, 41.9999962] C++ [20.0, 28.5, 42.0]
+vs_3_0 texldl filtering: 96 rows, worst |C++ - GPU| 0.00368, tolerance 0.01
+   per semantic {'TEXCOORD.0': 0.00253, 'TEXCOORD.1': 0.00224, 'TEXCOORD.2': 0.00167, 'TEXCOORD.3': 0.00368}
+   worst at row (0, 77) TEXCOORD.3 GPU [0.133056626, 0.0513915978, 0.536621094, 0.59349966] C++ [0.133214369, 0.0515789539, 0.54030472, 0.593504906]

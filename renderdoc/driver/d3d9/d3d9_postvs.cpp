@@ -22,6 +22,7 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+#include "maths/formatpacking.h"
 #include "d3d9_device.h"
 #include "d3d9_ffp_vertex.h"
 #include "d3d9_replay.h"
@@ -127,6 +128,33 @@ D3D9Emu::Vec4 SampledValue(D3DFORMAT format, const FloatVector &t)
     case D3DFMT_V8U8:
     case D3DFMT_V16U16: return D3D9Emu::Vec4(t.x, t.y, 1.0f, 1.0f);
     default: return D3D9Emu::Vec4(t.x, t.y, t.z, t.w);
+  }
+}
+
+// formats with up to 8 bits per colour channel, which D3DSAMP_SRGBTEXTURE converts
+bool SRGBReadable(D3DFORMAT format)
+{
+  switch((DWORD)format)
+  {
+    case D3DFMT_A8R8G8B8:
+    case D3DFMT_X8R8G8B8:
+    case D3DFMT_A8B8G8R8:
+    case D3DFMT_X8B8G8R8:
+    case D3DFMT_R8G8B8:
+    case D3DFMT_R5G6B5:
+    case D3DFMT_X1R5G5B5:
+    case D3DFMT_A1R5G5B5:
+    case D3DFMT_A4R4G4B4:
+    case D3DFMT_X4R4G4B4:
+    case D3DFMT_L8:
+    case D3DFMT_A8L8:
+    case D3DFMT_A4L4:
+    case D3DFMT_DXT1:
+    case D3DFMT_DXT2:
+    case D3DFMT_DXT3:
+    case D3DFMT_DXT4:
+    case D3DFMT_DXT5: return true;
+    default: return false;
   }
 }
 
@@ -624,6 +652,7 @@ void D3D9Replay::ReadVertexTexture(uint32_t sampler, const D3D9DeviceState &stat
     }
   }
 
+  bool srgb = false;
   for(const D3D9SamplerStates &s : state.SamplerStates)
   {
     if(s.Sampler != apiSampler)
@@ -638,9 +667,23 @@ void D3D9Replay::ReadVertexTexture(uint32_t sampler, const D3D9DeviceState &stat
         case D3DSAMP_BORDERCOLOR: tex.border = ColorDWORD(v.Value); break;
         case D3DSAMP_MAXMIPLEVEL: tex.maxMipLevel = v.Value; break;
         case D3DSAMP_MIPMAPLODBIAS: tex.mipLODBias = AsFloat(v.Value); break;
+        case D3DSAMP_MAGFILTER: tex.magFilter = D3D9Emu::TexFilter(v.Value); break;
+        case D3DSAMP_MINFILTER: tex.minFilter = D3D9Emu::TexFilter(v.Value); break;
+        case D3DSAMP_MIPFILTER: tex.mipFilter = D3D9Emu::TexFilter(v.Value); break;
+        case D3DSAMP_SRGBTEXTURE: srgb = v.Value != 0; break;
         default: break;
       }
     }
+  }
+
+  // sRGB reads convert the colour channels before filtering, as the GPU did. Only formats with 8
+  // bits or fewer per channel are converted: the others can't be read as sRGB.
+  if(srgb && SRGBReadable(format))
+  {
+    for(D3D9Emu::VSTexture::Level &level : tex.levels)
+      for(D3D9Emu::Vec4 &t : level.texels)
+        for(int c = 0; c < 3; c++)
+          t[c] = ConvertSRGBToLinear(t[c]);
   }
 }
 

@@ -52,7 +52,7 @@ the testing were on separate machines.
 | | ~~Saving DXT textures as PNG~~ | 0.5 | Done, see "Texture viewer" below (`d3d9_step8_dxt_png.md`). Most game textures are DXT |
 | | ~~Saving UpdateTexture dirty regions in captures~~ | 0.5 | Done, see "Dirty regions" below (`d3d9_step8_dirty_regions.md`). Texture streaming. Changed the capture format to version 0x2 |
 | | ~~vs_3_0 outputs that pack two semantics into one register~~ | 0.5 | Done, see "Packed vs_3_0 outputs" below (`d3d9_step8_packed_outputs.md`) |
-| | `texldl` filtering | 0.5 | Early SM3 GPUs could only point sample vertex textures, so many games do |
+| | ~~`texldl` filtering~~ | 0.5 | Done, see "texldl filtering" below (`d3d9_step8_texldl_filtering.md`). Early SM3 GPUs could only point sample vertex textures, so many games do |
 | | D24 at a depth of 0.375 | 0.25 | Check with ZFUNC EQUAL and adjust. One depth value, which only matters to an EQUAL test |
 | | P8 palettes | 0.5 | Low value, since current GPUs don't create P8 textures |
 
@@ -111,7 +111,7 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Simple_Triangle` | The three triangles at replay, including the pixel shader constants one (96, 191, 0), SaveTexture's alpha, the pipeline state at every draw with constants read at length 0 (`d3d9_pipestate_check.py`), the constant blocks and FVF, replaying every action, and the structured export round trip (`check_export`) |
 | `D3D9_Frame_Start_State` | The triangles, render states, and VS/PS float constants (c10, c20, c200, c180, and zero c138, c148) set before the first frame, the pipeline state check, the export round trip |
 | `D3D9_Texture_Formats` | `d3d9_formats_check.py` against the native run's reference: each format's picked texels, each texture saved as a PNG, and the render target at replay. And that the reference written under RenderDoc is byte-identical to the native one |
-| `D3D9_Mesh_Output` | `d3d9_mesh_check.py` against the native run's reference (a draw without a reference fails), and that the reference written under RenderDoc is byte-identical to the native one. The "vs_3_0 packed outputs" draw (11 semantics in 5 registers) is also checked against the GPU, read through a pixel shader that declares its inputs as the vertex shader declares its outputs, and its vertex shader output and pixel shader input signatures are checked |
+| `D3D9_Mesh_Output` | `d3d9_mesh_check.py` against the native run's reference (a draw without a reference fails), and that the reference written under RenderDoc is byte-identical to the native one. The "vs_3_0 packed outputs" draw (11 semantics in 5 registers) is also checked against the GPU, read through a pixel shader that declares its inputs as the vertex shader declares its outputs, and its vertex shader output and pixel shader input signatures are checked. The "vs_3_0 texldl filtering" draw (a 2D, a cube, a volume and an sRGB vertex texture, with linear and point filters, mip filters, a LOD bias, MAXMIPLEVEL and each address mode) is checked against its C++ reference and against the GPU within 0.01, and has to be there |
 | `D3D9_Overlay_Test` | `d3d9_overlay_check.py`, with the overlays saved in the test's tmp folder. Includes alpha tested, clipped and oDepth draws, whose Depth overlay has to be green exactly where the draw wrote |
 | `D3D9_Resource_Contents` | Every object's contents at the start of the frame, as listed under "Checking `D3D9_Resource_Contents` captures": each level, face and slice texel by texel, the previous frame's colour in every region the frames alternate, the vertex and write-only index buffers, and each face and slice of the DXT1 cube and volume textures saved as a PNG. Then the triangle drawn from them |
 | `D3D9_Dirty_Regions` | What UpdateTexture copies. The demo checks on the GPU, natively and under RenderDoc, that each frame's copies take exactly the dirty regions (in its log). The test checks at each of the frame's 7 UpdateTexture calls that the destination changed exactly in those regions, at each mip, cube face and volume slice: two rects of a 2D texture dirty when the frame starts, two rects on a cube face (copied as the box around them) and a whole face, two volume boxes, no rects, 6 rects, 7 rects (all of it), and a lock in the frame with D3DLOCK_NO_DIRTY_UPDATE beside one without. And the default pool textures' initial contents, from our shadow copies of what earlier frames copied |
@@ -1466,10 +1466,11 @@ predicated instructions, relative addressing by `a0` and `aL` on constants, inpu
 outputs, source and destination modifiers, and `texldl`.
 
 Known gaps:
-- `texldl` point samples the nearest mip level to the LOD (plus `D3DSAMP_MIPMAPLODBIAS`, from
-  `D3DSAMP_MAXMIPLEVEL` down), whatever the sampler's filters are, with the wrap, mirror, clamp,
-  border and mirror once address modes. Linear filtering isn't emulated. The texture is decoded
-  with phase 3b's `GetDecoded`, so it works for the formats that can display.
+- `texldl` filters as hardware vertex processing was measured to (see "texldl filtering"),
+  within a 256th or two of the texel range: the GPU's arithmetic isn't reproduced exactly.
+  Software vertex processing filters differently, which isn't emulated. Before step 8 it always
+  point sampled, and cube maps picked the x face when two axes were as long. The texture is
+  decoded with phase 3b's `GetDecoded`, so it works for the formats that can display.
 - Shaders run at full fp32 precision; partial precision hints are ignored, except where the
   documentation defines a reduced result (`expp`, `logp`). Transcendentals use the C library, so
   results can differ from a GPU's in the last bits.
@@ -1514,6 +1515,42 @@ Both give a pixel shader declared like the vertex shader each semantic in the co
 declared in, so that's what VS Out shows, and what the test compares against. How a mismatched
 pixel shader's inputs link isn't emulated anywhere: nothing in the replay needs it yet, though
 shader debugging (step 5) would. Only an RTX 4070 Ti on Windows 11 was measured.
+
+### texldl filtering
+
+Since step 8 `texldl` uses the sampler's filters (`VSTexture::SampleLevel` in
+`d3d9_vs_emulate.cpp`). Before, it always point sampled. What it does was measured natively, with
+a probe that samples vertex textures with 105 combinations of filters, address modes, LODs, mip
+levels, texture types and formats and reads back what `texldl` returned (`d3d9_step8_texldl_filtering/probe`). On
+the RTX 4070 Ti, with hardware vertex processing:
+- **The LOD** is the coordinate's w plus `D3DSAMP_MIPMAPLODBIAS`, with 8 bits of fraction,
+  rounded down (a LOD of 1/512 is 0).
+- **Which filter:** the LOD is clamped to `D3DSAMP_MAXMIPLEVEL` and the last level, and
+  `MAGFILTER` applies when that's 0 or less, `MINFILTER` above. Anisotropic filters linearly
+  (`texldl` has no derivatives).
+- **Which level:** with `MIPFILTER` NONE it's level 0, whatever `MAXMIPLEVEL` is, though
+  `MAXMIPLEVEL` still picks the filter above. POINT takes the nearest level to the clamped LOD,
+  LINEAR blends the two either side by the LOD's fraction.
+- **Linear filtering** blends 2, 4 or 8 texels, texel centres at half texels, each axis
+  addressed on its own (so `BORDER` blends in the border colour, and `WRAP` the far edge). The
+  weights keep 8 bits, rounded to the nearest.
+- **Cube maps** take the face of the longest axis, z first, then y, then x when two are as long,
+  and clamp at the face's edges: there's no filtering across faces.
+- **`D3DSAMP_SRGBTEXTURE`** converts the colour channels to linear before filtering. Only formats
+  with up to 8 bits per channel are converted; the others weren't tried.
+
+The GPU doesn't filter exactly as that says: its weights vary by a 256th or two depending on the
+other coordinates, so it isn't reproduced bit for bit. Against all of the probe's samples the
+model is within 0.0073 of each channel's range (1/128 is 0.0078), and the demo's C++ reference
+within 0.0037 of the GPU.
+
+Software vertex processing (the runtime runs the vertex shader and samples on the CPU) filters
+differently: 5-bit weights, its own rounding of the LOD, and different cube faces at ties and
+edges. RenderDoc emulates the hardware path only.
+
+Tested in `d3d9_step8_texldl_filtering.md`, with a new `D3D9_Mesh_Output` draw that samples a 2D,
+a cube, a volume and an sRGB vertex texture: passed. Not tried: other GPUs, sRGB formats other
+than A8R8G8B8, 1D and block compressed vertex textures, and games.
 
 Tested in `d3d9_step8_packed_outputs.md` with the "vs_3_0 packed outputs" draw of
 `D3D9_Mesh_Output`: passed, against C++ and the GPU, x64 and x86. Not tried with a real game.
@@ -1579,7 +1616,7 @@ Tested in `d3d9_step8_packed_outputs.md` with the "vs_3_0 packed outputs" draw o
 ### Testing the mesh output
 
 Unit tests: `util/test/d3d9_shader_unit_tests.sh` builds and runs the `[d3d9]` tests, now
-including `[vsemu]` (the interpreter per opcode, flow control, relative addressing, texldl,
+including `[vsemu]` (the interpreter per opcode, flow control, relative addressing, texldl and its filtering,
 vertex fetch, whole draws) and `[ffp]` (transforms, blending, each light type, material sources,
 texgen, texture transforms, fog, point size, the output signature). They pass on Linux with
 AddressSanitizer and UBSan. On Windows: `renderdoccmd test unit "[d3d9]"`.
@@ -1592,10 +1629,11 @@ The `D3D9_Mesh_Output` test does steps 1 and 2.
    `_reference_rdoc.txt` under RenderDoc), and logs where. Its references come
    from `ProcessVertices` on a second, software vertex processing device for the fixed function,
    vs_1_1 and vs_2_0 draws (screen space), and from C++ for pretransformed vertices, vs_3_0 with
-   texldl, instancing and packed outputs (clip space). The packed outputs draw also has `hw`
-   rows read back from the GPU into a float render target, through a pixel shader that declares
-   its inputs as the vertex shader declares its outputs; `d3d9_mesh_check.py` compares VS Out
-   with them as floats. Check its log for "Couldn't" or "ProcessVertices failed"
+   texldl, texldl filtering, instancing and packed outputs (clip space). The packed outputs and
+   texldl filtering draws also have `hw` rows read back from the GPU into a float render target,
+   through a pixel shader that declares its inputs as the vertex shader declares its outputs;
+   `d3d9_mesh_check.py` compares VS Out with them as floats (within 0.01 for texldl filtering,
+   which also has to match its C++ reference). Check its log for "Couldn't" or "ProcessVertices failed"
    warnings: a draw whose reference failed isn't checked, and counts as a failure.
 2. Capture a frame and run
    `python util\test\d3d9_mesh_check.py capture.rdc path\to\D3D9_Mesh_Output_reference.txt`

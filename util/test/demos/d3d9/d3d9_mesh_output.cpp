@@ -173,6 +173,9 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
       std::vector<std::pair<std::string, std::string>> semantics;
     };
     std::vector<HWRegister> hwRegisters;
+    // if not 0, the GPU's values only have to be this close (texldl with filtering, whose
+    // arithmetic isn't reproduced exactly), and the C++ reference has to match as well
+    float hwTolerance = 0.0f;
   };
 
   struct Bound
@@ -277,7 +280,21 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
     d->SetStreamSourceFreq(0, 1);
     d->SetStreamSourceFreq(1, 1);
     d->SetStreamSource(1, NULL, 0, 0);
-    d->SetTexture(D3DVERTEXTEXTURESAMPLER0, NULL);
+    // the vertex samplers' defaults, which the texldl cases change
+    for(DWORD s = D3DVERTEXTEXTURESAMPLER0; s <= D3DVERTEXTEXTURESAMPLER3; s++)
+    {
+      d->SetTexture(s, NULL);
+      d->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+      d->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+      d->SetSamplerState(s, D3DSAMP_ADDRESSW, D3DTADDRESS_WRAP);
+      d->SetSamplerState(s, D3DSAMP_BORDERCOLOR, 0);
+      d->SetSamplerState(s, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+      d->SetSamplerState(s, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+      d->SetSamplerState(s, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+      d->SetSamplerState(s, D3DSAMP_MIPMAPLODBIAS, 0);
+      d->SetSamplerState(s, D3DSAMP_MAXMIPLEVEL, 0);
+      d->SetSamplerState(s, D3DSAMP_SRGBTEXTURE, FALSE);
+    }
   }
 
   bool Bind(IDirect3DDevice9 * d, const Case &c, bool software, Bound &b)
@@ -664,6 +681,192 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
     return std::vector<DWORD>(p, p + code->GetBufferSize() / 4);
   }
 
+  // A reference for texldl with filtering, following what the GPU's hardware vertex processing
+  // was measured to do (see the D3D9 driver's STATUS.md, "texldl filtering"). The GPU's own
+  // arithmetic isn't reproduced exactly (its weights vary by a 256th or two), so its values are
+  // compared with a tolerance.
+  struct RefTexture
+  {
+    enum Kind
+    {
+      Tex2D,
+      Cube,
+      Volume,
+    } kind = Tex2D;
+    struct Level
+    {
+      int w = 1, h = 1, d = 1;
+      // x fastest, then y, then the slice or face, as the sampler reads them
+      std::vector<std::array<float, 4>> texels;
+    };
+    std::vector<Level> levels;
+    DWORD address[3] = {D3DTADDRESS_WRAP, D3DTADDRESS_WRAP, D3DTADDRESS_WRAP};
+    float border[4] = {};
+    DWORD mag = D3DTEXF_POINT, min = D3DTEXF_POINT, mip = D3DTEXF_NONE;
+    DWORD maxMip = 0;
+    float bias = 0.0f;
+  };
+
+  static int RefAddress(int i, int size, DWORD mode)
+  {
+    switch(mode)
+    {
+      case D3DTADDRESS_WRAP: i %= size; return i < 0 ? i + size : i;
+      case D3DTADDRESS_MIRROR:
+      {
+        int p = i % (2 * size);
+        if(p < 0)
+          p += 2 * size;
+        return p < size ? p : 2 * size - 1 - p;
+      }
+      case D3DTADDRESS_MIRRORONCE:
+        if(i < 0)
+          i = -i - 1;
+        return i < size ? i : size - 1;
+      case D3DTADDRESS_BORDER: return i < 0 || i >= size ? -1 : i;
+      default: return i < 0 ? 0 : (i >= size ? size - 1 : i);
+    }
+  }
+
+  // the texels along one axis and their weights; -1 is the border colour
+  static int RefTaps(float u, int size, DWORD mode, bool linear, int idx[2], float w[2])
+  {
+    if(!linear)
+    {
+      float a = u;
+      if(mode == D3DTADDRESS_WRAP)
+      {
+        a = u - floorf(u);
+      }
+      else if(mode == D3DTADDRESS_MIRROR)
+      {
+        float t = u - 2.0f * floorf(u * 0.5f);
+        a = t > 1.0f ? 2.0f - t : t;
+      }
+      else if(mode == D3DTADDRESS_MIRRORONCE)
+      {
+        a = fabsf(u) < 1.0f ? fabsf(u) : 1.0f;
+      }
+      else if(mode != D3DTADDRESS_BORDER)
+      {
+        a = u < 0.0f ? 0.0f : (u > 1.0f ? 1.0f : u);
+      }
+      int i = (int)floorf(a * float(size));
+      if(mode == D3DTADDRESS_BORDER && (i < 0 || i >= size))
+        idx[0] = -1;
+      else
+        idx[0] = i < 0 ? 0 : (i >= size ? size - 1 : i);
+      w[0] = 1.0f;
+      return 1;
+    }
+
+    // texel centres are at half texels, and the weight keeps 8 bits, rounded to the nearest
+    const float p = u * float(size) - 0.5f;
+    const float base = floorf(p);
+    const float f = floorf((p - base) * 256.0f + 0.5f) / 256.0f;
+    idx[0] = RefAddress((int)base, size, mode);
+    idx[1] = RefAddress((int)base + 1, size, mode);
+    w[0] = 1.0f - f;
+    w[1] = f;
+    return 2;
+  }
+
+  static std::array<float, 4> RefSampleLevel(const RefTexture &t, int level, const float *c,
+                                             bool linear)
+  {
+    const RefTexture::Level &l = t.levels[level];
+    int idx[3][2] = {{0, 0}, {0, 0}, {0, 0}};
+    float w[3][2] = {{1.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 0.0f}};
+    int n[3] = {1, 1, 1};
+
+    if(t.kind == RefTexture::Cube)
+    {
+      // the largest axis picks the face, z then y then x when two are as long, and the face's
+      // edges clamp
+      const float ax = fabsf(c[0]), ay = fabsf(c[1]), az = fabsf(c[2]);
+      int face;
+      float sc, tc, ma;
+      if(az >= ax && az >= ay)
+      {
+        face = c[2] >= 0.0f ? 4 : 5;
+        sc = c[2] >= 0.0f ? c[0] : -c[0];
+        tc = -c[1];
+        ma = az;
+      }
+      else if(ay >= ax)
+      {
+        face = c[1] >= 0.0f ? 2 : 3;
+        sc = c[0];
+        tc = c[1] >= 0.0f ? c[2] : -c[2];
+        ma = ay;
+      }
+      else
+      {
+        face = c[0] >= 0.0f ? 0 : 1;
+        sc = c[0] >= 0.0f ? -c[2] : c[2];
+        tc = -c[1];
+        ma = ax;
+      }
+      n[0] = RefTaps((sc / ma + 1.0f) * 0.5f, l.w, D3DTADDRESS_CLAMP, linear, idx[0], w[0]);
+      n[1] = RefTaps((tc / ma + 1.0f) * 0.5f, l.h, D3DTADDRESS_CLAMP, linear, idx[1], w[1]);
+      idx[2][0] = face;
+    }
+    else
+    {
+      n[0] = RefTaps(c[0], l.w, t.address[0], linear, idx[0], w[0]);
+      n[1] = RefTaps(c[1], l.h, t.address[1], linear, idx[1], w[1]);
+      if(t.kind == RefTexture::Volume)
+        n[2] = RefTaps(c[2], l.d, t.address[2], linear, idx[2], w[2]);
+    }
+
+    std::array<float, 4> ret = {};
+    for(int z = 0; z < n[2]; z++)
+      for(int y = 0; y < n[1]; y++)
+        for(int x = 0; x < n[0]; x++)
+        {
+          const float wt = w[0][x] * w[1][y] * w[2][z];
+          const int tx = idx[0][x], ty = idx[1][y], tz = idx[2][z];
+          const float *v = t.border;
+          if(tx >= 0 && ty >= 0 && tz >= 0)
+            v = t.levels[level].texels[(tz * l.h + ty) * l.w + tx].data();
+          for(int k = 0; k < 4; k++)
+            ret[k] += wt * v[k];
+        }
+    return ret;
+  }
+
+  static std::array<float, 4> RefSample(const RefTexture &t, const float *c)
+  {
+    // the LOD keeps 8 bits of fraction, rounded down
+    float lod = c[3] + t.bias;
+    lod = floorf(lod * 256.0f) / 256.0f;
+    const auto linear = [](DWORD f) { return f > D3DTEXF_POINT; };
+
+    // the LOD clamped to MAXMIPLEVEL picks the filter
+    const int last = (int)t.levels.size() - 1;
+    const float lo = float((int)t.maxMip < last ? (int)t.maxMip : last);
+    lod = lod < lo ? lo : (lod > float(last) ? float(last) : lod);
+    const bool lin = linear(lod <= 0.0f ? t.mag : t.min);
+
+    // without a mip filter it's level 0 whatever MAXMIPLEVEL is
+    if(t.mip == D3DTEXF_NONE)
+      return RefSampleLevel(t, 0, c, lin);
+
+    if(t.mip == D3DTEXF_POINT)
+      return RefSampleLevel(t, (int)floorf(lod + 0.5f), c, lin);
+
+    const int l0 = (int)floorf(lod);
+    const float f = lod - float(l0);
+    std::array<float, 4> a = RefSampleLevel(t, l0, c, lin);
+    if(f > 0.0f && l0 < last)
+    {
+      std::array<float, 4> b = RefSampleLevel(t, l0 + 1, c, lin);
+      for(int k = 0; k < 4; k++)
+        a[k] = a[k] * (1.0f - f) + b[k] * f;
+    }
+    return a;
+  }
+
   // a 1x1 float render target for WriteHardwareOutputs, and a copy of it to read
   IDirect3DSurface9Ptr hwFloatTarget, hwFloatRead;
 
@@ -722,7 +925,10 @@ RD_TEST(D3D9_Mesh_Output, D3D9GraphicsTest)
       return;
     }
 
-    fprintf(f, "hwfloat\n");
+    if(c.hwTolerance > 0.0f)
+      fprintf(f, "hwfloat %g\n", c.hwTolerance);
+    else
+      fprintf(f, "hwfloat\n");
     for(size_t r = 0; r < rows.size(); r++)
     {
       fprintf(f, "hw 0 %u", (UINT)r);
@@ -1645,6 +1851,318 @@ VOut main(float3 pos : POSITION, float4 col : COLOR0, float4 inst : TEXCOORD1)
            {{"TEXCOORD.6", "x"}, {"TEXCOORD.7", "y"}, {"COLOR.1", "zw"}}},
       };
       cases.push_back(c);
+    }
+
+    // vs_3_0 texldl with filtering: four vertex textures with different sampler states, over a
+    // 5x5 grid so the coordinates and LODs cross texels, mip levels and cube faces
+    const bool vtexFloat =
+        SUCCEEDED(d3d->CheckDeviceFormat(
+            D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, presentParams.BackBufferFormat,
+            D3DUSAGE_QUERY_VERTEXTEXTURE, D3DRTYPE_CUBETEXTURE, D3DFMT_A32B32G32R32F)) &&
+        SUCCEEDED(d3d->CheckDeviceFormat(
+            D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, presentParams.BackBufferFormat,
+            D3DUSAGE_QUERY_VERTEXTEXTURE, D3DRTYPE_VOLUMETEXTURE, D3DFMT_A32B32G32R32F)) &&
+        SUCCEEDED(d3d->CheckDeviceFormat(
+            D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, presentParams.BackBufferFormat,
+            D3DUSAGE_QUERY_VERTEXTEXTURE, D3DRTYPE_TEXTURE, D3DFMT_A8R8G8B8)) &&
+        SUCCEEDED(d3d->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
+                                         presentParams.BackBufferFormat, D3DUSAGE_QUERY_SRGBREAD,
+                                         D3DRTYPE_TEXTURE, D3DFMT_A8R8G8B8));
+    if(vtexOK && vtexFloat)
+    {
+      Case c;
+      c.name = "vs_3_0 texldl filtering";
+
+      std::vector<byte> fine;
+      for(int y = 0; y < 5; y++)
+      {
+        for(int x = 0; x < 5; x++)
+        {
+          float fx = float(x) * 0.5f - 1.0f, fy = float(y) * 0.5f - 1.0f;
+          PNCT v = {{fx, fy, fx * 0.1f}, {0.0f, 0.0f, -1.0f}, 0xffffffff, {x * 0.25f, y * 0.25f}};
+          Append(fine, v);
+        }
+      }
+      for(uint16_t y = 0; y < 4; y++)
+      {
+        for(uint16_t x = 0; x < 4; x++)
+        {
+          uint16_t i = y * 5 + x;
+          for(uint16_t k : {i, uint16_t(i + 5), uint16_t(i + 1), uint16_t(i + 1), uint16_t(i + 5),
+                            uint16_t(i + 6)})
+            c.indices.push_back(k);
+        }
+      }
+      c.verts = fine;
+      c.stride = sizeof(PNCT);
+      c.decl = {
+          {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+          {0, 28, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
+      };
+      c.kind = Case::Indexed;
+      c.primCount = 32;
+      c.vertexTexture = true;
+      c.shader = true;
+
+      auto hash = [](uint32_t a) {
+        a ^= a >> 16;
+        a *= 0x7feb352dU;
+        a ^= a >> 15;
+        a *= 0x846ca68bU;
+        a ^= a >> 16;
+        return float(a & 0xffff) / 65535.0f;
+      };
+
+      // s0: 8x4 with 4 levels, trilinear, wrapping in u and mirrored in v, with a LOD bias
+      // s1: a 4x4 cube with 3 levels, trilinear
+      // s2: a 4x4x4 volume with 3 levels, linear magnification and point minification without a
+      //     mip filter, border, clamp and mirror once
+      // s3: 8x8 A8R8G8B8 read as sRGB, with 4 levels: point magnification, linear minification,
+      //     the nearest mip level and MAXMIPLEVEL 1
+      RefTexture refs[4];
+      IDirect3DBaseTexture9Ptr texs[4];
+      bool ok = true;
+      {
+        IDirect3DTexture9Ptr t;
+        ok &= SUCCEEDED(
+            dev->CreateTexture(8, 4, 4, 0, D3DFMT_A32B32G32R32F, D3DPOOL_MANAGED, &t, NULL));
+        for(UINT l = 0; ok && l < 4; l++)
+        {
+          RefTexture::Level lev;
+          lev.w = 8 >> l;
+          lev.h = std::max(1, 4 >> l);
+          D3DLOCKED_RECT lr = {};
+          t->LockRect(l, &lr, NULL, 0);
+          for(int y = 0; y < lev.h; y++)
+            for(int x = 0; x < lev.w; x++)
+            {
+              std::array<float, 4> v;
+              for(int k = 0; k < 4; k++)
+                v[k] = hash(1000 + l * 4096 + (y * lev.w + x) * 4 + k);
+              memcpy((byte *)lr.pBits + y * lr.Pitch + x * 16, v.data(), 16);
+              lev.texels.push_back(v);
+            }
+          t->UnlockRect(l);
+          refs[0].levels.push_back(lev);
+        }
+        texs[0] = t;
+        refs[0].address[0] = D3DTADDRESS_WRAP;
+        refs[0].address[1] = D3DTADDRESS_MIRROR;
+        refs[0].mag = refs[0].min = refs[0].mip = D3DTEXF_LINEAR;
+        refs[0].bias = 0.25f;
+      }
+      {
+        IDirect3DCubeTexture9Ptr t;
+        ok &= SUCCEEDED(
+            dev->CreateCubeTexture(4, 3, 0, D3DFMT_A32B32G32R32F, D3DPOOL_MANAGED, &t, NULL));
+        for(UINT l = 0; ok && l < 3; l++)
+        {
+          RefTexture::Level lev;
+          lev.w = lev.h = 4 >> l;
+          lev.d = 6;
+          for(UINT f = 0; f < 6; f++)
+          {
+            D3DLOCKED_RECT lr = {};
+            t->LockRect((D3DCUBEMAP_FACES)f, l, &lr, NULL, 0);
+            for(int y = 0; y < lev.h; y++)
+              for(int x = 0; x < lev.w; x++)
+              {
+                std::array<float, 4> v;
+                for(int k = 0; k < 4; k++)
+                  v[k] = hash(2000 + l * 4096 + f * 256 + (y * lev.w + x) * 4 + k);
+                memcpy((byte *)lr.pBits + y * lr.Pitch + x * 16, v.data(), 16);
+                lev.texels.push_back(v);
+              }
+            t->UnlockRect((D3DCUBEMAP_FACES)f, l);
+          }
+          refs[1].levels.push_back(lev);
+        }
+        texs[1] = t;
+        refs[1].kind = RefTexture::Cube;
+        refs[1].mag = refs[1].min = refs[1].mip = D3DTEXF_LINEAR;
+      }
+      {
+        IDirect3DVolumeTexture9Ptr t;
+        ok &= SUCCEEDED(dev->CreateVolumeTexture(4, 4, 4, 3, 0, D3DFMT_A32B32G32R32F,
+                                                 D3DPOOL_MANAGED, &t, NULL));
+        for(UINT l = 0; ok && l < 3; l++)
+        {
+          RefTexture::Level lev;
+          lev.w = lev.h = lev.d = 4 >> l;
+          D3DLOCKED_BOX lb = {};
+          t->LockBox(l, &lb, NULL, 0);
+          for(int z = 0; z < lev.d; z++)
+            for(int y = 0; y < lev.h; y++)
+              for(int x = 0; x < lev.w; x++)
+              {
+                std::array<float, 4> v;
+                for(int k = 0; k < 4; k++)
+                  v[k] = hash(3000 + l * 4096 + ((z * lev.h + y) * lev.w + x) * 4 + k);
+                memcpy((byte *)lb.pBits + z * lb.SlicePitch + y * lb.RowPitch + x * 16, v.data(), 16);
+                lev.texels.push_back(v);
+              }
+          t->UnlockBox(l);
+          refs[2].levels.push_back(lev);
+        }
+        texs[2] = t;
+        refs[2].kind = RefTexture::Volume;
+        refs[2].address[0] = D3DTADDRESS_BORDER;
+        refs[2].address[1] = D3DTADDRESS_CLAMP;
+        refs[2].address[2] = D3DTADDRESS_MIRRORONCE;
+        refs[2].border[0] = 0.2f;
+        refs[2].border[1] = 0.4f;
+        refs[2].border[2] = 0.8f;
+        refs[2].border[3] = 1.0f;
+        refs[2].mag = D3DTEXF_LINEAR;
+        refs[2].min = D3DTEXF_POINT;
+        refs[2].mip = D3DTEXF_NONE;
+      }
+      {
+        IDirect3DTexture9Ptr t;
+        ok &= SUCCEEDED(dev->CreateTexture(8, 8, 4, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &t, NULL));
+        for(UINT l = 0; ok && l < 4; l++)
+        {
+          RefTexture::Level lev;
+          lev.w = lev.h = 8 >> l;
+          D3DLOCKED_RECT lr = {};
+          t->LockRect(l, &lr, NULL, 0);
+          for(int y = 0; y < lev.h; y++)
+            for(int x = 0; x < lev.w; x++)
+            {
+              byte b[4];
+              std::array<float, 4> v;
+              for(int k = 0; k < 4; k++)
+              {
+                b[k] = byte(hash(4000 + l * 4096 + (y * lev.w + x) * 4 + k) * 255.0f + 0.5f);
+                float f = float(b[k]) / 255.0f;
+                // the colour channels are read as sRGB
+                if(k < 3)
+                  f = f <= 0.04045f ? f / 12.92f : powf((f + 0.055f) / 1.055f, 2.4f);
+                v[k] = f;
+              }
+              // stored B, G, R, A
+              byte *dst = (byte *)lr.pBits + y * lr.Pitch + x * 4;
+              dst[0] = b[2];
+              dst[1] = b[1];
+              dst[2] = b[0];
+              dst[3] = b[3];
+              lev.texels.push_back(v);
+            }
+          t->UnlockRect(l);
+          refs[3].levels.push_back(lev);
+        }
+        texs[3] = t;
+        refs[3].address[0] = refs[3].address[1] = D3DTADDRESS_CLAMP;
+        refs[3].mag = D3DTEXF_POINT;
+        refs[3].min = D3DTEXF_LINEAR;
+        refs[3].mip = D3DTEXF_POINT;
+        refs[3].maxMip = 1;
+      }
+
+      // each sampler's coordinate is r0 * a + b, with r0 = (u, v, v, u) of the vertex
+      const float texA[4][4] = {
+          {1.3f, 1.2f, 0.0f, 2.5f},
+          {2.0f, 1.0f, 2.0f, 1.5f},
+          {1.4f, 1.2f, 1.6f, 2.0f},
+          {0.9f, 1.1f, 0.0f, 3.0f},
+      };
+      const float texB[4][4] = {
+          {-0.15f, -0.1f, 0.0f, -0.6f},
+          {-1.0f, -0.4f, -1.0f, 0.0f},
+          {-0.2f, -0.1f, -0.3f, -0.5f},
+          {0.03f, -0.05f, 0.0f, -1.2f},
+      };
+
+      std::string vs =
+          "vs_3_0\n"
+          "dcl_position v0\n"
+          "dcl_texcoord v1\n"
+          "dcl_2d s0\n"
+          "dcl_cube s1\n"
+          "dcl_volume s2\n"
+          "dcl_2d s3\n"
+          "dcl_position o0\n"
+          "dcl_texcoord0 o1\n"
+          "dcl_texcoord1 o2\n"
+          "dcl_texcoord2 o3\n"
+          "dcl_texcoord3 o4\n";
+      for(int i = 0; i < 4; i++)
+      {
+        char line[256];
+        snprintf(line, sizeof(line),
+                 "def c%d, %.9g, %.9g, %.9g, %.9g\ndef c%d, %.9g, %.9g, %.9g, %.9g\n", 4 + i * 2,
+                 texA[i][0], texA[i][1], texA[i][2], texA[i][3], 5 + i * 2, texB[i][0], texB[i][1],
+                 texB[i][2], texB[i][3]);
+        vs += line;
+      }
+      vs += "m4x4 o0, v0, c0\nmov r0, v1.xyyx\n";
+      for(int i = 0; i < 4; i++)
+        vs += "mul r1, r0, c" + std::to_string(4 + i * 2) + "\nadd r1, r1, c" +
+              std::to_string(5 + i * 2) + "\ntexldl r2, r1, s" + std::to_string(i) + "\nmov o" +
+              std::to_string(i + 1) + ", r2\n";
+      c.vsTokens = ok ? Assemble(vs) : std::vector<DWORD>();
+      if(!ok)
+        TEST_ERROR("Couldn't create the vertex textures for texldl filtering");
+
+      M wvp = Transpose(viewProj);
+      // the case holds the textures
+      std::vector<IDirect3DBaseTexture9Ptr> tex(texs, texs + 4);
+      std::vector<RefTexture> samp(refs, refs + 4);
+      c.state = [wvp, tex, samp](IDirect3DDevice9 *d) {
+        d->SetVertexShaderConstantF(0, wvp.m, 4);
+        for(DWORD i = 0; i < 4; i++)
+        {
+          const DWORD s = D3DVERTEXTEXTURESAMPLER0 + i;
+          const RefTexture &r = samp[i];
+          d->SetTexture(s, tex[i]);
+          d->SetSamplerState(s, D3DSAMP_ADDRESSU, r.address[0]);
+          d->SetSamplerState(s, D3DSAMP_ADDRESSV, r.address[1]);
+          d->SetSamplerState(s, D3DSAMP_ADDRESSW, r.address[2]);
+          d->SetSamplerState(s, D3DSAMP_BORDERCOLOR,
+                             D3DCOLOR_COLORVALUE(r.border[0], r.border[1], r.border[2], r.border[3]));
+          d->SetSamplerState(s, D3DSAMP_MAGFILTER, r.mag);
+          d->SetSamplerState(s, D3DSAMP_MINFILTER, r.min);
+          d->SetSamplerState(s, D3DSAMP_MIPFILTER, r.mip);
+          d->SetSamplerState(s, D3DSAMP_MIPMAPLODBIAS, *(const DWORD *)&r.bias);
+          d->SetSamplerState(s, D3DSAMP_MAXMIPLEVEL, r.maxMip);
+          d->SetSamplerState(s, D3DSAMP_SRGBTEXTURE, i == 3 ? TRUE : FALSE);
+        }
+      };
+
+      M vpm = viewProj;
+      c.reference = [fine, vpm, texA, texB, samp](UINT, UINT v, Outputs &out) {
+        const PNCT &p = ((const PNCT *)fine.data())[v];
+        float pos[4] = {p.pos[0], p.pos[1], p.pos[2], 1.0f}, clip[4];
+        Transform(pos, vpm, clip);
+        out["POSITION.0"] = {clip[0], clip[1], clip[2], clip[3]};
+        const float r0[4] = {p.uv[0], p.uv[1], p.uv[1], p.uv[0]};
+        for(int i = 0; i < 4; i++)
+        {
+          float coord[4];
+          for(int k = 0; k < 4; k++)
+          {
+            // as the shader does: a multiply, then an add
+            float m = r0[k] * texA[i][k];
+            coord[k] = m + texB[i][k];
+          }
+          std::array<float, 4> s = RefSample(samp[i], coord);
+          out["TEXCOORD." + std::to_string(i)] = {s[0], s[1], s[2], s[3]};
+        }
+      };
+      c.hwRegisters = {
+          {"dcl_texcoord0 v0", {{"TEXCOORD.0", "xyzw"}}},
+          {"dcl_texcoord1 v0", {{"TEXCOORD.1", "xyzw"}}},
+          {"dcl_texcoord2 v0", {{"TEXCOORD.2", "xyzw"}}},
+          {"dcl_texcoord3 v0", {{"TEXCOORD.3", "xyzw"}}},
+      };
+      c.hwTolerance = 0.01f;
+      cases.push_back(c);
+    }
+    else
+    {
+      TEST_WARN(
+          "Float cube and volume or sRGB vertex textures aren't supported, skipping texldl "
+          "filtering");
     }
 
     // a vertex shader with DrawPrimitiveUP

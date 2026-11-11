@@ -394,8 +394,85 @@ int32_t AddressTexel(float u, uint32_t size, TexAddress mode)
     return int32_t(size) - 1;
   return int32_t(f);
 }
+
+// The texels a linear filter reads along one axis, and their weights: the two either side of the
+// coordinate, addressed separately. The GPU keeps 8 bits of the weight, rounded to the nearest.
+struct AxisTaps
+{
+  int32_t idx[2] = {0, 0};
+  float weight[2] = {1.0f, 0.0f};
+  int count = 1;
+};
+
+// a texel index outside the texture after addressing, or -1 for the border colour
+int32_t AddressIndex(int32_t i, int32_t size, TexAddress mode)
+{
+  switch(mode)
+  {
+    case TexAddress::Wrap: i %= size; return i < 0 ? i + size : i;
+    case TexAddress::Mirror:
+    {
+      int32_t p = i % (2 * size);
+      if(p < 0)
+        p += 2 * size;
+      return p < size ? p : 2 * size - 1 - p;
+    }
+    case TexAddress::MirrorOnce:
+      if(i < 0)
+        i = -i - 1;
+      return RDCMIN(i, size - 1);
+    case TexAddress::Border: return i < 0 || i >= size ? -1 : i;
+    case TexAddress::Clamp:
+    default: return RDCCLAMP(i, 0, size - 1);
+  }
+}
+
+AxisTaps Taps(float u, uint32_t size, TexAddress mode, bool linear)
+{
+  AxisTaps ret;
+  if(!linear)
+  {
+    ret.idx[0] = AddressTexel(u, size, mode);
+    return ret;
+  }
+
+  if(!(u == u))
+    u = 0.0f;
+  // far enough out that the integer maths can't overflow
+  u = RDCCLAMP(u, -65536.0f, 65536.0f);
+
+  // texel centres are at half texels
+  const float p = u * float(size) - 0.5f;
+  const float base = floorf(p);
+  const float f = floorf((p - base) * 256.0f + 0.5f) / 256.0f;
+  const int32_t i = int32_t(base);
+
+  ret.idx[0] = AddressIndex(i, int32_t(size), mode);
+  ret.idx[1] = AddressIndex(i + 1, int32_t(size), mode);
+  ret.weight[0] = 1.0f - f;
+  ret.weight[1] = f;
+  ret.count = 2;
+  return ret;
+}
+
+bool IsLinear(TexFilter f)
+{
+  return uint32_t(f) > uint32_t(TexFilter::Point);
+}
 };    // namespace
 
+// What was measured on hardware vertex processing (an RTX 4070 Ti), which this follows:
+// - the LOD is the coordinate's w plus D3DSAMP_MIPMAPLODBIAS, with 8 bits of fraction, rounded
+//   down.
+// - the LOD is clamped to D3DSAMP_MAXMIPLEVEL and the last level. MAGFILTER applies when that's
+//   0 or less, MINFILTER above.
+// - with D3DSAMP_MIPFILTER NONE it's level 0, though MAXMIPLEVEL still clamps the LOD that picks
+//   the filter. A point mip filter takes the nearest level, a linear one blends the two either
+//   side.
+// - linear (and anisotropic) filters blend 2, 4 or 8 texels, each axis addressed on its own, so a
+//   border texel blends in the border colour.
+// - cube maps pick the face of the largest axis, z then y then x when two are equal, and clamp at
+//   the face's edges rather than filtering across faces.
 Vec4 VSTexture::SampleLevel(const Vec4 &coord, float lod) const
 {
   if(levels.empty())
@@ -405,66 +482,106 @@ Vec4 VSTexture::SampleLevel(const Vec4 &coord, float lod) const
   if(!(lod == lod))
     lod = 0.0f;
   lod = RDCCLAMP(lod, -1000.0f, 1000.0f);
+  lod = floorf(lod * 256.0f) / 256.0f;
 
-  int32_t level = int32_t(floorf(lod + 0.5f));
-  level = RDCMAX(level, int32_t(maxMipLevel));
-  level = RDCCLAMP(level, 0, int32_t(levels.size()) - 1);
+  const uint32_t last = uint32_t(levels.size()) - 1;
+  lod = RDCCLAMP(lod, float(RDCMIN(maxMipLevel, last)), float(last));
+  const bool linear = IsLinear(lod <= 0.0f ? magFilter : minFilter);
 
+  if(mipFilter == TexFilter::None)
+    return SampleTexels(0, coord, linear);
+
+  if(!IsLinear(mipFilter))
+    return SampleTexels(uint32_t(floorf(lod + 0.5f)), coord, linear);
+
+  const uint32_t l0 = uint32_t(floorf(lod));
+  const float f = lod - float(l0);
+  Vec4 ret = SampleTexels(l0, coord, linear);
+  if(f > 0.0f && l0 < last)
+  {
+    const Vec4 next = SampleTexels(l0 + 1, coord, linear);
+    for(int c = 0; c < 4; c++)
+      ret[c] = ret[c] * (1.0f - f) + next[c] * f;
+  }
+  return ret;
+}
+
+Vec4 VSTexture::SampleTexels(uint32_t level, const Vec4 &coord, bool linear) const
+{
+  level = RDCMIN(level, uint32_t(levels.size()) - 1);
   const Level &l = levels[level];
   if(l.width == 0 || l.height == 0 || l.depth == 0)
     return Vec4(0.0f, 0.0f, 0.0f, 1.0f);
 
-  int32_t x = 0, y = 0, z = 0;
+  AxisTaps taps[3];
 
   if(type == SamplerTextureType::Cube)
   {
     // the major axis picks the face (+X, -X, +Y, -Y, +Z, -Z), as D3D9 numbers them
     const float cx = coord[0], cy = coord[1], cz = coord[2];
     const float ax = fabsf(cx), ay = fabsf(cy), az = fabsf(cz);
+    int32_t face;
     float sc, tc, ma;
-    if(ax >= ay && ax >= az)
+    if(az >= ax && az >= ay)
     {
-      z = cx >= 0.0f ? 0 : 1;
-      sc = cx >= 0.0f ? -cz : cz;
+      face = cz >= 0.0f ? 4 : 5;
+      sc = cz >= 0.0f ? cx : -cx;
       tc = -cy;
-      ma = ax;
+      ma = az;
     }
-    else if(ay >= az)
+    else if(ay >= ax)
     {
-      z = cy >= 0.0f ? 2 : 3;
+      face = cy >= 0.0f ? 2 : 3;
       sc = cx;
       tc = cy >= 0.0f ? cz : -cz;
       ma = ay;
     }
     else
     {
-      z = cz >= 0.0f ? 4 : 5;
-      sc = cz >= 0.0f ? cx : -cx;
+      face = cx >= 0.0f ? 0 : 1;
+      sc = cx >= 0.0f ? -cz : cz;
       tc = -cy;
-      ma = az;
+      ma = ax;
     }
     if(ma == 0.0f)
       ma = 1.0f;
-    x = AddressTexel((sc / ma + 1.0f) * 0.5f, l.width, TexAddress::Clamp);
-    y = AddressTexel((tc / ma + 1.0f) * 0.5f, l.height, TexAddress::Clamp);
-    z = RDCMIN(z, int32_t(l.depth) - 1);
+    taps[0] = Taps((sc / ma + 1.0f) * 0.5f, l.width, TexAddress::Clamp, linear);
+    taps[1] = Taps((tc / ma + 1.0f) * 0.5f, l.height, TexAddress::Clamp, linear);
+    taps[2].idx[0] = RDCMIN(face, int32_t(l.depth) - 1);
   }
   else
   {
-    x = AddressTexel(coord[0], l.width, address[0]);
+    taps[0] = Taps(coord[0], l.width, address[0], linear);
     if(type != SamplerTextureType::Tex1D)
-      y = AddressTexel(coord[1], l.height, address[1]);
+      taps[1] = Taps(coord[1], l.height, address[1], linear);
     if(type == SamplerTextureType::Volume)
-      z = AddressTexel(coord[2], l.depth, address[2]);
+      taps[2] = Taps(coord[2], l.depth, address[2], linear);
   }
 
-  if(x < 0 || y < 0 || z < 0)
-    return border;
+  Vec4 ret;
+  for(int z = 0; z < taps[2].count; z++)
+  {
+    for(int y = 0; y < taps[1].count; y++)
+    {
+      for(int x = 0; x < taps[0].count; x++)
+      {
+        const float w = taps[0].weight[x] * taps[1].weight[y] * taps[2].weight[z];
+        if(w == 0.0f)
+          continue;
 
-  size_t idx = (size_t(z) * l.height + size_t(y)) * l.width + size_t(x);
-  if(idx >= l.texels.size())
-    return Vec4(0.0f, 0.0f, 0.0f, 1.0f);
-  return l.texels[idx];
+        Vec4 t = border;
+        const int32_t tx = taps[0].idx[x], ty = taps[1].idx[y], tz = taps[2].idx[z];
+        if(tx >= 0 && ty >= 0 && tz >= 0)
+        {
+          const size_t idx = (size_t(tz) * l.height + size_t(ty)) * l.width + size_t(tx);
+          t = idx < l.texels.size() ? l.texels[idx] : Vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        }
+        for(int c = 0; c < 4; c++)
+          ret[c] += w * t[c];
+      }
+    }
+  }
+  return ret;
 }
 
 const Vec4 *OutputRegister(const VSOutputs &out, const Version &version, const SigParameter &sig)
@@ -2260,13 +2377,18 @@ TEST_CASE("D3D9 vertex shader emulation - texldl", "[d3d9][vsemu]")
   CHECK(sample(1, Vec4(0.9f, 0.6f, 0.0f, 0.0f)) == 7.0f);
   // wrapping
   CHECK(sample(1, Vec4(1.3f, -0.4f, 0.0f, 0.0f)) == 5.0f);
-  // the nearest level to the LOD in w
+  // with a point mip filter, the nearest level to the LOD in w
+  tex.mipFilter = TexFilter::Point;
   CHECK(sample(1, Vec4(0.9f, 0.6f, 0.0f, 0.6f)) == 101.0f);
   CHECK(sample(1, Vec4(0.9f, 0.6f, 0.0f, 0.4f)) == 7.0f);
   CHECK(sample(1, Vec4(0.9f, 0.6f, 0.0f, 9.0f)) == 101.0f);
   // the most detailed level is MAXMIPLEVEL
   tex.maxMipLevel = 1;
   CHECK(sample(1, Vec4(0.1f, 0.1f, 0.0f, 0.0f)) == 100.0f);
+  // and without a mip filter it's always level 0
+  tex.mipFilter = TexFilter::None;
+  CHECK(sample(1, Vec4(0.1f, 0.1f, 0.0f, 0.0f)) == 0.0f);
+  CHECK(sample(1, Vec4(0.1f, 0.1f, 0.0f, 5.0f)) == 0.0f);
   tex.maxMipLevel = 0;
   // clamp, border and mirror
   tex.address[0] = TexAddress::Clamp;
@@ -2277,7 +2399,10 @@ TEST_CASE("D3D9 vertex shader emulation - texldl", "[d3d9][vsemu]")
   tex.address[0] = TexAddress::Mirror;
   CHECK(sample(1, Vec4(1.1f, 0.1f, 0.0f, 0.0f)) == 3.0f);
 
-  // cube faces by major axis
+  // cube faces by major axis, z then y then x when two are as long
+  CHECK(sample(2, Vec4(1.0f, 1.0f, 0.3f, 0.0f)) == 2.0f);
+  CHECK(sample(2, Vec4(1.0f, -1.0f, 1.0f, 0.0f)) == 4.0f);
+  CHECK(sample(2, Vec4(-1.0f, 0.5f, -1.0f, 0.0f)) == 5.0f);
   CHECK(sample(2, Vec4(1.0f, 0.2f, 0.3f, 0.0f)) == 0.0f);
   CHECK(sample(2, Vec4(-1.0f, 0.2f, 0.3f, 0.0f)) == 1.0f);
   CHECK(sample(2, Vec4(0.1f, 1.0f, 0.3f, 0.0f)) == 2.0f);
@@ -2292,6 +2417,140 @@ TEST_CASE("D3D9 vertex shader emulation - texldl", "[d3d9][vsemu]")
   a.op(Opcode::TexLdl, {Dst(RegType::TexCrdOutOrOutput, 0), C(0), Src(RegType::Sampler, 0)});
   REQUIRE(r.Run(a.finish()));
   CheckVec(r.out.tex[0], 0.0f, 0.0f, 0.0f, 1.0f);
+}
+
+TEST_CASE("D3D9 vertex shader emulation - texldl filtering", "[d3d9][vsemu]")
+{
+  // 4x2 with x + 4y in red, then a 2x1 level of 100 and 101
+  VSTexture tex;
+  tex.levels.resize(2);
+  tex.levels[0].width = 4;
+  tex.levels[0].height = 2;
+  for(uint32_t i = 0; i < 8; i++)
+    tex.levels[0].texels.push_back(Vec4(float(i), 0.0f, 0.0f, 1.0f));
+  tex.levels[1].width = 2;
+  tex.levels[1].height = 1;
+  tex.levels[1].texels.push_back(Vec4(100.0f, 0.0f, 0.0f, 1.0f));
+  tex.levels[1].texels.push_back(Vec4(101.0f, 0.0f, 0.0f, 1.0f));
+  tex.magFilter = tex.minFilter = TexFilter::Linear;
+
+  auto red = [&tex](float u, float v, float lod) {
+    return tex.SampleLevel(Vec4(u, v, 0.0f, lod), lod)[0];
+  };
+  auto closeTo = [](float a, float b) { return fabsf(a - b) < 1e-5f; };
+
+  SECTION("bilinear")
+  {
+    // texel centres are at half texels: v = 0.25 is row 0's centre
+    CHECK(closeTo(red(0.375f, 0.25f, 0.0f), 1.0f));
+    CHECK(closeTo(red(0.5f, 0.25f, 0.0f), 1.5f));
+    CHECK(closeTo(red(0.375f, 0.5f, 0.0f), 3.0f));
+    CHECK(closeTo(red(0.5f, 0.5f, 0.0f), 3.5f));
+    // the weight keeps 8 bits, rounded to the nearest: 0.3 becomes 77/256
+    CHECK(closeTo(red(0.45f, 0.25f, 0.0f), 1.0f + 77.0f / 256.0f));
+    // the anisotropic filter is linear
+    tex.magFilter = TexFilter::Anisotropic;
+    CHECK(closeTo(red(0.5f, 0.25f, 0.0f), 1.5f));
+  }
+
+  SECTION("addressing each texel")
+  {
+    // u = 0 is between texels -1 and 0
+    tex.border = Vec4(-1.0f, 0.0f, 0.0f, 0.0f);
+    CHECK(closeTo(red(0.0f, 0.25f, 0.0f), 1.5f));
+    tex.address[0] = TexAddress::Clamp;
+    CHECK(closeTo(red(0.0f, 0.25f, 0.0f), 0.0f));
+    tex.address[0] = TexAddress::Border;
+    CHECK(closeTo(red(0.0f, 0.25f, 0.0f), -0.5f));
+    tex.address[0] = TexAddress::Mirror;
+    CHECK(closeTo(red(0.0f, 0.25f, 0.0f), 0.0f));
+    CHECK(closeTo(red(1.0f, 0.25f, 0.0f), 3.0f));
+    tex.address[0] = TexAddress::MirrorOnce;
+    CHECK(closeTo(red(0.0f, 0.25f, 0.0f), 0.0f));
+    CHECK(closeTo(red(1.0f, 0.25f, 0.0f), 3.0f));
+    // the border colour blends in on each axis
+    tex.address[0] = TexAddress::Clamp;
+    tex.address[1] = TexAddress::Border;
+    CHECK(closeTo(red(0.375f, 0.0f, 0.0f), 0.5f * 1.0f + 0.5f * -1.0f));
+  }
+
+  SECTION("magnification and minification")
+  {
+    // without a mip filter: MAGFILTER at a LOD of 0 or less, MINFILTER above
+    tex.minFilter = TexFilter::Point;
+    CHECK(closeTo(red(0.5f, 0.25f, -1.0f), 1.5f));
+    CHECK(closeTo(red(0.5f, 0.25f, 0.0f), 1.5f));
+    CHECK(closeTo(red(0.5f, 0.25f, 0.5f), 2.0f));
+    // the LOD keeps 8 bits of fraction, rounded down: 1/512 is 0
+    CHECK(closeTo(red(0.5f, 0.25f, 1.0f / 512.0f), 1.5f));
+    CHECK(closeTo(red(0.5f, 0.25f, 1.0f / 256.0f), 2.0f));
+
+    // with one, the LOD clamped to MAXMIPLEVEL decides
+    tex.magFilter = TexFilter::Point;
+    tex.minFilter = TexFilter::Linear;
+    tex.mipFilter = TexFilter::Point;
+    tex.maxMipLevel = 1;
+    CHECK(closeTo(red(0.5f, 0.5f, -1.0f), 100.5f));
+    // without one it's level 0, but MAXMIPLEVEL still picks the filter
+    tex.mipFilter = TexFilter::None;
+    CHECK(closeTo(red(0.5f, 0.25f, -1.0f), 1.5f));
+    tex.maxMipLevel = 0;
+    CHECK(closeTo(red(0.5f, 0.25f, -1.0f), 2.0f));
+  }
+
+  SECTION("mip levels")
+  {
+    tex.magFilter = tex.minFilter = TexFilter::Point;
+    tex.mipFilter = TexFilter::Linear;
+    // level 0's texel 2 and level 1's texel 1
+    CHECK(closeTo(red(0.6f, 0.25f, 0.5f), 0.5f * 2.0f + 0.5f * 101.0f));
+    // 0.3 becomes 76/256, rounded down
+    const float f = 76.0f / 256.0f;
+    CHECK(closeTo(red(0.6f, 0.25f, 0.3f), (1.0f - f) * 2.0f + f * 101.0f));
+    // beyond the last level
+    CHECK(closeTo(red(0.6f, 0.25f, 3.0f), 101.0f));
+    // the bias adds to the LOD
+    tex.mipLODBias = 0.25f;
+    CHECK(closeTo(red(0.6f, 0.25f, 0.25f), 0.5f * 2.0f + 0.5f * 101.0f));
+    tex.mipLODBias = 0.0f;
+    // the point mip filter rounds to the nearest level
+    tex.mipFilter = TexFilter::Point;
+    CHECK(closeTo(red(0.6f, 0.25f, 0.49f), 2.0f));
+    CHECK(closeTo(red(0.6f, 0.25f, 0.5f), 101.0f));
+  }
+
+  SECTION("cube maps clamp at the face's edges")
+  {
+    VSTexture cube;
+    cube.type = SamplerTextureType::Cube;
+    cube.magFilter = cube.minFilter = TexFilter::Linear;
+    cube.levels.resize(1);
+    cube.levels[0].width = cube.levels[0].height = 2;
+    cube.levels[0].depth = 6;
+    for(uint32_t i = 0; i < 24; i++)
+      cube.levels[0].texels.push_back(Vec4(float(i), 0.0f, 0.0f, 1.0f));
+    // +Z is face 4, texels 16 to 19
+    CHECK(closeTo(cube.SampleLevel(Vec4(0.0f, 0.0f, 1.0f, 0.0f), 0.0f)[0], 17.5f));
+    // at the right edge only its right column
+    CHECK(closeTo(cube.SampleLevel(Vec4(0.99f, 0.0f, 1.0f, 0.0f), 0.0f)[0], 18.0f));
+  }
+
+  SECTION("volumes are trilinear")
+  {
+    VSTexture vol;
+    vol.type = SamplerTextureType::Volume;
+    vol.magFilter = vol.minFilter = TexFilter::Linear;
+    vol.levels.resize(1);
+    vol.levels[0].width = vol.levels[0].height = vol.levels[0].depth = 2;
+    for(uint32_t i = 0; i < 8; i++)
+      vol.levels[0].texels.push_back(Vec4(float(i), 0.0f, 0.0f, 1.0f));
+    CHECK(closeTo(vol.SampleLevel(Vec4(0.5f, 0.5f, 0.5f, 0.0f), 0.0f)[0], 3.5f));
+    CHECK(closeTo(vol.SampleLevel(Vec4(0.25f, 0.25f, 0.5f, 0.0f), 0.0f)[0], 2.0f));
+    vol.address[2] = TexAddress::Border;
+    vol.border = Vec4(10.0f, 0.0f, 0.0f, 0.0f);
+    CHECK(closeTo(vol.SampleLevel(Vec4(0.25f, 0.25f, 1.0f, 0.0f), 0.0f)[0],
+                  0.5f * 4.0f + 0.5f * 10.0f));
+  }
 }
 
 TEST_CASE("D3D9 vertex fetch", "[d3d9][vsemu]")

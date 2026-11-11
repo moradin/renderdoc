@@ -25,6 +25,9 @@
 # A draw with 'hwfloat' has hw rows read from a float render target, through a pixel shader that
 # declares its inputs as the vertex shader declares its outputs (vs_3_0 outputs packed into one
 # register). Those are compared as floats, and the C++ reference is only noted if it differs.
+# 'hwfloat <tolerance>' compares with the GPU within that tolerance instead (texldl with
+# filtering, where the GPU's arithmetic isn't reproduced exactly), and the C++ reference, which
+# follows the measured filtering, has to match as well.
 
 import os
 import struct
@@ -46,10 +49,12 @@ def parse_reference(path):
                 viewport = [float(x) for x in parts[1:7]]
             elif parts[0] == 'draw':
                 cur = {'name': line[5:].strip(), 'space': 'clip', 'rows': {}, 'hw': {}, 'error': None,
-                       'hwfloat': False}
+                       'hwfloat': False, 'hwtol': None}
                 draws.append(cur)
             elif parts[0] == 'hwfloat':
                 cur['hwfloat'] = True
+                if len(parts) > 1:
+                    cur['hwtol'] = float(parts[1])
             elif parts[0] == 'space':
                 cur['space'] = parts[1]
             elif parts[0] == 'error':
@@ -88,12 +93,14 @@ def close(a, b, rel, absolute):
     return abs(a - b) <= absolute + rel * max(abs(a), abs(b))
 
 
-def compare(key, ours, ref, space, vp, hw=False, hwfloat=False):
+def compare(key, ours, ref, space, vp, hw=False, hwfloat=False, hwtol=None):
     # returns None if they match, otherwise a description
     n = min(len(ours), len(ref))
     if hwfloat and len(ours) != len(ref):
         return '{} ours has {} components, the reference {}'.format(key, len(ours), len(ref))
-    if hwfloat:
+    if hwfloat and hw and hwtol is not None:
+        tols = [(0.0, hwtol)] * 4
+    elif hwfloat:
         tols = [(1e-4, 1e-4)] * 4
     elif hw and key == 'PSIZE.0':
         # the width of the square the GPU drew, in whole pixels
@@ -199,10 +206,19 @@ def check_draw(controller, action, ref, vp):
                     continue
                 if key in hw:
                     err = compare(key, rows[r][key], hw[key], ref['space'], vp, hw=True,
-                                  hwfloat=ref['hwfloat'])
+                                  hwfloat=ref['hwfloat'], hwtol=ref['hwtol'])
                     if err:
                         problems.append('instance {} row {}: (GPU) {}'.format(inst, r, err))
-                    if key in expected:
+                    if key in expected and ref['hwtol'] is not None:
+                        err = compare(key, rows[r][key], val, ref['space'], vp, hwfloat=True)
+                        if err:
+                            problems.append('instance {} row {}: (C++) {}'.format(inst, r, err))
+                        pverr = compare(key, hw[key], val, ref['space'], vp, hw=True, hwfloat=True,
+                                        hwtol=ref['hwtol'])
+                        if pverr:
+                            notes.append('instance {} row {}: The C++ reference differs from the '
+                                         'GPU: {}'.format(inst, r, pverr.replace('ours', 'GPU', 1)))
+                    elif key in expected:
                         pverr = compare(key, hw[key], val, ref['space'], vp, hwfloat=ref['hwfloat'])
                         if pverr:
                             notes.append('instance {} row {}: {} differs from the GPU: {}'.format(
@@ -215,6 +231,8 @@ def check_draw(controller, action, ref, vp):
 
     if ref['hw']:
         counts += ', {} rows checked against the GPU'.format(len(ref['hw']))
+        if ref['hwtol'] is not None:
+            counts += ' within {}'.format(ref['hwtol'])
 
     if problems:
         print('FAIL {} ({}): {} problems'.format(name, counts, len(problems)))

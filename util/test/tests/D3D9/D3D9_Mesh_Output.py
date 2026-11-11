@@ -46,6 +46,11 @@ class D3D9_Mesh_Output(rdtest.D3D9_Test):
             raise rdtest.TestFailureException("The reference written under RenderDoc differs from the native one")
         rdtest.log.success(f"The reference written under RenderDoc is identical to the native one ({len(native_data)} bytes)")
 
+        # the demo leaves out the filtered texldl draw on a GPU without float cube and volume
+        # vertex textures or sRGB reads, and the check only checks the draws in the reference
+        if b'draw vs_3_0 texldl filtering' not in native_data:
+            raise rdtest.TestFailureException("The demo left out the 'vs_3_0 texldl filtering' draw")
+
         mesh = self.check_script('d3d9_mesh_check')
         self.run_script_check('The mesh output check', mesh.check_capture, self.controller, native)
 
