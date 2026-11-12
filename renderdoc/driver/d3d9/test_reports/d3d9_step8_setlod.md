@@ -264,6 +264,50 @@ run): all 4 builds at 0 warnings, the unit tests passed (6147 assertions), and 1
 ## Tests complete summary: 18 passed out of 18 run from 209 total in 0:01:27.614325 ##
 ```
 
+## Follow-up: reporting the SetLOD a forced D3D9Ex replay ignores
+
+With `D3D9_ForceReplayOnExDevice` set, replay ignores SetLOD on textures that were managed at
+capture, and nothing said so. Now each LOD it ignores is a debug message (severity High, source
+Unsupported Configuration, category State Setting, ID 0):
+- a texture's nonzero LOD at the frame's start, from its initial contents, at event 0;
+- each SetLOD in the frame to a nonzero LOD (clamped to the last level, as the GPU does), at the
+  SetLOD's event. SetLOD(0) isn't reported, since it's what replay does anyway.
+
+`ReplayCreate` records the objects it moves from the managed to the default pool, and only those
+are reported: a D3D9Ex capture has no managed objects, and on a plain device nothing is ignored.
+
+`D3D9_Texture_LOD`'s D3D9Ex check now reads the messages first and expects exactly the 12 the
+demo's LODs give: 2D 2, cube 1, volume 3 and vertex 3 at event 0, the in-frame SetLOD(4), (3),
+(1) and (5) at events 66 to 69, and the SetLOD back to 2, 1, 3 and 3 at events 128 to 131. Each
+must name the setting and one texture, with its LOD. From the test's log:
+
+```
+Event 0: ResourceId::19 had LOD 2 when the frame started, which replay ignores: D3D9_ForceReplayOnExDevice is set, so this plain D3D9 capture replays on a D3D9Ex device, which puts D3DPOOL_MANAGED textures in the default pool, where SetLOD does nothing. Until its next SetLOD, draws sampling it read level 0 instead of level 2 as its most detailed. Turn the setting off to replay it as captured.
+Event 66: SetLOD(4) on ResourceId::19 isn't replayed: D3D9_ForceReplayOnExDevice is set, so this plain D3D9 capture replays on a D3D9Ex device, which puts D3DPOOL_MANAGED textures in the default pool, where SetLOD does nothing. Until its next SetLOD, draws sampling it read level 0 instead of level 4 as its most detailed. Turn the setting off to replay it as captured.
+** Each of the 12 LODs replay ignores has a debug message
+```
+
+The main check, on the plain device, still requires the capture to have no debug messages.
+
+`ui/08_errors_and_warnings.png`: qrenderdoc with the setting on (set from its Python, and off
+again before it closed). The status bar says "Capture has 12 issues", and Errors and Warnings
+lists the 12 messages with the textures as links. The first try showed a different random number
+in the ID column for each message: `DebugMessage::messageID` isn't initialised, so it's now set
+to 0, which the test checks.
+
+Builds and tests (`d3d9_step8_setlod/ignored_lod/`, x64 tests, as this is replay only):
+all 4 builds at 0 warnings, the unit tests passed (6147 assertions), and:
+
+```
+## Tests complete summary: 18 passed out of 18 run from 209 total in 0:01:28.045826 ##
+```
+
+In the screenshot, event 66 is selected: the API Inspector shows it is `SetLOD(Texture 19, 4)`,
+the call its message is about.
+
+No negative check was run (the test's comparison is of the exact list, so a missing message
+fails it).
+
 ## Not covered
 
 - Recovering from a lost replay device, which isn't done.

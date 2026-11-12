@@ -1284,7 +1284,14 @@ bool WrappedD3DDevice9::Serialise_BaseTexture_SetLOD(SerialiserType &ser,
   if(IsReplayingAndReading())
   {
     if(pTexture)
+    {
       pTexture->SetLOD(LODNew);
+
+      // the LOD the program got, which the GPU clamps to the last level
+      const DWORD levels = pTexture->GetLevelCount();
+      if(IsLoading(m_State) && levels > 0)
+        CheckIgnoredLOD(GetResID(pTexture), RDCMIN(LODNew, levels - 1), m_CurEventID);
+    }
   }
 
   return true;

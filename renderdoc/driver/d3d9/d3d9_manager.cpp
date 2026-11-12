@@ -98,6 +98,8 @@ bool D3D9ResourceManager::DoSerialise_InitialState(SerialiserType &ser, Resource
   {
     if(!Contents.Note.empty())
       RDCLOG("Initial contents of %s: %s", ToStr(id).c_str(), Contents.Note.c_str());
+    // read once, while the capture loads
+    m_Device->CheckIgnoredLOD(id, Contents.LOD, 0);
     SetInitialContents(id, D3D9InitialContents(new D3D9InitialContentsData(std::move(Contents))));
   }
 

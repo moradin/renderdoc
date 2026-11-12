@@ -1143,6 +1143,36 @@ void WrappedD3DDevice9::AddFailedCallMessage(MessageSource source, const rdcstr 
   m_DebugMessages.push_back(msg);
 }
 
+void WrappedD3DDevice9::CheckIgnoredLOD(ResourceId id, uint32_t lod, uint32_t eventId)
+{
+  if(lod == 0 || m_ManagedInDefaultPool.find(id) == m_ManagedInDefaultPool.end())
+    return;
+
+  DebugMessage msg;
+  msg.eventId = eventId;
+  // DebugMessage leaves it uninitialised, and there's no D3D9 debug layer ID for this
+  msg.messageID = 0;
+  msg.source = MessageSource::UnsupportedConfiguration;
+  msg.category = MessageCategory::State_Setting;
+  msg.severity = MessageSeverity::High;
+  const char *why =
+      "D3D9_ForceReplayOnExDevice is set, so this plain D3D9 capture replays on a D3D9Ex device, "
+      "which puts D3DPOOL_MANAGED textures in the default pool, where SetLOD does nothing.";
+  if(eventId == 0)
+    msg.description = StringFormat::Fmt(
+        "%s had LOD %u when the frame started, which replay ignores: %s Until its next SetLOD, "
+        "draws sampling it read level 0 instead of level %u as its most detailed. Turn the "
+        "setting off to replay it as captured.",
+        ToStr(id).c_str(), lod, why, lod);
+  else
+    msg.description = StringFormat::Fmt(
+        "SetLOD(%u) on %s isn't replayed: %s Until its next SetLOD, draws sampling it read level "
+        "0 instead of level %u as its most detailed. Turn the setting off to replay it as "
+        "captured.",
+        lod, ToStr(id).c_str(), why, lod);
+  m_DebugMessages.push_back(msg);
+}
+
 rdcarray<DebugMessage> WrappedD3DDevice9::GetDebugMessages()
 {
   rdcarray<DebugMessage> ret;

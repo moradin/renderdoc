@@ -191,6 +191,9 @@ public:
   D3D9Replay *GetReplay() const { return m_Replay; }
   // the failed calls found while loading, see RecordFailedCall. Returned once, as on D3D11.
   rdcarray<DebugMessage> GetDebugMessages();
+  // reports a texture's LOD that replay ignores, when the texture was D3DPOOL_MANAGED at capture
+  // and a forced D3D9Ex replay device put it in the default pool. eventId 0 is the frame's start.
+  void CheckIgnoredLOD(ResourceId id, uint32_t lod, uint32_t eventId);
   void ReplayLog(uint32_t startEventID, uint32_t endEventID, ReplayLogType replayType);
   const ActionDescription *GetAction(uint32_t eventId);
   // a DrawPrimitiveUP or DrawIndexedPrimitiveUP event's data, or NULL for other events
@@ -982,6 +985,9 @@ private:
   void ReadFailedCallParameters(WriteSerialiser &ser, D3D9Chunk params, bool &ok) {}
   void AddFailedCallMessage(MessageSource source, const rdcstr &function, HRESULT hr);
   rdcarray<DebugMessage> m_DebugMessages;
+  // D3DPOOL_MANAGED objects created in the default pool, on a D3D9Ex device replaying a plain D3D9
+  // capture (D3D9_ForceReplayOnExDevice), where their SetLOD does nothing
+  std::set<ResourceId> m_ManagedInDefaultPool;
   std::map<uint32_t, D3D9UserPrimitiveData> m_UserPrimitives;
   HWND m_ReplayWindow = NULL;
   ResourceId m_NextWrapperID;
@@ -1013,7 +1019,10 @@ HRESULT WrappedD3DDevice9::ReplayCreate(ResourceId id, D3DPOOL pool, DWORD usage
                                         CreateFunc create)
 {
   if(pool == D3DPOOL_MANAGED && m_deviceEx)
+  {
     pool = D3DPOOL_DEFAULT;
+    m_ManagedInDefaultPool.insert(id);
+  }
 
   HRESULT hr = E_FAIL;
 

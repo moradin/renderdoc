@@ -161,6 +161,61 @@ class D3D9_Texture_LOD(rdtest.D3D9_Test):
         finally:
             out.Shutdown()
 
+    def check_ignored_lod_messages(self, controller, messages):
+        """
+        On a forced D3D9Ex device each LOD replay ignores is reported as a debug message: each
+        texture's LOD at the frame's start (event 0), the frame's SetLOD to the in-frame LODs, and
+        its SetLOD back to the first ones. None of them is 0.
+        """
+        sdf = controller.GetStructuredFile()
+        event_names = {}
+        texture_ids = []
+
+        def walk(actions):
+            for a in actions:
+                for e in a.events:
+                    event_names[e.eventId] = sdf.chunks[e.chunkIndex].name
+                walk(a.children)
+
+        walk(controller.GetRootActions())
+
+        # each texture's ID, from the D3D9 sampler of the draw that samples it
+        draws = self.pass_draws(controller, PASSES[0])
+        for t in range(len(TEXTURES)):
+            controller.SetFrameEvent(draws[t].eventId, True)
+            d3d9 = controller.GetD3D9PipelineState()
+            texture_ids.append(d3d9.vertexSamplers[0].resourceId if t == VERTEX_ROW else
+                               d3d9.pixelSamplers[t].resourceId)
+
+        want = []
+        for t, (name, levels, before, in_frame) in enumerate(TEXTURES):
+            want.append((0, t, before))
+            want.append(('SetLOD', t, in_frame))
+            want.append(('SetLOD', t, before))
+
+        got = []
+        for m in messages:
+            if (m.source != rd.MessageSource.UnsupportedConfiguration or m.severity != rd.MessageSeverity.High or
+                    m.messageID != 0):
+                raise rdtest.TestFailureException(f"Unexpected message at event {m.eventId}: {m.description}")
+            if 'D3D9_ForceReplayOnExDevice' not in m.description:
+                raise rdtest.TestFailureException(f"The message doesn't name the setting: {m.description}")
+            tex = [t for t, rid in enumerate(texture_ids) if str(rid) in m.description]
+            if len(tex) != 1:
+                raise rdtest.TestFailureException(f"The message doesn't name one texture: {m.description}")
+            if m.eventId == 0:
+                where = 0
+                lod = m.description.split(' had LOD ')[1].split(' ')[0]
+            else:
+                where = 'SetLOD' if event_names.get(m.eventId, '').endswith('::SetLOD') else event_names.get(m.eventId)
+                lod = m.description.split('SetLOD(')[1].split(')')[0]
+            got.append((where, tex[0], int(lod)))
+            rdtest.log.print(f"Event {m.eventId}: {m.description}")
+
+        if sorted(got, key=str) != sorted(want, key=str):
+            raise rdtest.TestFailureException(f"The ignored LOD messages are {got}, expected {want}")
+        rdtest.log.success(f"Each of the {len(want)} LODs replay ignores has a debug message")
+
     def check_ex_device(self):
         """
         With D3D9_ForceReplayOnExDevice set the capture replays on a D3D9Ex device, as before: managed
@@ -178,6 +233,9 @@ class D3D9_Texture_LOD(rdtest.D3D9_Test):
             result, controller = cap.OpenCapture(rd.ReplayOptions(), None)
             if result != rd.ResultCode.Succeeded:
                 raise rdtest.TestFailureException(f"Couldn't replay on a D3D9Ex device: {result}")
+
+            # before replaying anything else, as fetching them empties the list
+            self.check_ignored_lod_messages(controller, controller.GetDebugMessages())
 
             draws = [self.pass_draws(controller, p) for p in PASSES]
             for i in (1, 0):

@@ -95,7 +95,8 @@ Known limitations of what works:
     exclusive fullscreen. RenderDoc then reports it, and the capture has to be opened again once
     that program has left fullscreen. Capturing isn't affected. The `D3D9_ForceReplayOnExDevice`
     setting (Tools, Settings, Core, Config Editor, under D3D9) replays them on D3D9Ex instead,
-    which isn't lost but ignores `SetLOD`.
+    which isn't lost but ignores `SetLOD`. Each LOD it ignores is then listed in Errors and
+    Warnings.
   - In captures made by builds before UpdateTexture's dirty regions were saved, an UpdateTexture
     inside the frame can copy more than it did at capture. Those captures still open.
   - In captures made by builds before the textures' `SetLOD` was saved, a LOD set before the frame
