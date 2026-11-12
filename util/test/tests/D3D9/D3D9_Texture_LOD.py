@@ -163,10 +163,10 @@ class D3D9_Texture_LOD(rdtest.D3D9_Test):
 
     def check_ex_device(self):
         """
-        With D3D9_ReplayOnExDevice set the capture replays on a D3D9Ex device, as before: managed
+        With D3D9_ForceReplayOnExDevice set the capture replays on a D3D9Ex device, as before: managed
         textures go in the default pool, where SetLOD does nothing.
         """
-        setting = rd.SetConfigSetting('D3D9_ReplayOnExDevice')
+        setting = rd.SetConfigSetting('D3D9_ForceReplayOnExDevice')
         setting.data.basic.b = True
         cap = None
         controller = None
@@ -189,7 +189,7 @@ class D3D9_Texture_LOD(rdtest.D3D9_Test):
                 controller.Shutdown()
             if cap is not None:
                 cap.Shutdown()
-        rdtest.log.success("With D3D9_ReplayOnExDevice set, the capture replays with SetLOD ignored")
+        rdtest.log.success("With D3D9_ForceReplayOnExDevice set, the capture replays with SetLOD ignored")
 
     def check_d3d9_capture(self):
         self.check_api()

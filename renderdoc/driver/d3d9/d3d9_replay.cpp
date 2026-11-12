@@ -32,10 +32,11 @@
 #include "d3d9_device.h"
 #include "d3d9_resources.h"
 
-RDOC_CONFIG(bool, D3D9_ReplayOnExDevice, false,
+RDOC_CONFIG(bool, D3D9_ForceReplayOnExDevice, false,
             "Replay captures made with a plain D3D9 device on a D3D9Ex device, as D3D9Ex "
             "captures are. Managed textures and buffers then go in the default pool, so SetLOD "
-            "is ignored, but the replay device can't be lost.");
+            "is ignored, but the replay device isn't lost when another program takes the display "
+            "in exclusive fullscreen, and can be created while one has it.");
 
 namespace
 {
@@ -1059,9 +1060,10 @@ RDResult D3D9_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IRepla
   // (another application going fullscreen, a display mode change), which replay reports as a
   // fatal error (FatalErrorCheck) rather than recreating everything in the default pool. D3D9Ex
   // devices are never lost, and D3D9Ex captures need one for their Ex calls.
-  const bool useEx = initParams.Ex || D3D9_ReplayOnExDevice();
+  const bool useEx = initParams.Ex || D3D9_ForceReplayOnExDevice();
   RDCLOG("Replaying a %s capture on a %s device%s", initParams.Ex ? "D3D9Ex" : "D3D9",
-         useEx ? "D3D9Ex" : "D3D9", !initParams.Ex && useEx ? " (D3D9_ReplayOnExDevice is set)" : "");
+         useEx ? "D3D9Ex" : "D3D9",
+         !initParams.Ex && useEx ? " (D3D9_ForceReplayOnExDevice is set)" : "");
 
   IDirect3D9 *d3d = NULL;
   HRESULT hr = S_OK;
@@ -1134,8 +1136,22 @@ RDResult D3D9_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IRepla
   if(FAILED(hr))
   {
     RDCWARN("Couldn't create a mixed vertex processing device (%s), trying hardware",
-            ToStr(hr).c_str());
+            ToStr((D3D9Result)hr).c_str());
     hr = createDevice(D3DCREATE_HARDWARE_VERTEXPROCESSING, &dev);
+  }
+
+  // a plain D3D9 device can't be created while another program has the display in exclusive
+  // fullscreen (measured: D3DERR_DEVICELOST), a D3D9Ex one can
+  if(hr == D3DERR_DEVICELOST && !useEx)
+  {
+    DestroyWindow(wnd);
+    d3d->Release();
+    RETURN_ERROR_RESULT(
+        ResultCode::APIInitFailed,
+        "Couldn't create a D3D9 device to replay with (D3DERR_DEVICELOST): another "
+        "program probably has the display in exclusive fullscreen. Open the capture "
+        "again once it has left fullscreen, or set D3D9_ForceReplayOnExDevice to "
+        "replay on a D3D9Ex device, which ignores SetLOD");
   }
 
   if(FAILED(hr) || dev == NULL)
@@ -1144,7 +1160,7 @@ RDResult D3D9_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IRepla
     d3d->Release();
     RETURN_ERROR_RESULT(ResultCode::APIHardwareUnsupported,
                         "Couldn't create a %s device to replay with: %s", useEx ? "D3D9Ex" : "D3D9",
-                        ToStr(hr).c_str());
+                        ToStr((D3D9Result)hr).c_str());
   }
 
   // the wrapped interfaces take over the references

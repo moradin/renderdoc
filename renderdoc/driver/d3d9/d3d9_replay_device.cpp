@@ -31,8 +31,8 @@
 // -------------------
 // The replay device is a WrappedD3DDevice9 around a device on a hidden window, and replays through
 // the same wrapped methods the application called. It's the kind the capture was made with: a
-// D3D9Ex device for D3D9Ex captures, a plain D3D9 one otherwise, unless D3D9_ReplayOnExDevice is
-// set. A plain device can be lost, which FatalErrorCheck reports. Wrappers created during replay
+// D3D9Ex device for D3D9Ex captures, a plain D3D9 one otherwise, unless D3D9_ForceReplayOnExDevice
+// is set. A plain device can be lost, which FatalErrorCheck reports. Wrappers created during replay
 // take the ID they had in the capture (see TakeWrapperID), so the captured IDs work everywhere.
 //
 // * Loading reads everything before the frame: the device-owned objects (DeviceInitialisation),
@@ -149,11 +149,19 @@ RDResult WrappedD3DDevice9::FatalErrorCheck()
     // A plain D3D9 device is lost when another application takes the display (going fullscreen,
     // changing the display mode). Getting it back means releasing and recreating every default
     // pool object, the capture's and replay's own, which isn't done: the capture has to be
-    // opened again. Setting D3D9_ReplayOnExDevice replays on a device that isn't lost.
+    // opened again. Setting D3D9_ForceReplayOnExDevice replays on a device that isn't lost.
     HRESULT hr = m_device->TestCooperativeLevel();
-    if(hr == D3DERR_DEVICELOST || hr == D3DERR_DEVICENOTRESET || hr == D3DERR_DRIVERINTERNALERROR)
+    if(hr == D3DERR_DEVICELOST || hr == D3DERR_DEVICENOTRESET)
       RETURN_ERROR_RESULT(ResultCode::DeviceLost,
-                          "The D3D9 replay device was lost (%s), open the capture again",
+                          "The D3D9 replay device was lost (%s), most likely because another "
+                          "program took the display in exclusive fullscreen or changed the display "
+                          "mode. Open the capture again once it has left fullscreen. Setting "
+                          "D3D9_ForceReplayOnExDevice replays on a D3D9Ex device, which isn't lost "
+                          "this way but ignores SetLOD",
+                          ToStr((D3D9Result)hr).c_str());
+    if(hr == D3DERR_DRIVERINTERNALERROR)
+      RETURN_ERROR_RESULT(ResultCode::DeviceLost,
+                          "The D3D9 replay device stopped working (%s), open the capture again",
                           ToStr((D3D9Result)hr).c_str());
   }
 

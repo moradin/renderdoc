@@ -3,10 +3,10 @@ E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/sh
 E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
 E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_fullscreen_probe.cpp:57 Log: Desktop 3840x2160, going fullscreen at 1280x720 60Hz
 E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_fullscreen_probe.cpp:80 Log: Fullscreen device created
-E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_fullscreen_probe.cpp:98 Log: Presented 230 frames fullscreen
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_fullscreen_probe.cpp:98 Log: Presented 225 frames fullscreen
 open <Result: 'Success'>
 replay <Result: 'Success'>
 before: 0
-fatal error after 0.63s (round 6): 28 Encountered a GPU device lost error: The D3D9 replay device was lost (D3DERR_DEVICELOST), open the capture again
-225663 replay rounds while the probe ran, probe exit 0
-after: 28 Encountered a GPU device lost error: The D3D9 replay device was lost (D3DERR_DEVICELOST), open the capture again
+fatal error after 0.69s (round 6): 28 Encountered a GPU device lost error: The D3D9 replay device was lost (D3DERR_DEVICELOST), most likely because another program took the display in exclusive fullscreen or changed the display mode. Open the capture again once it has left fullscreen. Setting D3D9_ForceReplayOnExDevice replays on a D3D9Ex device, which isn't lost this way but ignores SetLOD
+218790 replay rounds while the probe ran, probe exit 0
+after: 28 Encountered a GPU device lost error: The D3D9 replay device was lost (D3DERR_DEVICELOST), most likely because another program took the display in exclusive fullscreen or changed the display mode. Open the capture again once it has left fullscreen. Setting D3D9_ForceReplayOnExDevice replays on a D3D9Ex device, which isn't lost this way but ignores SetLOD

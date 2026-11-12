@@ -11,8 +11,8 @@ import renderdoc as rd
 
 rd.InitialiseReplay(rd.GlobalEnvironment(), [])
 if len(sys.argv) > 2 and sys.argv[2] == 'ex':
-    rd.SetConfigSetting('D3D9_ReplayOnExDevice').data.basic.b = True
-    print('D3D9_ReplayOnExDevice set')
+    rd.SetConfigSetting('D3D9_ForceReplayOnExDevice').data.basic.b = True
+    print('D3D9_ForceReplayOnExDevice set')
 
 cap = rd.OpenCaptureFile()
 print('open', cap.OpenFile(sys.argv[1], '', None))

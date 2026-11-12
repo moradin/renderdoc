@@ -19,8 +19,9 @@ can't do it). Instead, captures replay on the kind of device they were made with
   textures and buffers stay managed, and SetLOD works on the GPU as it did in the program.
 - **A D3D9Ex device** for D3D9Ex captures, which need one for their Ex calls and can't have
   managed objects anyway, so they never use SetLOD.
-- **`D3D9_ReplayOnExDevice`**, a new config setting (off by default), replays plain D3D9 captures
-  on D3D9Ex as before, in case the plain device causes trouble.
+- **`D3D9_ForceReplayOnExDevice`**, a new config setting (off by default), replays plain D3D9
+  captures on D3D9Ex as before, in case the plain device causes trouble. It was called
+  `D3D9_ReplayOnExDevice` in the first commit, and renamed in the follow-up (see "Follow-up").
 
 A plain D3D9 device can be lost, which is probably why replay used D3D9Ex. Recovering is left
 out: `FatalErrorCheck` checks `TestCooperativeLevel` and reports the device lost, and the capture
@@ -95,7 +96,7 @@ The test:
 - displays the 2D texture's mips 0, 3 and 6 in a headless texture output at the second pass,
   where its LOD is 4, and checks the colour shown;
 - replays every action;
-- opens the capture again with `D3D9_ReplayOnExDevice` set, and checks that both passes read as
+- opens the capture again with `D3D9_ForceReplayOnExDevice` set, and checks that both passes read as
   if every LOD were 0 and the descriptors start at mip 0.
 
 ## Results
@@ -136,7 +137,7 @@ E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_texture_lod.cpp:444 Log: All 704
     ** On a D3D9Ex device, 'LOD set in the frame': the descriptors and D3D9 samplers start at the LOD's level
     ** On a D3D9Ex device, 'LOD set before the frame': every row read the levels expected
     ** On a D3D9Ex device, 'LOD set before the frame': the descriptors and D3D9 samplers start at the LOD's level
-    ** With D3D9_ReplayOnExDevice set, the capture replays with SetLOD ignored
+    ** With D3D9_ForceReplayOnExDevice set, the capture replays with SetLOD ignored
 ```
 
 The 704 samples are the GPU's, natively and under RenderDoc; the rows the test reads at replay
@@ -154,37 +155,72 @@ To check the test catches what it should, each fix was taken out in turn and the
   '0xffd04001', ...`, which is levels 4, 5 and 6: the frame's SetLOD(4) was left in place.
 
 Replaying the test's capture with a build from before this change wasn't done; the negative
-checks and the `D3D9_ReplayOnExDevice` run (which is how replay worked before) cover what it
+checks and the `D3D9_ForceReplayOnExDevice` run (which is how replay worked before) cover what it
 would show.
 
 ### Device loss
 
 A temporary demo (`device_loss/d3d9_fullscreen_probe.cpp`, not committed as a demo) creates a
 D3D9 device in exclusive fullscreen at 1280x720 (the desktop is 3840x2160) and presents for 4
-seconds. `device_loss/device_loss.py` opens a `D3D9_Texture_LOD` capture, starts the probe, and
-keeps replaying every action while it runs.
+seconds. Two scripts run it next to a replay of a `D3D9_Texture_LOD` capture:
+- `device_loss/device_loss.py` opens the capture, starts the probe, and keeps replaying every
+  action while it runs: a game going fullscreen while a capture is open.
+- `device_loss/open_during_fullscreen.py` starts the probe, opens the capture 1.5 seconds later
+  while the probe is fullscreen, replays until it exits, then opens the capture again: opening a
+  capture while a game holds the display (for example from a second monitor).
 
-On the plain D3D9 device (`device_loss/plain_device.txt`):
+The outputs below are from the follow-up build (see "Follow-up"), with the setting's new name and
+the new messages. The first commit's run gave the same results, with the loss after 0.63 seconds
+and the shorter message.
+
+Replay open, then the program goes fullscreen, on the plain D3D9 device
+(`device_loss/plain_device.txt`):
 
 ```
 before: 0
-fatal error after 0.63s (round 6): 28 Encountered a GPU device lost error: The D3D9 replay device was lost (D3DERR_DEVICELOST), open the capture again
-225663 replay rounds while the probe ran, probe exit 0
-after: 28 Encountered a GPU device lost error: The D3D9 replay device was lost (D3DERR_DEVICELOST), open the capture again
+fatal error after 0.69s (round 6): 28 Encountered a GPU device lost error: The D3D9 replay device was lost (D3DERR_DEVICELOST), most likely because another program took the display in exclusive fullscreen or changed the display mode. Open the capture again once it has left fullscreen. Setting D3D9_ForceReplayOnExDevice replays on a D3D9Ex device, which isn't lost this way but ignores SetLOD
+218790 replay rounds while the probe ran, probe exit 0
+after: 28 Encountered a GPU device lost error: ...
 ```
 
 The replay went on without crashing: after the error the controller replays against a dummy
-driver, which is why the rounds got so fast. With `D3D9_ReplayOnExDevice` set
+driver, which is why the rounds got so fast. With `D3D9_ForceReplayOnExDevice` set
 (`device_loss/ex_device.txt`):
 
 ```
-D3D9_ReplayOnExDevice set
+D3D9_ForceReplayOnExDevice set
 before: 0
-102 replay rounds while the probe ran, probe exit 0
+97 replay rounds while the probe ran, probe exit 0
 after: 0 Success
 ```
 
-So the plain device can be lost by another program going fullscreen, and the setting avoids it.
+Opening the capture while the program is fullscreen, on the plain D3D9 device
+(`device_loss/open_during_plain.txt`):
+
+```
+While the program is fullscreen: OpenCapture <Result: 'API initialisation failed while loading the capture: Couldn't create a D3D9 device to replay with (D3DERR_DEVICELOST): another program probably has the display in exclusive fullscreen. Open the capture again once it has left fullscreen, or set D3D9_ForceReplayOnExDevice to replay on a D3D9Ex device, which ignores SetLOD'> after 0.27s
+program exit 0
+Opened again afterwards: OpenCapture <Result: 'Success'> after 0.32s
+replayed every action, read 480000 bytes, status 0
+```
+
+Before the follow-up this failed with "Current replaying hardware unsupported or incompatible with
+captured hardware: Couldn't create a D3D9 device to replay with: HRESULT<2289436776>", which is
+`D3DERR_DEVICELOST` as a number. With the setting (`device_loss/open_during_ex.txt`):
+
+```
+D3D9_ForceReplayOnExDevice set
+While the program is fullscreen: OpenCapture <Result: 'Success'> after 0.21s
+51 replay rounds until the program exited, first error: None
+after it exited: 0 Success
+Opened again afterwards: OpenCapture <Result: 'Success'> after 0.31s
+```
+
+So the plain device can be lost, or not created, while another program holds exclusive
+fullscreen, and the setting avoids both. Capturing isn't affected: the D3D9 driver creates no
+device of its own in the captured program, only wraps the program's, and RenderDoc has no D3D9
+device until a capture is opened, so launching a fullscreen game with no capture open loses
+nothing.
 
 ### UI
 
@@ -199,11 +235,34 @@ In qrenderdoc on the x64 test's capture (`ui/`, each window captured on its own)
 - `05_mesh_vsout_event124.png`: VS Out of the vertex texture draw. Every vertex's COLOR is
   0.81569, 0.25098, 0.01569, which is (208, 64, 4), level 6 of texture 3: LOD 5 and MAXMIPLEVEL
   1 on a 7 level texture read level 6 at every LOD, as the GPU did.
-- `06_config_editor.png`: Tools, Settings, Core, Config Editor lists the setting as D3D9,
-  ReplayOnExDevice, off.
+- `06_config_editor.png` (follow-up build): Tools, Settings, Core, Config Editor lists the setting
+  as D3D9, ForceReplayOnExDevice, off.
+- `07_device_lost_dialog.png` (follow-up build): with the capture open at event 110, the probe
+  went fullscreen and exited; the next event change showed qrenderdoc's "Device Lost error"
+  dialog with the D3D9 message (`D3DERR_DEVICENOTRESET` by then, as the probe had left). The
+  generic text under it is upstream's, for every API.
 
-The device-lost message wasn't checked in the UI; it's the same `GetFatalErrorStatus` message
-the Python run above shows.
+Renaming the setting leaves the old name in `%APPDATA%\renderdoc\renderdoc.conf` if the config
+was saved with it (Settings' OK saves every setting); the Config Editor then shows it in italics,
+as a setting it doesn't know. On this machine it was removed from the file by hand.
+
+## Follow-up: the setting's name and device loss messages
+
+After the first commit (3ecd43cb3):
+- the setting was renamed from `D3D9_ReplayOnExDevice` to `D3D9_ForceReplayOnExDevice`;
+- creating the replay device while another program has exclusive fullscreen now fails with a
+  message saying so, rather than "hardware unsupported" and a raw HRESULT;
+- the device lost message says what most likely caused it and what to do;
+  `D3DERR_DRIVERINTERNALERROR` keeps a plain "stopped working" message;
+- `D3DERR_*` codes in the device creation messages are shown by name.
+
+Builds and the x64 tests for it are in `d3d9_step8_setlod/followup/` (replay only, so no x86 test
+run): all 4 builds at 0 warnings, the unit tests passed (6147 assertions), and 18 of
+18 tests passed x64, `D3D9_Texture_LOD`'s D3D9Ex check setting the new name:
+
+```
+## Tests complete summary: 18 passed out of 18 run from 209 total in 0:01:27.614325 ##
+```
 
 ## Not covered
 

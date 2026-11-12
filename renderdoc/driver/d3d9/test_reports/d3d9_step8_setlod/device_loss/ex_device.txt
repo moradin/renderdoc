@@ -3,10 +3,10 @@ E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/sh
 E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
 E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_fullscreen_probe.cpp:57 Log: Desktop 3840x2160, going fullscreen at 1280x720 60Hz
 E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_fullscreen_probe.cpp:80 Log: Fullscreen device created
-E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_fullscreen_probe.cpp:98 Log: Presented 194 frames fullscreen
-D3D9_ReplayOnExDevice set
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_fullscreen_probe.cpp:98 Log: Presented 193 frames fullscreen
+D3D9_ForceReplayOnExDevice set
 open <Result: 'Success'>
 replay <Result: 'Success'>
 before: 0
-102 replay rounds while the probe ran, probe exit 0
+97 replay rounds while the probe ran, probe exit 0
 after: 0 Success

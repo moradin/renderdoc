@@ -1,0 +1,13 @@
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Fullscreen_Probe'
+E:\Projects\renderdoc\util\test\demos\test_common.cpp:457 Log: Requires glslc/shaderc for Vulkan tests
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_fullscreen_probe.cpp:57 Log: Desktop 3840x2160, going fullscreen at 1280x720 60Hz
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_fullscreen_probe.cpp:80 Log: Fullscreen device created
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_fullscreen_probe.cpp:98 Log: Presented 196 frames fullscreen
+D3D9_ForceReplayOnExDevice set
+While the program is fullscreen: OpenCapture <Result: 'Success'> after 0.21s
+51 replay rounds until the program exited, first error: None
+after it exited: 0 Success
+program exit 0
+Opened again afterwards: OpenCapture <Result: 'Success'> after 0.31s
+replayed every action, read 480000 bytes, status 0
