@@ -23,6 +23,7 @@
  ******************************************************************************/
 
 #include "d3d9_replay.h"
+#include "core/settings.h"
 #include "driver/dxgi/dxgi_common.h"
 #include "driver/shaders/dxbc/dxbc_compile.h"
 #include "maths/formatpacking.h"
@@ -30,6 +31,11 @@
 #include "d3d9_common.h"
 #include "d3d9_device.h"
 #include "d3d9_resources.h"
+
+RDOC_CONFIG(bool, D3D9_ReplayOnExDevice, false,
+            "Replay captures made with a plain D3D9 device on a D3D9Ex device, as D3D9Ex "
+            "captures are. Managed textures and buffers then go in the default pool, so SetLOD "
+            "is ignored, but the replay device can't be lost.");
 
 namespace
 {
@@ -275,7 +281,7 @@ struct TexelRemap
 };
 };
 
-D3D9Replay::D3D9Replay(WrappedD3DDevice9 *device, IDirect3D9Ex *d3d, HWND hiddenWindow)
+D3D9Replay::D3D9Replay(WrappedD3DDevice9 *device, IDirect3D9 *d3d, HWND hiddenWindow)
     : m_pDevice(device), m_D3D(d3d), m_HiddenWindow(hiddenWindow)
 {
   m_HighlightCache.driver = this;
@@ -1048,15 +1054,43 @@ RDResult D3D9_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IRepla
   if(lib == NULL)
     RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Failed to load d3d9.dll");
 
-  typedef HRESULT(WINAPI * PFN_Direct3DCreate9Ex)(UINT, IDirect3D9Ex **);
-  PFN_Direct3DCreate9Ex create9Ex = (PFN_Direct3DCreate9Ex)GetProcAddress(lib, "Direct3DCreate9Ex");
-  if(create9Ex == NULL)
-    RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "d3d9.dll has no Direct3DCreate9Ex");
+  // Captures replay on the kind of device they were made with. A plain D3D9 device keeps
+  // D3DPOOL_MANAGED objects as they were, which is the only pool SetLOD works in. It can be lost
+  // (another application going fullscreen, a display mode change), which replay reports as a
+  // fatal error (FatalErrorCheck) rather than recreating everything in the default pool. D3D9Ex
+  // devices are never lost, and D3D9Ex captures need one for their Ex calls.
+  const bool useEx = initParams.Ex || D3D9_ReplayOnExDevice();
+  RDCLOG("Replaying a %s capture on a %s device%s", initParams.Ex ? "D3D9Ex" : "D3D9",
+         useEx ? "D3D9Ex" : "D3D9", !initParams.Ex && useEx ? " (D3D9_ReplayOnExDevice is set)" : "");
 
-  IDirect3D9Ex *d3d = NULL;
-  HRESULT hr = create9Ex(D3D_SDK_VERSION, &d3d);
-  if(FAILED(hr) || d3d == NULL)
-    RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Direct3DCreate9Ex failed: %s", ToStr(hr).c_str());
+  IDirect3D9 *d3d = NULL;
+  HRESULT hr = S_OK;
+  if(useEx)
+  {
+    typedef HRESULT(WINAPI * PFN_Direct3DCreate9Ex)(UINT, IDirect3D9Ex **);
+    PFN_Direct3DCreate9Ex create9Ex =
+        (PFN_Direct3DCreate9Ex)GetProcAddress(lib, "Direct3DCreate9Ex");
+    if(create9Ex == NULL)
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "d3d9.dll has no Direct3DCreate9Ex");
+
+    IDirect3D9Ex *d3dEx = NULL;
+    hr = create9Ex(D3D_SDK_VERSION, &d3dEx);
+    if(FAILED(hr) || d3dEx == NULL)
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Direct3DCreate9Ex failed: %s",
+                          ToStr(hr).c_str());
+    d3d = d3dEx;
+  }
+  else
+  {
+    typedef IDirect3D9 *(WINAPI * PFN_Direct3DCreate9)(UINT);
+    PFN_Direct3DCreate9 create9 = (PFN_Direct3DCreate9)GetProcAddress(lib, "Direct3DCreate9");
+    if(create9 == NULL)
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "d3d9.dll has no Direct3DCreate9");
+
+    d3d = create9(D3D_SDK_VERSION);
+    if(d3d == NULL)
+      RETURN_ERROR_RESULT(ResultCode::APIInitFailed, "Direct3DCreate9 failed");
+  }
 
   HWND wnd = CreateHiddenWindow();
   if(wnd == NULL)
@@ -1081,15 +1115,27 @@ RDResult D3D9_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IRepla
   const DWORD commonFlags =
       D3DCREATE_FPU_PRESERVE | D3DCREATE_MULTITHREADED | D3DCREATE_NOWINDOWCHANGES;
 
-  IDirect3DDevice9Ex *dev = NULL;
-  hr = d3d->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, wnd,
-                           D3DCREATE_MIXED_VERTEXPROCESSING | commonFlags, &params, NULL, &dev);
+  auto createDevice = [&](DWORD vpFlags, IDirect3DDevice9 **dev) {
+    if(useEx)
+    {
+      IDirect3DDevice9Ex *devEx = NULL;
+      HRESULT ret = ((IDirect3D9Ex *)d3d)
+                        ->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, wnd,
+                                         vpFlags | commonFlags, &params, NULL, &devEx);
+      *dev = devEx;
+      return ret;
+    }
+    return d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, wnd, vpFlags | commonFlags,
+                             &params, dev);
+  };
+
+  IDirect3DDevice9 *dev = NULL;
+  hr = createDevice(D3DCREATE_MIXED_VERTEXPROCESSING, &dev);
   if(FAILED(hr))
   {
     RDCWARN("Couldn't create a mixed vertex processing device (%s), trying hardware",
             ToStr(hr).c_str());
-    hr = d3d->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, wnd,
-                             D3DCREATE_HARDWARE_VERTEXPROCESSING | commonFlags, &params, NULL, &dev);
+    hr = createDevice(D3DCREATE_HARDWARE_VERTEXPROCESSING, &dev);
   }
 
   if(FAILED(hr) || dev == NULL)
@@ -1097,7 +1143,8 @@ RDResult D3D9_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IRepla
     DestroyWindow(wnd);
     d3d->Release();
     RETURN_ERROR_RESULT(ResultCode::APIHardwareUnsupported,
-                        "Couldn't create a D3D9Ex device to replay with: %s", ToStr(hr).c_str());
+                        "Couldn't create a %s device to replay with: %s", useEx ? "D3D9Ex" : "D3D9",
+                        ToStr(hr).c_str());
   }
 
   // the wrapped interfaces take over the references

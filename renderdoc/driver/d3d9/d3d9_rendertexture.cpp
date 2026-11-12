@@ -36,8 +36,9 @@
 // with the bindings the wrappers track, since the replay continues from it.
 //
 // A subresource is displayed in one of three ways (GetDisplaySource):
-// * Textures in D3DPOOL_DEFAULT with a format the sampler returns as it's described (most colour
-//   formats, see NativeSwizzle) are sampled directly. The sampled value goes through a matrix that
+// * Textures in D3DPOOL_DEFAULT or D3DPOOL_MANAGED with a format the sampler returns as it's
+//   described (most colour formats, see NativeSwizzle) are sampled directly, with SetLOD's level
+//   set back to 0 while they are (ScopedBaseLOD). The sampled value goes through a matrix that
 //   moves its channels where the description has them: L8 samples as (L, L, L, 1) but is described
 //   as R8, so it's shown as (L, 0, 0, 1).
 // * Render target surfaces in those formats (back buffers, standalone render targets) are copied
@@ -788,8 +789,8 @@ bool D3D9Replay::GetDisplaySource(ResourceId id, const Subresource &sub, bool al
     default: return false;
   }
 
-  if(native && pool == D3DPOOL_DEFAULT && !IsDepthUsage(format, usage) &&
-     NativeSwizzle(format, src.swizzle, src.add))
+  if(native && (pool == D3DPOOL_DEFAULT || pool == D3DPOOL_MANAGED) &&
+     !IsDepthUsage(format, usage) && NativeSwizzle(format, src.swizzle, src.add))
   {
     src.filterable = isFilterable(format);
     return true;
@@ -945,6 +946,7 @@ bool D3D9Replay::RenderTexture(TextureDisplay cfg)
   DisplaySource src;
   if(!GetDisplaySource(cfg.resourceId, cfg.subresource, true, src))
     return false;
+  ScopedBaseLOD baseLOD(src.tex);
 
   // thumbnails of A8 textures show their alpha
   if(tex.format.type == ResourceFormatType::A8 && cfg.scale <= 0.0f)
@@ -1177,6 +1179,7 @@ bool D3D9Replay::ReadDecodedFromGPU(ResourceId id, const Subresource &sub, Decod
   DisplaySource src;
   if(!GetDisplaySource(id, sub, false, src))
     return false;
+  ScopedBaseLOD baseLOD(src.tex);
 
   TextureDescription tex = GetTexture(id);
   const uint32_t width = RDCMAX(1U, tex.width >> sub.mip);

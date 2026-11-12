@@ -1,0 +1,600 @@
+
+  renderdocshim.vcxproj -> E:\Projects\renderdoc\Win32\Development\renderdocshim32.dll
+  renderdocui_stub.vcxproj -> E:\Projects\renderdoc\Win32\Development\renderdocui.exe
+  Intel.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_Intel.lib
+  precompiled.cpp
+  precompiled.cpp
+  precompiled.cpp
+  arm_counters_stub.cpp
+  precompiled.cpp
+  Read Git commit: '5609dcb0b5a90e18638d071c251287ee7eb012b6'
+  renderdoc_version.vcxproj -> E:\Projects\renderdoc\Win32\Development\version.lib
+  ARM.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_ARM.lib
+  dxil_bytecode.cpp
+  dxil_bytecode_editor.cpp
+  dxil_common.cpp
+  dxil_controlflow.cpp
+  dxil_debug.cpp
+  dxil_debuginfo.cpp
+  dxil_disassemble.cpp
+  dxil_metadata.cpp
+  dxil_reflect.cpp
+  dxil_stringise.cpp
+  llvm_decoder.cpp
+  llvm_encoder.cpp
+  dxgi_common.cpp
+  dxgi_hooks.cpp
+  dxgi_stringise.cpp
+  dxgi_wrapped.cpp
+  d3d9_bytecode.cpp
+  d3d9_common.cpp
+  d3d9_contents.cpp
+  spirv_common.cpp
+  spirv_compile.cpp
+  d3d9_counters.cpp
+  d3d9_customshader.cpp
+  d3d9_debug.cpp
+  spirv_debug.cpp
+  d3d9_depth.cpp
+  d3d9_device.cpp
+  d3d9_device_serialise.cpp
+  spirv_debug_glsl450.cpp
+  spirv_debug_setup.cpp
+  spirv_disassemble.cpp
+  spirv_editor.cpp
+  d3d9_device_wrap.cpp
+  spirv_gen.cpp
+  spirv_processor.cpp
+  d3d9_direct3d.cpp
+  spirv_reflect.cpp
+  d3d9_ffp_vertex.cpp
+  spirv_stringise.cpp
+  d3d9_hooks.cpp
+  d3d9_manager.cpp
+  d3d9_overlay.cpp
+  d3d9_pipestate.cpp
+  d3d9_pixel.cpp
+  d3d9_postvs.cpp
+  d3d9_rendermesh.cpp
+  d3d9_rendertexture.cpp
+  d3d9_replay.cpp
+  d3d9_replay_device.cpp
+  d3d9_resources.cpp
+  d3d9_serialise.cpp
+  d3d9_shader_reflect.cpp
+  d3d9_shaderedit.cpp
+  d3d9_shaders.cpp
+  d3d9_state.cpp
+  d3d9_stringise.cpp
+  d3d9_swapchain.cpp
+  d3d9_vs_emulate.cpp
+  renderdoc_dxgi.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_dxgi.lib
+  renderdoc_d3d9.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_d3d9.lib
+  renderdoc_dxil.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_dxil.lib
+  precompiled.cpp
+  dx_debug.cpp
+  dxbc_bytecode.cpp
+  dxbc_bytecode_editor.cpp
+  dxbc_bytecode_ops.cpp
+  dxbc_bytecode_vendorext.cpp
+  dxbc_compile.cpp
+  dxbc_container.cpp
+  dxbc_debug.cpp
+  dxbc_reflect.cpp
+  dxbc_sdbg.cpp
+  dxbc_spdb.cpp
+  dxbc_stringise.cpp
+  renderdoc_spirv.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_spirv.lib
+  amd_isa.cpp
+  precompiled.cpp
+  precompiled.cpp
+  nv_aftermath.cpp
+  nv_d3d11_counters.cpp
+  nv_d3d12_counters.cpp
+  nv_vk_counters.cpp
+  renderdoc_dxbc.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_dxbc.lib
+  AMD.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_AMD.lib
+  precompiled.cpp
+  egl_hooks.cpp
+  egl_platform.cpp
+  gl_common.cpp
+  gl_counters.cpp
+  gl_debug.cpp
+  gl_driver.cpp
+  gl_hooks.cpp
+  gl_initstate.cpp
+  gl_manager.cpp
+  gl_msaa_array_conv.cpp
+  gl_outputwindow.cpp
+  gl_overlay.cpp
+  gl_pixelhistory.cpp
+  gl_postvs.cpp
+  gl_program_iterate.cpp
+  gl_rendermesh.cpp
+  gl_renderstate.cpp
+  gl_rendertext.cpp
+  gl_rendertexture.cpp
+  gl_replay.cpp
+  gl_resources.cpp
+  gl_shader_refl.cpp
+  gl_shaderdebug.cpp
+  gl_stringise.cpp
+  wgl_hooks.cpp
+  wgl_platform.cpp
+  gl_buffer_funcs.cpp
+  gl_debug_funcs.cpp
+  gl_draw_funcs.cpp
+  gl_emulated.cpp
+  imagestate_tests.cpp
+  imgrefs_tests.cpp
+  vk_acceleration_structure.cpp
+  vk_common.cpp
+  vk_core.cpp
+  vk_counters.cpp
+  vk_debug.cpp
+  vk_dispatchtables.cpp
+  vk_image_states.cpp
+  vk_info.cpp
+  vk_initstate.cpp
+  vk_layer.cpp
+  vk_manager.cpp
+  vk_memory.cpp
+  vk_msaa_buffer_conv.cpp
+  vk_next_chains.cpp
+  vk_outputwindow.cpp
+  vk_overlay.cpp
+  vk_pixelhistory.cpp
+  vk_postvs.cpp
+  vk_rendermesh.cpp
+  vk_rendertext.cpp
+  vk_rendertexture.cpp
+  vk_replay.cpp
+  vk_resources.cpp
+  vk_shader_cache.cpp
+  vk_shader_feedback.cpp
+  vk_shaderdebug.cpp
+  gl_framebuffer_funcs.cpp
+  gl_get_funcs.cpp
+  gl_interop_funcs.cpp
+  gl_query_funcs.cpp
+  gl_sampler_funcs.cpp
+  gl_shader_funcs.cpp
+  gl_state_funcs.cpp
+  gl_texture_funcs.cpp
+  gl_uniform_funcs.cpp
+  d3d12_command_list10_wrap.cpp
+  d3d12_command_list1_wrap.cpp
+  d3d12_command_list2_wrap.cpp
+  d3d12_command_list3_wrap.cpp
+  d3d12_command_list4_wrap.cpp
+  d3d12_command_list5_wrap.cpp
+  d3d12_command_list6_wrap.cpp
+  d3d12_command_list7_wrap.cpp
+  d3d12_command_list8_wrap.cpp
+  d3d12_command_list9_wrap.cpp
+  d3d12_command_list_wrap.cpp
+  d3d12_command_queue_wrap.cpp
+  d3d12_commands.cpp
+  d3d12_common.cpp
+  d3d12_counters.cpp
+  d3d12_debug.cpp
+  d3d12_device.cpp
+  d3d12_device_rescreate_wrap.cpp
+  d3d12_device_wrap.cpp
+  d3d12_device_wrap1.cpp
+  d3d12_device_wrap11.cpp
+  d3d12_device_wrap12.cpp
+  d3d12_device_wrap13.cpp
+  d3d12_device_wrap14.cpp
+  d3d12_device_wrap15.cpp
+  d3d12_device_wrap2.cpp
+  d3d12_device_wrap3.cpp
+  vk_state.cpp
+  d3d12_device_wrap4.cpp
+  vk_stringise.cpp
+  vk_win32.cpp
+  vk_cmd_funcs.cpp
+  vk_descriptor_funcs.cpp
+  NV.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_NV.lib
+  vk_device_funcs.cpp
+  precompiled.cpp
+  vk_draw_funcs.cpp
+  vk_dynamic_funcs.cpp
+  vk_get_funcs.cpp
+  vk_misc_funcs.cpp
+  vk_queue_funcs.cpp
+  vk_resource_funcs.cpp
+  d3d12_device_wrap5.cpp
+  d3d12_device_wrap6.cpp
+  d3d12_device_wrap7.cpp
+  vk_shader_funcs.cpp
+  d3d12_device_wrap8.cpp
+  d3d12_device_wrap9.cpp
+  vk_sync_funcs.cpp
+  vk_wsi_funcs.cpp
+  d3d11_common.cpp
+  d3d11_context.cpp
+  d3d11_context1_wrap.cpp
+  d3d11_context2_wrap.cpp
+  d3d11_context3_wrap.cpp
+  d3d11_context_wrap.cpp
+  d3d11_counters.cpp
+  d3d11_debug.cpp
+  d3d11_device.cpp
+  d3d11_device1_wrap.cpp
+  d3d11_device2_wrap.cpp
+  d3d11_device3_wrap.cpp
+  d3d11_device_wrap.cpp
+  d3d11_hooks.cpp
+  d3d11_initstate.cpp
+  d3d11_manager.cpp
+  d3d11_msaa_array_conv.cpp
+  d3d11_outputwindow.cpp
+  d3d11_overlay.cpp
+  d3d11_pixelhistory.cpp
+  d3d11_postvs.cpp
+  d3d11_rendermesh.cpp
+  d3d11_renderstate.cpp
+  d3d11_rendertext.cpp
+  d3d11_rendertexture.cpp
+  d3d11_replay.cpp
+  d3d11_resources.cpp
+  d3d11_serialise.cpp
+  d3d12_dxil_debug.cpp
+  d3d12_hooks.cpp
+  d3d12_initstate.cpp
+  d3d12_manager.cpp
+  d3d12_msaa_array_conv.cpp
+  d3d12_outputwindow.cpp
+  d3d12_overlay.cpp
+  d3d12_pixelhistory.cpp
+  d3d11_shader_cache.cpp
+  d3d11_shaderdebug.cpp
+  d3d12_postvs.cpp
+  d3d11_stringise.cpp
+  d3d11_video.cpp
+  d3d12_rendermesh.cpp
+  d3d9_hooks.cpp
+  d3d12_rendertext.cpp
+  d3d12_rendertexture.cpp
+  d3d12_replay.cpp
+  d3d12_resources.cpp
+  d3d12_rootsig.cpp
+  d3d12_sdk_select.cpp
+  renderdoc_d3d11.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_d3d11.lib
+  d3d12_serialise.cpp
+  d3d12_shader_cache.cpp
+  d3d12_shader_feedback.cpp
+  renderdoc_gl.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_gl.lib
+  d3d12_shaderdebug.cpp
+  d3d12_state.cpp
+  d3d12_stringise.cpp
+  vk_serialise.cpp
+  renderdoc_d3d12.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_d3d12.lib
+  renderdoc_vulkan.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_vulkan.lib
+  Processing layer JSON file for RenderDoc 1.48
+  precompiled.cpp
+  catch.cpp
+  BC1_Encode_kernel.cpp
+  BC2_Encode_kernel.cpp
+  BC3_Encode_kernel.cpp
+  BC4_Encode_kernel.cpp
+  BC5_Encode_kernel.cpp
+  BC6_Encode_kernel.cpp
+  BC7_Encode_Kernel.cpp
+  superluminal.cpp
+  android.cpp
+  android_tools.cpp
+  android_utils.cpp
+  jdwp.cpp
+  jdwp_connection.cpp
+  jdwp_util.cpp
+  common.cpp
+  dds_readwrite.cpp
+  jobsystem.cpp
+  jobsystem_tests.cpp
+  threading_tests.cpp
+  bit_flag_iterator_tests.cpp
+  gpu_address_range_tracker.cpp
+  image_viewer.cpp
+  intervals_tests.cpp
+  plugins.cpp
+  remote_server.cpp
+  replay_proxy.cpp
+  resource_manager.cpp
+  settings.cpp
+  sparse_page_table.cpp
+  target_control.cpp
+  glsl_shaders.cpp
+  hooks.cpp
+  camera.cpp
+  formatpacking.cpp
+  matrix.cpp
+  vec.cpp
+  os_specific.cpp
+  sys_win32_hooks.cpp
+  win32_callstack.cpp
+  win32_hook.cpp
+  win32_libentry.cpp
+  win32_network.cpp
+  win32_process.cpp
+  win32_shellext.cpp
+  win32_stringio.cpp
+  win32_threading.cpp
+  app_api.cpp
+  basic_types_tests.cpp
+  capture_file.cpp
+  capture_options.cpp
+  dummy_driver.cpp
+  entry_points.cpp
+  replay_controller.cpp
+  replay_driver.cpp
+  replay_output.cpp
+  chrome_json_codec.cpp
+  xml_codec.cpp
+  comp_io_tests.cpp
+  lz4io.cpp
+  rdcfile.cpp
+  serialiser.cpp
+  serialiser_tests.cpp
+  streamio.cpp
+  streamio_tests.cpp
+  zstdio.cpp
+  controlflow.cpp
+  grisu2.cpp
+  string_utils.cpp
+  utf8printf.cpp
+  core.cpp
+     Creating library E:\Projects\renderdoc\Win32\Development\renderdoc.lib and object E:\Projects\renderdoc\Win32\Development\renderdoc.exp
+  renderdoc.vcxproj -> E:\Projects\renderdoc\Win32\Development\renderdoc.dll
+  Compiling SWIG interface
+  Compiling SWIG interface
+  Compiling SWIG interface
+  renderdoccmd.cpp
+  Language subdirectory: python
+  Search paths:
+     .\
+     E:\Projects\renderdoc\renderdoc\api\replay\
+     .\swig_lib\python\
+     E:\Projects\renderdoc\qrenderdoc\3rdparty\swig\Lib\python\
+     .\swig_lib\
+     E:\Projects\renderdoc\qrenderdoc\3rdparty\swig\Lib\
+  Preprocessing...
+  Starting language-specific parse...
+  Language subdirectory: python
+  Search paths:
+     .\
+     E:\Projects\renderdoc\renderdoc\api\replay\
+     .\swig_lib\python\
+     E:\Projects\renderdoc\qrenderdoc\3rdparty\swig\Lib\python\
+     .\swig_lib\
+     E:\Projects\renderdoc\qrenderdoc\3rdparty\swig\Lib\
+  Preprocessing...
+  Starting language-specific parse...
+  Language subdirectory: python
+  Search paths:
+     .\
+     E:\Projects\renderdoc\renderdoc\api\replay\
+     .\swig_lib\python\
+     E:\Projects\renderdoc\qrenderdoc\3rdparty\swig\Lib\python\
+     .\swig_lib\
+     E:\Projects\renderdoc\qrenderdoc\3rdparty\swig\Lib\
+  Preprocessing...
+  Starting language-specific parse...
+  renderdoccmd_win32.cpp
+  Generating Code...
+  renderdoccmd.vcxproj -> E:\Projects\renderdoc\Win32\Development\renderdoccmd.exe
+  Processing types...
+  C++ analysis...
+  Processing nested classes...
+  Generating wrappers...
+  Processing types...
+  C++ analysis...
+  Processing nested classes...
+  Generating wrappers...
+  pyrenderdoc_stub.cpp
+  pyrenderdoc_stub.cpp
+  qrenderdoc_stub.cpp
+  Processing types...
+  C++ analysis...
+  Processing nested classes...
+  Generating wrappers...
+  precompiled.cpp
+  renderdoc_module_python.cxx
+  qrenderdoc_module_python.cxx
+  BufferFormatter.cpp
+  CaptureContext.cpp
+  Analytics.cpp
+  Helpers.cpp
+  PersistentConfig.cpp
+  QRDInterface.cpp
+  RemoteHost.cpp
+  ShaderProcessingTool.cpp
+  MiniQtHelper.cpp
+  QRDUtils.cpp
+  RGPInterop.cpp
+  ReplayManager.cpp
+  Resources.cpp
+  ScintillaSyntax.cpp
+  PythonContext.cpp
+  qprocessinfo.cpp
+  qrenderdoc.cpp
+  moc_APIInspector.cpp
+  moc_AboutDialog.cpp
+  moc_AnalyticsConfirmDialog.cpp
+  moc_AnalyticsPromptDialog.cpp
+  moc_AnnotationDisplay.cpp
+  moc_AxisMappingDialog.cpp
+  moc_BufferFormatSpecifier.cpp
+  moc_BufferViewer.cpp
+  moc_CameraControlsDialog.cpp
+  moc_CaptureDialog.cpp
+  moc_CollapseGroupBox.cpp
+  renderdoc_module_python.cxx
+  moc_CommentView.cpp
+  moc_ComputeDebugSelector.cpp
+  moc_ConfigEditor.cpp
+  moc_CrashDialog.cpp
+  moc_CustomPaintWidget.cpp
+  moc_D3D11PipelineStateViewer.cpp
+  moc_D3D12PipelineStateViewer.cpp
+  moc_D3D9PipelineStateViewer.cpp
+  Building without PySide2 - Qt will not be accessible in python scripting. See https://github.com/baldurk/renderdoc/wiki/PySide2
+  moc_DebugMessageView.cpp
+  moc_DescriptorViewer.cpp
+  moc_EnvironmentEditor.cpp
+  moc_EventBrowser.cpp
+  moc_ExtensionManager.cpp
+  moc_FindReplace.cpp
+  moc_GLPipelineStateViewer.cpp
+  moc_LiveCapture.cpp
+  moc_LogView.cpp
+  moc_MainWindow.cpp
+  moc_MarkerBreadcrumbs.cpp
+  moc_OrderedListEditor.cpp
+  moc_PerformanceCounterSelection.cpp
+  moc_PerformanceCounterViewer.cpp
+  moc_PipelineFlowChart.cpp
+  moc_PipelineStateViewer.cpp
+  moc_PixelHistoryView.cpp
+  moc_ProjectionGuessDialog.cpp
+  moc_PythonContext.cpp
+  moc_PythonShell.cpp
+  moc_QRDUtils.cpp
+  moc_RDDoubleSpinBox.cpp
+  moc_RDHeaderView.cpp
+  moc_RDLabel.cpp
+  moc_RDLineEdit.cpp
+  moc_RDListView.cpp
+  moc_RDListWidget.cpp
+  moc_RDMenu.cpp
+  moc_RDSplitter.cpp
+  moc_RDStyle.cpp
+  moc_RDTableView.cpp
+  moc_RDTableWidget.cpp
+  moc_RDTextEdit.cpp
+  moc_RDToolButton.cpp
+  moc_RDToolTip.cpp
+  moc_RDTreeView.cpp
+  moc_RDTreeWidget.cpp
+  moc_RDTweakedNativeStyle.cpp
+  moc_RangeHistogram.cpp
+  moc_RemoteManager.cpp
+  moc_ReplayOptionsSelector.cpp
+  moc_ResourceInspector.cpp
+  moc_ResourcePreview.cpp
+  moc_SettingsDialog.cpp
+  moc_ShaderMessageViewer.cpp
+  moc_ShaderViewer.cpp
+  moc_StatisticsViewer.cpp
+  moc_SuggestRemoteDialog.cpp
+  moc_TextureGoto.cpp
+  moc_TextureSaveDialog.cpp
+  moc_TextureViewer.cpp
+  moc_ThumbnailStrip.cpp
+  moc_TimelineBar.cpp
+  moc_TipsDialog.cpp
+  moc_ToolWindowManager.cpp
+  moc_ToolWindowManagerArea.cpp
+  moc_ToolWindowManagerSplitter.cpp
+  moc_ToolWindowManagerTabBar.cpp
+  moc_ToolWindowManagerWrapper.cpp
+  moc_UpdateDialog.cpp
+  moc_VirtualFileDialog.cpp
+  moc_VulkanPipelineStateViewer.cpp
+  qrc_qtconf.cpp
+  qrc_resources.cpp
+  RDStyle.cpp
+  RDTweakedNativeStyle.cpp
+  StyleData.cpp
+  AnnotationDisplay.cpp
+  BufferFormatSpecifier.cpp
+  CollapseGroupBox.cpp
+  ComputeDebugSelector.cpp
+  CustomPaintWidget.cpp
+  RDDoubleSpinBox.cpp
+  RDHeaderView.cpp
+  RDLabel.cpp
+  RDLineEdit.cpp
+  RDListView.cpp
+  RDListWidget.cpp
+  RDMenu.cpp
+  RDSplitter.cpp
+  RDTableView.cpp
+  RDTableWidget.cpp
+  RDTextEdit.cpp
+  RDToolButton.cpp
+  RDToolTip.cpp
+  RDTreeView.cpp
+  RDTreeWidget.cpp
+  FindReplace.cpp
+  MarkerBreadcrumbs.cpp
+  OrderedListEditor.cpp
+  PipelineFlowChart.cpp
+  RangeHistogram.cpp
+  ReplayOptionsSelector.cpp
+  ResourcePreview.cpp
+  TextureGoto.cpp
+  ThumbnailStrip.cpp
+  APIInspector.cpp
+  BufferViewer.cpp
+  CommentView.cpp
+  DebugMessageView.cpp
+  DescriptorViewer.cpp
+  AboutDialog.cpp
+  AnalyticsConfirmDialog.cpp
+  AnalyticsPromptDialog.cpp
+  AxisMappingDialog.cpp
+  CameraControlsDialog.cpp
+  CaptureDialog.cpp
+  ConfigEditor.cpp
+  CrashDialog.cpp
+  EnvironmentEditor.cpp
+  ExtensionManager.cpp
+  LiveCapture.cpp
+  PerformanceCounterSelection.cpp
+  ProjectionGuessDialog.cpp
+  RemoteManager.cpp
+  SettingsDialog.cpp
+  SuggestRemoteDialog.cpp
+  TextureSaveDialog.cpp
+  TipsDialog.cpp
+  UpdateDialog.cpp
+  VirtualFileDialog.cpp
+  EventBrowser.cpp
+  LogView.cpp
+  MainWindow.cpp
+  PerformanceCounterViewer.cpp
+  D3D11PipelineStateViewer.cpp
+  D3D12PipelineStateViewer.cpp
+  D3D9PipelineStateViewer.cpp
+  GLPipelineStateViewer.cpp
+  PipelineStateViewer.cpp
+  VulkanPipelineStateViewer.cpp
+  PixelHistoryView.cpp
+  PythonShell.cpp
+  ResourceInspector.cpp
+  ShaderMessageViewer.cpp
+  ShaderViewer.cpp
+  StatisticsViewer.cpp
+  TextureViewer.cpp
+  TimelineBar.cpp
+  PythonInvokers.cpp
+     Creating library E:\Projects\renderdoc\Win32\Development\pymodules\renderdoc.lib and object E:\Projects\renderdoc\Win32\Development\pymodules\renderdoc.exp
+  Generating code
+  Not all modules are compiled with -Gy (function comdat), build without incremental LTCG.
+  moc_ScintillaDocument.cpp
+  moc_ScintillaEdit.cpp
+  moc_ScintillaEditBase.cpp
+  moc_ScintillaQt.cpp
+  qrenderdoc_python.cxx
+  renderdoc_python.cxx
+     Creating library E:\Projects\renderdoc\Win32\Development\pymodules\qrenderdoc.lib and object E:\Projects\renderdoc\Win32\Development\pymodules\qrenderdoc.exp
+  Finished generating code
+  qrenderdoc_module.vcxproj -> E:\Projects\renderdoc\Win32\Development\pymodules\qrenderdoc.pyd
+  Built against default bundled python
+  pyrenderdoc_module.vcxproj -> E:\Projects\renderdoc\Win32\Development\pymodules\renderdoc.pyd
+  Built against default bundled python
+     Creating library E:\Projects\renderdoc\Win32\Development\\qrenderdoc.lib and object E:\Projects\renderdoc\Win32\Development\\qrenderdoc.exp
+  qrenderdoc_local.vcxproj -> E:\Projects\renderdoc\Win32\Development\qrenderdoc.exe
+  Built against default bundled python

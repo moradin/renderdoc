@@ -527,8 +527,12 @@ void D3D9PipelineStateViewer::addTextureRow(RDTreeWidget *tree, const QString &s
 
   if(tex)
   {
+    // a managed texture's SetLOD makes its level samp.textureLOD the one sampled as level 0
+    QVariant mips = tex->mips;
+    if(samp.textureLOD > 0)
+      mips = tr("%1 (LOD %2)").arg(tex->mips).arg(samp.textureLOD);
     node = new RDTreeWidgetItem({slot, samp.resourceId, ToQStr(tex->type), tex->width, tex->height,
-                                 tex->depth, tex->mips, tex->format.Name(), QString()});
+                                 tex->depth, mips, tex->format.Name(), QString()});
   }
   else
   {

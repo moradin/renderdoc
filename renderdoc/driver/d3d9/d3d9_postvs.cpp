@@ -616,11 +616,15 @@ void D3D9Replay::ReadVertexTexture(uint32_t sampler, const D3D9DeviceState &stat
     default: return;
   }
 
+  // SetLOD on a D3DPOOL_MANAGED texture makes level L the one sampled as level 0: texldl's LOD
+  // and MAXMIPLEVEL count from it, so the emulation gets the levels from L on. GetLOD is 0 for
+  // other textures, and on a D3D9Ex replay device.
   const DWORD levels = base->GetLevelCount();
-  tex.levels.resize(levels);
-  for(DWORD l = 0; l < levels; l++)
+  const DWORD first = RDCMIN(base->GetLOD(), levels > 0 ? levels - 1 : 0);
+  tex.levels.resize(levels - first);
+  for(DWORD l = first; l < levels; l++)
   {
-    D3D9Emu::VSTexture::Level &level = tex.levels[l];
+    D3D9Emu::VSTexture::Level &level = tex.levels[l - first];
 
     uint32_t depth = slices;
     if(tex.type == D3D9BC::SamplerTextureType::Volume)

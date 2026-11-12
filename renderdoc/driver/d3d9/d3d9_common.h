@@ -119,7 +119,8 @@ struct D3D9InitParams
   // 0x2: initial contents hold system memory textures' dirty regions (D3D9InitialContentsData)
   // 0x3: depth stencils read with the depth test hold each depth's level index, written back with
   //      another formula (DepthFormula in d3d9_depth.cpp)
-  static const uint64_t CurrentVersion = 0x3;
+  // 0x4: initial contents hold textures' LOD (SetLOD)
+  static const uint64_t CurrentVersion = 0x4;
   static bool IsSupportedVersion(uint64_t ver);
 };
 

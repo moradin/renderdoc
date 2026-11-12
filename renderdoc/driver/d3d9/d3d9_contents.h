@@ -151,6 +151,9 @@ struct D3D9InitialContentsData
   // which is what an UpdateTexture from it copies. Replay sets it after writing the contents.
   // Empty for other objects, and in captures before version 0x2.
   rdcarray<D3D9DirtyRegion> Dirty;
+  // for textures, the most detailed level set with SetLOD, which only D3DPOOL_MANAGED textures
+  // use. Replay sets it after writing the contents. 0 in captures before version 0x4.
+  uint32_t LOD = 0;
 };
 
 DECLARE_REFLECTION_STRUCT(D3D9InitialContentsData);

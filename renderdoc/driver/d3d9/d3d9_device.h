@@ -805,9 +805,10 @@ private:
   void DerivedReplayResource(ResourceId parent, ResourceId child);
 
   // Creates an object during replay with its captured ID. create(pool, usage) calls the wrapped
-  // creation function. D3D9Ex devices have no managed pool, so those objects go in the default
-  // pool, and textures that can't be rendered to are made dynamic where possible so they can be
-  // locked to write their contents.
+  // creation function. Captures from plain D3D9 devices replay on one, where D3DPOOL_MANAGED
+  // objects stay managed (lockable, and SetLOD works). D3D9Ex devices have no managed pool, so
+  // there those objects go in the default pool. Default pool textures that can't be rendered to
+  // are made dynamic where possible so they can be locked to write their contents.
   template <typename CreateFunc>
   HRESULT ReplayCreate(ResourceId id, D3DPOOL pool, DWORD usage, bool texture, CreateFunc create);
   bool CheckReplayCreate(HRESULT hr, IUnknown *obj, ResourceId id, const char *what);
@@ -1011,7 +1012,7 @@ template <typename CreateFunc>
 HRESULT WrappedD3DDevice9::ReplayCreate(ResourceId id, D3DPOOL pool, DWORD usage, bool texture,
                                         CreateFunc create)
 {
-  if(pool == D3DPOOL_MANAGED)
+  if(pool == D3DPOOL_MANAGED && m_deviceEx)
     pool = D3DPOOL_DEFAULT;
 
   HRESULT hr = E_FAIL;

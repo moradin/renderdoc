@@ -321,6 +321,8 @@ protected:
 public:
   DWORD STDMETHODCALLTYPE SetLOD(DWORD LODNew)
   {
+    // the initial contents hold the LOD the frame started with
+    D3D9PrepareForWrite(this);
     DWORD ret = this->m_pReal->SetLOD(LODNew);
     D3D9RecordSetLOD(this->m_pDevice, (NestedType *)this, LODNew);
     return ret;
@@ -753,6 +755,18 @@ private:
   D3D9BindingMask m_Mask;
   D3D9ObjectBindings m_Bindings;
 };
+
+// the real texture of a 2D, cube or volume texture's wrapper, NULL for other objects
+inline IDirect3DBaseTexture9 *GetRealBaseTexture(WrappedD3D9Object *obj)
+{
+  switch(obj ? obj->GetResourceType() : Resource_Unknown)
+  {
+    case Resource_Texture: return ((WrappedD3DTexture9 *)obj)->GetReal();
+    case Resource_CubeTexture: return ((WrappedD3DCubeTexture9 *)obj)->GetReal();
+    case Resource_VolumeTexture: return ((WrappedD3DVolumeTexture9 *)obj)->GetReal();
+    default: return NULL;
+  }
+}
 
 // WrappedD3DSwapChain9 is declared in d3d9_swapchain.h, include it to use this list
 #define ALL_D3D9_POOLED_TYPES                    \

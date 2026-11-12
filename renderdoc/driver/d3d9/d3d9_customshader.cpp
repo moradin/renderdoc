@@ -334,6 +334,7 @@ ResourceId D3D9Replay::ApplyCustomShader(TextureDisplay &display)
   DisplaySource src;
   if(!GetDisplaySource(display.resourceId, display.subresource, true, src))
     return ResourceId();
+  ScopedBaseLOD baseLOD(src.tex);
 
   IDirect3DDevice9 *dev = m_pDevice->GetReal();
 

@@ -626,6 +626,10 @@ void DoSerialise(SerialiserType &ser, D3D9InitialContentsData &el)
   {
     SERIALISE_MEMBER(Dirty);
   }
+  if(ser.VersionAtLeast(0x4))
+  {
+    SERIALISE_MEMBER(LOD);
+  }
 }
 
 INSTANTIATE_SERIALISE_TYPE(D3D9InitialContentsData);
@@ -636,6 +640,11 @@ INSTANTIATE_SERIALISE_TYPE(D3D9InitialContentsData);
 void WrappedD3DDevice9::ReadContents(WrappedD3D9Object *obj, D3D9InitialContentsData &contents)
 {
   SCOPED_LOCK(m_D3DLock);
+
+  // SetLOD reads the contents first (D3D9PrepareForWrite), so this is the LOD the frame started
+  // with. It's 0 for textures outside D3DPOOL_MANAGED.
+  if(IDirect3DBaseTexture9 *base = GetRealBaseTexture(obj))
+    contents.LOD = base->GetLOD();
 
   switch(obj->GetResourceType())
   {

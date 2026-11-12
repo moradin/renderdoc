@@ -147,4 +147,9 @@ void D3D9ResourceManager::Apply_InitialState(IUnknown *live, D3D9InitialContents
   // after the contents, whose writes made the texture dirty
   if(!data.data->Dirty.empty())
     m_Device->SetDirtyRegions(obj, data.data->Dirty);
+
+  // undoes SetLOD calls in the frame too. Only D3DPOOL_MANAGED textures use it, so it does
+  // nothing on a D3D9Ex replay device, which has none.
+  if(IDirect3DBaseTexture9 *base = GetRealBaseTexture(obj))
+    base->SetLOD(data.data->LOD);
 }

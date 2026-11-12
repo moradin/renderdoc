@@ -1524,8 +1524,9 @@ void DoSerialise(SerialiserType &ser, D3D9Pipe::Sampler &el)
   SERIALISE_MEMBER(srgbTexture);
   SERIALISE_MEMBER(elementIndex);
   SERIALISE_MEMBER(dmapOffset);
+  SERIALISE_MEMBER(textureLOD);
 
-  SIZE_CHECK(64);
+  SIZE_CHECK(72);
 }
 
 template <typename SerialiserType>
@@ -1738,7 +1739,7 @@ void DoSerialise(SerialiserType &ser, D3D9Pipe::State &el)
   SERIALISE_MEMBER(descriptorCount);
   SERIALISE_MEMBER(descriptorByteSize);
 
-  SIZE_CHECK(1192);
+  SIZE_CHECK(1200);
 }
 
 #pragma endregion D3D9 pipeline state

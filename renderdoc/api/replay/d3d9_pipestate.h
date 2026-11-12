@@ -377,7 +377,8 @@ struct Sampler
            magFilter == o.magFilter && minFilter == o.minFilter && mipFilter == o.mipFilter &&
            mipLODBias == o.mipLODBias && maxMipLevel == o.maxMipLevel &&
            maxAnisotropy == o.maxAnisotropy && srgbTexture == o.srgbTexture &&
-           elementIndex == o.elementIndex && dmapOffset == o.dmapOffset;
+           elementIndex == o.elementIndex && dmapOffset == o.dmapOffset &&
+           textureLOD == o.textureLOD;
   }
   bool operator<(const Sampler &o) const
   {
@@ -480,6 +481,14 @@ displacement map sampler (``D3DDMAPSAMPLER``), 257 to 260 for the vertex texture
 :type: int
 )");
   uint32_t dmapOffset = 0;
+
+  DOCUMENT(R"(The bound texture's most detailed mip level, set with ``SetLOD``. The sampler reads
+that level as level 0, and :data:`maxMipLevel` counts from it. Only ``D3DPOOL_MANAGED`` textures
+have one, it's 0 for the others.
+
+:type: int
+)");
+  uint32_t textureLOD = 0;
 };
 
 DOCUMENT(R"(

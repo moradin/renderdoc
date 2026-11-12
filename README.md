@@ -89,8 +89,15 @@ Known limitations of what works:
   pixels that the pixel shader discards or the alpha test rejects, as on the other APIs. The depth,
   stencil, backface and viewport/scissor overlays leave those pixels out.
 - **Replay**:
+  - Captures from a plain D3D9 device replay on a plain D3D9 device, and D3D9Ex captures on a
+    D3D9Ex one. A plain D3D9 device can be lost when another program takes the display (going
+    fullscreen, changing the display mode). RenderDoc then reports it, and the capture has to be
+    opened again. The `D3D9_ReplayOnExDevice` setting (Tools, Settings, Core, Config Editor,
+    under D3D9) replays them on D3D9Ex instead, which isn't lost but ignores `SetLOD`.
   - In captures made by builds before UpdateTexture's dirty regions were saved, an UpdateTexture
     inside the frame can copy more than it did at capture. Those captures still open.
+  - In captures made by builds before the textures' `SetLOD` was saved, a LOD set before the frame
+    is lost.
 - **Memory at capture**: the copies of default pool texture uploads take as much memory as the
   textures themselves.
 

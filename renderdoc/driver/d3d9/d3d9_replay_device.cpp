@@ -29,17 +29,21 @@
 
 // Replaying a capture
 // -------------------
-// The replay device is a WrappedD3DDevice9 around a D3D9Ex device on a hidden window, and replays
-// through the same wrapped methods the application called. Wrappers created during replay take the
-// ID they had in the capture (see TakeWrapperID), so the captured IDs work everywhere.
+// The replay device is a WrappedD3DDevice9 around a device on a hidden window, and replays through
+// the same wrapped methods the application called. It's the kind the capture was made with: a
+// D3D9Ex device for D3D9Ex captures, a plain D3D9 one otherwise, unless D3D9_ReplayOnExDevice is
+// set. A plain device can be lost, which FatalErrorCheck reports. Wrappers created during replay
+// take the ID they had in the capture (see TakeWrapperID), so the captured IDs work everywhere.
 //
 // * Loading reads everything before the frame: the device-owned objects (DeviceInitialisation),
 //   every object's creation, and the initial contents. The capture's implicit swapchains are
 //   created as additional swapchains presenting to the hidden window, windowed, and its automatic
 //   depth stencil as a standalone depth stencil.
-// * D3D9Ex devices have no managed pool, so those objects are created in the default pool, and
-//   textures that can't be rendered to are made dynamic where the driver allows it, so that their
-//   contents can be written by locking them. Buffers lose D3DUSAGE_WRITEONLY so they can be read.
+// * On a plain device D3DPOOL_MANAGED objects are created as they were, so they can be locked and
+//   SetLOD works. D3D9Ex devices have no managed pool, so there those objects are created in the
+//   default pool. Default pool textures that can't be rendered to are made dynamic where the
+//   driver allows it, so that their contents can be written by locking them. Buffers lose
+//   D3DUSAGE_WRITEONLY so they can be read.
 // * Replaying the frame applies the initial contents, sets the device state from
 //   BeginCaptureFrame, and replays the frame's calls up to the event asked for. Present only
 //   marks the end of the frame. Every call is an event; draws, clears, copies, presents and
@@ -138,7 +142,19 @@ RDResult WrappedD3DDevice9::FatalErrorCheck()
     HRESULT hr = m_deviceEx->CheckDeviceState(NULL);
     if(hr == D3DERR_DEVICEHUNG || hr == D3DERR_DEVICEREMOVED)
       RETURN_ERROR_RESULT(ResultCode::DeviceLost, "The D3D9 replay device stopped working: %s",
-                          ToStr(hr).c_str());
+                          ToStr((D3D9Result)hr).c_str());
+  }
+  else
+  {
+    // A plain D3D9 device is lost when another application takes the display (going fullscreen,
+    // changing the display mode). Getting it back means releasing and recreating every default
+    // pool object, the capture's and replay's own, which isn't done: the capture has to be
+    // opened again. Setting D3D9_ReplayOnExDevice replays on a device that isn't lost.
+    HRESULT hr = m_device->TestCooperativeLevel();
+    if(hr == D3DERR_DEVICELOST || hr == D3DERR_DEVICENOTRESET || hr == D3DERR_DRIVERINTERNALERROR)
+      RETURN_ERROR_RESULT(ResultCode::DeviceLost,
+                          "The D3D9 replay device was lost (%s), open the capture again",
+                          ToStr((D3D9Result)hr).c_str());
   }
 
   return ResultCode::Succeeded;

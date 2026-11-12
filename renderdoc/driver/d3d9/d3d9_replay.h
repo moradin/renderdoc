@@ -58,7 +58,7 @@ struct PostVSResult;
 class D3D9Replay final : public IReplayDriver
 {
 public:
-  D3D9Replay(WrappedD3DDevice9 *device, IDirect3D9Ex *d3d, HWND hiddenWindow);
+  D3D9Replay(WrappedD3DDevice9 *device, IDirect3D9 *d3d, HWND hiddenWindow);
 
   ResourceDescription &GetResourceDesc(ResourceId id);
   FrameRecord &WriteFrameRecord() { return m_FrameRecord; }
@@ -304,6 +304,31 @@ private:
     Vec4f add;
   };
 
+  // SetLOD on a D3DPOOL_MANAGED texture stops its more detailed levels being sampled at all, so
+  // sampling it to display or read it sets the LOD to 0 for as long as this lives
+  struct ScopedBaseLOD
+  {
+    explicit ScopedBaseLOD(IDirect3DBaseTexture9 *t)
+    {
+      lod = t ? t->GetLOD() : 0;
+      if(lod > 0)
+      {
+        tex = t;
+        tex->SetLOD(0);
+      }
+    }
+    ~ScopedBaseLOD()
+    {
+      if(tex)
+        tex->SetLOD(lod);
+    }
+    ScopedBaseLOD(const ScopedBaseLOD &) = delete;
+    ScopedBaseLOD &operator=(const ScopedBaseLOD &) = delete;
+
+    IDirect3DBaseTexture9 *tex = NULL;
+    DWORD lod = 0;
+  };
+
   struct OutputTarget
   {
     IDirect3DSurface9 *rt = NULL;
@@ -547,7 +572,7 @@ private:
   SDObject *m_ConstantsAnnotations[6] = {};
 
   WrappedD3DDevice9 *m_pDevice = NULL;
-  IDirect3D9Ex *m_D3D = NULL;
+  IDirect3D9 *m_D3D = NULL;
   HWND m_HiddenWindow = NULL;
 
   DriverInformation m_DriverInfo = {};

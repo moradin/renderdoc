@@ -54,6 +54,7 @@ the testing were on separate machines.
 | | ~~vs_3_0 outputs that pack two semantics into one register~~ | 0.5 | Done, see "Packed vs_3_0 outputs" below (`d3d9_step8_packed_outputs.md`) |
 | | ~~`texldl` filtering~~ | 0.5 | Done, see "texldl filtering" below (`d3d9_step8_texldl_filtering.md`). Early SM3 GPUs could only point sample vertex textures, so many games do |
 | | ~~D24 at a depth of 0.375~~ | 0.25 | Done, see "Known gaps in resource contents" below (`d3d9_step8_d24_levels.md`). Two D24 levels were never written back, which only matters to an EQUAL test. Changed the capture format to version 0x3 |
+| | ~~`SetLOD` on managed textures~~ | 0.25 (took about 1) | Done, see "Replay device and SetLOD" below (`d3d9_step8_setlod.md`). Replay ignored it, which changes the pixels of every draw sampling such a texture. Captures from plain D3D9 devices now replay on a plain D3D9 device, where it works. Changed the capture format to version 0x4 |
 | | P8 palettes | 0.5 | Parked: not worth it, since current GPUs can't sample P8 or A8P8. On the RTX 4070 Ti, P8 and A8P8 textures can only be made in D3DPOOL_SCRATCH, and offscreen plain surfaces in any pool, so nothing on it ever samples them. A quick probe found the reference rasterizer (`d3dref9.dll`, D3DDEVTYPE_REF) does: the colour comes from the current palette, and alpha from `peFlags` (P8, fixed function only; ps_2_0 gave 1) or the texture (A8P8). That device could be the native reference if this is picked up. `SetCurrentTexturePalette` with a number above 65535 crashes inside d3d9 |
 
 Left out on purpose:
@@ -121,7 +122,8 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Counters` | The GPU duration and samples passed counters: each draw's samples passed against what the demo's own occlusion queries counted natively (2048, 0, 1024, 120000, 1, and 1024 for a 4x multisampled 16x16 square), a duration for every action, the full screen heavy draw's against the demo's own timestamps (within 4x either way), and that the replay is back at the event it was at afterwards |
 | `D3D9_Resource_Usage` | Every texture, surface, buffer and constants pseudo buffer's usage against the exact list it should have: sampled and unsampled textures (a pixel sampler the shader doesn't read, a texture after a disabled fixed function stage), a vertex texture, used and unused streams, the index buffer only at the indexed draw, UP draws reading no buffers, both MRT targets, depth only with the depth test on, clears (both bound targets, as natively), StretchRect, a resolve, GetRenderTargetData, ColorFill, UpdateTexture, GenerateMipSubLevels and Unlock inside the frame |
 | `D3D9_Failed_Calls` | Debug messages for failed calls. The 18 calls give the same results natively and under RenderDoc, and each of the 13 that fail natively has exactly one message, at its own event inside its marker, with the HRESULT as its ID. The event is named after the call ("(failed)") and its result is `D3DERR_INVALIDCALL`. Some parameters are checked: render target index 4, start register 300 or 224, a source rect 128 wide, a texture 0 wide. A failed lock records its texture, which is in the capture, and a failed call's constants aren't read. The 5 calls that succeed natively (3 Clears with targets of different sizes, one with a smaller depth stencil, and an UnlockRect without a lock) have no message, there are no other messages, they're returned only once, and the triangle drawn after the failed calls replays |
-| `D3D9_Custom_Shaders` | Custom display shaders. The demo samples each of its textures natively with a ps_3_0 shader and writes what the GPU returned; the test builds the same shader as a custom shader and checks its output against that at 6 texels of every subresource: a default pool 2D texture with 3 mips, a managed one (decoded on the CPU), L8 (sampled as L, L, L, 1), a cube and a volume texture with 2 mips, a render target surface, and a D24S8 depth stencil (depth and stencil from its clears). `SV_Position` and `TEXCOORD0` match the native draw. The prefix's values (`RD_TexDim`, the mip, slice, sample and type, the range) are checked for each texture, a global the prefix doesn't fill is 0, `Texture2D` and `SamplerState` sample like `sampler2D`, the UI's template builds, and a shader with an error or for ps_2_0 doesn't |
+| `D3D9_Texture_LOD` | `SetLOD` on managed textures. The demo samples a 2D, a cube, a volume and a vertex texture at LODs 0 to 7 with a LOD set before the frame and MAXMIPLEVEL 0, then with a LOD set in the frame and MAXMIPLEVEL 1, and checks natively that the GPU read the levels expected (in its log). The test checks the same at replay, going to the second pass first so that the first has to undo the frame's SetLOD; the descriptors' first mip and mip count; VS Out of the vertex texture draw; the texture viewer showing mips 0, 3 and 6 of the 2D texture while its LOD is 4; and, opening the capture again with `D3D9_ReplayOnExDevice` set, that it replays on a D3D9Ex device with SetLOD ignored and the descriptors starting at mip 0 |
+| `D3D9_Custom_Shaders` | Custom display shaders. The demo samples each of its textures natively with a ps_3_0 shader and writes what the GPU returned; the test builds the same shader as a custom shader and checks its output against that at 6 texels of every subresource: a default pool 2D texture with 3 mips, a managed one (decoded on the CPU until step 8 moved replay to a plain D3D9 device, sampled directly since), L8 (sampled as L, L, L, 1), a cube and a volume texture with 2 mips, a render target surface, and a D24S8 depth stencil (depth and stencil from its clears). `SV_Position` and `TEXCOORD0` match the native draw. The prefix's values (`RD_TexDim`, the mip, slice, sample and type, the range) are checked for each texture, a global the prefix doesn't fill is 0, `Texture2D` and `SamplerState` sample like `sampler2D`, the UI's template builds, and a shader with an error or for ps_2_0 doesn't |
 | `D3D9_Shader_Editing` | Shader editing. The demo draws nine quads with vs_1_1, vs_2_0 and vs_3_0, ps_1_1, ps_1_4, ps_2_0 and ps_3_0 shaders, bound when the frame starts, by a state block recorded before the frame, by `Set*Shader`, created during the frame, shared by two draws, and with fixed function pixel processing; natively it draws the scene with each of 10 edits in place of the original and writes what the GPU drew at 36 texels. The test builds each edit (HLSL, assembly or bytecode), replaces the original and checks the texels against the GPU's, checks the pipeline state (the original's ID, the edit's reflection) and, for vertex shaders, VS Out; then removes it and checks the original is back. Every shader's disassembly assembles back to the same instructions. Errors (HLSL, assembly, ps_1_x HLSL, a profile or bytecode of the other stage, bytecode with no end token, other stages) are reported, HLSL with no profile is shader model 3, a pixel shader doesn't replace a vertex shader, and freeing a replacement removes it |
 | `D3D11_D3DPERF_Markers` | `d3d11_d3dperf_check.py`: the markers nest as drawn, with their colours |
 
@@ -358,8 +360,9 @@ Tested in `d3d9_step3.md`: `D3D9_Custom_Shaders` passes, and in qrenderdoc a cus
 texture's alpha and a depth stencil's stencil, and the editor inserts the D3D9 snippets.
 
 Not covered: multisampled textures, YUV formats and textures decoded because of their format (P8,
-ATI1 and so on) aren't in the test; they go through the same decoded path as the managed texture
-and the depth stencil.
+ATI1 and so on) aren't in the test; they go through the same decoded path as the depth stencil
+(and the managed texture, until step 8 moved replay to a plain D3D9 device, where it's sampled
+directly).
 
 ## Shader editing
 
@@ -767,17 +770,76 @@ Retest 3 (`d3d9_phase3_retest3.md`): the IA diagram and the Reset warning are fi
 
 ## Replay (phase 3a)
 
-How it works is described at the top of `d3d9_replay_device.cpp`. In short: a D3D9Ex device on a
-hidden window replays through the same wrappers the application used, and wrappers created during
-replay keep their captured IDs. The capture's implicit swapchains become additional swapchains,
-windowed, and its automatic depth stencil a standalone one. D3D9Ex has no managed pool, so managed
-objects go in the default pool, and textures that can't be rendered to are made D3DUSAGE_DYNAMIC
-where the driver allows, so they can be locked to write and read them. Buffers lose
-D3DUSAGE_WRITEONLY. Depth stencils are written back with `oDepth` and the stencil a bit at a time
-(`d3d9_depth.cpp`).
+How it works is described at the top of `d3d9_replay_device.cpp`. In short: a device on a hidden
+window replays through the same wrappers the application used, and wrappers created during replay
+keep their captured IDs. Since step 8 it's the kind of device the capture was made with: D3D9Ex
+for D3D9Ex captures, plain D3D9 otherwise (see "Replay device and SetLOD" below); until then it
+was always D3D9Ex. The capture's implicit swapchains become additional swapchains, windowed, and
+its automatic depth stencil a standalone one. On a plain device managed objects stay managed.
+D3D9Ex has no managed pool, so there they go in the default pool. Default pool textures that
+can't be rendered to are made D3DUSAGE_DYNAMIC where the driver allows, so they can be locked to
+write and read them. Buffers lose D3DUSAGE_WRITEONLY. Depth stencils are written back with
+`oDepth` and the stencil a bit at a time (`d3d9_depth.cpp`).
 
 On its own, 3a gives the event browser, the resource list, the structured data and fetching data
 from Python. The texture viewer is phase 3b and the D3D9 pipeline state phase 3c, below.
+
+### Replay device and SetLOD
+
+`IDirect3DBaseTexture9::SetLOD(L)` only works on D3DPOOL_MANAGED textures. Measured natively on
+the RTX 4070 Ti with a probe (`d3d9_step8_setlod/probe`), it makes level L the texture's level 0
+for sampling:
+- MIPFILTER NONE reads level L; `texldl`, `tex2Dlod` and the other explicit LODs count from L;
+  `D3DSAMP_MAXMIPLEVEL` M counts from L too, so the most detailed level read is L + M; the LOD
+  bias applies as usual; with derivatives the LOD is λ - L, so magnification lasts up to λ = L.
+  Sampling clamps at the last level, and a LOD past it is clamped to it (`SetLOD(9)` on a 7 level
+  texture returns the old LOD and `GetLOD` then returns 6).
+- Cube, volume and vertex textures behave the same way. On a default pool texture it does
+  nothing and `GetLOD` returns 0.
+- Raising MAXMIPLEVEL to L instead (on a default pool copy) isn't the same: it differed in 1588 of
+  3024 2D samples, and about half of the cube, volume and vertex ones, since it clamps the LOD
+  rather than moving level 0.
+
+Until step 8 replay was always on a D3D9Ex device, which has no managed pool, so managed textures
+went in the default pool and replay ignored SetLOD: every draw sampling such a texture read from
+level 0 at replay. A SetLOD before the frame wasn't captured either, and the descriptors showed
+mip 0 as the first.
+
+Since step 8:
+- **The replay device** is the kind the capture was made with (`D3D9InitParams::Ex`): a plain D3D9
+  device for plain D3D9 captures, where managed textures and buffers stay managed and SetLOD
+  works on the GPU as it did in the program; a D3D9Ex device for D3D9Ex captures, which can't have
+  managed objects and need it for their Ex calls. The `D3D9_ReplayOnExDevice` config setting
+  (qrenderdoc's Tools, Settings, Core, Config Editor, under D3D9) replays plain D3D9 captures on D3D9Ex as before, with
+  SetLOD ignored.
+- **Device loss:** a plain D3D9 device can be lost when another program takes the display (going
+  fullscreen, changing the display mode). D3D9Ex devices aren't, which is probably why replay used
+  one. Recovering would mean releasing and recreating every default pool object, the capture's and
+  replay's own, so it isn't done: `FatalErrorCheck` checks `TestCooperativeLevel` and reports
+  the device lost, and the capture has to be opened again. Tried in `d3d9_step8_setlod.md`: a
+  program taking exclusive fullscreen at another resolution lost a replaying plain D3D9 device
+  within 0.63 seconds, which was reported as "The D3D9 replay device was lost
+  (D3DERR_DEVICELOST), open the capture again", and replay went on without crashing. With
+  `D3D9_ReplayOnExDevice` set the same replay wasn't lost.
+- **Captures** from version 0x4 hold each texture's LOD as the frame started in its initial
+  contents (`D3D9InitialContentsData::LOD`). SetLOD reads the initial contents before changing
+  the LOD, as locks do, and replay sets the LOD again when it applies them, which also undoes
+  SetLOD calls in the frame when replaying from its start. Older captures have no LOD, so their
+  textures start the frame at 0.
+- **Descriptors** start at the LOD's level, with that many fewer mips. `MAXMIPLEVEL` (shown as the
+  sampler's minimum LOD) is still the value set, which counts from the LOD's level. The D3D9
+  pipeline state's samplers have the bound texture's LOD (`D3D9Pipe::Sampler::textureLOD`), and the
+  D3D9 Pipeline State panel shows it in the textures' Mips column ("7 (LOD 4)").
+- **The texture viewer** samples managed textures directly now, as it does default pool ones, so it
+  sets the LOD to 0 while it does (`ScopedBaseLOD`) and back afterwards, or levels above the LOD
+  would show the LOD's level. Custom display shaders do the same. Pick pixel, min/max, the
+  histogram and saving read the levels with locks, which SetLOD doesn't affect.
+- **VS Out** emulates `texldl` with the levels from the LOD's on (`ReadVertexTexture` in
+  `d3d9_postvs.cpp`), so the LOD and MAXMIPLEVEL count from it as on the GPU.
+
+Tested in `d3d9_step8_setlod.md`, with the new `D3D9_Texture_LOD` test: passed, and every other
+D3D9 test passed with their plain D3D9 captures replayed on a plain D3D9 device, x64 and x86. Not
+tried: derivatives (the test samples at explicit LODs), other GPUs, and games.
 
 Known gaps:
 - Multisampled render targets are written back by copying their resolved contents into a
@@ -834,7 +896,8 @@ How it works:
   and put it back after, with the render targets and the bindings the wrappers track, the same way
   `d3d9_depth.cpp` does. The shaders are SM3, compiled with D3DCompile on first use.
 - A subresource is displayed one of three ways (the comment at the top of the file has details):
-  textures in D3DPOOL_DEFAULT whose format the sampler returns as described are sampled directly,
+  textures in D3DPOOL_DEFAULT (and D3DPOOL_MANAGED since step 8, see "Replay device and SetLOD")
+  whose format the sampler returns as described are sampled directly,
   with a channel matrix that moves the channels to where the format's description has them (L8
   samples as LLL1 and shows as L001); render target surfaces in those formats (back buffers,
   standalone render targets) are copied into a texture with StretchRect, which also resolves
@@ -1042,7 +1105,8 @@ Known gaps:
 - (Since step 4.) Shader editing is offered, see "Shader editing".
 - Remote replay presents `localRenderer` D3D9, which has no proxy texture support, so remote
   replay of D3D9 captures probably won't display textures.
-- `SetLOD` on managed textures isn't reflected in the descriptors' first mip.
+- (Fixed in step 8: `SetLOD` on managed textures wasn't reflected in the descriptors' first mip,
+  see "Replay device and SetLOD".)
 
 ### Checking the pipeline state
 
@@ -1560,6 +1624,9 @@ within 0.0037 of the GPU.
 Software vertex processing (the runtime runs the vertex shader and samples on the CPU) filters
 differently: 5-bit weights, its own rounding of the LOD, and different cube faces at ties and
 edges. RenderDoc emulates the hardware path only.
+
+A managed vertex texture with `SetLOD(L)` is sampled from level L on, as if L were level 0 (see
+"Replay device and SetLOD"), which `D3D9_Texture_LOD` checks.
 
 Tested in `d3d9_step8_texldl_filtering.md`, with a new `D3D9_Mesh_Output` draw that samples a 2D,
 a cube, a volume and an sRGB vertex texture: passed. Not tried: other GPUs, sRGB formats other

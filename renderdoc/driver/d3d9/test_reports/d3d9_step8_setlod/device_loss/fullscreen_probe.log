@@ -1,0 +1,4 @@
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_fullscreen_probe.cpp:57 Log: Desktop 3840x2160, going fullscreen at 1280x720 60Hz
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_fullscreen_probe.cpp:80 Log: Fullscreen device created
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_fullscreen_probe.cpp:98 Log: Presented 194 frames fullscreen

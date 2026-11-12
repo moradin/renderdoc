@@ -546,6 +546,8 @@ void FillSampler(D3D9Pipe::Sampler &dst, DWORD sampler, const D3D9SamplerStateVa
   dst.srgbTexture = v[D3DSAMP_SRGBTEXTURE] != 0;
   dst.elementIndex = v[D3DSAMP_ELEMENTINDEX];
   dst.dmapOffset = v[D3DSAMP_DMAPOFFSET];
+  // SetLOD's level, which only managed textures have (see GetDescriptors)
+  dst.textureLOD = tex ? tex->GetLOD() : 0;
 }
 
 SamplerDescriptor MakeSamplerDescriptor(const D3D9Pipe::Sampler &samp)
@@ -1254,8 +1256,13 @@ rdcarray<Descriptor> D3D9Replay::GetDescriptors(ResourceId descriptorStore,
           TextureDescription tex = GetTexture(d.resource);
           d.format = tex.format;
           d.textureType = tex.type;
-          d.firstMip = 0;
-          d.numMips = (uint8_t)RDCMIN(tex.mips, 255U);
+          // SetLOD makes a D3DPOOL_MANAGED texture's level L its most detailed one: the sampler
+          // reads it as level 0, MAXMIPLEVEL and texldl's LOD count from it. GetLOD is 0 for
+          // other textures, and on a D3D9Ex replay device, which has no managed pool.
+          const uint32_t lod =
+              RDCMIN((uint32_t)bind.textures[descriptorId]->GetLOD(), RDCMAX(tex.mips, 1U) - 1);
+          d.firstMip = (uint8_t)RDCMIN(lod, 255U);
+          d.numMips = (uint8_t)RDCMIN(tex.mips - lod, 255U);
           d.firstSlice = 0;
           d.numSlices = (uint16_t)tex.arraysize;
         }
