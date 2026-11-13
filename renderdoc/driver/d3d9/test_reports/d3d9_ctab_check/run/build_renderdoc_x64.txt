@@ -1,0 +1,28 @@
+
+  Intel.vcxproj -> E:\Projects\renderdoc\x64\Development\driver_Intel.lib
+  renderdoc_dxgi.vcxproj -> E:\Projects\renderdoc\x64\Development\driver_dxgi.lib
+  ARM.vcxproj -> E:\Projects\renderdoc\x64\Development\driver_ARM.lib
+  renderdoc_dxil.vcxproj -> E:\Projects\renderdoc\x64\Development\driver_dxil.lib
+  renderdocshim.vcxproj -> E:\Projects\renderdoc\x64\Development\renderdocshim64.dll
+  renderdocui_stub.vcxproj -> E:\Projects\renderdoc\x64\Development\renderdocui.exe
+  renderdoc_spirv.vcxproj -> E:\Projects\renderdoc\x64\Development\driver_spirv.lib
+  AMD.vcxproj -> E:\Projects\renderdoc\x64\Development\driver_AMD.lib
+  renderdoc_dxbc.vcxproj -> E:\Projects\renderdoc\x64\Development\driver_dxbc.lib
+  renderdoc_vulkan.vcxproj -> E:\Projects\renderdoc\x64\Development\driver_vulkan.lib
+  NV.vcxproj -> E:\Projects\renderdoc\x64\Development\driver_NV.lib
+  renderdoc_gl.vcxproj -> E:\Projects\renderdoc\x64\Development\driver_gl.lib
+  d3d9_shader_reflect.cpp
+  renderdoc_d3d11.vcxproj -> E:\Projects\renderdoc\x64\Development\driver_d3d11.lib
+  renderdoc_d3d12.vcxproj -> E:\Projects\renderdoc\x64\Development\driver_d3d12.lib
+  Read Git commit: '12983db027577e19d86ab1f15d031d164228a5e4'
+  renderdoc_version.vcxproj -> E:\Projects\renderdoc\x64\Development\version.lib
+  renderdoc_d3d9.vcxproj -> E:\Projects\renderdoc\x64\Development\driver_d3d9.lib
+  Processing layer JSON file for RenderDoc 1.48
+  renderdoc.vcxproj -> E:\Projects\renderdoc\x64\Development\renderdoc.dll
+  renderdoccmd.vcxproj -> E:\Projects\renderdoc\x64\Development\renderdoccmd.exe
+  qrenderdoc_module.vcxproj -> E:\Projects\renderdoc\x64\Development\pymodules\qrenderdoc.pyd
+  Built against default bundled python
+  pyrenderdoc_module.vcxproj -> E:\Projects\renderdoc\x64\Development\pymodules\renderdoc.pyd
+  Built against default bundled python
+  qrenderdoc_local.vcxproj -> E:\Projects\renderdoc\x64\Development\qrenderdoc.exe
+  Built against default bundled python

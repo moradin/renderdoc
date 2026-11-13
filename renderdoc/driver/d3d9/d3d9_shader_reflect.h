@@ -118,7 +118,11 @@ struct CTABConstant
   // of it isn't used
   uint16_t registerCount = 0;
   CTABType type;
-  // the default value's DWORDs, packed as the type's components (not padded to registers)
+  // the default value, as the compiler stores it: the registers' contents for every register the
+  // type covers, including any past registerCount. That's 4 DWORDs per register in the float and
+  // integer sets (a matrix's rows or columns, or a vector, padded with zeros; an int scalar the
+  // compiler puts in an integer register is stored as a loop's (count, 0, 1, 0)), and 1 DWORD per
+  // register in the boolean set (0 or 0xFFFFFFFF). Checked against D3DX9_43's SetDefaults.
   rdcarray<uint32_t> defaultValue;
 };
 

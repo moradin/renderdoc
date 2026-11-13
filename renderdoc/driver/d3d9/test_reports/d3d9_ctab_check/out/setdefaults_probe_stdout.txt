@@ -1,0 +1,10 @@
+floats_vs2 vs 0x0 {'F': 50, 'I': 0, 'B': 0}
+floats_vs3 vs 0x0 {'F': 50, 'I': 0, 'B': 0}
+intbool_ps3 ps 0x0 {'F': 1, 'I': 2, 'B': 5}
+intbool_vs2a vs 0x0 {'F': 20, 'I': 1, 'B': 3}
+intbool_vs3 vs 0x0 {'F': 20, 'I': 1, 'B': 3}
+legacy_ps11 ps 0x0 {'F': 3, 'I': 0, 'B': 0}
+legacy_ps14 ps 0x0 {'F': 3, 'I': 0, 'B': 0}
+legacy_vs11 vs 0x0 {'F': 5, 'I': 0, 'B': 0}
+partial_vs3 vs 0x0 {'F': 4, 'I': 0, 'B': 2}
+sm2_ps20 ps 0x0 {'F': 6, 'I': 0, 'B': 0}

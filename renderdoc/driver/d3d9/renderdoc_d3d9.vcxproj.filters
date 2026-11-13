@@ -131,6 +131,9 @@
     <ClInclude Include="d3d9_bytecode_test.h">
       <Filter>Replay</Filter>
     </ClInclude>
+    <ClInclude Include="d3d9_ctab_test_data.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
     <ClInclude Include="d3d9_shader_reflect.h">
       <Filter>Replay</Filter>
     </ClInclude>

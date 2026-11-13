@@ -138,6 +138,7 @@
     <ClInclude Include="..\dx\official\d3d9types.h" />
     <ClInclude Include="d3d9_bytecode.h" />
     <ClInclude Include="d3d9_bytecode_test.h" />
+    <ClInclude Include="d3d9_ctab_test_data.h" />
     <ClInclude Include="d3d9_shader_reflect.h" />
     <ClInclude Include="d3d9_vs_emulate.h" />
     <ClInclude Include="d3d9_ffp_vertex.h" />

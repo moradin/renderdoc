@@ -1,0 +1,10 @@
+floats_vs3 vs_3_0 3184 bytes, 46 nodes 
+floats_vs2 vs_2_0 3172 bytes, 46 nodes 
+intbool_ps3 ps_3_0 1088 bytes, 15 nodes 
+intbool_vs3 vs_3_0 1156 bytes, 11 nodes 
+intbool_vs2a vs_2_a 1148 bytes, 11 nodes 
+sm2_ps20 ps_2_0 512 bytes, 6 nodes 
+legacy_ps11 ps_1_1 324 bytes, 5 nodes 
+legacy_ps14 ps_1_4 328 bytes, 5 nodes 
+legacy_vs11 vs_1_1 428 bytes, 2 nodes 
+partial_vs3 vs_3_0 644 bytes, 15 nodes 

@@ -1,0 +1,14 @@
+renderdoc.sln x64 exit 0 warnings 0 errors 0
+renderdoc.sln x86 exit 0 warnings 0 errors 0
+unit x64 exit 0 All tests passed (7659 assertions in 15 test cases)  
+unit x86 exit 0 All tests passed (7659 assertions in 15 test cases)  
+pymodule exit 0
+tests exit 0
+>> Test D3D9_Failed_Calls
+    .. Running D3D9_Failed_Calls natively for 3 frames
+    .. Running exe:'E:\Projects\renderdoc\util\test\demos_x64.exe' cmd:'D3D9_Failed_Calls --log E:\Projects\renderdoc\util\test\tmp\D3D9_Failed_Calls\demos.log --tmp E:\Projects\renderdoc\util\test\tmp' in dir:'' with env:'[]'
+E:\Projects\renderdoc\util\test\demos\main.cpp:690 Log: Running 'D3D9_Failed_Calls'
+    .. Test D3D9_Failed_Calls ran in 0:00:03.978970
+<< Test D3D9_Failed_Calls
+    ** The counters enumerated are ['GPU Duration', 'Samples Passed']
+## Tests complete summary: 18 passed out of 18 run from 209 total in 0:01:23.093976 ##

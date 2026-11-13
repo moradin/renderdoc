@@ -126,28 +126,6 @@ private:
   uint32_t m_Size;
 };
 
-// the number of components of a type, as its default value stores it
-uint32_t ComponentCount(const CTABType &type, int depth = 0)
-{
-  if(depth > MaxTypeDepth)
-    return 0;
-  uint32_t perElement = 0;
-  if(type.cls == ParamClass::Struct)
-  {
-    for(const CTABMember &m : type.members)
-      perElement += ComponentCount(m.type, depth + 1);
-  }
-  else if(type.cls == ParamClass::Object)
-  {
-    perElement = 0;
-  }
-  else
-  {
-    perElement = uint32_t(type.rows) * uint32_t(type.columns);
-  }
-  return perElement * RDCMAX(1U, uint32_t(type.elements));
-}
-
 ConstantSet SetFor(RegisterSet set)
 {
   if(set == RegisterSet::Int4)
@@ -712,9 +690,15 @@ void ParseConstantTable(const uint32_t *data, uint32_t numDWORDs, ConstantTable 
       continue;
     }
 
-    if(defaultOffset != 0)
+    // samplers have no default value
+    if(defaultOffset != 0 && constant.set != RegisterSet::Sampler)
     {
-      uint32_t count = ComponentCount(constant.type);
+      // the registers the whole type covers, including any the compiler didn't allocate
+      const ConstantSet cset = SetFor(constant.set);
+      const uint32_t registers = uint32_t(RDCMIN(uint64_t(RegistersPerElement(constant.type, cset)) *
+                                                     RDCMAX(1U, uint32_t(constant.type.elements)),
+                                                 uint64_t(MaxRegisters)));
+      const uint32_t count = registers * (cset == ConstantSet::Bool ? 1 : 4);
       // only take default values that are all inside the table
       if(defaultOffset <= numDWORDs * sizeof(uint32_t) &&
          (numDWORDs * sizeof(uint32_t) - defaultOffset) / 4 >= count)
@@ -1072,11 +1056,16 @@ void ShaderInfo::BuildReflection(ResourceId id)
       var.byteOffset = uint32_t(c.registerIndex) * RegisterStride(set);
       var.type = MakeConstantType(c.type, set, RDCMIN(uint32_t(c.registerCount), MaxSetRegisters));
 
-      // a default value is only kept for something that fits in 64 bits
-      if(!c.defaultValue.empty() && c.defaultValue.size() <= 2)
+      // a default value is only kept for a scalar or a vector of 2, which fit in 64 bits. Their
+      // components are the first DWORDs of the default either way: in the float and integer sets
+      // they're in one register, and in the boolean set each is a register of one DWORD.
+      const uint32_t components = uint32_t(c.type.rows) * uint32_t(c.type.columns);
+      if((c.type.cls == ParamClass::Scalar || c.type.cls == ParamClass::Vector) &&
+         c.type.elements <= 1 && components >= 1 && components <= 2 &&
+         c.defaultValue.size() >= components)
       {
         uint64_t def = c.defaultValue[0];
-        if(c.defaultValue.size() > 1)
+        if(components > 1)
           def |= uint64_t(c.defaultValue[1]) << 32;
         var.defaultValue = def;
       }
@@ -1264,6 +1253,7 @@ void ShaderInfo::FillConstants(uint32_t cbufSlot, const bytebuf &registerData,
 
 #include "catch/catch.hpp"
 #include "d3d9_bytecode_test.h"
+#include "d3d9_ctab_test_data.h"
 
 using namespace D3D9BC;
 using namespace D3D9BCTest;
@@ -1414,6 +1404,56 @@ const ShaderConstant *FindVar(const ConstantBlock *block, const rdcstr &name)
       return &v;
   return NULL;
 }
+
+// Finds a constant, struct member or array element by D3DX's path for it ("s.b", "sarr[1].c"),
+// and the register it starts at. An element is described by its array's ShaderConstant.
+const ShaderConstant *FindPath(const ConstantBlock *block, ConstantSet set, const rdcstr &path,
+                               uint32_t &reg)
+{
+  if(!block)
+    return NULL;
+
+  const uint32_t stride = set == ConstantSet::Bool ? 4 : 16;
+  const ShaderConstant *cur = NULL;
+  uint32_t offset = 0;
+  int32_t i = 0;
+  while(i < path.count())
+  {
+    if(path[i] == '[')
+    {
+      const int32_t end = path.indexOf(']', i);
+      if(cur == NULL || end < 0)
+        return NULL;
+      const uint32_t idx = (uint32_t)atoi(path.substr(i + 1, end - i - 1).c_str());
+      if(idx >= RDCMAX(1U, cur->type.elements))
+        return NULL;
+      offset += idx * cur->type.arrayByteStride;
+      i = end + 1;
+      continue;
+    }
+
+    if(path[i] == '.')
+      i++;
+    int32_t end = i;
+    while(end < path.count() && path[end] != '.' && path[end] != '[')
+      end++;
+    const rdcstr name = path.substr(i, end - i);
+
+    const rdcarray<ShaderConstant> &vars = cur ? cur->type.members : block->variables;
+    const ShaderConstant *next = NULL;
+    for(const ShaderConstant &v : vars)
+      if(v.name == name)
+        next = &v;
+    if(next == NULL)
+      return NULL;
+    cur = next;
+    offset += cur->byteOffset;
+    i = end;
+  }
+
+  reg = offset / stride;
+  return cur;
+}
 };
 
 TEST_CASE("D3D9 shader reflection", "[d3d9][shader]")
@@ -1440,7 +1480,8 @@ TEST_CASE("D3D9 shader reflection", "[d3d9][shader]")
     // an array whose last 3 elements aren't used, so only 5 registers were allocated
     ctab.AddConstant("Bones", RegisterSet::Float4, 8, 5, f4arr);
     ctab.AddConstant("Lights", RegisterSet::Float4, 13, 10, light);
-    ctab.AddConstant("Scale", RegisterSet::Float4, 23, 1, f1, {2.5f});
+    // defaults are stored as whole registers
+    ctab.AddConstant("Scale", RegisterSet::Float4, 23, 1, f1, {2.5f, 0.0f, 0.0f, 0.0f});
     ctab.AddConstant("Count", RegisterSet::Float4, 24, 1, intInFloat);
     ctab.AddConstant("Loops", RegisterSet::Int4, 1, 1, i4);
     ctab.AddConstant("Enable", RegisterSet::Bool, 0, 1, b1);
@@ -1494,7 +1535,7 @@ TEST_CASE("D3D9 shader reflection", "[d3d9][shader]")
     CHECK(table.target == "vs_3_0");
     REQUIRE(table.constants.size() == 11);
     CHECK(table.constants[3].type.members.size() == 3);
-    CHECK(table.constants[4].defaultValue.size() == 1);
+    CHECK(table.constants[4].defaultValue.size() == 4);
 
     CHECK(refl.stage == ShaderStage::Vertex);
     CHECK(refl.entryPoint == "main");
@@ -2055,6 +2096,179 @@ TEST_CASE("D3D9 shader reflection", "[d3d9][shader]")
     CHECK(refl.outputSignature[0].systemValue == ShaderBuiltin::Position);
     CHECK(refl.outputSignature.back().systemValue == ShaderBuiltin::PointSize);
   };
+
+  SECTION("Compiled constant tables")
+  {
+    // Tables from D3DCompile and the legacy D3DX9 compiler, with what D3DX9_43 reads from them:
+    // see d3d9_ctab_test_data.h. Each table is put in a shader with no instructions.
+    for(const CTABTestData::Shader &sh : CTABTestData::shaders)
+    {
+      INFO(sh.name);
+
+      rdcarray<uint32_t> tokens = {sh.version, CommentTok(sh.ctabDWORDs + 1),
+                                   MakeFourCC('C', 'T', 'A', 'B')};
+      tokens.append(sh.ctab, sh.ctabDWORDs);
+      tokens.push_back(EndTok());
+
+      ShaderInfo info;
+      info.Init(ResourceId(), tokens.data(), tokens.size());
+      const ShaderReflection &refl = info.GetReflection();
+      const ConstantTable &table = info.GetConstantTable();
+
+      CHECK(info.GetProgram().error.empty());
+      CHECK(table.present);
+      CHECK(table.error.empty());
+
+      // the registers our default values fill, as SetDefaults does: only the allocated ones
+      std::map<rdcpair<uint16_t, uint16_t>, rdcarray<uint32_t>> image;
+      for(const CTABConstant &c : table.constants)
+      {
+        if(c.defaultValue.empty())
+          continue;
+        const uint32_t per = c.set == RegisterSet::Bool ? 1 : 4;
+        INFO(c.name.c_str());
+        REQUIRE(c.defaultValue.size() >= c.registerCount * per);
+        CHECK(c.defaultValue.size() % per == 0);
+        for(uint32_t r = 0; r < c.registerCount; r++)
+          image[{uint16_t(c.set), uint16_t(c.registerIndex + r)}] =
+              rdcarray<uint32_t>(c.defaultValue.data() + r * per, per);
+      }
+
+      CHECK(image.size() == sh.numRegs);
+      for(size_t r = 0; r < sh.numRegs; r++)
+      {
+        const CTABTestData::Register &e = sh.regs[r];
+        INFO("register set " << e.set << " register " << e.reg);
+        auto it = image.find({e.set, e.reg});
+        const bool filled = it != image.end();
+        REQUIRE(filled);
+        for(size_t k = 0; k < it->second.size(); k++)
+          CHECK(it->second[k] == e.value[k]);
+      }
+
+      for(size_t n = 0; n < sh.numNodes; n++)
+      {
+        const CTABTestData::Node &node = sh.nodes[n];
+        const rdcstr path = node.path;
+        INFO(node.path);
+
+        const bool top = !path.contains('.') && !path.contains('[');
+        if(top)
+        {
+          const CTABConstant *c = NULL;
+          for(const CTABConstant &tc : table.constants)
+            if(tc.name == path)
+              c = &tc;
+          REQUIRE(c);
+          CHECK(uint16_t(c->set) == node.set);
+          CHECK(c->registerIndex == node.reg);
+          CHECK(c->registerCount == node.count);
+          CHECK(uint16_t(c->type.cls) == node.cls);
+          CHECK(uint16_t(c->type.type) == node.type);
+          CHECK(c->type.rows == node.rows);
+          CHECK(c->type.columns == node.columns);
+          CHECK(RDCMAX(uint16_t(1), c->type.elements) == node.elements);
+          CHECK(c->type.members.size() == node.members);
+        }
+
+        if(node.set == uint16_t(RegisterSet::Sampler))
+        {
+          if(!top)
+            continue;
+          const ShaderSampler *samp = NULL;
+          for(const ShaderSampler &ss : refl.samplers)
+            if(ss.name == path)
+              samp = &ss;
+          REQUIRE(samp);
+          CHECK(samp->fixedBindNumber == node.reg);
+          CHECK(samp->bindArraySize == node.count);
+          continue;
+        }
+
+        // registers the compiler didn't allocate aren't part of the variable
+        if(node.count == 0)
+          continue;
+
+        const ConstantSet set = node.set == uint16_t(RegisterSet::Bool)   ? ConstantSet::Bool
+                                : node.set == uint16_t(RegisterSet::Int4) ? ConstantSet::Int
+                                                                          : ConstantSet::Float;
+        uint32_t reg = ~0U;
+        const ShaderConstant *var = FindPath(FindBlock(refl, set), set, path, reg);
+        REQUIRE(var);
+        CHECK(reg == node.reg);
+
+        if(node.cls <= uint16_t(ParamClass::MatrixColumns))
+        {
+          CHECK(var->type.rows == node.rows);
+          CHECK(var->type.columns == node.columns);
+          CHECK(bool(var->type.flags & ShaderVariableFlags::RowMajorMatrix) ==
+                (node.cls == uint16_t(ParamClass::MatrixRows)));
+        }
+
+        // a scalar's or a 2 component vector's default value, from SetDefaults' registers
+        if(top && node.cls <= uint16_t(ParamClass::Vector) && node.elements == 1 &&
+           node.rows * node.columns <= 2)
+        {
+          const uint32_t components = uint32_t(node.rows) * uint32_t(node.columns);
+          uint32_t expected[2] = {};
+          bool found = false;
+          for(size_t r = 0; r < sh.numRegs; r++)
+          {
+            const CTABTestData::Register &e = sh.regs[r];
+            if(e.set != node.set)
+              continue;
+            if(set == ConstantSet::Bool)
+            {
+              if(e.reg >= node.reg && e.reg < node.reg + components)
+              {
+                expected[e.reg - node.reg] = e.value[0];
+                found = true;
+              }
+            }
+            else if(e.reg == node.reg)
+            {
+              expected[0] = e.value[0];
+              expected[1] = components > 1 ? e.value[1] : 0;
+              found = true;
+            }
+          }
+          // a constant without a default is 0
+          CHECK(var->defaultValue == (found ? (uint64_t(expected[1]) << 32) | expected[0] : 0));
+        }
+      }
+
+      // the compiler stores the default of every register the type covers, allocated or not
+      if(rdcstr(sh.name) == "partial_vs3")
+      {
+        for(const CTABConstant &c : table.constants)
+        {
+          INFO(c.name.c_str());
+          if(c.name == "part")
+          {
+            REQUIRE(c.defaultValue.size() == 16);
+            CHECK(c.defaultValue[8] == FloatBits(3.0f));
+            CHECK(c.defaultValue[15] == FloatBits(4.0f));
+          }
+          else if(c.name == "bpart")
+          {
+            CHECK(c.defaultValue == rdcarray<uint32_t>({~0U, ~0U, 0U, ~0U}));
+          }
+          else if(c.name == "tpart")
+          {
+            REQUIRE(c.defaultValue.size() == 12);
+            CHECK(c.defaultValue[8] == FloatBits(7.0f));
+          }
+          else if(c.name == "mpart")
+          {
+            // a column per register
+            REQUIRE(c.defaultValue.size() == 16);
+            CHECK(c.defaultValue[4] == FloatBits(2.0f));
+            CHECK(c.defaultValue[15] == FloatBits(16.0f));
+          }
+        }
+      }
+    }
+  }
 
   SECTION("Malformed constant tables")
   {

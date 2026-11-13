@@ -57,6 +57,13 @@ the testing were on separate machines.
 | | ~~`SetLOD` on managed textures~~ | 0.25 (took about 1) | Done, see "Replay device and SetLOD" below (`d3d9_step8_setlod.md`). Replay ignored it, which changes the pixels of every draw sampling such a texture. Captures from plain D3D9 devices now replay on a plain D3D9 device, where it works. Changed the capture format to version 0x4 |
 | | P8 palettes | 0.5 | Parked: not worth it, since current GPUs can't sample P8 or A8P8. On the RTX 4070 Ti, P8 and A8P8 textures can only be made in D3DPOOL_SCRATCH, and offscreen plain surfaces in any pool, so nothing on it ever samples them. A quick probe found the reference rasterizer (`d3dref9.dll`, D3DDEVTYPE_REF) does: the colour comes from the current palette, and alpha from `peFlags` (P8, fixed function only; ps_2_0 gave 1) or the texture (A8P8). That device could be the native reference if this is picked up. `SetCurrentTexturePalette` with a number above 65535 crashes inside d3d9 |
 
+Before step 5, two small shader items:
+
+| Work | Estimate | Notes |
+|---|---|---|
+| ~~Check the shader parser and constant table against the compiler~~ | 0.5 | Done, see "Shaders" below (`d3d9_ctab_check.md`). Default values were read wrongly for arrays and structs |
+| Edited shaders keep their constant table | 0.5 | After an edit, the pipeline state shows the edited shader's constants by register (`c12`) instead of by name |
+
 Left out on purpose:
 
 - **Quad overdraw:** it needs UAVs, which D3D9 doesn't have.
@@ -1218,7 +1225,7 @@ Reflection, which is what phase 3c's pipeline state builds on:
   isn't used to lay them out.
 - With a constant table, variables have their HLSL names and types: structs, arrays, matrices
   (`row_major` ones are row major, otherwise each register is a column), and default values for
-  ones of up to 64 bits. A variable's base type is what its register set holds, so an `int` or
+  scalars and vectors of up to 2 components (the reflection's default is 64 bits). A variable's base type is what its register set holds, so an `int` or
   `bool` the compiler put in `c#` registers is a float. Arrays are cut to the registers the
   compiler allocated (`RegisterCount`), as the registers after the last one used can belong to
   something else.
@@ -1242,13 +1249,29 @@ Reflection, which is what phase 3c's pipeline state builds on:
   from the constant table or `dcl_2d`/`dcl_cube`/`dcl_volume`. ps_1_x has neither without a table,
   so its samplers are 2D, or cubes for `texm3x3tex`, `texm3x3spec` and `texm3x3vspec`.
 
+Checked against the compiler:
+- The forms this section once listed as unverified (modifier order such as `mul_x2_sat`, source
+  modifiers before the swizzle, `dcl_texcoord1_centroid`, relative addressing in ps_3_0 inputs
+  and vs_3_0 outputs) are identical to fxc's (`d3d9_phase3_report.md`), and step 4's assembly
+  round trip covers every shader in the test captures.
+- The constant table, against D3DX9_43's own reader (`d3d9_ctab_check.md`): 10 tables from
+  D3DCompile (vs_2_0, vs_2_a, vs_3_0, ps_2_0, ps_3_0) and the legacy compiler (vs_1_1, ps_1_1,
+  ps_1_4), with every kind of uniform, all with initialisers. For every constant, struct member
+  and array element, the names, register sets, registers, classes, types and sizes match
+  `ID3DXConstantTable::GetConstantDesc`, through the reflection for members and elements. Default
+  values match what `SetDefaults` writes to a device's registers. 7 of the tables (the other 3
+  only differ in their version) are in the `[d3d9]` unit tests (`d3d9_ctab_test_data.h`).
+- Default values are stored as the registers' contents, not as the type's components packed
+  together, which is how they were read before (`d3d9_ctab_check.md`): 4 DWORDs per register in
+  the float and integer sets, with a vector or a matrix's row or column padded with zeros, and 1
+  DWORD per register (0 or 0xFFFFFFFF) in the boolean set. An `int` in an integer register is
+  stored as a loop's (count, 0, 1, 0), and a `bool` or `int` in float registers as a float. The
+  table stores every register the type covers, even past the registers the compiler allocated;
+  `SetDefaults` writes only the allocated ones. The packed reading was right for a single scalar
+  or vector, which is all the reflection publishes (`ShaderConstant::defaultValue`, for up to 2
+  components), but gave wrong values for arrays and structs of 2 scalars.
+
 Known gaps:
-- Unverified against fxc, since there's none here (see below): instruction modifier order
-  (`mul_x2_sat`, `mov_sat_pp`), `_abs` and other source modifiers before the swizzle
-  (`r0_bx2.x`), `dcl_texcoord1_centroid`, and how relatively addressed registers look in ps_3_0
-  and vs_3_0 outputs.
-- The constant table's default values are read as the type's components packed together, as Wine
-  does; that hasn't been checked against a real table, nor have integer and boolean defaults.
 - Without a constant table, how far a relatively addressed constant array goes is a guess.
 - No shader debugging or source-level debug info. (Editing was added in step 4, see "Shader
   editing".) AMD's GCN ISA disassembly isn't offered: AMD's plugins only take DXBC/DXIL, SPIR-V

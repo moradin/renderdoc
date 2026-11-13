@@ -1,0 +1,43 @@
+
+  Read Git commit: '12983db027577e19d86ab1f15d031d164228a5e4'
+  renderdocshim.vcxproj -> E:\Projects\renderdoc\Win32\Development\renderdocshim32.dll
+  ARM.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_ARM.lib
+  renderdoc_dxgi.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_dxgi.lib
+  Intel.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_Intel.lib
+  renderdocui_stub.vcxproj -> E:\Projects\renderdoc\Win32\Development\renderdocui.exe
+  renderdoc_dxil.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_dxil.lib
+  renderdoc_spirv.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_spirv.lib
+  renderdoc_dxbc.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_dxbc.lib
+  version.cpp
+  AMD.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_AMD.lib
+  NV.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_NV.lib
+  renderdoc_gl.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_gl.lib
+  renderdoc_vulkan.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_vulkan.lib
+  renderdoc_d3d12.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_d3d12.lib
+  renderdoc_d3d11.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_d3d11.lib
+  d3d9_counters.cpp
+  d3d9_customshader.cpp
+  d3d9_device_serialise.cpp
+  d3d9_overlay.cpp
+  d3d9_pipestate.cpp
+  d3d9_pixel.cpp
+  d3d9_postvs.cpp
+  d3d9_rendermesh.cpp
+  d3d9_rendertexture.cpp
+  d3d9_replay.cpp
+  d3d9_replay_device.cpp
+  d3d9_shader_reflect.cpp
+  d3d9_shaderedit.cpp
+  d3d9_shaders.cpp
+  d3d9_vs_emulate.cpp
+  renderdoc_version.vcxproj -> E:\Projects\renderdoc\Win32\Development\version.lib
+  renderdoc_d3d9.vcxproj -> E:\Projects\renderdoc\Win32\Development\driver_d3d9.lib
+  Processing layer JSON file for RenderDoc 1.48
+  renderdoc.vcxproj -> E:\Projects\renderdoc\Win32\Development\renderdoc.dll
+  renderdoccmd.vcxproj -> E:\Projects\renderdoc\Win32\Development\renderdoccmd.exe
+  pyrenderdoc_module.vcxproj -> E:\Projects\renderdoc\Win32\Development\pymodules\renderdoc.pyd
+  qrenderdoc_module.vcxproj -> E:\Projects\renderdoc\Win32\Development\pymodules\qrenderdoc.pyd
+  Built against default bundled python
+  Built against default bundled python
+  qrenderdoc_local.vcxproj -> E:\Projects\renderdoc\Win32\Development\qrenderdoc.exe
+  Built against default bundled python
