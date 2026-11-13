@@ -1248,8 +1248,9 @@ void PipelineStateViewer::SetupShaderEditButton(QToolButton *button, ResourceId 
           rdcstrpairs files;
           files.push_back(rdcpair<rdcstr, rdcstr>(
               "disassembly.asm",
-              tr("// Assembled with d3dcompiler_47's D3DAssemble. Comments aren't kept, so a\n"
-                 "// constant table below is lost and the constants are named by register.\n") +
+              tr("// Assembled with d3dcompiler_47's D3DAssemble. Comments aren't kept, so the\n"
+                 "// constant table below isn't either: the edit's constants are named from the\n"
+                 "// original's table, by register.\n") +
                   QString(text)));
 
           EditShader(shaderId, shaderDetails->stage, shaderDetails->entryPoint,

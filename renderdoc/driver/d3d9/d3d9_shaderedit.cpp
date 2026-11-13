@@ -43,7 +43,8 @@
 //   compiles vs_1_1 to vs_3_0 and ps_2_0 to ps_3_0, but not ps_1_x.
 // * D3D9 assembly, assembled by d3dcompiler_47's D3DAssemble, which takes every shader model
 //   including ps_1_x. RenderDoc's disassembly is in fxc's format, so it assembles back to the same
-//   instructions; the constant table, which is only comments in the disassembly, is lost.
+//   instructions. The constant table is only comments in the disassembly, so the result has
+//   none: ReplaceResource gives it the original's.
 // * D3D9 bytecode, as given.
 // The result has to parse completely, as the runtime reads it up to its end token with no length.
 
@@ -240,6 +241,33 @@ void D3D9Replay::ReplaceResource(ResourceId from, ResourceId to)
     RDCWARN("Only a D3D9 shader can replace another, of the same stage: %s can't replace %s",
             ToStr(to).c_str(), ToStr(from).c_str());
     return;
+  }
+
+  // An edit assembled from the disassembly has no constant table, since in the disassembly it's
+  // only comments, so its constants would be named by register. An edit without one takes the
+  // original's: its reflection and disassembly are read again with the original's CTAB comment
+  // after its version token. The shader the device runs doesn't change, comments do nothing. The
+  // names go by register, so they're wrong for a register the edit uses for something else.
+  D3D9BC::ShaderInfo &edit = toIt->second;
+  if(m_TargetShaders.find(to) != m_TargetShaders.end() && !edit.GetConstantTable().present &&
+     fromIt->second.GetConstantTable().present)
+  {
+    const uint32_t fourcc = D3D9BC::MakeFourCC('C', 'T', 'A', 'B');
+    uint32_t length = 0;
+    const uint32_t *ctab = fromIt->second.GetProgram().FindComment(fourcc, length);
+    const rdcarray<uint32_t> &editTokens = edit.GetProgram().tokens;
+    if(ctab && !editTokens.empty())
+    {
+      rdcarray<uint32_t> tokens;
+      tokens.reserve(editTokens.size() + length + 2);
+      tokens.push_back(editTokens[0]);
+      // the comment's length includes the four character code
+      tokens.push_back(uint32_t(D3D9BC::Opcode::Comment) | ((length + 1) << 16));
+      tokens.push_back(fourcc);
+      tokens.append(ctab, length);
+      tokens.append(editTokens.data() + 1, editTokens.size() - 1);
+      edit.Init(to, tokens.data(), tokens.size());
+    }
   }
 
   m_pDevice->GetResourceManager()->ReplaceResource(from, to);

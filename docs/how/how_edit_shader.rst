@@ -29,7 +29,7 @@ Editing D3D9 shaders
 
 D3D9 shaders are bytecode with no source, so the edit button offers two starting points:
 
-* **Edit Disassembly**, the default: the shader's disassembly, which is in fxc's format and is assembled again by ``D3DAssemble`` from d3dcompiler_47. This works for every shader model, ps_1_x included. The constant table is only comments in the disassembly, so the edited shader's constants are named by register (``c4``, ``i0``, ``b1``) in the pipeline state.
+* **Edit Disassembly**, the default: the shader's disassembly, which is in fxc's format and is assembled again by ``D3DAssemble`` from d3dcompiler_47. This works for every shader model, ps_1_x included. The constant table is only comments in the disassembly, so the assembled shader has none of its own: once it replaces the original, its constants and samplers are named from the original's table, by register. A register the edit uses for something else is still shown with the original's name.
 * **Edit Generated Stub**: an HLSL stub with the shader's constants and samplers at the registers the shader used, from its constant table, and its inputs and outputs. It's compiled for the shader's own model (``/T`` in the compile options), since vs_3_0 and ps_3_0 only work with each other. d3dcompiler_47 can't compile ps_1_x, so the stub for a ps_1_x shader is ps_2_0.
 
 HLSL without a ``/T`` profile is compiled as vs_3_0 or ps_3_0.

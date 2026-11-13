@@ -78,9 +78,10 @@ Known limitations of what works:
     more than 8 lights.
 - **Custom display shaders** are ps_3_0: the texture is in a sampler with point filtering, not a
   texture object, and the older `RENDERDOC_` globals aren't filled.
-- **Shader editing**: an edited disassembly loses the constant table, so the edited shader's
-  constants are named by register. HLSL can't be compiled to ps_1_x, so a ps_1_x shader's HLSL
-  stub is ps_2_0.
+- **Shader editing**: an edited disassembly has no constant table of its own (it's only comments
+  in the disassembly), so its constants are named from the original's table, by register: a
+  register the edit uses for something else keeps the original's name. HLSL can't be compiled to
+  ps_1_x, so a ps_1_x shader's HLSL stub is ps_2_0.
 - **Debug messages** only come from calls that returned an error. The runtime doesn't check many
   mistakes: an out of range texture stage, sampler, render state or stream returns S_OK.
 - **GPU durations** depend on the GPU's clocks when they're measured, as on D3D11. With an idle GPU
@@ -130,8 +131,9 @@ Not tested yet:
 - **Shader editing**:
   - a new shader encoding, `ShaderEncoding.D3D9Asm` (D3D9 assembly), which counts as text;
   - the D3D9 pipeline state has an Edit button for each shader, whose menu
-    (`PipelineStateViewer::SetupShaderEditButton`) offers Edit Disassembly and an HLSL Edit
-    Generated Stub made by `GenerateD3D9HLSLStub`;
+    (`PipelineStateViewer::SetupShaderEditButton`) offers Edit Disassembly, whose header comment
+    says the edit's constants are named from the original's table, and an HLSL Edit Generated
+    Stub made by `GenerateD3D9HLSLStub`;
   - the shader editor highlights D3D9 assembly like HLSL, says it can't insert snippets into it,
     and saves it as `.asm`;
   - the shader editing docs have a D3D9 section.

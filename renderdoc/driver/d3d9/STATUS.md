@@ -62,7 +62,7 @@ Before step 5, two small shader items:
 | Work | Estimate | Notes |
 |---|---|---|
 | ~~Check the shader parser and constant table against the compiler~~ | 0.5 | Done, see "Shaders" below (`d3d9_ctab_check.md`). Default values were read wrongly for arrays and structs |
-| Edited shaders keep their constant table | 0.5 | After an edit, the pipeline state shows the edited shader's constants by register (`c12`) instead of by name |
+| ~~Edited shaders keep their constant table~~ | 0.5 | Done, see "Shader editing" below (`d3d9_edit_ctab.md`). An edited disassembly's constants were named by register (`c12`) instead of by name |
 
 Left out on purpose:
 
@@ -131,7 +131,7 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Failed_Calls` | Debug messages for failed calls. The 18 calls give the same results natively and under RenderDoc, and each of the 13 that fail natively has exactly one message, at its own event inside its marker, with the HRESULT as its ID. The event is named after the call ("(failed)") and its result is `D3DERR_INVALIDCALL`. Some parameters are checked: render target index 4, start register 300 or 224, a source rect 128 wide, a texture 0 wide. A failed lock records its texture, which is in the capture, and a failed call's constants aren't read. The 5 calls that succeed natively (3 Clears with targets of different sizes, one with a smaller depth stencil, and an UnlockRect without a lock) have no message, there are no other messages, they're returned only once, and the triangle drawn after the failed calls replays |
 | `D3D9_Texture_LOD` | `SetLOD` on managed textures. The demo samples a 2D, a cube, a volume and a vertex texture at LODs 0 to 7 with a LOD set before the frame and MAXMIPLEVEL 0, then with a LOD set in the frame and MAXMIPLEVEL 1, and checks natively that the GPU read the levels expected (in its log). The test checks the same at replay, going to the second pass first so that the first has to undo the frame's SetLOD; the descriptors' first mip and mip count; VS Out of the vertex texture draw; the texture viewer showing mips 0, 3 and 6 of the 2D texture while its LOD is 4; and, opening the capture again with `D3D9_ForceReplayOnExDevice` set, that it replays on a D3D9Ex device with SetLOD ignored and the descriptors starting at mip 0, and that each of the 12 LODs it ignores (4 at the frame's start, 8 SetLOD calls) is a debug message naming the texture, the LOD and the setting |
 | `D3D9_Custom_Shaders` | Custom display shaders. The demo samples each of its textures natively with a ps_3_0 shader and writes what the GPU returned; the test builds the same shader as a custom shader and checks its output against that at 6 texels of every subresource: a default pool 2D texture with 3 mips, a managed one (decoded on the CPU until step 8 moved replay to a plain D3D9 device, sampled directly since), L8 (sampled as L, L, L, 1), a cube and a volume texture with 2 mips, a render target surface, and a D24S8 depth stencil (depth and stencil from its clears). `SV_Position` and `TEXCOORD0` match the native draw. The prefix's values (`RD_TexDim`, the mip, slice, sample and type, the range) are checked for each texture, a global the prefix doesn't fill is 0, `Texture2D` and `SamplerState` sample like `sampler2D`, the UI's template builds, and a shader with an error or for ps_2_0 doesn't |
-| `D3D9_Shader_Editing` | Shader editing. The demo draws nine quads with vs_1_1, vs_2_0 and vs_3_0, ps_1_1, ps_1_4, ps_2_0 and ps_3_0 shaders, bound when the frame starts, by a state block recorded before the frame, by `Set*Shader`, created during the frame, shared by two draws, and with fixed function pixel processing; natively it draws the scene with each of 10 edits in place of the original and writes what the GPU drew at 36 texels. The test builds each edit (HLSL, assembly or bytecode), replaces the original and checks the texels against the GPU's, checks the pipeline state (the original's ID, the edit's reflection) and, for vertex shaders, VS Out; then removes it and checks the original is back. Every shader's disassembly assembles back to the same instructions. Errors (HLSL, assembly, ps_1_x HLSL, a profile or bytecode of the other stage, bytecode with no end token, other stages) are reported, HLSL with no profile is shader model 3, a pixel shader doesn't replace a vertex shader, and freeing a replacement removes it |
+| `D3D9_Shader_Editing` | Shader editing. The demo draws nine quads with vs_1_1, vs_2_0 and vs_3_0, ps_1_1, ps_1_4, ps_2_0 and ps_3_0 shaders, bound when the frame starts, by a state block recorded before the frame, by `Set*Shader`, created during the frame, shared by two draws, and with fixed function pixel processing; natively it draws the scene with each of 10 edits in place of the original and writes what the GPU drew at 36 texels. The test builds each edit (HLSL, assembly or bytecode), replaces the original and checks the texels against the GPU's, checks the pipeline state (the original's ID, the edit's reflection) and, for vertex shaders, VS Out; then removes it and checks the original is back. An edit with a constant table keeps it, and the assembly edit, which has none, has the original's names. Every shader's disassembly assembles back to the same instructions, with no constant table, and replacing the original gives it the original's constants and samplers exactly (the 7 shaders with a table). Errors (HLSL, assembly, ps_1_x HLSL, a profile or bytecode of the other stage, bytecode with no end token, other stages) are reported, HLSL with no profile is shader model 3, a pixel shader doesn't replace a vertex shader, and freeing a replacement removes it |
 | `D3D11_D3DPERF_Markers` | `d3d11_d3dperf_check.py`: the markers nest as drawn, with their colours |
 
 What they don't cover:
@@ -402,11 +402,22 @@ changing for it.
   driver read freed memory in the next replay's first draw (see `d3d9_step4.md`); the cause inside
   the driver wasn't found. The reflection is kept, the replay controller may still point to it.
 - Custom display shaders build through `BuildShaderBytecode` too.
+- **Edits keep the original's constant table** (`d3d9_edit_ctab.md`). An edit assembled from the
+  disassembly has none, since in the disassembly the table is only comments, so its constants
+  and samplers were named by register (`c0`, `s0`). `ReplaceResource` now gives a replacement
+  without a table the original's: the edit's reflection and disassembly are read again with the
+  original's `CTAB` comment put after its version token, so the pipeline state, the constants and
+  the shader viewer show the original's names. Only for shaders built by `BuildTargetShader`, and
+  not for an edit with a table of its own (HLSL, or bytecode with one), which keeps it. The device
+  still runs the edit as built; comments don't change what a shader does. The names go by
+  register, so a register the edit uses for something else is still shown with the original's
+  name, as the comment at the top of the edited disassembly says.
 
 In qrenderdoc the D3D9 pipeline state has an Edit button for each shader, with:
 - **Edit Disassembly**, the default: the shader's disassembly as D3D9 assembly. It's in fxc's
-  format, so it assembles back to the same instructions. Comments aren't kept, so the constant
-  table is lost and the edited shader's constants are named by register.
+  format, so it assembles back to the same instructions. Comments aren't kept, so the assembled
+  shader has no constant table, and `ReplaceResource` gives it the original's (see "Edits keep
+  the original's constant table" above).
 - **Edit Generated Stub**: HLSL from the reflection (`PipelineStateViewer::GenerateD3D9HLSLStub`):
   the constants and samplers at the registers the shader used, structs named after their variable
   (D3D9 constant tables have no struct names), `row_major` matrices, and input and output structs

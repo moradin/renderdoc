@@ -1,4 +1,5 @@
 import os
+import re
 import struct
 
 import renderdoc as rd
@@ -32,6 +33,30 @@ def instructions(raw: bytes):
         ret.append(tokens[i])
         i += 1
     return ret
+
+
+def has_ctab(raw: bytes):
+    """Whether a shader has a constant table, in the comments after its version token."""
+    tokens = struct.unpack(f'<{len(raw) // 4}I', raw)
+    i = 1
+    while i < len(tokens) and tokens[i] & 0xFFFF == 0xFFFE:
+        length = (tokens[i] >> 16) & 0x7FFF
+        if length >= 1 and i + 1 < len(tokens) and tokens[i + 1] == 0x42415443:
+            return True
+        i += 1 + length
+    return False
+
+
+def constants(refl):
+    """The constant blocks' variables, by name and offset, and the samplers."""
+    return ([(b.name, [(v.name, v.byteOffset) for v in b.variables]) for b in refl.constantBlocks],
+            [(s.name, s.fixedBindNumber) for s in refl.samplers])
+
+
+def names(refl):
+    """The constants and samplers named by a constant table rather than by register."""
+    return (sorted(v.name for b in refl.constantBlocks for v in b.variables if not re.fullmatch(r'[cib]\d+', v.name)) +
+            sorted(s.name for s in refl.samplers if not re.fullmatch(r's\d+', s.name)))
 
 
 class D3D9_Shader_Editing(rdtest.D3D9_Test):
@@ -70,9 +95,10 @@ class D3D9_Shader_Editing(rdtest.D3D9_Test):
 
     def shader_at(self, marker: str, stage: str):
         self.controller.SetFrameEvent(self.draws[marker].eventId, True)
-        pipe = self.controller.GetD3D9PipelineState()
-        sh = pipe.vertexShader if stage == 'vs' else pipe.pixelShader
-        return sh.resourceId, sh.reflection
+        # PipeState returns the ID by value. The D3D9 pipeline state's resourceId is a reference
+        # into the controller's state, which changes with the next event.
+        pipe = self.controller.GetPipelineState()
+        return pipe.GetShader(STAGES[stage]), pipe.GetShaderReflection(STAGES[stage])
 
     def vs_out_x(self, marker: str):
         draw = self.draws[marker]
@@ -139,6 +165,25 @@ class D3D9_Shader_Editing(rdtest.D3D9_Test):
                 problems.append(f"{label}: its disassembly assembles to different instructions")
             else:
                 rdtest.log.success(f"{label}: its disassembly assembles back to the same instructions")
+
+            # the constant table is only comments in the disassembly, so the assembled shader has
+            # none. Replacing the original, it takes the original's. GetShader's reflection is the
+            # replay's own, which the replacement changes, so what's needed from it is kept first.
+            assembled = names(rebuilt)
+            assembled_ctab = has_ctab(bytes(rebuilt.rawBytes))
+            self.controller.ReplaceResource(id, new)
+            replaced = self.controller.GetShader(rd.ResourceId.Null(), new, rd.ShaderEntryPoint('main', refl.stage))
+            if assembled_ctab:
+                problems.append(f"{label}: its disassembly assembled with a constant table")
+            elif constants(replaced) != constants(refl):
+                problems.append(f"{label}: replacing the original, its assembled disassembly has constants "
+                                f"{constants(replaced)}, the original {constants(refl)}")
+            elif instructions(bytes(replaced.rawBytes)) != instructions(bytes(refl.rawBytes)):
+                problems.append(f"{label}: replacing the original changed its assembled disassembly's instructions")
+            elif names(refl):
+                rdtest.log.success(f"{label}: replacing the original, its assembled disassembly's constants are "
+                                   f"named {names(replaced)} from the original's table (as assembled: {assembled})")
+            self.controller.RemoveReplacement(id)
             self.controller.FreeTargetResource(new)
 
         # each edit, built and replacing the original, against the GPU drawing with the edit natively
@@ -158,6 +203,9 @@ class D3D9_Shader_Editing(rdtest.D3D9_Test):
                 problems.append(f"{name}: didn't build: {errors}")
                 continue
 
+            built = self.controller.GetShader(rd.ResourceId.Null(), new, rd.ShaderEntryPoint('main', STAGES[stage]))
+            built_raw = bytes(built.rawBytes)
+
             self.controller.ReplaceResource(original, new)
 
             if self.compare(name, problems):
@@ -168,6 +216,21 @@ class D3D9_Shader_Editing(rdtest.D3D9_Test):
             if id != original or bound is None or bound.resourceId != new:
                 problems.append(f"{name}: the pipeline state has {id} with {bound.resourceId if bound else None}'s "
                                 f"reflection, expected {original} with {new}'s")
+            # an edit with a constant table keeps it, one without takes the original's
+            elif has_ctab(built_raw):
+                if bytes(bound.rawBytes) != built_raw:
+                    problems.append(f"{name}: replacing the original changed the edit's bytecode, which has a "
+                                    f"constant table")
+                else:
+                    rdtest.log.success(f"{name}: the edit keeps its own constant table, constants {names(bound)}")
+            elif has_ctab(bytes(refl.rawBytes)):
+                missing = [n for n in names(refl) if n not in names(bound)]
+                if missing or instructions(bytes(bound.rawBytes)) != instructions(built_raw):
+                    problems.append(f"{name}: the edit has no constant table, but replacing the original it has "
+                                    f"constants {names(bound)}, not the original's {names(refl)}")
+                else:
+                    rdtest.log.success(f"{name}: the edit has no constant table, replacing the original its "
+                                       f"constants are named {names(bound)} from the original's")
 
             # mesh output runs the edited vertex shader, which moves the quad a quarter to the right
             if stage == 'vs' and marker in ['HLSL 3_0', 'SM1']:
