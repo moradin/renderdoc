@@ -29,6 +29,7 @@
 #include "common/formatting.h"
 #include "d3d9_replay.h"
 #include "d3d9_shader_reflect.h"
+#include "d3d9_vs_emulate.h"
 
 static const char *const D3D9DisassemblyTarget = "D3D9 Bytecode";
 
@@ -47,6 +48,20 @@ void D3D9Replay::AddShader(ResourceId id, const uint32_t *tokens, size_t numToke
   if(!info.GetConstantTable().error.empty())
     RDCWARN("Couldn't fully read shader %s's constant table: %s", ToStr(id).c_str(),
             info.GetConstantTable().error.c_str());
+
+  // vertex shaders are debugged in the interpreter VS Out uses (d3d9_shaderdebug.cpp)
+  if(info.GetStage() == ShaderStage::Vertex)
+  {
+    D3D9Emu::VSEmulator emu;
+    if(emu.Init(info.GetProgram()))
+      info.SetDebugStatus(true, rdcstr());
+    else
+      info.SetDebugStatus(false, "The vertex shader can't be emulated: " + emu.GetError());
+  }
+  else
+  {
+    info.SetDebugStatus(false, "Debugging D3D9 pixel shaders isn't supported yet");
+  }
 }
 
 rdcarray<ShaderEntryPoint> D3D9Replay::GetShaderEntryPoints(ResourceId shader)

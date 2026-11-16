@@ -1546,6 +1546,38 @@ bool FetchElement(const InputElement &el, const InputStream *streams, uint32_t n
   return true;
 }
 
+rdcarray<VSInputBinding> BindVSInputs(const Program &prog, const rdcarray<InputElement> &elements)
+{
+  rdcarray<VSInputBinding> ret;
+  for(const Instruction &inst : prog.instructions)
+  {
+    if(inst.op != Opcode::Dcl || inst.dst.type != RegType::Input || inst.dst.index >= MaxVSInputs)
+      continue;
+    for(const InputElement &el : elements)
+    {
+      if(el.usage == inst.usage && el.usageIndex == inst.usageIndex)
+      {
+        VSInputBinding b;
+        b.reg = inst.dst.index;
+        b.element = &el;
+        ret.push_back(b);
+        break;
+      }
+    }
+  }
+  return ret;
+}
+
+void FetchVSInputs(const DrawInputs &draw, const rdcarray<VSInputBinding> &bindings,
+                   uint32_t vertex, uint32_t instance, Vec4 inputs[MaxVSInputs])
+{
+  for(uint32_t i = 0; i < MaxVSInputs; i++)
+    inputs[i] = Vec4(0.0f, 0.0f, 0.0f, 1.0f);
+  for(const VSInputBinding &b : bindings)
+    FetchElement(*b.element, draw.streams.data(), (uint32_t)draw.streams.size(), vertex, instance,
+                 inputs[b.reg]);
+}
+
 //////////////////////////////////////////////////////////////////////////
 // running a draw
 
@@ -1678,31 +1710,14 @@ void RunPostVS(const DrawInputs &draw, uint32_t instance, const VSEmulator *vs,
   const uint32_t numStreams = (uint32_t)draw.streams.size();
 
   // which element each input register reads
-  struct InputMap
-  {
-    uint32_t reg;
-    const InputElement *el;
-  };
-  rdcarray<InputMap> inputMap;
+  rdcarray<VSInputBinding> inputMap;
 
   FFPInputs ffpInputs;
   FFPOutputLayout ffpLayout;
 
   if(vs)
   {
-    for(const Instruction &inst : vs->GetProgram().instructions)
-    {
-      if(inst.op != Opcode::Dcl || inst.dst.type != RegType::Input || inst.dst.index >= MaxVSInputs)
-        continue;
-      for(const InputElement &el : draw.elements)
-      {
-        if(el.usage == inst.usage && el.usageIndex == inst.usageIndex)
-        {
-          inputMap.push_back({inst.dst.index, &el});
-          break;
-        }
-      }
-    }
+    inputMap = BindVSInputs(vs->GetProgram(), draw.elements);
     result.clipSpace = true;
   }
   else
@@ -1721,10 +1736,7 @@ void RunPostVS(const DrawInputs &draw, uint32_t instance, const VSEmulator *vs,
     if(vs)
     {
       Vec4 inputs[MaxVSInputs];
-      for(uint32_t i = 0; i < MaxVSInputs; i++)
-        inputs[i] = Vec4(0.0f, 0.0f, 0.0f, 1.0f);
-      for(const InputMap &m : inputMap)
-        FetchElement(*m.el, streams, numStreams, vertices[v], instance, inputs[m.reg]);
+      FetchVSInputs(draw, inputMap, vertices[v], instance, inputs);
 
       VSOutputs out;
       rdcstr error;
@@ -1837,54 +1849,6 @@ using namespace D3D9Emu;
 
 namespace
 {
-// assembles a shader a token at a time: op() writes the instruction token with the right length
-// for the shader model, then its parameters
-struct Assembler
-{
-  rdcarray<uint32_t> tokens;
-  bool sm1 = false;
-
-  Assembler(uint8_t major, uint8_t minor)
-  {
-    sm1 = major < 2;
-    tokens.push_back(VersionToken(false, major, minor));
-  }
-
-  Assembler &op(Opcode o, std::initializer_list<uint32_t> params, uint32_t control = 0,
-                uint32_t flags = 0)
-  {
-    tokens.push_back(Inst(o, control, sm1 ? 0 : (uint32_t)params.size()) | flags);
-    for(uint32_t p : params)
-      tokens.push_back(p);
-    return *this;
-  }
-
-  Assembler &def(uint32_t reg, float x, float y, float z, float w)
-  {
-    return op(Opcode::Def,
-              {Dst(RegType::Const, reg), FloatBits(x), FloatBits(y), FloatBits(z), FloatBits(w)});
-  }
-
-  Assembler &defi(uint32_t reg, int32_t x, int32_t y, int32_t z, int32_t w)
-  {
-    return op(Opcode::DefI,
-              {Dst(RegType::ConstInt, reg), uint32_t(x), uint32_t(y), uint32_t(z), uint32_t(w)});
-  }
-
-  Assembler &dcl(DeclUsage usage, uint32_t index, uint32_t reg, RegType type = RegType::Input,
-                 uint32_t mask = 0xF)
-  {
-    return op(Opcode::Dcl, {Dcl(usage, index), Dst(type, reg, mask)});
-  }
-
-  rdcarray<uint32_t> finish()
-  {
-    rdcarray<uint32_t> ret = tokens;
-    ret.push_back(EndTok());
-    return ret;
-  }
-};
-
 const uint32_t X = Swz(0, 0, 0, 0), Y = Swz(1, 1, 1, 1), Z = Swz(2, 2, 2, 2), W = Swz(3, 3, 3, 3);
 const uint32_t XYZW = 0xE4;
 

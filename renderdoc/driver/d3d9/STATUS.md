@@ -71,9 +71,8 @@ Where it starts from:
 - **Already there:** the vertex shader interpreter in `d3d9_vs_emulate.cpp` runs every vs_1_1 to
   vs_3_0 instruction and gives VS Out, which is checked against the GPU. The bytecode parser,
   reflection and disassembler are done and checked against the compiler.
-- **Missing:** the interpreter doesn't run pixel shaders (it can step since 5.1). `DebugVertex`,
-  `DebugPixel` and `ContinueDebug` are stubs, and `shaderDebugging` is false
-  (`d3d9_pipestate.cpp`).
+- **Missing:** the interpreter doesn't run pixel shaders. Vertex shaders can be debugged since
+  5.2; `DebugPixel` is a stub.
 - **Already works for any driver:** qrenderdoc's shader viewer, "Debug this vertex", "Debug
   pixel", and the tests' `process_trace`. The driver returns a `ShaderDebugTrace` with the starting
   state, the steps with what each changed, and each instruction's disassembly line
@@ -85,7 +84,7 @@ Where it starts from:
 | # | Chunk | Done when |
 |---|---|---|
 | 5.1 | ~~**Prepare the interpreter for stepping** (nothing visible changes): split `VSEmulator::Execute` so it runs one instruction at a time and records what changed, keeping a fast path without recording for mesh output; the disassembler records each instruction's line~~ | Done, see "Stepping the interpreter" below (`d3d9_step5_1_stepping.md`). Unit tests check the steps and the line mapping; the 18 automated tests still pass (VS Out unchanged); mesh output on a big draw is no slower in Release (about 5% faster), but 4-6% slower in the unoptimised Development build |
-| 5.2 | **`DebugVertex` with registers:** `d3d9_shaderdebug.cpp` with `DebugVertex`, `ContinueDebug` and `FreeDebugger`, taking inputs, constants and textures from VS Out's snapshot. Inputs, `r#`, `a0`, `aL`, `p0` and outputs, named by register. `shaderDebugging` on; pixel shaders and fixed function draws say why they can't be debugged. A new `D3D9_Shader_Debug_Zoo` demo and test (modelled on `D3D11_Shader_Debug_Zoo`) with one vertex shader per model | For each, the debugger's final outputs equal VS Out exactly and pass `process_trace` |
+| 5.2 | ~~**`DebugVertex` with registers:** `d3d9_shaderdebug.cpp` with `DebugVertex`, `ContinueDebug` and `FreeDebugger`, taking inputs, constants and textures from VS Out's snapshot. Inputs, `r#`, `a0`, `aL`, `p0` and outputs, named by register. `shaderDebugging` on; pixel shaders and fixed function draws say why they can't be debugged. A new `D3D9_Shader_Debug_Zoo` demo and test (modelled on `D3D11_Shader_Debug_Zoo`) with one vertex shader per model~~ | Done, see "Debugging vertex shaders" below (`d3d9_step5_2_debug_vertex.md`). Every vertex of the zoo's vs_1_1, vs_2_0, vs_2_x, vs_3_0 and instanced vs_3_0 draws ends with VS Out's values exactly and passes `process_trace`; UI screenshots of "Debug this Vertex" |
 | 5.3 | **Names, flow control and UI for vertex shaders:** constants named from the constant table (struct and array members), `def` literals marked, a call stack for `call`/`ret`, flags for `texldl` samples and NaN/Inf. Zoo shaders with loops, `rep`, `break`, calls, predicates, relative addressing and `texldl` | The test checks names and call stacks; UI screenshots of "Debug this vertex", stepping, registers and constants |
 | 5.4 | **Native probes** (a probe and a report, no driver change): `vPos`'s pixel centre (whole or +0.5) and `vFace`'s values; ps_1_x's clamp range, `texcoord` clamping and `cnd` on 1_1-1_3; `dsx`/`dsy` per quad or per pixel; colour input precision and clamping; `texldd` against `texld`'s own LOD; `rcp`, `rsq`, `exp`, `log`, `sincos`, `pow` against the C library; reading inputs back with a replacement pixel shader, and which fragment it picks with alpha test or `texkill` | The report has the numbers, and the decisions for 5.5-5.10 are recorded here |
 | 5.5 | **ps_2_0-ps_3_0 interpreter** (portable, unit tested): pixel registers, `texld`/`texldp`/`texldb`/`texldd` through a sampling callback, `texkill`, `dsx`/`dsy`, `cmp`, `dp2add`, the 2x2 quad in lockstep | Unit tests pass on compiled shaders, with a CPU stub for sampling |
@@ -183,6 +182,7 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Texture_LOD` | `SetLOD` on managed textures. The demo samples a 2D, a cube, a volume and a vertex texture at LODs 0 to 7 with a LOD set before the frame and MAXMIPLEVEL 0, then with a LOD set in the frame and MAXMIPLEVEL 1, and checks natively that the GPU read the levels expected (in its log). The test checks the same at replay, going to the second pass first so that the first has to undo the frame's SetLOD; the descriptors' first mip and mip count; VS Out of the vertex texture draw; the texture viewer showing mips 0, 3 and 6 of the 2D texture while its LOD is 4; and, opening the capture again with `D3D9_ForceReplayOnExDevice` set, that it replays on a D3D9Ex device with SetLOD ignored and the descriptors starting at mip 0, and that each of the 12 LODs it ignores (4 at the frame's start, 8 SetLOD calls) is a debug message naming the texture, the LOD and the setting |
 | `D3D9_Custom_Shaders` | Custom display shaders. The demo samples each of its textures natively with a ps_3_0 shader and writes what the GPU returned; the test builds the same shader as a custom shader and checks its output against that at 6 texels of every subresource: a default pool 2D texture with 3 mips, a managed one (decoded on the CPU until step 8 moved replay to a plain D3D9 device, sampled directly since), L8 (sampled as L, L, L, 1), a cube and a volume texture with 2 mips, a render target surface, and a D24S8 depth stencil (depth and stencil from its clears). `SV_Position` and `TEXCOORD0` match the native draw. The prefix's values (`RD_TexDim`, the mip, slice, sample and type, the range) are checked for each texture, a global the prefix doesn't fill is 0, `Texture2D` and `SamplerState` sample like `sampler2D`, the UI's template builds, and a shader with an error or for ps_2_0 doesn't |
 | `D3D9_Shader_Editing` | Shader editing. The demo draws nine quads with vs_1_1, vs_2_0 and vs_3_0, ps_1_1, ps_1_4, ps_2_0 and ps_3_0 shaders, bound when the frame starts, by a state block recorded before the frame, by `Set*Shader`, created during the frame, shared by two draws, and with fixed function pixel processing; natively it draws the scene with each of 10 edits in place of the original and writes what the GPU drew at 36 texels. The test builds each edit (HLSL, assembly or bytecode), replaces the original and checks the texels against the GPU's, checks the pipeline state (the original's ID, the edit's reflection) and, for vertex shaders, VS Out; then removes it and checks the original is back. An edit with a constant table keeps it, and the assembly edit, which has none, has the original's names. Every shader's disassembly assembles back to the same instructions, with no constant table, and replacing the original gives it the original's constants and samplers exactly (the 7 shaders with a table). Errors (HLSL, assembly, ps_1_x HLSL, a profile or bytecode of the other stage, bytecode with no end token, other stages) are reported, HLSL with no profile is shader model 3, a pixel shader doesn't replace a vertex shader, and freeing a replacement removes it |
+| `D3D9_Shader_Debug_Zoo` | Vertex shader debugging. Each vertex of each instance of the vs_1_1 (hand assembled: `m4x4`, `a0` relative addressing, `expp`, `logp`, `lit`, `dst`, `frc`, comparisons, `oFog`, `oPts`), vs_2_0 (HLSL: a `loop` by `i0` over a relatively addressed array, a branch on `b0`, `sincos`, `pow`), vs_2_x (assembly: predicates, `setp`, `if_lt`, `break_gt`, a call), vs_3_0 (HLSL: a dynamic loop with a `break`, `texldl`) and instanced vs_3_0 (base vertex, start index, 2 instances) draws is debugged with `check_vertex_debug`: its outputs, through the trace's source variables, equal VS Out exactly, and `process_trace` steps the changes forwards and backwards consistently. Each step is on an instruction of the disassembly (not a declaration), registers are named and sized by register (`oFog` 1 column, `aL` an integer, `p0` booleans), the API says it can debug shaders, the pixel shader and the fixed function draw say why they can't be debugged, and `DebugVertex` on the fixed function draw gives no debugger. The pipeline state's model for the vs_2_x shader is `vs_2_x` |
 | `D3D11_D3DPERF_Markers` | `d3d11_d3dperf_check.py`: the markers nest as drawn, with their colours |
 
 What they don't cover:
@@ -1699,6 +1699,57 @@ with relative addressing on `aL`).
 - Release has no unit tests, so `globalconfig.h` was changed for that build only, and not
   committed.
 
+### Debugging vertex shaders
+
+Step 5.2 (`d3d9_step5_2_debug_vertex.md`): "Debug this Vertex" in the mesh viewer, and
+`DebugVertex` in Python.
+
+- **Where the vertex comes from.** `DebugVertex` (`d3d9_shaderdebug.cpp`) uses VS Out's snapshot
+  of the draw (`InitPostVSBuffers`, the `PostVSEvent` in `d3d9_postvs.h`): the same streams,
+  constants with the shader's literals applied, and decoded vertex textures. The vertex's inputs
+  are fetched as `RunPostVS` fetches them (`BindVSInputs`, `FetchVSInputs`), and it runs in the
+  same interpreter. So a debugged vertex ends with VS Out's values exactly, and VS Out is checked
+  against the GPU by `D3D9_Mesh_Output`.
+  - The vertex is found from the mesh viewer's IDX column, as D3D11 does: an indexed draw's index
+    with the base vertex added, or a non-indexed draw's vertex counted from its first. The
+    instance is clamped to the draw's.
+  - The debugger keeps the snapshot alive, so clearing the replay cache doesn't pull it away.
+- **The trace** (`D3D9Emu::VSDebugger`, `d3d9_vs_debug.cpp`, portable and unit tested):
+  - `inputs`: the `v#` registers the input signature uses, with a source variable per signature
+    element named by its semantic (TEXCOORD1).
+  - `constantBlocks`: one per reflection block (`c#`, `i#`, `b#`), with a member for each register
+    its variables cover. Each register is a source variable named as the disassembly names it
+    (`c12`), which is what the viewer lists and finds when hovering. The block itself has a source
+    variable too, so the viewer doesn't list its raw registers again.
+  - The first state lists every register the shader can change, found from the instructions:
+    the temporaries, `a0` (4 integers), `aL` (1 integer), `p0` (4 booleans), and the outputs:
+    `oPos`, `oFog` and `oPts` (1 column each), `oD#` and `oT#`, or vs_3_0's `o#` (all 12 if an
+    output is indexed by `aL`). A register that changes without being listed would appear with
+    nothing before, but none is expected.
+  - Each later state is one instruction, with each register it changed, before and after.
+    Declarations (`dcl`, `def`, `defi`, `defb`) run with the instruction before them, so stepping
+    never stops on one. The last state points at the last instruction run, since there's nothing
+    after the end to point at. `ContinueDebug` gives 100 steps at a time.
+  - A source variable per output signature element, on its register's components (two elements
+    can share a vs_3_0 register).
+  - `readOnlyResources` and `samplers`: the vertex texture samplers.
+  - `instInfo`: each instruction's line in the disassembly the viewer shows (5.1's line map).
+- **What can be debugged.** Each vertex shader's reflection says it can be debugged if the
+  interpreter accepts it (`AddShader`, `d3d9_shaders.cpp`), or why not. Pixel shaders say
+  "Debugging D3D9 pixel shaders isn't supported yet", and fixed function vertex processing's
+  made-up reflection says it isn't a shader. `shaderDebugging` is on in the API properties.
+  `DebugVertex` on a fixed function draw logs why and returns a trace with no debugger.
+- **The pipeline state's shader model** names 2_x shaders `vs_2_x` and `ps_2_x`, as the
+  disassembly does. It said `vs_2_1` before, which the zoo test found.
+- **Matrix instructions in the reflection.** `m4x4 oPos, v0, c0` reads c0-c3, but a shader without
+  a constant table listed only `c0` among its constants, in the constant viewer and so in the
+  debugger. The reflection now counts a register per row of `m4x4`, `m4x3`, `m3x4`, `m3x3` and
+  `m3x2`'s second source (unit tested, and checked by the zoo test). Found in the UI screenshots.
+
+Not yet (step 5.3): names from the constant table, a call stack, flags for `texldl` samples and
+NaNs. An instruction that fails in the interpreter (calls nested too deeply, too many instructions
+run) ends the trace on that instruction, with the reason only in the log (a warning).
+
 ### Packed vs_3_0 outputs
 
 A vs_3_0 shader can declare two or more semantics in one output register, each with its own
@@ -1834,9 +1885,11 @@ Unit tests: `util/test/d3d9_shader_unit_tests.sh` builds and runs the `[d3d9]` t
 including `[vsemu]` (the interpreter per opcode, flow control, relative addressing, texldl and its filtering,
 vertex fetch, whole draws, and stepping: every interpreter test also steps its shader and checks
 that each step's changes account for everything that changed and that it ends as `Execute` does) and `[ffp]` (transforms, blending, each light type, material sources,
-texgen, texture transforms, fog, point size, the output signature). They passed on Linux with
-AddressSanitizer and UBSan in phase 3e; the stepping checks have only run on Windows. On Windows:
-`renderdoccmd test unit "[d3d9]"`.
+texgen, texture transforms, fog, point size, the output signature), and `[vsdebug]` (5.2's
+debugger: the trace's registers, names, types and source variables, declarations skipped, steps
+that undo back to nothing, outputs equal to `Execute`'s, a failure ending the trace). They passed
+on Linux with AddressSanitizer and UBSan in phase 3e; the stepping and debugger checks have only
+run on Windows. On Windows: `renderdoccmd test unit "[d3d9]"`.
 
 On Windows, with `D3D9_Mesh_Output` (in the demos project):
 The `D3D9_Mesh_Output` test does steps 1 and 2.
@@ -1948,11 +2001,13 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
 - `d3d9_depth.cpp` - reading back depth stencils that can't be locked, and writing them at replay.
 - `d3d9_replay.*` - the replay driver the replay controller talks to (`D3D9Replay`), and creating
   the replay device.
-- `d3d9_postvs.cpp` - post-transform vertices for the mesh viewer (3e), on the CPU with
+- `d3d9_postvs.*` - post-transform vertices for the mesh viewer (3e), on the CPU with
   `d3d9_vs_emulate.*` (vertex shader interpreter, which can step for debugging, vertex fetch,
   running a draw) and
   `d3d9_ffp_vertex.*` (fixed function vertex processing). The last two are portable and unit
-  tested.
+  tested. `d3d9_postvs.h` has the snapshot of a draw that VS Out and debugging both use.
+- `d3d9_shaderdebug.cpp` - shader debugging: `DebugVertex`, `ContinueDebug`, `FreeDebugger`. The
+  trace is made by `d3d9_vs_debug.*` (`D3D9Emu::VSDebugger`), which is portable and unit tested.
 - `d3d9_replay_device.cpp` - the replay side of the device: loading, replaying the frame, the
   event list, writing contents.
 - `d3d9_overlay.cpp` - the texture viewer's overlays, `IsRenderOutput` and `GetPassEvents` (phase

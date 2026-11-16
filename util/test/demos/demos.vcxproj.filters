@@ -205,6 +205,9 @@
     <ClCompile Include="d3d9\d3d9_shader_editing.cpp">
       <Filter>D3D9\demos</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9\d3d9_shader_debug_zoo.cpp">
+      <Filter>D3D9\demos</Filter>
+    </ClCompile>
     <ClCompile Include="d3d9\d3d9_failed_calls.cpp">
       <Filter>D3D9\demos</Filter>
     </ClCompile>

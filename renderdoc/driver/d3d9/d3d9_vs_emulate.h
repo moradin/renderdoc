@@ -421,6 +421,22 @@ struct PostVSResult
   float farPlane = 100.0f;
 };
 
+// an input register a vertex shader declares (dcl_usage v#), and the declaration element with the
+// same usage and usage index that fills it
+struct VSInputBinding
+{
+  uint32_t reg = 0;
+  const InputElement *element = NULL;
+};
+
+// the shader's input registers with an element to fill them. The elements must outlive the result.
+rdcarray<VSInputBinding> BindVSInputs(const D3D9BC::Program &prog,
+                                      const rdcarray<InputElement> &elements);
+
+// a vertex's input registers: each bound one read from the draw's streams, the rest (0, 0, 0, 1)
+void FetchVSInputs(const DrawInputs &draw, const rdcarray<VSInputBinding> &bindings,
+                   uint32_t vertex, uint32_t instance, Vec4 inputs[MaxVSInputs]);
+
 // the order signature elements are stored in: the position first, the others as they are
 const rdcarray<size_t> PackOrder(const rdcarray<SigParameter> &sig);
 

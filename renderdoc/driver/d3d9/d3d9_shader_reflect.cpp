@@ -382,6 +382,21 @@ bool IsComponentwise(Opcode op)
   return false;
 }
 
+// how many registers a matrix instruction's second source covers
+uint32_t MatrixRows(Opcode op)
+{
+  switch(op)
+  {
+    case Opcode::M4x4:
+    case Opcode::M3x4: return 4;
+    case Opcode::M4x3:
+    case Opcode::M3x3: return 3;
+    case Opcode::M3x2: return 2;
+    default: break;
+  }
+  return 1;
+}
+
 uint8_t SourceReadMask(const Instruction &inst, size_t srcIdx)
 {
   const SrcParam &src = inst.srcs[srcIdx];
@@ -940,6 +955,12 @@ void ShaderInfo::BuildReflection(ResourceId id)
       else
       {
         regs[key].read |= SourceReadMask(inst, s);
+
+        // m4x4 and the other matrix instructions read the registers after their second source,
+        // one per row of the matrix
+        const uint32_t rows = s == 1 ? MatrixRows(inst.op) : 1;
+        for(uint32_t r = 1; r < rows; r++)
+          regs[RegKey(src.type, src.index + r)].read |= SourceReadMask(inst, s);
       }
 
       if(src.rel.present)
@@ -1866,6 +1887,42 @@ TEST_CASE("D3D9 shader reflection", "[d3d9][shader]")
     memcpy(&c3x, patched.data() + 3 * 16, 4);
     CHECK(c3x == 5.0f);
   };
+
+  SECTION("Matrix instructions read a register per row")
+  {
+    // vs_2_0: m4x4 oPos, v0, c4 reads c4-c7, m3x2 r0.xy, v0, c20 reads c20-c21
+    rdcarray<uint32_t> tokens = {
+        VersionToken(false, 2, 0),
+        Inst(Opcode::Dcl, 0, 2),
+        Dcl(DeclUsage::Position, 0),
+        Dst(RegType::Input, 0),
+        Inst(Opcode::M4x4, 0, 3),
+        Dst(RegType::RastOut, 0),
+        Src(RegType::Input, 0),
+        Src(RegType::Const, 4),
+        Inst(Opcode::M3x2, 0, 3),
+        Dst(RegType::Temp, 0, 0x3),
+        Src(RegType::Input, 0),
+        Src(RegType::Const, 20),
+        Inst(Opcode::Mov, 0, 2),
+        Dst(RegType::AttrOut, 0),
+        Src(RegType::Temp, 0, Swz(0, 1, 1, 1)),
+        EndTok(),
+    };
+
+    ShaderInfo info;
+    info.Init(ResourceId(), tokens.data(), tokens.size());
+    const ShaderReflection &refl = info.GetReflection();
+    INFO(info.GetDisassembly().c_str());
+    CHECK(info.GetProgram().error.empty());
+
+    const ConstantBlock *floats = FindBlock(refl, ConstantSet::Float);
+    REQUIRE(floats);
+    rdcarray<rdcstr> names;
+    for(const ShaderConstant &v : floats->variables)
+      names.push_back(v.name);
+    CHECK(names == rdcarray<rdcstr>({"c4", "c5", "c6", "c7", "c20", "c21"}));
+  }
 
   SECTION("Pixel shader signatures and samplers")
   {

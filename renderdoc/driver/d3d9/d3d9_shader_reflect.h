@@ -173,6 +173,14 @@ public:
   const ShaderReflection &GetReflection() const { return m_Reflection; }
   ShaderStage GetStage() const { return m_Reflection.stage; }
 
+  // whether the shader can be debugged, and why not. The reflection says it can't until this is
+  // called, since debugging is the replay's to decide.
+  void SetDebugStatus(bool debuggable, const rdcstr &status)
+  {
+    m_Reflection.debugInfo.debuggable = debuggable;
+    m_Reflection.debugInfo.debugStatus = status;
+  }
+
   // the constant table comment and the disassembly. instLines, if given, gets the line (from 1)
   // each instruction is on, as a debugger's trace gives them.
   rdcstr GetDisassembly(rdcarray<uint32_t> *instLines = NULL) const;

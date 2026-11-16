@@ -736,12 +736,8 @@ rdcarray<PixelModification> D3D9Replay::PixelHistory(rdcarray<EventUsage> events
   return {};
 }
 
-ShaderDebugTrace *D3D9Replay::DebugVertex(uint32_t eventId, uint32_t vertid, uint32_t instid,
-                                          uint32_t idx, uint32_t view)
-{
-  return new ShaderDebugTrace;
-}
-
+// DebugVertex, ContinueDebug and FreeDebugger are in d3d9_shaderdebug.cpp. Pixel shaders can't be
+// debugged yet (step 5.7), and D3D9 has no compute or mesh shaders.
 ShaderDebugTrace *D3D9Replay::DebugPixel(uint32_t eventId, uint32_t x, uint32_t y,
                                          const DebugPixelInputs &inputs)
 {
@@ -759,15 +755,6 @@ ShaderDebugTrace *D3D9Replay::DebugMeshThread(uint32_t eventId,
                                               const rdcfixedarray<uint32_t, 3> &threadid)
 {
   return new ShaderDebugTrace;
-}
-
-rdcarray<ShaderDebugState> D3D9Replay::ContinueDebug(ShaderDebugger *debugger)
-{
-  return {};
-}
-
-void D3D9Replay::FreeDebugger(ShaderDebugger *debugger)
-{
 }
 
 RDResult D3D9Replay::FatalErrorCheck()

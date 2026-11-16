@@ -499,6 +499,9 @@ rdcstr ShaderModelName(IDirect3DVertexShader9 *vs, IDirect3DPixelShader9 *ps)
   uint32_t major = (version >> 8) & 0xff;
   uint32_t minor = version & 0xff;
 
+  // as the disassembly names them (D3D9BC::VersionString): 2_1 is a 2_x shader
+  if(major == 2 && minor == 1)
+    return StringFormat::Fmt("%s_2_x", vs ? "vs" : "ps");
   if(minor == 0xff)
     return StringFormat::Fmt("%s_%u_sw", vs ? "vs" : "ps", major);
   return StringFormat::Fmt("%s_%u_%u", vs ? "vs" : "ps", major, minor);
@@ -719,7 +722,8 @@ APIProperties D3D9Replay::GetAPIProperties()
   ret.localRenderer = GraphicsAPI::D3D9;
   ret.vendor = m_DriverInfo.vendor;
   ret.degraded = false;
-  ret.shaderDebugging = false;
+  // vertex shaders only so far: each shader's reflection says whether it can be debugged
+  ret.shaderDebugging = true;
   ret.pixelHistory = false;
 
   return ret;

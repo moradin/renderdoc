@@ -22,13 +22,11 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+#include "d3d9_postvs.h"
 #include "maths/formatpacking.h"
 #include "d3d9_device.h"
-#include "d3d9_ffp_vertex.h"
-#include "d3d9_replay.h"
 #include "d3d9_resources.h"
 #include "d3d9_state.h"
-#include "d3d9_vs_emulate.h"
 
 // Post-transform vertices (phase 3e)
 // ----------------------------------
@@ -177,30 +175,6 @@ rdcstr LayoutKey(const D3D9Emu::FFPOutputLayout &l)
   return ret;
 }
 };    // namespace
-
-struct D3D9Replay::PostVSEvent
-{
-  // why there's no data, when there can't be any
-  rdcstr status;
-
-  D3D9Emu::DrawInputs draw;
-  Topology topology = Topology::Unknown;
-  uint32_t numInstances = 1;
-
-  bool hasVS = false;
-  D3D9Emu::VSEmulator vs;
-  D3D9Emu::VSConstants consts;
-  D3D9Emu::VSTexture textures[D3D9Emu::NumVertexSamplers];
-
-  D3D9Emu::FFPState ffp;
-
-  rdcarray<SigParameter> signature;
-
-  // computed when they're first asked for, by instance
-  std::map<uint32_t, D3D9Emu::PostVSResult> results;
-  std::map<uint32_t, ResourceId> vertexBuffers;
-  ResourceId indexBuffer;
-};
 
 void D3D9Replay::CreatePostVSResources()
 {
@@ -399,6 +373,8 @@ const ShaderReflection *D3D9Replay::GetFFPReflection(uint32_t eventId, const D3D
     refl.reset(new ShaderReflection);
     refl->stage = ShaderStage::Vertex;
     refl->entryPoint = "main";
+    refl->debugInfo.debuggable = false;
+    refl->debugInfo.debugStatus = "Fixed function vertex processing isn't a shader";
     refl->outputSignature = D3D9Emu::FFPSignature(layout);
     for(const D3D9Emu::InputElement &el : elements)
     {
@@ -535,6 +511,7 @@ void D3D9Replay::InitPostVSBuffers(uint32_t eventId)
       return;
     }
     ev.hasVS = true;
+    ev.vsId = vsId;
     ev.signature = it->second.GetReflection().outputSignature;
 
     const D3D9ShaderConstants &c = state.VertexShaderConstants;

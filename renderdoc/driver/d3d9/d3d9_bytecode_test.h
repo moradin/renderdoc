@@ -28,6 +28,7 @@
 // compiler for shader model 1-3 on every platform. Only included by the tests.
 
 #include <string.h>
+#include <initializer_list>
 #include "d3d9_bytecode.h"
 
 namespace D3D9BCTest
@@ -103,5 +104,53 @@ inline uint32_t FloatBits(float f)
   memcpy(&ret, &f, sizeof(ret));
   return ret;
 }
+
+// assembles a shader a token at a time: op() writes the instruction token with the right length
+// for the shader model, then its parameters
+struct Assembler
+{
+  rdcarray<uint32_t> tokens;
+  bool sm1 = false;
+
+  Assembler(uint8_t major, uint8_t minor)
+  {
+    sm1 = major < 2;
+    tokens.push_back(VersionToken(false, major, minor));
+  }
+
+  Assembler &op(Opcode o, std::initializer_list<uint32_t> params, uint32_t control = 0,
+                uint32_t flags = 0)
+  {
+    tokens.push_back(Inst(o, control, sm1 ? 0 : (uint32_t)params.size()) | flags);
+    for(uint32_t p : params)
+      tokens.push_back(p);
+    return *this;
+  }
+
+  Assembler &def(uint32_t reg, float x, float y, float z, float w)
+  {
+    return op(Opcode::Def,
+              {Dst(RegType::Const, reg), FloatBits(x), FloatBits(y), FloatBits(z), FloatBits(w)});
+  }
+
+  Assembler &defi(uint32_t reg, int32_t x, int32_t y, int32_t z, int32_t w)
+  {
+    return op(Opcode::DefI,
+              {Dst(RegType::ConstInt, reg), uint32_t(x), uint32_t(y), uint32_t(z), uint32_t(w)});
+  }
+
+  Assembler &dcl(DeclUsage usage, uint32_t index, uint32_t reg, RegType type = RegType::Input,
+                 uint32_t mask = 0xF)
+  {
+    return op(Opcode::Dcl, {Dcl(usage, index), Dst(type, reg, mask)});
+  }
+
+  rdcarray<uint32_t> finish()
+  {
+    rdcarray<uint32_t> ret = tokens;
+    ret.push_back(EndTok());
+    return ret;
+  }
+};
 
 };    // namespace D3D9BCTest

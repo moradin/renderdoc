@@ -38,6 +38,10 @@ The detailed status, with how each part works and how it was tested, is in
   - shader reflection from the constant table, and the constant viewers;
   - the Mesh Viewer's VS In and VS Out, for vertex shaders 1.1 to 3.0 and fixed function vertex
     processing. RenderDoc works out the VS Out data on the CPU;
+  - vertex shader debugging (the Mesh Viewer's "Debug this Vertex"), for vertex shaders 1.1 to
+    3.0, on the CPU with the same emulation as VS Out, so a debugged vertex ends with VS Out's
+    values. Registers, constants and inputs are named by register (`r0`, `c12`, `v1`), and the
+    signature's semantics map the inputs and outputs;
   - GPU durations (the Event Browser's Duration column) and samples passed, in the Performance
     Counter Viewer too;
   - resource usage: the Resource Inspector's usage list and the timeline's usage markers;
@@ -54,7 +58,8 @@ The detailed status, with how each part works and how it was tested, is in
 
 Not implemented:
 
-- shader debugging;
+- pixel shader debugging. Fixed function vertex and pixel processing can't be debugged either,
+  since it isn't a shader. Both say why in the UI;
 - pixel history;
 - GPU counters other than duration and samples passed: D3D9 has no pipeline statistics query;
 - messages from the D3D9 debug runtime, which doesn't run on Windows 8 and later. Only the calls
@@ -76,6 +81,10 @@ Known limitations of what works:
     within a 256th or two. Software vertex processing filters differently, which isn't emulated.
   - Fixed function processing doesn't handle N-patches, user clip planes, displacement mapping or
     more than 8 lights.
+- **Vertex shader debugging** doesn't yet name constants from the constant table, show a call
+  stack, or flag `texldl` samples and NaNs (all planned next). An instruction that fails in the
+  emulation (calls nested too deeply, a loop that never ends) ends the trace on it, with the
+  reason only in the log.
 - **Custom display shaders** are ps_3_0: the texture is in a sampler with point filtering, not a
   texture object, and the older `RENDERDOC_` globals aren't filled.
 - **Shader editing**: an edited disassembly has no constant table of its own (it's only comments
