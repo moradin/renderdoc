@@ -1,0 +1,346 @@
+== rcp (4386 inputs)
+  all normal, against C library: 4121 inputs, exact 3587, <=1 ulp 4121, <=2 4121, median 0, max 1 ulps, max abs error 6.9e+10, max relative error 1.2e-07
+  denormal x: 258 of 258 give the same result as a zero of the same sign
+  special inputs (x [y]: gpu | C library):
+    0: inf | inf
+    -0: -inf | -inf
+    1: 1 | 1
+    -1: -1 | -1
+    1.40129846e-45(den): inf | inf
+    inf: 0 | 0
+    -inf: -0 | -0
+    NaN: NaN | NaN
+== rsq (4386 inputs)
+  all normal, against C library: 4121 inputs, exact 2718, <=1 ulp 4103, <=2 4121, median 0, max 2 ulps, max abs error 64, max relative error 1.35e-07
+  denormal x: 258 of 258 give the same result as a zero of the same sign
+  special inputs (x [y]: gpu | C library):
+    0: inf | inf
+    -0: inf | inf
+    1: 1 | 1
+    -1: 1 | 1
+    1.40129846e-45(den): inf | 2.67137384e+22
+    inf: 0 | 0
+    -inf: 0 | 0
+    NaN: NaN | NaN
+== log (4386 inputs)
+  |x| in 0.5..2 (result near 0), against C library: 1556 inputs, exact 398, <=1 ulp 886, <=2 1122, median 1, max 23947835 ulps, max abs error 1.79e-07, max relative error 0.862
+  |x| < 0.5, against C library: 1551 inputs, exact 582, <=1 ulp 1515, <=2 1551, median 1, max 2 ulps, max abs error 8e-06, max relative error 2.3e-07
+  |x| > 2, against C library: 1014 inputs, exact 552, <=1 ulp 1014, <=2 1014, median 0, max 1 ulps, max abs error 3.9e-06, max relative error 1.2e-07
+  denormal x: 258 of 258 give the same result as a zero of the same sign
+  special inputs (x [y]: gpu | C library):
+    0: -inf | -inf
+    -0: -inf | -inf
+    1: 0 | 0
+    -1: 0 | 0
+    1.40129846e-45(den): -inf | -149
+    inf: inf | inf
+    -inf: inf | inf
+    NaN: NaN | NaN
+== exp (4642 inputs)
+  |x| < 1, against C library: 2140 inputs, exact 1109, <=1 ulp 2125, <=2 2140, median 0, max 2 ulps, max abs error 1.2e-07, max relative error 1.4e-07
+  1 <= |x| < 126, against C library: 2422 inputs, exact 1135, <=1 ulp 2407, <=2 2422, median 1, max 2 ulps, max abs error 5e+30, max relative error 1.39e-07
+  |x| >= 126, against C library: 20 inputs, exact 10, <=1 ulp 20, <=2 20, median 1, max 1 ulps, max abs error 2.1e+31, max relative error 1.17e-07
+  denormal x: 2 of 2 give the same result as a zero of the same sign
+  special inputs (x [y]: gpu | C library):
+    0: 1 | 1
+    -0: 1 | 1
+    1: 2 | 2
+    -1: 0.5 | 0.5
+    1.40129846e-45(den): 1 | 1
+    inf: inf | inf
+    -inf: 0 | 0
+    NaN: NaN | NaN
+    127: 1.70141183e+38 | 1.70141183e+38
+    128: inf | inf
+    129: inf | inf
+    -126: 1.17549435e-38 | 1.17549435e-38
+    -127: 0 | 5.87747175e-39(den)
+    -149: 0 | 1.40129846e-45(den)
+    -150: 0 | 0
+== pow (3856 inputs)
+  all, against C library: 3725 inputs, exact 507, <=1 ulp 1070, <=2 1458, median 4, max 163 ulps, max abs error 4.46e+32, max relative error 1.15e-05
+  denormal x: 16 of 16 give the same result as a zero of the same sign
+  special inputs (x [y]: gpu | C library):
+    0 0: 1 | 1
+    0 1: 0 | 0
+    0 -1: inf | inf
+    0 0.5: 0 | 0
+    0 2: 0 | 0
+    0 2.20000005: 0 | 0
+    0 inf: 0 | 0
+    0 NaN: NaN | NaN
+    -0 0: 1 | 1
+    -0 1: 0 | 0
+    -0 -1: inf | inf
+    -0 0.5: 0 | 0
+    -0 2: 0 | 0
+    -0 2.20000005: 0 | 0
+    -0 inf: 0 | 0
+    -0 NaN: NaN | NaN
+    1 0: 1 | 1
+    1 1: 1 | 1
+    1 -1: 1 | 1
+    1 0.5: 1 | 1
+    1 2: 1 | 1
+    1 2.20000005: 1 | 1
+    1 inf: 1 | 1
+    1 NaN: 1 | 1
+    -1 0: 1 | 1
+    -1 1: 1 | 1
+    -1 -1: 1 | 1
+    -1 0.5: 1 | 1
+    -1 2: 1 | 1
+    -1 2.20000005: 1 | 1
+    -1 inf: 1 | 1
+    -1 NaN: 1 | 1
+    2 0: 1 | 1
+    2 inf: inf | inf
+    2 NaN: NaN | NaN
+    0.5 0: 1 | 1
+    0.5 inf: 0 | 0
+    0.5 NaN: NaN | NaN
+    3 0: 1 | 1
+    3 inf: inf | inf
+    3 NaN: NaN | NaN
+    -3 0: 1 | 1
+    -3 inf: inf | inf
+    -3 NaN: NaN | NaN
+    1.40129846e-45(den) 0: 1 | 1
+    1.40129846e-45(den) 1: 0 | 1.40129846e-45(den)
+    1.40129846e-45(den) -1: inf | inf
+    1.40129846e-45(den) 0.5: 0 | 3.74339207e-23
+    1.40129846e-45(den) 2: 0 | 0
+    1.40129846e-45(den) 2.20000005: 0 | 0
+    1.40129846e-45(den) inf: 0 | 0
+    1.40129846e-45(den) NaN: NaN | NaN
+    1.17549435e-38 0: 1 | 1
+    1.17549435e-38 inf: 0 | 0
+    1.17549435e-38 NaN: NaN | NaN
+    -1.17549435e-38 0: 1 | 1
+    -1.17549435e-38 inf: 0 | 0
+    -1.17549435e-38 NaN: NaN | NaN
+    3.40282347e+38 0: 1 | 1
+    3.40282347e+38 inf: inf | inf
+    3.40282347e+38 NaN: NaN | NaN
+    -3.40282347e+38 0: 1 | 1
+    -3.40282347e+38 inf: inf | inf
+    -3.40282347e+38 NaN: NaN | NaN
+    inf 0: 1 | 1
+    inf 1: inf | inf
+    inf -1: 0 | 0
+    inf 0.5: inf | inf
+    inf 2: inf | inf
+    inf 2.20000005: inf | inf
+    inf inf: inf | inf
+    inf NaN: NaN | NaN
+    -inf 0: 1 | 1
+    -inf 1: inf | inf
+    -inf -1: 0 | 0
+    -inf 0.5: inf | inf
+    -inf 2: inf | inf
+    -inf 2.20000005: inf | inf
+    -inf inf: inf | inf
+    -inf NaN: NaN | NaN
+    NaN 0: 1 | 1
+    NaN 1: NaN | NaN
+    NaN -1: NaN | NaN
+    NaN 0.5: NaN | NaN
+    NaN 2: NaN | NaN
+    NaN 2.20000005: NaN | NaN
+    NaN inf: NaN | NaN
+    NaN NaN: NaN | NaN
+    100 0: 1 | 1
+    100 inf: inf | inf
+    100 NaN: NaN | NaN
+    -100 0: 1 | 1
+    -100 inf: inf | inf
+    -100 NaN: NaN | NaN
+    1e+10 0: 1 | 1
+    1e+10 inf: inf | inf
+    1e+10 NaN: NaN | NaN
+    1.00000001e-10 0: 1 | 1
+    1.00000001e-10 inf: 0 | 0
+    1.00000001e-10 NaN: NaN | NaN
+    127 0: 1 | 1
+    127 inf: inf | inf
+    127 NaN: NaN | NaN
+    128 0: 1 | 1
+    128 inf: inf | inf
+    128 NaN: NaN | NaN
+    129 0: 1 | 1
+    129 inf: inf | inf
+    129 NaN: NaN | NaN
+    -126 0: 1 | 1
+    -126 inf: inf | inf
+    -126 NaN: NaN | NaN
+    -127 0: 1 | 1
+    -127 inf: inf | inf
+    -127 NaN: NaN | NaN
+    -149 0: 1 | 1
+    -149 inf: inf | inf
+    -149 NaN: NaN | NaN
+    -150 0: 1 | 1
+    -150 inf: inf | inf
+    -150 NaN: NaN | NaN
+    0.99999994 0: 1 | 1
+    0.99999994 inf: 0 | 0
+    0.99999994 NaN: NaN | NaN
+    1.00000012 0: 1 | 1
+    1.00000012 inf: inf | inf
+    1.00000012 NaN: NaN | NaN
+    3.14159274 0: 1 | 1
+    3.14159274 inf: inf | inf
+    3.14159274 NaN: NaN | NaN
+    -3.14159274 0: 1 | 1
+    -3.14159274 inf: inf | inf
+    -3.14159274 NaN: NaN | NaN
+    6.28318548 0: 1 | 1
+    6.28318548 inf: inf | inf
+    6.28318548 NaN: NaN | NaN
+    1.57079637 0: 1 | 1
+    1.57079637 inf: inf | inf
+    1.57079637 NaN: NaN | NaN
+== sincos (3635 inputs)
+  |x| <= pi, against cos: 2376 inputs, exact 444, <=1 ulp 1205, <=2 1593, median 1, max 859553070 ulps, max abs error 3.8e-07, max relative error 1
+  |x| <= pi, against sin: 2376 inputs, exact 475, <=1 ulp 1207, <=2 1519, median 1, max 786163455 ulps, max abs error 3.2e-07, max relative error 1
+  pi < |x| <= 100, against cos: 1068 inputs, exact 22, <=1 ulp 47, <=2 75, median 41, max 1721102382 ulps, max abs error 9.48e-06, max relative error 16.7
+  pi < |x| <= 100, against sin: 1068 inputs, exact 20, <=1 ulp 54, <=2 77, median 39, max 1775405742 ulps, max abs error 9.37e-06, max relative error 24.6
+  |x| > 100, against cos: 184 inputs, exact 0, <=1 ulp 0, <=2 0, median 9482, max 1037274647 ulps, max abs error 0.146, max relative error 1
+  |x| > 100, against sin: 184 inputs, exact 0, <=1 ulp 0, <=2 0, median 8075, max 1056545380 ulps, max abs error 0.488, max relative error 1.24
+  denormal x: 2 of 2 give the same result as a zero of the same sign
+  special inputs (x [y]: gpu | C library):
+    0: cos 1 sin 0 | 1 0
+    -0: cos 1 sin 0 | 1 -0
+    1: cos 0.540302336 sin 0.841470897 | 0.540302277 0.841470957
+    -1: cos 0.540302336 sin -0.841470897 | 0.540302277 -0.841470957
+    1.40129846e-45(den): cos 1 sin 0 | 1 1.40129846e-45(den)
+    inf: cos NaN sin NaN | NaN NaN
+    -inf: cos NaN sin NaN | NaN NaN
+    NaN: cos NaN sin NaN | NaN NaN
+== mul: 286 of 3634 differ from reference 1
+    in 0 -0 0 0: gpu 0, ref -0
+    in 0 -1 0 0: gpu 0, ref -0
+    in 0 inf 0 0: gpu 0, ref NaN
+    in 0 NaN 0 0: gpu 0, ref NaN
+    in -0 0 0 0: gpu 0, ref -0
+    in -0 1 0 0: gpu 0, ref -0
+    in -0 inf 0 0: gpu 0, ref NaN
+    in -0 NaN 0 0: gpu 0, ref NaN
+    in -0 1.40129846e-45(den) 0 0: gpu 0, ref -0
+    in 1 -0 0 0: gpu 0, ref -0
+    in 1 1.40129846e-45(den) 0 0: gpu 0, ref 1.40129846e-45(den)
+    in -1 0 0 0: gpu 0, ref -0
+    in 1.40129846e-45(den) -0 0 0: gpu 0, ref -0
+    in 1.40129846e-45(den) 1 0 0: gpu 0, ref 1.40129846e-45(den)
+    in 1.40129846e-45(den) inf 0 0: gpu 0, ref inf
+    in 1.40129846e-45(den) NaN 0 0: gpu 0, ref NaN
+    in 1.17549435e-38 0.5 0 0: gpu 0, ref 5.87747175e-39(den)
+    in -1.17549435e-38 1.40129846e-45(den) 0 0: gpu 0, ref -0
+    in -1.17549435e-38 0.5 0 0: gpu -0, ref -5.87747175e-39(den)
+    in 3.40282347e+38 1.40129846e-45(den) 0 0: gpu 0, ref 4.7683713e-07
+    in inf 0 0 0: gpu 0, ref NaN
+    in inf -0 0 0: gpu 0, ref NaN
+    in inf 1.40129846e-45(den) 0 0: gpu 0, ref inf
+    in NaN 0 0 0: gpu 0, ref NaN
+    in NaN -0 0 0: gpu 0, ref NaN
+    ...
+== add: 10 of 3634 differ from reference 1
+    in 0 1.40129846e-45(den) 0 0: gpu 0, ref 1.40129846e-45(den)
+    in -0 1.40129846e-45(den) 0 0: gpu 0, ref 1.40129846e-45(den)
+    in 1.40129846e-45(den) 0 0 0: gpu 0, ref 1.40129846e-45(den)
+    in 1.40129846e-45(den) -0 0 0: gpu 0, ref 1.40129846e-45(den)
+    in 1.40129846e-45(den) 1.40129846e-45(den) 0 0: gpu 0, ref 2.80259693e-45(den)
+    in 1.17549421e-38(den) 1.40129846e-45(den) 0 0: gpu 0, ref 1.17549435e-38
+    in 1.17549435e-38 1.40129846e-45(den) 0 0: gpu 1.17549435e-38, ref 1.17549449e-38
+    in -1.17549435e-38 1.40129846e-45(den) 0 0: gpu -1.17549435e-38, ref -1.17549421e-38(den)
+== mad: 237 of 4352 differ from reference 2
+    in -8.90385044e-42(den) 2.09675908 2.28425663e-41(den) 0: gpu 0, ref 4.17306683e-42(den)
+    in -9.03520256e-38 2.92964983 -5.1091342e-42(den) 0: gpu -2.64699787e-37, ref -2.64704899e-37
+    in -6.28572044e-40(den) 3.28104663 4.88536141e-37 0: gpu 4.88536141e-37, ref 4.86473788e-37
+    in -2.07185509e-38 0.553173423 -1.01173749e-42(den) 0: gpu -0, ref -1.14619628e-38(den)
+    in 1.23172453e-39(den) 3.06755471 8.43768188e-39(den) 0: gpu 0, ref 1.22160646e-38
+    in 1.26500582e-37 1.35305715 -1.80360946e-37 0: gpu -0, ref -9.19843e-39(den)
+== mul_add: 237 of 4352 differ from reference 2
+    in -8.90385044e-42(den) 2.09675908 2.28425663e-41(den) 0: gpu 0, ref 4.17306683e-42(den)
+    in -9.03520256e-38 2.92964983 -5.1091342e-42(den) 0: gpu -2.64699787e-37, ref -2.64704899e-37
+    in -6.28572044e-40(den) 3.28104663 4.88536141e-37 0: gpu 4.88536141e-37, ref 4.86473788e-37
+    in -2.07185509e-38 0.553173423 -1.01173749e-42(den) 0: gpu -0, ref -1.14619628e-38(den)
+    in 1.23172453e-39(den) 3.06755471 8.43768188e-39(den) 0: gpu 0, ref 1.22160646e-38
+    in 1.26500582e-37 1.35305715 -1.80360946e-37 0: gpu -0, ref -9.19843e-39(den)
+== min: 260 of 3634 differ from reference 1
+    in 0 NaN 0 0: gpu 0, ref NaN
+    in -0 0 0 0: gpu -0, ref 0
+    in -0 NaN 0 0: gpu -0, ref NaN
+    in 1 NaN 0 0: gpu 1, ref NaN
+    in 1 1.40129846e-45(den) 0 0: gpu 0, ref 1.40129846e-45(den)
+    in 1.40129846e-45(den) 1 0 0: gpu 0, ref 1.40129846e-45(den)
+    in 1.40129846e-45(den) inf 0 0: gpu 0, ref 1.40129846e-45(den)
+    in 1.40129846e-45(den) NaN 0 0: gpu 0, ref NaN
+    in 1.40129846e-45(den) 1.40129846e-45(den) 0 0: gpu 0, ref 1.40129846e-45(den)
+    in inf NaN 0 0: gpu inf, ref NaN
+    in inf 1.40129846e-45(den) 0 0: gpu 0, ref 1.40129846e-45(den)
+    in NaN 1.40129846e-45(den) 0 0: gpu 0, ref 1.40129846e-45(den)
+    in -3.14241181e-40(den) 3.673527 0 0: gpu -0, ref -3.14241181e-40(den)
+== max: 58 of 3634 differ from reference 1
+    in 0 NaN 0 0: gpu 0, ref NaN
+    in 0 1.40129846e-45(den) 0 0: gpu 0, ref 1.40129846e-45(den)
+    in -0 0 0 0: gpu 0, ref -0
+    in -0 NaN 0 0: gpu -0, ref NaN
+    in -0 1.40129846e-45(den) 0 0: gpu 0, ref 1.40129846e-45(den)
+    in 1 NaN 0 0: gpu 1, ref NaN
+    in -1 1.40129846e-45(den) 0 0: gpu 0, ref 1.40129846e-45(den)
+    in 1.40129846e-45(den) 0 0 0: gpu 0, ref 1.40129846e-45(den)
+    in 1.40129846e-45(den) -0 0 0: gpu 0, ref 1.40129846e-45(den)
+    in 1.40129846e-45(den) -1 0 0: gpu 0, ref 1.40129846e-45(den)
+    in 1.40129846e-45(den) -inf 0 0: gpu 0, ref 1.40129846e-45(den)
+    in 1.40129846e-45(den) NaN 0 0: gpu 0, ref NaN
+    in 1.40129846e-45(den) 1.40129846e-45(den) 0 0: gpu 0, ref 1.40129846e-45(den)
+    in inf NaN 0 0: gpu inf, ref NaN
+    in -inf 1.40129846e-45(den) 0 0: gpu 0, ref 1.40129846e-45(den)
+    in NaN 1.40129846e-45(den) 0 0: gpu 0, ref 1.40129846e-45(den)
+== cmp: 130 of 4386 differ from reference 1
+    in -5.68944693e-39(den) 0 0 0: gpu 1, ref 0
+== frc: 258 of 4386 differ from reference 1
+    in 1.40129846e-45(den) 1 0 0: gpu 0, ref 1.40129846e-45(den)
+    in -5.68944693e-39(den) 0 0 0: gpu 0, ref 1
+    in 5.60519386e-45(den) 0 0 0: gpu 0, ref 5.60519386e-45(den)
+== dp3: 1 of 4103 differ from reference 2
+    in inf 0 0 0: gpu 0, ref NaN
+== dp4: 1 of 4103 differ from reference 2
+    in inf 0 0 0: gpu 0, ref NaN
+== dp2add: 1 of 4103 differ from reference 4
+    in inf 0 0 0: gpu 0, ref NaN
+== nrm: 1423 of 4103 differ from reference 1
+    in 0 0 0 0: gpu 0, ref NaN
+    in inf 0 0 0: gpu 0, ref NaN
+    in 2.15923214 0.305945873 -2.69813442 -0.492916584: gpu 0.622388482, ref 0.622388542
+== lrp: 2 of 4103 differ from reference 2
+    in inf 0 0 0: gpu 0, ref NaN
+    in NaN 1 1 1: gpu 1, ref NaN
+== mul_pp: 286 of 3634 differ from reference 1
+    in 0 -0 0 0: gpu 0, ref -0
+    in 0 -1 0 0: gpu 0, ref -0
+    in 0 inf 0 0: gpu 0, ref NaN
+    in 0 NaN 0 0: gpu 0, ref NaN
+    in -0 0 0 0: gpu 0, ref -0
+    in -0 1 0 0: gpu 0, ref -0
+    in -0 inf 0 0: gpu 0, ref NaN
+    in -0 NaN 0 0: gpu 0, ref NaN
+    in -0 1.40129846e-45(den) 0 0: gpu 0, ref -0
+    in 1 -0 0 0: gpu 0, ref -0
+    in 1 1.40129846e-45(den) 0 0: gpu 0, ref 1.40129846e-45(den)
+    in -1 0 0 0: gpu 0, ref -0
+    in 1.40129846e-45(den) -0 0 0: gpu 0, ref -0
+    in 1.40129846e-45(den) 1 0 0: gpu 0, ref 1.40129846e-45(den)
+    in 1.40129846e-45(den) inf 0 0: gpu 0, ref inf
+    in 1.40129846e-45(den) NaN 0 0: gpu 0, ref NaN
+    in 1.17549435e-38 0.5 0 0: gpu 0, ref 5.87747175e-39(den)
+    in -1.17549435e-38 1.40129846e-45(den) 0 0: gpu 0, ref -0
+    in -1.17549435e-38 0.5 0 0: gpu -0, ref -5.87747175e-39(den)
+    in 3.40282347e+38 1.40129846e-45(den) 0 0: gpu 0, ref 4.7683713e-07
+    in inf 0 0 0: gpu 0, ref NaN
+    in inf -0 0 0: gpu 0, ref NaN
+    in inf 1.40129846e-45(den) 0 0: gpu 0, ref inf
+    in NaN 0 0 0: gpu 0, ref NaN
+    in NaN -0 0 0: gpu 0, ref NaN
+    ...

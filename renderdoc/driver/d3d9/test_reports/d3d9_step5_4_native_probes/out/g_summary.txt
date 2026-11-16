@@ -1,0 +1,79 @@
+rcp: draw 00000000, 4386 inputs, 0 echoes differ from the input
+  ref1: 4121 finite normal: exact 3587, <=1 ulp 4121, <=2 4121, <=4 4121, <=16 4121, max 1 ulps (input -150 1 0 0), max abs 6.87194767e+10; 24 special cases differ
+rsq: draw 00000000, 4386 inputs, 0 echoes differ from the input
+  ref1: 4123 finite normal: exact 2718, <=1 ulp 4105, <=2 4123, <=4 4123, <=16 4123, max 2 ulps (input 1.00000012 1 0 0), max abs 64; 258 special cases differ
+log: draw 00000000, 4386 inputs, 0 echoes differ from the input
+  ref1: 4123 finite normal: exact 1532, <=1 ulp 3417, <=2 3689, <=4 3884, <=16 4061, max 23947835 ulps (input 0.99999994 1 0 0), max abs 7.62939453e-06; 258 special cases differ
+exp: draw 00000000, 4642 inputs, 0 echoes differ from the input
+  ref1: 4583 finite normal: exact 2255, <=1 ulp 4553, <=2 4583, <=4 4583, <=16 4583, max 2 ulps (input -56.0722885 0 0 0), max abs 2.02824096e+31; 34 special cases differ
+pow: draw 00000000, 3856 inputs, 0 echoes differ from the input
+  ref1: 3731 finite normal: exact 509, <=1 ulp 1072, <=2 1460, <=4 1903, <=16 2884, max 163 ulps (input 0.19045788 49.4162674 0 0), max abs 1.76456964e+33; 26 special cases differ
+  ref2: 3727 finite normal: exact 916, <=1 ulp 1819, <=2 2019, <=4 2285, <=16 2883, max 171 ulps (input 0.271525145 51.0625 0 0), max abs 4.46213011e+32; 37 special cases differ
+sincos: draw 00000000, 3635 inputs, 0 echoes differ from the input
+  ref1: 3630 finite normal: exact 466, <=1 ulp 1252, <=2 1668, <=4 2039, <=16 2533, max 1721102382 ulps (input -4.71238899 0 0 0), max abs 0.146978974; 0 special cases differ
+  ref2: 3630 finite normal: exact 495, <=1 ulp 1261, <=2 1596, <=4 1921, <=16 2386, max 1775405742 ulps (input -12.566371 0 0 0), max abs 0.521876514; 2 special cases differ
+rcp_pp: draw 00000000, 4386 inputs, 0 echoes differ from the input
+  ref1: 4121 finite normal: exact 3587, <=1 ulp 4121, <=2 4121, <=4 4121, <=16 4121, max 1 ulps (input -150 1 0 0), max abs 6.87194767e+10; 24 special cases differ
+  _pp: 269 of 4386 equal the fp32 reference rounded to fp16, 3827 the fp32 reference
+rsq_pp: draw 00000000, 4386 inputs, 0 echoes differ from the input
+  ref1: 4123 finite normal: exact 2718, <=1 ulp 4105, <=2 4123, <=4 4123, <=16 4123, max 2 ulps (input 1.00000012 1 0 0), max abs 64; 258 special cases differ
+  _pp: 266 of 4386 equal the fp32 reference rounded to fp16, 2722 the fp32 reference
+log_pp: draw 00000000, 4386 inputs, 0 echoes differ from the input
+  ref1: 4123 finite normal: exact 1532, <=1 ulp 3417, <=2 3689, <=4 3884, <=16 4061, max 23947835 ulps (input 0.99999994 1 0 0), max abs 7.62939453e-06; 258 special cases differ
+  _pp: 8 of 4386 equal the fp32 reference rounded to fp16, 1536 the fp32 reference
+exp_pp: draw 00000000, 4642 inputs, 0 echoes differ from the input
+  ref1: 4583 finite normal: exact 2255, <=1 ulp 4553, <=2 4583, <=4 4583, <=16 4583, max 2 ulps (input -56.0722885 0 0 0), max abs 2.02824096e+31; 34 special cases differ
+  _pp: 71 of 4642 equal the fp32 reference rounded to fp16, 2279 the fp32 reference
+pow_pp: draw 00000000, 3856 inputs, 0 echoes differ from the input
+  ref1: 3731 finite normal: exact 509, <=1 ulp 1072, <=2 1460, <=4 1903, <=16 2884, max 163 ulps (input 0.19045788 49.4162674 0 0), max abs 1.76456964e+33; 26 special cases differ
+  ref2: 3727 finite normal: exact 916, <=1 ulp 1819, <=2 2019, <=4 2285, <=16 2883, max 171 ulps (input 0.271525145 51.0625 0 0), max abs 4.46213011e+32; 37 special cases differ
+  _pp: 228 of 3856 equal the fp32 reference rounded to fp16, 570 the fp32 reference
+sincos_pp: draw 00000000, 3635 inputs, 0 echoes differ from the input
+  ref1: 3630 finite normal: exact 466, <=1 ulp 1252, <=2 1668, <=4 2039, <=16 2533, max 1721102382 ulps (input -4.71238899 0 0 0), max abs 0.146978974; 0 special cases differ
+  ref2: 3630 finite normal: exact 495, <=1 ulp 1261, <=2 1596, <=4 1921, <=16 2386, max 1775405742 ulps (input -12.566371 0 0 0), max abs 0.521876514; 2 special cases differ
+  _pp: 43 of 3635 equal the fp32 reference rounded to fp16, 468 the fp32 reference
+mul_pp: draw 00000000, 3634 inputs, 0 echoes differ from the input
+  ref1: 3272 finite normal: exact 3272, <=1 ulp 3272, <=2 3272, <=4 3272, <=16 3272, max 0 ulps (input 0 0 0 0), max abs 0; 250 special cases differ
+  _pp: 258 of 3634 equal the fp32 reference rounded to fp16, 3313 the fp32 reference
+mul: draw 00000000, 3634 inputs, 0 echoes differ from the input
+  ref1: 3272 finite normal: exact 3272, <=1 ulp 3272, <=2 3272, <=4 3272, <=16 3272, max 0 ulps (input 0 0 0 0), max abs 0; 250 special cases differ
+add: draw 00000000, 3634 inputs, 0 echoes differ from the input
+  ref1: 3274 finite normal: exact 3274, <=1 ulp 3274, <=2 3274, <=4 3274, <=16 3274, max 0 ulps (input 0 0 0 0), max abs 0; 10 special cases differ
+mad: draw 00000000, 4352 inputs, 0 echoes differ from the input
+  ref1: 4115 finite normal: exact 1535, <=1 ulp 1964, <=2 2010, <=4 2038, <=16 2059, max 889103040 ulps (input 3.75393772 3.91935158 -14.7130022 0), max abs 1.90734863e-06; 237 special cases differ
+  ref2: 4115 finite normal: exact 4115, <=1 ulp 4115, <=2 4115, <=4 4115, <=16 4115, max 0 ulps (input 0 0 0 0), max abs 0; 237 special cases differ
+mul_add: draw 00000000, 4352 inputs, 0 echoes differ from the input
+  ref1: 4115 finite normal: exact 1535, <=1 ulp 1964, <=2 2010, <=4 2038, <=16 2059, max 889103040 ulps (input 3.75393772 3.91935158 -14.7130022 0), max abs 1.90734863e-06; 237 special cases differ
+  ref2: 4115 finite normal: exact 4115, <=1 ulp 4115, <=2 4115, <=4 4115, <=16 4115, max 0 ulps (input 0 0 0 0), max abs 0; 237 special cases differ
+min: draw 00000000, 3634 inputs, 0 echoes differ from the input
+  ref1: 3274 finite normal: exact 3274, <=1 ulp 3274, <=2 3274, <=4 3274, <=16 3274, max 0 ulps (input 0 0 0 0), max abs 0; 259 special cases differ
+  ref2: 3274 finite normal: exact 3274, <=1 ulp 3274, <=2 3274, <=4 3274, <=16 3274, max 0 ulps (input 0 0 0 0), max abs 0; 228 special cases differ
+max: draw 00000000, 3634 inputs, 0 echoes differ from the input
+  ref1: 3274 finite normal: exact 3274, <=1 ulp 3274, <=2 3274, <=4 3274, <=16 3274, max 0 ulps (input 0 0 0 0), max abs 0; 57 special cases differ
+  ref2: 3274 finite normal: exact 3274, <=1 ulp 3274, <=2 3274, <=4 3274, <=16 3274, max 0 ulps (input 0 0 0 0), max abs 0; 26 special cases differ
+cmp: draw 00000000, 4386 inputs, 0 echoes differ from the input
+  ref1: 4125 finite normal: exact 4125, <=1 ulp 4125, <=2 4125, <=4 4125, <=16 4125, max 0 ulps (input 0 0 0 0), max abs 0; 130 special cases differ
+frc: draw 00000000, 4386 inputs, 0 echoes differ from the input
+  ref1: 4125 finite normal: exact 4125, <=1 ulp 4125, <=2 4125, <=4 4125, <=16 4125, max 0 ulps (input 0 0 0 0), max abs 0; 258 special cases differ
+dp3: draw 00000000, 4103 inputs, 0 echoes differ from the input
+  ref1: 4100 finite normal: exact 2658, <=1 ulp 3751, <=2 3942, <=4 4017, <=16 4071, max 1382 ulps (input 1.66144085 -3.63141918 -3.06645632 -1.30401039), max abs 3.81469727e-06; 1 special cases differ
+  ref2: 4100 finite normal: exact 4100, <=1 ulp 4100, <=2 4100, <=4 4100, <=16 4100, max 0 ulps (input 0 0 0 0), max abs 0; 1 special cases differ
+dp4: draw 00000000, 4103 inputs, 0 echoes differ from the input
+  ref1: 4100 finite normal: exact 2107, <=1 ulp 3184, <=2 3490, <=4 3697, <=16 3964, max 1223 ulps (input 3.85177231 3.52655411 -3.77186584 -3.6399889), max abs 7.62939453e-06; 1 special cases differ
+  ref2: 4100 finite normal: exact 4100, <=1 ulp 4100, <=2 4100, <=4 4100, <=16 4100, max 0 ulps (input 0 0 0 0), max abs 0; 1 special cases differ
+dp2add: draw 00000000, 4103 inputs, 0 echoes differ from the input
+  ref1: 4101 finite normal: exact 3334, <=1 ulp 3825, <=2 4012, <=4 4056, <=16 4092, max 128 ulps (input -1.55210161 -1.13223362 -2.25965834 1.08046341), max abs 1.90734863e-06; 1 special cases differ
+  ref2: 4101 finite normal: exact 2640, <=1 ulp 3781, <=2 3932, <=4 4002, <=16 4073, max 466 ulps (input 0.886950493 2.59333849 2.71215439 -1.97232485), max abs 1.90734863e-06; 1 special cases differ
+  ref3: 4101 finite normal: exact 2405, <=1 ulp 3773, <=2 3935, <=4 4012, <=16 4075, max 316 ulps (input 0.214598179 0.728811741 -2.39054108 3.9741416), max abs 1.90734863e-06; 1 special cases differ
+  ref4: 4101 finite normal: exact 4101, <=1 ulp 4101, <=2 4101, <=4 4101, <=16 4101, max 0 ulps (input 0 0 0 0), max abs 0; 1 special cases differ
+nrm: draw 00000000, 4103 inputs, 0 echoes differ from the input
+  ref1: 4099 finite normal: exact 2678, <=1 ulp 3905, <=2 4096, <=4 4099, <=16 4099, max 3 ulps (input 2.19055033 3.78604078 -1.69825792 -0.271962643), max abs 1.78813934e-07; 2 special cases differ
+  ref2: 4099 finite normal: exact 2272, <=1 ulp 4009, <=2 4099, <=4 4099, <=16 4099, max 2 ulps (input -1.46788836 -2.84662199 1.74036455 3.34948397), max abs 1.1920929e-07; 2 special cases differ
+  ref3: 4099 finite normal: exact 2843, <=1 ulp 3944, <=2 4099, <=4 4099, <=16 4099, max 2 ulps (input -1.47609472 0.00340795517 3.39245939 -3.95705462), max abs 1.1920929e-07; 2 special cases differ
+lrp: draw 00000000, 4103 inputs, 0 echoes differ from the input
+  ref1: 4100 finite normal: exact 3093, <=1 ulp 3951, <=2 4019, <=4 4060, <=16 4089, max 3827 ulps (input -1.13402462 -1.14904737 -0.610551834 3.90032625), max abs 1.90734863e-06; 2 special cases differ
+  ref2: 4100 finite normal: exact 4100, <=1 ulp 4100, <=2 4100, <=4 4100, <=16 4100, max 0 ulps (input 0 0 0 0), max abs 0; 2 special cases differ
+  ref3: 4100 finite normal: exact 3071, <=1 ulp 3885, <=2 3963, <=4 4039, <=16 4090, max 3540 ulps (input -1.13402462 -1.14904737 -0.610551834 3.90032625), max abs 1.90734863e-06; 2 special cases differ
+  ref4: 4100 finite normal: exact 2637, <=1 ulp 3818, <=2 3921, <=4 4003, <=16 4080, max 3827 ulps (input -1.13402462 -1.14904737 -0.610551834 3.90032625), max abs 3.81469727e-06; 2 special cases differ
+  ref5: 4100 finite normal: exact 3071, <=1 ulp 3885, <=2 3963, <=4 4039, <=16 4090, max 3540 ulps (input -1.13402462 -1.14904737 -0.610551834 3.90032625), max abs 1.90734863e-06; 2 special cases differ
+  ref6: 4100 finite normal: exact 3071, <=1 ulp 3885, <=2 3963, <=4 4039, <=16 4090, max 3540 ulps (input -1.13402462 -1.14904737 -0.610551834 3.90032625), max abs 1.90734863e-06; 2 special cases differ

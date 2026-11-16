@@ -86,13 +86,13 @@ Where it starts from:
 | 5.1 | ~~**Prepare the interpreter for stepping** (nothing visible changes): split `VSEmulator::Execute` so it runs one instruction at a time and records what changed, keeping a fast path without recording for mesh output; the disassembler records each instruction's line~~ | Done, see "Stepping the interpreter" below (`d3d9_step5_1_stepping.md`). Unit tests check the steps and the line mapping; the 18 automated tests still pass (VS Out unchanged); mesh output on a big draw is no slower in Release (about 5% faster), but 4-6% slower in the unoptimised Development build |
 | 5.2 | ~~**`DebugVertex` with registers:** `d3d9_shaderdebug.cpp` with `DebugVertex`, `ContinueDebug` and `FreeDebugger`, taking inputs, constants and textures from VS Out's snapshot. Inputs, `r#`, `a0`, `aL`, `p0` and outputs, named by register. `shaderDebugging` on; pixel shaders and fixed function draws say why they can't be debugged. A new `D3D9_Shader_Debug_Zoo` demo and test (modelled on `D3D11_Shader_Debug_Zoo`) with one vertex shader per model~~ | Done, see "Debugging vertex shaders" below (`d3d9_step5_2_debug_vertex.md`). Every vertex of the zoo's vs_1_1, vs_2_0, vs_2_x, vs_3_0 and instanced vs_3_0 draws ends with VS Out's values exactly and passes `process_trace`; UI screenshots of "Debug this Vertex" |
 | 5.3 | ~~**Names, flow control and UI for vertex shaders:** constants named from the constant table (struct and array members), `def` literals marked, a call stack for `call`/`ret`, flags for `texldl` samples and NaN/Inf. Zoo shaders with loops, `rep`, `break`, calls, predicates, relative addressing and `texldl`~~ | Done, see "Debugging vertex shaders" below (`d3d9_step5_3_names_flow.md`). The zoo test checks the names, call stacks and flags; UI screenshots of the constants, watches, the Callstack panel and an infinity. Also fixed qrenderdoc showing a TRUE boolean constant as a constant block |
-| 5.4 | **Native probes** (a probe and a report, no driver change): `vPos`'s pixel centre (whole or +0.5) and `vFace`'s values; ps_1_x's clamp range, `texcoord` clamping and `cnd` on 1_1-1_3; `dsx`/`dsy` per quad or per pixel; colour input precision and clamping; `texldd` against `texld`'s own LOD; `rcp`, `rsq`, `exp`, `log`, `sincos`, `pow` against the C library; reading inputs back with a replacement pixel shader, and which fragment it picks with alpha test or `texkill` | The report has the numbers, and the decisions for 5.5-5.10 are recorded here |
+| 5.4 | ~~**Native probes** (a probe and a report, no driver change): `vPos`'s pixel centre (whole or +0.5) and `vFace`'s values; ps_1_x's clamp range, `texcoord` clamping and `cnd` on 1_1-1_3; `dsx`/`dsy` per quad or per pixel; colour input precision and clamping; `texldd` against `texld`'s own LOD; `rcp`, `rsq`, `exp`, `log`, `sincos`, `pow` against the C library; reading inputs back with a replacement pixel shader, and which fragment it picks with alpha test or `texkill`~~ | Done, see "What the GPU does with pixel shaders" below (`d3d9_step5_4_native_probes.md`) |
 | 5.5 | **ps_2_0-ps_3_0 interpreter** (portable, unit tested): pixel registers, `texld`/`texldp`/`texldb`/`texldd` through a sampling callback, `texkill`, `dsx`/`dsy`, `cmp`, `dp2add`, the 2x2 quad in lockstep | Unit tests pass on compiled shaders, with a CPU stub for sampling |
-| 5.6 | **ps_1_x interpreter** (portable, unit tested): `texcoord`, `tex`, `texbem`/`texbeml`, `texreg2*`, the `texm3x2*`/`texm3x3*` families, `texdp3*`, `texdepth`, `bem`, ps_1_4's `texcrd`/`texld`/`phase`, co-issue, the ps_1_x modifiers, `cnd`, the range limit (5.4's numbers) | Unit tests pass |
-| 5.7 | **`DebugPixel`, inputs from the GPU:** redraw the event with a generated pixel shader writing the original's inputs to float32 targets, scissored to the quad (ps_2_0 for ps_1_x/2_x originals, ps_3_0 with the original's declarations for ps_3_0); `vPos` and `vFace` from a ps_3_0 pass; uncovered quad pixels from the derivatives. Debugging on for ps_2_0/3_0 shaders that don't sample; those that do say why not yet | Zoo pixel draws to A32B32G32R32F pass: the debugger's `oC#` and `oDepth` match the replay's pixel and the demo's native readback |
-| 5.8 | **Sampling on the GPU:** each sample is a one-pixel `texldd`/`texldl`/`texldb` draw with the original texture and sampler state, cached. Transcendentals on the GPU too if 5.4 found they differ | Zoo draws pass with 2D, cube and volume textures, mips, anisotropic, border, sRGB, `SetLOD`, D24 shadow comparison and an unbound texture |
+| 5.6 | **ps_1_x interpreter** (portable, unit tested): `texcoord`, `tex`, `texbem`/`texbeml`, `texreg2*`, the `texm3x2*`/`texm3x3*` families, `texdp3*`, `texdepth`, `bem`, ps_1_4's `texcrd`/`texld`/`phase`, co-issue, the ps_1_x modifiers, `cnd`, and the clamps 5.4 measured (constants, `texcoord`, the output; no range limit) | Unit tests pass |
+| 5.7 | **`DebugPixel`, inputs from the GPU:** redraw the event with a generated pixel shader writing the original's inputs and their `dsx`/`dsy` to float32 targets, scissored to the quad (ps_2_x for ps_1_x/2_x originals, since ps_2_0 has no `dsx`; ps_3_0 with the original's declarations for ps_3_0); `vPos` computed, `vFace` read with `cmp`; the quad's other pixels from the derivatives. Debugging on for ps_2_0/3_0 shaders that don't sample; those that do say why not yet | Zoo pixel draws to A32B32G32R32F pass: the debugger's `oC#` and `oDepth` match the replay's pixel and the demo's native readback |
+| 5.8 | **Sampling on the GPU:** each sample is a one-pixel `texldd`/`texldl`/`texldb` draw with the original texture and sampler state, cached. Transcendentals on the GPU too, since 5.4 found they differ | Zoo draws pass with 2D, cube and volume textures, mips, anisotropic, border, sRGB, `SetLOD`, D24 shadow comparison and an unbound texture |
 | 5.9 | **ps_1_x end to end, and the texture viewer:** ps_1_1-1_4 debugging on, texture addressing through 5.8's sampling; fixed function pixel stages say why they can't be debugged | ps_1_x zoo draws pass; UI screenshots of "Debug" in the texture viewer stepping a ps_1_x and a ps_3_0 shader |
-| 5.10 | **Which fragment, and edge cases:** pick the fragment as 5.4 decided (for ps_2_0 and later, possibly `mov oC#, t#` added to the original so its own `texkill`, `clip` and alpha test apply); multisampling (pixel centre, sample 0), point sprites, flat shading, centroid | Zoo draws with alpha test, `texkill` and overlapping triangles debug the fragment the GPU wrote, or the report says which cases don't |
+| 5.10 | **Which fragment, and edge cases:** for ps_2_0 and later, the original shader with its inputs written to extra targets, so its own `texkill` and alpha test pick the fragment (5.4); multisampling (pixel centre, sample 0), point sprites, centroid | Zoo draws with alpha test, `texkill` and overlapping triangles debug the fragment the GPU wrote, or the report says which cases don't |
 | 5.11 | **Finishing:** a D3D9 section in `docs/how/how_debug_shader.rst`, README, STATUS.md, the Python bindings checked | UI screenshots of a full vertex and pixel session; a full test run |
 | 5.12 | *Optional:* **HLSL source probe:** compile SM2/SM3 with `D3DXSHADER_DEBUG` (fxc `/Zi`), dump its comment blocks, work out the undocumented format | A report on the format |
 | 5.13 | *Optional:* **HLSL source debugging:** instructions mapped to file and line, variables to registers, so the viewer steps through HLSL | The zoo has a `/Zi` shader whose steps show its source lines and variables |
@@ -100,14 +100,90 @@ Where it starts from:
 Order: 5.4 comes before 5.5-5.10. 5.5 and 5.6 don't depend on each other; both come before 5.7.
 Step 6 (pixel history) reuses 5.7-5.10.
 
+#### What the GPU does with pixel shaders
+
+Measured natively in 5.4 (`d3d9_step5_4_native_probes.md`) on the RTX 4070 Ti, and the
+decisions they lead to:
+
+- **5.5, ps_2_0 to ps_3_0 arithmetic:**
+  - fp32 everywhere; `_pp` changes nothing on the GPU, so it's ignored.
+  - Denormal inputs act as a zero of the same sign in every arithmetic instruction, and denormal
+    results are flushed to ±0. `mov` keeps them.
+  - 0 × anything (∞ and NaN too) is +0 in `mul`, `mad`, `dp3`, `dp4`, `lrp` and `nrm`.
+  - `mad` is fused (`fmaf`, bit for bit).
+  - `dp3`/`dp4` round the first product and `fmaf` the rest in component order.
+  - `dp2add` is `fmaf(a.y, b.y, a.x * b.x) + c`, and `lrp` is `fmaf(s0, s1 - s2, s2)`.
+  - The driver also fused a separate `mul` and `add`. The interpreter can't know where it does
+    that, so tests allow a small relative difference.
+  - `min`/`max` return the other operand when one is NaN, with -0 below +0.
+  - `cmp` counts -0 as ≥ 0. `log(0)` is -∞, not the -FLT_MAX the vertex interpreter uses.
+  - The transcendentals are close to the C library, but not exact:
+    - `rcp` within 1 ulp, `rsq`, `exp` and `log` within 2 (`log` near 1 within 1.8e-7);
+    - `pow` within 163 ulps;
+    - `sincos` within 3.8e-7 for |x| ≤ π and 9.5e-6 up to 100, but up to 0.49 beyond.
+  - So they go through a callback like sampling, with C library defaults and the GPU's special
+    cases.
+- **5.6, ps_1_x:**
+  - Registers are fp32 with no range limit (values over 10^6 survive, despite
+    PixelShader1xMaxValue 65504).
+  - Constants are clamped to [-1, 1] when read, and r0 to [0, 1] when written.
+  - `texcoord` clamps to [0, 1]; `texcrd`, `tex` and `texld` don't.
+  - Modifiers don't clamp, except `_sat`. Source modifiers apply after the constant clamp.
+  - `cnd` takes src1 when the condition is > 0.5 (at fp32, in 1_1-1_3 and 1_4), and `cmp` when it
+    is ≥ 0.
+- **5.7, inputs:**
+  - Pixel (x, y) samples its inputs at the whole screen position (x, y), D3D9's rule; coverage
+    follows the top-left rule with those centres.
+  - `vPos` is (x, y) exactly, relative to the render target, not the viewport, so it's computed.
+  - `vFace` can only be a condition. It is exactly +1 for triangles clockwise on screen and -1
+    otherwise, whatever the cull or fill mode, and +1 for lines and points; it's read with `cmp`.
+  - Colours are full fp32 and interpolated exactly like texcoords, perspective included. A
+    vs_2_0's `oD#` arrive clamped to [0, 1]; ps_3_0's COLOR inputs aren't clamped. Flat shading
+    flattens colours, ps_3_0's too, but not texcoords. The replacement reads what the original
+    saw, as long as it declares the same inputs.
+  - Derivatives are per 2x2 quad: `dsx` from the top row and `dsy` from the left column, in ps_2_x
+    and ps_3_0. Helper pixels (outside the triangle or the scissor) run with extrapolated inputs.
+    So the quad's other pixels come from the debugged pixel's own value and derivatives, never
+    from the target, which another triangle may have written.
+  - This GPU has ps_2_x with gradient instructions (PS20Caps 0x1f, 32 temps, 512 slots); the
+    replacement for non-ps_3_0 shaders is ps_2_x.
+- **5.8, sampling:**
+  - A one-pixel `texldd` draw with the coordinate and derivatives as constants matches `texld`
+    bit for bit in 54 of 56 sampler and mapping combinations, including LOD bias and
+    `MAXMIPLEVEL`.
+  - Anisotropic filtering on a rotated mapping is the exception: 44 of 4,096 pixels, in whole
+    quads, are 1/128 of a level apart.
+  - Unbound samplers read (1, 1, 1, 1) for 2D and (0, 0, 0, 0) for cube and volume; the GPU draw
+    gives that as is.
+- **5.10, which fragment:**
+  - For each of 9 depth, texkill and alpha test cases in ps_2_0, ps_2_x and ps_3_0, the original
+    shader with its inputs also written to extra render targets read the fragment the GPU wrote:
+    27 of 27.
+  - A plain replacement with alpha test off got 6 of 27, and a depth EQUAL redraw 12, with 6 wrong
+    and 9 not possible.
+  - So for ps_2_0 and later the original runs with outputs appended (moved up to ps_2_x for
+    `dsx`), keeping its oC0 format, since the alpha test compares at the target format's precision
+    (on A8R8G8B8 it passes 128 from 127.56/255, not 127.5).
+  - ps_1_x can't have extra outputs: it gets the plain replacement, and a fragment rejected by
+    texkill or the alpha test isn't covered for it.
+- **Not probed:**
+  - other GPUs;
+  - vertex shader arithmetic: the same rules need checking there before 5.5 shares an ALU;
+  - ps_2_0's arithmetic on its own (the arithmetic ran as ps_3_0);
+  - `texldp`/`texldb` and cube or volume `texldd`;
+  - derivatives in flow control;
+  - multisampling and centroid (5.10).
+
 Risks:
 - **Which fragment is debugged.** D3D9 has no primitive ID. A redraw with the draw's depth and
   stencil state and alpha test off debugs the last fragment that passed the depth test; with alpha
-  test, `texkill` or `clip` that may not be the one that wrote the pixel. 5.4 decides; until then
-  it's listed as not covered.
-- **Where the pixel centre is:** measured in 5.4, not taken from the documentation.
-- **Precision:** the CPU runs full fp32. `_pp` hints and the GPU's transcendentals can differ in
-  the last bits; the tests compare within a stated tolerance and report each difference.
+  test, `texkill` or `clip` that may not be the one that wrote the pixel. 5.4 found that the
+  original shader with its inputs written to extra targets picks the right one (ps_2_0 and later);
+  ps_1_x stays a risk.
+- **Where the pixel centre is:** measured in 5.4: at whole coordinates, as D3D9 documents.
+- **Precision:** the CPU runs full fp32. The GPU ignores `_pp`. Its transcendentals differ in the
+  last bits (5.8 runs them on the GPU), and the driver may fuse a `mul` and an `add`; the tests
+  compare within a stated tolerance and report each difference.
 - **Changes outside the driver:** none planned. Any qrenderdoc change goes in the README.
 
 Left out: fixed function debugging (not a shader, though its emulation could be shown as one

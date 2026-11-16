@@ -1,0 +1,321 @@
+threshold T: per region the pixels' (vFace > T, vFace == T, vFace < -T, vFace == -T)
+cull none:
+  cmp / setp_gt 0 / if_ge 0 (1 or -1 each):
+    big clockwise triangle (draw 00000000): [1 1 1 1] x36
+    big counter-clockwise triangle (draw 00000000): [-1 -1 -1 1] x36
+    small clockwise triangle (draw 00000000): [1 1 1 1] x6
+    small counter-clockwise triangle (draw 00000000): [-1 -1 -1 1] x6
+    line (draw 00000000): [1 1 1 1] x14
+    point (draw 00000000): [1 1 1 1] x1
+  T = 0:
+    big clockwise triangle (draw 00000000): [1 0 0 0] x36
+    big counter-clockwise triangle (draw 00000000): [0 0 1 0] x36
+    small clockwise triangle (draw 00000000): [1 0 0 0] x6
+    small counter-clockwise triangle (draw 00000000): [0 0 1 0] x6
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 0.5:
+    big clockwise triangle (draw 00000000): [1 0 0 0] x36
+    big counter-clockwise triangle (draw 00000000): [0 0 1 0] x36
+    small clockwise triangle (draw 00000000): [1 0 0 0] x6
+    small counter-clockwise triangle (draw 00000000): [0 0 1 0] x6
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 0.999:
+    big clockwise triangle (draw 00000000): [1 0 0 0] x36
+    big counter-clockwise triangle (draw 00000000): [0 0 1 0] x36
+    small clockwise triangle (draw 00000000): [1 0 0 0] x6
+    small counter-clockwise triangle (draw 00000000): [0 0 1 0] x6
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 1:
+    big clockwise triangle (draw 00000000): [0 1 0 0] x36
+    big counter-clockwise triangle (draw 00000000): [0 0 0 1] x36
+    small clockwise triangle (draw 00000000): [0 1 0 0] x6
+    small counter-clockwise triangle (draw 00000000): [0 0 0 1] x6
+    line (draw 00000000): [0 1 0 0] x14
+    point (draw 00000000): [0 1 0 0] x1
+  T = 1.001:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x36
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x36
+    small clockwise triangle (draw 00000000): [0 0 0 0] x6
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x6
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 2:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x36
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x36
+    small clockwise triangle (draw 00000000): [0 0 0 0] x6
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x6
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 1000:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x36
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x36
+    small clockwise triangle (draw 00000000): [0 0 0 0] x6
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x6
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 1e+06:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x36
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x36
+    small clockwise triangle (draw 00000000): [0 0 0 0] x6
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x6
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+cull CW:
+  cmp / setp_gt 0 / if_ge 0 (1 or -1 each):
+    big clockwise triangle (draw 00000000): not drawn
+    big counter-clockwise triangle (draw 00000000): [-1 -1 -1 1] x36
+    small clockwise triangle (draw 00000000): not drawn
+    small counter-clockwise triangle (draw 00000000): [-1 -1 -1 1] x6
+    line (draw 00000000): [1 1 1 1] x14
+    point (draw 00000000): [1 1 1 1] x1
+  T = 0:
+    big clockwise triangle (draw 00000000): not drawn
+    big counter-clockwise triangle (draw 00000000): [0 0 1 0] x36
+    small clockwise triangle (draw 00000000): not drawn
+    small counter-clockwise triangle (draw 00000000): [0 0 1 0] x6
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 0.5:
+    big clockwise triangle (draw 00000000): not drawn
+    big counter-clockwise triangle (draw 00000000): [0 0 1 0] x36
+    small clockwise triangle (draw 00000000): not drawn
+    small counter-clockwise triangle (draw 00000000): [0 0 1 0] x6
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 0.999:
+    big clockwise triangle (draw 00000000): not drawn
+    big counter-clockwise triangle (draw 00000000): [0 0 1 0] x36
+    small clockwise triangle (draw 00000000): not drawn
+    small counter-clockwise triangle (draw 00000000): [0 0 1 0] x6
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 1:
+    big clockwise triangle (draw 00000000): not drawn
+    big counter-clockwise triangle (draw 00000000): [0 0 0 1] x36
+    small clockwise triangle (draw 00000000): not drawn
+    small counter-clockwise triangle (draw 00000000): [0 0 0 1] x6
+    line (draw 00000000): [0 1 0 0] x14
+    point (draw 00000000): [0 1 0 0] x1
+  T = 1.001:
+    big clockwise triangle (draw 00000000): not drawn
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x36
+    small clockwise triangle (draw 00000000): not drawn
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x6
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 2:
+    big clockwise triangle (draw 00000000): not drawn
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x36
+    small clockwise triangle (draw 00000000): not drawn
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x6
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 1000:
+    big clockwise triangle (draw 00000000): not drawn
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x36
+    small clockwise triangle (draw 00000000): not drawn
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x6
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 1e+06:
+    big clockwise triangle (draw 00000000): not drawn
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x36
+    small clockwise triangle (draw 00000000): not drawn
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x6
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+cull CCW:
+  cmp / setp_gt 0 / if_ge 0 (1 or -1 each):
+    big clockwise triangle (draw 00000000): [1 1 1 1] x36
+    big counter-clockwise triangle (draw 00000000): not drawn
+    small clockwise triangle (draw 00000000): [1 1 1 1] x6
+    small counter-clockwise triangle (draw 00000000): not drawn
+    line (draw 00000000): [1 1 1 1] x14
+    point (draw 00000000): [1 1 1 1] x1
+  T = 0:
+    big clockwise triangle (draw 00000000): [1 0 0 0] x36
+    big counter-clockwise triangle (draw 00000000): not drawn
+    small clockwise triangle (draw 00000000): [1 0 0 0] x6
+    small counter-clockwise triangle (draw 00000000): not drawn
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 0.5:
+    big clockwise triangle (draw 00000000): [1 0 0 0] x36
+    big counter-clockwise triangle (draw 00000000): not drawn
+    small clockwise triangle (draw 00000000): [1 0 0 0] x6
+    small counter-clockwise triangle (draw 00000000): not drawn
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 0.999:
+    big clockwise triangle (draw 00000000): [1 0 0 0] x36
+    big counter-clockwise triangle (draw 00000000): not drawn
+    small clockwise triangle (draw 00000000): [1 0 0 0] x6
+    small counter-clockwise triangle (draw 00000000): not drawn
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 1:
+    big clockwise triangle (draw 00000000): [0 1 0 0] x36
+    big counter-clockwise triangle (draw 00000000): not drawn
+    small clockwise triangle (draw 00000000): [0 1 0 0] x6
+    small counter-clockwise triangle (draw 00000000): not drawn
+    line (draw 00000000): [0 1 0 0] x14
+    point (draw 00000000): [0 1 0 0] x1
+  T = 1.001:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x36
+    big counter-clockwise triangle (draw 00000000): not drawn
+    small clockwise triangle (draw 00000000): [0 0 0 0] x6
+    small counter-clockwise triangle (draw 00000000): not drawn
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 2:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x36
+    big counter-clockwise triangle (draw 00000000): not drawn
+    small clockwise triangle (draw 00000000): [0 0 0 0] x6
+    small counter-clockwise triangle (draw 00000000): not drawn
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 1000:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x36
+    big counter-clockwise triangle (draw 00000000): not drawn
+    small clockwise triangle (draw 00000000): [0 0 0 0] x6
+    small counter-clockwise triangle (draw 00000000): not drawn
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 1e+06:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x36
+    big counter-clockwise triangle (draw 00000000): not drawn
+    small clockwise triangle (draw 00000000): [0 0 0 0] x6
+    small counter-clockwise triangle (draw 00000000): not drawn
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+cull none, wireframe:
+  cmp / setp_gt 0 / if_ge 0 (1 or -1 each):
+    big clockwise triangle (draw 00000000): [1 1 1 1] x22
+    big counter-clockwise triangle (draw 00000000): [-1 -1 -1 1] x22
+    small clockwise triangle (draw 00000000): [1 1 1 1] x7
+    small counter-clockwise triangle (draw 00000000): [-1 -1 -1 1] x7
+    line (draw 00000000): [1 1 1 1] x14
+    point (draw 00000000): [1 1 1 1] x1
+  T = 0:
+    big clockwise triangle (draw 00000000): [1 0 0 0] x22
+    big counter-clockwise triangle (draw 00000000): [0 0 1 0] x22
+    small clockwise triangle (draw 00000000): [1 0 0 0] x7
+    small counter-clockwise triangle (draw 00000000): [0 0 1 0] x7
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 0.5:
+    big clockwise triangle (draw 00000000): [1 0 0 0] x22
+    big counter-clockwise triangle (draw 00000000): [0 0 1 0] x22
+    small clockwise triangle (draw 00000000): [1 0 0 0] x7
+    small counter-clockwise triangle (draw 00000000): [0 0 1 0] x7
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 0.999:
+    big clockwise triangle (draw 00000000): [1 0 0 0] x22
+    big counter-clockwise triangle (draw 00000000): [0 0 1 0] x22
+    small clockwise triangle (draw 00000000): [1 0 0 0] x7
+    small counter-clockwise triangle (draw 00000000): [0 0 1 0] x7
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 1:
+    big clockwise triangle (draw 00000000): [0 1 0 0] x22
+    big counter-clockwise triangle (draw 00000000): [0 0 0 1] x22
+    small clockwise triangle (draw 00000000): [0 1 0 0] x7
+    small counter-clockwise triangle (draw 00000000): [0 0 0 1] x7
+    line (draw 00000000): [0 1 0 0] x14
+    point (draw 00000000): [0 1 0 0] x1
+  T = 1.001:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x22
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x22
+    small clockwise triangle (draw 00000000): [0 0 0 0] x7
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x7
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 2:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x22
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x22
+    small clockwise triangle (draw 00000000): [0 0 0 0] x7
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x7
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 1000:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x22
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x22
+    small clockwise triangle (draw 00000000): [0 0 0 0] x7
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x7
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 1e+06:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x22
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x22
+    small clockwise triangle (draw 00000000): [0 0 0 0] x7
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x7
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+cull none, point fill:
+  cmp / setp_gt 0 / if_ge 0 (1 or -1 each):
+    big clockwise triangle (draw 00000000): [1 1 1 1] x1
+    big counter-clockwise triangle (draw 00000000): [-1 -1 -1 1] x1
+    small clockwise triangle (draw 00000000): [1 1 1 1] x1
+    small counter-clockwise triangle (draw 00000000): [-1 -1 -1 1] x1
+    line (draw 00000000): [1 1 1 1] x14
+    point (draw 00000000): [1 1 1 1] x1
+  T = 0:
+    big clockwise triangle (draw 00000000): [1 0 0 0] x1
+    big counter-clockwise triangle (draw 00000000): [0 0 1 0] x1
+    small clockwise triangle (draw 00000000): [1 0 0 0] x1
+    small counter-clockwise triangle (draw 00000000): [0 0 1 0] x1
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 0.5:
+    big clockwise triangle (draw 00000000): [1 0 0 0] x1
+    big counter-clockwise triangle (draw 00000000): [0 0 1 0] x1
+    small clockwise triangle (draw 00000000): [1 0 0 0] x1
+    small counter-clockwise triangle (draw 00000000): [0 0 1 0] x1
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 0.999:
+    big clockwise triangle (draw 00000000): [1 0 0 0] x1
+    big counter-clockwise triangle (draw 00000000): [0 0 1 0] x1
+    small clockwise triangle (draw 00000000): [1 0 0 0] x1
+    small counter-clockwise triangle (draw 00000000): [0 0 1 0] x1
+    line (draw 00000000): [1 0 0 0] x14
+    point (draw 00000000): [1 0 0 0] x1
+  T = 1:
+    big clockwise triangle (draw 00000000): [0 1 0 0] x1
+    big counter-clockwise triangle (draw 00000000): [0 0 0 1] x1
+    small clockwise triangle (draw 00000000): [0 1 0 0] x1
+    small counter-clockwise triangle (draw 00000000): [0 0 0 1] x1
+    line (draw 00000000): [0 1 0 0] x14
+    point (draw 00000000): [0 1 0 0] x1
+  T = 1.001:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x1
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x1
+    small clockwise triangle (draw 00000000): [0 0 0 0] x1
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x1
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 2:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x1
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x1
+    small clockwise triangle (draw 00000000): [0 0 0 0] x1
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x1
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 1000:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x1
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x1
+    small clockwise triangle (draw 00000000): [0 0 0 0] x1
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x1
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1
+  T = 1e+06:
+    big clockwise triangle (draw 00000000): [0 0 0 0] x1
+    big counter-clockwise triangle (draw 00000000): [0 0 0 0] x1
+    small clockwise triangle (draw 00000000): [0 0 0 0] x1
+    small counter-clockwise triangle (draw 00000000): [0 0 0 0] x1
+    line (draw 00000000): [0 0 0 0] x14
+    point (draw 00000000): [0 0 0 0] x1

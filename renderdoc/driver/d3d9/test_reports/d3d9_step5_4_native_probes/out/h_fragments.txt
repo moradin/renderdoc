@@ -1,0 +1,145 @@
+NumSimultaneousRTs 4, PrimitiveMiscCaps 002fcef2 (MRTINDEPENDENTBITDEPTHS 1, MRTPOSTPIXELSHADERBLENDING 1)
+format 116 post pixel shader blending 00000000
+format 113 post pixel shader blending 00000000
+alpha test, ALPHAREF 128: alpha, then per target format and function 1 = passed
+0.498039216 (0x3efefeff, *255 = 127): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.498046875 (0x3eff0000, *255 = 127.001953): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.499023438 (0x3eff8000, *255 = 127.250977): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.499511719 (0x3effc000, *255 = 127.375488): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.499755859 (0x3effe000, *255 = 127.437744): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.49987793 (0x3efff000, *255 = 127.468872): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.499938965 (0x3efff800, *255 = 127.484436): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.499969482 (0x3efffc00, *255 = 127.492218): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.499984741 (0x3efffe00, *255 = 127.496109): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.499992371 (0x3effff00, *255 = 127.498055): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.499996185 (0x3effff80, *255 = 127.499023): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.499998093 (0x3effffc0, *255 = 127.499512): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.499999046 (0x3effffe0, *255 = 127.499756): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.499999523 (0x3efffff0, *255 = 127.499878): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.499999762 (0x3efffff8, *255 = 127.499939): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.499999881 (0x3efffffc, *255 = 127.499969): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.49999994 (0x3efffffe, *255 = 127.499985): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.5 (0x3f000000, *255 = 127.5): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.5 (0x3f000000, *255 = 127.5): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.50000006 (0x3f000001, *255 = 127.500015): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500000119 (0x3f000002, *255 = 127.500031): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500000238 (0x3f000004, *255 = 127.500061): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500000477 (0x3f000008, *255 = 127.500122): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500000954 (0x3f000010, *255 = 127.500244): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500001907 (0x3f000020, *255 = 127.500488): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500003815 (0x3f000040, *255 = 127.500977): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500007629 (0x3f000080, *255 = 127.501945): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500007689 (0x3f000081, *255 = 127.501961): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500015259 (0x3f000100, *255 = 127.503891): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500030518 (0x3f000200, *255 = 127.507782): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500061035 (0x3f000400, *255 = 127.515564): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.50012207 (0x3f000800, *255 = 127.531128): 8bitGE:0 8bitEQ:0 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500244141 (0x3f001000, *255 = 127.562256): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500488281 (0x3f002000, *255 = 127.624512): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500976562 (0x3f004000, *255 = 127.749023): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.500984251 (0x3f004081, *255 = 127.750984): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501472533 (0x3f006081, *255 = 127.875496): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501716673 (0x3f007081, *255 = 127.937752): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501838744 (0x3f007881, *255 = 127.96888): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501899779 (0x3f007c81, *255 = 127.984444): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501930296 (0x3f007e81, *255 = 127.992226): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501945555 (0x3f007f81, *255 = 127.996117): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:0 f16EQ:0 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501953125 (0x3f008000, *255 = 127.998047): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501953185 (0x3f008001, *255 = 127.998062): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501956999 (0x3f008041, *255 = 127.999031): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501958907 (0x3f008061, *255 = 127.999519): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.50195986 (0x3f008071, *255 = 127.999763): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501960337 (0x3f008079, *255 = 127.999886): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501960576 (0x3f00807d, *255 = 127.999947): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501960695 (0x3f00807f, *255 = 127.999977): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501960754 (0x3f008080, *255 = 127.999992): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501960754 (0x3f008080, *255 = 127.999992): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:0 f32EQ:0 f32GT:0
+0.501960814 (0x3f008081, *255 = 128): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:1 f32GT:0
+0.501960874 (0x3f008082, *255 = 128.000015): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:0 f32GT:1
+0.501960874 (0x3f008082, *255 = 128.000015): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:0 f32GT:1
+0.501960933 (0x3f008083, *255 = 128.000031): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:0 f32GT:1
+0.501961052 (0x3f008085, *255 = 128.000061): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:0 f32GT:1
+0.501961291 (0x3f008089, *255 = 128.000122): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:0 f32GT:1
+0.501961768 (0x3f008091, *255 = 128.000244): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:0 f32GT:1
+0.501962721 (0x3f0080a1, *255 = 128.000488): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:0 f32GT:1
+0.501964629 (0x3f0080c1, *255 = 128.000977): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:0 f32GT:1
+0.501968443 (0x3f008101, *255 = 128.001953): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:0 f32GT:1
+0.501976073 (0x3f008181, *255 = 128.003891): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:0 f32GT:1
+0.501991332 (0x3f008281, *255 = 128.007782): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:0 f32GT:1
+0.502021849 (0x3f008481, *255 = 128.015564): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:0 f32GT:1
+0.502082884 (0x3f008881, *255 = 128.031128): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:0 f32GT:1
+0.502204955 (0x3f009081, *255 = 128.062256): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:1 f16GT:0 f32GE:1 f32EQ:0 f32GT:1
+0.502449095 (0x3f00a081, *255 = 128.124512): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:0 f16GT:1 f32GE:1 f32EQ:0 f32GT:1
+0.502937376 (0x3f00c081, *255 = 128.249023): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:0 f16GT:1 f32GE:1 f32EQ:0 f32GT:1
+0.503913939 (0x3f010081, *255 = 128.498047): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:0 f16GT:1 f32GE:1 f32EQ:0 f32GT:1
+0.503921568 (0x3f010101, *255 = 128.5): 8bitGE:1 8bitEQ:1 8bitGT:0 f16GE:1 f16EQ:0 f16GT:1 f32GE:1 f32EQ:0 f32GT:1
+0.505882382 (0x3f018182, *255 = 129): 8bitGE:1 8bitEQ:0 8bitGT:1 f16GE:1 f16EQ:0 f16GT:1 f32GE:1 f32EQ:0 f32GT:1
+which fragment: id of the fragment each method reads at pixel 3,5
+  truth = the original drawn alone to A8R8G8B8 with its depth/alpha state
+  replacement = a shader writing only the inputs, to float targets, with the draw's depth state and alpha test off
+  original+MRT 8bit = the original with its inputs written to oC1/oC2, oC0 to A8R8G8B8, alpha test on
+  original+MRT float = the same with oC0 to A32B32G32R32F
+  depth EQUAL = the replacement after the original, ZFUNC EQUAL, no depth write
+ps_2_x (dsx appended), LESS, nearest second: truth 2 | replacement 2 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL 2   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    appended dsx(t2) at the pixel: 0.125 0 0.124999993
+    interpolated t2 at the pixel: replacement 2.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0
+ps_2_x (dsx appended), LESS, nearest fails alpha test: truth 1 | replacement 2 | original+MRT 8bit 1 (its oC0 1) | original+MRT float 1 | depth EQUAL 1   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    appended dsx(t2) at the pixel: 0.125 0 0.124999993
+    interpolated t2 at the pixel: replacement 2.375 0.625 0 | original+MRT 8bit 1.375 0.625 0 | float 1.375 0.625 0
+ps_2_x (dsx appended), LESS, nearest killed: truth 1 | replacement 2 | original+MRT 8bit 1 (its oC0 1) | original+MRT float 1 | depth EQUAL 1   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    appended dsx(t2) at the pixel: 0.125 0 0.124999993
+    interpolated t2 at the pixel: replacement 2.375 0.625 0 | original+MRT 8bit 1.375 0.625 0 | float 1.375 0.625 0
+ps_2_x (dsx appended), LESS, nearest first and fails alpha test: truth 1 | replacement 2 | original+MRT 8bit 1 (its oC0 1) | original+MRT float 1 | depth EQUAL 1   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    appended dsx(t2) at the pixel: 0.125 0 0.124999993
+    interpolated t2 at the pixel: replacement 2.375 0.625 0 | original+MRT 8bit 1.375 0.625 0 | float 1.375 0.625 0
+ps_2_x (dsx appended), no depth test: truth 3 | replacement 3 | original+MRT 8bit 3 (its oC0 3) | original+MRT float 3 | depth EQUAL -2   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    appended dsx(t2) at the pixel: 0.125 0 0.124999993
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 3.375 0.625 0 | float 3.375 0.625 0
+ps_2_x (dsx appended), no depth test, last killed: truth 2 | replacement 3 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL -2   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    appended dsx(t2) at the pixel: 0.125 0 0.124999993
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0
+ps_2_x (dsx appended), no depth test, last fails alpha test: truth 2 | replacement 3 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL -2   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    appended dsx(t2) at the pixel: 0.125 0 0.124999993
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0
+ps_2_x (dsx appended), LESSEQUAL, same depth, last fails alpha test: truth 2 | replacement 3 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL 3   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    appended dsx(t2) at the pixel: 0.125 0 0.124999993
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0
+ps_2_x (dsx appended), LESS, no depth write, last killed: truth 2 | replacement 3 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL -1   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    appended dsx(t2) at the pixel: 0.125 0 0.124999993
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0
+ps_2_0, LESS, nearest second: truth 2 | replacement 2 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL 2   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 2.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0
+ps_2_0, LESS, nearest fails alpha test: truth 1 | replacement 2 | original+MRT 8bit 1 (its oC0 1) | original+MRT float 1 | depth EQUAL 1   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 2.375 0.625 0 | original+MRT 8bit 1.375 0.625 0 | float 1.375 0.625 0
+ps_2_0, LESS, nearest killed: truth 1 | replacement 2 | original+MRT 8bit 1 (its oC0 1) | original+MRT float 1 | depth EQUAL 1   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 2.375 0.625 0 | original+MRT 8bit 1.375 0.625 0 | float 1.375 0.625 0
+ps_2_0, LESS, nearest first and fails alpha test: truth 1 | replacement 2 | original+MRT 8bit 1 (its oC0 1) | original+MRT float 1 | depth EQUAL 1   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 2.375 0.625 0 | original+MRT 8bit 1.375 0.625 0 | float 1.375 0.625 0
+ps_2_0, no depth test: truth 3 | replacement 3 | original+MRT 8bit 3 (its oC0 3) | original+MRT float 3 | depth EQUAL -2   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 3.375 0.625 0 | float 3.375 0.625 0
+ps_2_0, no depth test, last killed: truth 2 | replacement 3 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL -2   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0
+ps_2_0, no depth test, last fails alpha test: truth 2 | replacement 3 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL -2   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0
+ps_2_0, LESSEQUAL, same depth, last fails alpha test: truth 2 | replacement 3 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL 3   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0
+ps_2_0, LESS, no depth write, last killed: truth 2 | replacement 3 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL -1   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0
+ps_3_0, LESS, nearest second: truth 2 | replacement 2 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL 2   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 2.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0
+ps_3_0, LESS, nearest fails alpha test: truth 1 | replacement 2 | original+MRT 8bit 1 (its oC0 1) | original+MRT float 1 | depth EQUAL 1   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 2.375 0.625 0 | original+MRT 8bit 1.375 0.625 0 | float 1.375 0.625 0
+ps_3_0, LESS, nearest killed: truth 1 | replacement 2 | original+MRT 8bit 1 (its oC0 1) | original+MRT float 1 | depth EQUAL 1   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 2.375 0.625 0 | original+MRT 8bit 1.375 0.625 0 | float 1.375 0.625 0
+ps_3_0, LESS, nearest first and fails alpha test: truth 1 | replacement 2 | original+MRT 8bit 1 (its oC0 1) | original+MRT float 1 | depth EQUAL 1   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 2.375 0.625 0 | original+MRT 8bit 1.375 0.625 0 | float 1.375 0.625 0
+ps_3_0, no depth test: truth 3 | replacement 3 | original+MRT 8bit 3 (its oC0 3) | original+MRT float 3 | depth EQUAL -2   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 3.375 0.625 0 | float 3.375 0.625 0
+ps_3_0, no depth test, last killed: truth 2 | replacement 3 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL -2   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0
+ps_3_0, no depth test, last fails alpha test: truth 2 | replacement 3 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL -2   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0
+ps_3_0, LESSEQUAL, same depth, last fails alpha test: truth 2 | replacement 3 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL 3   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0
+ps_3_0, LESS, no depth write, last killed: truth 2 | replacement 3 | original+MRT 8bit 2 (its oC0 2) | original+MRT float 2 | depth EQUAL -1   (draws 00000000 00000000 bind 00000000 00000000 00000000 00000000)
+    interpolated t2 at the pixel: replacement 3.375 0.625 0 | original+MRT 8bit 2.375 0.625 0 | float 2.375 0.625 0

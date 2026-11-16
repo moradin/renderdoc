@@ -1,0 +1,12 @@
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_probe.cpp:2070 Log: NVIDIA GeForce RTX 4070 Ti driver 32.0.16.2124
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_probe.cpp:2101 Log: cleared float target holds 0.0274509825 (0x3ce0e0e2)
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_probe.cpp:81 Log: section a_centre
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_probe.cpp:81 Log: section b_vface
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_probe.cpp:81 Log: section c_ps1x
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_probe.cpp:81 Log: section d_colour
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_probe.cpp:81 Log: section e_derivatives
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_probe.cpp:81 Log: section f_texldd
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_probe.cpp:81 Log: section g_summary
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_probe.cpp:81 Log: section h_fragments
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_probe.cpp:2127 Log: done
