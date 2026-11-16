@@ -173,8 +173,9 @@ public:
   const ShaderReflection &GetReflection() const { return m_Reflection; }
   ShaderStage GetStage() const { return m_Reflection.stage; }
 
-  // the constant table comment and the disassembly
-  rdcstr GetDisassembly() const;
+  // the constant table comment and the disassembly. instLines, if given, gets the line (from 1)
+  // each instruction is on, as a debugger's trace gives them.
+  rdcstr GetDisassembly(rdcarray<uint32_t> *instLines = NULL) const;
 
   // Fills the variables of a constant block from that set's register file (see the top of this
   // file), with the shader's def, defi and defb literals replacing the registers they define,

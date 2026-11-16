@@ -1,0 +1,65 @@
+
+TEST_CASE("D3D9 AB", "[.][d3d9ab]")
+{
+ for(int32_t count : {4, 64}) {
+  Assembler a(2, 0);
+  a.def(20, 0, 0, 0, 0);
+  a.defi(0, count, 8, 1, 0);
+  a.dcl(DeclUsage::Position, 0, 0);
+  a.dcl(DeclUsage::Normal, 0, 1);
+  a.dcl(DeclUsage::TexCoord, 0, 2);
+  a.op(Opcode::M4x4, {OPos(), V(0), C(0)});
+  a.op(Opcode::M3x3, {DR(0, 0x7), V(1), C(4)});
+  a.op(Opcode::Nrm, {DR(1, 0x7), R(0)});
+  a.op(Opcode::Mov, {DR(2), C(20)});
+  a.op(Opcode::Loop, {Src(RegType::Loop, 0), Src(RegType::ConstInt, 0)});
+  a.op(Opcode::Dp3, {DR(3, 0x1), R(1), Src(RegType::Const, 0) | RelBit, Src(RegType::Loop, 0)});
+  a.op(Opcode::Max, {DR(3, 0x1), R(3, X), C(20, X)});
+  a.op(Opcode::Mad,
+       {DR(2), R(3, X), Src(RegType::Const, 4) | RelBit, Src(RegType::Loop, 0), R(2)});
+  a.op(Opcode::EndLoop, {});
+  a.op(Opcode::Mov, {Dst(RegType::AttrOut, 0), R(2)});
+  a.op(Opcode::Mul, {Dst(RegType::TexCrdOutOrOutput, 0, 0x3), V(2), C(16)});
+  rdcarray<uint32_t> tokens = a.finish();
+  Program prog;
+  ParseProgram(tokens.data(), tokens.size(), prog);
+  VSEmulator emu;
+  REQUIRE(emu.Init(prog));
+  VSConstants c;
+  c.floats.resize(24);
+  for(uint32_t i = 0; i < 24; i++)
+    c.floats[i] = Vec4(0.1f * i, 0.2f, 0.3f - 0.01f * i, 1.0f);
+  VSConstants consts = emu.ApplyLiterals(c);
+  VSTexture textures[NumVertexSamplers];
+  Vec4 inputs[MaxVSInputs];
+  double bestOld = 1e30, bestNew = 1e30;
+  float sink = 0;
+  for(int run = 0; run < 7; run++)
+  {
+    for(int which = 0; which < 2; which++)
+    {
+      auto start = std::chrono::high_resolution_clock::now();
+      for(uint32_t i = 0; i < 200000; i++)
+      {
+        inputs[0] = Vec4(float(i % 512), float(i / 512), 1, 1);
+        inputs[1] = Vec4(0, 1, 0, 0);
+        VSOutputs out;
+        rdcstr error;
+        if(which)
+          emu.Execute(inputs, consts, textures, out, error);
+        else
+          emu.ExecuteOld(inputs, consts, textures, out, error);
+        sink += out.rast[0][0];
+      }
+      auto end = std::chrono::high_resolution_clock::now();
+      double ms = std::chrono::duration<double, std::milli>(end - start).count();
+      if(which)
+        bestNew = RDCMIN(bestNew, ms);
+      else
+        bestOld = RDCMIN(bestOld, ms);
+    }
+  }
+  WARN(StringFormat::Fmt("loop %d: old %.1f ms new %.1f ms (%f)", count, bestOld, bestNew, sink).c_str());
+ }
+}
+

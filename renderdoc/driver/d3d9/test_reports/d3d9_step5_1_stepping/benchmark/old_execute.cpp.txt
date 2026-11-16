@@ -1,0 +1,712 @@
+// TEMPORARY: the old interpreter, for an A/B benchmark
+namespace
+{
+struct OldLoopFrame
+{
+  uint32_t start = 0;
+  int32_t remaining = 0;
+  int32_t aL = 0;
+  int32_t step = 0;
+  // rep doesn't have an aL
+  bool isLoop = false;
+};
+
+struct OldCallFrame
+{
+  uint32_t ret = 0;
+  size_t loopDepth = 0;
+};
+
+struct OldExecState
+{
+  Vec4 r[MaxVSTemps];
+  IVec4 a0;
+  bool p[4] = {false, false, false, false};
+  rdcarray<OldLoopFrame> loops;
+  rdcarray<OldCallFrame> calls;
+
+  const Vec4 *v = NULL;
+  const VSConstants *c = NULL;
+  VSOutputs *o = NULL;
+
+  int32_t aL() const
+  {
+    for(size_t i = loops.size(); i > 0; i--)
+      if(loops[i - 1].isLoop)
+        return loops[i - 1].aL;
+    return 0;
+  }
+
+  int32_t RelValue(const RelativeAddress &rel) const
+  {
+    if(!rel.present)
+      return 0;
+    if(rel.type == RegType::Loop)
+      return aL();
+    return a0.v[rel.component & 3];
+  }
+
+  Vec4 ReadRaw(const SrcParam &src, int32_t regOffset) const
+  {
+    int64_t idx = int64_t(src.index) + regOffset + RelValue(src.rel);
+    Vec4 ret;
+
+    switch(src.type)
+    {
+      case RegType::Temp:
+        if(idx >= 0 && idx < MaxVSTemps)
+          ret = r[idx];
+        break;
+      case RegType::Input:
+        if(idx >= 0 && idx < MaxVSInputs)
+          ret = v[idx];
+        break;
+      case RegType::Const:
+      case RegType::Const2:
+      case RegType::Const3:
+      case RegType::Const4:
+        idx += ConstantRegisterOffset(src.type);
+        if(idx >= 0 && idx < (int64_t)c->floats.size())
+          ret = c->floats[(size_t)idx];
+        break;
+      case RegType::AddrOrTexture:
+        for(int i = 0; i < 4; i++)
+          ret[i] = float(a0.v[i]);
+        break;
+      case RegType::ConstInt:
+        if(idx >= 0 && idx < (int64_t)c->ints.size())
+          for(int i = 0; i < 4; i++)
+            ret[i] = float(c->ints[(size_t)idx].v[i]);
+        break;
+      case RegType::ConstBool:
+      {
+        float b = (idx >= 0 && idx < (int64_t)c->bools.size() && c->bools[(size_t)idx]) ? 1.0f : 0.0f;
+        ret = Vec4(b, b, b, b);
+        break;
+      }
+      case RegType::Loop:
+      {
+        float l = float(aL());
+        ret = Vec4(l, l, l, l);
+        break;
+      }
+      case RegType::Predicate:
+        for(int i = 0; i < 4; i++)
+          ret[i] = p[i] ? 1.0f : 0.0f;
+        break;
+      default: break;
+    }
+
+    return ret;
+  }
+
+  Vec4 Read(const SrcParam &src, int32_t regOffset = 0) const
+  {
+    Vec4 raw = ReadRaw(src, regOffset);
+    Vec4 ret;
+    for(int i = 0; i < 4; i++)
+      ret[i] = ApplyMod(src.mod, raw[src.swizzle[i] & 3]);
+    return ret;
+  }
+
+  // a boolean condition: a boolean constant or a predicate component, with ! applied
+  bool ReadBool(const SrcParam &src) const
+  {
+    bool ret = false;
+    if(src.type == RegType::ConstBool)
+    {
+      int64_t idx = int64_t(src.index) + RelValue(src.rel);
+      ret = idx >= 0 && idx < (int64_t)c->bools.size() && c->bools[(size_t)idx] != 0;
+    }
+    else if(src.type == RegType::Predicate)
+    {
+      ret = p[src.swizzle[0] & 3];
+    }
+    else
+    {
+      ret = ReadRaw(src, 0)[src.swizzle[0] & 3] != 0.0f;
+    }
+    if(src.mod == SrcMod::Not)
+      ret = !ret;
+    return ret;
+  }
+
+  IVec4 ReadInt(const SrcParam &src) const
+  {
+    IVec4 ret;
+    if(src.type == RegType::ConstInt && src.index < c->ints.size())
+      ret = c->ints[src.index];
+    return ret;
+  }
+
+  uint8_t WriteMask(const Instruction &inst) const
+  {
+    uint8_t mask = inst.dst.writeMask;
+    if(inst.predicated)
+    {
+      for(int i = 0; i < 4; i++)
+      {
+        bool pc = p[inst.predicate.swizzle[i] & 3];
+        if(inst.predicate.mod == SrcMod::Not)
+          pc = !pc;
+        if(!pc)
+          mask &= ~(1 << i);
+      }
+    }
+    return mask;
+  }
+
+  void Write(const Instruction &inst, Vec4 val)
+  {
+    const DstParam &d = inst.dst;
+    const uint8_t mask = WriteMask(inst);
+
+    if(d.shift != 0)
+    {
+      const float scale = ldexpf(1.0f, d.shift);
+      for(int i = 0; i < 4; i++)
+        val[i] *= scale;
+    }
+
+    if(d.mods & DstMod_Saturate)
+      for(int i = 0; i < 4; i++)
+        val[i] = Saturate(val[i]);
+
+    int64_t idx = int64_t(d.index) + RelValue(d.rel);
+
+    Vec4 *dst = NULL;
+    switch(d.type)
+    {
+      case RegType::Temp:
+        if(idx >= 0 && idx < MaxVSTemps)
+          dst = &r[idx];
+        break;
+      case RegType::RastOut:
+        if(idx >= 0 && idx < 3)
+          dst = &o->rast[idx];
+        break;
+      case RegType::AttrOut:
+        if(idx >= 0 && idx < 2)
+          dst = &o->attr[idx];
+        break;
+      case RegType::TexCrdOutOrOutput:
+        if(idx >= 0 && idx < 12)
+          dst = &o->tex[idx];
+        break;
+      case RegType::AddrOrTexture:
+      {
+        // mova rounds to the nearest integer, vs_1_1's mov rounds down
+        const bool round = inst.op == Opcode::MovA;
+        for(int i = 0; i < 4; i++)
+        {
+          if(!(mask & (1 << i)))
+            continue;
+          float f = round ? floorf(val[i] + 0.5f) : floorf(val[i]);
+          if(!(f == f))
+            f = 0.0f;
+          f = RDCCLAMP(f, -65536.0f, 65536.0f);
+          a0.v[i] = int32_t(f);
+        }
+        return;
+      }
+      case RegType::Predicate:
+        for(int i = 0; i < 4; i++)
+          if(mask & (1 << i))
+            p[i] = val[i] != 0.0f;
+        return;
+      default: break;
+    }
+
+    if(dst)
+    {
+      for(int i = 0; i < 4; i++)
+        if(mask & (1 << i))
+          (*dst)[i] = val[i];
+    }
+  }
+};
+
+};
+bool VSEmulator::ExecuteOld(const Vec4 inputs[MaxVSInputs], const VSConstants &consts,
+                         const VSTexture textures[NumVertexSamplers], VSOutputs &out,
+                         rdcstr &error) const
+{
+  out = VSOutputs();
+
+  if(m_Prog == NULL || !m_Error.empty())
+  {
+    error = m_Error.empty() ? "No shader" : m_Error;
+    return false;
+  }
+
+  OldExecState s;
+  s.v = inputs;
+  s.c = &consts;
+  s.o = &out;
+
+  const rdcarray<Instruction> &insts = m_Prog->instructions;
+  uint32_t executed = 0;
+  uint32_t ip = 0;
+
+  auto fail = [&](const rdcstr &msg) {
+    error = StringFormat::Fmt("%s at instruction %u (%s)", msg.c_str(), ip,
+                              ip < insts.size() ? OpcodeName(m_Version, insts[ip]).c_str() : "");
+    return false;
+  };
+
+  while(ip < insts.size())
+  {
+    if(++executed > MaxInstructionsPerVertex)
+      return fail("Too many instructions executed, the shader may loop forever");
+
+    const Instruction &inst = insts[ip];
+    const rdcarray<SrcParam> &srcs = inst.srcs;
+    uint32_t next = ip + 1;
+
+    // sources an instruction needs, beyond which it's malformed
+    auto need = [&](size_t n) { return srcs.size() >= n; };
+#define NEED_SRCS(n)                 \
+  if(!need(n))                       \
+    return fail("Missing operands"); \
+  if(!inst.hasDst)                   \
+    return fail("Missing destination");
+
+    switch(inst.op)
+    {
+      case Opcode::Nop:
+      case Opcode::Dcl:
+      case Opcode::Def:
+      case Opcode::DefI:
+      case Opcode::DefB:
+      case Opcode::EndIf:
+      case Opcode::Comment: break;
+
+      case Opcode::End: next = (uint32_t)insts.size(); break;
+
+      // the main program falls through into the subroutines, which ends it
+      case Opcode::Label:
+        if(s.calls.empty())
+          next = (uint32_t)insts.size();
+        break;
+
+      case Opcode::Ret:
+        if(s.calls.empty())
+        {
+          next = (uint32_t)insts.size();
+        }
+        else
+        {
+          OldCallFrame f = s.calls.back();
+          s.calls.pop_back();
+          s.loops.resize(f.loopDepth);
+          next = f.ret;
+        }
+        break;
+
+      case Opcode::Call:
+      case Opcode::CallNZ:
+      {
+        if(srcs.empty() || (inst.op == Opcode::CallNZ && srcs.size() < 2))
+          return fail("Missing operands");
+        bool take = inst.op == Opcode::Call || s.ReadBool(srcs[1]);
+        if(take)
+        {
+          if(s.calls.size() >= MaxCallDepth)
+            return fail("Calls nested too deeply");
+          OldCallFrame f;
+          f.ret = ip + 1;
+          f.loopDepth = s.loops.size();
+          s.calls.push_back(f);
+          next = m_Labels[srcs[0].index] + 1;
+        }
+        break;
+      }
+
+      case Opcode::If:
+        if(srcs.empty())
+          return fail("Missing operands");
+        if(!s.ReadBool(srcs[0]))
+          next = m_Match[ip] + 1;
+        break;
+
+      case Opcode::IfC:
+        if(!need(2))
+          return fail("Missing operands");
+        if(!Compare(inst.GetComparison(), s.Read(srcs[0])[0], s.Read(srcs[1])[0]))
+          next = m_Match[ip] + 1;
+        break;
+
+      // reached at the end of the if block, skip the else block
+      case Opcode::Else: next = m_Match[ip] + 1; break;
+
+      case Opcode::Loop:
+      case Opcode::Rep:
+      {
+        const bool isLoop = inst.op == Opcode::Loop;
+        if(srcs.size() < (isLoop ? 2U : 1U))
+          return fail("Missing operands");
+        IVec4 i = s.ReadInt(srcs[isLoop ? 1 : 0]);
+        int32_t count = RDCCLAMP(i.v[0], 0, 255);
+        if(count == 0)
+        {
+          next = m_Match[ip] + 1;
+        }
+        else
+        {
+          OldLoopFrame f;
+          f.start = ip;
+          f.remaining = count;
+          f.isLoop = isLoop;
+          f.aL = isLoop ? i.v[1] : 0;
+          f.step = isLoop ? i.v[2] : 0;
+          s.loops.push_back(f);
+        }
+        break;
+      }
+
+      case Opcode::EndLoop:
+      case Opcode::EndRep:
+      {
+        if(s.loops.empty())
+          return fail("End of a loop that isn't running");
+        OldLoopFrame &f = s.loops.back();
+        if(--f.remaining > 0)
+        {
+          f.aL += f.step;
+          next = f.start + 1;
+        }
+        else
+        {
+          s.loops.pop_back();
+        }
+        break;
+      }
+
+      case Opcode::Break:
+      case Opcode::BreakC:
+      case Opcode::BreakP:
+      {
+        bool take = true;
+        if(inst.op == Opcode::BreakC)
+        {
+          if(!need(2))
+            return fail("Missing operands");
+          take = Compare(inst.GetComparison(), s.Read(srcs[0])[0], s.Read(srcs[1])[0]);
+        }
+        else if(inst.op == Opcode::BreakP)
+        {
+          if(srcs.empty())
+            return fail("Missing operands");
+          take = s.ReadBool(srcs[0]);
+        }
+        if(take)
+        {
+          if(s.loops.empty())
+            return fail("break outside a running loop");
+          s.loops.pop_back();
+          next = m_Match[ip] + 1;
+        }
+        break;
+      }
+
+      case Opcode::Mov:
+      case Opcode::MovA:
+      {
+        NEED_SRCS(1);
+        s.Write(inst, s.Read(srcs[0]));
+        break;
+      }
+
+      case Opcode::Add:
+      case Opcode::Sub:
+      case Opcode::Mul:
+      case Opcode::Min:
+      case Opcode::Max:
+      case Opcode::Slt:
+      case Opcode::Sge:
+      {
+        NEED_SRCS(2);
+        Vec4 a = s.Read(srcs[0]), b = s.Read(srcs[1]), r;
+        for(int i = 0; i < 4; i++)
+        {
+          switch(inst.op)
+          {
+            case Opcode::Add: r[i] = a[i] + b[i]; break;
+            case Opcode::Sub: r[i] = a[i] - b[i]; break;
+            case Opcode::Mul: r[i] = a[i] * b[i]; break;
+            case Opcode::Min: r[i] = a[i] < b[i] ? a[i] : b[i]; break;
+            case Opcode::Max: r[i] = a[i] >= b[i] ? a[i] : b[i]; break;
+            case Opcode::Slt: r[i] = a[i] < b[i] ? 1.0f : 0.0f; break;
+            case Opcode::Sge: r[i] = a[i] >= b[i] ? 1.0f : 0.0f; break;
+            default: break;
+          }
+        }
+        s.Write(inst, r);
+        break;
+      }
+
+      case Opcode::Mad:
+      case Opcode::Lrp:
+      case Opcode::Cmp:
+      case Opcode::Cnd:
+      {
+        NEED_SRCS(3);
+        Vec4 a = s.Read(srcs[0]), b = s.Read(srcs[1]), c = s.Read(srcs[2]), r;
+        for(int i = 0; i < 4; i++)
+        {
+          switch(inst.op)
+          {
+            case Opcode::Mad: r[i] = a[i] * b[i] + c[i]; break;
+            case Opcode::Lrp: r[i] = a[i] * (b[i] - c[i]) + c[i]; break;
+            case Opcode::Cmp: r[i] = a[i] >= 0.0f ? b[i] : c[i]; break;
+            case Opcode::Cnd: r[i] = a[i] > 0.5f ? b[i] : c[i]; break;
+            default: break;
+          }
+        }
+        s.Write(inst, r);
+        break;
+      }
+
+      case Opcode::Dp3:
+      case Opcode::Dp4:
+      {
+        NEED_SRCS(2);
+        s.Write(inst, Splat(Dot(s.Read(srcs[0]), s.Read(srcs[1]), inst.op == Opcode::Dp3 ? 3 : 4)));
+        break;
+      }
+
+      case Opcode::Dp2Add:
+      {
+        NEED_SRCS(3);
+        s.Write(inst, Splat(Dot(s.Read(srcs[0]), s.Read(srcs[1]), 2) + s.Read(srcs[2])[0]));
+        break;
+      }
+
+      case Opcode::Abs:
+      case Opcode::Frc:
+      case Opcode::Sgn:
+      {
+        NEED_SRCS(1);
+        Vec4 a = s.Read(srcs[0]), r;
+        for(int i = 0; i < 4; i++)
+        {
+          if(inst.op == Opcode::Abs)
+            r[i] = fabsf(a[i]);
+          else if(inst.op == Opcode::Frc)
+            r[i] = a[i] - floorf(a[i]);
+          else
+            r[i] = a[i] > 0.0f ? 1.0f : (a[i] < 0.0f ? -1.0f : 0.0f);
+        }
+        s.Write(inst, r);
+        break;
+      }
+
+      case Opcode::Rcp:
+      {
+        NEED_SRCS(1);
+        float f = s.Read(srcs[0])[3];
+        float r = f == 1.0f ? 1.0f : (f == 0.0f ? INFINITY : 1.0f / f);
+        s.Write(inst, Splat(r));
+        break;
+      }
+
+      case Opcode::Rsq:
+      {
+        NEED_SRCS(1);
+        float f = fabsf(s.Read(srcs[0])[3]);
+        float r = f == 1.0f ? 1.0f : (f == 0.0f ? INFINITY : 1.0f / sqrtf(f));
+        s.Write(inst, Splat(r));
+        break;
+      }
+
+      case Opcode::Exp:
+      {
+        NEED_SRCS(1);
+        s.Write(inst, Splat(exp2f(s.Read(srcs[0])[3])));
+        break;
+      }
+
+      case Opcode::Log:
+      {
+        NEED_SRCS(1);
+        float f = fabsf(s.Read(srcs[0])[3]);
+        s.Write(inst, Splat(f != 0.0f ? log2f(f) : -FLT_MAX));
+        break;
+      }
+
+      case Opcode::ExpP:
+      {
+        NEED_SRCS(1);
+        float w = s.Read(srcs[0])[3];
+        if(m_Version.major < 2)
+        {
+          float fl = floorf(w);
+          s.Write(inst, Vec4(exp2f(fl), w - fl, PartialPrecision(exp2f(w)), 1.0f));
+        }
+        else
+        {
+          s.Write(inst, Splat(PartialPrecision(exp2f(w))));
+        }
+        break;
+      }
+
+      case Opcode::LogP:
+      {
+        NEED_SRCS(1);
+        float f = fabsf(s.Read(srcs[0])[3]);
+        if(m_Version.major < 2)
+        {
+          if(f != 0.0f)
+          {
+            uint32_t bits;
+            memcpy(&bits, &f, sizeof(bits));
+            float exponent = float(int32_t((bits >> 23) & 0xFF) - 127);
+            uint32_t mbits = (bits & 0x7FFFFF) | 0x3F800000;
+            float mantissa;
+            memcpy(&mantissa, &mbits, sizeof(mantissa));
+            s.Write(inst, Vec4(exponent, mantissa, PartialPrecision(log2f(f)), 1.0f));
+          }
+          else
+          {
+            s.Write(inst, Vec4(-FLT_MAX, 1.0f, -FLT_MAX, 1.0f));
+          }
+        }
+        else
+        {
+          s.Write(inst, Splat(f != 0.0f ? PartialPrecision(log2f(f)) : -FLT_MAX));
+        }
+        break;
+      }
+
+      case Opcode::Pow:
+      {
+        NEED_SRCS(2);
+        s.Write(inst, Splat(powf(fabsf(s.Read(srcs[0])[3]), s.Read(srcs[1])[3])));
+        break;
+      }
+
+      case Opcode::Lit:
+      {
+        NEED_SRCS(1);
+        Vec4 a = s.Read(srcs[0]);
+        const float MaxPower = 127.9961f;
+        float power = RDCCLAMP(a[3], -MaxPower, MaxPower);
+        Vec4 r(1.0f, 0.0f, 0.0f, 1.0f);
+        if(a[0] > 0.0f)
+        {
+          r[1] = a[0];
+          if(a[1] > 0.0f)
+            r[2] = powf(a[1], power);
+        }
+        s.Write(inst, r);
+        break;
+      }
+
+      case Opcode::Dst:
+      {
+        NEED_SRCS(2);
+        Vec4 a = s.Read(srcs[0]), b = s.Read(srcs[1]);
+        s.Write(inst, Vec4(1.0f, a[1] * b[1], a[2], b[3]));
+        break;
+      }
+
+      case Opcode::Crs:
+      {
+        NEED_SRCS(2);
+        Vec4 a = s.Read(srcs[0]), b = s.Read(srcs[1]);
+        s.Write(inst, Vec4(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                           a[0] * b[1] - a[1] * b[0], 0.0f));
+        break;
+      }
+
+      case Opcode::Nrm:
+      {
+        NEED_SRCS(1);
+        Vec4 a = s.Read(srcs[0]);
+        float f = Dot(a, a, 3);
+        f = f != 0.0f ? 1.0f / sqrtf(f) : FLT_MAX;
+        // FLT_MAX * 0 is still 0
+        Vec4 r;
+        for(int i = 0; i < 4; i++)
+          r[i] = a[i] == 0.0f ? 0.0f : a[i] * f;
+        s.Write(inst, r);
+        break;
+      }
+
+      case Opcode::SinCos:
+      {
+        NEED_SRCS(1);
+        // vs_2_0's two extra constants only help hardware approximate it
+        float a = s.Read(srcs[0])[3];
+        s.Write(inst, Vec4(cosf(a), sinf(a), 0.0f, 0.0f));
+        break;
+      }
+
+      case Opcode::M4x4:
+      case Opcode::M4x3:
+      case Opcode::M3x4:
+      case Opcode::M3x3:
+      case Opcode::M3x2:
+      {
+        NEED_SRCS(2);
+        int rows = 4, size = 4;
+        switch(inst.op)
+        {
+          case Opcode::M4x3: rows = 3; break;
+          case Opcode::M3x4: size = 3; break;
+          case Opcode::M3x3:
+            rows = 3;
+            size = 3;
+            break;
+          case Opcode::M3x2:
+            rows = 2;
+            size = 3;
+            break;
+          default: break;
+        }
+        Vec4 a = s.Read(srcs[0]), r;
+        for(int i = 0; i < rows; i++)
+          r[i] = Dot(a, s.Read(srcs[1], i), size);
+        s.Write(inst, r);
+        break;
+      }
+
+      case Opcode::SetP:
+      {
+        NEED_SRCS(2);
+        Vec4 a = s.Read(srcs[0]), b = s.Read(srcs[1]), r;
+        for(int i = 0; i < 4; i++)
+          r[i] = Compare(inst.GetComparison(), a[i], b[i]) ? 1.0f : 0.0f;
+        s.Write(inst, r);
+        break;
+      }
+
+      case Opcode::TexLdl:
+      {
+        NEED_SRCS(2);
+        if(srcs[1].type != RegType::Sampler)
+          return fail("texldl without a sampler");
+        Vec4 coord = s.Read(srcs[0]);
+        Vec4 r(0.0f, 0.0f, 0.0f, 1.0f);
+        if(srcs[1].index < NumVertexSamplers && textures)
+          r = textures[srcs[1].index].SampleLevel(coord, coord[3]);
+        // the sampler's swizzle applies to the result
+        Vec4 sw;
+        for(int i = 0; i < 4; i++)
+          sw[i] = r[srcs[1].swizzle[i] & 3];
+        s.Write(inst, sw);
+        break;
+      }
+
+      default:
+        return fail(
+            StringFormat::Fmt("Unsupported instruction %s", OpcodeName(m_Version, inst).c_str()));
+    }
+
+#undef NEED_SRCS
+
+    ip = next;
+  }
+
+  return true;
+}

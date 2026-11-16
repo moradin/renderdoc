@@ -363,7 +363,8 @@ rdcstr RegisterName(const Version &version, RegType type, uint32_t index);
 // The disassembly of the instructions, in the style of fxc and D3DXDisassembleShader. It starts at
 // the version line; the constant table comment is generated separately (see d3d9_shader_reflect.h).
 // If the shader didn't parse completely, the error is shown after the instructions that did.
-rdcstr Disassemble(const Program &prog);
+// instLines, if given, gets the line (from 1) each of prog.instructions is on.
+rdcstr Disassemble(const Program &prog, rdcarray<uint32_t> *instLines = NULL);
 
 // The DWORD for a four character code, as comments store them
 constexpr uint32_t MakeFourCC(char a, char b, char c, char d)

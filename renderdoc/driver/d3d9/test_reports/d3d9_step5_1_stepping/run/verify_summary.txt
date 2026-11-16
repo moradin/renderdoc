@@ -1,0 +1,11 @@
+renderdoc.sln x64 exit 0 warnings 0 errors 0
+renderdoc.sln x86 exit 0 warnings 0 errors 0
+unit x64 exit 0 All tests passed (13187 assertions in 16 test cases)  
+unit x86 exit 0 All tests passed (13187 assertions in 16 test cases)  
+  RunPostVS: 200000 vertices of a 16 instruction shader in 1026.9 ms (best of   5) 
+  RunPostVS: 200000 vertices of a 16 instruction shader in 1021.2 ms (best of   5) 
+  RunPostVS: 200000 vertices of a 16 instruction shader in 1024.5 ms (best of   5) 
+pymodule exit 0
+tests exit 0
+## Tests complete summary: 18 passed out of 18 run from 209 total in 0:01:27.559981 ##
+release restore exit 0 errors 0

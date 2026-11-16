@@ -71,7 +71,7 @@ Where it starts from:
 - **Already there:** the vertex shader interpreter in `d3d9_vs_emulate.cpp` runs every vs_1_1 to
   vs_3_0 instruction and gives VS Out, which is checked against the GPU. The bytecode parser,
   reflection and disassembler are done and checked against the compiler.
-- **Missing:** the interpreter can't step and doesn't run pixel shaders. `DebugVertex`,
+- **Missing:** the interpreter doesn't run pixel shaders (it can step since 5.1). `DebugVertex`,
   `DebugPixel` and `ContinueDebug` are stubs, and `shaderDebugging` is false
   (`d3d9_pipestate.cpp`).
 - **Already works for any driver:** qrenderdoc's shader viewer, "Debug this vertex", "Debug
@@ -84,7 +84,7 @@ Where it starts from:
 
 | # | Chunk | Done when |
 |---|---|---|
-| 5.1 | **Prepare the interpreter for stepping** (nothing visible changes): split `VSEmulator::Execute` so it runs one instruction at a time and records what changed, keeping a fast path without recording for mesh output; the disassembler records each instruction's line | Unit tests check the steps and the line mapping; the 18 automated tests still pass (VS Out unchanged); mesh output on a big draw is no slower |
+| 5.1 | ~~**Prepare the interpreter for stepping** (nothing visible changes): split `VSEmulator::Execute` so it runs one instruction at a time and records what changed, keeping a fast path without recording for mesh output; the disassembler records each instruction's line~~ | Done, see "Stepping the interpreter" below (`d3d9_step5_1_stepping.md`). Unit tests check the steps and the line mapping; the 18 automated tests still pass (VS Out unchanged); mesh output on a big draw is no slower in Release (about 5% faster), but 4-6% slower in the unoptimised Development build |
 | 5.2 | **`DebugVertex` with registers:** `d3d9_shaderdebug.cpp` with `DebugVertex`, `ContinueDebug` and `FreeDebugger`, taking inputs, constants and textures from VS Out's snapshot. Inputs, `r#`, `a0`, `aL`, `p0` and outputs, named by register. `shaderDebugging` on; pixel shaders and fixed function draws say why they can't be debugged. A new `D3D9_Shader_Debug_Zoo` demo and test (modelled on `D3D11_Shader_Debug_Zoo`) with one vertex shader per model | For each, the debugger's final outputs equal VS Out exactly and pass `process_trace` |
 | 5.3 | **Names, flow control and UI for vertex shaders:** constants named from the constant table (struct and array members), `def` literals marked, a call stack for `call`/`ret`, flags for `texldl` samples and NaN/Inf. Zoo shaders with loops, `rep`, `break`, calls, predicates, relative addressing and `texldl` | The test checks names and call stacks; UI screenshots of "Debug this vertex", stepping, registers and constants |
 | 5.4 | **Native probes** (a probe and a report, no driver change): `vPos`'s pixel centre (whole or +0.5) and `vFace`'s values; ps_1_x's clamp range, `texcoord` clamping and `cnd` on 1_1-1_3; `dsx`/`dsy` per quad or per pixel; colour input precision and clamping; `texldd` against `texld`'s own LOD; `rcp`, `rsq`, `exp`, `log`, `sincos`, `pow` against the C library; reading inputs back with a replacement pixel shader, and which fragment it picks with alpha test or `texkill` | The report has the numbers, and the decisions for 5.5-5.10 are recorded here |
@@ -1271,7 +1271,10 @@ columns to the left (`  + mov r0.w, ...`). As fxc prints them, source swizzles h
 they replicate a component (`.xxxx` is `.x`) and all four otherwise (`.xyww`), ps_1_4's `t#`
 sources included (the documented `.xyz` and `.xyw` are `.xyzz` and `.xyww`). The complement
 modifier is `1-v0.w`. `dcl` leaves off usage index 0 (`dcl_texcoord`), relatively
-addressed registers are `c4[a0.x]` and `v0[aL]`, and `def` floats have 9 significant digits.
+addressed registers are `c4[a0.x]` and `v0[aL]`, and `def` floats have 9 significant digits. Since
+step 5.1 the disassembler can also give the line each instruction is on, for the shader
+debugger (see "Stepping the interpreter"); the unit tests check it on every disassembly they
+make.
 
 Reflection, which is what phase 3c's pipeline state builds on:
 - Constants are up to three constant blocks, only for the register sets the shader uses, in this
@@ -1657,6 +1660,45 @@ Known gaps:
 - The made up fixed function reflections are kept until the replay closes (the replay controller
   holds pointers to them), one per distinct output layout.
 
+### Stepping the interpreter
+
+Step 5.1 got the interpreter ready for shader debugging (step 5.2 on). Nothing visible changed.
+
+- A `VSThread` (`d3d9_vs_emulate.h`) is one vertex's run. `Start` sets it up with the inputs,
+  constants and textures, then `Step` runs one instruction, or `Run` runs to the end.
+  - Between steps, `Registers()` has the temporaries, `a0`, `p0`, the loop stack (with `aL`), the
+    call stack (each frame's `call` instruction and label) and the outputs.
+  - `NextInstruction()` is the instruction that runs next.
+- `Step(&changes)` appends a `VSRegisterChange` for each register the instruction wrote, with
+  what it held before, and the new value is in `Registers()`. That's what a debugger's
+  `ShaderVariableChange` needs.
+  - `a0` and `p0` are recorded as integers.
+  - `aL` is recorded when a `loop` starts, steps or ends, and not for `rep`.
+  - A predicated write whose components are all switched off records nothing.
+- A failed instruction (for example, calls nested too deeply) ends the thread with the error, and
+  changes nothing. `NextInstruction()` stays on it.
+- `VSEmulator::Execute`, which VS Out runs for every vertex, is now `Start` and `Run`. The loop is
+  a template on whether it records and whether it stops after one instruction. So the run to the
+  end has nothing for stepping in its loop, and keeps the instruction pointer in a local as
+  before.
+- `Disassemble` and `ShaderInfo::GetDisassembly` can return the line (from 1) each instruction is
+  on, which is what a trace's `instInfo[].lineInfo.disassemblyLine` needs. `GetDisassembly`'s
+  lines count the constant table comment above the instructions.
+
+Speed: an A/B benchmark ran the old `Execute` and the new one in the same binary, on 200,000
+vertices of a 16-instruction vs_2_0 shader (`m4x4`, `m3x3`, `nrm`, and a `loop` of 4 or 64 lights
+with relative addressing on `aL`).
+- In Release, the new one is about 5% faster: 168-171 ms against 177-181 ms with 4 lights, and
+  1754-1762 ms against 1844 ms with 64.
+- In Development, which compiles with `/Od`, it's about 4% slower (813-826 ms against
+  780-787 ms). There nothing is inlined, so this counts the extra calls per vertex (`Start`,
+  `Run`, the loop).
+- The hidden `[d3d9bench]` unit test times `RunPostVS` on that shader:
+  `renderdoccmd test unit "[d3d9bench]"`. In Development, built and run back to back, it took
+  978-983 ms before this change and 1042-1043 ms after, about 6% slower.
+- Release has no unit tests, so `globalconfig.h` was changed for that build only, and not
+  committed.
+
 ### Packed vs_3_0 outputs
 
 A vs_3_0 shader can declare two or more semantics in one output register, each with its own
@@ -1790,9 +1832,11 @@ Tested in `d3d9_step8_packed_outputs.md` with the "vs_3_0 packed outputs" draw o
 
 Unit tests: `util/test/d3d9_shader_unit_tests.sh` builds and runs the `[d3d9]` tests, now
 including `[vsemu]` (the interpreter per opcode, flow control, relative addressing, texldl and its filtering,
-vertex fetch, whole draws) and `[ffp]` (transforms, blending, each light type, material sources,
-texgen, texture transforms, fog, point size, the output signature). They pass on Linux with
-AddressSanitizer and UBSan. On Windows: `renderdoccmd test unit "[d3d9]"`.
+vertex fetch, whole draws, and stepping: every interpreter test also steps its shader and checks
+that each step's changes account for everything that changed and that it ends as `Execute` does) and `[ffp]` (transforms, blending, each light type, material sources,
+texgen, texture transforms, fog, point size, the output signature). They passed on Linux with
+AddressSanitizer and UBSan in phase 3e; the stepping checks have only run on Windows. On Windows:
+`renderdoccmd test unit "[d3d9]"`.
 
 On Windows, with `D3D9_Mesh_Output` (in the demos project):
 The `D3D9_Mesh_Output` test does steps 1 and 2.
@@ -1905,7 +1949,8 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
 - `d3d9_replay.*` - the replay driver the replay controller talks to (`D3D9Replay`), and creating
   the replay device.
 - `d3d9_postvs.cpp` - post-transform vertices for the mesh viewer (3e), on the CPU with
-  `d3d9_vs_emulate.*` (vertex shader interpreter, vertex fetch, running a draw) and
+  `d3d9_vs_emulate.*` (vertex shader interpreter, which can step for debugging, vertex fetch,
+  running a draw) and
   `d3d9_ffp_vertex.*` (fixed function vertex processing). The last two are portable and unit
   tested.
 - `d3d9_replay_device.cpp` - the replay side of the device: loading, replaying the frame, the

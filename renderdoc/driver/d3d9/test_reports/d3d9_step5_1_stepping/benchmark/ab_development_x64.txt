@@ -1,0 +1,30 @@
+Development x64 timings, copied from the console, in the order they were taken. 200,000 vertices
+of the 16-instruction shader. Development compiles with /Od and /JMC, so nothing is inlined: these
+count function calls. Release (ab_release_x64.txt) is the speed users get.
+
+RunPostVS ("[d3d9bench]", best of 5), each line a separate run:
+  before the change (6c2db4ee9 plus the benchmark):        933.7, 930.2, 931.2 ms
+  1. Execute = Start + one Step call per instruction:       1075.3, 1069.4, 1073.1 ms
+  2. the loop as a template on Record:                      1038.5, 1034.5, 1031.1 ms
+  3. 2 plus "inline" on the register helpers:               1052.7, 1082.2, 1055.3 ms
+
+Then the A/B ("[d3d9ab]", ab_test.cpp.txt: the old Execute and the new one in one binary, best
+of 7 each, a loop of 4 lights unless said):
+  4. as 3:                                                  old 797.0 / 795.4, new 887.7 / 885.5
+  5. Write a template on Record too:                        old 806.1 / 818.8, new 882.6 / 907.1
+  6. experiment, Start never resets the registers:          old 825.3 / 802.8, new 859.8 / 849.8
+  7. Start resets only a reused thread, Execute sets error
+     only on failure:                                       old 785.1 / 789.0, new 818.4 / 820.3
+  8. experiment, Execute doesn't copy the outputs:          old 799.1 / 805.2, new 829.9 / 834.8
+  9. 7 plus Single as a template parameter (committed):     old 787.0 / 780.4 / 782.2,
+                                                            new 826.0 / 817.4 / 813.4
+ 10. 9 with a loop of 64 lights:                            old 7625.9 / 7799.8, new 7875.9 / 8007.0
+ 11. 10, experiment, the failure lambda not capturing
+     the instruction count:                                 old 7667.9 / 7616.7, new 7948.1 / 7892.0
+
+The committed code is 9 (with the failure lambda as in 10). Its RunPostVS, from the final
+verification run (../run/bench_development_x64.txt): 1026.9, 1021.2, 1024.5 ms.
+
+The 931 ms "before" was taken earlier, so the old and new code were then built and timed back to
+back (../run/bench_old_vs_new_development.txt): old 982.1, 983.0, 977.8 ms; new 1043.4, 1042.3,
+1041.7 ms. About 6% slower.

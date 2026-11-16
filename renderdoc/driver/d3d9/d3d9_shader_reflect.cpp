@@ -826,9 +826,22 @@ void ShaderInfo::Init(ResourceId id, const uint32_t *tokens, size_t numTokens)
   BuildReflection(id);
 }
 
-rdcstr ShaderInfo::GetDisassembly() const
+rdcstr ShaderInfo::GetDisassembly(rdcarray<uint32_t> *instLines) const
 {
-  return ConstantTableComment(m_ConstantTable) + Disassemble(m_Program);
+  rdcstr comment = ConstantTableComment(m_ConstantTable);
+  rdcstr ret = comment + Disassemble(m_Program, instLines);
+
+  if(instLines)
+  {
+    uint32_t commentLines = 0;
+    for(char c : comment)
+      if(c == '\n')
+        commentLines++;
+    for(uint32_t &line : *instLines)
+      line += commentLines;
+  }
+
+  return ret;
 }
 
 void ShaderInfo::BuildReflection(ResourceId id)
@@ -1252,6 +1265,7 @@ void ShaderInfo::FillConstants(uint32_t cbufSlot, const bytebuf &registerData,
 #if ENABLED(ENABLE_UNIT_TESTS)
 
 #include "catch/catch.hpp"
+#include "strings/string_utils.h"
 #include "d3d9_bytecode_test.h"
 #include "d3d9_ctab_test_data.h"
 
@@ -1649,6 +1663,24 @@ TEST_CASE("D3D9 shader reflection", "[d3d9][shader]")
     CHECK(disasm.find("Loops         i1") < disasm.find("WorldViewProj c0"));
     CHECK(disasm.find("WorldViewProj c0") < disasm.find("Diffuse       s1"));
     CHECK(disasm.contains("    vs_3_0\n"));
+
+    // the instructions' lines count the constant table comment's
+    {
+      rdcarray<uint32_t> instLines, plainLines;
+      CHECK(info.GetDisassembly(&instLines) == disasm);
+      rdcstr plain = Disassemble(info.GetProgram(), &plainLines);
+      REQUIRE(instLines.size() == info.GetProgram().instructions.size());
+      REQUIRE(plainLines.size() == instLines.size());
+      rdcarray<rdcstr> lines, linesPlain;
+      split(disasm, lines, '\n');
+      split(plain, linesPlain, '\n');
+      CHECK(instLines[0] > plainLines[0] + 20);
+      for(size_t i = 0; i < instLines.size(); i++)
+      {
+        REQUIRE(instLines[i] <= lines.size());
+        CHECK(lines[instLines[i] - 1] == linesPlain[plainLines[i] - 1]);
+      }
+    }
 
     // filling: the matrix is column major, so each register is a column
     rdcarray<float> regs;

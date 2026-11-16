@@ -144,6 +144,124 @@ struct VSOutputs
 const Vec4 *OutputRegister(const VSOutputs &out, const D3D9BC::Version &version,
                            const SigParameter &sig);
 
+// a running loop or rep
+struct VSLoopFrame
+{
+  // the loop or rep instruction
+  uint32_t start = 0;
+  int32_t remaining = 0;
+  int32_t aL = 0;
+  int32_t step = 0;
+  // rep doesn't have an aL
+  bool isLoop = false;
+};
+
+// a running subroutine
+struct VSCallFrame
+{
+  // the call or callnz instruction, and the label it called
+  uint32_t call = 0;
+  uint32_t label = 0;
+  // the instruction to return to
+  uint32_t ret = 0;
+  // the loops running when it was called
+  size_t loopDepth = 0;
+};
+
+// the registers of one vertex's run, as they are between two instructions
+struct VSRegisters
+{
+  Vec4 r[MaxVSTemps];
+  IVec4 a0;
+  bool p[4] = {false, false, false, false};
+  rdcarray<VSLoopFrame> loops;
+  rdcarray<VSCallFrame> calls;
+  VSOutputs out;
+
+  // the index in loops of the innermost loop (rep has no aL), or -1 outside any
+  int32_t InnermostLoop() const
+  {
+    for(size_t i = loops.size(); i > 0; i--)
+      if(loops[i - 1].isLoop)
+        return int32_t(i - 1);
+    return -1;
+  }
+  // the loop counter register: the innermost loop's, 0 outside any
+  int32_t aL() const
+  {
+    int32_t l = InnermostLoop();
+    return l >= 0 ? loops[l].aL : 0;
+  }
+};
+
+// a register an instruction changed, and what it held before
+struct VSRegisterChange
+{
+  // Temp, AddrOrTexture (a0), Predicate (p0), Loop (aL), or the outputs RastOut, AttrOut and
+  // TexCrdOutOrOutput
+  D3D9BC::RegType type = D3D9BC::RegType::Temp;
+  uint32_t index = 0;
+  // the value before: in f for temps and outputs, in i for a0, aL (in x, 0 outside a loop) and
+  // p0 (each 0 or 1)
+  Vec4 f;
+  IVec4 i;
+};
+
+class VSEmulator;
+
+// One vertex's run of a shader, which can go one instruction at a time. VSEmulator::Execute runs
+// it to the end; a debugger steps it.
+class VSThread : private VSRegisters
+{
+public:
+  // starts a run at the first instruction. emu (initialised), inputs, consts (from
+  // emu.ApplyLiterals) and textures (the four vertex samplers, or NULL) must outlive the thread.
+  void Start(const VSEmulator &emu, const Vec4 inputs[MaxVSInputs], const VSConstants &consts,
+             const VSTexture textures[NumVertexSamplers]);
+
+  // the shader ended, or failed
+  bool Finished() const { return m_Finished; }
+  bool Failed() const { return !m_Error.empty(); }
+  const rdcstr &GetError() const { return m_Error; }
+  // the instruction Step runs next
+  uint32_t NextInstruction() const { return m_IP; }
+  uint32_t InstructionsExecuted() const { return m_Executed; }
+  const VSRegisters &Registers() const { return *this; }
+
+  // runs the next instruction, appending the registers it changed to changes if that isn't NULL.
+  // Returns false if there's nothing to run, or if the instruction failed: the thread is then
+  // finished, with GetError set and the registers as they were before it.
+  bool Step(rdcarray<VSRegisterChange> *changes = NULL);
+  // runs to the end. Returns false if an instruction failed.
+  bool Run();
+
+private:
+  int32_t RelValue(const D3D9BC::RelativeAddress &rel) const;
+  Vec4 ReadRaw(const D3D9BC::SrcParam &src, int32_t regOffset) const;
+  Vec4 Read(const D3D9BC::SrcParam &src, int32_t regOffset = 0) const;
+  bool ReadBool(const D3D9BC::SrcParam &src) const;
+  IVec4 ReadInt(const D3D9BC::SrcParam &src) const;
+  uint8_t WriteMask(const D3D9BC::Instruction &inst) const;
+  template <bool Record>
+  void Write(const D3D9BC::Instruction &inst, Vec4 val);
+  bool Fail(uint32_t ip, const rdcstr &msg);
+  template <bool Record, bool Single>
+  bool Exec(rdcarray<VSRegisterChange> *changes);
+
+  const VSEmulator *m_Emu = NULL;
+  const Vec4 *m_Inputs = NULL;
+  const VSConstants *m_Consts = NULL;
+  const VSTexture *m_Textures = NULL;
+
+  uint32_t m_IP = 0;
+  uint32_t m_Executed = 0;
+  bool m_Finished = true;
+  rdcstr m_Error;
+
+  // where Write records changes, during Step
+  rdcarray<VSRegisterChange> *m_Changes = NULL;
+};
+
 class VSEmulator
 {
 public:
@@ -165,6 +283,8 @@ public:
                const VSTexture textures[NumVertexSamplers], VSOutputs &out, rdcstr &error) const;
 
 private:
+  friend class VSThread;
+
   struct Literal
   {
     uint32_t reg;

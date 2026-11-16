@@ -1,0 +1,7 @@
+exit 0 errors 0
+  loop 4: old 181.2 ms new 170.9 ms (112753232.000000)
+  loop 64: old 1844.3 ms new 1761.5 ms (112753232.000000)
+  loop 4: old 176.7 ms new 168.1 ms (112753232.000000)
+  loop 64: old 1843.7 ms new 1754.4 ms (112753232.000000)
+
+[exited with code 0]

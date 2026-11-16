@@ -834,9 +834,12 @@ rdcstr RegisterName(const Version &version, RegType type, uint32_t index)
   return StringFormat::Fmt("unknownreg%u_%u", uint32_t(type), index);
 }
 
-rdcstr Disassemble(const Program &prog)
+rdcstr Disassemble(const Program &prog, rdcarray<uint32_t> *instLines)
 {
   rdcstr ret;
+
+  if(instLines)
+    instLines->clear();
 
   if(!prog.validVersion)
   {
@@ -847,6 +850,10 @@ rdcstr Disassemble(const Program &prog)
   const Version &version = prog.version;
 
   ret += "    " + VersionString(version) + "\n";
+  uint32_t lineNumber = 2;
+
+  if(instLines)
+    instLines->reserve(prog.instructions.size());
 
   int indent = 0;
 
@@ -908,6 +915,9 @@ rdcstr Disassemble(const Program &prog)
       line += " " + operands;
 
     ret += line + "\n";
+    if(instLines)
+      instLines->push_back(lineNumber);
+    lineNumber++;
 
     if(inst.op == Opcode::If || inst.op == Opcode::IfC || inst.op == Opcode::Else ||
        inst.op == Opcode::Loop || inst.op == Opcode::Rep)
@@ -952,10 +962,46 @@ rdcstr DoStringise(const D3D9BC::DeclUsage &el)
   return StringFormat::Fmt("DeclUsage(%u)", uint32_t(el));
 }
 
+// checks the line Disassemble gives each instruction is that instruction's
+static void CheckInstructionLines(const Program &prog, const rdcstr &disasm,
+                                  const rdcarray<uint32_t> &instLines)
+{
+  if(!prog.validVersion)
+  {
+    CHECK(instLines.empty());
+    return;
+  }
+
+  rdcarray<rdcstr> lines;
+  split(disasm, lines, '\n');
+
+  REQUIRE(instLines.size() == prog.instructions.size());
+  uint32_t prev = 1;
+  for(size_t i = 0; i < instLines.size(); i++)
+  {
+    const Instruction &inst = prog.instructions[i];
+    INFO(StringFormat::Fmt("instruction %zu (%s) on line %u", i,
+                           OpcodeName(prog.version, inst).c_str(), instLines[i])
+             .c_str());
+    // the version line is line 1, then one line per instruction
+    CHECK(instLines[i] == prev + 1);
+    prev = instLines[i];
+    REQUIRE(instLines[i] <= lines.size());
+    rdcstr line = lines[instLines[i] - 1];
+    line.trim();
+    CHECK(line.contains(inst.op == Opcode::Dcl ? rdcstr("dcl") : OpcodeName(prog.version, inst)));
+    CHECK(!line.beginsWith("//"));
+  }
+}
+
 static rdcstr DisassembleTokens(const rdcarray<uint32_t> &tokens, Program &prog)
 {
   ParseProgram(tokens.data(), tokens.size(), prog);
-  return Disassemble(prog);
+  rdcarray<uint32_t> instLines;
+  rdcstr ret = Disassemble(prog, &instLines);
+  CHECK(ret == Disassemble(prog));
+  CheckInstructionLines(prog, ret, instLines);
+  return ret;
 }
 
 // the instruction lines of a disassembly, without the indentation, the version line and the

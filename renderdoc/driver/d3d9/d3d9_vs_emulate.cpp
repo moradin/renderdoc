@@ -35,10 +35,12 @@
 // How the interpreter works
 // -------------------------
 // Init walks the program once: it matches each if/else/endif, loop/endloop, rep/endrep and break
-// with its partner, finds each label, and collects the def/defi/defb literals. Execute then runs
+// with its partner, finds each label, and collects the def/defi/defb literals. A VSThread then runs
 // the instructions in order with an instruction pointer, a stack of loops (each with its
-// remaining count and, for loop, its aL) and a stack of calls. Registers are fp32 throughout,
-// partial precision hints are ignored, as the reference rasterizer does.
+// remaining count and, for loop, its aL) and a stack of calls. Execute runs one to the end; a
+// debugger steps it, one instruction at a time, and gets the registers each one changed with what
+// they held before. Registers are fp32 throughout, partial precision hints are ignored, as the
+// reference rasterizer does.
 //
 // Where the D3D9 documentation gives an instruction's exact behaviour it's followed: rcp and rsq
 // of 0 give +inf (and of 1 exactly 1), rsq and log take the absolute value, log of 0 gives
@@ -126,230 +128,262 @@ uint32_t ConstantRegisterOffset(RegType type)
   }
 }
 
-struct LoopFrame
+};    // namespace
+
+void VSThread::Start(const VSEmulator &emu, const Vec4 inputs[MaxVSInputs],
+                     const VSConstants &consts, const VSTexture textures[NumVertexSamplers])
 {
-  uint32_t start = 0;
-  int32_t remaining = 0;
-  int32_t aL = 0;
-  int32_t step = 0;
-  // rep doesn't have an aL
-  bool isLoop = false;
-};
-
-struct CallFrame
-{
-  uint32_t ret = 0;
-  size_t loopDepth = 0;
-};
-
-struct ExecState
-{
-  Vec4 r[MaxVSTemps];
-  IVec4 a0;
-  bool p[4] = {false, false, false, false};
-  rdcarray<LoopFrame> loops;
-  rdcarray<CallFrame> calls;
-
-  const Vec4 *v = NULL;
-  const VSConstants *c = NULL;
-  VSOutputs *o = NULL;
-
-  int32_t aL() const
+  // a new thread already has its registers cleared, which is worth not doing twice for each
+  // vertex of a draw
+  if(m_Emu)
   {
-    for(size_t i = loops.size(); i > 0; i--)
-      if(loops[i - 1].isLoop)
-        return loops[i - 1].aL;
+    VSRegisters &regs = *this;
+    regs = VSRegisters();
+  }
+
+  m_Emu = &emu;
+  m_Inputs = inputs;
+  m_Consts = &consts;
+  m_Textures = textures;
+  m_IP = 0;
+  m_Executed = 0;
+  m_Error.clear();
+  m_Changes = NULL;
+  m_Finished = false;
+
+  if(emu.m_Prog == NULL || !emu.m_Error.empty())
+  {
+    m_Error = emu.m_Error.empty() ? "No shader" : emu.m_Error;
+    m_Finished = true;
+  }
+  else if(emu.m_Prog->instructions.empty())
+  {
+    m_Finished = true;
+  }
+}
+
+inline int32_t VSThread::RelValue(const RelativeAddress &rel) const
+{
+  if(!rel.present)
     return 0;
-  }
+  if(rel.type == RegType::Loop)
+    return aL();
+  return a0.v[rel.component & 3];
+}
 
-  int32_t RelValue(const RelativeAddress &rel) const
+inline Vec4 VSThread::ReadRaw(const SrcParam &src, int32_t regOffset) const
+{
+  int64_t idx = int64_t(src.index) + regOffset + RelValue(src.rel);
+  const VSConstants *c = m_Consts;
+  Vec4 ret;
+
+  switch(src.type)
   {
-    if(!rel.present)
-      return 0;
-    if(rel.type == RegType::Loop)
-      return aL();
-    return a0.v[rel.component & 3];
-  }
-
-  Vec4 ReadRaw(const SrcParam &src, int32_t regOffset) const
-  {
-    int64_t idx = int64_t(src.index) + regOffset + RelValue(src.rel);
-    Vec4 ret;
-
-    switch(src.type)
+    case RegType::Temp:
+      if(idx >= 0 && idx < MaxVSTemps)
+        ret = r[idx];
+      break;
+    case RegType::Input:
+      if(idx >= 0 && idx < MaxVSInputs)
+        ret = m_Inputs[idx];
+      break;
+    case RegType::Const:
+    case RegType::Const2:
+    case RegType::Const3:
+    case RegType::Const4:
+      idx += ConstantRegisterOffset(src.type);
+      if(idx >= 0 && idx < (int64_t)c->floats.size())
+        ret = c->floats[(size_t)idx];
+      break;
+    case RegType::AddrOrTexture:
+      for(int i = 0; i < 4; i++)
+        ret[i] = float(a0.v[i]);
+      break;
+    case RegType::ConstInt:
+      if(idx >= 0 && idx < (int64_t)c->ints.size())
+        for(int i = 0; i < 4; i++)
+          ret[i] = float(c->ints[(size_t)idx].v[i]);
+      break;
+    case RegType::ConstBool:
     {
-      case RegType::Temp:
-        if(idx >= 0 && idx < MaxVSTemps)
-          ret = r[idx];
-        break;
-      case RegType::Input:
-        if(idx >= 0 && idx < MaxVSInputs)
-          ret = v[idx];
-        break;
-      case RegType::Const:
-      case RegType::Const2:
-      case RegType::Const3:
-      case RegType::Const4:
-        idx += ConstantRegisterOffset(src.type);
-        if(idx >= 0 && idx < (int64_t)c->floats.size())
-          ret = c->floats[(size_t)idx];
-        break;
-      case RegType::AddrOrTexture:
-        for(int i = 0; i < 4; i++)
-          ret[i] = float(a0.v[i]);
-        break;
-      case RegType::ConstInt:
-        if(idx >= 0 && idx < (int64_t)c->ints.size())
-          for(int i = 0; i < 4; i++)
-            ret[i] = float(c->ints[(size_t)idx].v[i]);
-        break;
-      case RegType::ConstBool:
-      {
-        float b = (idx >= 0 && idx < (int64_t)c->bools.size() && c->bools[(size_t)idx]) ? 1.0f : 0.0f;
-        ret = Vec4(b, b, b, b);
-        break;
-      }
-      case RegType::Loop:
-      {
-        float l = float(aL());
-        ret = Vec4(l, l, l, l);
-        break;
-      }
-      case RegType::Predicate:
-        for(int i = 0; i < 4; i++)
-          ret[i] = p[i] ? 1.0f : 0.0f;
-        break;
-      default: break;
+      float b = (idx >= 0 && idx < (int64_t)c->bools.size() && c->bools[(size_t)idx]) ? 1.0f : 0.0f;
+      ret = Vec4(b, b, b, b);
+      break;
     }
-
-    return ret;
+    case RegType::Loop:
+    {
+      float l = float(aL());
+      ret = Vec4(l, l, l, l);
+      break;
+    }
+    case RegType::Predicate:
+      for(int i = 0; i < 4; i++)
+        ret[i] = p[i] ? 1.0f : 0.0f;
+      break;
+    default: break;
   }
 
-  Vec4 Read(const SrcParam &src, int32_t regOffset = 0) const
+  return ret;
+}
+
+inline Vec4 VSThread::Read(const SrcParam &src, int32_t regOffset) const
+{
+  Vec4 raw = ReadRaw(src, regOffset);
+  Vec4 ret;
+  for(int i = 0; i < 4; i++)
+    ret[i] = ApplyMod(src.mod, raw[src.swizzle[i] & 3]);
+  return ret;
+}
+
+// a boolean condition: a boolean constant or a predicate component, with ! applied
+inline bool VSThread::ReadBool(const SrcParam &src) const
+{
+  const VSConstants *c = m_Consts;
+  bool ret = false;
+  if(src.type == RegType::ConstBool)
   {
-    Vec4 raw = ReadRaw(src, regOffset);
-    Vec4 ret;
+    int64_t idx = int64_t(src.index) + RelValue(src.rel);
+    ret = idx >= 0 && idx < (int64_t)c->bools.size() && c->bools[(size_t)idx] != 0;
+  }
+  else if(src.type == RegType::Predicate)
+  {
+    ret = p[src.swizzle[0] & 3];
+  }
+  else
+  {
+    ret = ReadRaw(src, 0)[src.swizzle[0] & 3] != 0.0f;
+  }
+  if(src.mod == SrcMod::Not)
+    ret = !ret;
+  return ret;
+}
+
+inline IVec4 VSThread::ReadInt(const SrcParam &src) const
+{
+  IVec4 ret;
+  if(src.type == RegType::ConstInt && src.index < m_Consts->ints.size())
+    ret = m_Consts->ints[src.index];
+  return ret;
+}
+
+inline uint8_t VSThread::WriteMask(const Instruction &inst) const
+{
+  uint8_t mask = inst.dst.writeMask;
+  if(inst.predicated)
+  {
     for(int i = 0; i < 4; i++)
-      ret[i] = ApplyMod(src.mod, raw[src.swizzle[i] & 3]);
-    return ret;
+    {
+      bool pc = p[inst.predicate.swizzle[i] & 3];
+      if(inst.predicate.mod == SrcMod::Not)
+        pc = !pc;
+      if(!pc)
+        mask &= ~(1 << i);
+    }
+  }
+  return mask;
+}
+
+template <bool Record>
+inline void VSThread::Write(const Instruction &inst, Vec4 val)
+{
+  const DstParam &d = inst.dst;
+  const uint8_t mask = WriteMask(inst);
+
+  if(d.shift != 0)
+  {
+    const float scale = ldexpf(1.0f, d.shift);
+    for(int i = 0; i < 4; i++)
+      val[i] *= scale;
   }
 
-  // a boolean condition: a boolean constant or a predicate component, with ! applied
-  bool ReadBool(const SrcParam &src) const
-  {
-    bool ret = false;
-    if(src.type == RegType::ConstBool)
-    {
-      int64_t idx = int64_t(src.index) + RelValue(src.rel);
-      ret = idx >= 0 && idx < (int64_t)c->bools.size() && c->bools[(size_t)idx] != 0;
-    }
-    else if(src.type == RegType::Predicate)
-    {
-      ret = p[src.swizzle[0] & 3];
-    }
-    else
-    {
-      ret = ReadRaw(src, 0)[src.swizzle[0] & 3] != 0.0f;
-    }
-    if(src.mod == SrcMod::Not)
-      ret = !ret;
-    return ret;
-  }
+  if(d.mods & DstMod_Saturate)
+    for(int i = 0; i < 4; i++)
+      val[i] = Saturate(val[i]);
 
-  IVec4 ReadInt(const SrcParam &src) const
-  {
-    IVec4 ret;
-    if(src.type == RegType::ConstInt && src.index < c->ints.size())
-      ret = c->ints[src.index];
-    return ret;
-  }
+  int64_t idx = int64_t(d.index) + RelValue(d.rel);
 
-  uint8_t WriteMask(const Instruction &inst) const
+  Vec4 *dst = NULL;
+  switch(d.type)
   {
-    uint8_t mask = inst.dst.writeMask;
-    if(inst.predicated)
+    case RegType::Temp:
+      if(idx >= 0 && idx < MaxVSTemps)
+        dst = &r[idx];
+      break;
+    case RegType::RastOut:
+      if(idx >= 0 && idx < 3)
+        dst = &out.rast[idx];
+      break;
+    case RegType::AttrOut:
+      if(idx >= 0 && idx < 2)
+        dst = &out.attr[idx];
+      break;
+    case RegType::TexCrdOutOrOutput:
+      if(idx >= 0 && idx < 12)
+        dst = &out.tex[idx];
+      break;
+    case RegType::AddrOrTexture:
     {
-      for(int i = 0; i < 4; i++)
+      if(Record)
       {
-        bool pc = p[inst.predicate.swizzle[i] & 3];
-        if(inst.predicate.mod == SrcMod::Not)
-          pc = !pc;
-        if(!pc)
-          mask &= ~(1 << i);
-      }
-    }
-    return mask;
-  }
-
-  void Write(const Instruction &inst, Vec4 val)
-  {
-    const DstParam &d = inst.dst;
-    const uint8_t mask = WriteMask(inst);
-
-    if(d.shift != 0)
-    {
-      const float scale = ldexpf(1.0f, d.shift);
-      for(int i = 0; i < 4; i++)
-        val[i] *= scale;
-    }
-
-    if(d.mods & DstMod_Saturate)
-      for(int i = 0; i < 4; i++)
-        val[i] = Saturate(val[i]);
-
-    int64_t idx = int64_t(d.index) + RelValue(d.rel);
-
-    Vec4 *dst = NULL;
-    switch(d.type)
-    {
-      case RegType::Temp:
-        if(idx >= 0 && idx < MaxVSTemps)
-          dst = &r[idx];
-        break;
-      case RegType::RastOut:
-        if(idx >= 0 && idx < 3)
-          dst = &o->rast[idx];
-        break;
-      case RegType::AttrOut:
-        if(idx >= 0 && idx < 2)
-          dst = &o->attr[idx];
-        break;
-      case RegType::TexCrdOutOrOutput:
-        if(idx >= 0 && idx < 12)
-          dst = &o->tex[idx];
-        break;
-      case RegType::AddrOrTexture:
-      {
-        // mova rounds to the nearest integer, vs_1_1's mov rounds down
-        const bool round = inst.op == Opcode::MovA;
-        for(int i = 0; i < 4; i++)
+        if(mask)
         {
-          if(!(mask & (1 << i)))
-            continue;
-          float f = round ? floorf(val[i] + 0.5f) : floorf(val[i]);
-          if(!(f == f))
-            f = 0.0f;
-          f = RDCCLAMP(f, -65536.0f, 65536.0f);
-          a0.v[i] = int32_t(f);
+          VSRegisterChange change;
+          change.type = RegType::AddrOrTexture;
+          change.i = a0;
+          m_Changes->push_back(change);
         }
-        return;
       }
-      case RegType::Predicate:
-        for(int i = 0; i < 4; i++)
-          if(mask & (1 << i))
-            p[i] = val[i] != 0.0f;
-        return;
-      default: break;
+      // mova rounds to the nearest integer, vs_1_1's mov rounds down
+      const bool round = inst.op == Opcode::MovA;
+      for(int i = 0; i < 4; i++)
+      {
+        if(!(mask & (1 << i)))
+          continue;
+        float f = round ? floorf(val[i] + 0.5f) : floorf(val[i]);
+        if(!(f == f))
+          f = 0.0f;
+        f = RDCCLAMP(f, -65536.0f, 65536.0f);
+        a0.v[i] = int32_t(f);
+      }
+      return;
     }
-
-    if(dst)
-    {
+    case RegType::Predicate:
+      if(Record)
+      {
+        if(mask)
+        {
+          VSRegisterChange change;
+          change.type = RegType::Predicate;
+          for(int i = 0; i < 4; i++)
+            change.i.v[i] = p[i] ? 1 : 0;
+          m_Changes->push_back(change);
+        }
+      }
       for(int i = 0; i < 4; i++)
         if(mask & (1 << i))
-          (*dst)[i] = val[i];
-    }
+          p[i] = val[i] != 0.0f;
+      return;
+    default: break;
   }
-};
+
+  if(dst && mask)
+  {
+    if(Record)
+    {
+      VSRegisterChange change;
+      change.type = d.type;
+      change.index = uint32_t(idx);
+      change.f = *dst;
+      m_Changes->push_back(change);
+    }
+    for(int i = 0; i < 4; i++)
+      if(mask & (1 << i))
+        (*dst)[i] = val[i];
+  }
+}
+
+namespace
+{
 
 float Dot(const Vec4 &a, const Vec4 &b, int n)
 {
@@ -801,33 +835,76 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
                          const VSTexture textures[NumVertexSamplers], VSOutputs &out,
                          rdcstr &error) const
 {
-  out = VSOutputs();
+  VSThread thread;
+  thread.Start(*this, inputs, consts, textures);
+  bool ret = thread.Run();
+  out = thread.Registers().out;
+  if(!ret)
+    error = thread.GetError();
+  return ret;
+}
 
-  if(m_Prog == NULL || !m_Error.empty())
-  {
-    error = m_Error.empty() ? "No shader" : m_Error;
+bool VSThread::Fail(uint32_t ip, const rdcstr &msg)
+{
+  const rdcarray<Instruction> &insts = m_Emu->m_Prog->instructions;
+  m_IP = ip;
+  m_Error =
+      StringFormat::Fmt("%s at instruction %u (%s)", msg.c_str(), ip,
+                        ip < insts.size() ? OpcodeName(m_Emu->m_Version, insts[ip]).c_str() : "");
+  m_Finished = true;
+  m_Changes = NULL;
+  return false;
+}
+
+bool VSThread::Run()
+{
+  if(m_Finished)
+    return m_Error.empty();
+  return Exec<false, false>(NULL);
+}
+
+bool VSThread::Step(rdcarray<VSRegisterChange> *changes)
+{
+  return changes ? Exec<true, true>(changes) : Exec<false, true>(NULL);
+}
+
+// runs instructions until the end, or only one with Single. With Record, each change is appended
+// to changes. Running to the end is the mesh viewer's path for every vertex, so it keeps the
+// instruction pointer in a local and has nothing for stepping in its loop.
+template <bool Record, bool Single>
+bool VSThread::Exec(rdcarray<VSRegisterChange> *changes)
+{
+  if(m_Finished)
     return false;
-  }
 
-  ExecState s;
-  s.v = inputs;
-  s.c = &consts;
-  s.o = &out;
+  const VSEmulator &emu = *m_Emu;
+  const Version &version = emu.m_Version;
+  const rdcarray<Instruction> &insts = emu.m_Prog->instructions;
+  const uint32_t numInsts = (uint32_t)insts.size();
+  VSThread &s = *this;
 
-  const rdcarray<Instruction> &insts = m_Prog->instructions;
-  uint32_t executed = 0;
-  uint32_t ip = 0;
+  uint32_t ip = m_IP;
+  uint32_t executed = m_Executed;
+  m_Changes = Record ? changes : NULL;
 
+  // a failed instruction isn't counted, and leaves ip on it
   auto fail = [&](const rdcstr &msg) {
-    error = StringFormat::Fmt("%s at instruction %u (%s)", msg.c_str(), ip,
-                              ip < insts.size() ? OpcodeName(m_Version, insts[ip]).c_str() : "");
-    return false;
+    m_Executed = executed - 1;
+    return Fail(ip, msg);
   };
 
-  while(ip < insts.size())
+  for(;;)
   {
     if(++executed > MaxInstructionsPerVertex)
       return fail("Too many instructions executed, the shader may loop forever");
+
+    // aL changes when the innermost loop does, or its counter
+    int32_t loopBefore = -1, aLBefore = 0;
+    if(Record)
+    {
+      loopBefore = InnermostLoop();
+      aLBefore = aL();
+    }
 
     const Instruction &inst = insts[ip];
     const rdcarray<SrcParam> &srcs = inst.srcs;
@@ -866,7 +943,7 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
         }
         else
         {
-          CallFrame f = s.calls.back();
+          VSCallFrame f = s.calls.back();
           s.calls.pop_back();
           s.loops.resize(f.loopDepth);
           next = f.ret;
@@ -883,11 +960,13 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
         {
           if(s.calls.size() >= MaxCallDepth)
             return fail("Calls nested too deeply");
-          CallFrame f;
+          VSCallFrame f;
+          f.call = ip;
+          f.label = srcs[0].index;
           f.ret = ip + 1;
           f.loopDepth = s.loops.size();
           s.calls.push_back(f);
-          next = m_Labels[srcs[0].index] + 1;
+          next = emu.m_Labels[srcs[0].index] + 1;
         }
         break;
       }
@@ -896,18 +975,18 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
         if(srcs.empty())
           return fail("Missing operands");
         if(!s.ReadBool(srcs[0]))
-          next = m_Match[ip] + 1;
+          next = emu.m_Match[ip] + 1;
         break;
 
       case Opcode::IfC:
         if(!need(2))
           return fail("Missing operands");
         if(!Compare(inst.GetComparison(), s.Read(srcs[0])[0], s.Read(srcs[1])[0]))
-          next = m_Match[ip] + 1;
+          next = emu.m_Match[ip] + 1;
         break;
 
       // reached at the end of the if block, skip the else block
-      case Opcode::Else: next = m_Match[ip] + 1; break;
+      case Opcode::Else: next = emu.m_Match[ip] + 1; break;
 
       case Opcode::Loop:
       case Opcode::Rep:
@@ -919,11 +998,11 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
         int32_t count = RDCCLAMP(i.v[0], 0, 255);
         if(count == 0)
         {
-          next = m_Match[ip] + 1;
+          next = emu.m_Match[ip] + 1;
         }
         else
         {
-          LoopFrame f;
+          VSLoopFrame f;
           f.start = ip;
           f.remaining = count;
           f.isLoop = isLoop;
@@ -939,7 +1018,7 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
       {
         if(s.loops.empty())
           return fail("End of a loop that isn't running");
-        LoopFrame &f = s.loops.back();
+        VSLoopFrame &f = s.loops.back();
         if(--f.remaining > 0)
         {
           f.aL += f.step;
@@ -974,7 +1053,7 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
           if(s.loops.empty())
             return fail("break outside a running loop");
           s.loops.pop_back();
-          next = m_Match[ip] + 1;
+          next = emu.m_Match[ip] + 1;
         }
         break;
       }
@@ -983,7 +1062,7 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
       case Opcode::MovA:
       {
         NEED_SRCS(1);
-        s.Write(inst, s.Read(srcs[0]));
+        s.Write<Record>(inst, s.Read(srcs[0]));
         break;
       }
 
@@ -996,22 +1075,22 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
       case Opcode::Sge:
       {
         NEED_SRCS(2);
-        Vec4 a = s.Read(srcs[0]), b = s.Read(srcs[1]), r;
+        Vec4 a = s.Read(srcs[0]), b = s.Read(srcs[1]), res;
         for(int i = 0; i < 4; i++)
         {
           switch(inst.op)
           {
-            case Opcode::Add: r[i] = a[i] + b[i]; break;
-            case Opcode::Sub: r[i] = a[i] - b[i]; break;
-            case Opcode::Mul: r[i] = a[i] * b[i]; break;
-            case Opcode::Min: r[i] = a[i] < b[i] ? a[i] : b[i]; break;
-            case Opcode::Max: r[i] = a[i] >= b[i] ? a[i] : b[i]; break;
-            case Opcode::Slt: r[i] = a[i] < b[i] ? 1.0f : 0.0f; break;
-            case Opcode::Sge: r[i] = a[i] >= b[i] ? 1.0f : 0.0f; break;
+            case Opcode::Add: res[i] = a[i] + b[i]; break;
+            case Opcode::Sub: res[i] = a[i] - b[i]; break;
+            case Opcode::Mul: res[i] = a[i] * b[i]; break;
+            case Opcode::Min: res[i] = a[i] < b[i] ? a[i] : b[i]; break;
+            case Opcode::Max: res[i] = a[i] >= b[i] ? a[i] : b[i]; break;
+            case Opcode::Slt: res[i] = a[i] < b[i] ? 1.0f : 0.0f; break;
+            case Opcode::Sge: res[i] = a[i] >= b[i] ? 1.0f : 0.0f; break;
             default: break;
           }
         }
-        s.Write(inst, r);
+        s.Write<Record>(inst, res);
         break;
       }
 
@@ -1021,19 +1100,19 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
       case Opcode::Cnd:
       {
         NEED_SRCS(3);
-        Vec4 a = s.Read(srcs[0]), b = s.Read(srcs[1]), c = s.Read(srcs[2]), r;
+        Vec4 a = s.Read(srcs[0]), b = s.Read(srcs[1]), c = s.Read(srcs[2]), res;
         for(int i = 0; i < 4; i++)
         {
           switch(inst.op)
           {
-            case Opcode::Mad: r[i] = a[i] * b[i] + c[i]; break;
-            case Opcode::Lrp: r[i] = a[i] * (b[i] - c[i]) + c[i]; break;
-            case Opcode::Cmp: r[i] = a[i] >= 0.0f ? b[i] : c[i]; break;
-            case Opcode::Cnd: r[i] = a[i] > 0.5f ? b[i] : c[i]; break;
+            case Opcode::Mad: res[i] = a[i] * b[i] + c[i]; break;
+            case Opcode::Lrp: res[i] = a[i] * (b[i] - c[i]) + c[i]; break;
+            case Opcode::Cmp: res[i] = a[i] >= 0.0f ? b[i] : c[i]; break;
+            case Opcode::Cnd: res[i] = a[i] > 0.5f ? b[i] : c[i]; break;
             default: break;
           }
         }
-        s.Write(inst, r);
+        s.Write<Record>(inst, res);
         break;
       }
 
@@ -1041,14 +1120,15 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
       case Opcode::Dp4:
       {
         NEED_SRCS(2);
-        s.Write(inst, Splat(Dot(s.Read(srcs[0]), s.Read(srcs[1]), inst.op == Opcode::Dp3 ? 3 : 4)));
+        s.Write<Record>(
+            inst, Splat(Dot(s.Read(srcs[0]), s.Read(srcs[1]), inst.op == Opcode::Dp3 ? 3 : 4)));
         break;
       }
 
       case Opcode::Dp2Add:
       {
         NEED_SRCS(3);
-        s.Write(inst, Splat(Dot(s.Read(srcs[0]), s.Read(srcs[1]), 2) + s.Read(srcs[2])[0]));
+        s.Write<Record>(inst, Splat(Dot(s.Read(srcs[0]), s.Read(srcs[1]), 2) + s.Read(srcs[2])[0]));
         break;
       }
 
@@ -1057,17 +1137,17 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
       case Opcode::Sgn:
       {
         NEED_SRCS(1);
-        Vec4 a = s.Read(srcs[0]), r;
+        Vec4 a = s.Read(srcs[0]), res;
         for(int i = 0; i < 4; i++)
         {
           if(inst.op == Opcode::Abs)
-            r[i] = fabsf(a[i]);
+            res[i] = fabsf(a[i]);
           else if(inst.op == Opcode::Frc)
-            r[i] = a[i] - floorf(a[i]);
+            res[i] = a[i] - floorf(a[i]);
           else
-            r[i] = a[i] > 0.0f ? 1.0f : (a[i] < 0.0f ? -1.0f : 0.0f);
+            res[i] = a[i] > 0.0f ? 1.0f : (a[i] < 0.0f ? -1.0f : 0.0f);
         }
-        s.Write(inst, r);
+        s.Write<Record>(inst, res);
         break;
       }
 
@@ -1075,8 +1155,8 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
       {
         NEED_SRCS(1);
         float f = s.Read(srcs[0])[3];
-        float r = f == 1.0f ? 1.0f : (f == 0.0f ? INFINITY : 1.0f / f);
-        s.Write(inst, Splat(r));
+        float res = f == 1.0f ? 1.0f : (f == 0.0f ? INFINITY : 1.0f / f);
+        s.Write<Record>(inst, Splat(res));
         break;
       }
 
@@ -1084,15 +1164,15 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
       {
         NEED_SRCS(1);
         float f = fabsf(s.Read(srcs[0])[3]);
-        float r = f == 1.0f ? 1.0f : (f == 0.0f ? INFINITY : 1.0f / sqrtf(f));
-        s.Write(inst, Splat(r));
+        float res = f == 1.0f ? 1.0f : (f == 0.0f ? INFINITY : 1.0f / sqrtf(f));
+        s.Write<Record>(inst, Splat(res));
         break;
       }
 
       case Opcode::Exp:
       {
         NEED_SRCS(1);
-        s.Write(inst, Splat(exp2f(s.Read(srcs[0])[3])));
+        s.Write<Record>(inst, Splat(exp2f(s.Read(srcs[0])[3])));
         break;
       }
 
@@ -1100,7 +1180,7 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
       {
         NEED_SRCS(1);
         float f = fabsf(s.Read(srcs[0])[3]);
-        s.Write(inst, Splat(f != 0.0f ? log2f(f) : -FLT_MAX));
+        s.Write<Record>(inst, Splat(f != 0.0f ? log2f(f) : -FLT_MAX));
         break;
       }
 
@@ -1108,14 +1188,14 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
       {
         NEED_SRCS(1);
         float w = s.Read(srcs[0])[3];
-        if(m_Version.major < 2)
+        if(version.major < 2)
         {
           float fl = floorf(w);
-          s.Write(inst, Vec4(exp2f(fl), w - fl, PartialPrecision(exp2f(w)), 1.0f));
+          s.Write<Record>(inst, Vec4(exp2f(fl), w - fl, PartialPrecision(exp2f(w)), 1.0f));
         }
         else
         {
-          s.Write(inst, Splat(PartialPrecision(exp2f(w))));
+          s.Write<Record>(inst, Splat(PartialPrecision(exp2f(w))));
         }
         break;
       }
@@ -1124,7 +1204,7 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
       {
         NEED_SRCS(1);
         float f = fabsf(s.Read(srcs[0])[3]);
-        if(m_Version.major < 2)
+        if(version.major < 2)
         {
           if(f != 0.0f)
           {
@@ -1134,16 +1214,16 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
             uint32_t mbits = (bits & 0x7FFFFF) | 0x3F800000;
             float mantissa;
             memcpy(&mantissa, &mbits, sizeof(mantissa));
-            s.Write(inst, Vec4(exponent, mantissa, PartialPrecision(log2f(f)), 1.0f));
+            s.Write<Record>(inst, Vec4(exponent, mantissa, PartialPrecision(log2f(f)), 1.0f));
           }
           else
           {
-            s.Write(inst, Vec4(-FLT_MAX, 1.0f, -FLT_MAX, 1.0f));
+            s.Write<Record>(inst, Vec4(-FLT_MAX, 1.0f, -FLT_MAX, 1.0f));
           }
         }
         else
         {
-          s.Write(inst, Splat(f != 0.0f ? PartialPrecision(log2f(f)) : -FLT_MAX));
+          s.Write<Record>(inst, Splat(f != 0.0f ? PartialPrecision(log2f(f)) : -FLT_MAX));
         }
         break;
       }
@@ -1151,7 +1231,7 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
       case Opcode::Pow:
       {
         NEED_SRCS(2);
-        s.Write(inst, Splat(powf(fabsf(s.Read(srcs[0])[3]), s.Read(srcs[1])[3])));
+        s.Write<Record>(inst, Splat(powf(fabsf(s.Read(srcs[0])[3]), s.Read(srcs[1])[3])));
         break;
       }
 
@@ -1161,14 +1241,14 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
         Vec4 a = s.Read(srcs[0]);
         const float MaxPower = 127.9961f;
         float power = RDCCLAMP(a[3], -MaxPower, MaxPower);
-        Vec4 r(1.0f, 0.0f, 0.0f, 1.0f);
+        Vec4 res(1.0f, 0.0f, 0.0f, 1.0f);
         if(a[0] > 0.0f)
         {
-          r[1] = a[0];
+          res[1] = a[0];
           if(a[1] > 0.0f)
-            r[2] = powf(a[1], power);
+            res[2] = powf(a[1], power);
         }
-        s.Write(inst, r);
+        s.Write<Record>(inst, res);
         break;
       }
 
@@ -1176,7 +1256,7 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
       {
         NEED_SRCS(2);
         Vec4 a = s.Read(srcs[0]), b = s.Read(srcs[1]);
-        s.Write(inst, Vec4(1.0f, a[1] * b[1], a[2], b[3]));
+        s.Write<Record>(inst, Vec4(1.0f, a[1] * b[1], a[2], b[3]));
         break;
       }
 
@@ -1184,8 +1264,8 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
       {
         NEED_SRCS(2);
         Vec4 a = s.Read(srcs[0]), b = s.Read(srcs[1]);
-        s.Write(inst, Vec4(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
-                           a[0] * b[1] - a[1] * b[0], 0.0f));
+        s.Write<Record>(inst, Vec4(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                                   a[0] * b[1] - a[1] * b[0], 0.0f));
         break;
       }
 
@@ -1196,10 +1276,10 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
         float f = Dot(a, a, 3);
         f = f != 0.0f ? 1.0f / sqrtf(f) : FLT_MAX;
         // FLT_MAX * 0 is still 0
-        Vec4 r;
+        Vec4 res;
         for(int i = 0; i < 4; i++)
-          r[i] = a[i] == 0.0f ? 0.0f : a[i] * f;
-        s.Write(inst, r);
+          res[i] = a[i] == 0.0f ? 0.0f : a[i] * f;
+        s.Write<Record>(inst, res);
         break;
       }
 
@@ -1208,7 +1288,7 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
         NEED_SRCS(1);
         // vs_2_0's two extra constants only help hardware approximate it
         float a = s.Read(srcs[0])[3];
-        s.Write(inst, Vec4(cosf(a), sinf(a), 0.0f, 0.0f));
+        s.Write<Record>(inst, Vec4(cosf(a), sinf(a), 0.0f, 0.0f));
         break;
       }
 
@@ -1234,20 +1314,20 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
             break;
           default: break;
         }
-        Vec4 a = s.Read(srcs[0]), r;
+        Vec4 a = s.Read(srcs[0]), res;
         for(int i = 0; i < rows; i++)
-          r[i] = Dot(a, s.Read(srcs[1], i), size);
-        s.Write(inst, r);
+          res[i] = Dot(a, s.Read(srcs[1], i), size);
+        s.Write<Record>(inst, res);
         break;
       }
 
       case Opcode::SetP:
       {
         NEED_SRCS(2);
-        Vec4 a = s.Read(srcs[0]), b = s.Read(srcs[1]), r;
+        Vec4 a = s.Read(srcs[0]), b = s.Read(srcs[1]), res;
         for(int i = 0; i < 4; i++)
-          r[i] = Compare(inst.GetComparison(), a[i], b[i]) ? 1.0f : 0.0f;
-        s.Write(inst, r);
+          res[i] = Compare(inst.GetComparison(), a[i], b[i]) ? 1.0f : 0.0f;
+        s.Write<Record>(inst, res);
         break;
       }
 
@@ -1257,27 +1337,48 @@ bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &cons
         if(srcs[1].type != RegType::Sampler)
           return fail("texldl without a sampler");
         Vec4 coord = s.Read(srcs[0]);
-        Vec4 r(0.0f, 0.0f, 0.0f, 1.0f);
-        if(srcs[1].index < NumVertexSamplers && textures)
-          r = textures[srcs[1].index].SampleLevel(coord, coord[3]);
+        Vec4 res(0.0f, 0.0f, 0.0f, 1.0f);
+        if(srcs[1].index < NumVertexSamplers && m_Textures)
+          res = m_Textures[srcs[1].index].SampleLevel(coord, coord[3]);
         // the sampler's swizzle applies to the result
         Vec4 sw;
         for(int i = 0; i < 4; i++)
-          sw[i] = r[srcs[1].swizzle[i] & 3];
-        s.Write(inst, sw);
+          sw[i] = res[srcs[1].swizzle[i] & 3];
+        s.Write<Record>(inst, sw);
         break;
       }
 
       default:
         return fail(
-            StringFormat::Fmt("Unsupported instruction %s", OpcodeName(m_Version, inst).c_str()));
+            StringFormat::Fmt("Unsupported instruction %s", OpcodeName(version, inst).c_str()));
     }
 
 #undef NEED_SRCS
 
+    if(Record)
+    {
+      if(InnermostLoop() != loopBefore || aL() != aLBefore)
+      {
+        VSRegisterChange change;
+        change.type = RegType::Loop;
+        change.i.v[0] = aLBefore;
+        changes->push_back(change);
+      }
+    }
+
     ip = next;
+    if(ip >= numInsts)
+    {
+      m_Finished = true;
+      break;
+    }
+    if(Single)
+      break;
   }
 
+  m_IP = ip;
+  m_Executed = executed;
+  m_Changes = NULL;
   return true;
 }
 
@@ -1726,6 +1827,7 @@ void RunPostVS(const DrawInputs &draw, uint32_t instance, const VSEmulator *vs,
 
 #if ENABLED(ENABLE_UNIT_TESTS)
 
+#include <chrono>
 #include "catch/catch.hpp"
 #include "d3d9_bytecode_test.h"
 #include "d3d9_shader_reflect.h"
@@ -1807,6 +1909,110 @@ uint32_t OPos()
   return Dst(RegType::RastOut, 0);
 }
 
+bool SameBits(const Vec4 &a, const Vec4 &b)
+{
+  return memcmp(a.v, b.v, sizeof(a.v)) == 0;
+}
+
+bool SameBits(const IVec4 &a, const IVec4 &b)
+{
+  return memcmp(a.v, b.v, sizeof(a.v)) == 0;
+}
+
+// what a debugger would show of a thread's registers, kept up to date only from the changes
+// each step reports
+struct Shadow
+{
+  Vec4 r[MaxVSTemps];
+  IVec4 a0;
+  IVec4 p;
+  int32_t aL = 0;
+  int32_t loop = -1;
+  VSOutputs out;
+
+  void Take(const VSRegisters &regs)
+  {
+    for(uint32_t i = 0; i < MaxVSTemps; i++)
+      r[i] = regs.r[i];
+    a0 = regs.a0;
+    for(int i = 0; i < 4; i++)
+      p.v[i] = regs.p[i] ? 1 : 0;
+    aL = regs.aL();
+    loop = regs.InnermostLoop();
+    out = regs.out;
+  }
+
+  static const Vec4 *Output(const VSOutputs &o, RegType type, uint32_t index)
+  {
+    if(type == RegType::RastOut && index < 3)
+      return &o.rast[index];
+    if(type == RegType::AttrOut && index < 2)
+      return &o.attr[index];
+    if(type == RegType::TexCrdOutOrOutput && index < 12)
+      return &o.tex[index];
+    return NULL;
+  }
+
+  // checks a change's old value is what the shadow has, then takes the new value from regs.
+  // Returns false if the change is wrong.
+  bool Apply(const VSRegisterChange &c, const VSRegisters &regs)
+  {
+    switch(c.type)
+    {
+      case RegType::Temp:
+        if(c.index >= MaxVSTemps || !SameBits(c.f, r[c.index]))
+          return false;
+        r[c.index] = regs.r[c.index];
+        return true;
+      case RegType::AddrOrTexture:
+        if(!SameBits(c.i, a0))
+          return false;
+        a0 = regs.a0;
+        return true;
+      case RegType::Predicate:
+        if(!SameBits(c.i, p))
+          return false;
+        for(int i = 0; i < 4; i++)
+          p.v[i] = regs.p[i] ? 1 : 0;
+        return true;
+      case RegType::Loop:
+        if(c.i.v[0] != aL)
+          return false;
+        aL = regs.aL();
+        loop = regs.InnermostLoop();
+        return true;
+      default:
+      {
+        Vec4 *o = (Vec4 *)Output(out, c.type, c.index);
+        if(!o || !SameBits(c.f, *o))
+          return false;
+        *o = *Output(regs.out, c.type, c.index);
+        return true;
+      }
+    }
+  }
+
+  // the registers that differ from regs, which no change reported
+  rdcstr Differences(const VSRegisters &regs) const
+  {
+    Shadow now;
+    now.Take(regs);
+    rdcstr ret;
+    for(uint32_t i = 0; i < MaxVSTemps; i++)
+      if(!SameBits(r[i], now.r[i]))
+        ret += StringFormat::Fmt("r%u ", i);
+    if(!SameBits(a0, now.a0))
+      ret += "a0 ";
+    if(!SameBits(p, now.p))
+      ret += "p0 ";
+    if(aL != now.aL || loop != now.loop)
+      ret += "aL ";
+    if(memcmp(&out, &now.out, sizeof(out)) != 0)
+      ret += "outputs ";
+    return ret;
+  }
+};
+
 struct Runner
 {
   Program prog;
@@ -1827,7 +2033,53 @@ struct Runner
       return false;
     }
     VSConstants c = emu.ApplyLiterals(consts);
-    return emu.Execute(inputs, c, textures, out, error);
+    bool ret = emu.Execute(inputs, c, textures, out, error);
+    CheckStepping(c, ret);
+    return ret;
+  }
+
+  // steps the same run one instruction at a time, checking it ends the same way and that each
+  // step's changes account for everything that changed
+  void CheckStepping(const VSConstants &c, bool executed)
+  {
+    VSThread thread;
+    thread.Start(emu, inputs, c, textures);
+
+    Shadow shadow;
+    shadow.Take(thread.Registers());
+
+    rdcarray<VSRegisterChange> changes;
+    bool ok = true;
+    while(!thread.Finished())
+    {
+      const uint32_t inst = thread.NextInstruction();
+      changes.clear();
+      if(!thread.Step(&changes))
+      {
+        ok = false;
+        // nothing changed by a failed instruction
+        CHECK(changes.empty());
+        CHECK(thread.NextInstruction() == inst);
+        break;
+      }
+      for(const VSRegisterChange &ch : changes)
+      {
+        INFO(StringFormat::Fmt("instruction %u, change to type %u index %u", inst,
+                               uint32_t(ch.type), ch.index)
+                 .c_str());
+        CHECK(shadow.Apply(ch, thread.Registers()));
+      }
+      rdcstr diff = shadow.Differences(thread.Registers());
+      INFO(StringFormat::Fmt("instruction %u changed %s without reporting it", inst, diff.c_str())
+               .c_str());
+      CHECK(diff.empty());
+    }
+
+    CHECK(ok == executed);
+    CHECK(thread.GetError() == error);
+    CHECK(memcmp(&thread.Registers().out, &out, sizeof(out)) == 0);
+    // nothing runs after the end
+    CHECK_FALSE(thread.Step(&changes));
   }
 
   // runs a shader whose result is in oPos
@@ -2333,6 +2585,236 @@ TEST_CASE("D3D9 vertex shader emulation - flow control", "[d3d9][vsemu]")
   }
 }
 
+// a thread's run, one Step at a time: the instruction each step ran and what it changed
+struct StepTrace
+{
+  rdcarray<uint32_t> insts;
+  rdcarray<rdcarray<VSRegisterChange>> changes;
+};
+
+StepTrace StepAll(VSThread &thread)
+{
+  StepTrace ret;
+  while(!thread.Finished())
+  {
+    ret.insts.push_back(thread.NextInstruction());
+    ret.changes.push_back({});
+    if(!thread.Step(&ret.changes.back()))
+      break;
+  }
+  return ret;
+}
+
+TEST_CASE("D3D9 vertex shader emulation - stepping", "[d3d9][vsemu]")
+{
+  Program prog;
+  VSEmulator emu;
+  Vec4 inputs[MaxVSInputs];
+  VSConstants consts;
+  consts.floats.resize(4);
+  consts.ints.resize(4);
+  consts.bools.resize(4);
+
+  auto init = [&](const rdcarray<uint32_t> &tokens) {
+    ParseProgram(tokens.data(), tokens.size(), prog);
+    REQUIRE(emu.Init(prog));
+    consts = emu.ApplyLiterals(consts);
+  };
+
+  SECTION("each step's changes, with the values before")
+  {
+    Assembler a(2, 1);
+    a.def(0, 1, 2, 3, 4);
+    a.def(1, 10, 0, 0, 0);
+    a.op(Opcode::Mov, {DR(0), C(0)});
+    a.op(Opcode::Add, {DR(0, 0x1), R(0), C(1, X)});
+    // p0 is all false, so this writes nothing
+    a.op(Opcode::Mov, {DR(1), Src(RegType::Predicate, 0), C(0)}, 0, PredBit);
+    a.op(Opcode::MovA, {Dst(RegType::AddrOrTexture, 0, 0x1), C(0, Y)});
+    a.op(Opcode::SetP, {Dst(RegType::Predicate, 0, 0x2), C(0), C(1)}, uint32_t(Comparison::GT));
+    a.op(Opcode::Mov, {OPos(), R(0)});
+    init(a.finish());
+
+    VSThread thread;
+    thread.Start(emu, inputs, consts, NULL);
+    CHECK_FALSE(thread.Finished());
+    CHECK(thread.NextInstruction() == 0);
+
+    StepTrace t = StepAll(thread);
+    CHECK(thread.Finished());
+    CHECK_FALSE(thread.Failed());
+    CHECK(thread.InstructionsExecuted() == 8);
+    CHECK(t.insts == rdcarray<uint32_t>({0, 1, 2, 3, 4, 5, 6, 7}));
+    REQUIRE(t.changes.size() == 8);
+
+    // the defs change nothing
+    CHECK(t.changes[0].empty());
+    CHECK(t.changes[1].empty());
+
+    REQUIRE(t.changes[2].size() == 1);
+    CHECK(t.changes[2][0].type == RegType::Temp);
+    CHECK(t.changes[2][0].index == 0);
+    CheckVec(t.changes[2][0].f, 0, 0, 0, 0);
+
+    REQUIRE(t.changes[3].size() == 1);
+    CHECK(t.changes[3][0].type == RegType::Temp);
+    CheckVec(t.changes[3][0].f, 1, 2, 3, 4);
+
+    CHECK(t.changes[4].empty());
+
+    REQUIRE(t.changes[5].size() == 1);
+    CHECK(t.changes[5][0].type == RegType::AddrOrTexture);
+    CHECK(t.changes[5][0].i.v[0] == 0);
+
+    REQUIRE(t.changes[6].size() == 1);
+    CHECK(t.changes[6][0].type == RegType::Predicate);
+    CHECK(t.changes[6][0].i.v[1] == 0);
+
+    REQUIRE(t.changes[7].size() == 1);
+    CHECK(t.changes[7][0].type == RegType::RastOut);
+    CHECK(t.changes[7][0].index == 0);
+    CheckVec(t.changes[7][0].f, 0, 0, 0, 0);
+
+    const VSRegisters &regs = thread.Registers();
+    CheckVec(regs.r[0], 11, 2, 3, 4);
+    CHECK(regs.a0.v[0] == 2);
+    CHECK(regs.p[1]);
+    CHECK_FALSE(regs.p[0]);
+    CheckVec(regs.out.rast[0], 11, 2, 3, 4);
+
+    // nothing runs after the end
+    rdcarray<VSRegisterChange> changes;
+    CHECK_FALSE(thread.Step(&changes));
+    CHECK(changes.empty());
+    CHECK_FALSE(thread.Failed());
+  }
+
+  SECTION("aL changes when a loop starts, steps and ends, not for rep")
+  {
+    Assembler a(2, 0);
+    a.defi(0, 2, 5, 3, 0);
+    a.defi(1, 1, 0, 0, 0);
+    a.op(Opcode::Mov, {DR(0), C(2)});
+    a.op(Opcode::Loop, {Src(RegType::Loop, 0), Src(RegType::ConstInt, 0)});
+    a.op(Opcode::Rep, {Src(RegType::ConstInt, 1)});
+    a.op(Opcode::Add, {DR(0, 0x1), R(0), Src(RegType::Loop, 0)});
+    a.op(Opcode::EndRep, {});
+    a.op(Opcode::EndLoop, {});
+    init(a.finish());
+
+    VSThread thread;
+    thread.Start(emu, inputs, consts, NULL);
+    StepTrace t = StepAll(thread);
+    CHECK_FALSE(thread.Failed());
+    CHECK(t.insts == rdcarray<uint32_t>({0, 1, 2, 3, 4, 5, 6, 7, 4, 5, 6, 7}));
+
+    auto loopChange = [&](size_t step) -> int32_t {
+      for(const VSRegisterChange &c : t.changes[step])
+        if(c.type == RegType::Loop)
+          return c.i.v[0];
+      return -1;
+    };
+    // loop: aL was 0 outside it
+    CHECK(loopChange(3) == 0);
+    // rep and endrep don't change it
+    CHECK(loopChange(4) == -1);
+    CHECK(loopChange(6) == -1);
+    // the first endloop: 5 -> 8, the second ends the loop
+    CHECK(loopChange(7) == 5);
+    CHECK(loopChange(11) == 8);
+    CHECK(thread.Registers().aL() == 0);
+    CHECK(thread.Registers().loops.empty());
+    CHECK(thread.Registers().r[0][0] == 13.0f);
+  }
+
+  SECTION("the call stack")
+  {
+    Assembler a(2, 0);
+    a.op(Opcode::Call, {Src(RegType::Label, 0)});
+    a.op(Opcode::Ret, {});
+    a.op(Opcode::Label, {Src(RegType::Label, 0)});
+    a.op(Opcode::Call, {Src(RegType::Label, 1)});
+    a.op(Opcode::Ret, {});
+    a.op(Opcode::Label, {Src(RegType::Label, 1)});
+    a.op(Opcode::Mov, {DR(0), V(0)});
+    a.op(Opcode::Ret, {});
+    init(a.finish());
+
+    VSThread thread;
+    thread.Start(emu, inputs, consts, NULL);
+    rdcarray<size_t> depths;
+    rdcarray<uint32_t> insts;
+    while(!thread.Finished())
+    {
+      insts.push_back(thread.NextInstruction());
+      depths.push_back(thread.Registers().calls.size());
+      if(thread.NextInstruction() == 6)
+      {
+        const rdcarray<VSCallFrame> &calls = thread.Registers().calls;
+        REQUIRE(calls.size() == 2);
+        CHECK(calls[0].call == 0);
+        CHECK(calls[0].label == 0);
+        CHECK(calls[0].ret == 1);
+        CHECK(calls[1].call == 3);
+        CHECK(calls[1].label == 1);
+        CHECK(calls[1].ret == 4);
+      }
+      REQUIRE(thread.Step());
+    }
+    CHECK(insts == rdcarray<uint32_t>({0, 3, 6, 7, 4, 1}));
+    CHECK(depths == rdcarray<size_t>({0, 1, 2, 2, 1, 0}));
+  }
+
+  SECTION("a failed instruction ends the thread and changes nothing")
+  {
+    // l0 calls itself until the calls nest too deeply
+    Assembler a(2, 0);
+    a.op(Opcode::Mov, {DR(0), V(0)});
+    a.op(Opcode::Call, {Src(RegType::Label, 0)});
+    a.op(Opcode::Ret, {});
+    a.op(Opcode::Label, {Src(RegType::Label, 0)});
+    a.op(Opcode::Call, {Src(RegType::Label, 0)});
+    a.op(Opcode::Ret, {});
+    init(a.finish());
+
+    inputs[0] = Vec4(1, 2, 3, 4);
+
+    VSThread thread;
+    thread.Start(emu, inputs, consts, NULL);
+    StepTrace t = StepAll(thread);
+    CHECK(thread.Finished());
+    CHECK(thread.Failed());
+    CHECK(thread.GetError().contains("Calls nested too deeply at instruction 4"));
+    CHECK(thread.NextInstruction() == 4);
+    CHECK(t.changes.back().empty());
+    CHECK(thread.Registers().calls.size() == 16);
+    CheckVec(thread.Registers().r[0], 1, 2, 3, 4);
+    CHECK_FALSE(thread.Step());
+
+    // Execute fails the same way
+    VSOutputs out;
+    rdcstr error;
+    CHECK_FALSE(emu.Execute(inputs, consts, NULL, out, error));
+    CHECK(error == thread.GetError());
+  }
+
+  SECTION("an emulator that failed to initialise")
+  {
+    Assembler a(2, 0);
+    a.op(Opcode::EndIf, {});
+    rdcarray<uint32_t> tokens = a.finish();
+    ParseProgram(tokens.data(), tokens.size(), prog);
+    REQUIRE_FALSE(emu.Init(prog));
+
+    VSThread thread;
+    thread.Start(emu, inputs, consts, NULL);
+    CHECK(thread.Finished());
+    CHECK(thread.Failed());
+    CHECK(thread.GetError() == emu.GetError());
+    CHECK_FALSE(thread.Step());
+  }
+}
+
 TEST_CASE("D3D9 vertex shader emulation - texldl", "[d3d9][vsemu]")
 {
   Runner r;
@@ -2808,6 +3290,82 @@ TEST_CASE("D3D9 post-transform draws - vs_3_0 outputs packed into one register",
                               20.0f, 60.0f,                  // TEXCOORD2: o2.xz
                               40.0f,                         // FOG: o2.y
                               20.0f, 30.0f, 40.0f}));        // COLOR: o3.yzw
+}
+
+// Not run by default (run it with "[d3d9bench]"): how long RunPostVS takes for a big draw, so a
+// change to the interpreter can be checked for speed. Prints the best of 5 runs.
+TEST_CASE("D3D9 vertex shader emulation - speed", "[.][d3d9bench]")
+{
+  // a vs_2_0 shader like a lit, skinned-free mesh: transform, normal, four lights in a loop
+  Assembler a(2, 0);
+  a.def(20, 0, 0, 0, 0);
+  a.defi(0, 4, 8, 1, 0);
+  a.dcl(DeclUsage::Position, 0, 0);
+  a.dcl(DeclUsage::Normal, 0, 1);
+  a.dcl(DeclUsage::TexCoord, 0, 2);
+  a.op(Opcode::M4x4, {OPos(), V(0), C(0)});
+  a.op(Opcode::M3x3, {DR(0, 0x7), V(1), C(4)});
+  a.op(Opcode::Nrm, {DR(1, 0x7), R(0)});
+  a.op(Opcode::Mov, {DR(2), C(20)});
+  // aL = 8, 9, 10, 11: the light directions and colours are c[aL] and c[aL + 4]
+  a.op(Opcode::Loop, {Src(RegType::Loop, 0), Src(RegType::ConstInt, 0)});
+  a.op(Opcode::Dp3, {DR(3, 0x1), R(1), Src(RegType::Const, 0) | RelBit, Src(RegType::Loop, 0)});
+  a.op(Opcode::Max, {DR(3, 0x1), R(3, X), C(20, X)});
+  a.op(Opcode::Mad, {DR(2), R(3, X), Src(RegType::Const, 4) | RelBit, Src(RegType::Loop, 0), R(2)});
+  a.op(Opcode::EndLoop, {});
+  a.op(Opcode::Mov, {Dst(RegType::AttrOut, 0), R(2)});
+  a.op(Opcode::Mul, {Dst(RegType::TexCrdOutOrOutput, 0, 0x3), V(2), C(16)});
+  rdcarray<uint32_t> tokens = a.finish();
+
+  ShaderInfo info;
+  info.Init(ResourceId(), tokens.data(), tokens.size());
+  VSEmulator emu;
+  REQUIRE(emu.Init(info.GetProgram()));
+  const rdcarray<SigParameter> &sig = info.GetReflection().outputSignature;
+
+  const uint32_t numVerts = 200000;
+  DrawInputs draw;
+  draw.streams.resize(1);
+  for(uint32_t i = 0; i < numVerts; i++)
+  {
+    float v[12] = {float(i % 512),      float(i / 512),       1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                   float(i % 7) * 0.1f, float(i % 11) * 0.1f, 0.0f, 0.0f};
+    draw.streams[0].data.append((const byte *)v, sizeof(v));
+  }
+  draw.streams[0].stride = sizeof(float) * 12;
+  InputElement pos, norm, uv;
+  pos.type = DeclType::Float4;
+  norm.offset = 16;
+  norm.type = DeclType::Float4;
+  norm.usage = DeclUsage::Normal;
+  uv.offset = 32;
+  uv.type = DeclType::Float2;
+  uv.usage = DeclUsage::TexCoord;
+  draw.elements = {pos, norm, uv};
+  draw.numVertices = numVerts;
+
+  VSConstants c;
+  c.floats.resize(24);
+  for(uint32_t i = 0; i < 24; i++)
+    c.floats[i] = Vec4(0.1f * i, 0.2f, 0.3f - 0.01f * i, 1.0f);
+  VSConstants consts = emu.ApplyLiterals(c);
+  VSTexture textures[NumVertexSamplers];
+
+  double best = 1e30;
+  for(int run = 0; run < 5; run++)
+  {
+    PostVSResult res;
+    auto start = std::chrono::high_resolution_clock::now();
+    RunPostVS(draw, 0, &emu, consts, textures, NULL, sig, res);
+    auto end = std::chrono::high_resolution_clock::now();
+    REQUIRE(res.status.empty());
+    REQUIRE(res.numUnique == numVerts);
+    best = RDCMIN(best, std::chrono::duration<double, std::milli>(end - start).count());
+  }
+  WARN(
+      StringFormat::Fmt("RunPostVS: %u vertices of a %zu instruction shader in %.1f ms (best of 5)",
+                        numVerts, info.GetProgram().instructions.size(), best)
+          .c_str());
 }
 
 #endif    // ENABLED(ENABLE_UNIT_TESTS)
