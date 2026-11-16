@@ -84,7 +84,7 @@ ShaderDebugTrace *D3D9Replay::DebugVertex(uint32_t eventId, uint32_t vertid, uin
   D3D9Emu::VSDebugger *debugger = new D3D9Emu::VSDebugger;
   // the emulator, constants and textures are the event's
   debugger->owner = ev;
-  return debugger->Begin(ev->vs, sh->second.GetReflection(), lines, inputs, ev->consts, ev->textures);
+  return debugger->Begin(ev->vs, sh->second, lines, inputs, ev->consts, ev->textures);
 }
 
 rdcarray<ShaderDebugState> D3D9Replay::ContinueDebug(ShaderDebugger *debugger)

@@ -151,6 +151,14 @@ enum class ConstantSet : uint32_t
 
 const char *ConstantBlockName(ConstantSet set);
 
+// the constant set a constant table's register set is in (not for samplers)
+ConstantSet ConstantSetFor(RegisterSet set);
+
+// the registers one element of a constant table type takes in a set: in the float and integer
+// sets a register per scalar or vector, and per row (row_major) or column of a matrix, and in the
+// boolean set one per component
+uint32_t ConstantRegistersPerElement(const CTABType &type, ConstantSet set);
+
 // Reads a constant table from the DWORDs after a comment's 'CTAB' code.
 void ParseConstantTable(const uint32_t *data, uint32_t numDWORDs, ConstantTable &table);
 

@@ -25,12 +25,21 @@
 #include "d3d9_vs_debug.h"
 #include "common/formatting.h"
 
-// What the trace has, all named by register (5.3 adds the constant table's names):
+// What the trace has:
 // - inputs: the v# registers the input signature uses, as the vertex fetched them, with a source
 //   variable per signature element (its semantic, e.g. TEXCOORD1).
 // - constantBlocks: one per reflection constant block (c#, i#, b#), with a member for each register
-//   its variables cover, the shader's literals applied. Each register is a source variable named
-//   as the disassembly names it (c12), so it's what the viewer lists and finds when hovering.
+//   the shader can read, the shader's literals applied. The registers are named by source
+//   variables, which is what the viewer's constants list shows:
+//   - each scalar, vector and matrix the constant table describes, by its HLSL name with struct
+//     members and array elements spelled out (lights[1].dir), on the registers the compiler
+//     allocated it. A variable the compiler only allocated part of is cut to that part: a
+//     column_major float4x4 given three registers shows as the 4x3 the shader reads.
+//   - those registers again by register, under "Registers" (Registers.c4), so the viewer finds the
+//     disassembly's names when hovering over them.
+//   - the shader's def, defi and defb literals under "Literals" (Literals.c10), so they're told
+//     apart from what the application set.
+//   - any other register by its name in the disassembly (c12).
 // - the mutable registers, which the first state lists: the temporaries, a0, aL, p0 and the
 //   outputs the shader uses. oFog and oPts are one component, aL is an integer and p0 booleans.
 // - a source variable per output signature element, on its output register's components, which
@@ -52,6 +61,131 @@ bool IsDeclaration(Opcode op)
 {
   return op == Opcode::Dcl || op == Opcode::Def || op == Opcode::DefI || op == Opcode::DefB;
 }
+
+// what each register set's registers are called in the disassembly, and their type
+const char *const SetPrefixes[] = {"c", "i", "b"};
+const RegType SetRegTypes[] = {RegType::Const, RegType::ConstInt, RegType::ConstBool};
+
+VarType SetVarType(ConstantSet set)
+{
+  return set == ConstantSet::Float ? VarType::Float
+         : set == ConstantSet::Int ? VarType::SInt
+                                   : VarType::Bool;
+}
+
+// Makes the source variables for a constant table: one for each scalar, vector and matrix in a
+// constant's type, on the registers from reg up to end (the end of what the compiler allocated the
+// constant). Struct members and array elements are in registers one after the other (see
+// ConstantRegistersPerElement).
+struct ConstantNamer
+{
+  ConstantSet set;
+  // the constant block's variable name, e.g. "c"
+  rdcstr block;
+  rdcarray<SourceVariableMapping> *out;
+  // the registers named
+  std::set<uint32_t> *named;
+
+  DebugVariableReference Ref(uint32_t reg, uint32_t comp) const
+  {
+    named->insert(reg);
+    return DebugVariableReference(DebugVariableType::Constant,
+                                  StringFormat::Fmt("%s[%u]", block.c_str(), reg), comp);
+  }
+
+  void Name(const rdcstr &name, const CTABType &type, uint32_t reg, uint32_t end, int depth = 0)
+  {
+    if(reg >= end || depth > 16)
+      return;
+
+    const uint32_t elements = RDCMAX(1U, uint32_t(type.elements));
+    if(elements > 1)
+    {
+      CTABType element = type;
+      element.elements = 1;
+      const uint64_t per = ConstantRegistersPerElement(element, set);
+      for(uint32_t e = 0; e < elements && reg + e * per < end; e++)
+        Name(StringFormat::Fmt("%s[%u]", name.c_str(), e), element, uint32_t(reg + e * per), end,
+             depth + 1);
+      return;
+    }
+
+    if(type.cls == ParamClass::Struct)
+    {
+      uint64_t r = reg;
+      for(const CTABMember &m : type.members)
+      {
+        if(r >= end)
+          break;
+        Name(name + "." + m.name, m.type, uint32_t(r), end, depth + 1);
+        r += uint64_t(ConstantRegistersPerElement(m.type, set)) *
+             RDCMAX(1U, uint32_t(m.type.elements));
+      }
+      return;
+    }
+
+    const uint32_t avail = end - reg;
+    const bool isBool = set == ConstantSet::Bool;
+    uint32_t rows = RDCCLAMP(uint32_t(type.rows), 1U, 4U);
+    uint32_t columns = RDCCLAMP(uint32_t(type.columns), 1U, 4U);
+    rdcarray<rdcpair<uint32_t, uint32_t>> comps;
+
+    switch(type.cls)
+    {
+      case ParamClass::Scalar:
+        rows = columns = 1;
+        comps.push_back({reg, 0});
+        break;
+      case ParamClass::Vector:
+        rows = 1;
+        // in the boolean set each component is a register
+        if(isBool)
+          columns = RDCMIN(columns, avail);
+        for(uint32_t c = 0; c < columns; c++)
+          comps.push_back(isBool ? rdcpair<uint32_t, uint32_t>(reg + c, 0)
+                                 : rdcpair<uint32_t, uint32_t>(reg, c));
+        break;
+      case ParamClass::MatrixRows:
+      case ParamClass::MatrixColumns:
+      {
+        const bool rowMajor = type.cls == ParamClass::MatrixRows;
+        if(isBool)
+        {
+          // every component is a register, so only a whole matrix makes sense
+          if(rows * columns > avail)
+            return;
+          for(uint32_t r = 0; r < rows; r++)
+            for(uint32_t c = 0; c < columns; c++)
+              comps.push_back({reg + (rowMajor ? r * columns + c : c * rows + r), 0});
+          break;
+        }
+        // a register per row (row_major) or column, as many as were allocated
+        if(rowMajor)
+          rows = RDCMIN(rows, avail);
+        else
+          columns = RDCMIN(columns, avail);
+        for(uint32_t r = 0; r < rows; r++)
+          for(uint32_t c = 0; c < columns; c++)
+            comps.push_back(rowMajor ? rdcpair<uint32_t, uint32_t>(reg + r, c)
+                                     : rdcpair<uint32_t, uint32_t>(reg + c, r));
+        break;
+      }
+      // samplers aren't in these sets
+      default: return;
+    }
+
+    SourceVariableMapping map;
+    map.name = name;
+    map.type = SetVarType(set);
+    map.rows = rows;
+    map.columns = columns;
+    map.offset = reg * (isBool ? 4 : 16);
+    map.signatureIndex = -1;
+    for(const rdcpair<uint32_t, uint32_t> &c : comps)
+      map.variables.push_back(Ref(c.first, c.second));
+    out->push_back(map);
+  }
+};
 
 bool IsOutput(RegType type)
 {
@@ -163,7 +297,7 @@ ShaderVariable VSDebugger::Current(RegType type, uint32_t index) const
   return Variable(type, index, f, i);
 }
 
-ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderReflection &refl,
+ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderInfo &info,
                                     const rdcarray<uint32_t> &instLines,
                                     const Vec4 inputs[MaxVSInputs], const VSConstants &consts,
                                     const VSTexture textures[NumVertexSamplers])
@@ -183,6 +317,7 @@ ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderReflectio
   m_Thread.Start(emu, m_Inputs, consts, textures);
 
   const Program &prog = emu.GetProgram();
+  const ShaderReflection &refl = info.GetReflection();
 
   //////////////////////////////////////////////////////////////////////////
   // inputs
@@ -315,8 +450,24 @@ ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderReflectio
   //////////////////////////////////////////////////////////////////////////
   // constants
 
-  static const char *const prefixes[] = {"c", "i", "b"};
-  static const RegType regTypes[] = {RegType::Const, RegType::ConstInt, RegType::ConstBool};
+  const ConstantTable &ctab = info.GetConstantTable();
+
+  // the registers each def, defi and defb sets
+  std::set<uint32_t> literals[3];
+  for(const Instruction &inst : prog.instructions)
+  {
+    if(!inst.hasDst)
+      continue;
+    if(inst.op == Opcode::Def && inst.dst.type == RegType::Const)
+      literals[0].insert(inst.dst.index);
+    else if(inst.op == Opcode::DefI && inst.dst.type == RegType::ConstInt)
+      literals[1].insert(inst.dst.index);
+    else if(inst.op == Opcode::DefB && inst.dst.type == RegType::ConstBool)
+      literals[2].insert(inst.dst.index);
+  }
+
+  // the constant table's registers again by register, listed after everything else
+  rdcarray<SourceVariableMapping> aliases;
 
   for(uint32_t k = 0; k < (uint32_t)refl.constantBlocks.size(); k++)
   {
@@ -334,13 +485,29 @@ ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderReflectio
       continue;
     }
 
-    cb.name = prefixes[set];
+    cb.name = SetPrefixes[set];
     const uint32_t stride = set == 2 ? 4 : 16;
 
-    // the registers the block's variables cover
-    std::set<uint32_t> regs;
+    // the constant table's names, on the registers the compiler allocated each constant
+    std::set<uint32_t> named;
+    ConstantNamer namer = {ConstantSet(set), cb.name, &ret->sourceVars, &named};
+    std::set<rdcstr> tableNames;
+    for(const CTABConstant &c : ctab.constants)
+    {
+      if(c.set == RegisterSet::Sampler || ConstantSetFor(c.set) != ConstantSet(set))
+        continue;
+      tableNames.insert(c.name);
+      namer.Name(c.name, c.type, c.registerIndex,
+                 RDCMIN(uint32_t(c.registerIndex) + c.registerCount, 8192U));
+    }
+
+    // the registers the shader can read: those named, and those of the reflection's other
+    // variables (literals, and registers the code reads that the table doesn't describe)
+    std::set<uint32_t> regs = named;
     for(const ShaderConstant &var : block.variables)
     {
+      if(tableNames.count(var.name))
+        continue;
       const uint32_t first = var.byteOffset / stride;
       const uint32_t size = var.type.arrayByteStride * RDCMAX(1U, var.type.elements);
       const uint32_t count = RDCMIN(RDCMAX(1U, (size + stride - 1) / stride), 8192U);
@@ -371,12 +538,23 @@ ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderReflectio
       }
       cb.members.push_back(m);
 
-      SourceVariableMapping map =
-          Mapping(RegisterName(m_Version, regTypes[set], r), m.type, m.columns, -1);
+      const rdcstr regName = RegisterName(m_Version, SetRegTypes[set], r);
+      const bool isNamed = named.count(r) > 0;
+      rdcstr name = regName;
+      if(isNamed)
+        name = "Registers." + regName;
+      else if(literals[set].count(r))
+        name = "Literals." + regName;
+
+      SourceVariableMapping map = Mapping(name, m.type, m.columns, -1);
+      map.offset = r * stride;
       const rdcstr path = cb.name + member;
       for(uint32_t c = 0; c < m.columns; c++)
         map.variables.push_back(DebugVariableReference(DebugVariableType::Constant, path, c));
-      ret->sourceVars.push_back(map);
+      if(isNamed)
+        aliases.push_back(map);
+      else
+        ret->sourceVars.push_back(map);
     }
 
     // the block itself, so the viewer doesn't also list it as raw registers
@@ -386,6 +564,8 @@ ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderReflectio
 
     ret->constantBlocks.push_back(cb);
   }
+
+  ret->sourceVars.append(aliases);
 
   //////////////////////////////////////////////////////////////////////////
   // textures
@@ -427,6 +607,15 @@ ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderReflectio
   return ret;
 }
 
+rdcarray<rdcstr> VSDebugger::Callstack() const
+{
+  // the oldest first, as the viewer wants them
+  rdcarray<rdcstr> ret = {"main"};
+  for(const VSCallFrame &f : m_Thread.Registers().calls)
+    ret.push_back(StringFormat::Fmt("l%u", f.label));
+  return ret;
+}
+
 void VSDebugger::SkipDeclarations(rdcarray<VSRegisterChange> &changes)
 {
   const rdcarray<Instruction> &insts = m_Emu->GetProgram().instructions;
@@ -453,6 +642,7 @@ rdcarray<ShaderDebugState> VSDebugger::Continue(uint32_t maxSteps)
     ShaderDebugState initial;
     initial.stepIndex = 0;
     initial.nextInstruction = m_Thread.Finished() ? 0 : m_Thread.NextInstruction();
+    initial.callstack = Callstack();
     for(const Register &r : m_Registers)
     {
       ShaderVariableChange change;
@@ -475,9 +665,14 @@ rdcarray<ShaderDebugState> VSDebugger::Continue(uint32_t maxSteps)
     m_LastInstruction = inst;
     SkipDeclarations(changes);
 
+    const Instruction &ran = m_Emu->GetProgram().instructions[inst];
+
     ShaderDebugState state;
     state.stepIndex = m_Steps++;
     state.nextInstruction = m_Thread.Finished() ? m_LastInstruction : m_Thread.NextInstruction();
+    state.callstack = Callstack();
+    if(ran.op == Opcode::TexLdl)
+      state.flags |= ShaderEvents::SampleLoadGather;
 
     // an instruction changes each register once, but declarations run with it
     seen.clear();
@@ -494,6 +689,18 @@ rdcarray<ShaderDebugState> VSDebugger::Continue(uint32_t maxSteps)
       else
         change.before = Variable(c.type, c.index, c.f, c.i);
       change.after = Current(c.type, c.index);
+
+      // a NaN or infinity in a component the instruction wrote
+      if(ran.hasDst && c.type == ran.dst.type && change.after.type == VarType::Float)
+      {
+        for(uint32_t comp = 0; comp < change.after.columns; comp++)
+        {
+          const float f = change.after.value.f32v[comp];
+          if((ran.dst.writeMask & (1 << comp)) && (RDCISNAN(f) || RDCISINF(f)))
+            state.flags |= ShaderEvents::GeneratedNanOrInf;
+        }
+      }
+
       state.changes.push_back(std::move(change));
     }
 
@@ -510,6 +717,7 @@ rdcarray<ShaderDebugState> VSDebugger::Continue(uint32_t maxSteps)
 #include <map>
 #include "catch/catch.hpp"
 #include "d3d9_bytecode_test.h"
+#include "d3d9_ctab_test_data.h"
 #include "d3d9_shader_reflect.h"
 
 using namespace D3D9BCTest;
@@ -546,7 +754,7 @@ struct DebugRun
   // the variable had, and that going back from the end undoes everything
   void Debug(uint32_t maxSteps)
   {
-    trace = debugger.Begin(emu, info.GetReflection(), lines, inputs, consts, textures);
+    trace = debugger.Begin(emu, info, lines, inputs, consts, textures);
     REQUIRE(trace->debugger == &debugger);
 
     for(;;)
@@ -796,14 +1004,23 @@ TEST_CASE("D3D9 vertex shader debugging", "[d3d9][vsdebug]")
     CHECK(ints.members[0].type == VarType::SInt);
     CHECK(ints.members[0].value.s32v[0] == 3);
 
-    const SourceVariableMapping *c10 = run.SourceVar("c10");
+    // without a constant table, by register, and the literals marked
+    const SourceVariableMapping *c3 = run.SourceVar("c3");
+    REQUIRE(c3 != NULL);
+    CHECK(c3->type == VarType::Float);
+    REQUIRE(c3->variables.size() == 4);
+    CHECK(c3->variables[1].name == "c[3]");
+    CHECK(c3->variables[1].component == 1);
+    CHECK(run.SourceVar("c10") == NULL);
+    const SourceVariableMapping *c10 = run.SourceVar("Literals.c10");
     REQUIRE(c10 != NULL);
     CHECK(c10->type == VarType::Float);
     REQUIRE(c10->variables.size() == 4);
     CHECK(c10->variables[2].type == DebugVariableType::Constant);
     CHECK(c10->variables[2].name == "c[10]");
     CHECK(c10->variables[2].component == 2);
-    CHECK(run.SourceVar("i0") != NULL);
+    CHECK(run.SourceVar("Literals.i0") != NULL);
+    CHECK(run.SourceVar("i0") == NULL);
     const SourceVariableMapping *block = run.SourceVar("Float constants (c#)");
     REQUIRE(block != NULL);
     CHECK(block->columns == 0);
@@ -889,6 +1106,250 @@ TEST_CASE("D3D9 vertex shader debugging", "[d3d9][vsdebug]")
     // the initial state, the mov, the first call, then 15 more calls before the 17th fails
     CHECK(run.states.size() == 18);
     CHECK(run.states.back().nextInstruction == 4);
+    // stopped inside the 16 calls that ran
+    CHECK(run.states.back().callstack.size() == 17);
+    CHECK(run.states.back().callstack[0] == "main");
+    CHECK(run.states.back().callstack[16] == "l0");
+  }
+
+  SECTION("call stacks and flags")
+  {
+    Assembler a(3, 0);
+    a.dcl(DeclUsage::Position, 0, 0);
+    a.dcl(DeclUsage::Position, 0, 0, RegType::TexCrdOutOrOutput);
+    a.dcl(DeclUsage::TexCoord, 0, 1, RegType::TexCrdOutOrOutput);
+    a.op(Opcode::Dcl, {DclSampler(2), Dst(RegType::Sampler, 0)});
+    a.defi(0, 2, 0, 0, 0);
+    a.def(0, 0.0f, 1.0f, 0.5f, 0.0f);
+    // 6
+    a.op(Opcode::Mov, {Dst(RegType::TexCrdOutOrOutput, 0), Src(RegType::Input, 0)});
+    a.op(Opcode::Mov, {DR(0), C(0, X)});
+    a.op(Opcode::Rep, {Src(RegType::ConstInt, 0)});
+    a.op(Opcode::Call, {Src(RegType::Label, 1)});
+    a.op(Opcode::EndRep, {});
+    // 11: a sample, then 1 / 0 into r2.x and 0 * 0 into r2.y
+    a.op(Opcode::TexLdl, {DR(1), C(0, Z), Src(RegType::Sampler, 0)});
+    a.op(Opcode::Rcp, {DR(2, 0x1), C(0, X)});
+    a.op(Opcode::Mul, {DR(2, 0x2), C(0, X), C(0, X)});
+    a.op(Opcode::Add, {Dst(RegType::TexCrdOutOrOutput, 1), R(0), R(1)});
+    a.op(Opcode::Ret, {});
+    // 16: l1 calls l2
+    a.op(Opcode::Label, {Src(RegType::Label, 1)});
+    a.op(Opcode::Add, {DR(0), R(0), C(0, Y)});
+    a.op(Opcode::Call, {Src(RegType::Label, 2)});
+    a.op(Opcode::Ret, {});
+    // 20
+    a.op(Opcode::Label, {Src(RegType::Label, 2)});
+    a.op(Opcode::Mul, {DR(0, 0x1), R(0, X), C(0, Z)});
+    a.op(Opcode::Ret, {});
+
+    run.inputs[0] = Vec4(0.5f, 0.25f, 0.0f, 1.0f);
+    run.Init(a.finish());
+    run.Debug(5);
+    CHECK(run.debugger.GetError().empty());
+
+    // each state's call stack is where its next instruction is
+    rdcarray<rdcstr> mainOnly = {"main"}, inL1 = {"main", "l1"}, inL2 = {"main", "l1", "l2"};
+    const rdcarray<Instruction> &insts = run.info.GetProgram().instructions;
+    uint32_t calls = 0, inner = 0;
+    for(const ShaderDebugState &s : run.states)
+    {
+      const uint32_t next = s.nextInstruction;
+      INFO("step " << s.stepIndex << ", instruction " << next);
+      if(next >= 20)
+      {
+        CHECK(s.callstack == inL2);
+        inner++;
+      }
+      else if(next >= 16)
+      {
+        CHECK(s.callstack == inL1);
+      }
+      else
+      {
+        CHECK(s.callstack == mainOnly);
+      }
+      if(insts[next].op == Opcode::Call)
+        calls++;
+
+      // only the texldl samples, and only the rcp makes an infinity (0 * 0 is 0)
+      const bool sample = s.stepIndex > 0 && run.states[s.stepIndex - 1].nextInstruction == 11;
+      const bool inf = s.stepIndex > 0 && run.states[s.stepIndex - 1].nextInstruction == 12;
+      CHECK(bool(s.flags & ShaderEvents::SampleLoadGather) == sample);
+      CHECK(bool(s.flags & ShaderEvents::GeneratedNanOrInf) == inf);
+    }
+    // two calls from main and two from l1, and l2's two instructions run twice
+    CHECK(calls == 4);
+    CHECK(inner == 4);
+    CHECK(run.states.back().callstack == mainOnly);
+    CHECK(run.vars["r0"].value.f32v[0] == 0.75f);
+    CHECK(RDCISINF(run.vars["r2"].value.f32v[0]));
+    run.CheckOutputs();
+  }
+
+  SECTION("constants named from compiled constant tables")
+  {
+    // the tables from D3DCompile in d3d9_ctab_test_data.h, with what D3DX9_43 says each constant,
+    // struct member and array element is allocated
+    for(const CTABTestData::Shader &sh : CTABTestData::shaders)
+    {
+      if((sh.version >> 16) != 0xFFFE || ((sh.version >> 8) & 0xFF) < 2)
+        continue;
+      INFO(sh.name);
+
+      // the table, a def, and reads of c90 (which isn't in any table) and the def
+      Assembler a(3, 0);
+      a.tokens.push_back(CommentTok(sh.ctabDWORDs + 1));
+      a.tokens.push_back(MakeFourCC('C', 'T', 'A', 'B'));
+      a.tokens.append(sh.ctab, sh.ctabDWORDs);
+      a.dcl(DeclUsage::Position, 0, 0, RegType::TexCrdOutOrOutput);
+      a.def(95, 1.0f, 2.0f, 3.0f, 4.0f);
+      a.op(Opcode::Add, {Dst(RegType::TexCrdOutOrOutput, 0), C(90), C(95)});
+
+      DebugRun one;
+      one.consts.floats.resize(96);
+      for(uint32_t r = 0; r < 96; r++)
+        one.consts.floats[r] = Vec4(float(r), float(r) + 0.25f, float(r) + 0.5f, float(r) + 0.75f);
+      one.consts.ints.resize(16);
+      for(uint32_t r = 0; r < 16; r++)
+        one.consts.ints[r].v[0] = int32_t(r) * 10;
+      one.consts.bools.resize(16);
+      for(uint32_t r = 0; r < 16; r++)
+        one.consts.bools[r] = (r % 2) == 1;
+      one.Init(a.finish());
+      one.Debug(100);
+      REQUIRE(one.info.GetConstantTable().present);
+
+      // the constant blocks' registers, by the variable names the source variables use
+      std::map<rdcstr, const ShaderVariable *> regs;
+      for(const ShaderVariable &cb : one.trace->constantBlocks)
+        for(const ShaderVariable &m : cb.members)
+          regs[cb.name + m.name] = &m;
+
+      uint32_t leaves = 0;
+      for(size_t n = 0; n < sh.numNodes; n++)
+      {
+        const CTABTestData::Node &node = sh.nodes[n];
+        // scalars, vectors and matrices, not structs (5), objects (4) or whole arrays
+        if(node.cls >= 4 || node.elements > 1 || node.set > 2)
+          continue;
+        INFO(node.path);
+
+        const SourceVariableMapping *map = one.SourceVar(node.path);
+        if(node.count == 0)
+        {
+          // nothing allocated, so there's nothing to show
+          CHECK(map == NULL);
+          continue;
+        }
+        REQUIRE(map != NULL);
+        leaves++;
+
+        // exactly the registers D3DX says it's allocated
+        static const char prefixes[] = {'b', 'i', 'c'};
+        std::set<rdcstr> used, expected;
+        for(uint32_t r = node.reg; r < uint32_t(node.reg + node.count); r++)
+          expected.insert(StringFormat::Fmt("%c[%u]", prefixes[node.set], r));
+        for(const DebugVariableReference &v : map->variables)
+        {
+          CHECK(v.type == DebugVariableType::Constant);
+          used.insert(v.name);
+          REQUIRE(regs.count(v.name) == 1);
+        }
+        CHECK(used == expected);
+        CHECK(map->variables.size() == size_t(map->rows) * map->columns);
+        CHECK(map->type == (node.set == 2   ? VarType::Float
+                            : node.set == 1 ? VarType::SInt
+                                            : VarType::Bool));
+
+        // the alias for each register
+        for(const rdcstr &r : expected)
+        {
+          const rdcstr alias =
+              StringFormat::Fmt("Registers.%c%s", r[0], r.substr(2, r.size() - 3).c_str());
+          CHECK(one.SourceVar(alias) != NULL);
+        }
+      }
+      CHECK(leaves > 0);
+
+      // c90 isn't in the table and c95 is the def
+      CHECK(one.SourceVar("c90") != NULL);
+      CHECK(one.SourceVar("Literals.c95") != NULL);
+      CHECK(one.SourceVar("Registers.c90") == NULL);
+      one.CheckOutputs();
+    }
+
+    // a few by hand: a column_major and a row_major matrix, a struct in an array, and an int and
+    // bool vector
+    auto component = [](DebugRun &r, const char *name, size_t i) {
+      const SourceVariableMapping *map = r.SourceVar(name);
+      REQUIRE(map != NULL);
+      REQUIRE(i < map->variables.size());
+      return StringFormat::Fmt("%s.%u", map->variables[i].name.c_str(),
+                               (uint32_t)map->variables[i].component);
+    };
+    for(const CTABTestData::Shader &sh : CTABTestData::shaders)
+    {
+      const rdcstr name = sh.name;
+      if(name != "floats_vs3" && name != "intbool_vs3" && name != "partial_vs3")
+        continue;
+      Assembler a(3, 0);
+      a.tokens.push_back(CommentTok(sh.ctabDWORDs + 1));
+      a.tokens.push_back(MakeFourCC('C', 'T', 'A', 'B'));
+      a.tokens.append(sh.ctab, sh.ctabDWORDs);
+      a.dcl(DeclUsage::Position, 0, 0, RegType::TexCrdOutOrOutput);
+      a.op(Opcode::Mov, {Dst(RegType::TexCrdOutOrOutput, 0), C(0)});
+      DebugRun one;
+      one.Init(a.finish());
+      one.Debug(100);
+
+      if(name == "floats_vs3")
+      {
+        // m44 is column_major at c13: row 1, column 2 is c15.y
+        const SourceVariableMapping *m44 = one.SourceVar("m44");
+        REQUIRE(m44 != NULL);
+        CHECK(m44->rows == 4);
+        CHECK(m44->columns == 4);
+        CHECK(component(one, "m44", 1 * 4 + 2) == "c[15].1");
+        // rm44 is row_major at c17: row 1, column 2 is c18.z
+        CHECK(component(one, "rm44", 1 * 4 + 2) == "c[18].2");
+        // m23, a column_major float2x3 at c32: row 1, column 2 is c34.y
+        CHECK(component(one, "m23", 1 * 3 + 2) == "c[34].1");
+        // sarr[1].c, a float2x2 in the second element of a struct array at c4
+        CHECK(component(one, "sarr[1].c", 1 * 2 + 0) == "c[6].1");
+        CHECK(component(one, "o.i[1].q", 0) == "c[11].0");
+        CHECK(one.SourceVar("sarr") == NULL);
+      }
+      else if(name == "intbool_vs3")
+      {
+        // bones is float4x3[4], column_major: three registers each
+        const SourceVariableMapping *bone = one.SourceVar("bones[1]");
+        REQUIRE(bone != NULL);
+        CHECK(bone->rows == 4);
+        CHECK(bone->columns == 3);
+        CHECK(component(one, "bones[1]", 3 * 3 + 1) == "c[4].3");
+        // rbones is row_major float4x3[2]: four registers each
+        CHECK(component(one, "rbones[1]", 3 * 3 + 1) == "c[19].1");
+        // a bool2 takes a boolean register per component
+        CHECK(component(one, "bb", 1) == "b[1].0");
+        CHECK(component(one, "count", 0) == "i[0].0");
+        CHECK(one.SourceVar("count")->type == VarType::SInt);
+      }
+      else
+      {
+        // mpart is a float4x4 the compiler gave one register, its first column
+        const SourceVariableMapping *mpart = one.SourceVar("mpart");
+        REQUIRE(mpart != NULL);
+        CHECK(mpart->rows == 4);
+        CHECK(mpart->columns == 1);
+        CHECK(component(one, "mpart", 2) == "c[3].2");
+        // tpart.b and part[2] weren't given a register
+        CHECK(one.SourceVar("tpart.a") != NULL);
+        CHECK(one.SourceVar("tpart.b") == NULL);
+        CHECK(one.SourceVar("part[1]") != NULL);
+        CHECK(one.SourceVar("part[2]") == NULL);
+      }
+    }
   }
 }
 

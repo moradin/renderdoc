@@ -40,8 +40,11 @@ The detailed status, with how each part works and how it was tested, is in
     processing. RenderDoc works out the VS Out data on the CPU;
   - vertex shader debugging (the Mesh Viewer's "Debug this Vertex"), for vertex shaders 1.1 to
     3.0, on the CPU with the same emulation as VS Out, so a debugged vertex ends with VS Out's
-    values. Registers, constants and inputs are named by register (`r0`, `c12`, `v1`), and the
-    signature's semantics map the inputs and outputs;
+    values. Constants are named from the constant table (struct members, array elements and
+    matrices included), the shader's `def` literals are marked, and other registers are named as
+    the disassembly names them (`r0`, `c12`, `v1`); the signature's semantics map the inputs and
+    outputs. The Callstack panel shows the subroutines (`call`), and "Run to Sample" and "Run to
+    NaN/Inf" stop on `texldl` and on instructions writing a NaN or infinity;
   - GPU durations (the Event Browser's Duration column) and samples passed, in the Performance
     Counter Viewer too;
   - resource usage: the Resource Inspector's usage list and the timeline's usage markers;
@@ -81,9 +84,9 @@ Known limitations of what works:
     within a 256th or two. Software vertex processing filters differently, which isn't emulated.
   - Fixed function processing doesn't handle N-patches, user clip planes, displacement mapping or
     more than 8 lights.
-- **Vertex shader debugging** doesn't yet name constants from the constant table, show a call
-  stack, or flag `texldl` samples and NaNs (all planned next). An instruction that fails in the
-  emulation (calls nested too deeply, a loop that never ends) ends the trace on it, with the
+- **Vertex shader debugging**: a constant the compiler only allocated part of shows only that
+  part (a float4x4 given two registers shows as the float4x2 the shader reads). An instruction
+  that fails in the emulation (calls nested too deeply, a loop that never ends) ends the trace on it, with the
   reason only in the log.
 - **Custom display shaders** are ps_3_0: the texture is in a sampler with point filtering, not a
   texture object, and the older `RENDERDOC_` globals aren't filled.

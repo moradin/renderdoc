@@ -611,6 +611,16 @@ void AppendParameter(rdcstr &ret, const rdcstr &indent, const rdcstr &name, cons
 
 };    // anonymous namespace
 
+ConstantSet ConstantSetFor(RegisterSet set)
+{
+  return SetFor(set);
+}
+
+uint32_t ConstantRegistersPerElement(const CTABType &type, ConstantSet set)
+{
+  return RegistersPerElement(type, set);
+}
+
 const char *ConstantBlockName(ConstantSet set)
 {
   switch(set)

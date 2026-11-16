@@ -1,0 +1,10 @@
+
+  Processing layer JSON file for RenderDoc 1.48
+C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(538,5): warning MSB8028: The intermediate directory (E:\Projects\renderdoc\x64\Development\py3module\obj\) contains files shared from another project (pyrenderdoc_module.vcxproj).  This can lead to incorrect clean and rebuild behavior. [E:\Projects\renderdoc\renderdoc\renderdoc.vcxproj]
+     Creating library E:\Projects\renderdoc\x64\Development\pymodules\renderdoc.lib and object E:\Projects\renderdoc\x64\Development\pymodules\renderdoc.exp
+  Generating code
+  Not all modules are compiled with -Gy (function comdat), build without incremental LTCG.
+  Finished generating code
+  pyrenderdoc_module.vcxproj -> E:\Projects\renderdoc\x64\Development\pymodules\renderdoc.pyd
+  Built against python from E:\Projects\renderdoc\x64\Development\py3module\python314
+Built E:\Projects\renderdoc\x64\Development\py3module\pymodules\renderdoc.pyd, which imports python314.dll

@@ -32,8 +32,9 @@ RD_TEST(D3D9_Shader_Debug_Zoo, D3D9GraphicsTest)
 {
   static constexpr const char *Description =
       "Draws with a vertex shader of each model to debug (vs_1_1, vs_2_0, vs_2_x and vs_3_0), "
-      "each in its own marker, plus an instanced vs_3_0 draw with a base vertex and a fixed "
-      "function draw, which can't be debugged.";
+      "each in its own marker, plus an instanced vs_3_0 draw with a base vertex, a vs_2_x draw "
+      "with nested calls, a vs_3_0 draw whose constant table has structs, arrays and matrices, and "
+      "a fixed function draw, which can't be debugged.";
 
   // vs_1_1 tokens, hand assembled since D3DAssemble doesn't take vs_1_1
   enum
@@ -198,6 +199,85 @@ mov r1, v1
 ret
 )EOSHADER";
 
+  // calls: rep around a call to l1, which calls l3, then callnz on b0
+  const char *VS2XCalls = R"EOSHADER(
+vs_2_x
+dcl_position v0
+dcl_color v1
+defi i1, 3, 0, 0, 0
+def c20, 0, 0.25, 0.5, 1
+m4x4 oPos, v0, c0
+mov r0, c20.x
+rep i1
+  call l1
+endrep
+callnz l2, b0
+mov oD0, r0
+mov oT0, v1
+ret
+label l1
+add r0, r0, c20.y
+call l3
+ret
+label l2
+mul r0, r0, c20.z
+ret
+label l3
+add r0.x, r0.x, v1.x
+ret
+)EOSHADER";
+
+  // a constant table with a row_major matrix, an array of structs, a matrix the compiler only
+  // allocates two columns of, and a bool array. 1 / zero is an infinity.
+  const char *VS30Names = R"EOSHADER(
+
+struct Light
+{
+  float4 colour;
+  float3 dir;
+  float range;
+};
+
+float4x4 wvp : register(c0);
+row_major float4x3 world : register(c4);
+Light lights[2] : register(c8);
+float4x4 texMat : register(c14);
+float zero : register(c18);
+bool flags[2] : register(b0);
+
+struct vin
+{
+  float3 pos : POSITION;
+  float4 col : COLOR0;
+  float2 uv : TEXCOORD0;
+};
+
+struct vout
+{
+  float4 pos : POSITION;
+  float4 col : COLOR0;
+  float2 uv : TEXCOORD0;
+  float extra : TEXCOORD1;
+};
+
+vout main(vin IN)
+{
+  vout OUT;
+  float3 wp = mul(float4(IN.pos, 1), world);
+  OUT.pos = mul(float4(wp, 1), wvp);
+  float3 c = 0;
+  for(int i = 0; i < 2; i++)
+    c += lights[i].colour.rgb * saturate(dot(normalize(wp + 1), lights[i].dir) * lights[i].range);
+  if(flags[1])
+    c = c.bgr;
+  OUT.col = float4(c, IN.col.a);
+  OUT.uv = mul(float4(IN.uv, 0, 1), texMat).xy;
+  OUT.extra = min(1.0f / zero, 4.0f);
+  return OUT;
+}
+
+)EOSHADER";
+
   // a dynamic loop with relative addressing on aL and a break, texldl from a vertex texture
   const char *VS30 = R"EOSHADER(
 
@@ -280,12 +360,12 @@ vout main(vin IN)
   };
 
   // c0-c3 as fxc reads a column_major float4x4 with mul(v, m): a scale and a translation that put
-  // the triangle in a cell of a 3x2 grid
+  // the triangle in a cell of a 4x2 grid
   static void Cell(float m[16], int cell)
   {
-    const float x = -0.66f + 0.66f * float(cell % 3), y = 0.5f - 1.0f * float(cell / 3);
+    const float x = -0.75f + 0.5f * float(cell % 4), y = 0.5f - 1.0f * float(cell / 4);
     const float c[16] = {
-        0.5f, 0.0f, 0.0f, x,       //
+        0.4f, 0.0f, 0.0f, x,       //
         0.0f, 0.6f, 0.0f, y,       //
         0.0f, 0.0f, 1.0f, 0.0f,    //
         0.0f, 0.0f, 0.0f, 1.0f,    //
@@ -333,21 +413,26 @@ vout main(vin IN)
     IDirect3DVertexShader9Ptr vs20 = createVS(CompileLoop(VS20, "vs_2_0", 0), "vs_2_0");
     IDirect3DVertexShader9Ptr vs30 = createVS(CompileLoop(VS30, "vs_3_0", 0), "vs_3_0");
     IDirect3DVertexShader9Ptr vs30inst = CreateVS(Compile(VS30Instanced, "main", "vs_3_0"));
+    IDirect3DVertexShader9Ptr vs30names = CreateVS(Compile(VS30Names, "main", "vs_3_0"));
 
-    IDirect3DVertexShader9Ptr vs2x;
-    if(assemble)
-    {
+    auto assembleVS = [&](const char *source, const char *name) {
+      IDirect3DVertexShader9Ptr ret;
+      if(!assemble)
+        return ret;
       ID3DBlobPtr code, errors;
-      const std::string src = VS2X;
+      const std::string src = source;
       if(FAILED(assemble(src.c_str(), src.size(), NULL, NULL, NULL, 0, &code, &errors)))
-        TEST_ERROR("Couldn't assemble the vs_2_x shader: %s",
+        TEST_ERROR("Couldn't assemble the %s shader: %s", name,
                    errors ? (const char *)errors->GetBufferPointer() : "");
       else
-        vs2x = createVS(
+        ret = createVS(
             std::vector<DWORD>((const DWORD *)code->GetBufferPointer(),
                                (const DWORD *)code->GetBufferPointer() + code->GetBufferSize() / 4),
-            "vs_2_x");
-    }
+            name);
+      return ret;
+    };
+    IDirect3DVertexShader9Ptr vs2x = assembleVS(VS2X, "vs_2_x");
+    IDirect3DVertexShader9Ptr vs2xcalls = assembleVS(VS2XCalls, "vs_2_x calls");
 
     // vs_3_0 and ps_3_0 have to be used together
     IDirect3DPixelShader9Ptr ps = CreatePS(Compile(D3D9DefaultPixel, "main", "ps_3_0"));
@@ -423,9 +508,9 @@ vout main(vin IN)
 
     const float w = (float)screenWidth, h = (float)screenHeight;
     const FFVertex ffTri[3] = {
-        {w * 0.70f, h * 0.95f, 0.5f, 1.0f, D3DCOLOR_XRGB(255, 0, 255)},
-        {w * 0.80f, h * 0.75f, 0.5f, 1.0f, D3DCOLOR_XRGB(255, 0, 255)},
-        {w * 0.90f, h * 0.95f, 0.5f, 1.0f, D3DCOLOR_XRGB(255, 0, 255)},
+        {w * 0.80f, h * 0.95f, 0.5f, 1.0f, D3DCOLOR_XRGB(255, 0, 255)},
+        {w * 0.875f, h * 0.75f, 0.5f, 1.0f, D3DCOLOR_XRGB(255, 0, 255)},
+        {w * 0.95f, h * 0.95f, 0.5f, 1.0f, D3DCOLOR_XRGB(255, 0, 255)},
     };
 
     float m[16];
@@ -546,6 +631,58 @@ vout main(vin IN)
         dev->SetStreamSourceFreq(1, 1);
         dev->SetStreamSource(1, NULL, 0, 0);
         dev->SetVertexDeclaration(defaultDecl);
+        popMarker();
+      }
+
+      if(vs2xcalls)
+      {
+        pushMarker("vs_2_x calls");
+        Cell(m, 5);
+        dev->SetVertexShaderConstantF(0, m, 4);
+        const BOOL callL2 = TRUE;
+        dev->SetVertexShaderConstantB(0, &callL2, 1);
+        dev->SetVertexShader(vs2xcalls);
+        dev->SetPixelShader(ps20);
+        dev->DrawPrimitive(D3DPT_TRIANGLELIST, 0, 1);
+        popMarker();
+      }
+
+      if(vs30names)
+      {
+        pushMarker("vs_3_0 names");
+        Cell(m, 6);
+        dev->SetVertexShaderConstantF(0, m, 4);
+        // world is row_major: a register per row, the translation in the last
+        const float world[] = {
+            1.0f,  0.0f, 0.0f, 0.0f,    //
+            0.0f,  1.0f, 0.0f, 0.0f,    //
+            0.0f,  0.0f, 1.0f, 0.0f,    //
+            0.05f, 0.1f, 0.0f, 0.0f,    //
+        };
+        dev->SetVertexShaderConstantF(4, world, 4);
+        // two lights: colour, dir, range
+        const float lights[] = {
+            1.0f,  0.5f, 0.25f, 1.0f,    //
+            0.6f,  0.8f, 0.0f,  0.0f,    //
+            0.75f, 0.0f, 0.0f,  0.0f,    //
+            0.25f, 0.5f, 1.0f,  1.0f,    //
+            0.0f,  0.6f, 0.8f,  0.0f,    //
+            1.5f,  0.0f, 0.0f,  0.0f,    //
+        };
+        dev->SetVertexShaderConstantF(8, lights, 6);
+        // texMat's first two columns: u' = 2u + 0.1, v' = 0.5v + 0.2
+        const float texMat[] = {
+            2.0f, 0.0f, 0.0f, 0.1f,    //
+            0.0f, 0.5f, 0.0f, 0.2f,    //
+        };
+        dev->SetVertexShaderConstantF(14, texMat, 2);
+        const float zero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        dev->SetVertexShaderConstantF(18, zero, 1);
+        const BOOL flags[2] = {FALSE, TRUE};
+        dev->SetVertexShaderConstantB(0, flags, 2);
+        dev->SetVertexShader(vs30names);
+        dev->SetPixelShader(ps);
+        dev->DrawPrimitive(D3DPT_TRIANGLELIST, 0, 1);
         popMarker();
       }
 

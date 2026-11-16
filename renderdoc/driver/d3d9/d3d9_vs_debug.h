@@ -24,7 +24,7 @@
 
 #pragma once
 
-// Vertex shader debugging (step 5.2): a ShaderDebugger that steps one vertex through the
+// Vertex shader debugging (steps 5.2 and 5.3): a ShaderDebugger that steps one vertex through the
 // interpreter (VSThread in d3d9_vs_emulate.h) and describes it as the replay controller's
 // ShaderDebugTrace and ShaderDebugStates. Like the interpreter it doesn't need any Windows
 // headers, so it's unit tested on every platform. The replay side, which takes the vertex's inputs,
@@ -32,6 +32,7 @@
 
 #include <memory>
 #include <set>
+#include "d3d9_shader_reflect.h"
 #include "d3d9_vs_emulate.h"
 
 namespace D3D9Emu
@@ -41,16 +42,18 @@ class VSDebugger : public ShaderDebugger
 public:
   // Starts debugging one vertex, returning its trace with debugger set to this. inputs are copied.
   // emu (initialised without an error), consts (from emu.ApplyLiterals) and textures (or NULL)
-  // must outlive the debugger: owner can keep what they belong to alive. refl is the shader's
-  // reflection, and instLines each instruction's line in its disassembly
-  // (ShaderInfo::GetDisassembly).
-  ShaderDebugTrace *Begin(const VSEmulator &emu, const ShaderReflection &refl,
+  // must outlive the debugger: owner can keep what they belong to alive. info is the shader's
+  // reflection and constant table (only used here), and instLines each instruction's line in its
+  // disassembly (ShaderInfo::GetDisassembly).
+  ShaderDebugTrace *Begin(const VSEmulator &emu, const D3D9BC::ShaderInfo &info,
                           const rdcarray<uint32_t> &instLines, const Vec4 inputs[MaxVSInputs],
                           const VSConstants &consts, const VSTexture textures[NumVertexSamplers]);
 
   // The next states: on the first call the initial one, with every register the shader can change,
   // then up to maxSteps instructions, each with the registers it changed. Empty once the shader has
-  // finished. Declarations (dcl, def, defi, defb) aren't steps.
+  // finished. Declarations (dcl, def, defi, defb) aren't steps. Each state has the call stack at
+  // its next instruction ("main", then a label such as "l2" per call), and its flags say whether
+  // its instruction sampled a texture (texldl) or wrote a NaN or infinity.
   rdcarray<ShaderDebugState> Continue(uint32_t maxSteps = 100);
 
   // why the shader stopped before its end, if it did
@@ -73,6 +76,7 @@ private:
   ShaderVariable Variable(D3D9BC::RegType type, uint32_t index, const Vec4 &f, const IVec4 &i) const;
   ShaderVariable Current(D3D9BC::RegType type, uint32_t index) const;
   void SkipDeclarations(rdcarray<VSRegisterChange> &changes);
+  rdcarray<rdcstr> Callstack() const;
 
   const VSEmulator *m_Emu = NULL;
   VSThread m_Thread;
