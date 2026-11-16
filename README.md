@@ -146,6 +146,11 @@ Not tested yet:
   - the shader editor highlights D3D9 assembly like HLSL, says it can't insert snippets into it,
     and saves it as `.asm`;
   - the shader editing docs have a D3D9 section.
+- **Shader debugger constants** (`ShaderViewer.cpp`, every API): a constant's value is only read
+  as a constant block binding when the source variable points at a whole block (or an element of
+  an array of them). Before, any value whose bits looked like a binding showed the bound block
+  instead: every TRUE D3D9 boolean constant showed as "VS float constants (c#)". Upstream has
+  this too, for integer or boolean constant buffer values such as (1, 0, ...).
 - **Core**: `InitialiseReplay` waits for the GPU enumeration thread it started on a previous call.
   Before this fix, calling it twice in one process (as Python scripts inside qrenderdoc do) could
   run two enumerations at once and crash while a capture loaded. Upstream has this bug too.

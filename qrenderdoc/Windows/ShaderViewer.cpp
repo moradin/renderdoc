@@ -5279,7 +5279,30 @@ RDTreeWidgetItem *ShaderViewer::makeSourceVariableNode(const SourceVariableMappi
         if(reg == NULL)
           continue;
 
-        if(reg->IsDirectAccess())
+        // Only a whole constant block, or an element of an array of them, refers to a binding. A
+        // value in one is a value, even when its bits look like a binding index or a direct access
+        // (a TRUE D3D9 boolean register is 1, 0, 0, 0).
+        bool isBlock = false;
+        for(const ShaderVariable &cb : m_Trace->constantBlocks)
+        {
+          if(reg == &cb)
+          {
+            isBlock = true;
+            break;
+          }
+          if(cb.IsDirectAccess())
+            continue;
+          const uint32_t cbIndex = cb.GetBindIndex().index;
+          if(cbIndex < (uint32_t)m_ShaderDetails->constantBlocks.size() &&
+             m_ShaderDetails->constantBlocks[cbIndex].bindArraySize > 1)
+          {
+            for(const ShaderVariable &element : cb.members)
+              if(reg == &element)
+                isBlock = true;
+          }
+        }
+
+        if(isBlock && reg->IsDirectAccess())
           continue;
 
         typeName = lit("Constant");
@@ -5291,9 +5314,13 @@ RDTreeWidgetItem *ShaderViewer::makeSourceVariableNode(const SourceVariableMappi
         bind.arrayElement = 0;
 
         rdcarray<UsedDescriptor> descriptors;
-        for(const UsedDescriptor &a : cbBinds)
-          if(CategoryForDescriptorType(a.access.type) == bind.category && a.access.index == bind.index)
-            descriptors.push_back(a);
+        if(isBlock)
+        {
+          for(const UsedDescriptor &a : cbBinds)
+            if(CategoryForDescriptorType(a.access.type) == bind.category &&
+               a.access.index == bind.index)
+              descriptors.push_back(a);
+        }
 
         if(descriptors.empty())
         {
