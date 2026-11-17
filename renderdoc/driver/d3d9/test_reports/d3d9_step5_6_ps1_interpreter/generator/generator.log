@@ -1,0 +1,32 @@
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:318 Log: NVIDIA GeForce RTX 4070 Ti driver 32.0.16.2124
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: arith_1_1: 40 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: texcoord_1_1: 9 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: texkill_1_1: 7 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: texkill_w_1_1: 7 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: texbem_1_1: 10 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: texbeml_1_1: 24 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: texreg2_1_1: 16 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: m3x2tex_1_1: 13 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: m3x3tex_1_1: 16 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: m3x3spec_1_1: 17 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: m3x3spec_c3_1_1: 17 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: m3x3vspec_1_1: 16 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: coissue_1_1: 14 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: arith_1_2: 24 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: m3x3_1_2: 30 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: dp3_1_2: 30 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: reg2rgb_1_2: 10 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: proj_none_1_1: 7 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: proj_count3_1_1: 7 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: proj_count4_1_1: 7 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: proj_only_1_1: 7 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: proj_count3_1_4: 8 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: arith_1_4: 45 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: texcrd_1_4: 25 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: texcrd_dw_1_4: 25 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: texld_dw_1_4: 8 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: bem_1_4: 22 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: texkill_1_4: 13 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:508 Log: coissue_1_4: 24 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps1_emu_data.cpp:514 Log: done

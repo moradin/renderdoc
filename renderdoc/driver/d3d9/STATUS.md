@@ -72,8 +72,8 @@ Where it starts from:
   vs_3_0 instruction and gives VS Out, which is checked against the GPU. The bytecode parser,
   reflection and disassembler are done and checked against the compiler.
 - **Missing:** `DebugPixel` is a stub. Vertex shaders can be debugged since 5.2, with names, call
-  stacks and flags since 5.3. Since 5.5, ps_2_0 to ps_3_0 shaders run in their own interpreter
-  (`d3d9_ps_emulate.cpp`); ps_1_x doesn't run yet.
+  stacks and flags since 5.3. Since 5.5 and 5.6, ps_1_1 to ps_3_0 shaders run in their own
+  interpreter (`d3d9_ps_emulate.cpp`), which nothing calls yet.
 - **Already works for any driver:** qrenderdoc's shader viewer, "Debug this vertex", "Debug
   pixel", and the tests' `process_trace`. The driver returns a `ShaderDebugTrace` with the starting
   state, the steps with what each changed, and each instruction's disassembly line
@@ -89,7 +89,7 @@ Where it starts from:
 | 5.3 | ~~**Names, flow control and UI for vertex shaders:** constants named from the constant table (struct and array members), `def` literals marked, a call stack for `call`/`ret`, flags for `texldl` samples and NaN/Inf. Zoo shaders with loops, `rep`, `break`, calls, predicates, relative addressing and `texldl`~~ | Done, see "Debugging vertex shaders" below (`d3d9_step5_3_names_flow.md`). The zoo test checks the names, call stacks and flags; UI screenshots of the constants, watches, the Callstack panel and an infinity. Also fixed qrenderdoc showing a TRUE boolean constant as a constant block |
 | 5.4 | ~~**Native probes** (a probe and a report, no driver change): `vPos`'s pixel centre (whole or +0.5) and `vFace`'s values; ps_1_x's clamp range, `texcoord` clamping and `cnd` on 1_1-1_3; `dsx`/`dsy` per quad or per pixel; colour input precision and clamping; `texldd` against `texld`'s own LOD; `rcp`, `rsq`, `exp`, `log`, `sincos`, `pow` against the C library; reading inputs back with a replacement pixel shader, and which fragment it picks with alpha test or `texkill`~~ | Done, see "What the GPU does with pixel shaders" below (`d3d9_step5_4_native_probes.md`) |
 | 5.5 | ~~**ps_2_0-ps_3_0 interpreter** (portable, unit tested): pixel registers, `texld`/`texldp`/`texldb`/`texldd` through a sampling callback, `texkill`, `dsx`/`dsy`, `cmp`, `dp2add`, the 2x2 quad in lockstep~~ | Done, see "Pixel shader interpreter" below (`d3d9_step5_5_ps_interpreter.md`). 26 compiled ps_2_0, ps_2_x and ps_3_0 cases match the GPU's outputs and discards: bit for bit without transcendentals, within 1.6e-6 relative with them (5.1e-6 for the trigonometry) |
-| 5.6 | **ps_1_x interpreter** (portable, unit tested): `texcoord`, `tex`, `texbem`/`texbeml`, `texreg2*`, the `texm3x2*`/`texm3x3*` families, `texdp3*`, `texdepth`, `bem`, ps_1_4's `texcrd`/`texld`/`phase`, co-issue, the ps_1_x modifiers, `cnd`, and the clamps 5.4 measured (constants, `texcoord`, the output; no range limit) | Unit tests pass |
+| 5.6 | ~~**ps_1_x interpreter** (portable, unit tested): `texcoord`, `tex`, `texbem`/`texbeml`, `texreg2*`, the `texm3x2*`/`texm3x3*` families, `texdp3*`, `texdepth`, `bem`, ps_1_4's `texcrd`/`texld`/`phase`, co-issue, the ps_1_x modifiers, `cnd`, and the clamps 5.4 measured (constants, `texcoord`, the output; no range limit)~~ | Done, see "Pixel shader interpreter" below (`d3d9_step5_6_ps1_interpreter.md`). 29 assembled ps_1_1-1_4 cases match the GPU's r0 and discards bit for bit, but for two values 1 ulp apart through `rcp` |
 | 5.7 | **`DebugPixel`, inputs from the GPU:** redraw the event with a generated pixel shader writing the original's inputs and their `dsx`/`dsy` to float32 targets, scissored to the quad (ps_2_x for ps_1_x/2_x originals, since ps_2_0 has no `dsx`; ps_3_0 with the original's declarations for ps_3_0); `vPos` computed, `vFace` read with `cmp`; the quad's other pixels from the derivatives. Debugging on for ps_2_0/3_0 shaders that don't sample; those that do say why not yet | Zoo pixel draws to A32B32G32R32F pass: the debugger's `oC#` and `oDepth` match the replay's pixel and the demo's native readback |
 | 5.8 | **Sampling on the GPU:** each sample is a one-pixel `texldd`/`texldl`/`texldb` draw with the original texture and sampler state, cached. Transcendentals on the GPU too, since 5.4 found they differ | Zoo draws pass with 2D, cube and volume textures, mips, anisotropic, border, sRGB, `SetLOD`, D24 shadow comparison and an unbound texture |
 | 5.9 | **ps_1_x end to end, and the texture viewer:** ps_1_1-1_4 debugging on, texture addressing through 5.8's sampling; fixed function pixel stages say why they can't be debugged | ps_1_x zoo draws pass; UI screenshots of "Debug" in the texture viewer stepping a ps_1_x and a ps_3_0 shader |
@@ -132,6 +132,12 @@ decisions they lead to:
   - Modifiers don't clamp, except `_sat`. Source modifiers apply after the constant clamp.
   - `cnd` takes src1 when the condition is > 0.5 (at fp32, in 1_1-1_3 and 1_4), and `cmp` when it
     is ≥ 0.
+  - Measured in 5.6 (`d3d9_step5_6_ps1_interpreter.md`): `texcoord` clamps w too; `texkill` tests
+    x, y and z of the coordinate (1_1-1_3) or register (1_4), not w; a co-issued pair reads
+    before either half writes; `D3DTTFF_PROJECTED` makes 1_1-1_3's `tex` divide by w whatever
+    the count (with a vertex shader), and 1_4 ignores it; `texbeml`'s luminance is clamped to
+    [0, 1] and scales all four channels; `texm3x3spec`'s eye constant isn't clamped; `_dw` is a
+    multiply by `rcp`.
 - **5.7, inputs:**
   - Pixel (x, y) samples its inputs at the whole screen position (x, y), D3D9's rule; coverage
     follows the top-left rule with those centres.
@@ -2089,11 +2095,11 @@ match the previous round. The rows are covered under "Event Browser rows" above,
 the icon sizes and failed on the 9 pixel icon and the resource cells' underline and hover area,
 both fixed in c1049db4f, which retest 5 passed.
 
-## Pixel shader interpreter (step 5.5)
+## Pixel shader interpreter (steps 5.5 and 5.6)
 
-`d3d9_ps_emulate.*` (`D3D9Emu`, portable and unit tested) runs ps_2_0, ps_2_x and ps_3_0 shaders
-for pixel shader debugging; 5.7 will feed it from the GPU. Tested in
-`d3d9_step5_5_ps_interpreter.md`.
+`d3d9_ps_emulate.*` (`D3D9Emu`, portable and unit tested) runs ps_1_1 to ps_3_0 shaders for pixel
+shader debugging; 5.7 will feed it from the GPU. Tested in `d3d9_step5_5_ps_interpreter.md`
+(ps_2_0 to ps_3_0) and `d3d9_step5_6_ps1_interpreter.md` (ps_1_x).
 
 - **A quad at a time.** `PSQuad` runs a 2x2 quad's four pixels in lockstep: each `Step` runs one
   instruction in every pixel that hasn't finished, and records what one chosen pixel changed (old
@@ -2126,11 +2132,37 @@ for pixel shader debugging; 5.7 will feed it from the GPU. Tested in
   takes 147-148 ms against 150-151 ms before 5.5 (`[d3d9bench]`). `static inline` copies were 5%
   faster again (139-141 ms), but the macro was kept as the clearer code.
 
+ps_1_x (step 5.6) runs on the same quad and arithmetic, with what the GPU was measured doing
+("What the GPU does with pixel shaders" above):
+- **Registers:** ps_1_1 to ps_1_3's `t#` are texture registers (`PSRegisters::t`), written by the
+  texture instructions and read by arithmetic; each texture instruction samples the stage, and
+  reads the coordinate set (`PSInputs::t`), its destination names. ps_1_4's `t#` are the
+  coordinates, and `texld r#` samples the stage `r#` names. `texm3x2pad`/`texm3x3pad` keep their
+  dot product in their register's x, which shaders can't read but a debugger can show.
+- **Clamps:** constants to [-1, 1] as they're read, before the modifier (not `texm3x3spec`'s eye
+  vector); r0 to [0, 1] when it's copied to oC0 at the end; `texcoord` all four components;
+  `texbeml`'s luminance. Nothing else.
+- **Co-issued pairs** run as one step, both halves reading before either writes. A register both
+  halves write (`r0.rgb`, `r0.a`) is reported once, with its value from before the pair.
+- **Texture stage state** comes in `PSStageState` (bump matrix, luminance scale and offset,
+  `D3DTTFF_PROJECTED`), passed to `PSQuad::Start`; 5.9 fills it.
+- **Lookups** go through `PSCallbacks::Sample` with the coordinate the instruction works out
+  (bumped, reflected, projected), its derivatives across the quad, and `type` `Unknown`, since
+  ps_1_x declares no samplers.
+- **Divides** (`_dz`, `_dw`, projected `tex`, the reflection, `texdepth`, `texm3x2depth`) multiply
+  by `rcp` through `PSCallbacks::Transcendental`, since that matched the GPU's `texcrd` and a true
+  divide didn't.
+- Choices made without a measurement: `texdepth` and `texm3x2depth` give 1 for a zero divisor and
+  aren't clamped; `texbem`/`bem` add `fma(M10, g, M00 * r)` to u; unused lookup components are 0;
+  `phase` keeps alpha, which the validator stops shaders reading.
+
 Tests (`renderdoccmd test unit "[psemu]"`):
 - Hand-assembled shaders check 5.4's measured special cases bit for bit, the quad's derivatives
   and lookups, `texkill`, divergent flow control with `v[aL]`, `vPos` and `vFace`, predication,
-  the callbacks, and what it refuses. Each run is stepped again per pixel, checking the reported
-  changes account for everything.
+  the callbacks, and what it refuses. For ps_1_x: the clamps, `cnd`, co-issue, each texture
+  instruction's formula, stage and derivatives, projection, the depth instructions and a ps_1_4
+  shader with `phase`. Each run is stepped again per pixel, checking the reported changes account
+  for everything.
 - Compiled shaders (`d3d9_ps_test_data.h`, from a generator in the report's folder): 10 HLSL
   shaders, compiled by D3DCompile for ps_2_0, ps_2_a and ps_3_0 where they fit, 26 cases, run
   natively on a 4x4 float target with the inputs each pixel saw read back. The interpreter
@@ -2138,10 +2170,16 @@ Tests (`renderdoccmd test unit "[psemu]"`):
   bit-exact except values from transcendentals (at most 1.6e-6 relative, 5.1e-6 for the
   trigonometry) and `normalize` (1.25e-7). `renderdoccmd test unit "[d3d9psstats]"` prints the
   numbers.
+- Assembled ps_1_x shaders (`d3d9_ps1_test_data.h`, from a generator in the 5.6 report's folder):
+  29 ps_1_1 to ps_1_4 cases with a float texture and bump matrix on each of stages 0-5, run
+  natively the same way. The same pixels are discarded and r0 matches bit for bit, but for two
+  `texcrd _dw` values 1 ulp apart through the GPU's `rcp`.
 
-Not covered: ps_1_x (5.6); cube and volume lookups, mips, filtering and bias against the GPU (the
-test texture has one point-sampled level; 5.8 samples on the GPU); derivatives inside divergent
-flow control; `oDepth` and partial-mask `texkill` against the GPU; other GPUs.
+Not covered: cube and volume lookups, mips, filtering and bias against the GPU (the test textures
+have one point-sampled level, and ps_1_x's 3D lookups sampled 2D textures; 5.8 samples on the
+GPU); bump map formats such as V8U8; derivatives inside divergent flow control; `oDepth` (also
+from `texdepth`/`texm3x2depth`) and partial-mask `texkill` against the GPU; projection with fixed
+function vertex processing; other GPUs.
 
 ## Inspecting a capture
 
@@ -2178,8 +2216,9 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
   tested. `d3d9_postvs.h` has the snapshot of a draw that VS Out and debugging both use.
 - `d3d9_shaderdebug.cpp` - shader debugging: `DebugVertex`, `ContinueDebug`, `FreeDebugger`. The
   trace is made by `d3d9_vs_debug.*` (`D3D9Emu::VSDebugger`), which is portable and unit tested.
-- `d3d9_ps_emulate.*` - the ps_2_0 to ps_3_0 interpreter (step 5.5), portable and unit tested,
-  with `d3d9_ps_test_data.h` (compiled shaders and the GPU's results) for its tests.
+- `d3d9_ps_emulate.*` - the ps_1_1 to ps_3_0 interpreter (steps 5.5 and 5.6), portable and unit
+  tested, with `d3d9_ps_test_data.h` (compiled shaders and the GPU's results) and
+  `d3d9_ps1_test_data.h` (assembled ps_1_x shaders and the GPU's results) for its tests.
 - `d3d9_replay_device.cpp` - the replay side of the device: loading, replaying the frame, the
   event list, writing contents.
 - `d3d9_overlay.cpp` - the texture viewer's overlays, `IsRenderOutput` and `GetPassEvents` (phase

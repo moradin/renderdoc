@@ -143,6 +143,9 @@
     <ClInclude Include="d3d9_ctab_test_data.h">
       <Filter>Replay</Filter>
     </ClInclude>
+    <ClInclude Include="d3d9_ps1_test_data.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
     <ClInclude Include="d3d9_ps_test_data.h">
       <Filter>Replay</Filter>
     </ClInclude>
