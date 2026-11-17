@@ -213,11 +213,20 @@ struct VSRegisterChange
   IVec4 i;
 };
 
+// For small helpers called from the interpreters' inner loops. With plain inline, once a helper
+// was called from more than one file the whole program optimisation stopped inlining it into the
+// vertex interpreter's loop, and VS Out was a quarter slower in Release.
+#if defined(_MSC_VER)
+#define D3D9_FORCE_INLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+#define D3D9_FORCE_INLINE inline __attribute__((always_inline))
+#else
+#define D3D9_FORCE_INLINE inline
+#endif
+
 // helpers both interpreters use: _sat (NaN gives 0), the comparisons of ifc, breakc and setp, a
-// source modifier, and where c2048 and up are for the types above Const. They're static so each
-// file has its own: shared, the whole program optimisation stopped inlining them into the vertex
-// interpreter's loop, which made VS Out a quarter slower.
-static inline float Saturate(float f)
+// source modifier, and where c2048 and up are for the types above Const.
+D3D9_FORCE_INLINE float Saturate(float f)
 {
   // NaN saturates to 0
   if(!(f > 0.0f))
@@ -225,7 +234,7 @@ static inline float Saturate(float f)
   return f > 1.0f ? 1.0f : f;
 }
 
-static inline bool Compare(D3D9BC::Comparison c, float a, float b)
+D3D9_FORCE_INLINE bool Compare(D3D9BC::Comparison c, float a, float b)
 {
   switch(c)
   {
@@ -239,7 +248,7 @@ static inline bool Compare(D3D9BC::Comparison c, float a, float b)
   }
 }
 
-static inline float ApplyMod(D3D9BC::SrcMod mod, float f)
+D3D9_FORCE_INLINE float ApplyMod(D3D9BC::SrcMod mod, float f)
 {
   switch(mod)
   {
@@ -260,7 +269,7 @@ static inline float ApplyMod(D3D9BC::SrcMod mod, float f)
   }
 }
 
-static inline uint32_t ConstantRegisterOffset(D3D9BC::RegType type)
+D3D9_FORCE_INLINE uint32_t ConstantRegisterOffset(D3D9BC::RegType type)
 {
   switch(type)
   {

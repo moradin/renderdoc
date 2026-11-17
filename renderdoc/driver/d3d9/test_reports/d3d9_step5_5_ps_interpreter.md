@@ -28,7 +28,7 @@ Tested on the commit that adds it, on Windows 11 with an RTX 4070 Ti (driver 32.
 - Shared with the vertex interpreter, moved out of `VSEmulator` without changing what it does:
   `ProgramLayout` (flow control matching, labels and literals), `FlowRegisters` (`p0`, the loop and
   call stacks, `aL`) and the small helpers (`Saturate`, `Compare`, `ApplyMod`,
-  `ConstantRegisterOffset`, now `static inline` in `d3d9_vs_emulate.h`; see "Speed" below). The
+  `ConstantRegisterOffset`, now `D3D9_FORCE_INLINE` in `d3d9_vs_emulate.h`; see "Speed" below). The
   fixed function code's own copy of `Saturate` was the same, and now uses the shared one.
 - `d3d9_bytecode_test.h`'s `Assembler` can assemble pixel shaders.
 - `d3d9_ps_test_data.h`: compiled shaders with the GPU's results (below).
@@ -179,10 +179,10 @@ The vertex interpreter's code moved, so `RunPostVS` was timed with the hidden `[
 (200,000 vertices of a 16-instruction vs_2_0 shader), old and new back to back. Release has no unit
 tests, so `globalconfig.h` was switched for that build only and restored.
 
-| Build | Before (HEAD) | First version | Final |
-|---|---|---|---|
-| Release | 150.1-151.3 ms | 200.0-202.2 ms | 137.9-139.1 ms |
-| Development | 1093.7-1097.8 ms | 1124.8-1126.8 ms | 1016.0-1020.4 ms |
+| Build | Before (HEAD) | First version | `static inline` | `D3D9_FORCE_INLINE` |
+|---|---|---|---|---|
+| Release | 150.1-151.3 ms | 200.0-202.2 ms | 137.9-139.1 ms | 146.8-148.3 ms |
+| Development | 1093.7-1097.8 ms | 1124.8-1126.8 ms | 1016.0-1020.4 ms | 1035.0-1037.3 ms |
 
 - The first version made the helpers (`ApplyMod`, `Saturate`, `Compare`,
   `ConstantRegisterOffset`) ordinary functions called from both interpreters. With two files
@@ -191,12 +191,19 @@ tests, so `globalconfig.h` was switched for that build only and restored.
   quarter slower.
 - As `static inline` in the header, each file has its own copy, as the vertex interpreter's were
   before. Release is then 8% faster than before; the code is otherwise the same, so that's likely
-  layout.
+  layout. This was in d417ffd0f.
+- A later commit replaced the `static` copies with a `D3D9_FORCE_INLINE` macro (`__forceinline`,
+  or `always_inline` on gcc and clang), so the reason is in the code rather than in a comment
+  about `static`. Timed back to back with the `static inline` code (139.1-140.6 ms in that
+  session), Release is 147 ms: still 2% faster than before 5.5 and well clear of the regression,
+  but 5% slower than letting the compiler choose with `static inline`. Forcing every call inline,
+  `ApplyMod`'s switch included, likely makes the loop bigger. Kept for the clearer code.
 - In the Development build (`/Od`, nothing inlined) the first version was 2.7% slower; the final
   one is 7% faster than before. Its final numbers come from the verification run, not back to back
   with the old code; the other columns are each from one session.
 - The outputs are in `benchmark/`: `release.txt` (new, old, new again), `release_inline.txt`,
-  `release_static.txt` (final) and `development.txt`.
+  `release_static.txt`, `development.txt`, and for the macro `release_static_again.txt`,
+  `release_forceinline.txt` and `verify_summary_forceinline.txt`.
 
 ## Other checks
 

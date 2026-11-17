@@ -2120,10 +2120,11 @@ for pixel shader debugging; 5.7 will feed it from the GPU. Tested in
 - **Shared with the vertex interpreter:** `ProgramLayout` (flow control matching, labels,
   literals), `FlowRegisters` (`p0`, the loop and call stacks) and the small helpers, moved out of
   `VSEmulator` unchanged. The flow control runs the same way. The helpers (`ApplyMod`,
-  `Saturate`, `Compare`, `ConstantRegisterOffset`) are `static inline` in `d3d9_vs_emulate.h`, so
-  each file has its own: called from two files, the whole program optimisation stopped inlining
-  them into the vertex loop and VS Out was a third slower in Release. As they are, Release
-  `RunPostVS` takes 138-139 ms against 150-151 ms before (`[d3d9bench]`).
+  `Saturate`, `Compare`, `ConstantRegisterOffset`) are `D3D9_FORCE_INLINE` in `d3d9_vs_emulate.h`:
+  with plain `inline`, called from two files, the whole program optimisation stopped inlining them
+  into the vertex loop and VS Out was a third slower in Release. Forced, Release `RunPostVS`
+  takes 147-148 ms against 150-151 ms before 5.5 (`[d3d9bench]`). `static inline` copies were 5%
+  faster again (139-141 ms), but the macro was kept as the clearer code.
 
 Tests (`renderdoccmd test unit "[psemu]"`):
 - Hand-assembled shaders check 5.4's measured special cases bit for bit, the quad's derivatives

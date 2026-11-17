@@ -1,0 +1,6 @@
+build 0 errors 0 warnings 0
+  RunPostVS: 200000 vertices of a 16 instruction shader in 146.8 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 147.3 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 148.3 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 147.3 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 147.1 ms (best of 5)
