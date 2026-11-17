@@ -64,49 +64,6 @@ const uint32_t MaxInstructionsPerVertex = 1U << 20;
 // SM3 allows four nested calls, plus some slack
 const uint32_t MaxCallDepth = 16;
 
-float Saturate(float f)
-{
-  // NaN saturates to 0
-  if(!(f > 0.0f))
-    return 0.0f;
-  return f > 1.0f ? 1.0f : f;
-}
-
-bool Compare(Comparison c, float a, float b)
-{
-  switch(c)
-  {
-    case Comparison::GT: return a > b;
-    case Comparison::EQ: return a == b;
-    case Comparison::GE: return a >= b;
-    case Comparison::LT: return a < b;
-    case Comparison::NE: return a != b;
-    case Comparison::LE: return a <= b;
-    default: return false;
-  }
-}
-
-float ApplyMod(SrcMod mod, float f)
-{
-  switch(mod)
-  {
-    case SrcMod::None: return f;
-    case SrcMod::Neg: return -f;
-    case SrcMod::Bias: return f - 0.5f;
-    case SrcMod::BiasNeg: return -(f - 0.5f);
-    case SrcMod::Sign: return 2.0f * f - 1.0f;
-    case SrcMod::SignNeg: return -(2.0f * f - 1.0f);
-    case SrcMod::Comp: return 1.0f - f;
-    case SrcMod::X2: return 2.0f * f;
-    case SrcMod::X2Neg: return -2.0f * f;
-    case SrcMod::Abs: return fabsf(f);
-    case SrcMod::AbsNeg: return -fabsf(f);
-    case SrcMod::Not: return f != 0.0f ? 0.0f : 1.0f;
-    // _dz and _dw only apply to ps_1_4's texld and texcrd
-    default: return f;
-  }
-}
-
 // clears the low 8 bits of the mantissa, as the documentation's partial precision pseudo code does
 float PartialPrecision(float f)
 {
@@ -116,18 +73,6 @@ float PartialPrecision(float f)
   memcpy(&f, &bits, sizeof(bits));
   return f;
 }
-
-uint32_t ConstantRegisterOffset(RegType type)
-{
-  switch(type)
-  {
-    case RegType::Const2: return 2048;
-    case RegType::Const3: return 4096;
-    case RegType::Const4: return 6144;
-    default: return 0;
-  }
-}
-
 };    // namespace
 
 void VSThread::Start(const VSEmulator &emu, const Vec4 inputs[MaxVSInputs],
@@ -643,11 +588,6 @@ bool VSEmulator::Init(const Program &prog)
   m_Prog = &prog;
   m_Version = prog.version;
   m_Error.clear();
-  m_Match.clear();
-  m_Labels.clear();
-  m_FloatLiterals.clear();
-  m_IntLiterals.clear();
-  m_BoolLiterals.clear();
 
   if(!prog.validVersion || !prog.version.IsVS())
   {
@@ -667,8 +607,19 @@ bool VSEmulator::Init(const Program &prog)
     return false;
   }
 
+  return m_Layout.Build(prog, m_Error);
+}
+
+bool ProgramLayout::Build(const Program &prog, rdcstr &error)
+{
+  match.clear();
+  labels.clear();
+  floatLiterals.clear();
+  intLiterals.clear();
+  boolLiterals.clear();
+
   const rdcarray<Instruction> &insts = prog.instructions;
-  m_Match.fill(insts.size(), NoMatch);
+  match.fill(insts.size(), NoMatch);
 
   rdcarray<uint32_t> stack;
 
@@ -686,10 +637,10 @@ bool VSEmulator::Init(const Program &prog)
         if(stack.empty() ||
            (insts[stack.back()].op != Opcode::If && insts[stack.back()].op != Opcode::IfC))
         {
-          m_Error = StringFormat::Fmt("else without if at instruction %u", i);
+          error = StringFormat::Fmt("else without if at instruction %u", i);
           return false;
         }
-        m_Match[stack.back()] = i;
+        match[stack.back()] = i;
         stack.back() = i;
         break;
       case Opcode::EndIf:
@@ -697,10 +648,10 @@ bool VSEmulator::Init(const Program &prog)
            (insts[stack.back()].op != Opcode::If && insts[stack.back()].op != Opcode::IfC &&
             insts[stack.back()].op != Opcode::Else))
         {
-          m_Error = StringFormat::Fmt("endif without if at instruction %u", i);
+          error = StringFormat::Fmt("endif without if at instruction %u", i);
           return false;
         }
-        m_Match[stack.back()] = i;
+        match[stack.back()] = i;
         stack.pop_back();
         break;
       case Opcode::EndLoop:
@@ -709,22 +660,22 @@ bool VSEmulator::Init(const Program &prog)
         const Opcode start = inst.op == Opcode::EndLoop ? Opcode::Loop : Opcode::Rep;
         if(stack.empty() || insts[stack.back()].op != start)
         {
-          m_Error = StringFormat::Fmt("%s without %s at instruction %u",
-                                      inst.op == Opcode::EndLoop ? "endloop" : "endrep",
-                                      inst.op == Opcode::EndLoop ? "loop" : "rep", i);
+          error = StringFormat::Fmt("%s without %s at instruction %u",
+                                    inst.op == Opcode::EndLoop ? "endloop" : "endrep",
+                                    inst.op == Opcode::EndLoop ? "loop" : "rep", i);
           return false;
         }
-        m_Match[stack.back()] = i;
-        m_Match[i] = stack.back();
+        match[stack.back()] = i;
+        match[i] = stack.back();
         stack.pop_back();
 
         // the breaks inside break to here
-        for(uint32_t b = m_Match[i] + 1; b < i; b++)
+        for(uint32_t b = match[i] + 1; b < i; b++)
         {
           const Opcode op = insts[b].op;
           if((op == Opcode::Break || op == Opcode::BreakC || op == Opcode::BreakP) &&
-             m_Match[b] == NoMatch)
-            m_Match[b] = i;
+             match[b] == NoMatch)
+            match[b] = i;
         }
         break;
       }
@@ -734,17 +685,17 @@ bool VSEmulator::Init(const Program &prog)
           uint32_t l = inst.srcs[0].index;
           if(l >= 2048)
           {
-            m_Error = StringFormat::Fmt("label l%u out of range", l);
+            error = StringFormat::Fmt("label l%u out of range", l);
             return false;
           }
-          while(m_Labels.size() <= l)
-            m_Labels.push_back(NoMatch);
-          m_Labels[l] = i;
+          while(labels.size() <= l)
+            labels.push_back(NoMatch);
+          labels[l] = i;
         }
         // flow control doesn't continue across subroutines
         if(!stack.empty())
         {
-          m_Error = StringFormat::Fmt("label inside flow control at instruction %u", i);
+          error = StringFormat::Fmt("label inside flow control at instruction %u", i);
           return false;
         }
         break;
@@ -753,7 +704,7 @@ bool VSEmulator::Init(const Program &prog)
         Literal lit;
         lit.reg = inst.dst.index + ConstantRegisterOffset(inst.dst.type);
         memcpy(lit.value, inst.literal, sizeof(lit.value));
-        m_FloatLiterals.push_back(lit);
+        floatLiterals.push_back(lit);
         break;
       }
       case Opcode::DefI:
@@ -761,7 +712,7 @@ bool VSEmulator::Init(const Program &prog)
         Literal lit;
         lit.reg = inst.dst.index;
         memcpy(lit.value, inst.literal, sizeof(lit.value));
-        m_IntLiterals.push_back(lit);
+        intLiterals.push_back(lit);
         break;
       }
       case Opcode::DefB:
@@ -769,7 +720,7 @@ bool VSEmulator::Init(const Program &prog)
         Literal lit = {};
         lit.reg = inst.dst.index;
         lit.value[0] = inst.literal[0];
-        m_BoolLiterals.push_back(lit);
+        boolLiterals.push_back(lit);
         break;
       }
       default: break;
@@ -778,7 +729,7 @@ bool VSEmulator::Init(const Program &prog)
 
   if(!stack.empty())
   {
-    m_Error = StringFormat::Fmt("unterminated flow control starting at instruction %u", stack.back());
+    error = StringFormat::Fmt("unterminated flow control starting at instruction %u", stack.back());
     return false;
   }
 
@@ -786,17 +737,17 @@ bool VSEmulator::Init(const Program &prog)
   {
     const Instruction &inst = insts[i];
     const Opcode op = inst.op;
-    if((op == Opcode::Break || op == Opcode::BreakC || op == Opcode::BreakP) && m_Match[i] == NoMatch)
+    if((op == Opcode::Break || op == Opcode::BreakC || op == Opcode::BreakP) && match[i] == NoMatch)
     {
-      m_Error = StringFormat::Fmt("break outside a loop at instruction %u", i);
+      error = StringFormat::Fmt("break outside a loop at instruction %u", i);
       return false;
     }
     if(op == Opcode::Call || op == Opcode::CallNZ)
     {
       uint32_t l = inst.srcs.empty() ? NoMatch : inst.srcs[0].index;
-      if(l >= m_Labels.size() || m_Labels[l] == NoMatch)
+      if(l >= labels.size() || labels[l] == NoMatch)
       {
-        m_Error = StringFormat::Fmt("call to missing label at instruction %u", i);
+        error = StringFormat::Fmt("call to missing label at instruction %u", i);
         return false;
       }
     }
@@ -805,23 +756,23 @@ bool VSEmulator::Init(const Program &prog)
   return true;
 }
 
-VSConstants VSEmulator::ApplyLiterals(const VSConstants &consts) const
+VSConstants ProgramLayout::ApplyLiterals(const VSConstants &consts) const
 {
   VSConstants ret = consts;
 
-  for(const Literal &l : m_FloatLiterals)
+  for(const Literal &l : floatLiterals)
   {
     if(ret.floats.size() <= l.reg)
       ret.floats.resize(l.reg + 1);
     memcpy(ret.floats[l.reg].v, l.value, sizeof(l.value));
   }
-  for(const Literal &l : m_IntLiterals)
+  for(const Literal &l : intLiterals)
   {
     if(ret.ints.size() <= l.reg)
       ret.ints.resize(l.reg + 1);
     memcpy(ret.ints[l.reg].v, l.value, sizeof(l.value));
   }
-  for(const Literal &l : m_BoolLiterals)
+  for(const Literal &l : boolLiterals)
   {
     if(ret.bools.size() <= l.reg)
       ret.bools.resize(l.reg + 1);
@@ -829,6 +780,11 @@ VSConstants VSEmulator::ApplyLiterals(const VSConstants &consts) const
   }
 
   return ret;
+}
+
+VSConstants VSEmulator::ApplyLiterals(const VSConstants &consts) const
+{
+  return m_Layout.ApplyLiterals(consts);
 }
 
 bool VSEmulator::Execute(const Vec4 inputs[MaxVSInputs], const VSConstants &consts,
@@ -966,7 +922,7 @@ bool VSThread::Exec(rdcarray<VSRegisterChange> *changes)
           f.ret = ip + 1;
           f.loopDepth = s.loops.size();
           s.calls.push_back(f);
-          next = emu.m_Labels[srcs[0].index] + 1;
+          next = emu.m_Layout.labels[srcs[0].index] + 1;
         }
         break;
       }
@@ -975,18 +931,18 @@ bool VSThread::Exec(rdcarray<VSRegisterChange> *changes)
         if(srcs.empty())
           return fail("Missing operands");
         if(!s.ReadBool(srcs[0]))
-          next = emu.m_Match[ip] + 1;
+          next = emu.m_Layout.match[ip] + 1;
         break;
 
       case Opcode::IfC:
         if(!need(2))
           return fail("Missing operands");
         if(!Compare(inst.GetComparison(), s.Read(srcs[0])[0], s.Read(srcs[1])[0]))
-          next = emu.m_Match[ip] + 1;
+          next = emu.m_Layout.match[ip] + 1;
         break;
 
       // reached at the end of the if block, skip the else block
-      case Opcode::Else: next = emu.m_Match[ip] + 1; break;
+      case Opcode::Else: next = emu.m_Layout.match[ip] + 1; break;
 
       case Opcode::Loop:
       case Opcode::Rep:
@@ -998,7 +954,7 @@ bool VSThread::Exec(rdcarray<VSRegisterChange> *changes)
         int32_t count = RDCCLAMP(i.v[0], 0, 255);
         if(count == 0)
         {
-          next = emu.m_Match[ip] + 1;
+          next = emu.m_Layout.match[ip] + 1;
         }
         else
         {
@@ -1053,7 +1009,7 @@ bool VSThread::Exec(rdcarray<VSRegisterChange> *changes)
           if(s.loops.empty())
             return fail("break outside a running loop");
           s.loops.pop_back();
-          next = emu.m_Match[ip] + 1;
+          next = emu.m_Layout.match[ip] + 1;
         }
         break;
       }

@@ -1,0 +1,29 @@
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_test.cpp:224 Log: Running D3D9 test on NVIDIA GeForce RTX 4070 Ti
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:319 Log: NVIDIA GeForce RTX 4070 Ti driver 32.0.16.2124
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: arith_ps_2_0: 183 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: arith_ps_2_a: 166 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: arith_ps_3_0: 159 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: transcendental_ps_2_0: 186 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: transcendental_ps_2_a: 186 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: transcendental_ps_3_0: 161 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: trig_ps_2_a: 376 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: trig_ps_3_0: 355 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: matrix_ps_2_0: 98 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: matrix_ps_2_a: 98 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: matrix_ps_3_0: 86 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: staticflow_ps_3_0: 131 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: flow_ps_3_0: 155 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: deriv_ps_2_a: 83 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: deriv_ps_3_0: 71 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: texture_ps_2_0: 117 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: texture_ps_2_a: 112 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: texture_ps_3_0: 97 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: texgrad_ps_2_a: 70 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: texgrad_ps_3_0: 67 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: texlod_ps_3_0: 59 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: clip_ps_2_0: 60 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: clip_ps_2_a: 60 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: clip_ps_3_0: 60 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: vface_ps_3_0: 80 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:653 Log: vface_ps_3_0_ccw: 80 DWORDs
+E:\Projects\renderdoc\util\test\demos\d3d9\d3d9_ps_emu_data.cpp:661 Log: done

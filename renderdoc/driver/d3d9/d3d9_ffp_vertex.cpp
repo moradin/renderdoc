@@ -58,13 +58,6 @@ namespace
 // the direction to the viewer without D3DRS_LOCALVIEWER: the camera looks down +z
 const float NonLocalViewer[3] = {0.0f, 0.0f, -1.0f};
 
-float Saturate(float f)
-{
-  if(!(f > 0.0f))
-    return 0.0f;
-  return f > 1.0f ? 1.0f : f;
-}
-
 float Dot3(const float *a, const float *b)
 {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];

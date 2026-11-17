@@ -1,0 +1,5 @@
+Development x64, [d3d9bench] RunPostVS, back to back (5.5 first version vs HEAD 35cb367aa):
+old (HEAD): 1097.8 1097.1 1094.7 1095.2 1093.7 ms
+new (first version, helpers shared as ordinary functions): 1126.5 1124.8 1126.8 1125.7 1125.5 ms
+
+final code, from the verification run (verify_summary.txt): 1020.4 1016.0 1018.7 ms

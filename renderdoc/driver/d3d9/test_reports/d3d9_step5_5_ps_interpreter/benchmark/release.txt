@@ -1,0 +1,21 @@
+new build 0 errors 0
+new:
+  RunPostVS: 200000 vertices of a 16 instruction shader in 201.1 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 201.1 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 200.7 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 201.9 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 202.2 ms (best of 5)
+old build 0 errors 0
+old:
+  RunPostVS: 200000 vertices of a 16 instruction shader in 150.9 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 150.9 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 150.7 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 151.3 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 150.1 ms (best of 5)
+new again build 0 errors 0
+new again:
+  RunPostVS: 200000 vertices of a 16 instruction shader in 200.0 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 200.0 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 200.6 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 200.4 ms (best of 5)
+  RunPostVS: 200000 vertices of a 16 instruction shader in 200.6 ms (best of 5)

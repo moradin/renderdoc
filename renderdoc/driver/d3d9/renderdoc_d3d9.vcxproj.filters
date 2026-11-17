@@ -38,6 +38,9 @@
     <ClCompile Include="d3d9_vs_debug.cpp">
       <Filter>Replay</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9_ps_emulate.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
     </ClCompile>
     <ClCompile Include="d3d9_ffp_vertex.cpp">
       <Filter>Replay</Filter>
@@ -140,12 +143,18 @@
     <ClInclude Include="d3d9_ctab_test_data.h">
       <Filter>Replay</Filter>
     </ClInclude>
+    <ClInclude Include="d3d9_ps_test_data.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
     <ClInclude Include="d3d9_shader_reflect.h">
       <Filter>Replay</Filter>
     </ClInclude>
     <ClInclude Include="d3d9_vs_emulate.h">
       <Filter>Replay</Filter>
     <ClInclude Include="d3d9_vs_debug.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_ps_emulate.h">
       <Filter>Replay</Filter>
     </ClInclude>
     <ClInclude Include="d3d9_postvs.h">

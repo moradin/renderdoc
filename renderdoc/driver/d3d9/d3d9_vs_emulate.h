@@ -32,6 +32,7 @@
 // tested on every platform. The replay side, which fills these structs from the device, is
 // d3d9_postvs.cpp.
 
+#include <math.h>
 #include "api/replay/renderdoc_replay.h"
 #include "d3d9_bytecode.h"
 
@@ -168,15 +169,12 @@ struct VSCallFrame
   size_t loopDepth = 0;
 };
 
-// the registers of one vertex's run, as they are between two instructions
-struct VSRegisters
+// the predicate and the flow control state of a run, the same in vertex and pixel shaders
+struct FlowRegisters
 {
-  Vec4 r[MaxVSTemps];
-  IVec4 a0;
   bool p[4] = {false, false, false, false};
   rdcarray<VSLoopFrame> loops;
   rdcarray<VSCallFrame> calls;
-  VSOutputs out;
 
   // the index in loops of the innermost loop (rep has no aL), or -1 outside any
   int32_t InnermostLoop() const
@@ -194,6 +192,14 @@ struct VSRegisters
   }
 };
 
+// the registers of one vertex's run, as they are between two instructions
+struct VSRegisters : FlowRegisters
+{
+  Vec4 r[MaxVSTemps];
+  IVec4 a0;
+  VSOutputs out;
+};
+
 // a register an instruction changed, and what it held before
 struct VSRegisterChange
 {
@@ -205,6 +211,90 @@ struct VSRegisterChange
   // p0 (each 0 or 1)
   Vec4 f;
   IVec4 i;
+};
+
+// helpers both interpreters use: _sat (NaN gives 0), the comparisons of ifc, breakc and setp, a
+// source modifier, and where c2048 and up are for the types above Const. They're static so each
+// file has its own: shared, the whole program optimisation stopped inlining them into the vertex
+// interpreter's loop, which made VS Out a quarter slower.
+static inline float Saturate(float f)
+{
+  // NaN saturates to 0
+  if(!(f > 0.0f))
+    return 0.0f;
+  return f > 1.0f ? 1.0f : f;
+}
+
+static inline bool Compare(D3D9BC::Comparison c, float a, float b)
+{
+  switch(c)
+  {
+    case D3D9BC::Comparison::GT: return a > b;
+    case D3D9BC::Comparison::EQ: return a == b;
+    case D3D9BC::Comparison::GE: return a >= b;
+    case D3D9BC::Comparison::LT: return a < b;
+    case D3D9BC::Comparison::NE: return a != b;
+    case D3D9BC::Comparison::LE: return a <= b;
+    default: return false;
+  }
+}
+
+static inline float ApplyMod(D3D9BC::SrcMod mod, float f)
+{
+  switch(mod)
+  {
+    case D3D9BC::SrcMod::None: return f;
+    case D3D9BC::SrcMod::Neg: return -f;
+    case D3D9BC::SrcMod::Bias: return f - 0.5f;
+    case D3D9BC::SrcMod::BiasNeg: return -(f - 0.5f);
+    case D3D9BC::SrcMod::Sign: return 2.0f * f - 1.0f;
+    case D3D9BC::SrcMod::SignNeg: return -(2.0f * f - 1.0f);
+    case D3D9BC::SrcMod::Comp: return 1.0f - f;
+    case D3D9BC::SrcMod::X2: return 2.0f * f;
+    case D3D9BC::SrcMod::X2Neg: return -2.0f * f;
+    case D3D9BC::SrcMod::Abs: return fabsf(f);
+    case D3D9BC::SrcMod::AbsNeg: return -fabsf(f);
+    case D3D9BC::SrcMod::Not: return f != 0.0f ? 0.0f : 1.0f;
+    // _dz and _dw only apply to ps_1_4's texld and texcrd
+    default: return f;
+  }
+}
+
+static inline uint32_t ConstantRegisterOffset(D3D9BC::RegType type)
+{
+  switch(type)
+  {
+    case D3D9BC::RegType::Const2: return 2048;
+    case D3D9BC::RegType::Const3: return 4096;
+    case D3D9BC::RegType::Const4: return 6144;
+    default: return 0;
+  }
+}
+
+// What the interpreters (this one and the pixel shader one in d3d9_ps_emulate.h) work out about a
+// program before running it: its flow control matched up, its labels and its literals.
+struct ProgramLayout
+{
+  struct Literal
+  {
+    uint32_t reg;
+    uint32_t value[4];
+  };
+
+  // per instruction: for if/ifc the matching else (or endif), for else the endif, for loop/rep
+  // the endloop/endrep and for those the loop, for break/breakc/breakp the end of the loop it
+  // breaks out of. ~0U otherwise.
+  rdcarray<uint32_t> match;
+  // the instruction index of each label, by label number. ~0U where there's none.
+  rdcarray<uint32_t> labels;
+
+  rdcarray<Literal> floatLiterals, intLiterals, boolLiterals;
+
+  // fills the above from prog. Returns false, with the reason in error, if its flow control doesn't
+  // match up.
+  bool Build(const D3D9BC::Program &prog, rdcstr &error);
+  // the constants with the literals applied, and padded to cover them
+  VSConstants ApplyLiterals(const VSConstants &consts) const;
 };
 
 class VSEmulator;
@@ -285,24 +375,10 @@ public:
 private:
   friend class VSThread;
 
-  struct Literal
-  {
-    uint32_t reg;
-    uint32_t value[4];
-  };
-
   const D3D9BC::Program *m_Prog = NULL;
   D3D9BC::Version m_Version;
   rdcstr m_Error;
-
-  // per instruction: for if/ifc the matching else (or endif), for else the endif, for loop/rep
-  // the endloop/endrep and for those the loop, for break/breakc/breakp the end of the loop it
-  // breaks out of. ~0U otherwise.
-  rdcarray<uint32_t> m_Match;
-  // the instruction index of each label, by label number. ~0U where there's none.
-  rdcarray<uint32_t> m_Labels;
-
-  rdcarray<Literal> m_FloatLiterals, m_IntLiterals, m_BoolLiterals;
+  ProgramLayout m_Layout;
 };
 
 //////////////////////////////////////////////////////////////////////////

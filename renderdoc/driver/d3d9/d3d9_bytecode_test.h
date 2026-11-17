@@ -112,10 +112,10 @@ struct Assembler
   rdcarray<uint32_t> tokens;
   bool sm1 = false;
 
-  Assembler(uint8_t major, uint8_t minor)
+  Assembler(uint8_t major, uint8_t minor, bool pixel = false)
   {
     sm1 = major < 2;
-    tokens.push_back(VersionToken(false, major, minor));
+    tokens.push_back(VersionToken(pixel, major, minor));
   }
 
   Assembler &op(Opcode o, std::initializer_list<uint32_t> params, uint32_t control = 0,
