@@ -1,4 +1,5 @@
 import math
+import struct
 import renderdoc as rd
 import rdtest
 
@@ -51,10 +52,36 @@ REGISTERS = {
     'vs_3_0': {'o0': (rd.VarType.Float, 4)},
 }
 
+# the pixel draws that can be debugged: their marker, the outputs they write, and how far each output
+# may be from the GPU's (relative to its magnitude, at least 1), with the reason. The driver fuses a
+# mul and the add after it, which the bytecode has apart (ps_2_0's mul r0, r0, r1.x and add r0, r0,
+# r1), and a derivative of the result magnifies the difference.
+PIXEL_DRAWS = {
+    'ps_2_0': (['oC0'], 1e-6, 'the driver fuses a mul and an add'),
+    'ps_2_x': (['oC0', 'oC1'], 1e-5, 'the driver fuses a mul and an add, then ddx and ddy'),
+    'ps_3_0': (['oC0', 'oC1', 'oDepth'], 1e-5, 'the driver fuses a mul and an add'),
+}
+
+# the D24S8 depth target's step
+DEPTH_EPS = 1.5 / (1 << 24)
+
+
+def bits(f):
+    return struct.unpack('<I', struct.pack('<f', f))[0]
+
+
+def float_of(hexbits):
+    return struct.unpack('<f', struct.pack('<I', int(hexbits, 16)))[0]
+
 
 class D3D9_Shader_Debug_Zoo(rdtest.D3D9_Test):
     demos_test_name = 'D3D9_Shader_Debug_Zoo'
     internal = False
+
+    def get_capture(self):
+        # the native run writes what the GPU drew at the pixel draws' probes
+        self.run_native()
+        return super().get_capture()
 
     def check_d3d9_capture(self):
         self.check_api()
@@ -64,6 +91,11 @@ class D3D9_Shader_Debug_Zoo(rdtest.D3D9_Test):
 
         for marker, model, instances in DRAWS:
             self.check_draw(marker, model, instances)
+
+        self.read_pixel_reference()
+        for marker in PIXEL_DRAWS:
+            self.check_pixel_draw(marker)
+        self.check_pixel_trace()
 
         self.check_not_debuggable()
 
@@ -310,15 +342,181 @@ class D3D9_Shader_Debug_Zoo(rdtest.D3D9_Test):
 
             rdtest.log.success(f"The names draw's constants are named: {sorted(NAMES.keys())}, literals {literals}")
 
-    def check_not_debuggable(self):
-        # pixel shaders can't be debugged yet, and say so
-        draw = self.find_marker_draw('vs_3_0')
+    def read_pixel_reference(self):
+        """What the GPU wrote natively at each pixel draw's probes: both targets' values."""
+        self.pixel_reference = {}
+        with open(self.demo_tmp_path('D3D9_Shader_Debug_Zoo_pixels.txt')) as f:
+            for line in f:
+                parts = line.rstrip('\n').split('\t')
+                if len(parts) != 11:
+                    continue
+                values = [float_of(h) for h in parts[3:]]
+                self.pixel_reference.setdefault(parts[0], []).append(
+                    ((int(parts[1]), int(parts[2])), values[0:4], values[4:8]))
+        if len(self.pixel_reference) == 0:
+            raise rdtest.TestFailureException("The native run wrote no pixel reference")
+
+    def debug_outputs(self, trace, variables):
+        """The debugged pixel's outputs by register: oC# and oDepth, through the output signature."""
+        refl = self.controller.GetPipelineState().GetShaderReflection(rd.ShaderStage.Pixel)
+        ret = {}
+        for i, sig in enumerate(refl.outputSignature):
+            source = self.find_source_var(trace.sourceVars, i, rd.DebugVariableType.Variable)
+            if source is None:
+                raise rdtest.TestFailureException(f"The trace has no source variable for {sig.semanticIdxName}")
+            value = self.evaluate_source_var(source, variables).value.f32v
+            if sig.systemValue == rd.ShaderBuiltin.DepthOutput:
+                ret['oDepth'] = [value[0]]
+            else:
+                ret[f'oC{sig.regIndex}'] = list(value[0:4])
+        return ret
+
+    def check_pixel_draw(self, marker):
+        """Each probe of the draw: the debugged pixel's outputs against the replay's targets and the
+        GPU's native ones, and its changes step forwards and backwards consistently."""
+        outputs, tolerance, why = PIXEL_DRAWS[marker]
+        draw = self.find_marker_draw(marker)
         self.set_event(draw.eventId, True)
-        ps = self.controller.GetPipelineState().GetShaderReflection(rd.ShaderStage.Pixel)
-        if ps.debugInfo.debuggable or 'pixel' not in ps.debugInfo.debugStatus:
-            raise rdtest.TestFailureException(f"The pixel shader's debug status is {ps.debugInfo.debuggable}, "
-                                              f"'{ps.debugInfo.debugStatus}'")
-        rdtest.log.success(f"The pixel shader can't be debugged: '{ps.debugInfo.debugStatus}'")
+
+        pipe = self.controller.GetPipelineState()
+        refl = pipe.GetShaderReflection(rd.ShaderStage.Pixel)
+        if not refl.debugInfo.debuggable:
+            raise rdtest.TestFailureException(f"The {marker} pixel shader can't be debugged: "
+                                              f"{refl.debugInfo.debugStatus}")
+        targets = [t.resource for t in pipe.GetOutputTargets()]
+        depth = pipe.GetDepthTarget().resource
+
+        worst = 0.0
+        exact = 0
+        compared = 0
+        inexact = []
+        for (x, y), native0, native1 in self.pixel_reference[marker]:
+            with self.debug_pixel(x, y, rd.DebugPixelInputs()) as debug:
+                if debug.trace.debugger is None:
+                    raise rdtest.TestFailureException(f"{marker}: pixel ({x}, {y}) couldn't be debugged")
+                if debug.trace.stage != rd.ShaderStage.Pixel:
+                    raise rdtest.TestFailureException(f"{marker}: the trace's stage is {debug.trace.stage}")
+                cycles, variables = self.process_trace(debug.trace)
+                got = self.debug_outputs(debug.trace, variables)
+
+            for name in outputs:
+                if name not in got:
+                    raise rdtest.TestFailureException(f"{marker}: pixel ({x}, {y}) has no {name}, only "
+                                                      f"{sorted(got.keys())}")
+
+                if name == 'oDepth':
+                    # the depth target holds 24 bits; natively oC1 doesn't have it, the replay's depth does
+                    picked = self.controller.PickPixel(depth, x, y, rd.Subresource(0, 0, 0),
+                                                       rd.CompType.Typeless).floatValue[0]
+                    if abs(picked - got[name][0]) > DEPTH_EPS:
+                        raise rdtest.TestFailureException(f"{marker}: pixel ({x}, {y})'s oDepth is {got[name][0]}, "
+                                                          f"the depth target has {picked}")
+                    continue
+
+                index = int(name[2:])
+                replay = list(self.controller.PickPixel(targets[index], x, y, rd.Subresource(0, 0, 0),
+                                                        rd.CompType.Typeless).floatValue)
+                native = native0 if index == 0 else native1
+
+                # the replay draws what the GPU drew natively, bit for bit
+                if [bits(v) for v in replay] != [bits(v) for v in native]:
+                    raise rdtest.TestFailureException(f"{marker}: pixel ({x}, {y})'s {name} at replay is {replay}, "
+                                                      f"natively {native}")
+
+                for c in range(4):
+                    compared += 1
+                    if bits(got[name][c]) == bits(native[c]):
+                        exact += 1
+                        continue
+                    diff = abs(got[name][c] - native[c]) / max(1.0, abs(native[c]))
+                    worst = max(worst, diff)
+                    inexact.append(f"({x}, {y}) {name}.{'xyzw'[c]} {got[name][c]:.9g} vs {native[c]:.9g} "
+                                   f"({abs(bits(got[name][c]) - bits(native[c]))} ulps)")
+                    if diff > tolerance:
+                        raise rdtest.TestFailureException(
+                            f"{marker}: pixel ({x}, {y})'s {name} is {got[name]}, the GPU's is {native} "
+                            f"(component {c} is {diff} off, more than {tolerance})")
+
+        for line in inexact:
+            rdtest.log.print(f"{marker}: {line}")
+        probes = len(self.pixel_reference[marker])
+        rdtest.log.success(f"{marker}: {probes} pixels debugged, {exact} of {compared} output components "
+                           f"bit for bit the GPU's" +
+                           (f", the others at most {worst:.3g} off ({why})" if exact < compared else ""))
+
+    def check_pixel_trace(self):
+        """The ps_3_0 draw's trace: its inputs (vPos the pixel, vFace +1 or -1 by the triangle's
+        winding), the registers it changes, and steps on its instructions."""
+        draw = self.find_marker_draw('ps_3_0')
+        self.set_event(draw.eventId, True)
+        refl = self.controller.GetPipelineState().GetShaderReflection(rd.ShaderStage.Pixel)
+        target = self.controller.GetDisassemblyTargets(True)[0]
+        disasm = self.controller.DisassembleShader(rd.ResourceId.Null(), refl, target).split('\n')
+
+        # (223, 37) is in the clockwise triangle, (270, 100) in the other
+        for (x, y), face in [((223, 37), 1.0), ((270, 100), -1.0)]:
+            with self.debug_pixel(x, y, rd.DebugPixelInputs()) as debug:
+                trace = debug.trace
+                inputs = {v.name: v for v in trace.inputs}
+                for name in ['vPos', 'vFace', 'v0']:
+                    if name not in inputs:
+                        raise rdtest.TestFailureException(f"The ps_3_0 trace has no input {name}: {sorted(inputs.keys())}")
+                # the inputs by register too, as the disassembly names them, for watches and hovering
+                aliases = [v.name for v in trace.sourceVars
+                           if len(v.variables) > 0 and v.variables[0].type == rd.DebugVariableType.Input]
+                for name in ['Registers.vPos', 'Registers.vFace', 'Registers.v0']:
+                    if name not in aliases:
+                        raise rdtest.TestFailureException(f"The ps_3_0 trace has no {name}: {aliases}")
+                pos = inputs['vPos']
+                if pos.columns != 2 or list(pos.value.f32v[0:2]) != [float(x), float(y)]:
+                    raise rdtest.TestFailureException(f"Pixel ({x}, {y})'s vPos is {list(pos.value.f32v[0:pos.columns])}")
+                if inputs['vFace'].columns != 1 or inputs['vFace'].value.f32v[0] != face:
+                    raise rdtest.TestFailureException(f"Pixel ({x}, {y})'s vFace is {inputs['vFace'].value.f32v[0]}, "
+                                                      f"expected {face}")
+
+                lines = {i.instruction: i.lineInfo.disassemblyLine for i in trace.instInfo}
+                states = self.all_states(trace.debugger)
+                initial = {c.after.name: c.after for c in states[0].changes}
+                for name, columns in [('oC0', 4), ('oC1', 4), ('oDepth', 1), ('r0', 4)]:
+                    if name not in initial or initial[name].columns != columns:
+                        raise rdtest.TestFailureException(f"The ps_3_0 trace's first state has no {name} of {columns} "
+                                                          f"columns: {sorted(initial.keys())}")
+                for st in states:
+                    line = lines.get(st.nextInstruction, 0)
+                    text = disasm[line - 1].strip() if 0 < line <= len(disasm) else ''
+                    if text == '' or text.startswith('//') or text.startswith('dcl') or text.startswith('def'):
+                        raise rdtest.TestFailureException(f"ps_3_0: step {st.stepIndex} is on line {line}, '{text}'")
+                    if st.flags & rd.ShaderEvents.SampleLoadGather:
+                        raise rdtest.TestFailureException(f"ps_3_0: step {st.stepIndex} says it sampled")
+                if len(states) < 10:
+                    raise rdtest.TestFailureException(f"The ps_3_0 pixel took only {len(states)} steps")
+
+        rdtest.log.success("ps_3_0: vPos and vFace are the pixels', the inputs are listed by register too, the "
+                           "outputs are listed, and every step is on an instruction")
+
+    def check_not_debuggable(self):
+        # pixel shaders that sample, and ps_1_x, can't be debugged yet, and say so
+        for marker, words, (x, y) in [('ps_3_0 texture', 'sample', (340, 60)), ('ps_1_1', 'ps_1_x', (40, 210))]:
+            draw = self.find_marker_draw(marker)
+            self.set_event(draw.eventId, True)
+            ps = self.controller.GetPipelineState().GetShaderReflection(rd.ShaderStage.Pixel)
+            if ps.debugInfo.debuggable or words not in ps.debugInfo.debugStatus:
+                raise rdtest.TestFailureException(f"The {marker} pixel shader's debug status is "
+                                                  f"{ps.debugInfo.debuggable}, '{ps.debugInfo.debugStatus}'")
+            trace = self.controller.DebugPixel(x, y, rd.DebugPixelInputs())
+            if trace.debugger is not None:
+                raise rdtest.TestFailureException(f"A pixel of the {marker} draw was debugged")
+            self.controller.FreeTrace(trace)
+            rdtest.log.success(f"The {marker} pixel shader can't be debugged: '{ps.debugInfo.debugStatus}'")
+
+        # a pixel the draw doesn't cover has nothing to debug
+        draw = self.find_marker_draw('ps_2_0')
+        self.set_event(draw.eventId, True)
+        trace = self.controller.DebugPixel(5, 5, rd.DebugPixelInputs())
+        if trace.debugger is not None:
+            raise rdtest.TestFailureException("A pixel outside the ps_2_0 draw was debugged")
+        self.controller.FreeTrace(trace)
+        rdtest.log.success("A pixel outside the draw isn't debugged")
 
         # fixed function vertex processing isn't a shader
         draw = self.find_marker_draw('Fixed function')
@@ -330,5 +528,10 @@ class D3D9_Shader_Debug_Zoo(rdtest.D3D9_Test):
         trace = self.controller.DebugVertex(0, 0, 0, 0)
         if trace.debugger is not None:
             raise rdtest.TestFailureException("A fixed function vertex was debugged")
+        self.controller.FreeTrace(trace)
+        # nor is fixed function pixel processing, at a pixel the triangle covers
+        trace = self.controller.DebugPixel(350, 270, rd.DebugPixelInputs())
+        if trace.debugger is not None:
+            raise rdtest.TestFailureException("A fixed function pixel was debugged")
         self.controller.FreeTrace(trace)
         rdtest.log.success(f"The fixed function draw can't be debugged: '{vs.debugInfo.debugStatus}'")

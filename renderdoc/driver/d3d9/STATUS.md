@@ -71,9 +71,11 @@ Where it starts from:
 - **Already there:** the vertex shader interpreter in `d3d9_vs_emulate.cpp` runs every vs_1_1 to
   vs_3_0 instruction and gives VS Out, which is checked against the GPU. The bytecode parser,
   reflection and disassembler are done and checked against the compiler.
-- **Missing:** `DebugPixel` is a stub. Vertex shaders can be debugged since 5.2, with names, call
-  stacks and flags since 5.3. Since 5.5 and 5.6, ps_1_1 to ps_3_0 shaders run in their own
-  interpreter (`d3d9_ps_emulate.cpp`), which nothing calls yet.
+- **Missing:** Vertex shaders can be debugged since 5.2, with names, call stacks and flags since
+  5.3. Since 5.5 and 5.6, ps_1_1 to ps_3_0 shaders run in their own interpreter
+  (`d3d9_ps_emulate.cpp`), and since 5.7 `DebugPixel` debugs ps_2_0 to ps_3_0 shaders that don't
+  sample, with inputs read from the GPU. Sampling (5.8), ps_1_x (5.9) and choosing the fragment
+  (5.10) are next.
 - **Already works for any driver:** qrenderdoc's shader viewer, "Debug this vertex", "Debug
   pixel", and the tests' `process_trace`. The driver returns a `ShaderDebugTrace` with the starting
   state, the steps with what each changed, and each instruction's disassembly line
@@ -90,7 +92,7 @@ Where it starts from:
 | 5.4 | ~~**Native probes** (a probe and a report, no driver change): `vPos`'s pixel centre (whole or +0.5) and `vFace`'s values; ps_1_x's clamp range, `texcoord` clamping and `cnd` on 1_1-1_3; `dsx`/`dsy` per quad or per pixel; colour input precision and clamping; `texldd` against `texld`'s own LOD; `rcp`, `rsq`, `exp`, `log`, `sincos`, `pow` against the C library; reading inputs back with a replacement pixel shader, and which fragment it picks with alpha test or `texkill`~~ | Done, see "What the GPU does with pixel shaders" below (`d3d9_step5_4_native_probes.md`) |
 | 5.5 | ~~**ps_2_0-ps_3_0 interpreter** (portable, unit tested): pixel registers, `texld`/`texldp`/`texldb`/`texldd` through a sampling callback, `texkill`, `dsx`/`dsy`, `cmp`, `dp2add`, the 2x2 quad in lockstep~~ | Done, see "Pixel shader interpreter" below (`d3d9_step5_5_ps_interpreter.md`). 26 compiled ps_2_0, ps_2_x and ps_3_0 cases match the GPU's outputs and discards: bit for bit without transcendentals, within 1.6e-6 relative with them (5.1e-6 for the trigonometry) |
 | 5.6 | ~~**ps_1_x interpreter** (portable, unit tested): `texcoord`, `tex`, `texbem`/`texbeml`, `texreg2*`, the `texm3x2*`/`texm3x3*` families, `texdp3*`, `texdepth`, `bem`, ps_1_4's `texcrd`/`texld`/`phase`, co-issue, the ps_1_x modifiers, `cnd`, and the clamps 5.4 measured (constants, `texcoord`, the output; no range limit)~~ | Done, see "Pixel shader interpreter" below (`d3d9_step5_6_ps1_interpreter.md`). 29 assembled ps_1_1-1_4 cases match the GPU's r0 and discards bit for bit, but for two values 1 ulp apart through `rcp` |
-| 5.7 | **`DebugPixel`, inputs from the GPU:** redraw the event with a generated pixel shader writing the original's inputs and their `dsx`/`dsy` to float32 targets, scissored to the quad (ps_2_x for ps_1_x/2_x originals, since ps_2_0 has no `dsx`; ps_3_0 with the original's declarations for ps_3_0); `vPos` computed, `vFace` read with `cmp`; the quad's other pixels from the derivatives. Debugging on for ps_2_0/3_0 shaders that don't sample; those that do say why not yet | Zoo pixel draws to A32B32G32R32F pass: the debugger's `oC#` and `oDepth` match the replay's pixel and the demo's native readback |
+| 5.7 | ~~**`DebugPixel`, inputs from the GPU:** redraw the event with a generated pixel shader writing the original's inputs and their `dsx`/`dsy` to float32 targets, scissored to the quad (ps_2_x for ps_1_x/2_x originals, since ps_2_0 has no `dsx`; ps_3_0 with the original's declarations for ps_3_0); `vPos` computed, `vFace` read with `cmp`; the quad's other pixels from the derivatives. Debugging on for ps_2_0/3_0 shaders that don't sample; those that do say why not yet~~ | Done, see "Debugging pixel shaders" below (`d3d9_step5_7_debug_pixel.md`). 21 pixels of the zoo's ps_2_0, ps_2_x and ps_3_0 draws: the replay's pixels are the GPU's bit for bit, and the debugger's `oC#` are too in 109 of 140 components; the others are within 2.8e-6, where the driver fused a `mul` and an `add` the bytecode has apart. `oDepth` matches the D24 target. The quad's other pixels aren't extrapolated: ps_3_0 reads them exactly, and so does ps_2_x where the same primitive covers them |
 | 5.8 | **Sampling on the GPU:** each sample is a one-pixel `texldd`/`texldl`/`texldb` draw with the original texture and sampler state, cached. Transcendentals on the GPU too, since 5.4 found they differ | Zoo draws pass with 2D, cube and volume textures, mips, anisotropic, border, sRGB, `SetLOD`, D24 shadow comparison and an unbound texture |
 | 5.9 | **ps_1_x end to end, and the texture viewer:** ps_1_1-1_4 debugging on, texture addressing through 5.8's sampling; fixed function pixel stages say why they can't be debugged | ps_1_x zoo draws pass; UI screenshots of "Debug" in the texture viewer stepping a ps_1_x and a ps_3_0 shader |
 | 5.10 | **Which fragment, and edge cases:** for ps_2_0 and later, the original shader with its inputs written to extra targets, so its own `texkill` and alpha test pick the fragment (5.4); multisampling (pixel centre, sample 0), point sprites, centroid | Zoo draws with alpha test, `texkill` and overlapping triangles debug the fragment the GPU wrote, or the report says which cases don't |
@@ -139,6 +141,9 @@ decisions they lead to:
     [0, 1] and scales all four channels; `texm3x3spec`'s eye constant isn't clamped; `_dw` is a
     multiply by `rcp`.
 - **5.7, inputs:**
+  - Done in 5.7, see "Debugging pixel shaders" below. Measured on the way: the driver fuses a
+    `mul` and the `add` after it in ps_2_0 and ps_2_x too, not only in ps_3_0
+    (`d3d9_step5_7_debug_pixel.md`).
   - Pixel (x, y) samples its inputs at the whole screen position (x, y), D3D9's rule; coverage
     follows the top-left rule with those centres.
   - `vPos` is (x, y) exactly, relative to the render target, not the viewport, so it's computed.
@@ -151,7 +156,9 @@ decisions they lead to:
   - Derivatives are per 2x2 quad: `dsx` from the top row and `dsy` from the left column, in ps_2_x
     and ps_3_0. Helper pixels (outside the triangle or the scissor) run with extrapolated inputs.
     So the quad's other pixels come from the debugged pixel's own value and derivatives, never
-    from the target, which another triangle may have written.
+    from the target, which another triangle may have written. (5.7 does better: ps_3_0 reads the
+    neighbours' inputs in the pixel itself, and ps_2_x reads them at the neighbours, taking them
+    only where their derivatives are the pixel's, so the same primitive covered them.)
   - This GPU has ps_2_x with gradient instructions (PS20Caps 0x1f, 32 temps, 512 slots); the
     replacement for non-ps_3_0 shaders is ps_2_x.
 - **5.8, sampling:**
@@ -265,7 +272,7 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Texture_LOD` | `SetLOD` on managed textures. The demo samples a 2D, a cube, a volume and a vertex texture at LODs 0 to 7 with a LOD set before the frame and MAXMIPLEVEL 0, then with a LOD set in the frame and MAXMIPLEVEL 1, and checks natively that the GPU read the levels expected (in its log). The test checks the same at replay, going to the second pass first so that the first has to undo the frame's SetLOD; the descriptors' first mip and mip count; VS Out of the vertex texture draw; the texture viewer showing mips 0, 3 and 6 of the 2D texture while its LOD is 4; and, opening the capture again with `D3D9_ForceReplayOnExDevice` set, that it replays on a D3D9Ex device with SetLOD ignored and the descriptors starting at mip 0, and that each of the 12 LODs it ignores (4 at the frame's start, 8 SetLOD calls) is a debug message naming the texture, the LOD and the setting |
 | `D3D9_Custom_Shaders` | Custom display shaders. The demo samples each of its textures natively with a ps_3_0 shader and writes what the GPU returned; the test builds the same shader as a custom shader and checks its output against that at 6 texels of every subresource: a default pool 2D texture with 3 mips, a managed one (decoded on the CPU until step 8 moved replay to a plain D3D9 device, sampled directly since), L8 (sampled as L, L, L, 1), a cube and a volume texture with 2 mips, a render target surface, and a D24S8 depth stencil (depth and stencil from its clears). `SV_Position` and `TEXCOORD0` match the native draw. The prefix's values (`RD_TexDim`, the mip, slice, sample and type, the range) are checked for each texture, a global the prefix doesn't fill is 0, `Texture2D` and `SamplerState` sample like `sampler2D`, the UI's template builds, and a shader with an error or for ps_2_0 doesn't |
 | `D3D9_Shader_Editing` | Shader editing. The demo draws nine quads with vs_1_1, vs_2_0 and vs_3_0, ps_1_1, ps_1_4, ps_2_0 and ps_3_0 shaders, bound when the frame starts, by a state block recorded before the frame, by `Set*Shader`, created during the frame, shared by two draws, and with fixed function pixel processing; natively it draws the scene with each of 10 edits in place of the original and writes what the GPU drew at 36 texels. The test builds each edit (HLSL, assembly or bytecode), replaces the original and checks the texels against the GPU's, checks the pipeline state (the original's ID, the edit's reflection) and, for vertex shaders, VS Out; then removes it and checks the original is back. An edit with a constant table keeps it, and the assembly edit, which has none, has the original's names. Every shader's disassembly assembles back to the same instructions, with no constant table, and replacing the original gives it the original's constants and samplers exactly (the 7 shaders with a table). Errors (HLSL, assembly, ps_1_x HLSL, a profile or bytecode of the other stage, bytecode with no end token, other stages) are reported, HLSL with no profile is shader model 3, a pixel shader doesn't replace a vertex shader, and freeing a replacement removes it |
-| `D3D9_Shader_Debug_Zoo` | Vertex shader debugging. Each vertex of each instance of the vs_1_1 (hand assembled: `m4x4`, `a0` relative addressing, `expp`, `logp`, `lit`, `dst`, `frc`, comparisons, `oFog`, `oPts`), vs_2_0 (HLSL: a `loop` by `i0` over a relatively addressed array, a branch on `b0`, `sincos`, `pow`), vs_2_x (assembly: predicates, `setp`, `if_lt`, `break_gt`, a call), vs_3_0 (HLSL: a dynamic loop with a `break`, `texldl`) and instanced vs_3_0 (base vertex, start index, 2 instances) draws is debugged with `check_vertex_debug`: its outputs, through the trace's source variables, equal VS Out exactly, and `process_trace` steps the changes forwards and backwards consistently. Each step is on an instruction of the disassembly (not a declaration), registers are named and sized by register (`oFog` 1 column, `aL` an integer, `p0` booleans), the API says it can debug shaders, the pixel shader and the fixed function draw say why they can't be debugged, and `DebugVertex` on the fixed function draw gives no debugger. The pipeline state's model for the vs_2_x shader is `vs_2_x`. Since 5.3 also a vs_2_x draw with nested calls (`rep` around `call l1`, which calls `l3`, then `callnz l2, b0`) and a vs_3_0 HLSL draw whose constant table has a row_major matrix, an array of structs, a matrix with two of its columns allocated and a bool array, and which makes an infinity (`1 / zero`). Every state's call stack ends with the label its instruction is in, and the call stacks each draw goes through are the expected ones; only `texldl` is flagged as a sample, and only the steps writing a NaN or infinity to a component they write (the names draw's `rcp` and the `mul` after it) are flagged as such. The names draw's constants are named, shaped and placed as the table allocates them (`texMat` as 4x2, nothing for `lights[2]`), each named register is also under "Registers", values read through them are the application's, and the compiler's literals are under "Literals" and nowhere else |
+| `D3D9_Shader_Debug_Zoo` | Vertex shader debugging. Each vertex of each instance of the vs_1_1 (hand assembled: `m4x4`, `a0` relative addressing, `expp`, `logp`, `lit`, `dst`, `frc`, comparisons, `oFog`, `oPts`), vs_2_0 (HLSL: a `loop` by `i0` over a relatively addressed array, a branch on `b0`, `sincos`, `pow`), vs_2_x (assembly: predicates, `setp`, `if_lt`, `break_gt`, a call), vs_3_0 (HLSL: a dynamic loop with a `break`, `texldl`) and instanced vs_3_0 (base vertex, start index, 2 instances) draws is debugged with `check_vertex_debug`: its outputs, through the trace's source variables, equal VS Out exactly, and `process_trace` steps the changes forwards and backwards consistently. Each step is on an instruction of the disassembly (not a declaration), registers are named and sized by register (`oFog` 1 column, `aL` an integer, `p0` booleans), the API says it can debug shaders, the fixed function draw says why it can't be debugged, and `DebugVertex` on the fixed function draw gives no debugger. The pipeline state's model for the vs_2_x shader is `vs_2_x`. Since 5.3 also a vs_2_x draw with nested calls (`rep` around `call l1`, which calls `l3`, then `callnz l2, b0`) and a vs_3_0 HLSL draw whose constant table has a row_major matrix, an array of structs, a matrix with two of its columns allocated and a bool array, and which makes an infinity (`1 / zero`). Every state's call stack ends with the label its instruction is in, and the call stacks each draw goes through are the expected ones; only `texldl` is flagged as a sample, and only the steps writing a NaN or infinity to a component they write (the names draw's `rcp` and the `mul` after it) are flagged as such. The names draw's constants are named, shaped and placed as the table allocates them (`texMat` as 4x2, nothing for `lights[2]`), each named register is also under "Registers", values read through them are the application's, and the compiler's literals are under "Literals" and nowhere else Since 5.7 also pixel shader debugging, with draws to two A32B32G32R32F targets of a ps_2_0 shader (arithmetic on colours and coordinates with constants), a ps_2_x one (`ps_2_a`: `ddx`, `ddy` and two targets) and a ps_3_0 one (vPos, vFace with a clockwise and a counter-clockwise triangle, a loop, a branch, derivatives, two targets and oDepth), each two triangles whose vertices have different w. The demo writes what the GPU wrote at 7 pixels of each (a whole quad, and others either side of the diagonal) natively; at each, the replay's pixels have to be those bit for bit, and the debugged pixel's `oC#` too, within 1e-6 relative for ps_2_0 and 1e-5 with derivatives, where the driver fuses a `mul` and an `add` (each difference is logged). `oDepth` has to match the D24S8 target to 24 bits, and `process_trace` has to step consistently. The ps_3_0 trace's vPos is the pixel, its vFace +1 or -1 by the triangle, `oC0`, `oC1`, `oDepth` (1 column) and `r0` are listed, and every step is on an instruction. A ps_3_0 draw that samples and a ps_1_1 draw say why they can't be debugged yet, and give no debugger, as don't a pixel outside a draw and the fixed function draw's pixel |
 | `D3D11_D3DPERF_Markers` | `d3d11_d3dperf_check.py`: the markers nest as drawn, with their colours |
 
 What they don't cover:
@@ -1799,7 +1806,8 @@ Vertex" in the mesh viewer, and `DebugVertex` in Python.
   - The debugger keeps the snapshot alive, so clearing the replay cache doesn't pull it away.
 - **The trace** (`D3D9Emu::VSDebugger`, `d3d9_vs_debug.cpp`, portable and unit tested):
   - `inputs`: the `v#` registers the input signature uses, with a source variable per signature
-    element named by its semantic (TEXCOORD1).
+    element named by its semantic (TEXCOORD1), and since 5.7 one per register under "Registers"
+    (`Registers.v0`), so the disassembly's names resolve in watches.
   - `constantBlocks`: one per reflection block (`c#`, `i#`, `b#`), with a member for each register
     the shader can read: those the constant table allocates, and the reflection's other variables'
     (literals, registers read that the table doesn't describe). The viewer's constants list shows
@@ -1841,9 +1849,9 @@ Vertex" in the mesh viewer, and `DebugVertex` in Python.
   - `readOnlyResources` and `samplers`: the vertex texture samplers.
   - `instInfo`: each instruction's line in the disassembly the viewer shows (5.1's line map).
 - **What can be debugged.** Each vertex shader's reflection says it can be debugged if the
-  interpreter accepts it (`AddShader`, `d3d9_shaders.cpp`), or why not. Pixel shaders say
-  "Debugging D3D9 pixel shaders isn't supported yet", and fixed function vertex processing's
-  made-up reflection says it isn't a shader. `shaderDebugging` is on in the API properties.
+  interpreter accepts it (`AddShader`, `d3d9_shaders.cpp`), or why not. Pixel shaders say so too
+  since 5.7 ("Debugging pixel shaders" below), and fixed function vertex processing's made-up
+  reflection says it isn't a shader. `shaderDebugging` is on in the API properties.
   `DebugVertex` on a fixed function draw logs why and returns a trace with no debugger.
 - **The pipeline state's shader model** names 2_x shaders `vs_2_x` and `ps_2_x`, as the
   disassembly does. It said `vs_2_1` before, which the zoo test found.
@@ -2095,11 +2103,90 @@ match the previous round. The rows are covered under "Event Browser rows" above,
 the icon sizes and failed on the 9 pixel icon and the resource cells' underline and hover area,
 both fixed in c1049db4f, which retest 5 passed.
 
+## Debugging pixel shaders
+
+Step 5.7 (`d3d9_step5_7_debug_pixel.md`): `DebugPixel` (`d3d9_shaderdebug.cpp`), which the texture
+viewer's Debug button and Python call, for ps_2_0 to ps_3_0 shaders that don't sample. Shaders
+that sample (5.8) and ps_1_x (5.9) say why not yet, in their reflection's debug status, which the
+UI shows. Like D3D11's, the pixel's inputs come from the GPU and the shader runs on the CPU, a
+2x2 quad at a time (the interpreter below).
+
+- **Reading the inputs back.** D3D9 has no UAVs, so the event is drawn again with generated pixel
+  shaders that write the inputs to A32B32G32R32F render targets of our own, the size of the draw's
+  first target, four values a draw (`BuildInputReadback`, `d3d9_ps_debug.cpp`, portable and unit
+  tested by running the generated shaders through the interpreter):
+  - ps_3_0 originals get a ps_3_0 shader with the original's own input declarations (semantics,
+    masks, `_centroid`), so the rasterizer interpolates them the same way. vFace is read with
+    `cmp` (+1 or -1), since it can only be a condition; vPos is the pixel's position (5.4).
+  - ps_2_0 and ps_2_x originals get a ps_2_x shader with their `t#` and `v#` declarations
+    (ps_2_0 has no `dsx`). ps_1_x's are built the same way from the `t#` and `v#` it reads, ready
+    for 5.9.
+  - Components not declared are 0.
+  - The draw is replayed up to the event without its draw, so depth and stencil are what it tests
+    against. The readback draws leave them alone (no depth or stencil writes), with blending,
+    alpha test, fog and sRGB writes off; everything else is the draw's. The scissor rect is the
+    pixel alone, which has to be inside the draw's own. An occlusion query on the first draw says
+    whether the draw writes the pixel; if not, there's nothing to debug (a trace without a
+    debugger, and a warning in the log). The device's state is put back afterwards.
+  - Each value goes through StretchRect into a 1x1 target and GetRenderTargetData.
+- **The quad's other pixels.** `dsx` is the quad's top row's difference and `dsy` its left
+  column's (5.4), so the top left, top right and bottom left pixels' inputs are what the
+  interpreter's derivatives (and 5.8's lookups) come from (`QuadInputs`):
+  - ps_3_0's readback reads them in the pixel itself: with `cmp` on vPos's parity it keeps the
+    input in one pixel and 0 in the other, so `dsx`/`dsy` of that is the input there, exactly
+    (signs of zero included).
+  - ps_2_x has no vPos. Its readback also reads each input's `dsx` and `dsy`, and is drawn again at
+    each of the quad's other pixels (outside the draw's scissor rect too, as helpers are). A
+    neighbour's values are taken when its derivatives are the pixel's bit for bit, which means the
+    same primitive covered it. Otherwise they're worked out from the pixel's value and
+    derivatives: exactly from the top row and left column (subtracting values within a factor of
+    two of each other is exact), but from the bottom right, with perspective, only nearly.
+  - A GPU without ps_2_x gradient instructions would give ps_2_0 readbacks without derivatives,
+    and all four pixels the debugged pixel's inputs (a warning in the log). Not tested: this GPU
+    has them.
+- **The trace** (`D3D9Emu::PSDebugger`, `d3d9_ps_debug.cpp`, portable and unit tested) shares its
+  stepping, constants, samplers and disassembly lines with the vertex debugger (`StepDebugger`,
+  `d3d9_vs_debug.h`):
+  - `inputs`: the input registers the input signature uses, as the pixel got them: `v#`, `t#`,
+    `vPos` (2 components) and `vFace` (1). ps_1_1 to ps_1_3's texture coordinates are
+    `texcoord#`, since their `t#` are registers the texture instructions write. A source variable
+    per signature element (`TEXCOORD`, `COLOR1`, `VFACE`), and one per input register under
+    "Registers" (`Registers.vFace`), since the viewer lists the inputs only by their semantics: a
+    watch or a hover on the disassembly's `vFace` or `v0` found nothing before (the 5.7 UI
+    screenshots). Vertex shader inputs get them too.
+  - The first state lists the registers the shader can change: `r#`, ps_1_1 to ps_1_3's `t#`,
+    `aL`, `p0`, `oC#` and `oDepth` (1 column). ps_1_x's `r0` reaches `oC0` at the end, as the last
+    step's change.
+  - A source variable per output signature element, on `oC#` or `oDepth`.
+  - Steps, call stacks and flags as for vertex shaders; `SampleLoadGather` on the instructions
+    that sample (none can be debugged yet).
+- **Which fragment.** With overlapping triangles in one draw this is the last fragment drawn that
+  passes the depth and stencil test as they were before the draw, and with alpha test, `texkill`
+  or `clip` it may be one they reject. 5.10 picks the fragment the GPU wrote (5.4).
+
+Tested by `D3D9_Shader_Debug_Zoo` (7 pixels in each of a ps_2_0, a ps_2_x and a ps_3_0 draw to
+A32B32G32R32F targets, with perspective, against the demo's native readback and the replay) and
+the unit tests (`renderdoccmd test unit "[psdebug]"`).
+
+- The replay's pixels are the GPU's bit for bit. Of the debugger's output components, 109 of 140
+  are bit for bit the GPU's (ps_2_0 21 of 28, ps_2_x 39 of 56, ps_3_0 49 of 56); the others are 1
+  ulp off without derivatives, and up to 2.8e-6 (256 ulps of a small value) with them. They're the
+  driver fusing a `mul` and the `add` after it, which fxc wrote apart (ps_2_0 and ps_2_a didn't
+  use `mad` there); a derivative of the difference then magnifies it. Checked: with that
+  pair fused, ps_2_x's worst pixel gives the GPU's value exactly from the inputs the debugger read.
+  The test allows 1e-6 (ps_2_0) and 1e-5 (with derivatives) relative to the value, at least 1.
+- `oDepth` matches the D24S8 target to its 24 bits.
+
+Not covered: multisampled targets, which `DebugPixel` refuses until 5.10; shaders that sample (5.8),
+ps_1_x (5.9); which fragment with overlapping triangles, alpha test and `texkill` (5.10); point
+sprites and centroid against the GPU; a GPU without ps_2_x gradient instructions; other GPUs.
+
 ## Pixel shader interpreter (steps 5.5 and 5.6)
 
 `d3d9_ps_emulate.*` (`D3D9Emu`, portable and unit tested) runs ps_1_1 to ps_3_0 shaders for pixel
-shader debugging; 5.7 will feed it from the GPU. Tested in `d3d9_step5_5_ps_interpreter.md`
-(ps_2_0 to ps_3_0) and `d3d9_step5_6_ps1_interpreter.md` (ps_1_x).
+shader debugging, fed from the GPU since 5.7 ("Debugging pixel shaders" above). Tested in
+`d3d9_step5_5_ps_interpreter.md` (ps_2_0 to ps_3_0) and `d3d9_step5_6_ps1_interpreter.md`
+(ps_1_x).
 
 - **A quad at a time.** `PSQuad` runs a 2x2 quad's four pixels in lockstep: each `Step` runs one
   instruction in every pixel that hasn't finished, and records what one chosen pixel changed (old
@@ -2214,8 +2301,13 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
   running a draw) and
   `d3d9_ffp_vertex.*` (fixed function vertex processing). The last two are portable and unit
   tested. `d3d9_postvs.h` has the snapshot of a draw that VS Out and debugging both use.
-- `d3d9_shaderdebug.cpp` - shader debugging: `DebugVertex`, `ContinueDebug`, `FreeDebugger`. The
-  trace is made by `d3d9_vs_debug.*` (`D3D9Emu::VSDebugger`), which is portable and unit tested.
+- `d3d9_shaderdebug.cpp` - shader debugging: `DebugVertex`, `DebugPixel` (reading the pixel's
+  inputs back from the GPU), `ContinueDebug`, `FreeDebugger`. The traces are made by
+  `d3d9_vs_debug.*` (`D3D9Emu::VSDebugger`, and `StepDebugger`, which both debuggers share) and
+  `d3d9_ps_debug.*` (`D3D9Emu::PSDebugger`, and the shaders that read the inputs back), which are
+  portable and unit tested.
+- `d3d9_bytecode_build.h` - builds shader bytecode a token at a time, for the pixel debugger's
+  generated shaders and the unit tests' hand-assembled ones (`d3d9_bytecode_test.h`).
 - `d3d9_ps_emulate.*` - the ps_1_1 to ps_3_0 interpreter (steps 5.5 and 5.6), portable and unit
   tested, with `d3d9_ps_test_data.h` (compiled shaders and the GPU's results) and
   `d3d9_ps1_test_data.h` (assembled ps_1_x shaders and the GPU's results) for its tests.

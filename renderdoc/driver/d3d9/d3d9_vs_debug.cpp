@@ -40,6 +40,8 @@
 //   - the shader's def, defi and defb literals under "Literals" (Literals.c10), so they're told
 //     apart from what the application set.
 //   - any other register by its name in the disassembly (c12).
+// - the inputs again by register under "Registers" (Registers.v0), so the viewer finds the
+//   disassembly's names for them too.
 // - the mutable registers, which the first state lists: the temporaries, a0, aL, p0 and the
 //   outputs the shader uses. oFog and oPts are one component, aL is an integer and p0 booleans.
 // - a source variable per output signature element, on its output register's components, which
@@ -55,13 +57,26 @@ namespace D3D9Emu
 {
 using namespace D3D9BC;
 
-namespace
-{
 bool IsDeclaration(Opcode op)
 {
   return op == Opcode::Dcl || op == Opcode::Def || op == Opcode::DefI || op == Opcode::DefB;
 }
 
+SourceVariableMapping DebugMapping(const rdcstr &name, VarType type, uint32_t columns,
+                                   int32_t signatureIndex)
+{
+  SourceVariableMapping ret;
+  ret.name = name;
+  ret.type = type;
+  ret.rows = columns > 0 ? 1 : 0;
+  ret.columns = columns;
+  ret.offset = 0;
+  ret.signatureIndex = signatureIndex;
+  return ret;
+}
+
+namespace
+{
 // what each register set's registers are called in the disassembly, and their type
 const char *const SetPrefixes[] = {"c", "i", "b"};
 const RegType SetRegTypes[] = {RegType::Const, RegType::ConstInt, RegType::ConstBool};
@@ -215,246 +230,33 @@ bool OutputRegisterOf(const Version &version, const SigParameter &sig, RegType &
     return index < 8;
   return false;
 }
-
-SourceVariableMapping Mapping(const rdcstr &name, VarType type, uint32_t columns,
-                              int32_t signatureIndex)
-{
-  SourceVariableMapping ret;
-  ret.name = name;
-  ret.type = type;
-  ret.rows = columns > 0 ? 1 : 0;
-  ret.columns = columns;
-  ret.offset = 0;
-  ret.signatureIndex = signatureIndex;
-  return ret;
-}
 };    // namespace
 
-ShaderVariable VSDebugger::Variable(RegType type, uint32_t index, const Vec4 &f, const IVec4 &i) const
+void StepDebugger::Reset(const Program &prog)
 {
-  const rdcstr name = RegisterName(m_Version, type, index);
-  switch(type)
-  {
-    case RegType::AddrOrTexture: return ShaderVariable(name, i.v[0], i.v[1], i.v[2], i.v[3]);
-    case RegType::Predicate:
-    {
-      ShaderVariable ret(name, uint32_t(i.v[0]), uint32_t(i.v[1]), uint32_t(i.v[2]),
-                         uint32_t(i.v[3]));
-      ret.type = VarType::Bool;
-      return ret;
-    }
-    case RegType::Loop:
-    {
-      ShaderVariable ret(name, i.v[0], 0, 0, 0);
-      ret.columns = 1;
-      return ret;
-    }
-    case RegType::RastOut:
-      // oFog and oPts are scalars
-      if(index > 0)
-      {
-        ShaderVariable ret(name, f[0], 0.0f, 0.0f, 0.0f);
-        ret.columns = 1;
-        return ret;
-      }
-      break;
-    default: break;
-  }
-  return ShaderVariable(name, f[0], f[1], f[2], f[3]);
-}
-
-ShaderVariable VSDebugger::Current(RegType type, uint32_t index) const
-{
-  const VSRegisters &regs = m_Thread.Registers();
-  Vec4 f;
-  IVec4 i;
-  switch(type)
-  {
-    case RegType::Temp:
-      if(index < MaxVSTemps)
-        f = regs.r[index];
-      break;
-    case RegType::AddrOrTexture: i = regs.a0; break;
-    case RegType::Predicate:
-      for(int c = 0; c < 4; c++)
-        i.v[c] = regs.p[c] ? 1 : 0;
-      break;
-    case RegType::Loop: i.v[0] = regs.aL(); break;
-    case RegType::RastOut:
-      if(index < 3)
-        f = regs.out.rast[index];
-      break;
-    case RegType::AttrOut:
-      if(index < 2)
-        f = regs.out.attr[index];
-      break;
-    case RegType::TexCrdOutOrOutput:
-      if(index < 12)
-        f = regs.out.tex[index];
-      break;
-    default: break;
-  }
-  return Variable(type, index, f, i);
-}
-
-ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderInfo &info,
-                                    const rdcarray<uint32_t> &instLines,
-                                    const Vec4 inputs[MaxVSInputs], const VSConstants &consts,
-                                    const VSTexture textures[NumVertexSamplers])
-{
-  ShaderDebugTrace *ret = new ShaderDebugTrace;
-  ret->stage = ShaderStage::Vertex;
-  ret->debugger = this;
-
-  for(uint32_t i = 0; i < MaxVSInputs; i++)
-    m_Inputs[i] = inputs[i];
-  m_Emu = &emu;
-  m_Version = emu.GetVersion();
+  m_Prog = &prog;
+  m_Version = prog.version;
   m_Steps = 0;
   m_LastInstruction = 0;
   m_Registers.clear();
   m_Known.clear();
-  m_Thread.Start(emu, m_Inputs, consts, textures);
+}
 
-  const Program &prog = emu.GetProgram();
+void StepDebugger::AddRegister(RegType type, uint32_t index)
+{
+  if(m_Known.insert(Key(type, index)).second)
+    m_Registers.push_back({type, index});
+}
+
+void StepDebugger::DescribeConstants(ShaderDebugTrace *ret, const ShaderInfo &info,
+                                     const VSConstants &consts) const
+{
   const ShaderReflection &refl = info.GetReflection();
-
-  //////////////////////////////////////////////////////////////////////////
-  // inputs
-
-  bool inputUsed[MaxVSInputs] = {};
-  for(const SigParameter &sig : refl.inputSignature)
-    if(sig.regIndex < MaxVSInputs)
-      inputUsed[sig.regIndex] = true;
-
-  for(uint32_t reg = 0; reg < MaxVSInputs; reg++)
-  {
-    if(!inputUsed[reg])
-      continue;
-    const Vec4 &v = m_Inputs[reg];
-    ret->inputs.push_back(
-        ShaderVariable(RegisterName(m_Version, RegType::Input, reg), v[0], v[1], v[2], v[3]));
-  }
-
-  for(int32_t s = 0; s < refl.inputSignature.count(); s++)
-  {
-    const SigParameter &sig = refl.inputSignature[s];
-    if(sig.regIndex >= MaxVSInputs)
-      continue;
-    SourceVariableMapping map = Mapping(sig.semanticIdxName, VarType::Float, sig.compCount, s);
-    const rdcstr reg = RegisterName(m_Version, RegType::Input, sig.regIndex);
-    for(uint32_t c = 0; c < 4; c++)
-      if(sig.regChannelMask & (1 << c))
-        map.variables.push_back(DebugVariableReference(DebugVariableType::Input, reg, c));
-    ret->sourceVars.push_back(map);
-  }
-
-  //////////////////////////////////////////////////////////////////////////
-  // the registers the shader can change
-
-  std::set<uint32_t> temps, outputs;
-  bool a0 = false, aL = false, p0 = false, allOutputs = false;
-
-  auto use = [&](RegType type, uint32_t index, const RelativeAddress &rel) {
-    if(type == RegType::Temp && index < MaxVSTemps)
-      temps.insert(index);
-    else if(type == RegType::AddrOrTexture)
-      a0 = true;
-    else if(type == RegType::Loop)
-      aL = true;
-    else if(type == RegType::Predicate)
-      p0 = true;
-    else if(IsOutput(type))
-    {
-      outputs.insert(Key(type, index));
-      // vs_3_0 can index the outputs with aL
-      if(rel.present)
-        allOutputs = true;
-    }
-
-    if(rel.present)
-    {
-      if(rel.type == RegType::Loop)
-        aL = true;
-      else
-        a0 = true;
-    }
-  };
-
-  for(const Instruction &inst : prog.instructions)
-  {
-    if(inst.op == Opcode::Loop)
-      aL = true;
-    if(IsDeclaration(inst.op))
-    {
-      // vs_3_0's declared outputs
-      if(inst.op == Opcode::Dcl && inst.hasDst && IsOutput(inst.dst.type))
-        outputs.insert(Key(inst.dst.type, inst.dst.index));
-      continue;
-    }
-    if(inst.hasDst)
-      use(inst.dst.type, inst.dst.index, inst.dst.rel);
-    if(inst.predicated)
-      use(inst.predicate.type, inst.predicate.index, inst.predicate.rel);
-    for(const SrcParam &src : inst.srcs)
-      use(src.type, src.index, src.rel);
-  }
-
-  if(allOutputs)
-    for(uint32_t o = 0; o < 12; o++)
-      outputs.insert(Key(RegType::TexCrdOutOrOutput, o));
-
-  for(const SigParameter &sig : refl.outputSignature)
-  {
-    RegType type;
-    uint32_t index;
-    if(OutputRegisterOf(m_Version, sig, type, index))
-      outputs.insert(Key(type, index));
-  }
-
-  auto add = [this](RegType type, uint32_t index) {
-    if(m_Known.insert(Key(type, index)).second)
-      m_Registers.push_back({type, index});
-  };
-
-  for(uint32_t t : temps)
-    add(RegType::Temp, t);
-  if(a0)
-    add(RegType::AddrOrTexture, 0);
-  if(aL)
-    add(RegType::Loop, 0);
-  if(p0)
-    add(RegType::Predicate, 0);
-  // the keys sort oPos, oFog, oPts, oD#, then oT# or o#
-  for(uint32_t key : outputs)
-    add(RegType(key >> 16), key & 0xFFFF);
-
-  //////////////////////////////////////////////////////////////////////////
-  // outputs
-
-  for(int32_t s = 0; s < refl.outputSignature.count(); s++)
-  {
-    const SigParameter &sig = refl.outputSignature[s];
-    RegType type;
-    uint32_t index;
-    if(!OutputRegisterOf(m_Version, sig, type, index))
-      continue;
-    SourceVariableMapping map = Mapping(sig.semanticIdxName, VarType::Float, sig.compCount, s);
-    const rdcstr reg = RegisterName(m_Version, type, index);
-    for(uint32_t c = 0; c < 4; c++)
-      if(sig.regChannelMask & (1 << c))
-        map.variables.push_back(DebugVariableReference(DebugVariableType::Variable, reg, c));
-    ret->sourceVars.push_back(map);
-  }
-
-  //////////////////////////////////////////////////////////////////////////
-  // constants
-
   const ConstantTable &ctab = info.GetConstantTable();
 
   // the registers each def, defi and defb sets
   std::set<uint32_t> literals[3];
-  for(const Instruction &inst : prog.instructions)
+  for(const Instruction &inst : m_Prog->instructions)
   {
     if(!inst.hasDst)
       continue;
@@ -546,7 +348,7 @@ ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderInfo &inf
       else if(literals[set].count(r))
         name = "Literals." + regName;
 
-      SourceVariableMapping map = Mapping(name, m.type, m.columns, -1);
+      SourceVariableMapping map = DebugMapping(name, m.type, m.columns, -1);
       map.offset = r * stride;
       const rdcstr path = cb.name + member;
       for(uint32_t c = 0; c < m.columns; c++)
@@ -558,7 +360,7 @@ ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderInfo &inf
     }
 
     // the block itself, so the viewer doesn't also list it as raw registers
-    SourceVariableMapping blockMap = Mapping(block.name, VarType::Unknown, 0, -1);
+    SourceVariableMapping blockMap = DebugMapping(block.name, VarType::Unknown, 0, -1);
     blockMap.variables.push_back(DebugVariableReference(DebugVariableType::Constant, cb.name));
     ret->sourceVars.push_back(blockMap);
 
@@ -566,10 +368,10 @@ ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderInfo &inf
   }
 
   ret->sourceVars.append(aliases);
+}
 
-  //////////////////////////////////////////////////////////////////////////
-  // textures
-
+void StepDebugger::DescribeSamplers(ShaderDebugTrace *ret, const ShaderReflection &refl) const
+{
   for(uint32_t i = 0; i < (uint32_t)refl.readOnlyResources.size(); i++)
   {
     const ShaderResource &res = refl.readOnlyResources[i];
@@ -579,7 +381,7 @@ ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderInfo &inf
     reg.SetBindIndex(ShaderBindIndex(DescriptorCategory::ReadOnlyResource, i, 0));
     ret->readOnlyResources.push_back(reg);
 
-    SourceVariableMapping map = Mapping(res.name, VarType::ReadOnlyResource, 1, -1);
+    SourceVariableMapping map = DebugMapping(res.name, VarType::ReadOnlyResource, 1, -1);
     map.variables.push_back(DebugVariableReference(DebugVariableType::ReadOnlyResource, reg.name));
     ret->sourceVars.push_back(map);
   }
@@ -593,41 +395,266 @@ ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderInfo &inf
     reg.SetBindIndex(ShaderBindIndex(DescriptorCategory::Sampler, i, 0));
     ret->samplers.push_back(reg);
   }
+}
 
-  //////////////////////////////////////////////////////////////////////////
-  // disassembly lines
+void StepDebugger::DescribeInputRegisters(ShaderDebugTrace *ret) const
+{
+  for(const ShaderVariable &input : ret->inputs)
+  {
+    SourceVariableMapping map =
+        DebugMapping("Registers." + input.name, VarType::Float, input.columns, -1);
+    for(uint32_t c = 0; c < input.columns; c++)
+      map.variables.push_back(DebugVariableReference(DebugVariableType::Input, input.name, c));
+    ret->sourceVars.push_back(map);
+  }
+}
 
-  ret->instInfo.resize(prog.instructions.size());
-  for(uint32_t i = 0; i < (uint32_t)prog.instructions.size(); i++)
+void StepDebugger::DescribeInstructions(ShaderDebugTrace *ret, const rdcarray<uint32_t> &instLines) const
+{
+  ret->instInfo.resize(m_Prog->instructions.size());
+  for(uint32_t i = 0; i < (uint32_t)m_Prog->instructions.size(); i++)
   {
     ret->instInfo[i].instruction = i;
     ret->instInfo[i].lineInfo.disassemblyLine = i < instLines.size() ? instLines[i] : 0;
   }
+}
+
+ShaderVariable VSDebugger::Variable(RegType type, uint32_t index, const Vec4 &f, const IVec4 &i) const
+{
+  const rdcstr name = RegisterName(m_Version, type, index);
+  switch(type)
+  {
+    case RegType::AddrOrTexture: return ShaderVariable(name, i.v[0], i.v[1], i.v[2], i.v[3]);
+    case RegType::Predicate:
+    {
+      ShaderVariable ret(name, uint32_t(i.v[0]), uint32_t(i.v[1]), uint32_t(i.v[2]),
+                         uint32_t(i.v[3]));
+      ret.type = VarType::Bool;
+      return ret;
+    }
+    case RegType::Loop:
+    {
+      ShaderVariable ret(name, i.v[0], 0, 0, 0);
+      ret.columns = 1;
+      return ret;
+    }
+    case RegType::RastOut:
+      // oFog and oPts are scalars
+      if(index > 0)
+      {
+        ShaderVariable ret(name, f[0], 0.0f, 0.0f, 0.0f);
+        ret.columns = 1;
+        return ret;
+      }
+      break;
+    default: break;
+  }
+  return ShaderVariable(name, f[0], f[1], f[2], f[3]);
+}
+
+ShaderVariable VSDebugger::Current(RegType type, uint32_t index) const
+{
+  const VSRegisters &regs = m_Thread.Registers();
+  Vec4 f;
+  IVec4 i;
+  switch(type)
+  {
+    case RegType::Temp:
+      if(index < MaxVSTemps)
+        f = regs.r[index];
+      break;
+    case RegType::AddrOrTexture: i = regs.a0; break;
+    case RegType::Predicate:
+      for(int c = 0; c < 4; c++)
+        i.v[c] = regs.p[c] ? 1 : 0;
+      break;
+    case RegType::Loop: i.v[0] = regs.aL(); break;
+    case RegType::RastOut:
+      if(index < 3)
+        f = regs.out.rast[index];
+      break;
+    case RegType::AttrOut:
+      if(index < 2)
+        f = regs.out.attr[index];
+      break;
+    case RegType::TexCrdOutOrOutput:
+      if(index < 12)
+        f = regs.out.tex[index];
+      break;
+    default: break;
+  }
+  return Variable(type, index, f, i);
+}
+
+ShaderDebugTrace *VSDebugger::Begin(const VSEmulator &emu, const ShaderInfo &info,
+                                    const rdcarray<uint32_t> &instLines,
+                                    const Vec4 inputs[MaxVSInputs], const VSConstants &consts,
+                                    const VSTexture textures[NumVertexSamplers])
+{
+  ShaderDebugTrace *ret = new ShaderDebugTrace;
+  ret->stage = ShaderStage::Vertex;
+  ret->debugger = this;
+
+  for(uint32_t i = 0; i < MaxVSInputs; i++)
+    m_Inputs[i] = inputs[i];
+  Reset(emu.GetProgram());
+  m_Thread.Start(emu, m_Inputs, consts, textures);
+
+  const Program &prog = emu.GetProgram();
+  const ShaderReflection &refl = info.GetReflection();
+
+  //////////////////////////////////////////////////////////////////////////
+  // inputs
+
+  bool inputUsed[MaxVSInputs] = {};
+  for(const SigParameter &sig : refl.inputSignature)
+    if(sig.regIndex < MaxVSInputs)
+      inputUsed[sig.regIndex] = true;
+
+  for(uint32_t reg = 0; reg < MaxVSInputs; reg++)
+  {
+    if(!inputUsed[reg])
+      continue;
+    const Vec4 &v = m_Inputs[reg];
+    ret->inputs.push_back(
+        ShaderVariable(RegisterName(m_Version, RegType::Input, reg), v[0], v[1], v[2], v[3]));
+  }
+
+  for(int32_t s = 0; s < refl.inputSignature.count(); s++)
+  {
+    const SigParameter &sig = refl.inputSignature[s];
+    if(sig.regIndex >= MaxVSInputs)
+      continue;
+    SourceVariableMapping map = DebugMapping(sig.semanticIdxName, VarType::Float, sig.compCount, s);
+    const rdcstr reg = RegisterName(m_Version, RegType::Input, sig.regIndex);
+    for(uint32_t c = 0; c < 4; c++)
+      if(sig.regChannelMask & (1 << c))
+        map.variables.push_back(DebugVariableReference(DebugVariableType::Input, reg, c));
+    ret->sourceVars.push_back(map);
+  }
+
+  //////////////////////////////////////////////////////////////////////////
+  // the registers the shader can change
+
+  std::set<uint32_t> temps, outputs;
+  bool a0 = false, aL = false, p0 = false, allOutputs = false;
+
+  auto use = [&](RegType type, uint32_t index, const RelativeAddress &rel) {
+    if(type == RegType::Temp && index < MaxVSTemps)
+      temps.insert(index);
+    else if(type == RegType::AddrOrTexture)
+      a0 = true;
+    else if(type == RegType::Loop)
+      aL = true;
+    else if(type == RegType::Predicate)
+      p0 = true;
+    else if(IsOutput(type))
+    {
+      outputs.insert(Key(type, index));
+      // vs_3_0 can index the outputs with aL
+      if(rel.present)
+        allOutputs = true;
+    }
+
+    if(rel.present)
+    {
+      if(rel.type == RegType::Loop)
+        aL = true;
+      else
+        a0 = true;
+    }
+  };
+
+  for(const Instruction &inst : prog.instructions)
+  {
+    if(inst.op == Opcode::Loop)
+      aL = true;
+    if(IsDeclaration(inst.op))
+    {
+      // vs_3_0's declared outputs
+      if(inst.op == Opcode::Dcl && inst.hasDst && IsOutput(inst.dst.type))
+        outputs.insert(Key(inst.dst.type, inst.dst.index));
+      continue;
+    }
+    if(inst.hasDst)
+      use(inst.dst.type, inst.dst.index, inst.dst.rel);
+    if(inst.predicated)
+      use(inst.predicate.type, inst.predicate.index, inst.predicate.rel);
+    for(const SrcParam &src : inst.srcs)
+      use(src.type, src.index, src.rel);
+  }
+
+  if(allOutputs)
+    for(uint32_t o = 0; o < 12; o++)
+      outputs.insert(Key(RegType::TexCrdOutOrOutput, o));
+
+  for(const SigParameter &sig : refl.outputSignature)
+  {
+    RegType type;
+    uint32_t index;
+    if(OutputRegisterOf(m_Version, sig, type, index))
+      outputs.insert(Key(type, index));
+  }
+
+  for(uint32_t t : temps)
+    AddRegister(RegType::Temp, t);
+  if(a0)
+    AddRegister(RegType::AddrOrTexture, 0);
+  if(aL)
+    AddRegister(RegType::Loop, 0);
+  if(p0)
+    AddRegister(RegType::Predicate, 0);
+  // the keys sort oPos, oFog, oPts, oD#, then oT# or o#
+  for(uint32_t key : outputs)
+    AddRegister(RegType(key >> 16), key & 0xFFFF);
+
+  //////////////////////////////////////////////////////////////////////////
+  // outputs
+
+  for(int32_t s = 0; s < refl.outputSignature.count(); s++)
+  {
+    const SigParameter &sig = refl.outputSignature[s];
+    RegType type;
+    uint32_t index;
+    if(!OutputRegisterOf(m_Version, sig, type, index))
+      continue;
+    SourceVariableMapping map = DebugMapping(sig.semanticIdxName, VarType::Float, sig.compCount, s);
+    const rdcstr reg = RegisterName(m_Version, type, index);
+    for(uint32_t c = 0; c < 4; c++)
+      if(sig.regChannelMask & (1 << c))
+        map.variables.push_back(DebugVariableReference(DebugVariableType::Variable, reg, c));
+    ret->sourceVars.push_back(map);
+  }
+
+  DescribeConstants(ret, info, consts);
+  DescribeInputRegisters(ret);
+  DescribeSamplers(ret, refl);
+  DescribeInstructions(ret, instLines);
 
   return ret;
 }
 
-rdcarray<rdcstr> VSDebugger::Callstack() const
+rdcarray<rdcstr> StepDebugger::Callstack() const
 {
   // the oldest first, as the viewer wants them
   rdcarray<rdcstr> ret = {"main"};
-  for(const VSCallFrame &f : m_Thread.Registers().calls)
+  for(const VSCallFrame &f : Flow().calls)
     ret.push_back(StringFormat::Fmt("l%u", f.label));
   return ret;
 }
 
-void VSDebugger::SkipDeclarations(rdcarray<VSRegisterChange> &changes)
+void StepDebugger::SkipDeclarations(rdcarray<VSRegisterChange> &changes)
 {
-  const rdcarray<Instruction> &insts = m_Emu->GetProgram().instructions;
-  while(!m_Thread.Finished() && m_Thread.NextInstruction() < insts.size() &&
-        IsDeclaration(insts[m_Thread.NextInstruction()].op))
+  const rdcarray<Instruction> &insts = m_Prog->instructions;
+  while(!ThreadFinished() && ThreadNextInstruction() < insts.size() &&
+        IsDeclaration(insts[ThreadNextInstruction()].op))
   {
-    if(!m_Thread.Step(&changes))
+    if(!ThreadStep(changes))
       break;
   }
 }
 
-rdcarray<ShaderDebugState> VSDebugger::Continue(uint32_t maxSteps)
+rdcarray<ShaderDebugState> StepDebugger::Continue(uint32_t maxSteps)
 {
   rdcarray<ShaderDebugState> ret;
 
@@ -641,7 +668,7 @@ rdcarray<ShaderDebugState> VSDebugger::Continue(uint32_t maxSteps)
 
     ShaderDebugState initial;
     initial.stepIndex = 0;
-    initial.nextInstruction = m_Thread.Finished() ? 0 : m_Thread.NextInstruction();
+    initial.nextInstruction = ThreadFinished() ? 0 : ThreadNextInstruction();
     initial.callstack = Callstack();
     for(const Register &r : m_Registers)
     {
@@ -655,23 +682,23 @@ rdcarray<ShaderDebugState> VSDebugger::Continue(uint32_t maxSteps)
 
   std::set<uint32_t> seen;
 
-  for(uint32_t n = 0; n < maxSteps && !m_Thread.Finished(); n++)
+  for(uint32_t n = 0; n < maxSteps && !ThreadFinished(); n++)
   {
     changes.clear();
-    const uint32_t inst = m_Thread.NextInstruction();
+    const uint32_t inst = ThreadNextInstruction();
     // a failed instruction changed nothing and finished the thread, so the last state stays on it
-    if(!m_Thread.Step(&changes))
+    if(!ThreadStep(changes))
       break;
     m_LastInstruction = inst;
     SkipDeclarations(changes);
 
-    const Instruction &ran = m_Emu->GetProgram().instructions[inst];
+    const Instruction &ran = m_Prog->instructions[inst];
 
     ShaderDebugState state;
     state.stepIndex = m_Steps++;
-    state.nextInstruction = m_Thread.Finished() ? m_LastInstruction : m_Thread.NextInstruction();
+    state.nextInstruction = ThreadFinished() ? m_LastInstruction : ThreadNextInstruction();
     state.callstack = Callstack();
-    if(ran.op == Opcode::TexLdl)
+    if(Samples(ran))
       state.flags |= ShaderEvents::SampleLoadGather;
 
     // an instruction changes each register once, but declarations run with it

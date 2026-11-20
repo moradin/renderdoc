@@ -24,6 +24,14 @@
 
 #include "d3d9_test.h"
 
+#define CHECK_HR(expr)                                    \
+  do                                                      \
+  {                                                       \
+    HRESULT check_hr = (expr);                            \
+    if(FAILED(check_hr))                                  \
+      TEST_ERROR("%s failed: %x", #expr, (UINT)check_hr); \
+  } while(0)
+
 typedef HRESULT(WINAPI *pD3DAssemble)(LPCVOID pSrcData, SIZE_T SrcDataSize, LPCSTR pSourceName,
                                       const D3D_SHADER_MACRO *pDefines, ID3DInclude *pInclude,
                                       UINT Flags, ID3DBlob **ppShader, ID3DBlob **ppErrorMsgs);
@@ -34,7 +42,10 @@ RD_TEST(D3D9_Shader_Debug_Zoo, D3D9GraphicsTest)
       "Draws with a vertex shader of each model to debug (vs_1_1, vs_2_0, vs_2_x and vs_3_0), "
       "each in its own marker, plus an instanced vs_3_0 draw with a base vertex, a vs_2_x draw "
       "with nested calls, a vs_3_0 draw whose constant table has structs, arrays and matrices, and "
-      "a fixed function draw, which can't be debugged.";
+      "a fixed function draw, which can't be debugged. Then pixel shader draws to A32B32G32R32F "
+      "targets (ps_2_0, ps_2_x with derivatives and two targets, ps_3_0 with vPos, vFace, a loop "
+      "and oDepth), and two that can't be debugged yet (one samples, one is ps_1_1). Natively, "
+      "what the GPU wrote at a few pixels of each is written to D3D9_Shader_Debug_Zoo_pixels.txt.";
 
   // vs_1_1 tokens, hand assembled since D3DAssemble doesn't take vs_1_1
   enum
@@ -353,6 +364,189 @@ vout main(vin IN)
 
 )EOSHADER";
 
+  // The pixel draws. Each fills a cell of the float targets with two triangles whose vertices
+  // have different w, so the inputs are interpolated with perspective. The vertex shader is the
+  // same HLSL for vs_2_0 and vs_3_0.
+  const char *PixelVS = R"EOSHADER(
+struct a2v
+{
+  float4 pos : POSITION;
+  float4 col : COLOR0;
+  float4 uv : TEXCOORD0;
+};
+
+struct v2f
+{
+  float4 pos : POSITION;
+  float4 col : COLOR0;
+  float2 uv : TEXCOORD0;
+  float4 uv1 : TEXCOORD1;
+  float3 uv2 : TEXCOORD2;
+};
+
+v2f main(a2v IN)
+{
+  v2f OUT;
+  OUT.pos = IN.pos;
+  OUT.col = IN.col;
+  OUT.uv = IN.uv.xy;
+  OUT.uv1 = IN.uv * 2.0f - 0.5f;
+  OUT.uv2 = IN.uv.zwx + IN.col.xyz;
+  return OUT;
+}
+)EOSHADER";
+
+  // arithmetic on colours and texture coordinates, with constants
+  const char *PS20 = R"EOSHADER(
+float4 k0 : register(c0);
+float4 k1 : register(c1);
+
+struct v2f
+{
+  float4 col : COLOR0;
+  float2 uv : TEXCOORD0;
+  float4 uv1 : TEXCOORD1;
+  float3 uv2 : TEXCOORD2;
+};
+
+float4 main(v2f IN) : COLOR0
+{
+  float4 a = IN.col * k0 + float4(IN.uv, IN.uv.x * IN.uv.y, 1.0f);
+  float d = dot(IN.uv1, k1);
+  return a * d + float4(IN.uv2, frac(IN.uv1.w * 3.0f));
+}
+)EOSHADER";
+
+  // derivatives, of a product of inputs and of an input, and two targets
+  const char *PS2X = R"EOSHADER(
+float4 k0 : register(c0);
+
+struct v2f
+{
+  float4 col : COLOR0;
+  float2 uv : TEXCOORD0;
+  float4 uv1 : TEXCOORD1;
+  float3 uv2 : TEXCOORD2;
+};
+
+struct f2a
+{
+  float4 c0 : COLOR0;
+  float4 c1 : COLOR1;
+};
+
+f2a main(v2f IN)
+{
+  f2a OUT;
+  float4 v = IN.uv1 * IN.uv1.yxwz + IN.col;
+  OUT.c0 = v + ddx(v) * 16.0f;
+  OUT.c1 = ddy(v) * 16.0f + ddx(IN.uv2.xyzz) * k0;
+  return OUT;
+}
+)EOSHADER";
+
+  // vPos, vFace (one triangle of the draw is clockwise, the other not), a loop, a branch,
+  // derivatives, two targets and oDepth
+  const char *PS30 = R"EOSHADER(
+float4 k0 : register(c0);
+
+struct v2f
+{
+  float4 col : COLOR0;
+  float2 uv : TEXCOORD0;
+  float4 uv1 : TEXCOORD1;
+  float3 uv2 : TEXCOORD2;
+  float face : VFACE;
+  float2 vpos : VPOS;
+};
+
+struct f2a
+{
+  float4 c0 : COLOR0;
+  float4 c1 : COLOR1;
+  float depth : DEPTH;
+};
+
+f2a main(v2f IN)
+{
+  f2a OUT;
+  float4 acc = IN.col;
+  [loop] for(int i = 0; i < 3; i++)
+    acc = acc * k0 + IN.uv1;
+  [branch] if(IN.uv.x > 0.5f)
+    acc.xy += IN.vpos * 0.001f;
+  OUT.c0 = IN.face > 0 ? acc : -acc;
+  OUT.c1 = float4(ddx(IN.uv2.x), ddy(IN.uv2.y), IN.vpos.x, IN.vpos.y);
+  OUT.depth = saturate(IN.uv.y * 0.5f + 0.25f);
+  return OUT;
+}
+)EOSHADER";
+
+  // samples a texture, which can't be debugged yet
+  const char *PS30Texture = R"EOSHADER(
+sampler2D tex : register(s0);
+
+struct v2f
+{
+  float4 col : COLOR0;
+  float2 uv : TEXCOORD0;
+};
+
+float4 main(v2f IN) : COLOR0
+{
+  return tex2D(tex, IN.uv) * IN.col;
+}
+)EOSHADER";
+
+  struct PixelVertex
+  {
+    float pos[4];
+    float col[4];
+    float uv[4];
+  };
+
+  struct PixelDraw
+  {
+    const char *marker;
+    // the cell of the targets it fills: 4 across, 2 down
+    int cell;
+  };
+
+  static constexpr int NumPixelDraws = 5;
+  const PixelDraw PixelDraws[NumPixelDraws] = {
+      {"ps_2_0", 0}, {"ps_2_x", 1}, {"ps_3_0", 2}, {"ps_3_0 texture", 3}, {"ps_1_1", 4},
+  };
+
+  // two triangles filling most of a cell. The corners' w are 1, 2, 1.5 and 3. With clockwise the
+  // second triangle is clockwise like the first, otherwise it's counter-clockwise.
+  void PixelQuad(int cell, bool clockwise, PixelVertex out[6])
+  {
+    const float x0 = -1.0f + 0.5f * float(cell % 4) + 0.05f, x1 = x0 + 0.4f;
+    const float y0 = 0.95f - 1.0f * float(cell / 4), y1 = y0 - 0.9f;
+    const PixelVertex corners[4] = {
+        // top left, top right, bottom left, bottom right
+        {{x0, y0, 0.5f, 1.0f}, {0.2f, 0.4f, 0.6f, 1.0f}, {0.0f, 0.0f, 0.25f, 0.5f}},
+        {{x1, y0, 0.5f, 2.0f}, {0.9f, 0.1f, 0.3f, 0.5f}, {1.0f, 0.0f, 0.75f, -0.5f}},
+        {{x0, y1, 0.5f, 1.5f}, {0.5f, 0.8f, 0.0f, 0.25f}, {0.0f, 1.0f, -0.5f, 2.0f}},
+        {{x1, y1, 0.5f, 3.0f}, {0.1f, 0.6f, 1.0f, 0.75f}, {1.0f, 1.0f, 1.5f, 1.0f}},
+    };
+    const int order[2][6] = {{0, 1, 2, 1, 3, 2}, {0, 1, 2, 1, 2, 3}};
+    for(int v = 0; v < 6; v++)
+    {
+      out[v] = corners[order[clockwise ? 0 : 1][v]];
+      // x, y and z as the w given
+      for(int c = 0; c < 3; c++)
+        out[v].pos[c] *= out[v].pos[3];
+    }
+  }
+
+  // the pixels each pixel draw's reference has, relative to its cell's top left: a whole quad, and
+  // others on either side of the diagonal (the ps_3_0 draw's triangles have different windings)
+  static constexpr int NumProbes = 7;
+  const int Probes[NumProbes][2] = {
+      {40, 60}, {41, 60}, {40, 61}, {41, 61}, {23, 37}, {70, 100}, {88, 130},
+  };
+
   struct FFVertex
   {
     float x, y, z, rhw;
@@ -371,6 +565,51 @@ vout main(vin IN)
         0.0f, 0.0f, 0.0f, 1.0f,    //
     };
     memcpy(m, c, sizeof(c));
+  }
+
+  // each probe of each pixel draw: its marker, x, y, then both targets' values as float bits
+  void WritePixelReference(IDirect3DSurface9Ptr targets[2])
+  {
+    const std::string path = tmpPath + "/D3D9_Shader_Debug_Zoo_pixels.txt";
+    FILE *f = NULL;
+    fopen_s(&f, path.c_str(), "w");
+    if(!f)
+    {
+      TEST_ERROR("Couldn't write %s", path.c_str());
+      return;
+    }
+
+    IDirect3DSurface9Ptr readback[2];
+    D3DLOCKED_RECT locked[2] = {};
+    for(int t = 0; t < 2; t++)
+    {
+      CHECK_HR(dev->CreateOffscreenPlainSurface(screenWidth, screenHeight, D3DFMT_A32B32G32R32F,
+                                                D3DPOOL_SYSTEMMEM, &readback[t], NULL));
+      CHECK_HR(dev->GetRenderTargetData(targets[t], readback[t]));
+      CHECK_HR(readback[t]->LockRect(&locked[t], NULL, D3DLOCK_READONLY));
+    }
+
+    for(const PixelDraw &draw : PixelDraws)
+    {
+      const int cx = (draw.cell % 4) * screenWidth / 4, cy = (draw.cell / 4) * screenHeight / 2;
+      for(const auto &probe : Probes)
+      {
+        const int x = cx + probe[0], y = cy + probe[1];
+        fprintf(f, "%s\t%d\t%d", draw.marker, x, y);
+        for(int t = 0; t < 2; t++)
+        {
+          const DWORD *texel =
+              (const DWORD *)((const byte *)locked[t].pBits + y * locked[t].Pitch) + x * 4;
+          for(int c = 0; c < 4; c++)
+            fprintf(f, "\t%08x", texel[c]);
+        }
+        fprintf(f, "\n");
+      }
+    }
+
+    for(int t = 0; t < 2; t++)
+      readback[t]->UnlockRect();
+    fclose(f);
   }
 
   int main()
@@ -512,6 +751,47 @@ vout main(vin IN)
         {w * 0.875f, h * 0.75f, 0.5f, 1.0f, D3DCOLOR_XRGB(255, 0, 255)},
         {w * 0.95f, h * 0.95f, 0.5f, 1.0f, D3DCOLOR_XRGB(255, 0, 255)},
     };
+
+    // the pixel draws' targets, and what they need
+    IDirect3DSurface9Ptr pixelTargets[2];
+    for(int t = 0; t < 2; t++)
+      CHECK_HR(dev->CreateRenderTarget(screenWidth, screenHeight, D3DFMT_A32B32G32R32F,
+                                       D3DMULTISAMPLE_NONE, 0, FALSE, &pixelTargets[t], NULL));
+    IDirect3DSurface9Ptr backBuffer;
+    dev->GetRenderTarget(0, &backBuffer);
+
+    const D3DVERTEXELEMENT9 pixelElems[] = {
+        {0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+        {0, 16, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0},
+        {0, 32, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
+        D3DDECL_END(),
+    };
+    IDirect3DVertexDeclaration9Ptr pixelDecl;
+    CHECK_HR(dev->CreateVertexDeclaration(pixelElems, &pixelDecl));
+
+    IDirect3DVertexShader9Ptr pixelVS20 = CreateVS(Compile(PixelVS, "main", "vs_2_0"));
+    IDirect3DVertexShader9Ptr pixelVS30 = CreateVS(Compile(PixelVS, "main", "vs_3_0"));
+    IDirect3DPixelShader9Ptr pixelShaders[NumPixelDraws] = {
+        CreatePS(Compile(PS20, "main", "ps_2_0")),
+        CreatePS(Compile(PS2X, "main", "ps_2_a")),
+        CreatePS(Compile(PS30, "main", "ps_3_0")),
+        CreatePS(Compile(PS30Texture, "main", "ps_3_0")),
+    };
+    if(assemble)
+    {
+      const std::string src = "ps_1_1\nmov r0, v0\n";
+      ID3DBlobPtr code, errors;
+      if(FAILED(assemble(src.c_str(), src.size(), NULL, NULL, NULL, 0, &code, &errors)))
+        TEST_ERROR("Couldn't assemble the ps_1_1 shader");
+      else
+        dev->CreatePixelShader((const DWORD *)code->GetBufferPointer(), &pixelShaders[4]);
+    }
+    for(int d = 0; d < NumPixelDraws; d++)
+      if(!pixelShaders[d])
+        TEST_ERROR("Couldn't create the %s pixel shader", PixelDraws[d].marker);
+
+    // natively, what the GPU wrote at the probes after the first frame
+    bool wroteReference = rdoc != NULL;
 
     float m[16];
 
@@ -686,6 +966,37 @@ vout main(vin IN)
         popMarker();
       }
 
+      // the pixel draws, to the float targets
+      dev->SetRenderTarget(0, pixelTargets[0]);
+      dev->SetRenderTarget(1, pixelTargets[1]);
+      dev->Clear(0, NULL, D3DCLEAR_TARGET, 0, 1.0f, 0);
+      dev->SetVertexDeclaration(pixelDecl);
+      for(int d = 0; d < NumPixelDraws; d++)
+      {
+        const PixelDraw &draw = PixelDraws[d];
+        if(!pixelShaders[d])
+          continue;
+        pushMarker(draw.marker);
+        const bool sm3 = d == 2 || d == 3;
+        dev->SetVertexShader(sm3 ? pixelVS30 : pixelVS20);
+        dev->SetPixelShader(pixelShaders[d]);
+        const float k[8] = {0.5f, -0.75f, 1.25f, 0.375f, 0.25f, 0.5f, -0.125f, 1.5f};
+        dev->SetPixelShaderConstantF(0, k, 2);
+        // the ps_3_0 draw writes oDepth
+        dev->SetRenderState(D3DRS_ZENABLE, d == 2 ? D3DZB_TRUE : D3DZB_FALSE);
+        dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_ALWAYS);
+        dev->SetTexture(0, d == 3 ? heights.GetInterfacePtr() : NULL);
+        PixelVertex quad[6];
+        PixelQuad(draw.cell, d != 2, quad);
+        dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, quad, sizeof(PixelVertex));
+        popMarker();
+      }
+      dev->SetTexture(0, NULL);
+      dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+      dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+      dev->SetRenderTarget(1, NULL);
+      dev->SetRenderTarget(0, backBuffer);
+
       pushMarker("Fixed function");
       dev->SetVertexShader(NULL);
       dev->SetPixelShader(NULL);
@@ -696,6 +1007,12 @@ vout main(vin IN)
       popMarker();
 
       dev->EndScene();
+
+      if(!wroteReference)
+      {
+        WritePixelReference(pixelTargets);
+        wroteReference = true;
+      }
 
       Present();
     }

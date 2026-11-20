@@ -101,6 +101,7 @@
     <ClCompile Include="d3d9_shader_reflect.cpp" />
     <ClCompile Include="d3d9_vs_emulate.cpp" />
     <ClCompile Include="d3d9_vs_debug.cpp" />
+    <ClCompile Include="d3d9_ps_debug.cpp" />
     <ClCompile Include="d3d9_ps_emulate.cpp" />
     <ClCompile Include="d3d9_ffp_vertex.cpp" />
     <ClCompile Include="d3d9_postvs.cpp" />
@@ -140,6 +141,7 @@
     <ClInclude Include="..\dx\official\d3d9caps.h" />
     <ClInclude Include="..\dx\official\d3d9types.h" />
     <ClInclude Include="d3d9_bytecode.h" />
+    <ClInclude Include="d3d9_bytecode_build.h" />
     <ClInclude Include="d3d9_bytecode_test.h" />
     <ClInclude Include="d3d9_ctab_test_data.h" />
     <ClInclude Include="d3d9_ps1_test_data.h" />
@@ -147,6 +149,7 @@
     <ClInclude Include="d3d9_shader_reflect.h" />
     <ClInclude Include="d3d9_vs_emulate.h" />
     <ClInclude Include="d3d9_vs_debug.h" />
+    <ClInclude Include="d3d9_ps_debug.h" />
     <ClInclude Include="d3d9_ps_emulate.h" />
     <ClInclude Include="d3d9_postvs.h" />
     <ClInclude Include="d3d9_ffp_vertex.h" />

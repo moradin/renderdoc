@@ -27,6 +27,7 @@
 // shader's bytecode and answers the replay controller with it.
 
 #include "common/formatting.h"
+#include "d3d9_ps_debug.h"
 #include "d3d9_replay.h"
 #include "d3d9_shader_reflect.h"
 #include "d3d9_vs_emulate.h"
@@ -60,7 +61,10 @@ void D3D9Replay::AddShader(ResourceId id, const uint32_t *tokens, size_t numToke
   }
   else
   {
-    info.SetDebugStatus(false, "Debugging D3D9 pixel shaders isn't supported yet");
+    // pixel shaders in the pixel interpreter (d3d9_ps_debug.cpp), so far those that don't sample
+    rdcstr status;
+    const bool debuggable = D3D9Emu::PixelShaderDebuggable(info.GetProgram(), status);
+    info.SetDebugStatus(debuggable, status);
   }
 }
 

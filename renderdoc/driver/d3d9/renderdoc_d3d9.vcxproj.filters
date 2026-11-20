@@ -38,6 +38,9 @@
     <ClCompile Include="d3d9_vs_debug.cpp">
       <Filter>Replay</Filter>
     </ClCompile>
+    <ClCompile Include="d3d9_ps_debug.cpp">
+      <Filter>Replay</Filter>
+    </ClCompile>
     <ClCompile Include="d3d9_ps_emulate.cpp">
       <Filter>Replay</Filter>
     </ClCompile>
@@ -137,6 +140,9 @@
     <ClInclude Include="d3d9_bytecode.h">
       <Filter>Replay</Filter>
     </ClInclude>
+    <ClInclude Include="d3d9_bytecode_build.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
     <ClInclude Include="d3d9_bytecode_test.h">
       <Filter>Replay</Filter>
     </ClInclude>
@@ -155,6 +161,9 @@
     <ClInclude Include="d3d9_vs_emulate.h">
       <Filter>Replay</Filter>
     <ClInclude Include="d3d9_vs_debug.h">
+      <Filter>Replay</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d9_ps_debug.h">
       <Filter>Replay</Filter>
     </ClInclude>
     <ClInclude Include="d3d9_ps_emulate.h">
