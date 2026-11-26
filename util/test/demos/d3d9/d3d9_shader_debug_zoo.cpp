@@ -44,8 +44,11 @@ RD_TEST(D3D9_Shader_Debug_Zoo, D3D9GraphicsTest)
       "with nested calls, a vs_3_0 draw whose constant table has structs, arrays and matrices, and "
       "a fixed function draw, which can't be debugged. Then pixel shader draws to A32B32G32R32F "
       "targets (ps_2_0, ps_2_x with derivatives and two targets, ps_3_0 with vPos, vFace, a loop "
-      "and oDepth), and two that can't be debugged yet (one samples, one is ps_1_1). Natively, "
-      "what the GPU wrote at a few pixels of each is written to D3D9_Shader_Debug_Zoo_pixels.txt.";
+      "and oDepth), transcendentals, and lookups: texld, texldp, texldb, texldd and texldl, of "
+      "mipmapped 2D, cube and volume textures, anisotropic, with a border colour, sRGB, SetLOD, a "
+      "D24S8 shadow map drawn in the frame, and samplers with nothing bound. A ps_1_1 draw can't "
+      "be debugged yet. Natively, what the GPU wrote at a few pixels of each is written to "
+      "D3D9_Shader_Debug_Zoo_pixels.txt.";
 
   // vs_1_1 tokens, hand assembled since D3DAssemble doesn't take vs_1_1
   enum
@@ -366,8 +369,12 @@ vout main(vin IN)
 
   // The pixel draws. Each fills a cell of the float targets with two triangles whose vertices
   // have different w, so the inputs are interpolated with perspective. The vertex shader is the
-  // same HLSL for vs_2_0 and vs_3_0.
+  // same HLSL for vs_2_0 and vs_3_0. c0 and c1 map uv, so the lookups' coordinates are inputs as
+  // the rasterizer gave them; they're the identity unless a draw says otherwise.
   const char *PixelVS = R"EOSHADER(
+float4 uvRow0 : register(c0);
+float4 uvRow1 : register(c1);
+
 struct a2v
 {
   float4 pos : POSITION;
@@ -389,7 +396,7 @@ v2f main(a2v IN)
   v2f OUT;
   OUT.pos = IN.pos;
   OUT.col = IN.col;
-  OUT.uv = IN.uv.xy;
+  OUT.uv = float2(dot(float3(IN.uv.xy, 1.0f), uvRow0.xyz), dot(float3(IN.uv.xy, 1.0f), uvRow1.xyz));
   OUT.uv1 = IN.uv * 2.0f - 0.5f;
   OUT.uv2 = IN.uv.zwx + IN.col.xyz;
   return OUT;
@@ -482,7 +489,7 @@ f2a main(v2f IN)
 }
 )EOSHADER";
 
-  // samples a texture, which can't be debugged yet
+  // a point sampled 4x4 float texture
   const char *PS30Texture = R"EOSHADER(
 sampler2D tex : register(s0);
 
@@ -498,6 +505,163 @@ float4 main(v2f IN) : COLOR0
 }
 )EOSHADER";
 
+  // The lookups: the same v2f for all of them
+  const char *SampleV2F = R"EOSHADER(
+struct v2f
+{
+  float4 col : COLOR0;
+  float2 uv : TEXCOORD0;
+  float4 uv1 : TEXCOORD1;
+  float3 uv2 : TEXCOORD2;
+};
+
+struct f2a
+{
+  float4 c0 : COLOR0;
+  float4 c1 : COLOR1;
+};
+)EOSHADER";
+
+  // rcp, rsq, exp, log, sincos, and pow (which fxc writes as log, mul and exp)
+  const char *PS30Transcendentals = R"EOSHADER(
+f2a main(v2f IN)
+{
+  f2a OUT;
+  OUT.c0 = float4(1.0f / (IN.col.x + 0.1f), rsqrt(IN.uv1.y * IN.uv1.y + 0.01f), exp2(IN.uv1.z),
+                  log2(abs(IN.uv1.x) + 0.01f));
+  float s, c;
+  sincos(IN.uv2.x * 5.0f, s, c);
+  OUT.c1 = float4(s, c, pow(abs(IN.uv1.w) + 0.1f, IN.col.z * 3.0f), 0.0f);
+  return OUT;
+}
+)EOSHADER";
+
+  // the transcendentals of inputs as they are, assembled, since HLSL's sincos reduces its argument
+  // to [-pi, pi] first
+  const char *PS30TranscendentalsAsm = R"EOSHADER(
+ps_3_0
+def c0, 0, 0, 0, 0
+dcl_color v0
+dcl_texcoord1 v1
+dcl_texcoord2 v2
+mov r0, c0
+rcp r0.x, v0.x
+rsq r0.y, v1.y
+exp r0.z, v1.z
+log r0.w, v1.x
+mov oC0, r0
+mov r1, c0
+sincos r1.xy, v2.x
+mov r2, v0
+pow r1.z, v1.w, r2.z
+mov oC1, r1
+)EOSHADER";
+
+  // texld, texldp and texldb, on a mipmapped texture sampled trilinearly
+  const char *PS20Lookups = R"EOSHADER(
+sampler2D tex : register(s0);
+
+f2a main(v2f IN)
+{
+  f2a OUT;
+  OUT.c0 = tex2D(tex, IN.uv);
+  OUT.c1 = tex2Dproj(tex, float4(IN.uv1.xy, 0.0f, IN.col.w + 0.5f)) +
+           tex2Dbias(tex, float4(IN.uv, 0.0f, IN.uv1.w));
+  return OUT;
+}
+)EOSHADER";
+
+  // texldd, with derivatives from dsx and dsy, scaled
+  const char *PS2XGradients = R"EOSHADER(
+sampler2D tex : register(s0);
+
+f2a main(v2f IN)
+{
+  f2a OUT;
+  OUT.c0 = tex2Dgrad(tex, IN.uv, ddx(IN.uv) * 3.0f, ddy(IN.uv) * 0.5f);
+  OUT.c1 = tex2Dgrad(tex, IN.uv1.xy, ddy(IN.uv1.xy), ddx(IN.uv1.xy));
+  return OUT;
+}
+)EOSHADER";
+
+  // one lookup in c0, and IN.uv in c1 (for the anisotropic, sRGB and SetLOD draws)
+  const char *PS30Lookup2D = R"EOSHADER(
+sampler2D tex : register(s0);
+
+f2a main(v2f IN)
+{
+  f2a OUT;
+  OUT.c0 = tex2D(tex, IN.uv);
+  OUT.c1 = float4(IN.uv, 0.0f, 1.0f);
+  return OUT;
+}
+)EOSHADER";
+
+  const char *PS30Cube = R"EOSHADER(
+samplerCUBE tex : register(s0);
+
+f2a main(v2f IN)
+{
+  f2a OUT;
+  OUT.c0 = texCUBE(tex, IN.uv2 - float3(0.9f, 0.7f, 1.0f));
+  OUT.c1 = texCUBEbias(tex, float4(IN.uv1.zxy, IN.uv1.w));
+  return OUT;
+}
+)EOSHADER";
+
+  const char *PS30Volume = R"EOSHADER(
+sampler3D tex : register(s0);
+
+f2a main(v2f IN)
+{
+  f2a OUT;
+  OUT.c0 = tex3D(tex, IN.uv1.xyz);
+  OUT.c1 = tex3Dlod(tex, float4(IN.uv2, IN.uv1.w * 2.0f));
+  return OUT;
+}
+)EOSHADER";
+
+  // a border colour, with uv outside [0, 1], and texldl
+  const char *PS30Border = R"EOSHADER(
+sampler2D tex : register(s0);
+
+f2a main(v2f IN)
+{
+  f2a OUT;
+  OUT.c0 = tex2D(tex, IN.uv);
+  OUT.c1 = tex2Dlod(tex, float4(IN.uv, 0.0f, IN.uv1.w * 2.0f));
+  return OUT;
+}
+)EOSHADER";
+
+  // a D24S8 texture: the GPU compares z with the depth, and filters the results. Its depth is u,
+  // so comparing with v passes on one side of the diagonal, with filtered results near it.
+  const char *PS30Shadow = R"EOSHADER(
+sampler2D tex : register(s0);
+
+f2a main(v2f IN)
+{
+  f2a OUT;
+  OUT.c0 = tex2Dproj(tex, float4(IN.uv, IN.uv.y, 1.0f));
+  OUT.c1 = tex2Dbias(tex, float4(IN.uv1.xy, IN.col.x, 0.0f));
+  return OUT;
+}
+)EOSHADER";
+
+  // samplers with nothing bound
+  const char *PS30Unbound = R"EOSHADER(
+sampler2D tex : register(s0);
+samplerCUBE cube : register(s1);
+
+f2a main(v2f IN)
+{
+  f2a OUT;
+  OUT.c0 = tex2D(tex, IN.uv);
+  OUT.c1 = texCUBE(cube, IN.uv2);
+  return OUT;
+}
+)EOSHADER";
+
   struct PixelVertex
   {
     float pos[4];
@@ -508,19 +672,60 @@ float4 main(v2f IN) : COLOR0
   struct PixelDraw
   {
     const char *marker;
-    // the cell of the targets it fills: 4 across, 2 down
+    // the cell of the targets it fills: 4 across, 2 down, in the first pair of targets (0-7), the
+    // second (8-15) or the third (16-23)
     int cell;
+    // vs_3_0 and ps_3_0, or vs_2_0
+    bool sm3;
   };
 
-  static constexpr int NumPixelDraws = 5;
+  enum
+  {
+    DrawPS20,
+    DrawPS2X,
+    DrawPS30,
+    DrawPS30Texture,
+    DrawPS11,
+    DrawTranscendentals,
+    DrawPS20Lookups,
+    DrawPS2XGradients,
+    DrawAnisotropic,
+    DrawCube,
+    DrawVolume,
+    DrawBorder,
+    DrawSRGB,
+    DrawSetLOD,
+    DrawShadow,
+    DrawUnbound,
+    DrawTranscendentalsAsm,
+    NumPixelDraws,
+  };
+  static constexpr int NumTargetPairs = 3;
   const PixelDraw PixelDraws[NumPixelDraws] = {
-      {"ps_2_0", 0}, {"ps_2_x", 1}, {"ps_3_0", 2}, {"ps_3_0 texture", 3}, {"ps_1_1", 4},
+      {"ps_2_0", 0, false},
+      {"ps_2_x", 1, false},
+      {"ps_3_0", 2, true},
+      {"ps_3_0 texture", 3, true},
+      {"ps_1_1", 4, false},
+      {"ps_3_0 transcendentals", 5, true},
+      {"ps_2_0 lookups", 6, false},
+      {"ps_2_x gradients", 7, false},
+      {"ps_3_0 anisotropic", 8, true},
+      {"ps_3_0 cube", 9, true},
+      {"ps_3_0 volume", 10, true},
+      {"ps_3_0 border", 11, true},
+      {"ps_3_0 sRGB", 12, true},
+      {"ps_3_0 SetLOD", 13, true},
+      {"ps_3_0 shadow", 14, true},
+      {"ps_3_0 unbound", 15, true},
+      {"ps_3_0 transcendentals asm", 16, true},
   };
 
   // two triangles filling most of a cell. The corners' w are 1, 2, 1.5 and 3. With clockwise the
   // second triangle is clockwise like the first, otherwise it's counter-clockwise.
   void PixelQuad(int cell, bool clockwise, PixelVertex out[6])
   {
+    cell %= 8;
     const float x0 = -1.0f + 0.5f * float(cell % 4) + 0.05f, x1 = x0 + 0.4f;
     const float y0 = 0.95f - 1.0f * float(cell / 4), y1 = y0 - 0.9f;
     const PixelVertex corners[4] = {
@@ -567,8 +772,10 @@ float4 main(v2f IN) : COLOR0
     memcpy(m, c, sizeof(c));
   }
 
-  // each probe of each pixel draw: its marker, x, y, then both targets' values as float bits
-  void WritePixelReference(IDirect3DSurface9Ptr targets[2])
+  // each probe of each pixel draw that was drawn: its marker, x, y, then both of its targets'
+  // values as float bits
+  void WritePixelReference(IDirect3DSurface9Ptr targets[NumTargetPairs * 2],
+                           const bool drawn[NumPixelDraws])
   {
     const std::string path = tmpPath + "/D3D9_Shader_Debug_Zoo_pixels.txt";
     FILE *f = NULL;
@@ -579,9 +786,9 @@ float4 main(v2f IN) : COLOR0
       return;
     }
 
-    IDirect3DSurface9Ptr readback[2];
-    D3DLOCKED_RECT locked[2] = {};
-    for(int t = 0; t < 2; t++)
+    IDirect3DSurface9Ptr readback[NumTargetPairs * 2];
+    D3DLOCKED_RECT locked[NumTargetPairs * 2] = {};
+    for(int t = 0; t < NumTargetPairs * 2; t++)
     {
       CHECK_HR(dev->CreateOffscreenPlainSurface(screenWidth, screenHeight, D3DFMT_A32B32G32R32F,
                                                 D3DPOOL_SYSTEMMEM, &readback[t], NULL));
@@ -589,14 +796,18 @@ float4 main(v2f IN) : COLOR0
       CHECK_HR(readback[t]->LockRect(&locked[t], NULL, D3DLOCK_READONLY));
     }
 
-    for(const PixelDraw &draw : PixelDraws)
+    for(int d = 0; d < NumPixelDraws; d++)
     {
-      const int cx = (draw.cell % 4) * screenWidth / 4, cy = (draw.cell / 4) * screenHeight / 2;
+      const PixelDraw &draw = PixelDraws[d];
+      if(!drawn[d])
+        continue;
+      const int cell = draw.cell % 8, set = draw.cell / 8;
+      const int cx = (cell % 4) * screenWidth / 4, cy = (cell / 4) * screenHeight / 2;
       for(const auto &probe : Probes)
       {
         const int x = cx + probe[0], y = cy + probe[1];
         fprintf(f, "%s\t%d\t%d", draw.marker, x, y);
-        for(int t = 0; t < 2; t++)
+        for(int t = set * 2; t < set * 2 + 2; t++)
         {
           const DWORD *texel =
               (const DWORD *)((const byte *)locked[t].pBits + y * locked[t].Pitch) + x * 4;
@@ -607,9 +818,49 @@ float4 main(v2f IN) : COLOR0
       }
     }
 
-    for(int t = 0; t < 2; t++)
+    for(int t = 0; t < NumTargetPairs * 2; t++)
       readback[t]->UnlockRect();
     fclose(f);
+  }
+
+  // a texel of the sampled textures, different in each level, face and slice: a level's texels
+  // vary across it, so filtering between them shows
+  static DWORD Texel(int x, int y, int z, int level)
+  {
+    return D3DCOLOR_ARGB(255 - level * 30, (x * 37 + level * 50) & 255, (y * 59 + z * 23) & 255,
+                         (((x ^ y) * 16) + level * 40 + z * 7) & 255);
+  }
+
+  // a managed A8R8G8B8 texture with every level of Texel
+  IDirect3DTexture9Ptr MakeMipTexture(UINT size)
+  {
+    IDirect3DTexture9Ptr ret;
+    if(FAILED(dev->CreateTexture(size, size, 0, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &ret, NULL)))
+    {
+      TEST_ERROR("Couldn't create a %ux%u texture", size, size);
+      return ret;
+    }
+    for(DWORD l = 0; l < ret->GetLevelCount(); l++)
+    {
+      D3DLOCKED_RECT rect = {};
+      ret->LockRect(l, &rect, NULL, 0);
+      const int s = int(size >> l);
+      for(int y = 0; y < s; y++)
+        for(int x = 0; x < s; x++)
+          ((DWORD *)((byte *)rect.pBits + y * rect.Pitch))[x] = Texel(x, y, 0, l);
+      ret->UnlockRect(l);
+    }
+    return ret;
+  }
+
+  void SetFilter(DWORD sampler, DWORD min, DWORD mag, DWORD mip, DWORD address)
+  {
+    dev->SetSamplerState(sampler, D3DSAMP_MINFILTER, min);
+    dev->SetSamplerState(sampler, D3DSAMP_MAGFILTER, mag);
+    dev->SetSamplerState(sampler, D3DSAMP_MIPFILTER, mip);
+    dev->SetSamplerState(sampler, D3DSAMP_ADDRESSU, address);
+    dev->SetSamplerState(sampler, D3DSAMP_ADDRESSV, address);
+    dev->SetSamplerState(sampler, D3DSAMP_ADDRESSW, address);
   }
 
   int main()
@@ -752,13 +1003,95 @@ float4 main(v2f IN) : COLOR0
         {w * 0.95f, h * 0.95f, 0.5f, 1.0f, D3DCOLOR_XRGB(255, 0, 255)},
     };
 
-    // the pixel draws' targets, and what they need
-    IDirect3DSurface9Ptr pixelTargets[2];
-    for(int t = 0; t < 2; t++)
+    // the pixel draws' targets, in pairs, and what they need
+    IDirect3DSurface9Ptr pixelTargets[NumTargetPairs * 2];
+    for(int t = 0; t < NumTargetPairs * 2; t++)
       CHECK_HR(dev->CreateRenderTarget(screenWidth, screenHeight, D3DFMT_A32B32G32R32F,
                                        D3DMULTISAMPLE_NONE, 0, FALSE, &pixelTargets[t], NULL));
-    IDirect3DSurface9Ptr backBuffer;
+    IDirect3DSurface9Ptr backBuffer, backDepth;
     dev->GetRenderTarget(0, &backBuffer);
+    dev->GetDepthStencilSurface(&backDepth);
+
+    // what the lookups sample: a 64x64 texture with all its levels, the same with SetLOD(2), a
+    // 16x16 cube and a 16x16x16 volume texture with all theirs
+    IDirect3DTexture9Ptr mipTex = MakeMipTexture(64);
+    IDirect3DTexture9Ptr lodTex = MakeMipTexture(64);
+    if(lodTex)
+      lodTex->SetLOD(2);
+
+    IDirect3DCubeTexture9Ptr cubeTex;
+    if(SUCCEEDED(dev->CreateCubeTexture(16, 0, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &cubeTex, NULL)))
+    {
+      for(DWORD l = 0; l < cubeTex->GetLevelCount(); l++)
+      {
+        for(int face = 0; face < 6; face++)
+        {
+          D3DLOCKED_RECT faceRect = {};
+          cubeTex->LockRect(D3DCUBEMAP_FACES(face), l, &faceRect, NULL, 0);
+          const int s = 16 >> l;
+          for(int y = 0; y < s; y++)
+            for(int x = 0; x < s; x++)
+              ((DWORD *)((byte *)faceRect.pBits + y * faceRect.Pitch))[x] = Texel(x, y, face * 3, l);
+          cubeTex->UnlockRect(D3DCUBEMAP_FACES(face), l);
+        }
+      }
+    }
+    else
+    {
+      TEST_ERROR("Couldn't create the cube texture");
+    }
+
+    IDirect3DVolumeTexture9Ptr volTex;
+    if(SUCCEEDED(dev->CreateVolumeTexture(16, 16, 16, 0, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED,
+                                          &volTex, NULL)))
+    {
+      for(DWORD l = 0; l < volTex->GetLevelCount(); l++)
+      {
+        D3DLOCKED_BOX box = {};
+        volTex->LockBox(l, &box, NULL, 0);
+        const int s = 16 >> l;
+        for(int z = 0; z < s; z++)
+          for(int y = 0; y < s; y++)
+            for(int x = 0; x < s; x++)
+              ((DWORD *)((byte *)box.pBits + z * box.SlicePitch + y * box.RowPitch))[x] =
+                  Texel(x, y, z, l);
+        volTex->UnlockBox(l);
+      }
+    }
+    else
+    {
+      TEST_ERROR("Couldn't create the volume texture");
+    }
+
+    // an 8x8 D24S8 texture, drawn each frame, which the shadow draw compares against: big texels,
+    // so many pixels get results filtered between them. Not every GPU can sample depth formats.
+    IDirect3DTexture9Ptr shadowTex;
+    IDirect3DSurface9Ptr shadowDepth, shadowColour;
+    if(SUCCEEDED(d3d->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8,
+                                        D3DUSAGE_DEPTHSTENCIL, D3DRTYPE_TEXTURE, D3DFMT_D24S8)) &&
+       SUCCEEDED(dev->CreateTexture(8, 8, 1, D3DUSAGE_DEPTHSTENCIL, D3DFMT_D24S8, D3DPOOL_DEFAULT,
+                                    &shadowTex, NULL)))
+    {
+      shadowTex->GetSurfaceLevel(0, &shadowDepth);
+      CHECK_HR(dev->CreateRenderTarget(8, 8, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE,
+                                       &shadowColour, NULL));
+    }
+    else
+    {
+      TEST_WARN("D24S8 textures can't be sampled, leaving out the shadow draw");
+    }
+    // the shadow map's depth: u, from 0.02 on the left to 0.98 on the right
+    const FFVertex shadowQuad[4] = {
+        {-0.5f, -0.5f, 0.02f, 1.0f, 0xFFFFFFFF},
+        {7.5f, -0.5f, 0.98f, 1.0f, 0xFFFFFFFF},
+        {-0.5f, 7.5f, 0.02f, 1.0f, 0xFFFFFFFF},
+        {7.5f, 7.5f, 0.98f, 1.0f, 0xFFFFFFFF},
+    };
+    const bool srgbRead = SUCCEEDED(d3d->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
+                                                           D3DFMT_X8R8G8B8, D3DUSAGE_QUERY_SRGBREAD,
+                                                           D3DRTYPE_TEXTURE, D3DFMT_A8R8G8B8));
+    if(!srgbRead)
+      TEST_WARN("A8R8G8B8 can't be read as sRGB, leaving out the sRGB draw");
 
     const D3DVERTEXELEMENT9 pixelElems[] = {
         {0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
@@ -771,24 +1104,122 @@ float4 main(v2f IN) : COLOR0
 
     IDirect3DVertexShader9Ptr pixelVS20 = CreateVS(Compile(PixelVS, "main", "vs_2_0"));
     IDirect3DVertexShader9Ptr pixelVS30 = CreateVS(Compile(PixelVS, "main", "vs_3_0"));
+    auto lookupPS = [&](const char *source, const char *profile) {
+      return CreatePS(Compile(std::string(SampleV2F) + source, "main", profile));
+    };
     IDirect3DPixelShader9Ptr pixelShaders[NumPixelDraws] = {
         CreatePS(Compile(PS20, "main", "ps_2_0")),
         CreatePS(Compile(PS2X, "main", "ps_2_a")),
         CreatePS(Compile(PS30, "main", "ps_3_0")),
         CreatePS(Compile(PS30Texture, "main", "ps_3_0")),
+        NULL,
+        lookupPS(PS30Transcendentals, "ps_3_0"),
+        lookupPS(PS20Lookups, "ps_2_0"),
+        lookupPS(PS2XGradients, "ps_2_a"),
+        lookupPS(PS30Lookup2D, "ps_3_0"),
+        lookupPS(PS30Cube, "ps_3_0"),
+        lookupPS(PS30Volume, "ps_3_0"),
+        lookupPS(PS30Border, "ps_3_0"),
+        lookupPS(PS30Lookup2D, "ps_3_0"),
+        lookupPS(PS30Lookup2D, "ps_3_0"),
+        lookupPS(PS30Shadow, "ps_3_0"),
+        lookupPS(PS30Unbound, "ps_3_0"),
     };
-    if(assemble)
-    {
-      const std::string src = "ps_1_1\nmov r0, v0\n";
+    auto assemblePS = [&](const std::string &src, int d) {
+      if(!assemble)
+        return;
       ID3DBlobPtr code, errors;
       if(FAILED(assemble(src.c_str(), src.size(), NULL, NULL, NULL, 0, &code, &errors)))
-        TEST_ERROR("Couldn't assemble the ps_1_1 shader");
+        TEST_ERROR("Couldn't assemble the %s shader: %s", PixelDraws[d].marker,
+                   errors ? (const char *)errors->GetBufferPointer() : "");
       else
-        dev->CreatePixelShader((const DWORD *)code->GetBufferPointer(), &pixelShaders[4]);
-    }
+        dev->CreatePixelShader((const DWORD *)code->GetBufferPointer(), &pixelShaders[d]);
+    };
+    assemblePS("ps_1_1\nmov r0, v0\n", DrawPS11);
+    assemblePS(PS30TranscendentalsAsm, DrawTranscendentalsAsm);
+    bool drawn[NumPixelDraws] = {};
     for(int d = 0; d < NumPixelDraws; d++)
+    {
       if(!pixelShaders[d])
         TEST_ERROR("Couldn't create the %s pixel shader", PixelDraws[d].marker);
+      drawn[d] = pixelShaders[d] != NULL;
+    }
+    drawn[DrawShadow] &= shadowTex != NULL;
+    drawn[DrawSRGB] &= srgbRead;
+
+    // each pixel draw's sampler 0 (and 1), and the uv mapping in the vertex shader's c0 and c1
+    auto setupLookups = [&](int d) {
+      float uv[8] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+      auto scale = [&](float s) {
+        uv[0] = s;
+        uv[5] = s;
+      };
+      SetFilter(0, D3DTEXF_LINEAR, D3DTEXF_LINEAR, D3DTEXF_LINEAR, D3DTADDRESS_WRAP);
+      dev->SetSamplerState(0, D3DSAMP_MAXANISOTROPY, 1);
+      dev->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
+      dev->SetSamplerState(0, D3DSAMP_BORDERCOLOR, 0);
+      dev->SetTexture(0, NULL);
+      dev->SetTexture(1, NULL);
+      switch(d)
+      {
+        case DrawPS30Texture:
+          SetFilter(0, D3DTEXF_POINT, D3DTEXF_POINT, D3DTEXF_NONE, D3DTADDRESS_WRAP);
+          dev->SetTexture(0, heights);
+          break;
+        case DrawPS20Lookups:
+          scale(4.0f);
+          dev->SetTexture(0, mipTex);
+          break;
+        case DrawPS2XGradients:
+          // anisotropic, with texldd's derivatives
+          SetFilter(0, D3DTEXF_ANISOTROPIC, D3DTEXF_LINEAR, D3DTEXF_LINEAR, D3DTADDRESS_WRAP);
+          dev->SetSamplerState(0, D3DSAMP_MAXANISOTROPY, 8);
+          scale(3.0f);
+          dev->SetTexture(0, mipTex);
+          break;
+        case DrawAnisotropic:
+        {
+          // u stretched 8 times and the mapping turned by 30 degrees
+          SetFilter(0, D3DTEXF_ANISOTROPIC, D3DTEXF_LINEAR, D3DTEXF_LINEAR, D3DTADDRESS_WRAP);
+          dev->SetSamplerState(0, D3DSAMP_MAXANISOTROPY, 16);
+          const float c = 0.8660254f, s = 0.5f;
+          const float rows[8] = {8.0f * c, -8.0f * s, 0.0f, 0.0f, s, c, 0.0f, 0.0f};
+          memcpy(uv, rows, sizeof(uv));
+          dev->SetTexture(0, mipTex);
+          break;
+        }
+        case DrawCube:
+          SetFilter(0, D3DTEXF_LINEAR, D3DTEXF_LINEAR, D3DTEXF_LINEAR, D3DTADDRESS_CLAMP);
+          dev->SetTexture(0, cubeTex);
+          break;
+        case DrawVolume: dev->SetTexture(0, volTex); break;
+        case DrawBorder:
+        {
+          SetFilter(0, D3DTEXF_LINEAR, D3DTEXF_LINEAR, D3DTEXF_POINT, D3DTADDRESS_BORDER);
+          dev->SetSamplerState(0, D3DSAMP_BORDERCOLOR, D3DCOLOR_ARGB(0x80, 0xFF, 0x40, 0x20));
+          const float rows[8] = {1.6f, 0.0f, -0.3f, 0.0f, 0.0f, 1.6f, -0.3f, 0.0f};
+          memcpy(uv, rows, sizeof(uv));
+          dev->SetTexture(0, mipTex);
+          break;
+        }
+        case DrawSRGB:
+          dev->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, TRUE);
+          scale(2.0f);
+          dev->SetTexture(0, mipTex);
+          break;
+        case DrawSetLOD:
+          scale(4.0f);
+          dev->SetTexture(0, lodTex);
+          break;
+        case DrawShadow:
+          // the comparisons filtered
+          SetFilter(0, D3DTEXF_LINEAR, D3DTEXF_LINEAR, D3DTEXF_NONE, D3DTADDRESS_CLAMP);
+          dev->SetTexture(0, shadowTex);
+          break;
+        default: break;
+      }
+      dev->SetVertexShaderConstantF(0, uv, 2);
+    };
 
     // natively, what the GPU wrote at the probes after the first frame
     bool wroteReference = rdoc != NULL;
@@ -966,32 +1397,65 @@ float4 main(v2f IN) : COLOR0
         popMarker();
       }
 
-      // the pixel draws, to the float targets
-      dev->SetRenderTarget(0, pixelTargets[0]);
-      dev->SetRenderTarget(1, pixelTargets[1]);
-      dev->Clear(0, NULL, D3DCLEAR_TARGET, 0, 1.0f, 0);
+      // the shadow map the shadow draw samples, drawn in the frame
+      if(shadowTex)
+      {
+        pushMarker("Shadow map");
+        dev->SetRenderTarget(0, shadowColour);
+        dev->SetDepthStencilSurface(shadowDepth);
+        dev->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
+        dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+        dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_ALWAYS);
+        dev->SetVertexShader(NULL);
+        dev->SetPixelShader(NULL);
+        dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+        dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+        dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+        dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, shadowQuad, sizeof(FFVertex));
+        dev->SetDepthStencilSurface(backDepth);
+        dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+        popMarker();
+      }
+
+      // the pixel draws, to the float targets: cells 0-7 to the first pair, 8-15 to the second,
+      // 16-23 to the third
+      for(int set = NumTargetPairs - 1; set >= 0; set--)
+      {
+        dev->SetRenderTarget(0, pixelTargets[set * 2]);
+        dev->SetRenderTarget(1, pixelTargets[set * 2 + 1]);
+        dev->Clear(0, NULL, D3DCLEAR_TARGET, 0, 1.0f, 0);
+      }
       dev->SetVertexDeclaration(pixelDecl);
+      int boundSet = 0;
       for(int d = 0; d < NumPixelDraws; d++)
       {
         const PixelDraw &draw = PixelDraws[d];
-        if(!pixelShaders[d])
+        if(!drawn[d])
           continue;
+        if(draw.cell / 8 != boundSet)
+        {
+          boundSet = draw.cell / 8;
+          dev->SetRenderTarget(0, pixelTargets[boundSet * 2]);
+          dev->SetRenderTarget(1, pixelTargets[boundSet * 2 + 1]);
+        }
         pushMarker(draw.marker);
-        const bool sm3 = d == 2 || d == 3;
-        dev->SetVertexShader(sm3 ? pixelVS30 : pixelVS20);
+        dev->SetVertexShader(draw.sm3 ? pixelVS30 : pixelVS20);
         dev->SetPixelShader(pixelShaders[d]);
         const float k[8] = {0.5f, -0.75f, 1.25f, 0.375f, 0.25f, 0.5f, -0.125f, 1.5f};
         dev->SetPixelShaderConstantF(0, k, 2);
         // the ps_3_0 draw writes oDepth
-        dev->SetRenderState(D3DRS_ZENABLE, d == 2 ? D3DZB_TRUE : D3DZB_FALSE);
+        dev->SetRenderState(D3DRS_ZENABLE, d == DrawPS30 ? D3DZB_TRUE : D3DZB_FALSE);
         dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_ALWAYS);
-        dev->SetTexture(0, d == 3 ? heights.GetInterfacePtr() : NULL);
+        setupLookups(d);
         PixelVertex quad[6];
-        PixelQuad(draw.cell, d != 2, quad);
+        PixelQuad(draw.cell, d != DrawPS30, quad);
         dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, quad, sizeof(PixelVertex));
         popMarker();
       }
       dev->SetTexture(0, NULL);
+      dev->SetTexture(1, NULL);
+      dev->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
+      SetFilter(0, D3DTEXF_POINT, D3DTEXF_POINT, D3DTEXF_NONE, D3DTADDRESS_WRAP);
       dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
       dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
       dev->SetRenderTarget(1, NULL);
@@ -1010,7 +1474,7 @@ float4 main(v2f IN) : COLOR0
 
       if(!wroteReference)
       {
-        WritePixelReference(pixelTargets);
+        WritePixelReference(pixelTargets, drawn);
         wroteReference = true;
       }
 

@@ -631,6 +631,9 @@ bool PSThread::Sample(const Instruction &inst, Vec4 &result)
       s.ddy = Diff(c[QuadBottomLeft], c[QuadTopLeft]);
       // w is the projection or the bias, not part of the coordinate
       s.ddx[3] = s.ddy[3] = 0.0f;
+      for(uint32_t i = 0; i < QuadPixels; i++)
+        s.quad[i] = m_Quad[i];
+      s.pixel = m_QuadIndex;
       break;
     }
   }
@@ -764,6 +767,9 @@ bool PSThread::SampleStage(uint32_t stage, const Vec4 &coord, Vec4 &result)
   s.ddx = Diff(m_Quad[QuadTopRight], m_Quad[QuadTopLeft]);
   s.ddy = Diff(m_Quad[QuadBottomLeft], m_Quad[QuadTopLeft]);
   s.ddx[3] = s.ddy[3] = 0.0f;
+  for(uint32_t i = 0; i < QuadPixels; i++)
+    s.quad[i] = m_Quad[i];
+  s.pixel = m_QuadIndex;
   result = m_Callbacks->Sample(s);
   return true;
 }
@@ -1388,7 +1394,10 @@ void PSQuad::Start(const PSEmulator &emu, const PSInputs inputs[QuadPixels],
                    const VSConstants &consts, PSCallbacks *callbacks, const PSStageState *stages)
 {
   for(uint32_t i = 0; i < QuadPixels; i++)
+  {
     m_Pixels[i].Start(emu, inputs[i], consts, callbacks, stages);
+    m_Pixels[i].m_QuadIndex = i;
+  }
 }
 
 bool PSQuad::Finished() const

@@ -24,11 +24,15 @@
 
 #pragma once
 
-// Pixel shader debugging (step 5.7): the parts that don't need a device, so they're unit tested on
-// every platform. The replay side (DebugPixel in d3d9_shaderdebug.cpp) draws the event again with
-// the shaders BuildInputReadback makes, reads what they wrote, and hands the quad QuadInputs builds
-// from it to a PSDebugger, which steps the pixel through the interpreter (d3d9_ps_emulate.h).
+// Pixel shader debugging (steps 5.7 and 5.8): the parts that don't need a device, so they're unit
+// tested on every platform. The replay side (DebugPixel in d3d9_shaderdebug.cpp) draws the event
+// again with the shaders BuildInputReadback makes, reads what they wrote, and hands the quad
+// QuadInputs builds from it to a PSDebugger, which steps the pixel through the interpreter
+// (d3d9_ps_emulate.h). Its lookups and transcendentals come from a PSLookupCache, filled on the GPU
+// with the shaders BuildSampleShader and BuildTranscendentalShader make.
 
+#include <string.h>
+#include <map>
 #include "d3d9_ps_emulate.h"
 #include "d3d9_vs_debug.h"
 
@@ -110,15 +114,83 @@ inline uint32_t QuadPixelOf(uint32_t x, uint32_t y)
 bool PSInstructionSamples(const D3D9BC::Instruction &inst);
 
 // Whether DebugPixel can debug prog yet, and if not why (the reflection's debugStatus): ps_2_0 to
-// ps_3_0 shaders that don't sample. Sampling on the GPU (step 5.8) and ps_1_x (5.9) come later.
+// ps_3_0 shaders. ps_1_x comes in step 5.9.
 bool PixelShaderDebuggable(const D3D9BC::Program &prog, rdcstr &status);
+
+// The ps_3_0 shader that looks up a sample on the GPU (5.8), drawn to a 2x2 A32B32G32R32F target
+// whose pixels are the quad's, from sampler as the event set it up, writing oC0. For texld, texldp
+// and texldb each pixel looks up its own coordinate, c0-c3 in QuadPixel order (picked by vPos), so
+// the GPU works out the derivatives, the level and the anisotropy as it did for the event. texldd
+// takes the coordinate and derivatives from c0-c2, and texldl the coordinate from c0, the same in
+// every pixel. type is the sampler's declaration; Unknown (ps_1_x) or 1D sample as 2D.
+rdcarray<uint32_t> BuildSampleShader(SampleKind kind, uint32_t sampler,
+                                     D3D9BC::SamplerTextureType type);
+// the constants BuildSampleShader's shader takes for sample, returning how many
+uint32_t SampleShaderConstants(const PSSample &sample, Vec4 consts[QuadPixels]);
+// The ps_3_0 shader that runs rcp, rsq, exp, log, pow or sincos on the GPU, drawn like
+// BuildSampleShader's: each pixel of the 2x2 target runs it on x (and y, pow's exponent) of c0-c3 in
+// QuadPixel order, picked by vPos, writing the result as CPUTranscendental returns it to oC0:
+// sincos's (cos, sin, 0, 0), the others' in x and 0 in y, z and w.
+rdcarray<uint32_t> BuildTranscendentalShader(D3D9BC::Opcode op);
+
+// Where PSLookupCache gets what it hasn't seen yet: the GPU, at replay
+class PSLookupSource
+{
+public:
+  virtual ~PSLookupSource() = default;
+  // texld, texldp and texldb (and ps_1_x's lookups): the result in each pixel of sample.quad;
+  // texldd and texldl: the result in results[0]. Returns false with the reason in error.
+  virtual bool SampleQuad(const PSSample &sample, Vec4 results[QuadPixels], rdcstr &error) = 0;
+  virtual bool Transcendental(D3D9BC::Opcode op, float a, float b, Vec4 &result, rdcstr &error) = 0;
+};
+
+// The callbacks for a debugged pixel's quad: every lookup and transcendental, kept by what was
+// asked. DebugPixel runs the quad once with the GPU as the source while the replay is at the
+// event, then takes the source away, and the debugger steps the same quad from the cache alone,
+// whenever the UI asks, since by then the replay may be anywhere. A quad's four texld, texldp or
+// texldb lookups are one GPU draw, in whichever pixel asks first.
+class PSLookupCache : public PSCallbacks
+{
+public:
+  void SetSource(PSLookupSource *source) { m_Source = source; }
+  Vec4 Sample(const PSSample &sample) override;
+  Vec4 Transcendental(D3D9BC::Opcode op, float a, float b) override;
+
+  // how many lookups and transcendentals there were: what was looked up and run
+  size_t NumSamples() const { return m_Samples.size(); }
+  size_t NumTranscendentals() const { return m_Transcendentals.size(); }
+  // lookups that failed, or weren't cached once the source was gone: their results are 0, and
+  // transcendentals' the C library's. The first one's reason is in GetError().
+  uint32_t Failures() const { return m_Failures; }
+  const rdcstr &GetError() const { return m_Error; }
+
+private:
+  struct Key
+  {
+    uint32_t words[20] = {};
+    bool operator<(const Key &o) const { return memcmp(words, o.words, sizeof(words)) < 0; }
+  };
+  struct Results
+  {
+    Vec4 v[QuadPixels];
+  };
+  static Key SampleKey(const PSSample &s);
+  void Fail(const rdcstr &why);
+
+  PSLookupSource *m_Source = NULL;
+  std::map<Key, Results> m_Samples;
+  std::map<Key, Vec4> m_Transcendentals;
+  uint32_t m_Failures = 0;
+  rdcstr m_Error;
+};
 
 class PSDebugger : public StepDebugger
 {
 public:
   // Starts debugging pixel (a QuadPixel) of a quad, returning its trace with debugger set to
   // this. inputs are copied. emu (initialised without an error), consts (from emu.ApplyLiterals),
-  // callbacks (or NULL for a shader that doesn't sample) and stages (or NULL) must outlive the
+  // callbacks (a PSLookupCache at replay, or NULL for a shader without lookups, whose
+  // transcendentals then come from the C library) and stages (or NULL) must outlive the
   // debugger: owner can keep what they belong to alive. info is the shader's reflection and
   // constant table (only used here), and instLines each instruction's line in its disassembly.
   ShaderDebugTrace *Begin(const PSEmulator &emu, const D3D9BC::ShaderInfo &info,

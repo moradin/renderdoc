@@ -414,8 +414,9 @@ rdcstr D3D9CompileDebugShader(const char *source, const char *profile, DWORD fla
   return CompileShader(source, profile, flags, bytecode);
 }
 
-// state that affects our draws, beyond what each draw sets itself. The mesh viewer uses it too.
-void D3D9SetDebugDrawState(IDirect3DDevice9 *dev)
+// state that affects our draws, beyond what each draw sets itself, except the samplers. The pixel
+// debugger's lookups use it, which sample as the event set its samplers up.
+void D3D9SetDebugRenderState(IDirect3DDevice9 *dev)
 {
   for(DWORD i = 1; i < D3D9_NUM_RENDER_TARGETS; i++)
     dev->SetRenderTarget(i, NULL);
@@ -460,6 +461,13 @@ void D3D9SetDebugDrawState(IDirect3DDevice9 *dev)
   // D3DUSAGE_SOFTWAREPROCESSING) can only be drawn with hardware vertex processing
   if(dev->GetSoftwareVertexProcessing())
     dev->SetSoftwareVertexProcessing(FALSE);
+}
+
+// D3D9SetDebugRenderState, and point sampling with nothing bound in samplers 0-2. The mesh viewer
+// uses it too.
+void D3D9SetDebugDrawState(IDirect3DDevice9 *dev)
+{
+  D3D9SetDebugRenderState(dev);
 
   for(DWORD s = 0; s < 3; s++)
   {

@@ -48,6 +48,13 @@
 //   depth bias, clip planes, point sprites) is the draw's, since it decides which pixels are drawn
 //   and what they get.
 // - Each value is copied out of its target with StretchRect into a 1x1 target, then read back.
+// Lookups and transcendentals (step 5.8) are made on the GPU too, while the replay is still at the
+// event: the quad runs through the interpreter once there, with GPULookups behind a PSLookupCache,
+// and the debugger then steps it again from the cache alone, since the UI asks for the steps later,
+// wherever the replay is by then. A lookup draws the quad's four coordinates into a 2x2 target, one
+// a pixel, with the shader's own instruction (texld, texldp or texldb) and the event's sampler, so
+// the GPU works out the derivatives, level and anisotropy it did for the event: no filtering,
+// comparison or border rule is emulated, and the results are the GPU's bit for bit.
 // With overlapping triangles in one draw this debugs the last fragment that passes the depth and
 // stencil test as they were before the draw, and with alpha test or texkill one that may have been
 // rejected: 5.10 picks the fragment the GPU wrote. Multisampled targets aren't supported yet.
@@ -60,6 +67,9 @@
 #include "d3d9_ps_debug.h"
 #include "d3d9_resources.h"
 #include "d3d9_vs_debug.h"
+
+// in d3d9_rendertexture.cpp
+void D3D9SetDebugRenderState(IDirect3DDevice9 *dev);
 
 namespace
 {
@@ -106,6 +116,187 @@ struct PixelDebugData
 {
   D3D9Emu::PSEmulator emu;
   D3D9Emu::VSConstants consts;
+  // the quad's lookups and transcendentals, made on the GPU when the pixel was debugged
+  D3D9Emu::PSLookupCache lookups;
+};
+
+// more than any shader should need: past it, lookups fail rather than draw on
+const uint32_t MaxGPULookups = 1U << 16;
+
+// D3D9Emu::PSLookupSource on the GPU (5.8). Each lookup is a draw of BuildSampleShader's shader to
+// a 2x2 A32B32G32R32F target, its pixels the quad's, with the event's textures and sampler states;
+// each transcendental a draw of BuildTranscendentalShader's. It's used while the replay is at the
+// event, between SaveReplayDrawState and RestoreReplayDrawState, so it sets up what it draws with
+// itself and leaves the samplers and textures alone.
+class GPULookups : public D3D9Emu::PSLookupSource
+{
+public:
+  GPULookups(IDirect3DDevice9 *dev, IDirect3DVertexShader9 *vs, IDirect3DVertexDeclaration9 *decl)
+      : m_Dev(dev), m_VS(vs), m_Decl(decl)
+  {
+  }
+  ~GPULookups()
+  {
+    SAFE_RELEASE(m_Target);
+    SAFE_RELEASE(m_Read);
+    for(auto &it : m_Shaders)
+      SAFE_RELEASE(it.second);
+  }
+
+  uint32_t Draws() const { return m_Draws; }
+
+  bool SampleQuad(const D3D9Emu::PSSample &sample, D3D9Emu::Vec4 results[D3D9Emu::QuadPixels],
+                  rdcstr &error) override
+  {
+    D3D9BC::SamplerTextureType type = sample.type;
+    if(type == D3D9BC::SamplerTextureType::Unknown)
+      type = BoundType(sample.sampler);
+
+    const uint32_t key = (uint32_t(sample.kind) << 16) | (uint32_t(type) << 8) | sample.sampler;
+    IDirect3DPixelShader9 *ps = Shader(
+        key, [&]() { return D3D9Emu::BuildSampleShader(sample.kind, sample.sampler, type); }, error);
+    if(ps == NULL)
+      return false;
+
+    D3D9Emu::Vec4 consts[D3D9Emu::QuadPixels];
+    const uint32_t count = D3D9Emu::SampleShaderConstants(sample, consts);
+    return Draw(ps, consts, count, results, error);
+  }
+
+  bool Transcendental(D3D9BC::Opcode op, float a, float b, D3D9Emu::Vec4 &result, rdcstr &error) override
+  {
+    IDirect3DPixelShader9 *ps = Shader(
+        0x1000000 | uint32_t(op), [&]() { return D3D9Emu::BuildTranscendentalShader(op); }, error);
+    if(ps == NULL)
+      return false;
+
+    // the same operands in every pixel
+    D3D9Emu::Vec4 consts[D3D9Emu::QuadPixels];
+    for(D3D9Emu::Vec4 &c : consts)
+      c = D3D9Emu::Vec4(a, b, 0.0f, 0.0f);
+    D3D9Emu::Vec4 out[D3D9Emu::QuadPixels];
+    if(!Draw(ps, consts, D3D9Emu::QuadPixels, out, error))
+      return false;
+    result = out[0];
+    return true;
+  }
+
+private:
+  // the type of the texture bound to sampler, for ps_1_x, which doesn't declare its samplers
+  D3D9BC::SamplerTextureType BoundType(uint32_t sampler)
+  {
+    D3D9BC::SamplerTextureType ret = D3D9BC::SamplerTextureType::Tex2D;
+    IDirect3DBaseTexture9 *tex = NULL;
+    m_Dev->GetTexture(sampler, &tex);
+    if(tex)
+    {
+      if(tex->GetType() == D3DRTYPE_CUBETEXTURE)
+        ret = D3D9BC::SamplerTextureType::Cube;
+      else if(tex->GetType() == D3DRTYPE_VOLUMETEXTURE)
+        ret = D3D9BC::SamplerTextureType::Volume;
+      tex->Release();
+    }
+    return ret;
+  }
+
+  template <typename Build>
+  IDirect3DPixelShader9 *Shader(uint32_t key, Build build, rdcstr &error)
+  {
+    auto it = m_Shaders.find(key);
+    if(it != m_Shaders.end())
+      return it->second;
+
+    const rdcarray<uint32_t> tokens = build();
+    IDirect3DPixelShader9 *ps = NULL;
+    HRESULT hr = m_Dev->CreatePixelShader((const DWORD *)tokens.data(), &ps);
+    if(FAILED(hr))
+    {
+      error = "couldn't create the shader: " + ToStr(hr);
+      return NULL;
+    }
+    m_Shaders[key] = ps;
+    return ps;
+  }
+
+  bool Draw(IDirect3DPixelShader9 *ps, const D3D9Emu::Vec4 *consts, uint32_t count,
+            D3D9Emu::Vec4 out[D3D9Emu::QuadPixels], rdcstr &error)
+  {
+    if(m_VS == NULL || m_Decl == NULL)
+    {
+      error = "the GPU has no shader model 3";
+      return false;
+    }
+    if(m_Draws >= MaxGPULookups)
+    {
+      error = StringFormat::Fmt("more than %u", MaxGPULookups);
+      return false;
+    }
+
+    if(m_Target == NULL)
+    {
+      HRESULT hr = m_Dev->CreateRenderTarget(2, 2, D3DFMT_A32B32G32R32F, D3DMULTISAMPLE_NONE, 0,
+                                             FALSE, &m_Target, NULL);
+      if(SUCCEEDED(hr))
+        hr = m_Dev->CreateOffscreenPlainSurface(2, 2, D3DFMT_A32B32G32R32F, D3DPOOL_SYSTEMMEM,
+                                                &m_Read, NULL);
+      if(FAILED(hr))
+      {
+        error = "couldn't create a 2x2 A32B32G32R32F render target: " + ToStr(hr);
+        return false;
+      }
+      D3D9SetDebugRenderState(m_Dev);
+    }
+
+    // a quad over the whole 2x2 target, through the texture viewer's vertex shader
+    static const float quad[4][4] = {
+        {0.0f, 0.0f, 0.0f, 1.0f},
+        {0.0f, -1.0f, 0.0f, 1.0f},
+        {1.0f, 0.0f, 0.0f, 1.0f},
+        {1.0f, -1.0f, 0.0f, 1.0f},
+    };
+    const float vsConsts[8] = {-0.5f, 0.5f, 3.0f, 3.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    const D3DVIEWPORT9 viewport = {0, 0, 2, 2, 0.0f, 1.0f};
+
+    const bool ownScene = SUCCEEDED(m_Dev->BeginScene());
+    m_Dev->SetRenderTarget(0, m_Target);
+    m_Dev->SetDepthStencilSurface(NULL);
+    m_Dev->SetViewport(&viewport);
+    m_Dev->SetVertexShader(m_VS);
+    m_Dev->SetVertexShaderConstantF(0, vsConsts, 2);
+    m_Dev->SetVertexDeclaration(m_Decl);
+    m_Dev->SetPixelShader(ps);
+    m_Dev->SetPixelShaderConstantF(0, consts[0].v, count);
+    HRESULT hr = m_Dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(quad[0]));
+    if(ownScene)
+      m_Dev->EndScene();
+    m_Draws++;
+
+    D3DLOCKED_RECT locked = {};
+    if(SUCCEEDED(hr))
+      hr = m_Dev->GetRenderTargetData(m_Target, m_Read);
+    if(SUCCEEDED(hr))
+      hr = m_Read->LockRect(&locked, NULL, D3DLOCK_READONLY);
+    if(FAILED(hr))
+    {
+      error = "couldn't draw it or read it back: " + ToStr(hr);
+      return false;
+    }
+    for(uint32_t i = 0; i < D3D9Emu::QuadPixels; i++)
+    {
+      const byte *row = (const byte *)locked.pBits + (i >> 1) * locked.Pitch;
+      memcpy(out[i].v, row + (i & 1) * sizeof(out[i].v), sizeof(out[i].v));
+    }
+    m_Read->UnlockRect();
+    return true;
+  }
+
+  IDirect3DDevice9 *m_Dev;
+  IDirect3DVertexShader9 *m_VS;
+  IDirect3DVertexDeclaration9 *m_Decl;
+  IDirect3DSurface9 *m_Target = NULL;
+  IDirect3DSurface9 *m_Read = NULL;
+  std::map<uint32_t, IDirect3DPixelShader9 *> m_Shaders;
+  uint32_t m_Draws = 0;
 };
 
 // the objects ReadPixelInputs makes, released however it returns
@@ -440,23 +631,44 @@ ShaderDebugTrace *D3D9Replay::DebugPixel(uint32_t eventId, uint32_t x, uint32_t 
   const bool read = ReadPixelInputs(m_pDevice, eventId, x, y, info.GetProgram(), state, passes,
                                     results, corners, error);
 
+  D3D9Emu::PSInputs quad[D3D9Emu::QuadPixels];
+  uint32_t gpuDraws = 0;
+  if(read)
+  {
+    D3D9Emu::QuadInputs(passes, results, corners, x, y, quad);
+
+    // the quad runs once now, with its lookups and transcendentals drawn on the GPU while the
+    // replay is at the event, and the debugger steps it again from what they returned
+    const bool sm3 = InitDebugRender();
+    GPULookups gpu(m_pDevice->GetReal(), sm3 ? m_Debug.texDisplayVS : NULL,
+                   sm3 ? m_Debug.quadDecl : NULL);
+    data->lookups.SetSource(&gpu);
+    D3D9Emu::PSQuad run;
+    run.Start(data->emu, quad, data->consts, &data->lookups, NULL);
+    run.Run();
+    data->lookups.SetSource(NULL);
+    gpuDraws = gpu.Draws();
+  }
+
   m_pDevice->RestoreReplayDrawState(state);
 
   if(!read)
     return NoPixelDebug(eventId, x, y, error);
+  if(data->lookups.Failures() > 0)
+    return NoPixelDebug(eventId, x, y,
+                        "its lookups couldn't be made on the GPU: " + data->lookups.GetError());
 
-  D3D9Emu::PSInputs quad[D3D9Emu::QuadPixels];
-  D3D9Emu::QuadInputs(passes, results, corners, x, y, quad);
+  RDCLOG("Debugging pixel (%u, %u) at event %u: %zu lookups and %zu transcendentals, %u GPU draws",
+         x, y, eventId, data->lookups.NumSamples(), data->lookups.NumTranscendentals(), gpuDraws);
 
   rdcarray<uint32_t> lines;
   info.GetDisassembly(&lines);
 
   D3D9Emu::PSDebugger *debugger = new D3D9Emu::PSDebugger;
-  // the emulator and constants are the debugger's
+  // the emulator, constants and lookups are the debugger's
   debugger->owner = data;
-  // no lookups yet (5.8): shaders that sample aren't debuggable
   return debugger->Begin(data->emu, info, lines, quad, D3D9Emu::QuadPixelOf(x, y), data->consts,
-                         NULL, NULL);
+                         &data->lookups, NULL);
 }
 
 rdcarray<ShaderDebugState> D3D9Replay::ContinueDebug(ShaderDebugger *debugger)

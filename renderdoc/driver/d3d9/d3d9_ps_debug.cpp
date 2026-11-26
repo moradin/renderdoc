@@ -426,16 +426,195 @@ bool PixelShaderDebuggable(const Program &prog, rdcstr &status)
     status = "Debugging ps_1_x pixel shaders isn't supported yet";
     return false;
   }
-  for(const Instruction &inst : prog.instructions)
-  {
-    if(PSInstructionSamples(inst))
-    {
-      status = "Debugging pixel shaders that sample textures isn't supported yet";
-      return false;
-    }
-  }
   status.clear();
   return true;
+}
+
+namespace
+{
+// Picks c0-c3 by the pixel's place in the 2x2 target (QuadPixel order) into r<dst>, with r0 and
+// r4-r7 as scratch, and c4 for -0.5. x and y of vPos are 0 or 1, so vPos - 0.5 is negative in the
+// left column and the top row. mov and cmp move the values as they are. An instruction can read
+// only one constant register.
+void PickPerPixel(Assembler &a, uint32_t dst)
+{
+  const uint32_t x = Src(RegType::Temp, 0, Swz(0, 0, 0, 0));
+  const uint32_t y = Src(RegType::Temp, 0, Swz(1, 1, 1, 1));
+  a.def(4, -0.5f, 0.0f, 0.0f, 0.0f);
+  a.op(Opcode::Dcl, {DclNone(), Dst(RegType::MiscType, 0, 0x3)});
+  a.op(Opcode::Add, {Dst(RegType::Temp, 0, 0x3), Src(RegType::MiscType, 0),
+                     Src(RegType::Const, 4, Swz(0, 0, 0, 0))});
+  for(uint32_t i = 0; i < QuadPixels; i++)
+    a.op(Opcode::Mov, {Dst(RegType::Temp, 4 + i), Src(RegType::Const, i)});
+  a.op(Opcode::Cmp, {Dst(RegType::Temp, dst), x, Src(RegType::Temp, 4 + QuadTopRight),
+                     Src(RegType::Temp, 4 + QuadTopLeft)});
+  a.op(Opcode::Cmp, {Dst(RegType::Temp, 2), x, Src(RegType::Temp, 4 + QuadBottomRight),
+                     Src(RegType::Temp, 4 + QuadBottomLeft)});
+  a.op(Opcode::Cmp, {Dst(RegType::Temp, dst), y, Src(RegType::Temp, 2), Src(RegType::Temp, dst)});
+}
+};    // namespace
+
+rdcarray<uint32_t> BuildSampleShader(SampleKind kind, uint32_t sampler, SamplerTextureType type)
+{
+  if(type != SamplerTextureType::Cube && type != SamplerTextureType::Volume)
+    type = SamplerTextureType::Tex2D;
+
+  Assembler a(3, 0, true);
+  const uint32_t s = Src(RegType::Sampler, sampler);
+  a.op(Opcode::Dcl, {DclSampler(uint32_t(type)), Dst(RegType::Sampler, sampler)});
+
+  // the lookups take their operands from temps
+  switch(kind)
+  {
+    case SampleKind::Gradient:
+      for(uint32_t i = 0; i < 3; i++)
+        a.op(Opcode::Mov, {Dst(RegType::Temp, i), Src(RegType::Const, i)});
+      a.op(Opcode::TexLdd, {Dst(RegType::Temp, 3), Src(RegType::Temp, 0), s, Src(RegType::Temp, 1),
+                            Src(RegType::Temp, 2)});
+      break;
+    case SampleKind::Level:
+      a.op(Opcode::Mov, {Dst(RegType::Temp, 0), Src(RegType::Const, 0)});
+      a.op(Opcode::TexLdl, {Dst(RegType::Temp, 3), Src(RegType::Temp, 0), s});
+      break;
+    default:
+    {
+      // each pixel's own coordinate
+      PickPerPixel(a, 1);
+      // texld, texldp (control 1) or texldb (2)
+      const uint32_t control =
+          kind == SampleKind::Projected ? 1U : (kind == SampleKind::Bias ? 2U : 0U);
+      a.op(Opcode::Tex, {Dst(RegType::Temp, 3), Src(RegType::Temp, 1), s}, control);
+      break;
+    }
+  }
+
+  a.op(Opcode::Mov, {Dst(RegType::ColorOut, 0), Src(RegType::Temp, 3)});
+  return a.finish();
+}
+
+uint32_t SampleShaderConstants(const PSSample &sample, Vec4 consts[QuadPixels])
+{
+  switch(sample.kind)
+  {
+    case SampleKind::Gradient:
+      consts[0] = sample.coord;
+      consts[1] = sample.ddx;
+      consts[2] = sample.ddy;
+      return 3;
+    case SampleKind::Level: consts[0] = sample.coord; return 1;
+    default:
+      for(uint32_t i = 0; i < QuadPixels; i++)
+        consts[i] = sample.quad[i];
+      return QuadPixels;
+  }
+}
+
+rdcarray<uint32_t> BuildTranscendentalShader(Opcode op)
+{
+  Assembler a(3, 0, true);
+  a.def(5, 0.0f, 0.0f, 0.0f, 0.0f);
+  // the operands picked per pixel, though they're the same in each: from a constant alone the
+  // driver works it out another way, 1 ulp off rsq in the shader (measured)
+  PickPerPixel(a, 1);
+  a.op(Opcode::Mov, {Dst(RegType::Temp, 3), Src(RegType::Const, 5)});
+  const uint32_t x = Src(RegType::Temp, 1, Swz(0, 0, 0, 0));
+  switch(op)
+  {
+    case Opcode::Pow:
+      a.op(Opcode::Pow, {Dst(RegType::Temp, 3, 0x1), x, Src(RegType::Temp, 1, Swz(1, 1, 1, 1))});
+      break;
+    // ps_3_0's has no constants; (cos, sin) as the interpreter has it
+    case Opcode::SinCos: a.op(Opcode::SinCos, {Dst(RegType::Temp, 3, 0x3), x}); break;
+    default: a.op(op, {Dst(RegType::Temp, 3, 0x1), x}); break;
+  }
+  a.op(Opcode::Mov, {Dst(RegType::ColorOut, 0), Src(RegType::Temp, 3)});
+  return a.finish();
+}
+
+namespace
+{
+void PutWords(uint32_t *&w, const Vec4 &v)
+{
+  memcpy(w, v.v, sizeof(v.v));
+  w += 4;
+}
+};    // namespace
+
+PSLookupCache::Key PSLookupCache::SampleKey(const PSSample &s)
+{
+  Key k;
+  uint32_t *w = k.words;
+  *w++ = 1 + uint32_t(s.kind);
+  *w++ = s.sampler;
+  *w++ = uint32_t(s.type);
+  if(s.kind == SampleKind::Gradient || s.kind == SampleKind::Level)
+  {
+    PutWords(w, s.coord);
+    PutWords(w, s.ddx);
+    PutWords(w, s.ddy);
+  }
+  else
+  {
+    for(uint32_t i = 0; i < QuadPixels; i++)
+      PutWords(w, s.quad[i]);
+  }
+  return k;
+}
+
+void PSLookupCache::Fail(const rdcstr &why)
+{
+  if(m_Failures++ == 0)
+    m_Error = why;
+}
+
+Vec4 PSLookupCache::Sample(const PSSample &sample)
+{
+  const bool perPixel = sample.kind == SampleKind::Gradient || sample.kind == SampleKind::Level;
+  const Key key = SampleKey(sample);
+  auto it = m_Samples.find(key);
+  if(it == m_Samples.end())
+  {
+    Results res;
+    if(m_Source == NULL)
+    {
+      Fail("a lookup wasn't made when the pixel was debugged");
+      return Vec4();
+    }
+    rdcstr error;
+    if(!m_Source->SampleQuad(sample, res.v, error))
+    {
+      Fail("a lookup failed: " + error);
+      return Vec4();
+    }
+    it = m_Samples.insert(std::make_pair(key, res)).first;
+  }
+  return it->second.v[perPixel ? 0 : (sample.pixel & 3)];
+}
+
+Vec4 PSLookupCache::Transcendental(Opcode op, float a, float b)
+{
+  Key key;
+  key.words[0] = 0x100 | uint32_t(op);
+  memcpy(&key.words[1], &a, sizeof(a));
+  memcpy(&key.words[2], &b, sizeof(b));
+  auto it = m_Transcendentals.find(key);
+  if(it != m_Transcendentals.end())
+    return it->second;
+
+  Vec4 res;
+  rdcstr error;
+  if(m_Source == NULL)
+  {
+    Fail("a transcendental wasn't run when the pixel was debugged");
+    return CPUTranscendental(op, a, b);
+  }
+  if(!m_Source->Transcendental(op, a, b, res, error))
+  {
+    Fail("a transcendental failed: " + error);
+    return CPUTranscendental(op, a, b);
+  }
+  m_Transcendentals[key] = res;
+  return res;
 }
 
 rdcstr PSDebugger::InputName(RegType type, uint32_t index) const
@@ -1318,6 +1497,340 @@ TEST_CASE("D3D9 pixel shader debugging - stepping a pixel", "[d3d9][psemu][psdeb
     {
       inst.op = op;
       CHECK_FALSE(PSInstructionSamples(inst));
+    }
+  }
+}
+
+namespace
+{
+bool Same(const Vec4 &a, const Vec4 &b)
+{
+  return memcmp(a.v, b.v, sizeof(a.v)) == 0;
+}
+
+// what the interpreter asks, and an answer that says which request it was
+struct RecordingCallbacks : PSCallbacks
+{
+  rdcarray<PSSample> samples;
+  struct Call
+  {
+    Opcode op;
+    float a, b;
+  };
+  rdcarray<Call> calls;
+
+  Vec4 Sample(const PSSample &s) override
+  {
+    samples.push_back(s);
+    return Vec4(float(samples.size()), s.coord[0], s.coord[1], -2.0f);
+  }
+  Vec4 Transcendental(Opcode op, float a, float b) override
+  {
+    calls.push_back({op, a, b});
+    return Vec4(3.0f, 4.0f, 5.0f, 6.0f);
+  }
+};
+
+// a generated shader run in a 2x2 target: each pixel's vPos is its place in it
+struct TargetRun
+{
+  Program prog;
+  PSEmulator emu;
+  VSConstants consts;
+  PSQuad quad;
+
+  bool Run(const rdcarray<uint32_t> &tokens, const rdcarray<Vec4> &c, PSCallbacks *callbacks)
+  {
+    ParseProgram(tokens.data(), tokens.size(), prog);
+    if(!prog.error.empty() || !emu.Init(prog))
+      return false;
+    VSConstants given;
+    given.floats = c;
+    consts = emu.ApplyLiterals(given);
+    PSInputs in[QuadPixels];
+    for(uint32_t i = 0; i < QuadPixels; i++)
+      in[i].pos = Vec4(float(i & 1), float(i >> 1), 0.0f, 0.0f);
+    quad.Start(emu, in, consts, callbacks);
+    return quad.Run();
+  }
+};
+
+// the GPU, as far as the cache can tell: each answer says which call it was
+struct FakeSource : PSLookupSource
+{
+  uint32_t samples = 0, transcendentals = 0;
+  bool fail = false;
+
+  bool SampleQuad(const PSSample &s, Vec4 results[QuadPixels], rdcstr &error) override
+  {
+    samples++;
+    if(fail)
+    {
+      error = "no GPU";
+      return false;
+    }
+    for(uint32_t i = 0; i < QuadPixels; i++)
+      results[i] = Vec4(float(i), s.quad[i][0] + s.coord[0], float(samples), 0.5f);
+    return true;
+  }
+  bool Transcendental(Opcode op, float a, float b, Vec4 &result, rdcstr &error) override
+  {
+    transcendentals++;
+    if(fail)
+    {
+      error = "no GPU";
+      return false;
+    }
+    result = Vec4(a * 2.0f, b, float(transcendentals), float(op));
+    return true;
+  }
+};
+};    // namespace
+
+TEST_CASE("D3D9 pixel shader debugging - lookups on the GPU", "[d3d9][psemu][psdebug]")
+{
+  // a coordinate per pixel of the quad, all different
+  const rdcarray<Vec4> quadCoords = {
+      Vec4(0.125f, 0.25f, 0.375f, 0.5f),
+      Vec4(1.5f, -2.25f, 3.0f, 0.75f),
+      Vec4(-4.0f, 5.5f, 0.0625f, 2.0f),
+      Vec4(7.0f, 8.0f, -9.0f, -1.5f),
+  };
+
+  SECTION("texld, texldp and texldb: each pixel its own coordinate, as the GPU looks them up")
+  {
+    for(SampleKind kind : {SampleKind::Implicit, SampleKind::Projected, SampleKind::Bias})
+    {
+      for(SamplerTextureType type :
+          {SamplerTextureType::Tex2D, SamplerTextureType::Cube, SamplerTextureType::Volume})
+      {
+        RecordingCallbacks rec;
+        TargetRun run;
+        REQUIRE(run.Run(BuildSampleShader(kind, 5, type), quadCoords, &rec));
+        CHECK(run.prog.version.major == 3);
+        CHECK(run.emu.SamplerType(5) == type);
+
+        // one lookup a pixel, of the same instruction, with the quad's coordinates as given
+        REQUIRE(rec.samples.size() == size_t(QuadPixels));
+        for(uint32_t i = 0; i < QuadPixels; i++)
+        {
+          const PSSample &s = rec.samples[i];
+          CHECK((s.kind == kind));
+          CHECK(s.sampler == 5);
+          CHECK((s.type == type));
+          CHECK(s.pixel == i);
+          CHECK(Same(s.coord, quadCoords[i]));
+          for(uint32_t j = 0; j < QuadPixels; j++)
+            CHECK(Same(s.quad[j], quadCoords[j]));
+          if(kind == SampleKind::Bias)
+            CHECK(s.lod == quadCoords[i][3]);
+
+          // what it got is what the pixel writes
+          const PSOutputs &out = run.quad.Pixel(i).Registers().out;
+          CHECK(out.written == 1);
+          CHECK(Same(out.color[0], Vec4(float(i + 1), s.coord[0], s.coord[1], -2.0f)));
+        }
+
+        // and the constants it takes are the sample's quad
+        Vec4 consts[4];
+        REQUIRE(SampleShaderConstants(rec.samples[2], consts) == size_t(QuadPixels));
+        for(uint32_t j = 0; j < QuadPixels; j++)
+          CHECK(Same(consts[j], quadCoords[j]));
+      }
+    }
+  }
+
+  SECTION("texldd and texldl: the coordinate and derivatives from the constants")
+  {
+    const PSSample given = [&]() {
+      PSSample s;
+      s.coord = Vec4(0.3f, 0.6f, 0.9f, 1.25f);
+      s.ddx = Vec4(0.01f, -0.02f, 0.0f, 0.0f);
+      s.ddy = Vec4(0.0f, 0.03f, 0.04f, 0.0f);
+      return s;
+    }();
+
+    for(SampleKind kind : {SampleKind::Gradient, SampleKind::Level})
+    {
+      PSSample asked = given;
+      asked.kind = kind;
+      Vec4 c[4];
+      const uint32_t count = SampleShaderConstants(asked, c);
+      CHECK(count == (kind == SampleKind::Gradient ? 3U : 1U));
+
+      RecordingCallbacks rec;
+      TargetRun run;
+      REQUIRE(run.Run(BuildSampleShader(kind, 0, SamplerTextureType::Unknown),
+                      rdcarray<Vec4>(c, count), &rec));
+      // Unknown samples as 2D
+      CHECK(run.emu.SamplerType(0) == SamplerTextureType::Tex2D);
+      REQUIRE(rec.samples.size() == size_t(QuadPixels));
+      for(const PSSample &s : rec.samples)
+      {
+        CHECK((s.kind == kind));
+        CHECK(Same(s.coord, given.coord));
+        if(kind == SampleKind::Gradient)
+        {
+          CHECK(Same(s.ddx, given.ddx));
+          CHECK(Same(s.ddy, given.ddy));
+        }
+        else
+        {
+          CHECK(s.lod == given.coord[3]);
+        }
+      }
+    }
+  }
+
+  SECTION(
+      "transcendentals: x (and y for pow) of each pixel's constant, the result as the "
+      "interpreter keeps it")
+  {
+    for(Opcode op : {Opcode::Rcp, Opcode::Rsq, Opcode::Exp, Opcode::Log, Opcode::Pow, Opcode::SinCos})
+    {
+      RecordingCallbacks rec;
+      TargetRun run;
+      rdcarray<Vec4> c;
+      for(uint32_t i = 0; i < QuadPixels; i++)
+        c.push_back(Vec4(1.75f + float(i), -0.5f - float(i), 9.0f, 9.0f));
+      REQUIRE(run.Run(BuildTranscendentalShader(op), c, &rec));
+      REQUIRE(rec.calls.size() == size_t(QuadPixels));
+      const Vec4 expected =
+          op == Opcode::SinCos ? Vec4(3.0f, 4.0f, 0.0f, 0.0f) : Vec4(3.0f, 0.0f, 0.0f, 0.0f);
+      for(uint32_t i = 0; i < QuadPixels; i++)
+      {
+        CHECK((rec.calls[i].op == op));
+        CHECK(rec.calls[i].a == c[i][0]);
+        CHECK(rec.calls[i].b == (op == Opcode::Pow ? c[i][1] : 0.0f));
+        CHECK(Same(run.quad.Pixel(i).Registers().out.color[0], expected));
+      }
+    }
+  }
+
+  SECTION("the cache: a quad's lookups in one call, then without the GPU")
+  {
+    FakeSource gpu;
+    PSLookupCache cache;
+    cache.SetSource(&gpu);
+
+    PSSample s;
+    s.kind = SampleKind::Implicit;
+    for(uint32_t i = 0; i < QuadPixels; i++)
+      s.quad[i] = quadCoords[i];
+    for(uint32_t i = 0; i < QuadPixels; i++)
+    {
+      s.pixel = i;
+      s.coord = quadCoords[i];
+      CHECK(Same(cache.Sample(s), Vec4(float(i), quadCoords[i][0] + quadCoords[0][0], 1.0f, 0.5f)));
+    }
+    CHECK(gpu.samples == 1);
+
+    // another sampler or kind is another lookup; texldd's is the pixel's alone
+    s.sampler = 1;
+    cache.Sample(s);
+    s.kind = SampleKind::Bias;
+    cache.Sample(s);
+    PSSample grad;
+    grad.kind = SampleKind::Gradient;
+    grad.coord = Vec4(0.5f, 0.5f, 0.0f, 0.0f);
+    grad.ddx = Vec4(0.25f, 0.0f, 0.0f, 0.0f);
+    grad.pixel = 3;
+    const Vec4 gradResult = cache.Sample(grad);
+    CHECK(Same(gradResult, Vec4(0.0f, 0.5f, 4.0f, 0.5f)));
+    grad.ddx[1] = 0.125f;
+    cache.Sample(grad);
+    CHECK(gpu.samples == 5);
+    CHECK(cache.NumSamples() == 5);
+
+    // transcendentals by their bits: -0 isn't +0
+    CHECK(Same(cache.Transcendental(Opcode::Rcp, 2.0f, 0.0f),
+               Vec4(4.0f, 0.0f, 1.0f, float(Opcode::Rcp))));
+    cache.Transcendental(Opcode::Rcp, 2.0f, 0.0f);
+    cache.Transcendental(Opcode::Rcp, 0.0f, 0.0f);
+    cache.Transcendental(Opcode::Rcp, -0.0f, 0.0f);
+    cache.Transcendental(Opcode::Rsq, 2.0f, 0.0f);
+    CHECK(gpu.transcendentals == 4);
+    CHECK(cache.NumTranscendentals() == 4);
+    CHECK(cache.Failures() == 0);
+
+    // without the GPU, what was asked before is answered the same
+    cache.SetSource(NULL);
+    grad.ddx[1] = 0.0f;
+    CHECK(Same(cache.Sample(grad), gradResult));
+    s.kind = SampleKind::Implicit;
+    s.sampler = 0;
+    s.pixel = 2;
+    CHECK(Same(cache.Sample(s), Vec4(2.0f, quadCoords[2][0] + quadCoords[0][0], 1.0f, 0.5f)));
+    CHECK(Same(cache.Transcendental(Opcode::Rcp, 2.0f, 0.0f),
+               Vec4(4.0f, 0.0f, 1.0f, float(Opcode::Rcp))));
+    CHECK(cache.Failures() == 0);
+
+    // and what wasn't fails: 0 for a lookup, the C library for a transcendental
+    s.quad[3][0] = 100.0f;
+    CHECK(Same(cache.Sample(s), Vec4()));
+    CHECK(cache.Transcendental(Opcode::Rcp, 4.0f, 0.0f)[0] == 0.25f);
+    CHECK(cache.Failures() == 2);
+    CHECK(cache.GetError().contains("wasn't made"));
+  }
+
+  SECTION("the cache: the GPU failing")
+  {
+    FakeSource gpu;
+    gpu.fail = true;
+    PSLookupCache cache;
+    cache.SetSource(&gpu);
+    PSSample s;
+    CHECK(Same(cache.Sample(s), Vec4()));
+    CHECK(cache.Transcendental(Opcode::Rcp, 2.0f, 0.0f)[0] == 0.5f);
+    CHECK(cache.Failures() == 2);
+    CHECK(cache.GetError() == "a lookup failed: no GPU");
+    CHECK(cache.NumSamples() == 0);
+  }
+
+  SECTION("a pixel stepped again from the cache gets what the GPU gave")
+  {
+    // ps_2_0: texld t0, then an rcp of what it got
+    Assembler a(2, 0, true);
+    a.op(Opcode::Dcl, {DclNone(), Dst(RegType::AddrOrTexture, 0, 0x3)});
+    a.op(Opcode::Dcl, {DclSampler(2), Dst(RegType::Sampler, 0)});
+    a.op(Opcode::Tex,
+         {Dst(RegType::Temp, 0), Src(RegType::AddrOrTexture, 0), Src(RegType::Sampler, 0)});
+    a.op(Opcode::Rcp, {Dst(RegType::Temp, 1, 0x1), Src(RegType::Temp, 0, Swz(1, 1, 1, 1))});
+    a.op(Opcode::Add,
+         {Dst(RegType::ColorOut, 0), Src(RegType::Temp, 0), Src(RegType::Temp, 1, Swz(0, 0, 0, 0))});
+    const rdcarray<uint32_t> tokens = a.finish();
+
+    PSInputs in[QuadPixels];
+    AffineQuad(10, 20, in);
+
+    Program prog;
+    ParseProgram(tokens.data(), tokens.size(), prog);
+    PSEmulator emu;
+    REQUIRE(emu.Init(prog));
+    const VSConstants consts = emu.ApplyLiterals(VSConstants());
+
+    FakeSource gpu;
+    PSLookupCache cache;
+    cache.SetSource(&gpu);
+    PSQuad first;
+    first.Start(emu, in, consts, &cache);
+    REQUIRE(first.Run());
+    cache.SetSource(NULL);
+    // the quad's four lookups were one, and each pixel's rcp is of its own value
+    CHECK(gpu.samples == 1);
+    CHECK(gpu.transcendentals == 4);
+
+    PSQuad again;
+    again.Start(emu, in, consts, &cache);
+    REQUIRE(again.Run());
+    CHECK(cache.Failures() == 0);
+    for(uint32_t i = 0; i < QuadPixels; i++)
+    {
+      const Vec4 &c = again.Pixel(i).Registers().out.color[0];
+      CHECK(Same(c, first.Pixel(i).Registers().out.color[0]));
+      // the pixel's own result came back: x is its index, plus rcp(y) * 2 as FakeSource has it
+      const float y = in[i].t[0][0] + in[0].t[0][0];
+      CHECK(c[0] == float(i) + 2.0f * y);
     }
   }
 }

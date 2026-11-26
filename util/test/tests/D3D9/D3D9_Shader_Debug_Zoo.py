@@ -55,11 +55,37 @@ REGISTERS = {
 # the pixel draws that can be debugged: their marker, the outputs they write, and how far each output
 # may be from the GPU's (relative to its magnitude, at least 1), with the reason. The driver fuses a
 # mul and the add after it, which the bytecode has apart (ps_2_0's mul r0, r0, r1.x and add r0, r0,
-# r1), and a derivative of the result magnifies the difference.
+# r1), and a derivative of the result magnifies the difference. Lookups and transcendentals are made
+# on the GPU, so the draws that only look up, or work out transcendentals of inputs, are bit for bit.
 PIXEL_DRAWS = {
     'ps_2_0': (['oC0'], 1e-6, 'the driver fuses a mul and an add'),
     'ps_2_x': (['oC0', 'oC1'], 1e-5, 'the driver fuses a mul and an add, then ddx and ddy'),
     'ps_3_0': (['oC0', 'oC1', 'oDepth'], 1e-5, 'the driver fuses a mul and an add'),
+    'ps_3_0 texture': (['oC0'], 0.0, ''),
+    # fxc reduces sincos's argument to [-pi, pi] with a mad, frc and mad. The driver works out the
+    # arguments its own way: at 2 of 7 pixels they're an ulp or two from the bytecode's, and sin of
+    # 0.1 is then 50 ulps off. Of the inputs as they are (the asm draw), the GPU's results are exact.
+    'ps_3_0 transcendentals': (['oC0', 'oC1'], 1e-6, 'the driver works out their arguments its own way'),
+    'ps_2_0 lookups': (['oC0', 'oC1'], 0.0, ''),
+    'ps_2_x gradients': (['oC0', 'oC1'], 0.0, ''),
+    'ps_3_0 anisotropic': (['oC0', 'oC1'], 0.0, ''),
+    'ps_3_0 cube': (['oC0', 'oC1'], 0.0, ''),
+    'ps_3_0 volume': (['oC0', 'oC1'], 0.0, ''),
+    'ps_3_0 border': (['oC0', 'oC1'], 0.0, ''),
+    'ps_3_0 sRGB': (['oC0', 'oC1'], 0.0, ''),
+    'ps_3_0 SetLOD': (['oC0', 'oC1'], 0.0, ''),
+    'ps_3_0 shadow': (['oC0', 'oC1'], 0.0, ''),
+    'ps_3_0 unbound': (['oC0', 'oC1'], 0.0, ''),
+    'ps_3_0 transcendentals asm': (['oC0', 'oC1'], 0.0, ''),
+}
+
+# the lookups each sampling draw's pixel makes, by instruction
+LOOKUPS = {
+    'ps_2_0 lookups': ['texld', 'texldp', 'texldb'],
+    'ps_2_x gradients': ['texldd', 'texldd'],
+    'ps_3_0 cube': ['texld', 'texldb'],
+    'ps_3_0 volume': ['texld', 'texldl'],
+    'ps_3_0 shadow': ['texldp', 'texldb'],
 }
 
 # the D24S8 depth target's step
@@ -94,8 +120,15 @@ class D3D9_Shader_Debug_Zoo(rdtest.D3D9_Test):
 
         self.read_pixel_reference()
         for marker in PIXEL_DRAWS:
+            if marker not in self.pixel_reference:
+                # the demo leaves out what the GPU can't do, and says so
+                rdtest.log.print(f"{marker}: not drawn natively, the GPU can't")
+                continue
             self.check_pixel_draw(marker)
         self.check_pixel_trace()
+        for marker in LOOKUPS:
+            if marker in self.pixel_reference:
+                self.check_lookup_trace(marker)
 
         self.check_not_debuggable()
 
@@ -494,9 +527,52 @@ class D3D9_Shader_Debug_Zoo(rdtest.D3D9_Test):
         rdtest.log.success("ps_3_0: vPos and vFace are the pixels', the inputs are listed by register too, the "
                            "outputs are listed, and every step is on an instruction")
 
+    def check_lookup_trace(self, marker):
+        """A sampling draw's trace: the steps that ran a lookup, and only those, say they sampled. It's
+        stepped with the replay at another event, as the UI may: its lookups were made when the pixel
+        was debugged, so its outputs are still the GPU's."""
+        draw = self.find_marker_draw(marker)
+        self.set_event(draw.eventId, True)
+        refl = self.controller.GetPipelineState().GetShaderReflection(rd.ShaderStage.Pixel)
+        target = self.controller.GetDisassemblyTargets(True)[0]
+        disasm = self.controller.DisassembleShader(rd.ResourceId.Null(), refl, target).split('\n')
+
+        (x, y), native0, native1 = self.pixel_reference[marker][0]
+        with self.debug_pixel(x, y, rd.DebugPixelInputs()) as debug:
+            lines = {i.instruction: i.lineInfo.disassemblyLine for i in debug.trace.instInfo}
+            # the textures there are what later draws made of them, and the samplers aren't the draw's
+            self.set_event(self.find_marker_draw('Fixed function').eventId, True)
+            states = self.all_states(debug.trace.debugger)
+
+            outputs = {}
+            for st in states:
+                for c in st.changes:
+                    if c.after.name in ('oC0', 'oC1'):
+                        outputs[c.after.name] = list(c.after.value.f32v[0:4])
+            for name, native in [('oC0', native0), ('oC1', native1)]:
+                if [bits(v) for v in outputs.get(name, [])] != [bits(v) for v in native]:
+                    raise rdtest.TestFailureException(f"{marker}: stepped at another event, pixel ({x}, {y})'s "
+                                                      f"{name} is {outputs.get(name)}, the GPU's is {native}")
+
+            sampled = []
+            for n, st in enumerate(states):
+                ran = disasm[lines[states[n - 1].nextInstruction] - 1].strip() if n > 0 else ''
+                op = ran.split()[0] if ran else ''
+                flagged = bool(st.flags & rd.ShaderEvents.SampleLoadGather)
+                if flagged != op.startswith('tex'):
+                    raise rdtest.TestFailureException(f"{marker}: step {st.stepIndex} ran '{ran}', and its sample "
+                                                      f"flag is {flagged}")
+                if flagged:
+                    sampled.append(op)
+            if sorted(sampled) != sorted(LOOKUPS[marker]):
+                raise rdtest.TestFailureException(f"{marker}: the steps that sampled ran {sampled}, expected "
+                                                  f"{LOOKUPS[marker]}")
+        rdtest.log.success(f"{marker}: the steps that sampled are its lookups, {sampled}, and stepped at "
+                           f"another event its outputs are the GPU's")
+
     def check_not_debuggable(self):
-        # pixel shaders that sample, and ps_1_x, can't be debugged yet, and say so
-        for marker, words, (x, y) in [('ps_3_0 texture', 'sample', (340, 60)), ('ps_1_1', 'ps_1_x', (40, 210))]:
+        # ps_1_x pixel shaders can't be debugged yet, and say so
+        for marker, words, (x, y) in [('ps_1_1', 'ps_1_x', (40, 210))]:
             draw = self.find_marker_draw(marker)
             self.set_event(draw.eventId, True)
             ps = self.controller.GetPipelineState().GetShaderReflection(rd.ShaderStage.Pixel)

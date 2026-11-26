@@ -45,10 +45,13 @@ The detailed status, with how each part works and how it was tested, is in
     the disassembly names them (`r0`, `c12`, `v1`); the signature's semantics map the inputs and
     outputs. The Callstack panel shows the subroutines (`call`), and "Run to Sample" and "Run to
     NaN/Inf" stop on `texldl` and on instructions writing a NaN or infinity;
-  - pixel shader debugging (the Texture Viewer's Debug button), for ps_2_0 to ps_3_0 shaders that
-    don't sample textures yet. The pixel's inputs, and those of the other pixels of its 2x2 quad,
-    are read from the GPU by drawing the event again, and the shader runs on the CPU, with names
-    and steps as for vertex shaders;
+  - pixel shader debugging (the Texture Viewer's Debug button), for ps_2_0 to ps_3_0 shaders. The
+    pixel's inputs, and those of the other pixels of its 2x2 quad, are read from the GPU by drawing
+    the event again, and the shader runs on the CPU, with names and steps as for vertex shaders.
+    Its texture lookups and transcendentals (`rcp`, `rsq`, `exp`, `log`, `pow`, `sincos`) are made
+    on the GPU, with the event's textures and sampler states, so they're the GPU's own: filtering,
+    anisotropy, sRGB, borders, depth comparisons and unbound samplers included. "Run to Sample"
+    stops on the lookups;
   - GPU durations (the Event Browser's Duration column) and samples passed, in the Performance
     Counter Viewer too;
   - resource usage: the Resource Inspector's usage list and the timeline's usage markers;
@@ -65,9 +68,8 @@ The detailed status, with how each part works and how it was tested, is in
 
 Not implemented:
 
-- pixel shader debugging for ps_1_x shaders and shaders that sample textures. Fixed function
-  vertex and pixel processing can't be debugged either, since it isn't a shader. They say why in
-  the UI;
+- pixel shader debugging for ps_1_x shaders. Fixed function vertex and pixel processing can't be
+  debugged either, since it isn't a shader. They say why in the UI;
 - pixel history;
 - GPU counters other than duration and samples passed: D3D9 has no pipeline statistics query;
 - messages from the D3D9 debug runtime, which doesn't run on Windows 8 and later. Only the calls
@@ -99,7 +101,10 @@ Known limitations of what works:
     or `clip` it may not be the one the GPU kept.
   - Multisampled targets can't be debugged yet.
   - Results can differ from the GPU's in the last bits where its driver fuses a `mul` and an
-    `add` that the shader has apart, more after a derivative.
+    `add` that the shader has apart, more after a derivative, or works out a transcendental's
+    argument another way (HLSL's `sin` and `cos` reduce theirs with a `mad`, `frc` and `mad`).
+  - Each lookup and transcendental is a draw and a readback when the pixel is debugged, so a
+    shader with many of them takes longer to start debugging.
 - **Custom display shaders** are ps_3_0: the texture is in a sampler with point filtering, not a
   texture object, and the older `RENDERDOC_` globals aren't filled.
 - **Shader editing**: an edited disassembly has no constant table of its own (it's only comments

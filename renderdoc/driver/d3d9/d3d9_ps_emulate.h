@@ -27,7 +27,8 @@
 // The pixel shader interpreter for ps_1_1 to ps_3_0 (steps 5.5 and 5.6). It runs a 2x2 quad of
 // pixels in lockstep, so dsx, dsy and the derivatives of texture lookups come from the neighbouring
 // pixels as they do on the GPU. Sampling goes through a callback, and so do the transcendentals,
-// since the GPU's differ from the C library in the last bits (5.8 runs both on the GPU). The
+// since the GPU's differ from the C library in the last bits; the pixel debugger makes both on the
+// GPU (5.8, PSLookupCache in d3d9_ps_debug.h). The
 // arithmetic follows what the GPU was measured doing (STATUS.md, "What the GPU does with pixel
 // shaders"). Like the vertex interpreter, whose flow control and constants it shares, it doesn't
 // need any Windows headers, so it's unit tested on every platform.
@@ -148,6 +149,12 @@ struct PSSample
   Vec4 ddx, ddy;
   // texldb's bias or texldl's level, both coord.w. Zero otherwise.
   float lod = 0.0f;
+  // For texld, texldp, texldb and ps_1_x's lookups, whose derivatives come from the quad: the
+  // coordinate in each pixel of the quad, as coord (texldp's not divided), and which of them
+  // this pixel is. Looking those four up together gets the GPU's own derivatives (5.8). Zero for
+  // texldd and texldl.
+  Vec4 quad[QuadPixels];
+  uint32_t pixel = 0;
 };
 
 // The C library's rcp, rsq, exp, log, pow and sincos, with the GPU's special cases. a and b are the
@@ -238,6 +245,8 @@ private:
 
   // QuadOperand's value in each pixel of the quad, before this instruction ran in any of them
   Vec4 m_Quad[QuadPixels];
+  // which pixel of the quad this is
+  uint32_t m_QuadIndex = 0;
 
   // ps_1_x's co-issued pairs read their sources before either writes: while running the pair,
   // Write keeps the results here
