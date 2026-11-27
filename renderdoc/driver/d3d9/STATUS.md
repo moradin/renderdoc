@@ -42,7 +42,7 @@ the testing were on separate machines.
 | | ~~Custom display shaders in the texture viewer~~ | 0.5-1 | Done, see "Custom display shaders" below |
 | 4 | ~~**Shader editing and replacement**, including Edit Generated Stub~~ | 1.5-2 | Done, see "Shader editing" below |
 | 5 | ~~**Shader debugging**~~ | 5-8 (about 11 sessions) | Done but for three chunks, see "Step 5 plan" below: closed on 2026-11-27 without 5.9 (ps_1_x pixels) and the optional 5.12-5.13 (HLSL source), which are put off with notes for picking them up ("Put off from step 5") |
-| 6 | **Pixel history:** which draws touched the pixel (occlusion queries per event), which primitive wrote it (drawing one primitive at a time, since D3D9 has no primitive ID), values before and after (`GetRenderTargetData`), depth (the existing bisection), and debugging the pixel (step 5) | 3-5 | |
+| 6 | **Pixel history:** which draws touched the pixel (occlusion queries per event), which primitive wrote it (drawing one primitive at a time, since D3D9 has no primitive ID), values before and after (`GetRenderTargetData`), depth (the existing bisection), and debugging the pixel (step 5) | 3-5 (about 7 sessions) | Split into chunks that each fit one session, see "Step 6 plan" below |
 | 7 | **Remote replay:** display textures through the proxy | 1-2 | Parked: not worth it for now. Mostly mapping D3D9 formats onto the proxy's D3D11 textures |
 | 8 | **Limitations worth fixing**, in this order, before steps 5 and 6 | 3-4 | |
 | | ~~Alpha test and discard in the overlays~~ | 1 | Done, see "Overlays" below (`d3d9_step8_overlays.md`). Alpha tested and clipped geometry (foliage, fences, sprites) is everywhere in D3D9 games |
@@ -393,6 +393,54 @@ Outside this plan:
 - **Other GPUs:** AMD and Intel may round the depth readback differently, and may sample ATI2's
   blue differently.
 - **Upstream merges:** about half a day each time.
+
+### Step 6 plan
+
+Pixel history, in chunks that each fit one session, ending as step 5's did (commit, report,
+STATUS.md, push, master). Approved on 2026-11-27.
+
+**What the API asks for.** `PixelHistory(events, target, x, y, sub, typeCast)`
+(`D3D9Replay::PixelHistory` is a stub returning nothing, and `APIProperties.pixelHistory` is off).
+The replay controller passes the target's write events up to the current one from `GetUsage`
+(step 3): draws (`ColorTarget`, `DepthStencilTarget`), `Clear` (Clear and ColorFill), the copies
+(StretchRect, UpdateSurface, UpdateTexture) and `GenMips`; it drops `CPUWrite`. The driver returns
+a `PixelModification` per fragment, in event order: `preMod`, `shaderOut` and `postMod` (colour,
+depth, stencil, with -1 for none and -2 for unknown), `fragIndex`, `primitiveID` (`~0U` for
+unknown), `unboundPS`, `directShaderWrite`, and why a fragment failed (`backfaceCulled`,
+`scissorClipped`, `shaderDiscarded`, `depthTestFailed`, `stencilTestFailed`, `sampleMasked`,
+`depthClipped`, `viewClipped`). The pixel history window groups fragments by event, shows the
+values and why each failed, offers "Debug Pixel" with the fragment's primitive in
+`DebugPixelInputs.primitive`, and "Go to primitive".
+
+**How D3D11 does it** (`d3d11_pixelhistory.cpp`), and what D3D9 does instead:
+
+| D3D11 | D3D9 |
+|---|---|
+| Pixel values copied into UAV buffers by a compute shader | A 1x1 StretchRect of the target's pixel into a target of the same format, then GetRenderTargetData, decoded as pick pixel does (`d3d9_pixel.cpp`). Multisampled targets resolved; other textures through `ReadSubresource` |
+| Depth and stencil from a typeless SRV copy of the depth buffer | The depth and stencil tests (`d3d9_depth.cpp`'s bisection), scissored to the pixel |
+| Which events touched the pixel: an occlusion predicate with a fixed colour shader, cull and depth clip off, a 1x1 scissor, depth, stencil and writes off | The same with `D3DQUERYTYPE_OCCLUSION`, alpha test and clip planes off too, and a fixed colour shader of the vertex shader's model (vs_3_0 needs ps_3_0), as the overlays do; fixed function too |
+| Why it failed: an occlusion query per test, turning back on one of cull, depth clip, scissor, the shader's discard, depth, stencil | The same, with D3D9's own: the alpha test and `texkill` (`shaderDiscarded`), two-sided stencil, user clip planes, `MULTISAMPLEMASK` (`sampleMasked`, on the CPU). No depth clip disable, unless `D3DRS_CLIPPING` FALSE turns out to be one (6.1) |
+| Fragments in a draw: stencil INCR_SAT on a scratch depth stencil counts them (at most 255), then stencil EQUAL with ref N keeps fragment N, for its `shaderOut` (blending off, float target) and the `postMod` after it | The same: D3D9 has stencil, INCR_SAT and two-sided stencil. Each fragment's `postMod` from a fresh replay to the event, so blending accumulates right (D3D11 doesn't, and its test has no blending) |
+| `primitiveID` from `SV_PrimitiveID` | No primitive ID in D3D9. Found by bisecting the draw's primitive range with occlusion queries: fragment N is from the primitive p where the primitives before p make at most N fragments and those up to p more. `log2(primitives)` draws per fragment, per instance range. DrawPrimitiveUP's vertices are in the capture, so its ranges can be drawn too |
+| Debugging a fragment: `DebugPixel` with the primitive | D3D9's `DebugPixel` ignores the primitive (step 5). With it, the readback draws only that primitive, which also picks the right fragment for ps_1_x and fragments rejected by `texkill` or the alpha test, where step 5 can't |
+
+| # | Chunk | Done when |
+|---|---|---|
+| 6.1 | **Native probe** (a probe and a report, no driver change): an occlusion query scissored to one pixel counts its fragments (and samples, multisampled); a 1x1 StretchRect of each render target format copies it bit for bit, and a multisampled one resolves it; a draw of part of a primitive range covers the same pixels with the same values as the whole draw, for each topology, DrawPrimitiveUP and instancing; stencil INCR_SAT counts fragments in primitive order; whether Clear and ColorFill honour the scissor and viewport; whether `D3DRS_CLIPPING` FALSE stops depth clipping; user clip planes; sRGB writes | A report on each, with the decisions they lead to |
+| 6.2 | **Events and their values:** `PixelHistory` lists each event that touched the pixel, one modification each, with `preMod` and `postMod` colour (1x1 StretchRect) and depth and stencil (bisection at the pixel); Clear, ColorFill, the copies and GenerateMipSubLevels as `directShaderWrite`; `pixelHistory` on. A new `D3D9_Pixel_History` demo, modelled on `D3D11_Pixel_History` with the same markers where D3D9 can, which also records the target's pixel natively after each event | Every event's values are the GPU's (the native run's), in a new test; the UI's pixel history lists them |
+| 6.3 | **Why fragments failed:** the occlusion query per test above, for every shader model and fixed function | The demo's culled, scissored, alpha tested, `texkill`ed, depth and stencil failing (two-sided too), clip plane and sample masked draws are flagged as natively |
+| 6.4 | **Fragments within a draw:** the count, each fragment's `shaderOut` (colour and depth) and `postMod`, the `preMod`s chained, per fragment depth failures (`CheckDepthTestQuantised`) and discards, with blending | The demo's overlapping, blended and partly discarded draws match the native run fragment by fragment |
+| 6.5 | **Primitive IDs and debugging:** the bisection above, for each topology, DrawPrimitiveUP and instancing; `DebugPixel` honouring `DebugPixelInputs.primitive` | Primitive IDs as the demo drew them; debugging a fragment from the pixel history gives that fragment's outputs, including a hidden one, a ps_1_x one and one rejected by the alpha test |
+| 6.6 | **Formats and targets:** each render target format, mips and cube faces of render target textures, depth stencil formats as the target (D16, D24S8, D24X8, INTZ), multisampled targets (resolved values; `sub.sample` only through `sampleMasked`), sRGB writes | The demo's batches per format pass |
+| 6.7 | **Finishing:** where it fits, the D3D9 test runs upstream's shared `rdtest.Pixel_History` checks (`util/test/rdtest/shared/Pixel_History.py`, used by D3D11, D3D12, GL and Vulkan) and a blend test like `D3D12_Blend_Pixel_History`; the docs (`docs/how/how_inspect_pixel.rst`), README, STATUS.md; UI screenshots; how long a busy pixel takes | Tests pass on x64; UI screenshots of the history, Debug Pixel and Go to primitive from it |
+
+Order: 6.1 first; 6.2 before the rest; 6.3 and 6.4 in either order; 6.5 after 6.4.
+
+Not known yet: how long a history takes with many events (every step replays to the event; the
+counters' partial replays help), whether D3D9 can tell depth clipping from not being drawn at all,
+and per sample values of multisampled targets, which D3D9 can't read (step 5 found that masking to
+one sample moves the shading there): `sub.sample` would only say whether `MULTISAMPLEMASK` let the
+sample through.
 
 ## Automated tests
 
