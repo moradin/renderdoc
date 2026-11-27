@@ -1,0 +1,50 @@
+== x64
+ps_2_0: 7 pixels debugged, 21 of 28 output components bit for bit the GPU's, the others at most 9.32e-08 off (the driver fuses a mul and an add)
+ps_2_x: 7 pixels debugged, 39 of 56 output components bit for bit the GPU's, the others at most 2.8e-06 off (the driver fuses a mul and an add, then ddx and ddy)
+ps_3_0: 7 pixels debugged, 49 of 56 output components bit for bit the GPU's, the others at most 7.96e-08 off (the driver fuses a mul and an add)
+ps_3_0 texture: 7 pixels debugged, 28 of 28 output components bit for bit the GPU's
+ps_3_0 transcendentals: 7 pixels debugged, 52 of 56 output components bit for bit the GPU's, the others at most 3.73e-07 off (the driver works out their arguments its own way)
+ps_2_0 lookups: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_2_x gradients: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 anisotropic: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 cube: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 volume: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 border: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 sRGB: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 SetLOD: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 shadow: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 unbound: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 transcendentals asm: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 depth: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_2_0 texkill: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_2_x alpha test: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 stencil: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 alpha test 8-bit: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_2_x point sprites: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 centroid: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 multisampled: 7 pixels debugged, 28 of 28 output components bit for bit the GPU's
+== x86
+ps_2_0: 7 pixels debugged, 21 of 28 output components bit for bit the GPU's, the others at most 9.32e-08 off (the driver fuses a mul and an add)
+ps_2_x: 7 pixels debugged, 39 of 56 output components bit for bit the GPU's, the others at most 2.8e-06 off (the driver fuses a mul and an add, then ddx and ddy)
+ps_3_0: 7 pixels debugged, 49 of 56 output components bit for bit the GPU's, the others at most 7.96e-08 off (the driver fuses a mul and an add)
+ps_3_0 texture: 7 pixels debugged, 28 of 28 output components bit for bit the GPU's
+ps_3_0 transcendentals: 7 pixels debugged, 52 of 56 output components bit for bit the GPU's, the others at most 3.73e-07 off (the driver works out their arguments its own way)
+ps_2_0 lookups: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_2_x gradients: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 anisotropic: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 cube: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 volume: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 border: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 sRGB: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 SetLOD: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 shadow: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 unbound: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 transcendentals asm: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 depth: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_2_0 texkill: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_2_x alpha test: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 stencil: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 alpha test 8-bit: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_2_x point sprites: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 centroid: 7 pixels debugged, 56 of 56 output components bit for bit the GPU's
+ps_3_0 multisampled: 7 pixels debugged, 28 of 28 output components bit for bit the GPU's

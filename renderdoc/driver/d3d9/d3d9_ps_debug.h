@@ -65,16 +65,34 @@ struct ReadbackItem
   uint8_t mask = 0xF;
 };
 
-// one draw of the readback: a pixel shader writing items[n] to oC#n, or 0 to oC0 when it has none
+// which shader the readback draws (5.10)
+enum class ReadbackShader : uint8_t
+{
+  // one of our own that writes the inputs alone. It can't discard, so it reads the last fragment
+  // drawn that passes the depth and stencil tests, even one the original's texkill or the draw's
+  // alpha test rejected.
+  Replacement,
+  // the original, with the inputs written to render targets it doesn't write: its own texkill,
+  // oDepth and the draw's alpha test then pick the fragment, the one the GPU wrote (measured in
+  // 5.4). ps_2_0 and later, since ps_1_x writes r0 alone.
+  Original,
+};
+
+// one draw of the readback: a pixel shader writing items[n] to oC<targets[n]>, or 0 to oC0 when a
+// replacement has no items
 struct ReadbackPass
 {
   rdcarray<ReadbackItem> items;
+  rdcarray<uint32_t> targets;
+  // the original's own oC#, as bits: they need a render target bound, oC0 in the draw's format for
+  // the alpha test, but aren't read
+  uint32_t ownTargets = 0;
   rdcarray<uint32_t> tokens;
 };
 
 // Builds the pixel shaders that read back the inputs prog (a ps_1_1 to ps_3_0 shader) gets, and
-// what the other pixels of its quad got, at most maxTargets (1-4) values a pass. They declare the
-// inputs as prog does, so the rasterizer interpolates them the same way:
+// what the other pixels of its quad got, at most maxTargets (1-4) render targets a pass. They
+// declare the inputs as prog does, so the rasterizer interpolates them the same way:
 // - for ps_3_0 a ps_3_0 shader with prog's own input declarations (semantics, masks, centroid),
 //   which also reads vFace if prog declares it. It reads the quad's top left, top right and bottom
 //   left pixels' inputs exactly, picking them out by vPos. vPos itself isn't read: it's the
@@ -82,10 +100,15 @@ struct ReadbackPass
 // - otherwise ps_2_x, the first model with dsx and dsy, with prog's t# and v# declarations, or for
 //   ps_1_x the t# and v# it reads. It reads the inputs' dsx and dsy, which give the quad's other
 //   pixels' inputs, when gradients is true; without them it's ps_2_0, and reads only the pixel's.
+// With ReadbackShader::Original each pass is prog itself, a ps_2_0 one moved up to ps_2_x for dsx,
+// with the reading appended where its main program ends (before its first ret, or the end), its
+// values to the targets prog doesn't write and two constants prog doesn't read (it can't tell
+// which a relatively addressed read reaches, so it takes the highest). prog's temps are free by
+// then.
 // A shader that reads no inputs gets one pass with no items. Returns false with the reason in
-// error if prog isn't a pixel shader that can be read back.
-bool BuildInputReadback(const D3D9BC::Program &prog, bool gradients, uint32_t maxTargets,
-                        rdcarray<ReadbackPass> &passes, rdcstr &error);
+// error if prog isn't a pixel shader that can be read back that way.
+bool BuildInputReadback(const D3D9BC::Program &prog, ReadbackShader shader, bool gradients,
+                        uint32_t maxTargets, rdcarray<ReadbackPass> &passes, rdcstr &error);
 
 // The quad of pixel (x, y) from the readback's results (results[pass][target], each pass's
 // targets' values at the pixel), in QuadPixel order; the pixel itself is at QuadPixelOf(x, y).

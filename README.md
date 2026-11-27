@@ -51,7 +51,10 @@ The detailed status, with how each part works and how it was tested, is in
     Its texture lookups and transcendentals (`rcp`, `rsq`, `exp`, `log`, `pow`, `sincos`) are made
     on the GPU, with the event's textures and sampler states, so they're the GPU's own: filtering,
     anisotropy, sRGB, borders, depth comparisons and unbound samplers included. "Run to Sample"
-    stops on the lookups;
+    stops on the lookups. The debugged fragment is the one the GPU wrote: the event is drawn
+    again with the original shader, so its `texkill` and `oDepth` and the draw's alpha test
+    choose it, and with a copy of the depth stencil, so the draw's own fragments test against
+    each other. Multisampled targets too, at the pixel centre;
   - GPU durations (the Event Browser's Duration column) and samples passed, in the Performance
     Counter Viewer too;
   - resource usage: the Resource Inspector's usage list and the timeline's usage markers;
@@ -96,10 +99,14 @@ Known limitations of what works:
   that fails in the emulation (calls nested too deeply, a loop that never ends) ends the trace on it, with the
   reason only in the log.
 - **Pixel shader debugging**:
-  - The debugged fragment is the last one the draw writes that passes the depth and stencil test
-    as they were before the draw. With overlapping triangles in one draw, alpha test, `texkill`
-    or `clip` it may not be the one the GPU kept.
-  - Multisampled targets can't be debugged yet.
+  - On a multisampled target the debugged fragment is the one covering the pixel centre, which
+    for a pixel at a primitive's edge may not be the only one in it, and a fragment covering
+    some samples but not the centre isn't found. Centroid inputs are read at the centre. D3D9
+    has no multiple render targets with multisampling, so the inputs are read by a shader of our
+    own: `texkill` and the alpha test don't choose the fragment there, and it's the last one
+    that passes the depth and stencil tests.
+  - Where `texkill` or the alpha test rejected every fragment at the pixel, the one that would
+    have been written without them is debugged.
   - Results can differ from the GPU's in the last bits where its driver fuses a `mul` and an
     `add` that the shader has apart, more after a derivative, or works out a transcendental's
     argument another way (HLSL's `sin` and `cos` reduce theirs with a `mad`, `frc` and `mad`).

@@ -65,8 +65,8 @@ Vec4 *InputField(PSInputs &in, RegType type, uint32_t index)
 }
 };    // namespace
 
-bool BuildInputReadback(const Program &prog, bool gradients, uint32_t maxTargets,
-                        rdcarray<ReadbackPass> &passes, rdcstr &error)
+bool BuildInputReadback(const Program &prog, ReadbackShader shader, bool gradients,
+                        uint32_t maxTargets, rdcarray<ReadbackPass> &passes, rdcstr &error)
 {
   passes.clear();
 
@@ -84,14 +84,21 @@ bool BuildInputReadback(const Program &prog, bool gradients, uint32_t maxTargets
 
   maxTargets = RDCCLAMP(maxTargets, 1U, 4U);
   const bool sm3 = ver.major >= 3;
+  const bool original = shader == ReadbackShader::Original;
 
   // the input declarations, as tokens, and the registers read with their components
   rdcarray<uint32_t> decls;
   std::map<uint32_t, uint8_t> regs;
-  bool face = false;
+  bool face = false, pos = false;
 
   if(ver.IsSM1())
   {
+    if(original)
+    {
+      error = "a ps_1_x shader writes r0 alone, so nothing can be written alongside";
+      return false;
+    }
+
     // ps_1_x declares nothing: the colours and coordinates it reads, whole. ps_1_1 to ps_1_3's
     // texture instructions read the coordinate set their destination names (texreg2* don't, but
     // reading it too does no harm); ps_1_4 reads them as sources.
@@ -127,6 +134,8 @@ bool BuildInputReadback(const Program &prog, bool gradients, uint32_t maxTargets
       const RegType type = inst.dst.type;
       const bool isFace = sm3 && type == RegType::MiscType && inst.dst.index == 1;
       const bool isInput = type == RegType::Input || (!sm3 && type == RegType::AddrOrTexture);
+      if(sm3 && type == RegType::MiscType && inst.dst.index == 0)
+        pos = true;
       if(!isFace && !isInput)
         continue;
 
@@ -148,6 +157,84 @@ bool BuildInputReadback(const Program &prog, bool gradients, uint32_t maxTargets
   }
 
   const bool derivatives = !sm3 && gradients;
+
+  // where the values go, and the constants the reading uses: a replacement's are its own, an
+  // original's those it leaves
+  rdcarray<uint32_t> freeTargets;
+  uint32_t ownTargets = 0;
+  uint32_t zeroConst = 0, oneConst = 1;
+  // an original's main program's end, where the reading goes, and where its declarations start
+  uint32_t insertAt = 0, prologueAt = 0, endPos = 0;
+  if(original)
+  {
+    const uint32_t numConsts = sm3 ? 224 : 32;
+    rdcarray<bool> constUsed;
+    constUsed.resize(numConsts);
+
+    endPos = 1;
+    for(const Instruction &inst : prog.instructions)
+    {
+      endPos = RDCMAX(endPos, inst.offset + 1 + inst.length);
+      if(inst.hasDst && inst.dst.type == RegType::ColorOut && inst.dst.index < 4)
+        ownTargets |= 1U << inst.dst.index;
+      if(inst.op == Opcode::Def && inst.dst.type == RegType::Const && inst.dst.index < numConsts)
+        constUsed[inst.dst.index] = true;
+      for(const SrcParam &src : inst.srcs)
+        if(src.type == RegType::Const && src.index < numConsts)
+          constUsed[src.index] = true;
+    }
+    for(const CommentBlock &comment : prog.comments)
+      endPos = RDCMAX(endPos, comment.offset + comment.length);
+    if(endPos >= prog.tokens.size() || prog.tokens[endPos] != EndTok())
+    {
+      error = "the shader's end token isn't where its instructions end";
+      return false;
+    }
+
+    // main ends at its ret, before the subroutines' labels, or at the end token
+    insertAt = endPos;
+    for(const Instruction &inst : prog.instructions)
+    {
+      if(inst.op == Opcode::Label)
+        break;
+      if(inst.op == Opcode::Ret)
+      {
+        insertAt = inst.offset;
+        break;
+      }
+    }
+    // the defs and declarations go before the original's, after its leading comments
+    prologueAt = prog.instructions.empty() ? endPos : prog.instructions[0].offset;
+
+    for(uint32_t t = 0; t < maxTargets; t++)
+      if(!(ownTargets & (1U << t)))
+        freeTargets.push_back(t);
+    if(freeTargets.empty())
+    {
+      error = StringFormat::Fmt(
+          "it writes all %u render targets the GPU has, leaving none to write its inputs to",
+          maxTargets);
+      return false;
+    }
+
+    // the highest two constants it doesn't read or define
+    rdcarray<uint32_t> spare;
+    for(uint32_t c = numConsts; c > 0 && spare.size() < 2; c--)
+      if(!constUsed[c - 1])
+        spare.push_back(c - 1);
+    if(spare.size() < 2)
+    {
+      error = "it reads every constant, leaving none for reading its inputs";
+      return false;
+    }
+    zeroConst = spare[0];
+    oneConst = spare[1];
+  }
+  else
+  {
+    for(uint32_t t = 0; t < maxTargets; t++)
+      freeTargets.push_back(t);
+  }
 
   rdcarray<ReadbackItem> items;
   for(auto it = regs.begin(); it != regs.end(); ++it)
@@ -185,37 +272,48 @@ bool BuildInputReadback(const Program &prog, bool gradients, uint32_t maxTargets
     items.push_back(item);
   }
 
-  // a shader that reads no inputs still gets a pass, writing 0 to oC0, which shows whether the
-  // draw covers the pixel
-  for(size_t first = 0; first < items.size() || (first == 0 && items.empty()); first += maxTargets)
+  // ps_2_x for dsx and dsy (ps_2_0 has neither)
+  const uint8_t major = sm3 ? 3 : 2;
+  const uint8_t minor = sm3 ? 0 : (derivatives ? 1 : (original ? ver.minor : 0));
+  const uint32_t perPass = (uint32_t)freeTargets.size();
+
+  // a shader that reads no inputs still gets a pass, writing 0 to oC0 (or the original as it is),
+  // which shows whether the draw covers the pixel
+  for(size_t first = 0; first < items.size() || (first == 0 && items.empty()); first += perPass)
   {
     ReadbackPass pass;
+    pass.ownTargets = ownTargets;
 
-    // ps_2_x for dsx and dsy (ps_2_0 has neither)
-    Assembler a(sm3 ? 3 : 2, sm3 ? 0 : (derivatives ? 1 : 0), true);
-    a.def(0, 0.0f, 0.0f, 0.0f, 0.0f);
-    a.def(1, 1.0f, -1.0f, 0.5f, 0.0f);
-    a.tokens.append(decls);
+    // the constants and declarations, then the reading
+    Assembler pro(major, minor, true);
+    pro.def(zeroConst, 0.0f, 0.0f, 0.0f, 0.0f);
+    pro.def(oneConst, 1.0f, -1.0f, 0.5f, 0.0f);
+    if(!original)
+      pro.tokens.append(decls);
+    // ps_3_0 picks out the quad's pixels by their position, the pixel's integer position
+    if(sm3 && (!original || !pos))
+      pro.op(Opcode::Dcl, {DclNone(), Dst(RegType::MiscType, 0, 0x3)});
 
-    // ps_3_0 picks out the quad's pixels by their position: r4 is (x & 1, y & 1), from vPos, which
-    // is the pixel's integer position
+    Assembler a(major, minor, true);
+
+    // r4 is (x & 1, y & 1), from vPos
     if(sm3)
     {
-      a.op(Opcode::Dcl, {DclNone(), Dst(RegType::MiscType, 0, 0x3)});
       a.op(Opcode::Mul, {Dst(RegType::Temp, 4, 0x3), Src(RegType::MiscType, 0),
-                         Src(RegType::Const, 1, Swz(2, 2, 2, 2))});
+                         Src(RegType::Const, oneConst, Swz(2, 2, 2, 2))});
       a.op(Opcode::Frc, {Dst(RegType::Temp, 4, 0x3), Src(RegType::Temp, 4)});
       a.op(Opcode::Add, {Dst(RegType::Temp, 4, 0x3), Src(RegType::Temp, 4), Src(RegType::Temp, 4)});
     }
 
     const uint32_t notRight = Src(RegType::Temp, 4, Swz(0, 0, 0, 0), SrcMod::Neg);
     const uint32_t notBottom = Src(RegType::Temp, 4, Swz(1, 1, 1, 1), SrcMod::Neg);
-    const uint32_t zero = Src(RegType::Const, 0);
+    const uint32_t zero = Src(RegType::Const, zeroConst);
 
-    for(uint32_t k = 0; k < maxTargets && first + k < items.size(); k++)
+    for(uint32_t k = 0; k < perPass && first + k < items.size(); k++)
     {
       const ReadbackItem &item = items[first + k];
       pass.items.push_back(item);
+      pass.targets.push_back(freeTargets[k]);
 
       // the components not declared are 0
       a.op(Opcode::Mov, {Dst(RegType::Temp, k), zero});
@@ -233,7 +331,7 @@ bool BuildInputReadback(const Program &prog, bool gradients, uint32_t maxTargets
           // -0 on the right and -input on the left: -0 - (-input) is the input, its zeros' signs
           // included
           a.op(Opcode::Cmp, {picked, notRight, Src(item.type, item.index, 0xE4, SrcMod::Neg),
-                             Src(RegType::Const, 0, 0xE4, SrcMod::Neg)});
+                             Src(RegType::Const, zeroConst, 0xE4, SrcMod::Neg)});
           a.op(Opcode::Dsx, {dst, Src(RegType::Temp, 5)});
           break;
         case ReadbackValue::TopRight:
@@ -246,18 +344,34 @@ bool BuildInputReadback(const Program &prog, bool gradients, uint32_t maxTargets
           break;
         case ReadbackValue::Face:
           // vFace can only be a condition: +1 where it's >= 0, -1 otherwise
-          a.op(Opcode::Cmp,
-               {Dst(RegType::Temp, k, 0x1), Src(RegType::MiscType, 1),
-                Src(RegType::Const, 1, Swz(0, 0, 0, 0)), Src(RegType::Const, 1, Swz(1, 1, 1, 1))});
+          a.op(Opcode::Cmp, {Dst(RegType::Temp, k, 0x1), Src(RegType::MiscType, 1),
+                             Src(RegType::Const, oneConst, Swz(0, 0, 0, 0)),
+                             Src(RegType::Const, oneConst, Swz(1, 1, 1, 1))});
           break;
       }
-      a.op(Opcode::Mov, {Dst(RegType::ColorOut, k), Src(RegType::Temp, k)});
+      a.op(Opcode::Mov, {Dst(RegType::ColorOut, freeTargets[k]), Src(RegType::Temp, k)});
     }
 
-    if(items.empty())
-      a.op(Opcode::Mov, {Dst(RegType::ColorOut, 0), Src(RegType::Const, 0)});
-
-    pass.tokens = a.finish();
+    if(!original)
+    {
+      if(items.empty())
+        a.op(Opcode::Mov, {Dst(RegType::ColorOut, 0), Src(RegType::Const, zeroConst)});
+      pass.tokens = pro.tokens;
+      pass.tokens.append(a.tokens.data() + 1, a.tokens.size() - 1);
+      pass.tokens.push_back(EndTok());
+    }
+    else
+    {
+      // the original's version token (moved up for dsx), the prologue before its own
+      // declarations, and the reading where main ends
+      const rdcarray<uint32_t> &orig = prog.tokens;
+      pass.tokens.push_back(derivatives ? VersionToken(true, 2, 1) : orig[0]);
+      pass.tokens.append(orig.data() + 1, prologueAt - 1);
+      pass.tokens.append(pro.tokens.data() + 1, pro.tokens.size() - 1);
+      pass.tokens.append(orig.data() + prologueAt, insertAt - prologueAt);
+      pass.tokens.append(a.tokens.data() + 1, a.tokens.size() - 1);
+      pass.tokens.append(orig.data() + insertAt, endPos + 1 - insertAt);
+    }
     passes.push_back(pass);
   }
 
@@ -928,10 +1042,14 @@ rdcarray<rdcarray<Vec4>> RunReadback(const rdcarray<ReadbackPass> &passes,
     QuadRun run;
     REQUIRE(run.Run(pass.tokens, truth));
     const PSOutputs &out = run.quad.Pixel(pixel).Registers().out;
-    CHECK(out.written == (1U << pass.items.size()) - 1);
+    REQUIRE(pass.targets.size() == pass.items.size());
+    uint32_t written = pass.ownTargets;
+    for(uint32_t t : pass.targets)
+      written |= 1U << t;
+    CHECK((out.written & 0xF) == written);
     rdcarray<Vec4> targets;
     for(size_t k = 0; k < pass.items.size(); k++)
-      targets.push_back(out.color[k]);
+      targets.push_back(out.color[pass.targets[k]]);
     results.push_back(targets);
   }
   return results;
@@ -1092,7 +1210,7 @@ TEST_CASE("D3D9 pixel shader debugging - input readback", "[d3d9][psemu][psdebug
 
     rdcarray<ReadbackPass> passes;
     rdcstr error;
-    REQUIRE(BuildInputReadback(prog, true, 4, passes, error));
+    REQUIRE(BuildInputReadback(prog, ReadbackShader::Replacement, true, 4, passes, error));
 
     // v0, t0 and t2 with their derivatives, four a pass, in ps_2_x for dsx and dsy
     REQUIRE(passes.size() == 3);
@@ -1178,7 +1296,7 @@ TEST_CASE("D3D9 pixel shader debugging - input readback", "[d3d9][psemu][psdebug
     }
 
     // without gradient instructions: ps_2_0, the values alone, the same in all four pixels
-    REQUIRE(BuildInputReadback(prog, false, 4, passes, error));
+    REQUIRE(BuildInputReadback(prog, ReadbackShader::Replacement, false, 4, passes, error));
     REQUIRE(passes.size() == 1);
     CHECK(passes[0].items.size() == 3);
     CHECK(passes[0].tokens[0] == VersionToken(true, 2, 0));
@@ -1187,7 +1305,7 @@ TEST_CASE("D3D9 pixel shader debugging - input readback", "[d3d9][psemu][psdebug
       CHECK(SameVec(rebuilt[i].v[0], truth[3].v[0]));
 
     // one target a pass
-    REQUIRE(BuildInputReadback(prog, true, 1, passes, error));
+    REQUIRE(BuildInputReadback(prog, ReadbackShader::Replacement, true, 1, passes, error));
     CHECK(passes.size() == 9);
 
     // a shader reading no inputs has one pass writing 0 to oC0, to see whether the draw covers
@@ -1197,7 +1315,7 @@ TEST_CASE("D3D9 pixel shader debugging - input readback", "[d3d9][psemu][psdebug
     none.op(Opcode::Mov, {Dst(RegType::ColorOut, 0), Src(RegType::Const, 0)});
     const rdcarray<uint32_t> noneTokens = none.finish();
     ParseProgram(noneTokens.data(), noneTokens.size(), prog);
-    REQUIRE(BuildInputReadback(prog, true, 4, passes, error));
+    REQUIRE(BuildInputReadback(prog, ReadbackShader::Replacement, true, 4, passes, error));
     REQUIRE(passes.size() == 1);
     CHECK(passes[0].items.empty());
     QuadRun run;
@@ -1224,7 +1342,7 @@ TEST_CASE("D3D9 pixel shader debugging - input readback", "[d3d9][psemu][psdebug
     rdcstr error;
     // ps_3_0 reads the quad's pixels whether or not gradients are there for ps_2_x: each input,
     // then its top left, top right and bottom left values
-    REQUIRE(BuildInputReadback(prog, false, 4, passes, error));
+    REQUIRE(BuildInputReadback(prog, ReadbackShader::Replacement, false, 4, passes, error));
     REQUIRE(passes.size() == 3);
     CHECK(passes[0].tokens[0] == VersionToken(true, 3, 0));
     REQUIRE(passes[0].items.size() == 4);
@@ -1307,7 +1425,7 @@ TEST_CASE("D3D9 pixel shader debugging - input readback", "[d3d9][psemu][psdebug
 
     rdcarray<ReadbackPass> passes;
     rdcstr error;
-    REQUIRE(BuildInputReadback(prog, true, 4, passes, error));
+    REQUIRE(BuildInputReadback(prog, ReadbackShader::Replacement, true, 4, passes, error));
     REQUIRE(passes.size() == 3);
     CHECK(passes[0].tokens[0] == VersionToken(true, 2, 1));
     CHECK((passes[0].items[0].type == RegType::Input && passes[0].items[0].index == 1));
@@ -1333,12 +1451,217 @@ TEST_CASE("D3D9 pixel shader debugging - input readback", "[d3d9][psemu][psdebug
     tokens = b.finish();
     ParseProgram(tokens.data(), tokens.size(), prog);
     REQUIRE(prog.error.empty());
-    REQUIRE(BuildInputReadback(prog, false, 4, passes, error));
+    REQUIRE(BuildInputReadback(prog, ReadbackShader::Replacement, false, 4, passes, error));
     REQUIRE(passes.size() == 1);
     REQUIRE(passes[0].items.size() == 3);
     CHECK((passes[0].items[0].type == RegType::Input && passes[0].items[0].index == 0));
     CHECK((passes[0].items[1].type == RegType::AddrOrTexture && passes[0].items[1].index == 0));
     CHECK((passes[0].items[2].type == RegType::AddrOrTexture && passes[0].items[2].index == 2));
+  }
+
+  SECTION("the original with the reading appended")
+  {
+    // ps_2_0 that kills, defines a constant and writes oC0
+    Assembler a(2, 0, true);
+    a.def(31, 2.0f, 2.0f, 2.0f, 2.0f);
+    a.op(Opcode::Dcl, {DclNone(), Dst(RegType::AddrOrTexture, 0, 0x3)});
+    a.op(Opcode::Dcl, {DclNone(), Dst(RegType::Input, 0)});
+    a.op(Opcode::Dcl, {DclNone(), Dst(RegType::AddrOrTexture, 2)});
+    a.op(Opcode::TexKill, {Dst(RegType::AddrOrTexture, 2)});
+    a.op(Opcode::Mul, {Dst(RegType::Temp, 0), Src(RegType::Input, 0), Src(RegType::Const, 31)});
+    a.op(Opcode::Mov, {Dst(RegType::ColorOut, 0), Src(RegType::Temp, 0)});
+    const rdcarray<uint32_t> tokens = a.finish();
+    Program prog;
+    ParseProgram(tokens.data(), tokens.size(), prog);
+    REQUIRE(prog.error.empty());
+
+    rdcarray<ReadbackPass> passes, replacement;
+    rdcstr error;
+    REQUIRE(BuildInputReadback(prog, ReadbackShader::Original, true, 4, passes, error));
+    REQUIRE(BuildInputReadback(prog, ReadbackShader::Replacement, true, 4, replacement, error));
+
+    // v0, t0 and t2 with their derivatives, three a pass in oC1-oC3, in ps_2_x for dsx
+    REQUIRE(passes.size() == 3);
+    for(const ReadbackPass &pass : passes)
+    {
+      CHECK(pass.tokens[0] == VersionToken(true, 2, 1));
+      CHECK(pass.ownTargets == 1);
+      CHECK(pass.targets == rdcarray<uint32_t>({1, 2, 3}));
+    }
+
+    // the original's own instructions are all there, then the reading, with constants it doesn't
+    // use (c30 and c29)
+    Program appended;
+    ParseProgram(passes[0].tokens.data(), passes[0].tokens.size(), appended);
+    REQUIRE(appended.error.empty());
+    rdcarray<Opcode> ops;
+    for(const Instruction &inst : appended.instructions)
+    {
+      ops.push_back(inst.op);
+      if(inst.op == Opcode::Def)
+        CHECK((inst.dst.index == 31 || inst.dst.index == 30 || inst.dst.index == 29));
+    }
+    REQUIRE(ops.size() > 9);
+    CHECK(uint32_t(ops[0]) == uint32_t(Opcode::Def));
+    CHECK(uint32_t(ops[1]) == uint32_t(Opcode::Def));
+    CHECK(uint32_t(ops[2]) == uint32_t(Opcode::Def));
+    CHECK(uint32_t(ops[6]) == uint32_t(Opcode::TexKill));
+    CHECK(uint32_t(ops[7]) == uint32_t(Opcode::Mul));
+    CHECK(uint32_t(ops[8]) == uint32_t(Opcode::Mov));
+
+    // the original's oC0 and texkill are as they were; the values read are the replacement's
+    PSInputs truth[QuadPixels];
+    AffineQuad(10, 20, truth);
+    QuadRun alone;
+    REQUIRE(alone.Run(tokens, truth));
+    for(uint32_t p = 0; p < QuadPixels; p++)
+    {
+      INFO("pixel " << p);
+      for(const ReadbackPass &pass : passes)
+      {
+        QuadRun run;
+        REQUIRE(run.Run(pass.tokens, truth));
+        CHECK(SameVec(run.quad.Pixel(p).Registers().out.color[0],
+                      alone.quad.Pixel(p).Registers().out.color[0]));
+        CHECK(run.quad.Pixel(p).Registers().killed == alone.quad.Pixel(p).Registers().killed);
+      }
+
+      rdcarray<rdcarray<Vec4>> got = RunReadback(passes, truth, p);
+      rdcarray<rdcarray<Vec4>> want = RunReadback(replacement, truth, p);
+      rdcarray<Vec4> gotFlat, wantFlat;
+      for(const rdcarray<Vec4> &r : got)
+        gotFlat.append(r);
+      for(const rdcarray<Vec4> &r : want)
+        wantFlat.append(r);
+      REQUIRE(gotFlat.size() == wantFlat.size());
+      for(size_t i = 0; i < gotFlat.size(); i++)
+        CHECK(SameVec(gotFlat[i], wantFlat[i]));
+
+      PSInputs rebuilt[QuadPixels];
+      ReadBack(passes, truth, 10 + (p & 1), 20 + (p >> 1), rebuilt);
+      for(uint32_t i = 0; i < QuadPixels; i++)
+      {
+        CHECK(SameVec(rebuilt[i].v[0], truth[i].v[0]));
+        CHECK(SameVec(rebuilt[i].t[0], Masked(truth[i].t[0], 0x3)));
+        CHECK(SameVec(rebuilt[i].t[2], truth[i].t[2]));
+      }
+    }
+
+    // without gradient instructions it stays ps_2_0
+    REQUIRE(BuildInputReadback(prog, ReadbackShader::Original, false, 4, passes, error));
+    REQUIRE(passes.size() == 1);
+    CHECK(passes[0].tokens[0] == VersionToken(true, 2, 0));
+
+    // ps_3_0 whose main calls a subroutine: the reading goes before main's ret, and vPos is
+    // declared for it. oC0 and oC1 are its own, so two values a pass.
+    Assembler b(3, 0, true);
+    b.dcl(DeclUsage::TexCoord, 0, 0, RegType::Input, 0xF);
+    b.op(Opcode::Dcl, {DclNone(), Dst(RegType::MiscType, 1)});
+    b.op(Opcode::Call, {Src(RegType::Label, 0)});
+    b.op(Opcode::Mov, {Dst(RegType::ColorOut, 0), Src(RegType::Temp, 0)});
+    b.op(Opcode::Mov, {Dst(RegType::ColorOut, 1), Src(RegType::Input, 0, Swz(3, 2, 1, 0))});
+    b.op(Opcode::Ret, {});
+    b.op(Opcode::Label, {Src(RegType::Label, 0)});
+    b.op(Opcode::Add, {Dst(RegType::Temp, 0), Src(RegType::Input, 0), Src(RegType::Input, 0)});
+    b.op(Opcode::Ret, {});
+    const rdcarray<uint32_t> sub = b.finish();
+    ParseProgram(sub.data(), sub.size(), prog);
+    REQUIRE(prog.error.empty());
+    REQUIRE(BuildInputReadback(prog, ReadbackShader::Original, true, 4, passes, error));
+    // v0 and its three corners, and vFace
+    REQUIRE(passes.size() == 3);
+    CHECK(passes[0].ownTargets == 3);
+    CHECK(passes[0].targets == rdcarray<uint32_t>({2, 3}));
+    CHECK(passes[2].items.size() == 1);
+    CHECK((passes[2].items[0].what == ReadbackValue::Face));
+
+    ParseProgram(passes[0].tokens.data(), passes[0].tokens.size(), appended);
+    REQUIRE(appended.error.empty());
+    uint32_t vposDecls = 0;
+    size_t firstRet = 0, firstLabel = 0, lastOut = 0;
+    for(size_t i = 0; i < appended.instructions.size(); i++)
+    {
+      const Instruction &inst = appended.instructions[i];
+      if(inst.op == Opcode::Dcl && inst.dst.type == RegType::MiscType && inst.dst.index == 0)
+        vposDecls++;
+      if(inst.op == Opcode::Ret && firstRet == 0)
+        firstRet = i;
+      if(inst.op == Opcode::Label && firstLabel == 0)
+        firstLabel = i;
+      if(inst.hasDst && inst.dst.type == RegType::ColorOut && inst.dst.index >= 2)
+        lastOut = i;
+    }
+    CHECK(vposDecls == 1);
+    CHECK(lastOut < firstRet);
+    CHECK(firstRet + 1 == firstLabel);
+
+    for(float face : {1.0f, -1.0f})
+    {
+      AffineQuad(30, 40, truth, face);
+      REQUIRE(alone.Run(sub, truth));
+      PSInputs rebuilt[QuadPixels];
+      ReadBack(passes, truth, 31, 41, rebuilt);
+      for(uint32_t i = 0; i < QuadPixels; i++)
+      {
+        CHECK(rebuilt[i].face == face);
+        CHECK(SameVec(rebuilt[i].v[0], truth[i].v[0]));
+      }
+      for(const ReadbackPass &pass : passes)
+      {
+        QuadRun run;
+        REQUIRE(run.Run(pass.tokens, truth));
+        for(uint32_t t = 0; t < 2; t++)
+          CHECK(SameVec(run.quad.Pixel(3).Registers().out.color[t],
+                        alone.quad.Pixel(3).Registers().out.color[t]));
+      }
+    }
+
+    // a vPos it declares isn't declared again
+    Assembler c(3, 0, true);
+    c.op(Opcode::Dcl, {DclNone(), Dst(RegType::MiscType, 0, 0x3)});
+    c.dcl(DeclUsage::Color, 0, 0, RegType::Input, 0xF);
+    c.op(Opcode::Add, {Dst(RegType::ColorOut, 0), Src(RegType::Input, 0), Src(RegType::MiscType, 0)});
+    const rdcarray<uint32_t> withPos = c.finish();
+    ParseProgram(withPos.data(), withPos.size(), prog);
+    REQUIRE(BuildInputReadback(prog, ReadbackShader::Original, true, 4, passes, error));
+    REQUIRE(passes.size() == 2);
+    ParseProgram(passes[0].tokens.data(), passes[0].tokens.size(), appended);
+    REQUIRE(appended.error.empty());
+    vposDecls = 0;
+    for(const Instruction &inst : appended.instructions)
+      if(inst.op == Opcode::Dcl && inst.dst.type == RegType::MiscType && inst.dst.index == 0)
+        vposDecls++;
+    CHECK(vposDecls == 1);
+    AffineQuad(2, 6, truth);
+    PSInputs rebuilt[QuadPixels];
+    ReadBack(passes, truth, 2, 7, rebuilt);
+    for(uint32_t i = 0; i < QuadPixels; i++)
+      CHECK(SameVec(rebuilt[i].v[0], truth[i].v[0]));
+
+    // with no inputs, the original as it is, for the occlusion query
+    Assembler none(2, 0, true);
+    none.def(0, 1.0f, 2.0f, 3.0f, 4.0f);
+    none.op(Opcode::Mov, {Dst(RegType::ColorOut, 0), Src(RegType::Const, 0)});
+    const rdcarray<uint32_t> noneTokens = none.finish();
+    ParseProgram(noneTokens.data(), noneTokens.size(), prog);
+    REQUIRE(BuildInputReadback(prog, ReadbackShader::Original, true, 4, passes, error));
+    REQUIRE(passes.size() == 1);
+    CHECK(passes[0].items.empty());
+    QuadRun run;
+    REQUIRE(run.Run(passes[0].tokens, truth));
+    CHECK(SameVec(run.quad.Pixel(0).Registers().out.color[0], Vec4(1.0f, 2.0f, 3.0f, 4.0f)));
+
+    // what it can't do: ps_1_x, and a shader writing every target there is
+    Assembler ps11(1, 1, true);
+    ps11.op(Opcode::Mov, {Dst(RegType::Temp, 0), Src(RegType::Input, 0)});
+    const rdcarray<uint32_t> ps11Tokens = ps11.finish();
+    ParseProgram(ps11Tokens.data(), ps11Tokens.size(), prog);
+    CHECK_FALSE(BuildInputReadback(prog, ReadbackShader::Original, true, 4, passes, error));
+    CHECK(error.contains("ps_1_x"));
+
+    ParseProgram(withPos.data(), withPos.size(), prog);
+    CHECK_FALSE(BuildInputReadback(prog, ReadbackShader::Original, true, 1, passes, error));
+    CHECK(error.contains("all 1 render targets"));
   }
 
   SECTION("what it refuses")
@@ -1350,7 +1673,7 @@ TEST_CASE("D3D9 pixel shader debugging - input readback", "[d3d9][psemu][psdebug
     ParseProgram(tokens.data(), tokens.size(), prog);
     rdcarray<ReadbackPass> passes;
     rdcstr error;
-    CHECK_FALSE(BuildInputReadback(prog, true, 4, passes, error));
+    CHECK_FALSE(BuildInputReadback(prog, ReadbackShader::Replacement, true, 4, passes, error));
     CHECK(error == "it isn't a pixel shader");
   }
 }

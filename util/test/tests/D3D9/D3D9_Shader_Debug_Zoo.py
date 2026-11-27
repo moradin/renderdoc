@@ -77,6 +77,26 @@ PIXEL_DRAWS = {
     'ps_3_0 shadow': (['oC0', 'oC1'], 0.0, ''),
     'ps_3_0 unbound': (['oC0', 'oC1'], 0.0, ''),
     'ps_3_0 transcendentals asm': (['oC0', 'oC1'], 0.0, ''),
+    # which fragment: overlapping layers in one draw, where the one written is decided by depth
+    # writes and texkill, texkill, the alpha test, stencil writes, and the alpha test on an 8-bit
+    # target (at whose precision it compares). The layer's id is in oC0.x and oC1.z.
+    'ps_3_0 depth': (['oC0', 'oC1'], 0.0, ''),
+    'ps_2_0 texkill': (['oC0', 'oC1'], 0.0, ''),
+    'ps_2_x alpha test': (['oC0', 'oC1'], 0.0, ''),
+    'ps_3_0 stencil': (['oC0', 'oC1'], 0.0, ''),
+    'ps_3_0 alpha test 8-bit': (['oC0', 'oC1'], 0.0, ''),
+    'ps_2_x point sprites': (['oC0', 'oC1'], 0.0, ''),
+    'ps_3_0 centroid': (['oC0', 'oC1'], 0.0, ''),
+    # depth layers on a 4x multisampled target, drawn alone (D3D9 has no multiple render targets
+    # with multisampling): the fragment covering the pixel centre, shaded there. The probes are
+    # inside the primitives, so the GPU's resolve is every sample's value.
+    'ps_3_0 multisampled': (['oC0'], 0.0, ''),
+}
+
+# outputs drawn to an A8R8G8B8 target: the debugger's value is compared as the target stores it,
+# rounded to 8 bits, and the native reference is c / 255
+UNORM8_OUTPUTS = {
+    'ps_3_0 alpha test 8-bit': ['oC0'],
 }
 
 # the lookups each sampling draw's pixel makes, by instruction
@@ -94,6 +114,12 @@ DEPTH_EPS = 1.5 / (1 << 24)
 
 def bits(f):
     return struct.unpack('<I', struct.pack('<f', f))[0]
+
+
+def unorm8(v):
+    """v as an 8-bit UNORM target stores it, read back as a float32"""
+    c = math.floor(min(max(v, 0.0), 1.0) * 255.0 + 0.5)
+    return struct.unpack('<f', struct.pack('<f', c / 255.0))[0]
 
 
 def float_of(hexbits):
@@ -445,6 +471,9 @@ class D3D9_Shader_Debug_Zoo(rdtest.D3D9_Test):
                         raise rdtest.TestFailureException(f"{marker}: pixel ({x}, {y})'s oDepth is {got[name][0]}, "
                                                           f"the depth target has {picked}")
                     continue
+
+                if name in UNORM8_OUTPUTS.get(marker, []):
+                    got[name] = [unorm8(v) for v in got[name]]
 
                 index = int(name[2:])
                 replay = list(self.controller.PickPixel(targets[index], x, y, rd.Subresource(0, 0, 0),

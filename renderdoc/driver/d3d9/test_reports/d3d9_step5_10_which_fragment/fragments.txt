@@ -1,0 +1,40 @@
+5.10: the original with its inputs appended, a copy of the depth stencil, oC0 in the draw's format
+  ps_3_0 depth: 7 of 7 pixels the GPU's
+  ps_2_0 texkill: 7 of 7 pixels the GPU's
+  ps_2_x alpha test: 7 of 7 pixels the GPU's
+  ps_3_0 stencil: 7 of 7 pixels the GPU's
+  ps_3_0 alpha test 8-bit: 7 of 7 pixels the GPU's
+  ps_2_x point sprites: 7 of 7 pixels the GPU's
+  ps_3_0 centroid: 7 of 7 pixels the GPU's
+5.8 as it was: a replacement, depth and stencil writes off
+  ps_3_0 depth: 0 of 7 pixels the GPU's: (140,60) id 0.25, the GPU wrote 0; (141,60) id 0.25, the GPU wrote 0; (140,61) id 0.25, the GPU wrote 0; (141,61) id 0.25, the GPU wrote 0; (123,37) id 0.25, the GPU wrote 0; (170,100) id 0.25, the GPU wrote -0.25; (188,130) id 0.25, the GPU wrote -0.25
+  ps_2_0 texkill: 2 of 7 pixels the GPU's: (340,60) id 0.25, the GPU wrote 0; (341,60) id 0.25, the GPU wrote 0; (340,61) id 0.25, the GPU wrote 0; (341,61) id 0.25, the GPU wrote 0; (323,37) id 0.25, the GPU wrote 0
+  ps_2_x alpha test: 2 of 7 pixels the GPU's: (40,210) id 0, the GPU wrote -0.25; (41,210) id 0, the GPU wrote -0.25; (40,211) id 0, the GPU wrote -0.25; (41,211) id 0, the GPU wrote -0.25; (23,187) id 0, the GPU wrote -0.25
+  ps_3_0 stencil: 0 of 7 pixels the GPU's: (140,210) id 0.25, the GPU wrote 0; (141,210) id 0.25, the GPU wrote 0; (140,211) id 0.25, the GPU wrote 0; (141,211) id 0.25, the GPU wrote 0; (123,187) id 0.25, the GPU wrote 0; (170,250) id 0.25, the GPU wrote -0.25; (188,280) id 0.25, the GPU wrote -0.25
+  ps_3_0 alpha test 8-bit: 0 of 7 pixels the GPU's: (40,60) id 0.25, the GPU wrote 0; (41,60) id 0.25, the GPU wrote 0; (40,61) id 0.25, the GPU wrote 0; (41,61) id 0.25, the GPU wrote 0; (23,37) id 0.25, the GPU wrote 0; (70,100) id 0.25, the GPU wrote 0; (88,130) id 0.25, the GPU wrote 0
+  ps_2_x point sprites: 7 of 7 pixels the GPU's
+  ps_3_0 centroid: 7 of 7 pixels the GPU's
+a replacement with the copy of the depth stencil
+  ps_3_0 depth: 2 of 7 pixels the GPU's: (140,60) id -0.25, the GPU wrote 0; (141,60) id -0.25, the GPU wrote 0; (140,61) id -0.25, the GPU wrote 0; (141,61) id -0.25, the GPU wrote 0; (123,37) id -0.25, the GPU wrote 0
+  ps_2_0 texkill: 2 of 7 pixels the GPU's: (340,60) id 0.25, the GPU wrote 0; (341,60) id 0.25, the GPU wrote 0; (340,61) id 0.25, the GPU wrote 0; (341,61) id 0.25, the GPU wrote 0; (323,37) id 0.25, the GPU wrote 0
+  ps_2_x alpha test: 2 of 7 pixels the GPU's: (40,210) id 0, the GPU wrote -0.25; (41,210) id 0, the GPU wrote -0.25; (40,211) id 0, the GPU wrote -0.25; (41,211) id 0, the GPU wrote -0.25; (23,187) id 0, the GPU wrote -0.25
+  ps_3_0 stencil: 2 of 7 pixels the GPU's: (140,210) id -0.25, the GPU wrote 0; (141,210) id -0.25, the GPU wrote 0; (140,211) id -0.25, the GPU wrote 0; (141,211) id -0.25, the GPU wrote 0; (123,187) id -0.25, the GPU wrote 0
+  ps_3_0 alpha test 8-bit: 0 of 7 pixels the GPU's: (40,60) id 0.25, the GPU wrote 0; (41,60) id 0.25, the GPU wrote 0; (40,61) id 0.25, the GPU wrote 0; (41,61) id 0.25, the GPU wrote 0; (23,37) id 0.25, the GPU wrote 0; (70,100) id 0.25, the GPU wrote 0; (88,130) id 0.25, the GPU wrote 0
+  ps_2_x point sprites: 7 of 7 pixels the GPU's
+  ps_3_0 centroid: 7 of 7 pixels the GPU's
+the original without the copy: depth and stencil writes off
+  ps_3_0 depth: 0 of 7 pixels the GPU's: (140,60) id 0.25, the GPU wrote 0; (141,60) id 0.25, the GPU wrote 0; (140,61) id 0.25, the GPU wrote 0; (141,61) id 0.25, the GPU wrote 0; (123,37) id 0.25, the GPU wrote 0; (170,100) id 0.25, the GPU wrote -0.25; (188,130) id 0.25, the GPU wrote -0.25
+  ps_2_0 texkill: 7 of 7 pixels the GPU's
+  ps_2_x alpha test: 7 of 7 pixels the GPU's
+  ps_3_0 stencil: 0 of 7 pixels the GPU's: (140,210) id 0.25, the GPU wrote 0; (141,210) id 0.25, the GPU wrote 0; (140,211) id 0.25, the GPU wrote 0; (141,211) id 0.25, the GPU wrote 0; (123,187) id 0.25, the GPU wrote 0; (170,250) id 0.25, the GPU wrote -0.25; (188,280) id 0.25, the GPU wrote -0.25
+  ps_3_0 alpha test 8-bit: 7 of 7 pixels the GPU's
+  ps_2_x point sprites: 7 of 7 pixels the GPU's
+  ps_3_0 centroid: 7 of 7 pixels the GPU's
+the original with oC0 to A32B32G32R32F
+  ps_3_0 depth: 7 of 7 pixels the GPU's
+  ps_2_0 texkill: 7 of 7 pixels the GPU's
+  ps_2_x alpha test: 7 of 7 pixels the GPU's
+  ps_3_0 stencil: 7 of 7 pixels the GPU's
+  ps_3_0 alpha test 8-bit: 0 of 7 pixels the GPU's: (40,60) id -0.25, the GPU wrote 0; (41,60) id -0.25, the GPU wrote 0; (40,61) id -0.25, the GPU wrote 0; (41,61) id -0.25, the GPU wrote 0; (23,37) id -0.25, the GPU wrote 0; (70,100) id -0.25, the GPU wrote 0; (88,130) id -0.25, the GPU wrote 0
+  ps_2_x point sprites: 7 of 7 pixels the GPU's
+  ps_3_0 centroid: 7 of 7 pixels the GPU's

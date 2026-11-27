@@ -46,9 +46,11 @@ RD_TEST(D3D9_Shader_Debug_Zoo, D3D9GraphicsTest)
       "targets (ps_2_0, ps_2_x with derivatives and two targets, ps_3_0 with vPos, vFace, a loop "
       "and oDepth), transcendentals, and lookups: texld, texldp, texldb, texldd and texldl, of "
       "mipmapped 2D, cube and volume textures, anisotropic, with a border colour, sRGB, SetLOD, a "
-      "D24S8 shadow map drawn in the frame, and samplers with nothing bound. A ps_1_1 draw can't "
-      "be debugged yet. Natively, what the GPU wrote at a few pixels of each is written to "
-      "D3D9_Shader_Debug_Zoo_pixels.txt.";
+      "D24S8 shadow map drawn in the frame, and samplers with nothing bound. Then draws of "
+      "overlapping layers where depth writes, texkill, the alpha test (on float and A8R8G8B8 "
+      "targets) or stencil decide which fragment is written, point sprites, centroid inputs, and "
+      "depth layers on a 4x multisampled target. A ps_1_1 draw can't be debugged yet. Natively, "
+      "what the GPU wrote at a few pixels of each is written to D3D9_Shader_Debug_Zoo_pixels.txt.";
 
   // vs_1_1 tokens, hand assembled since D3DAssemble doesn't take vs_1_1
   enum
@@ -662,6 +664,75 @@ f2a main(v2f IN)
 }
 )EOSHADER";
 
+  // Which fragment (5.10): draws of three overlapping layers, where depth, texkill, the alpha test
+  // or stencil decide which the GPU writes. uv1.z is the layer's id (in both targets, since an
+  // 8-bit one clamps it), col.w the alpha test's alpha, and texkill kills where uv1.w is negative.
+  const char *PSLayers = R"EOSHADER(
+f2a main(v2f IN)
+{
+  f2a OUT;
+  clip(IN.uv1.w);
+  OUT.c0 = float4(IN.uv1.z, IN.uv, IN.col.w);
+  OUT.c1 = float4(IN.uv1.xyz, IN.col.x);
+  return OUT;
+}
+)EOSHADER";
+
+  // the same with derivatives, for ps_2_x
+  const char *PS2XLayers = R"EOSHADER(
+f2a main(v2f IN)
+{
+  f2a OUT;
+  clip(IN.uv1.w);
+  OUT.c0 = float4(IN.uv1.z, IN.uv, IN.col.w);
+  OUT.c1 = float4(ddx(IN.uv1.x), ddy(IN.uv1.y), IN.uv1.z, IN.col.x);
+  return OUT;
+}
+)EOSHADER";
+
+  // point sprites: the coordinates across each sprite, and their derivatives
+  const char *PS2XSprites = R"EOSHADER(
+f2a main(v2f IN)
+{
+  f2a OUT;
+  OUT.c0 = float4(IN.uv, ddx(IN.uv.x), ddy(IN.uv.y));
+  OUT.c1 = float4(IN.uv1.xy, IN.col.xy);
+  return OUT;
+}
+)EOSHADER";
+
+  // the layer's id and inputs to one target, for the multisampled draw
+  const char *PSLayersOne = R"EOSHADER(
+float4 main(v2f IN) : COLOR0
+{
+  return float4(IN.uv1.z, IN.uv, IN.col.x);
+}
+)EOSHADER";
+
+  // inputs declared centroid
+  const char *PS30Centroid = R"EOSHADER(
+struct v2f
+{
+  float4 col : COLOR0;
+  float2 uv : TEXCOORD0_centroid;
+  float4 uv1 : TEXCOORD1_centroid;
+};
+
+struct f2a
+{
+  float4 c0 : COLOR0;
+  float4 c1 : COLOR1;
+};
+
+f2a main(v2f IN)
+{
+  f2a OUT;
+  OUT.c0 = float4(IN.uv, IN.uv1.zw);
+  OUT.c1 = IN.uv1 * IN.col;
+  return OUT;
+}
+)EOSHADER";
+
   struct PixelVertex
   {
     float pos[4];
@@ -673,7 +744,8 @@ f2a main(v2f IN)
   {
     const char *marker;
     // the cell of the targets it fills: 4 across, 2 down, in the first pair of targets (0-7), the
-    // second (8-15) or the third (16-23)
+    // second (8-15), the third (16-23), the fourth (24-31, whose first target is A8R8G8B8) or the
+    // fifth (32-39, multisampled)
     int cell;
     // vs_3_0 and ps_3_0, or vs_2_0
     bool sm3;
@@ -698,9 +770,22 @@ f2a main(v2f IN)
     DrawShadow,
     DrawUnbound,
     DrawTranscendentalsAsm,
+    DrawDepth,
+    DrawTexkill,
+    DrawAlphaTest,
+    DrawStencil,
+    DrawSprites,
+    DrawCentroid,
+    DrawAlphaTest8,
+    DrawMSAA,
     NumPixelDraws,
   };
-  static constexpr int NumTargetPairs = 3;
+  // the fourth pair's first target is A8R8G8B8, for the alpha test at its precision. The fifth's
+  // first is 4x multisampled, with its own depth stencil, and drawn alone: D3D9 has no multiple
+  // render targets with multisampling.
+  static constexpr int NumTargetPairs = 5;
+  static constexpr int ColourTarget = 6;
+  static constexpr int MSAASet = 4;
   const PixelDraw PixelDraws[NumPixelDraws] = {
       {"ps_2_0", 0, false},
       {"ps_2_x", 1, false},
@@ -719,7 +804,42 @@ f2a main(v2f IN)
       {"ps_3_0 shadow", 14, true},
       {"ps_3_0 unbound", 15, true},
       {"ps_3_0 transcendentals asm", 16, true},
+      // cell 18 is left out: the ps_3_0 draw writes depth there (in cell 2)
+      {"ps_3_0 depth", 17, true},
+      {"ps_2_0 texkill", 19, false},
+      {"ps_2_x alpha test", 20, false},
+      {"ps_3_0 stencil", 21, true},
+      {"ps_2_x point sprites", 22, false},
+      {"ps_3_0 centroid", 23, true},
+      {"ps_3_0 alpha test 8-bit", 24, true},
+      {"ps_3_0 multisampled", 32, true},
   };
+
+  // one layer of a which-fragment draw: its depth, id (in uv1.z), whether texkill kills its left
+  // part, and its alpha on the left and right
+  struct Layer
+  {
+    float z;
+    int id;
+    bool killLeft;
+    float alphaLeft, alphaRight;
+  };
+
+  // A layer: PixelQuad's two triangles, all at depth z, with uv.z = id / 8 (so uv1.z is
+  // id / 4 - 0.5). texkill's uv1.w goes from -0.5 on the left to 0.5 on the right, so it kills
+  // where u < 0.5, about the left two thirds of the cell with the perspective; otherwise it's 1.5.
+  void LayerQuad(int cell, const Layer &layer, PixelVertex out[6])
+  {
+    PixelQuad(cell, true, out);
+    for(int v = 0; v < 6; v++)
+    {
+      const bool left = out[v].uv[0] == 0.0f;
+      out[v].pos[2] = layer.z * out[v].pos[3];
+      out[v].uv[2] = float(layer.id) / 8.0f;
+      out[v].uv[3] = layer.killLeft ? (left ? 0.0f : 0.5f) : 1.0f;
+      out[v].col[3] = left ? layer.alphaLeft : layer.alphaRight;
+    }
+  }
 
   // two triangles filling most of a cell. The corners' w are 1, 2, 1.5 and 3. With clockwise the
   // second triangle is clockwise like the first, otherwise it's counter-clockwise.
@@ -790,9 +910,24 @@ f2a main(v2f IN)
     D3DLOCKED_RECT locked[NumTargetPairs * 2] = {};
     for(int t = 0; t < NumTargetPairs * 2; t++)
     {
-      CHECK_HR(dev->CreateOffscreenPlainSurface(screenWidth, screenHeight, D3DFMT_A32B32G32R32F,
-                                                D3DPOOL_SYSTEMMEM, &readback[t], NULL));
-      CHECK_HR(dev->GetRenderTargetData(targets[t], readback[t]));
+      const D3DFORMAT fmt = t == ColourTarget ? D3DFMT_A8R8G8B8 : D3DFMT_A32B32G32R32F;
+      CHECK_HR(dev->CreateOffscreenPlainSurface(screenWidth, screenHeight, fmt, D3DPOOL_SYSTEMMEM,
+                                                &readback[t], NULL));
+      D3DSURFACE_DESC desc = {};
+      targets[t]->GetDesc(&desc);
+      if(desc.MultiSampleType != D3DMULTISAMPLE_NONE)
+      {
+        // resolved: the probes are inside the primitives, where every sample has the same value
+        IDirect3DSurface9Ptr resolved;
+        CHECK_HR(dev->CreateRenderTarget(screenWidth, screenHeight, fmt, D3DMULTISAMPLE_NONE, 0,
+                                         FALSE, &resolved, NULL));
+        CHECK_HR(dev->StretchRect(targets[t], NULL, resolved, NULL, D3DTEXF_NONE));
+        CHECK_HR(dev->GetRenderTargetData(resolved, readback[t]));
+      }
+      else
+      {
+        CHECK_HR(dev->GetRenderTargetData(targets[t], readback[t]));
+      }
       CHECK_HR(readback[t]->LockRect(&locked[t], NULL, D3DLOCK_READONLY));
     }
 
@@ -809,8 +944,22 @@ f2a main(v2f IN)
         fprintf(f, "%s\t%d\t%d", draw.marker, x, y);
         for(int t = set * 2; t < set * 2 + 2; t++)
         {
-          const DWORD *texel =
-              (const DWORD *)((const byte *)locked[t].pBits + y * locked[t].Pitch) + x * 4;
+          const byte *row = (const byte *)locked[t].pBits + y * locked[t].Pitch;
+          if(t == ColourTarget)
+          {
+            // B, G, R, A bytes, as the floats they are: c / 255
+            const byte *texel = row + x * 4;
+            const int order[4] = {2, 1, 0, 3};
+            for(int c = 0; c < 4; c++)
+            {
+              const float v = float(texel[order[c]]) / 255.0f;
+              DWORD b;
+              memcpy(&b, &v, sizeof(b));
+              fprintf(f, "\t%08x", b);
+            }
+            continue;
+          }
+          const DWORD *texel = (const DWORD *)row + x * 4;
           for(int c = 0; c < 4; c++)
             fprintf(f, "\t%08x", texel[c]);
         }
@@ -1005,9 +1154,26 @@ f2a main(v2f IN)
 
     // the pixel draws' targets, in pairs, and what they need
     IDirect3DSurface9Ptr pixelTargets[NumTargetPairs * 2];
+    const bool msaa =
+        SUCCEEDED(d3d->CheckDeviceMultiSampleType(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
+                                                  D3DFMT_A32B32G32R32F, TRUE,
+                                                  D3DMULTISAMPLE_4_SAMPLES, NULL)) &&
+        SUCCEEDED(d3d->CheckDeviceMultiSampleType(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, D3DFMT_D24S8,
+                                                  TRUE, D3DMULTISAMPLE_4_SAMPLES, NULL));
+    if(!msaa)
+      TEST_WARN(
+          "A32B32G32R32F or D24S8 can't be 4x multisampled, leaving out the multisampled draw");
     for(int t = 0; t < NumTargetPairs * 2; t++)
-      CHECK_HR(dev->CreateRenderTarget(screenWidth, screenHeight, D3DFMT_A32B32G32R32F,
-                                       D3DMULTISAMPLE_NONE, 0, FALSE, &pixelTargets[t], NULL));
+    {
+      const bool ms = msaa && t == MSAASet * 2;
+      CHECK_HR(dev->CreateRenderTarget(
+          screenWidth, screenHeight, t == ColourTarget ? D3DFMT_A8R8G8B8 : D3DFMT_A32B32G32R32F,
+          ms ? D3DMULTISAMPLE_4_SAMPLES : D3DMULTISAMPLE_NONE, 0, FALSE, &pixelTargets[t], NULL));
+    }
+    IDirect3DSurface9Ptr msaaDepth;
+    if(msaa)
+      CHECK_HR(dev->CreateDepthStencilSurface(screenWidth, screenHeight, D3DFMT_D24S8,
+                                              D3DMULTISAMPLE_4_SAMPLES, 0, FALSE, &msaaDepth, NULL));
     IDirect3DSurface9Ptr backBuffer, backDepth;
     dev->GetRenderTarget(0, &backBuffer);
     dev->GetDepthStencilSurface(&backDepth);
@@ -1124,6 +1290,15 @@ f2a main(v2f IN)
         lookupPS(PS30Lookup2D, "ps_3_0"),
         lookupPS(PS30Shadow, "ps_3_0"),
         lookupPS(PS30Unbound, "ps_3_0"),
+        NULL,
+        lookupPS(PSLayers, "ps_3_0"),
+        lookupPS(PSLayers, "ps_2_0"),
+        lookupPS(PS2XLayers, "ps_2_a"),
+        lookupPS(PSLayers, "ps_3_0"),
+        lookupPS(PS2XSprites, "ps_2_a"),
+        CreatePS(Compile(PS30Centroid, "main", "ps_3_0")),
+        lookupPS(PSLayers, "ps_3_0"),
+        lookupPS(PSLayersOne, "ps_3_0"),
     };
     auto assemblePS = [&](const std::string &src, int d) {
       if(!assemble)
@@ -1146,6 +1321,7 @@ f2a main(v2f IN)
     }
     drawn[DrawShadow] &= shadowTex != NULL;
     drawn[DrawSRGB] &= srgbRead;
+    drawn[DrawMSAA] &= msaa;
 
     // each pixel draw's sampler 0 (and 1), and the uv mapping in the vertex shader's c0 and c1
     auto setupLookups = [&](int d) {
@@ -1226,9 +1402,53 @@ f2a main(v2f IN)
 
     float m[16];
 
+    // the which-fragment draws' layers, in the order they're drawn
+    auto layersOf = [](int d, Layer layers[3]) {
+      const Layer plain = {0.5f, 0, false, 1.0f, 1.0f};
+      for(int l = 0; l < 3; l++)
+      {
+        layers[l] = plain;
+        layers[l].id = l + 1;
+      }
+      switch(d)
+      {
+        case DrawMSAA:
+          // the nearest first, so it's written: without depth writes the last would be read
+          layers[0].z = 0.3f;
+          layers[2].z = 0.6f;
+          return 3;
+        case DrawDepth:
+          // the nearest first, killed on the left: there the middle one is written
+          layers[0].z = 0.3f;
+          layers[0].killLeft = true;
+          layers[2].z = 0.6f;
+          return 3;
+        case DrawTexkill:
+          // the last killed on the left
+          layers[2].killLeft = true;
+          return 3;
+        case DrawAlphaTest:
+          // the second's alpha passes 128/255 on the right only
+          layers[1].alphaLeft = 0.25f;
+          layers[1].alphaRight = 0.75f;
+          return 2;
+        case DrawStencil:
+          // only the first fragment that isn't killed passes EQUAL 0, then INCR
+          layers[0].killLeft = true;
+          return 3;
+        case DrawAlphaTest8:
+          // 0.5003 is 127.58 of 255: on an 8-bit target the alpha test passes it (from 127.56,
+          // 5.4), at fp32 it wouldn't (from 128). 0.5001 (127.53) fails both.
+          layers[1].alphaLeft = layers[1].alphaRight = 0.5003f;
+          layers[2].alphaLeft = layers[2].alphaRight = 0.5001f;
+          return 3;
+        default: return 0;
+      }
+    };
+
     while(Running())
     {
-      dev->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
+      dev->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL,
                  D3DCOLOR_COLORVALUE(0.2f, 0.2f, 0.2f, 1.0f), 1.0f, 0);
 
       dev->BeginScene();
@@ -1418,13 +1638,17 @@ f2a main(v2f IN)
       }
 
       // the pixel draws, to the float targets: cells 0-7 to the first pair, 8-15 to the second,
-      // 16-23 to the third
+      // 16-23 to the third, 24-31 to the fourth
       for(int set = NumTargetPairs - 1; set >= 0; set--)
       {
+        const bool ms = msaa && set == MSAASet;
         dev->SetRenderTarget(0, pixelTargets[set * 2]);
-        dev->SetRenderTarget(1, pixelTargets[set * 2 + 1]);
-        dev->Clear(0, NULL, D3DCLEAR_TARGET, 0, 1.0f, 0);
+        dev->SetRenderTarget(1, ms ? NULL : pixelTargets[set * 2 + 1]);
+        dev->SetDepthStencilSurface(ms ? msaaDepth : backDepth);
+        dev->Clear(0, NULL, D3DCLEAR_TARGET | (ms ? D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL : 0), 0,
+                   1.0f, 0);
       }
+      dev->SetDepthStencilSurface(backDepth);
       dev->SetVertexDeclaration(pixelDecl);
       int boundSet = 0;
       for(int d = 0; d < NumPixelDraws; d++)
@@ -1435,8 +1659,10 @@ f2a main(v2f IN)
         if(draw.cell / 8 != boundSet)
         {
           boundSet = draw.cell / 8;
+          const bool ms = msaa && boundSet == MSAASet;
           dev->SetRenderTarget(0, pixelTargets[boundSet * 2]);
-          dev->SetRenderTarget(1, pixelTargets[boundSet * 2 + 1]);
+          dev->SetRenderTarget(1, ms ? NULL : pixelTargets[boundSet * 2 + 1]);
+          dev->SetDepthStencilSurface(ms ? msaaDepth : backDepth);
         }
         pushMarker(draw.marker);
         dev->SetVertexShader(draw.sm3 ? pixelVS30 : pixelVS20);
@@ -1446,10 +1672,81 @@ f2a main(v2f IN)
         // the ps_3_0 draw writes oDepth
         dev->SetRenderState(D3DRS_ZENABLE, d == DrawPS30 ? D3DZB_TRUE : D3DZB_FALSE);
         dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_ALWAYS);
+        dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+        dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+        dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+        dev->SetRenderState(D3DRS_POINTSPRITEENABLE, FALSE);
         setupLookups(d);
-        PixelVertex quad[6];
-        PixelQuad(draw.cell, d != DrawPS30, quad);
-        dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, quad, sizeof(PixelVertex));
+        switch(d)
+        {
+          case DrawDepth:
+          case DrawMSAA:
+            dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+            dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESS);
+            break;
+          case DrawAlphaTest:
+          case DrawAlphaTest8:
+            dev->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
+            dev->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
+            dev->SetRenderState(D3DRS_ALPHAREF, 128);
+            break;
+          case DrawStencil:
+            // stencil only: the depth test always passes and isn't written
+            dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+            dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+            dev->SetRenderState(D3DRS_STENCILENABLE, TRUE);
+            dev->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_EQUAL);
+            dev->SetRenderState(D3DRS_STENCILREF, 0);
+            dev->SetRenderState(D3DRS_STENCILMASK, 0xFF);
+            dev->SetRenderState(D3DRS_STENCILWRITEMASK, 0xFF);
+            dev->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_INCR);
+            break;
+          default: break;
+        }
+
+        Layer layers[3];
+        const int numLayers = layersOf(d, layers);
+        if(numLayers > 0)
+        {
+          PixelVertex quads[3 * 6];
+          for(int l = 0; l < numLayers; l++)
+            LayerQuad(draw.cell, layers[l], quads + l * 6);
+          dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2 * numLayers, quads, sizeof(PixelVertex));
+        }
+        else if(d == DrawSprites)
+        {
+          // two 48 pixel sprites over the probes: (14-62, 32-80) and (54-102, 92-140) of the cell
+          const float size = 48.0f;
+          DWORD sizeBits;
+          memcpy(&sizeBits, &size, sizeof(sizeBits));
+          dev->SetRenderState(D3DRS_POINTSPRITEENABLE, TRUE);
+          dev->SetRenderState(D3DRS_POINTSCALEENABLE, FALSE);
+          dev->SetRenderState(D3DRS_POINTSIZE, sizeBits);
+          const int cell = draw.cell % 8;
+          const float cx = float((cell % 4) * screenWidth / 4),
+                      cy = float((cell / 4) * screenHeight / 2);
+          const float centres[2][2] = {{38.0f, 56.0f}, {78.0f, 116.0f}};
+          PixelVertex points[2] = {};
+          for(int p = 0; p < 2; p++)
+          {
+            PixelVertex &pt = points[p];
+            pt.pos[0] = (cx + centres[p][0]) / float(screenWidth) * 2.0f - 1.0f;
+            pt.pos[1] = 1.0f - (cy + centres[p][1]) / float(screenHeight) * 2.0f;
+            pt.pos[2] = 0.5f;
+            pt.pos[3] = 1.0f;
+            const float col[4] = {0.3f + 0.4f * p, 0.6f, 0.1f, 1.0f};
+            const float uv[4] = {0.25f, 0.75f - 0.5f * p, 0.5f, 1.0f};
+            memcpy(pt.col, col, sizeof(col));
+            memcpy(pt.uv, uv, sizeof(uv));
+          }
+          dev->DrawPrimitiveUP(D3DPT_POINTLIST, 2, points, sizeof(PixelVertex));
+        }
+        else
+        {
+          PixelVertex quad[6];
+          PixelQuad(draw.cell, d != DrawPS30, quad);
+          dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, quad, sizeof(PixelVertex));
+        }
         popMarker();
       }
       dev->SetTexture(0, NULL);
@@ -1458,6 +1755,11 @@ f2a main(v2f IN)
       SetFilter(0, D3DTEXF_POINT, D3DTEXF_POINT, D3DTEXF_NONE, D3DTADDRESS_WRAP);
       dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
       dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+      dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+      dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+      dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+      dev->SetRenderState(D3DRS_POINTSPRITEENABLE, FALSE);
+      dev->SetDepthStencilSurface(backDepth);
       dev->SetRenderTarget(1, NULL);
       dev->SetRenderTarget(0, backBuffer);
 

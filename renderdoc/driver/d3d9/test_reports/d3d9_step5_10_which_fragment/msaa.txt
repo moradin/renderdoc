@@ -1,0 +1,129 @@
+adapter NVIDIA GeForce RTX 4070 Ti, driver 32.0.16.2124
+multisample types (quality levels), windowed:
+  A32B32G32R32F: NONMASKABLE(4) 2(1) 4(1) 8(1)
+  A16B16G16R16F: NONMASKABLE(4) 2(1) 4(1) 8(1)
+  A8R8G8B8: NONMASKABLE(4) 2(1) 4(1) 8(1)
+  D24S8: NONMASKABLE(4) 2(1) 4(1) 8(1)
+
+2x MSAA, A32B32G32R32F and D24S8 quality 0: create 00000000
+  0.333333343    (3eaaaaab): all samples resolve to 0.333333343 (3eaaaaab), sample 0 alone to 0.166666672 (3e2aaaab), times 2 0.333333343 (3eaaaaab)
+  0.100000001    (3dcccccd): all samples resolve to 0.100000001 (3dcccccd), sample 0 alone to 0.0500000007 (3d4ccccd), times 2 0.100000001 (3dcccccd)
+  3.14159274     (40490fdb): all samples resolve to 3.14159274 (40490fdb), sample 0 alone to 1.57079637 (3fc90fdb), times 2 3.14159274 (40490fdb)
+  -2.49999992e-20 (9eec1e4a): all samples resolve to -2.49999992e-20 (9eec1e4a), sample 0 alone to -1.24999996e-20 (9e6c1e4a), times 2 -2.49999992e-20 (9eec1e4a)
+  9.99999991e-38 (02081cea): all samples resolve to 9.99999991e-38 (02081cea), sample 0 alone to 4.99999996e-38 (01881cea), times 2 9.99999991e-38 (02081cea)
+  9.9999461e-41  (000116c2): all samples resolve to 0 (00000000), sample 0 alone to 0 (00000000), times 2 0 (00000000)
+  -0             (80000000): all samples resolve to 0 (00000000), sample 0 alone to 0 (00000000), times 2 0 (00000000)
+  65504.5        (477fe080): all samples resolve to 65504.5 (477fe080), sample 0 alone to 32752.25 (46ffe080), times 2 65504.5 (477fe080)
+  1.00000002e+30 (7149f2ca): all samples resolve to 1.00000002e+30 (7149f2ca), sample 0 alone to 5.00000008e+29 (70c9f2ca), times 2 1.00000002e+30 (7149f2ca)
+  0.699999988    (3f333333): all samples resolve to 0.699999988 (3f333333), sample 0 alone to 0.349999994 (3eb33333), times 2 0.699999988 (3f333333)
+  all samples exact: 8 of 10; sample 0 alone times 2 exact: 8 of 10
+  sample 0 is left out from an edge at +0.2656, +0.2656 of the centre
+  sample 1 is left out from an edge at -0.2344, -0.2344 of the centre
+  plain t0 in a pixel whose bottom right a triangle covers: sample 0 covered, t0 (5.249351, 5.249350)
+  centroid t0 in a pixel whose bottom right a triangle covers: sample 0 covered, t0 (5.249351, 5.249350)
+  shading rate on A32B32G32R32F, every sample written: (0.000000, 0.000000, 0.500000, 0.500000)
+    sample 0 alone, times 2: (0.250000, 0.250000, 1.000000, 1.000000), so the offset (+0.2500, +0.2500)
+    sample 1 alone, times 2: (0.250000, 0.250000, 0.000000, 0.000000), so the offset (-0.2500, -0.2500)
+  MULTISAMPLEANTIALIAS FALSE on A32B32G32R32F: (0, 0, 0.5, 0.5)
+  shading rate on A8R8G8B8, every sample written: (0.000000, 0.000000, 0.498039, 0.498039)
+    sample 0 alone, times 2: (0.352941, 0.352941, 1.474510, 0.996078), so the offset (+0.4873, +0.2480)
+    sample 1 alone, times 2: (0.352941, 0.352941, 0.000000, 0.000000), so the offset (-0.2500, -0.2500)
+  MULTISAMPLEANTIALIAS FALSE on A8R8G8B8: (0, 0, 0.498039216, 0.498039216)
+  MULTISAMPLEANTIALIAS FALSE: 8 of 10 values resolve exactly
+  MULTISAMPLEANTIALIAS FALSE, left edge swept across the pixel, resolved: from -0.5000 1.0000 from +0.0156 0.0000
+  MULTISAMPLEANTIALIAS FALSE, top edge swept across the pixel, resolved: from -0.5000 1.0000 from +0.0156 0.0000
+  MULTISAMPLEANTIALIAS FALSE, the triangle over the bottom right: t0 (5.000000, 5.000000), w 1.000000
+  MULTISAMPLEANTIALIAS FALSE, a triangle over samples but not the centre: w 0.000000
+  the same with MULTISAMPLEANTIALIAS TRUE: w 0.000000 (the covered fraction), t0 (0.000000, 0.000000) times that
+  with MULTISAMPLEANTIALIAS FALSE the draw passes 256 samples
+  depth stencil StretchRect 00000000; a 16x16 draw at z 0.5 against the copy (the left half at 0.3) passes 256 samples, 128 with MULTISAMPLEMASK 1
+
+4x MSAA, A32B32G32R32F and D24S8 quality 0: create 00000000
+  0.333333343    (3eaaaaab): all samples resolve to 0.333333343 (3eaaaaab), sample 0 alone to 0.0833333358 (3daaaaab), times 4 0.333333343 (3eaaaaab)
+  0.100000001    (3dcccccd): all samples resolve to 0.100000001 (3dcccccd), sample 0 alone to 0.0250000004 (3ccccccd), times 4 0.100000001 (3dcccccd)
+  3.14159274     (40490fdb): all samples resolve to 3.14159274 (40490fdb), sample 0 alone to 0.785398185 (3f490fdb), times 4 3.14159274 (40490fdb)
+  -2.49999992e-20 (9eec1e4a): all samples resolve to -2.49999992e-20 (9eec1e4a), sample 0 alone to -6.2499998e-21 (9dec1e4a), times 4 -2.49999992e-20 (9eec1e4a)
+  9.99999991e-38 (02081cea): all samples resolve to 9.99999991e-38 (02081cea), sample 0 alone to 2.49999998e-38 (01081cea), times 4 9.99999991e-38 (02081cea)
+  9.9999461e-41  (000116c2): all samples resolve to 0 (00000000), sample 0 alone to 0 (00000000), times 4 0 (00000000)
+  -0             (80000000): all samples resolve to 0 (00000000), sample 0 alone to 0 (00000000), times 4 0 (00000000)
+  65504.5        (477fe080): all samples resolve to 65504.5 (477fe080), sample 0 alone to 16376.125 (467fe080), times 4 65504.5 (477fe080)
+  1.00000002e+30 (7149f2ca): all samples resolve to 1.00000002e+30 (7149f2ca), sample 0 alone to 2.50000004e+29 (7049f2ca), times 4 1.00000002e+30 (7149f2ca)
+  0.699999988    (3f333333): all samples resolve to 0.699999988 (3f333333), sample 0 alone to 0.174999997 (3e333333), times 4 0.699999988 (3f333333)
+  all samples exact: 8 of 10; sample 0 alone times 4 exact: 8 of 10
+  sample 0 is left out from an edge at -0.1094, -0.3594 of the centre
+  sample 1 is left out from an edge at +0.3906, -0.1094 of the centre
+  sample 2 is left out from an edge at -0.3594, +0.1406 of the centre
+  sample 3 is left out from an edge at +0.1406, +0.3906 of the centre
+  plain t0 in a pixel whose bottom right a triangle covers: sample 1 covered, t0 (5.374026, 4.875324) sample 3 covered, t0 (5.124675, 5.374025)
+  centroid t0 in a pixel whose bottom right a triangle covers: sample 1 covered, t0 (5.374026, 4.875324) sample 3 covered, t0 (5.124675, 5.374025)
+  shading rate on A32B32G32R32F, every sample written: (0.000000, 0.000000, 0.500000, 0.500000)
+    sample 0 alone, times 4: (0.062500, 0.562500, 0.250000, -0.250000), so the offset (-0.1250, -0.3750)
+    sample 1 alone, times 4: (0.562500, 0.062500, 1.250000, 0.250000), so the offset (+0.3750, -0.1250)
+    sample 2 alone, times 4: (0.562500, 0.062500, -0.250000, 0.750000), so the offset (-0.3750, +0.1250)
+    sample 3 alone, times 4: (0.062500, 0.562500, 0.750000, 1.250000), so the offset (+0.1250, +0.3750)
+  MULTISAMPLEANTIALIAS FALSE on A32B32G32R32F: (0, 0, 0.5, 0.5)
+  shading rate on A8R8G8B8, every sample written: (0.000000, 0.000000, 0.498039, 0.498039)
+    sample 0 alone, times 4: (0.062745, 1.160784, 0.470588, 0.000000), so the offset (-0.0147, -0.2500)
+    sample 1 alone, times 4: (1.160784, 0.062745, 2.149020, 0.250980), so the offset (+0.8245, -0.1245)
+    sample 2 alone, times 4: (1.160784, 0.062745, 0.000000, 0.752941), so the offset (-0.2500, +0.1265)
+    sample 3 alone, times 4: (0.062745, 1.160784, 1.584314, 1.003922), so the offset (+0.5422, +0.2520)
+  MULTISAMPLEANTIALIAS FALSE on A8R8G8B8: (0, 0, 0.498039216, 0.498039216)
+  MULTISAMPLEANTIALIAS FALSE: 8 of 10 values resolve exactly
+  MULTISAMPLEANTIALIAS FALSE, left edge swept across the pixel, resolved: from -0.5000 1.0000 from +0.0156 0.0000
+  MULTISAMPLEANTIALIAS FALSE, top edge swept across the pixel, resolved: from -0.5000 1.0000 from +0.0156 0.0000
+  MULTISAMPLEANTIALIAS FALSE, the triangle over the bottom right: t0 (5.000000, 5.000000), w 1.000000
+  MULTISAMPLEANTIALIAS FALSE, a triangle over samples but not the centre: w 0.000000
+  the same with MULTISAMPLEANTIALIAS TRUE: w 0.500000 (the covered fraction), t0 (5.000000, 5.002631) times that
+  with MULTISAMPLEANTIALIAS FALSE the draw passes 512 samples
+  depth stencil StretchRect 00000000; a 16x16 draw at z 0.5 against the copy (the left half at 0.3) passes 512 samples, 128 with MULTISAMPLEMASK 1
+
+8x MSAA, A32B32G32R32F and D24S8 quality 0: create 00000000
+  0.333333343    (3eaaaaab): all samples resolve to 0.333333343 (3eaaaaab), sample 0 alone to 0.0416666679 (3d2aaaab), times 8 0.333333343 (3eaaaaab)
+  0.100000001    (3dcccccd): all samples resolve to 0.100000001 (3dcccccd), sample 0 alone to 0.0125000002 (3c4ccccd), times 8 0.100000001 (3dcccccd)
+  3.14159274     (40490fdb): all samples resolve to 3.14159274 (40490fdb), sample 0 alone to 0.392699093 (3ec90fdb), times 8 3.14159274 (40490fdb)
+  -2.49999992e-20 (9eec1e4a): all samples resolve to -2.49999992e-20 (9eec1e4a), sample 0 alone to -3.1249999e-21 (9d6c1e4a), times 8 -2.49999992e-20 (9eec1e4a)
+  9.99999991e-38 (02081cea): all samples resolve to 9.99999991e-38 (02081cea), sample 0 alone to 1.24999999e-38 (00881cea), times 8 9.99999991e-38 (02081cea)
+  9.9999461e-41  (000116c2): all samples resolve to 0 (00000000), sample 0 alone to 0 (00000000), times 8 0 (00000000)
+  -0             (80000000): all samples resolve to 0 (00000000), sample 0 alone to 0 (00000000), times 8 0 (00000000)
+  65504.5        (477fe080): all samples resolve to 65504.5 (477fe080), sample 0 alone to 8188.0625 (45ffe080), times 8 65504.5 (477fe080)
+  1.00000002e+30 (7149f2ca): all samples resolve to 1.00000002e+30 (7149f2ca), sample 0 alone to 1.25000002e+29 (6fc9f2ca), times 8 1.00000002e+30 (7149f2ca)
+  0.699999988    (3f333333): all samples resolve to 0.699999988 (3f333333), sample 0 alone to 0.0874999985 (3db33333), times 8 0.699999988 (3f333333)
+  all samples exact: 8 of 10; sample 0 alone times 8 exact: 8 of 10
+  sample 0 is left out from an edge at +0.0781, -0.1719 of the centre
+  sample 1 is left out from an edge at -0.0469, +0.2031 of the centre
+  sample 2 is left out from an edge at +0.3281, +0.0781 of the centre
+  sample 3 is left out from an edge at -0.1719, -0.2969 of the centre
+  sample 4 is left out from an edge at -0.2969, +0.3281 of the centre
+  sample 5 is left out from an edge at -0.4219, -0.0469 of the centre
+  sample 6 is left out from an edge at +0.2031, +0.4531 of the centre
+  sample 7 is left out from an edge at +0.4531, -0.4219 of the centre
+  plain t0 in a pixel whose bottom right a triangle covers: sample 0 covered, t0 (5.062337, 4.812986) sample 1 covered, t0 (4.937662, 5.187013) sample 2 covered, t0 (5.311688, 5.062337) sample 4 covered, t0 (5.000000, 5.000000) sample 6 covered, t0 (5.000000, 5.000000)
+  centroid t0 in a pixel whose bottom right a triangle covers: sample 0 covered, t0 (5.062337, 4.812986) sample 1 covered, t0 (4.937662, 5.187013) sample 2 covered, t0 (5.311688, 5.062337) sample 4 covered, t0 (4.688312, 5.311688) sample 6 covered, t0 (5.187013, 5.436363)
+  shading rate on A32B32G32R32F, every sample written: (0.000000, 0.000000, 0.500000, 0.500000)
+    sample 0 alone, times 8: (0.015625, 0.140625, 0.625000, 0.125000), so the offset (+0.0625, -0.1875)
+    sample 1 alone, times 8: (0.015625, 0.140625, 0.375000, 0.875000), so the offset (-0.0625, +0.1875)
+    sample 2 alone, times 8: (0.390625, 0.015625, 1.125000, 0.625000), so the offset (+0.3125, +0.0625)
+    sample 3 alone, times 8: (0.140625, 0.390625, 0.125000, -0.125000), so the offset (-0.1875, -0.3125)
+    sample 4 alone, times 8: (0.000000, 0.000000, 0.500000, 0.500000), so the offset (+0.0000, +0.0000)
+    sample 5 alone, times 8: (0.000000, 0.000000, 0.500000, 0.500000), so the offset (+0.0000, +0.0000)
+    sample 6 alone, times 8: (0.000000, 0.000000, 0.500000, 0.500000), so the offset (+0.0000, +0.0000)
+    sample 7 alone, times 8: (0.000000, 0.000000, 0.500000, 0.500000), so the offset (+0.0000, +0.0000)
+  MULTISAMPLEANTIALIAS FALSE on A32B32G32R32F: (0, 0, 0.5, 0.5)
+  shading rate on A8R8G8B8, every sample written: (0.000000, 0.000000, 0.498039, 0.498039)
+    sample 0 alone, times 8: (0.031373, 0.219608, 1.850980, 0.125490), so the offset (+0.6755, -0.1873)
+    sample 1 alone, times 8: (0.031373, 0.219608, 1.003922, 0.878431), so the offset (+0.2520, +0.1892)
+    sample 2 alone, times 8: (1.066667, 0.031373, 3.105882, 0.627451), so the offset (+1.3029, +0.0637)
+    sample 3 alone, times 8: (0.219608, 1.066667, 0.188235, 0.000000), so the offset (-0.1559, -0.2500)
+    sample 4 alone, times 8: (0.000000, 0.000000, 1.411765, 0.501961), so the offset (+0.4559, +0.0010)
+    sample 5 alone, times 8: (0.000000, 0.000000, 1.411765, 0.501961), so the offset (+0.4559, +0.0010)
+    sample 6 alone, times 8: (0.000000, 0.000000, 1.411765, 0.501961), so the offset (+0.4559, +0.0010)
+    sample 7 alone, times 8: (0.000000, 0.000000, 1.411765, 0.501961), so the offset (+0.4559, +0.0010)
+  MULTISAMPLEANTIALIAS FALSE on A8R8G8B8: (0, 0, 0.498039216, 0.498039216)
+  MULTISAMPLEANTIALIAS FALSE: 8 of 10 values resolve exactly
+  MULTISAMPLEANTIALIAS FALSE, left edge swept across the pixel, resolved: from -0.5000 1.0000 from +0.0156 0.0000
+  MULTISAMPLEANTIALIAS FALSE, top edge swept across the pixel, resolved: from -0.5000 1.0000 from +0.0156 0.0000
+  MULTISAMPLEANTIALIAS FALSE, the triangle over the bottom right: t0 (5.000000, 5.000000), w 1.000000
+  MULTISAMPLEANTIALIAS FALSE, a triangle over samples but not the centre: w 0.000000
+  the same with MULTISAMPLEANTIALIAS TRUE: w 0.000000 (the covered fraction), t0 (0.000000, 0.000000) times that
+  with MULTISAMPLEANTIALIAS FALSE the draw passes 1024 samples
+  depth stencil StretchRect 00000000; a 16x16 draw at z 0.5 against the copy (the left half at 0.3) passes 1024 samples, 128 with MULTISAMPLEMASK 1

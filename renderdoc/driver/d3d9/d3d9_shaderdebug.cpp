@@ -30,12 +30,24 @@
 //
 // A pixel (step 5.7) is debugged as D3D11 debugs one: its inputs come from the GPU, and the shader
 // runs on the CPU for the pixel's 2x2 quad (PSDebugger, d3d9_ps_debug.cpp). D3D9 has no UAVs, so
-// the event is drawn again with generated pixel shaders (BuildInputReadback) that write the
-// inputs, and their dsx and dsy, to A32B32G32R32F render targets of our own, four values a pass:
+// the event is drawn again with pixel shaders (BuildInputReadback) that write the inputs, and
+// their dsx and dsy, to A32B32G32R32F render targets of our own:
+// - Which fragment (5.10): for ps_2_0 and later the shader is the original with the reading
+//   appended, its values to the targets the original doesn't write (up to three a pass), so its
+//   own texkill and oDepth, and the draw's alpha test (oC0 in the draw's format, since the test
+//   compares at its precision), pick the fragment the GPU wrote. Otherwise (ps_1_x, a shader that
+//   writes every target, a multisampled draw, or a pixel whose every fragment was rejected) it's a
+//   replacement writing four values a pass, which reads the last fragment drawn that passes the
+//   depth and stencil tests.
 // - The draw is replayed up to the event without its draw first, so depth and stencil are what the
-//   draw tests against, and every pass leaves them alone (ZWRITEENABLE FALSE, the stencil ops KEEP
-//   and a write mask of 0), as the overlays do. The replay controller replays the event again
-//   afterwards, and the device's state is put back before returning.
+//   draw tests against. When the draw writes them, each pass draws to a copy of its depth stencil
+//   with its own depth and stencil state, so one draw's fragments test against each other as they
+//   did; otherwise, or when it can't be copied, the passes leave them alone (ZWRITEENABLE FALSE,
+//   the stencil ops KEEP and a write mask of 0), as the overlays do. The replay controller replays
+//   the event again afterwards, and the device's state is put back before returning.
+// - Multisampled targets: our targets are multisampled as the draw's, the passes draw with
+//   MULTISAMPLEANTIALIAS FALSE, which shades the fragment covering the pixel centre there and
+//   writes it to every sample, and a resolve reads it back exactly.
 // - The scissor rect is the pixel alone, inside the draw's own. The GPU still runs the quad's
 //   other pixels as helpers, so the derivatives are right. An occlusion query around the first
 //   pass says whether the draw wrote the pixel at all.
@@ -44,9 +56,9 @@
 //   vPos, so the passes are also drawn at each of the quad's other pixels (outside the draw's
 //   scissor rect too, as helpers are), and QuadInputs takes a neighbour's values when its
 //   derivatives are the pixel's bit for bit, which means the same primitive covered it.
-// - Blending, alpha test, fog and sRGB writes are off; everything else (cull, fill and shade mode,
-//   depth bias, clip planes, point sprites) is the draw's, since it decides which pixels are drawn
-//   and what they get.
+// - Blending, fog and sRGB writes are off, and a replacement's alpha test; everything else (cull,
+//   fill and shade mode, depth bias, clip planes, point sprites) is the draw's, since it decides
+//   which pixels are drawn and what they get.
 // - Each value is copied out of its target with StretchRect into a 1x1 target, then read back.
 // Lookups and transcendentals (step 5.8) are made on the GPU too, while the replay is still at the
 // event: the quad runs through the interpreter once there, with GPULookups behind a PSLookupCache,
@@ -55,9 +67,6 @@
 // a pixel, with the shader's own instruction (texld, texldp or texldb) and the event's sampler, so
 // the GPU works out the derivatives, level and anisotropy it did for the event: no filtering,
 // comparison or border rule is emulated, and the results are the GPU's bit for bit.
-// With overlapping triangles in one draw this debugs the last fragment that passes the depth and
-// stencil test as they were before the draw, and with alpha test or texkill one that may have been
-// rejected: 5.10 picks the fragment the GPU wrote. Multisampled targets aren't supported yet.
 //
 // Fixed function vertex and pixel processing aren't shaders. They say so in their reflection's
 // debugStatus, which the UI shows, as do pixel shaders the interpreter can't debug yet.
@@ -259,6 +268,8 @@ private:
 
     const bool ownScene = SUCCEEDED(m_Dev->BeginScene());
     m_Dev->SetRenderTarget(0, m_Target);
+    for(DWORD t = 1; t < 4; t++)
+      m_Dev->SetRenderTarget(t, NULL);
     m_Dev->SetDepthStencilSurface(NULL);
     m_Dev->SetViewport(&viewport);
     m_Dev->SetVertexShader(m_VS);
@@ -302,7 +313,13 @@ private:
 // the objects ReadPixelInputs makes, released however it returns
 struct ReadbackObjects
 {
+  // A32B32G32R32F, a render target index each
   IDirect3DSurface9 *targets[4] = {};
+  // an original's oC0, in the draw's format, so the alpha test compares at its precision
+  IDirect3DSurface9 *colour0 = NULL;
+  // the draw's depth stencil, and a copy of it as it was before the draw
+  IDirect3DSurface9 *appDepth = NULL;
+  IDirect3DSurface9 *depthCopy = NULL;
   IDirect3DSurface9 *pick = NULL;
   IDirect3DSurface9 *pickRead = NULL;
   IDirect3DQuery9 *query = NULL;
@@ -312,6 +329,9 @@ struct ReadbackObjects
   {
     for(IDirect3DSurface9 *&t : targets)
       SAFE_RELEASE(t);
+    SAFE_RELEASE(colour0);
+    SAFE_RELEASE(appDepth);
+    SAFE_RELEASE(depthCopy);
     SAFE_RELEASE(pick);
     SAFE_RELEASE(pickRead);
     SAFE_RELEASE(query);
@@ -320,33 +340,46 @@ struct ReadbackObjects
   }
 };
 
+// copies a depth stencil surface, which StretchRect only does outside a scene. The replay is in
+// one, and stays in it.
+HRESULT CopyDepth(IDirect3DDevice9 *dev, IDirect3DSurface9 *from, IDirect3DSurface9 *to)
+{
+  dev->SetDepthStencilSurface(NULL);
+  const bool inScene = SUCCEEDED(dev->EndScene());
+  HRESULT hr = dev->StretchRect(from, NULL, to, NULL, D3DTEXF_NONE);
+  if(inScene)
+    dev->BeginScene();
+  return hr;
+}
+
 // Draws the event again with the readback passes and reads what they wrote at (x, y), into
-// results[pass][target], and for ps_2_x the same at the quad's other pixels (corners, see
+// results[pass][item], and for ps_2_x the same at the quad's other pixels (corners, see
 // QuadInputs), each empty when the draw doesn't write it. The replay is at the event without its
-// draw, and the caller puts the device's state back.
+// draw, and the caller puts the device's state back. With ReadbackShader::Original the passes are
+// the original shader with the draw's alpha test; a replacement has alpha test off.
+//
+// When the draw writes depth or stencil, each pass draws to a copy of its depth stencil as it was
+// before the draw, with the draw's own depth and stencil state, so the fragments of one draw test
+// against each other as they did. When it can't be copied, the passes leave the draw's depth
+// stencil alone, and depthNote says so: they then read the last fragment drawn that passes the
+// tests as they were before the draw.
 bool ReadPixelInputs(WrappedD3DDevice9 *device, uint32_t eventId, uint32_t x, uint32_t y,
                      const D3D9BC::Program &prog, const D3D9DeviceState &state,
-                     rdcarray<D3D9Emu::ReadbackPass> &passes,
+                     D3D9Emu::ReadbackShader shader, rdcarray<D3D9Emu::ReadbackPass> &passes,
                      rdcarray<rdcarray<D3D9Emu::Vec4>> &results,
-                     rdcarray<rdcarray<D3D9Emu::Vec4>> corners[3], rdcstr &error)
+                     rdcarray<rdcarray<D3D9Emu::Vec4>> corners[3], rdcstr &depthNote, rdcstr &error)
 {
   IDirect3DDevice9 *dev = device->GetReal();
+  const bool original = shader == D3D9Emu::ReadbackShader::Original;
 
   D3DCAPS9 caps = {};
   dev->GetDeviceCaps(&caps);
   // ps_2_x's dsx and dsy, for the quad's other pixels. Without them those get the pixel's inputs.
   const bool gradients = (caps.PS20Caps.Caps & D3DPS20CAPS_GRADIENTINSTRUCTIONS) != 0;
-  const uint32_t maxTargets = RDCCLAMP(uint32_t(caps.NumSimultaneousRTs), 1U, 4U);
   if(!gradients && prog.version.major < 3)
     RDCWARN(
         "The GPU has no ps_2_x gradient instructions, so the debugged pixel's neighbours get "
         "its own inputs and the derivatives are 0");
-
-  if(!D3D9Emu::BuildInputReadback(prog, gradients, maxTargets, passes, error))
-  {
-    error = "its inputs can't be read back: " + error;
-    return false;
-  }
 
   D3DSURFACE_DESC rtDesc = {};
   {
@@ -360,11 +393,21 @@ bool ReadPixelInputs(WrappedD3DDevice9 *device, uint32_t eventId, uint32_t x, ui
     rt->Release();
   }
 
-  if(rtDesc.MultiSampleType != D3DMULTISAMPLE_NONE)
+  // Multisampled (5.10): the GPU shades a pixel once, at its centre, and writes the samples the
+  // fragment covers. Our target is multisampled the same way, for the depth stencil, and the passes
+  // draw with MULTISAMPLEANTIALIAS FALSE: the fragment covering the centre is shaded there, as the
+  // GPU shaded it, and written to every sample, so the resolve that reads it back gives it exactly
+  // (but for -0 and denormals, which resolves make +0). Measured natively; drawing sample 0 alone
+  // with MULTISAMPLEMASK instead makes the GPU shade at the sample. D3D9 has no multiple render
+  // targets with multisampling, so there's nowhere to write the inputs alongside an original's
+  // oC0: a replacement reads them, one value a pass.
+  const bool msaa = rtDesc.MultiSampleType != D3DMULTISAMPLE_NONE;
+  if(msaa && original)
   {
-    error = "multisampled render targets can't be debugged yet";
+    error = "a multisampled draw can't have more than one render target";
     return false;
   }
+  const uint32_t maxTargets = msaa ? 1U : RDCCLAMP(uint32_t(caps.NumSimultaneousRTs), 1U, 4U);
   if(x >= rtDesc.Width || y >= rtDesc.Height)
   {
     error = StringFormat::Fmt("it's outside the %ux%u render target", rtDesc.Width, rtDesc.Height);
@@ -384,22 +427,47 @@ bool ReadPixelInputs(WrappedD3DDevice9 *device, uint32_t eventId, uint32_t x, ui
     }
   }
 
+  // an original's oC0 keeps the draw's format, alongside float targets
+  if(original && rtDesc.Format != D3DFMT_A32B32G32R32F &&
+     !(caps.PrimitiveMiscCaps & D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS))
+  {
+    error = "the GPU can't draw to render targets of different bit depths at once";
+    return false;
+  }
+
+  if(!D3D9Emu::BuildInputReadback(prog, shader, gradients, maxTargets, passes, error))
+  {
+    error = "its inputs can't be read back: " + error;
+    return false;
+  }
+
   ReadbackObjects objs;
 
-  uint32_t numTargets = 0;
+  // the targets each pass draws to: oC0 always, an original's own, and the values'
+  uint32_t used = 1;
   for(const D3D9Emu::ReadbackPass &pass : passes)
-    numTargets = RDCMAX(numTargets, (uint32_t)pass.items.size());
-  // a shader without inputs still has a pass, writing 0 to oC0, for the occlusion query
-  numTargets = RDCMAX(numTargets, 1U);
-
-  for(uint32_t t = 0; t < numTargets; t++)
   {
-    HRESULT hr = dev->CreateRenderTarget(rtDesc.Width, rtDesc.Height, D3DFMT_A32B32G32R32F,
-                                         D3DMULTISAMPLE_NONE, 0, FALSE, &objs.targets[t], NULL);
+    used |= pass.ownTargets;
+    for(uint32_t t : pass.targets)
+      used |= 1U << t;
+  }
+  const bool ownColour0 = original && (passes[0].ownTargets & 1);
+
+  for(uint32_t t = 0; t < 4; t++)
+  {
+    if(!(used & (1U << t)))
+      continue;
+    const bool asDraw = t == 0 && ownColour0;
+    IDirect3DSurface9 **surf = asDraw ? &objs.colour0 : &objs.targets[t];
+    const D3DFORMAT fmt = asDraw ? rtDesc.Format : D3DFMT_A32B32G32R32F;
+    HRESULT hr = dev->CreateRenderTarget(rtDesc.Width, rtDesc.Height, fmt, rtDesc.MultiSampleType,
+                                         rtDesc.MultiSampleQuality, FALSE, surf, NULL);
     if(FAILED(hr))
     {
-      error = StringFormat::Fmt("couldn't create a %ux%u A32B32G32R32F render target: %s",
-                                rtDesc.Width, rtDesc.Height, ToStr(hr).c_str());
+      error = StringFormat::Fmt("couldn't create a %ux%u %s render target%s: %s", rtDesc.Width,
+                                rtDesc.Height, ToStr(fmt).c_str(),
+                                msaa ? (" with " + ToStr(rtDesc.MultiSampleType)).c_str() : "",
+                                ToStr(hr).c_str());
       return false;
     }
   }
@@ -435,16 +503,50 @@ bool ReadPixelInputs(WrappedD3DDevice9 *device, uint32_t eventId, uint32_t x, ui
     return false;
   }
 
-  // every pass leaves the depth stencil alone and writes its values as they are
-  dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-  dev->SetRenderState(D3DRS_STENCILWRITEMASK, 0);
-  dev->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
-  dev->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
-  dev->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_KEEP);
-  dev->SetRenderState(D3DRS_CCW_STENCILFAIL, D3DSTENCILOP_KEEP);
-  dev->SetRenderState(D3DRS_CCW_STENCILZFAIL, D3DSTENCILOP_KEEP);
-  dev->SetRenderState(D3DRS_CCW_STENCILPASS, D3DSTENCILOP_KEEP);
-  dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+  // a copy of the depth stencil when the draw writes it, so its fragments test against each other
+  dev->GetDepthStencilSurface(&objs.appDepth);
+  if(objs.appDepth)
+  {
+    DWORD zenable = 0, zwrite = 0, stencil = 0, stencilMask = 0;
+    dev->GetRenderState(D3DRS_ZENABLE, &zenable);
+    dev->GetRenderState(D3DRS_ZWRITEENABLE, &zwrite);
+    dev->GetRenderState(D3DRS_STENCILENABLE, &stencil);
+    dev->GetRenderState(D3DRS_STENCILWRITEMASK, &stencilMask);
+    if((zenable != D3DZB_FALSE && zwrite) || (stencil && stencilMask != 0))
+    {
+      D3DSURFACE_DESC dsDesc = {};
+      objs.appDepth->GetDesc(&dsDesc);
+      hr = dev->CreateDepthStencilSurface(dsDesc.Width, dsDesc.Height, dsDesc.Format,
+                                          dsDesc.MultiSampleType, dsDesc.MultiSampleQuality, FALSE,
+                                          &objs.depthCopy, NULL);
+      if(SUCCEEDED(hr))
+        hr = CopyDepth(dev, objs.appDepth, objs.depthCopy);
+      dev->SetDepthStencilSurface(objs.appDepth);
+      if(FAILED(hr))
+      {
+        SAFE_RELEASE(objs.depthCopy);
+        depthNote = StringFormat::Fmt(
+            "its %s depth stencil can't be copied (%s), so the fragments drawn before in the same "
+            "draw don't change what the depth and stencil tests compare with",
+            ToStr(dsDesc.Format).c_str(), ToStr(hr).c_str());
+      }
+    }
+  }
+
+  // the passes write their values as they are
+  if(!objs.depthCopy)
+  {
+    dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    dev->SetRenderState(D3DRS_STENCILWRITEMASK, 0);
+    dev->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
+    dev->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
+    dev->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_KEEP);
+    dev->SetRenderState(D3DRS_CCW_STENCILFAIL, D3DSTENCILOP_KEEP);
+    dev->SetRenderState(D3DRS_CCW_STENCILZFAIL, D3DSTENCILOP_KEEP);
+    dev->SetRenderState(D3DRS_CCW_STENCILPASS, D3DSTENCILOP_KEEP);
+  }
+  if(!original)
+    dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
   dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
   dev->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
   dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
@@ -453,6 +555,11 @@ bool ReadPixelInputs(WrappedD3DDevice9 *device, uint32_t eventId, uint32_t x, ui
   dev->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
   dev->SetRenderState(D3DRS_COLORWRITEENABLE2, 0xF);
   dev->SetRenderState(D3DRS_COLORWRITEENABLE3, 0xF);
+  if(msaa)
+  {
+    dev->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, FALSE);
+    dev->SetRenderState(D3DRS_MULTISAMPLEMASK, 0xFFFFFFFF);
+  }
 
   // the passes drawn with the scissor rect on (px, py) alone, false if the draw doesn't write it
   auto drawAt = [&](uint32_t px, uint32_t py, rdcarray<rdcarray<D3D9Emu::Vec4>> &out) {
@@ -462,11 +569,32 @@ bool ReadPixelInputs(WrappedD3DDevice9 *device, uint32_t eventId, uint32_t x, ui
 
     for(size_t p = 0; p < passes.size(); p++)
     {
-      const uint32_t count = (uint32_t)passes[p].items.size();
+      const D3D9Emu::ReadbackPass &pass = passes[p];
 
+      // each pass starts from the depth and stencil as they were before the draw
+      if(objs.depthCopy)
+      {
+        HRESULT copyHR = CopyDepth(dev, objs.appDepth, objs.depthCopy);
+        if(FAILED(copyHR))
+        {
+          error = "couldn't copy the depth stencil: " + ToStr(copyHR);
+          return false;
+        }
+        dev->SetDepthStencilSurface(objs.depthCopy);
+      }
+
+      uint32_t bound = 1 | pass.ownTargets;
+      for(uint32_t t : pass.targets)
+        bound |= 1U << t;
       // setting render target 0 resets the viewport and scissor rect
       for(uint32_t t = 0; t < D3D9_NUM_RENDER_TARGETS; t++)
-        dev->SetRenderTarget(t, t == 0 || t < count ? objs.targets[t] : NULL);
+      {
+        IDirect3DSurface9 *surf = NULL;
+        if(t < 4 && (bound & (1U << t)))
+          surf = t == 0 && ownColour0 ? objs.colour0 : objs.targets[t];
+        if(t < maxTargets)
+          dev->SetRenderTarget(t, surf);
+      }
       dev->SetViewport(&state.Viewport);
       dev->SetScissorRect(&rect);
       dev->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
@@ -492,9 +620,10 @@ bool ReadPixelInputs(WrappedD3DDevice9 *device, uint32_t eventId, uint32_t x, ui
         }
       }
 
-      for(uint32_t t = 0; t < count; t++)
+      for(size_t k = 0; k < pass.items.size(); k++)
       {
-        HRESULT readHR = dev->StretchRect(objs.targets[t], &rect, objs.pick, NULL, D3DTEXF_NONE);
+        HRESULT readHR =
+            dev->StretchRect(objs.targets[pass.targets[k]], &rect, objs.pick, NULL, D3DTEXF_NONE);
         if(SUCCEEDED(readHR))
           readHR = dev->GetRenderTargetData(objs.pick, objs.pickRead);
         D3DLOCKED_RECT locked = {};
@@ -514,33 +643,29 @@ bool ReadPixelInputs(WrappedD3DDevice9 *device, uint32_t eventId, uint32_t x, ui
     return true;
   };
 
-  if(!drawAt(x, y, results))
-    return false;
-  if(results.empty())
-  {
-    error =
-        "the draw doesn't write it: it's outside its primitives, or fails the depth or stencil "
-        "test";
-    return false;
-  }
+  bool ok = drawAt(x, y, results);
 
   // ps_2_x's neighbours, which ps_3_0 reads with vPos instead
-  if(prog.version.major < 3 && gradients)
+  if(ok && !results.empty() && prog.version.major < 3 && gradients)
   {
     const uint32_t qx = x & ~1U, qy = y & ~1U;
     const uint32_t cornerPos[3][2] = {{qx, qy}, {qx + 1, qy}, {qx, qy + 1}};
-    for(uint32_t c = 0; c < 3; c++)
+    for(uint32_t c = 0; ok && c < 3; c++)
     {
       corners[c].clear();
       const uint32_t cx = cornerPos[c][0], cy = cornerPos[c][1];
       if((cx == x && cy == y) || cx >= rtDesc.Width || cy >= rtDesc.Height)
         continue;
-      if(!drawAt(cx, cy, corners[c]))
-        return false;
+      ok = drawAt(cx, cy, corners[c]);
     }
   }
 
-  return true;
+  // RestoreReplayDrawState sets only the targets the replay has, so ours go here
+  for(uint32_t t = 1; t < maxTargets; t++)
+    dev->SetRenderTarget(t, NULL);
+  dev->SetDepthStencilSurface(objs.appDepth);
+
+  return ok;
 }
 };    // namespace
 
@@ -625,11 +750,62 @@ ShaderDebugTrace *D3D9Replay::DebugPixel(uint32_t eventId, uint32_t x, uint32_t 
 
   data->consts = data->emu.ApplyLiterals(ToConstants(state.PixelShaderConstants));
 
+  // Which fragment (5.10): the original shader with its inputs written alongside keeps its
+  // texkill, oDepth and the draw's alpha test, so it reads the fragment the GPU wrote. When it
+  // can't (ps_1_x, a shader writing every target), or every fragment was rejected, a replacement
+  // reads the last one drawn that passes the depth and stencil tests.
+  const D3D9BC::Program &prog = info.GetProgram();
   rdcarray<D3D9Emu::ReadbackPass> passes;
   rdcarray<rdcarray<D3D9Emu::Vec4>> results, corners[3];
-  rdcstr error;
-  const bool read = ReadPixelInputs(m_pDevice, eventId, x, y, info.GetProgram(), state, passes,
-                                    results, corners, error);
+  rdcstr error, depthNote, fragment;
+  bool read = false;
+  if(prog.version.major >= 2)
+  {
+    read = ReadPixelInputs(m_pDevice, eventId, x, y, prog, state, D3D9Emu::ReadbackShader::Original,
+                           passes, results, corners, depthNote, error);
+    if(read && !results.empty())
+    {
+      fragment = "the fragment the draw wrote";
+    }
+    else if(read)
+    {
+      fragment =
+          "the last fragment drawn that passes the depth and stencil tests, though its texkill or "
+          "the alpha test rejected every one";
+    }
+    else
+    {
+      RDCWARN(
+          "Pixel (%u, %u) at event %u: a replacement shader reads its inputs, since the original "
+          "can't (%s), so texkill and the alpha test don't choose the fragment",
+          x, y, eventId, error.c_str());
+      error.clear();
+    }
+  }
+  if(!read || results.empty())
+  {
+    if(fragment.empty())
+      fragment =
+          "the last fragment drawn that passes the depth and stencil tests, which its texkill or "
+          "the alpha test may have rejected";
+    passes.clear();
+    results.clear();
+    for(auto &c : corners)
+      c.clear();
+    depthNote.clear();
+    read =
+        ReadPixelInputs(m_pDevice, eventId, x, y, prog, state, D3D9Emu::ReadbackShader::Replacement,
+                        passes, results, corners, depthNote, error);
+    if(read && results.empty())
+    {
+      read = false;
+      error =
+          "the draw doesn't write it: it's outside its primitives, or fails the depth or stencil "
+          "test";
+    }
+  }
+  if(!depthNote.empty())
+    RDCWARN("Pixel (%u, %u) at event %u: %s", x, y, eventId, depthNote.c_str());
 
   D3D9Emu::PSInputs quad[D3D9Emu::QuadPixels];
   uint32_t gpuDraws = 0;
@@ -658,8 +834,10 @@ ShaderDebugTrace *D3D9Replay::DebugPixel(uint32_t eventId, uint32_t x, uint32_t 
     return NoPixelDebug(eventId, x, y,
                         "its lookups couldn't be made on the GPU: " + data->lookups.GetError());
 
-  RDCLOG("Debugging pixel (%u, %u) at event %u: %zu lookups and %zu transcendentals, %u GPU draws",
-         x, y, eventId, data->lookups.NumSamples(), data->lookups.NumTranscendentals(), gpuDraws);
+  RDCLOG(
+      "Debugging pixel (%u, %u) at event %u, %s: %zu lookups and %zu transcendentals, %u GPU draws",
+      x, y, eventId, fragment.c_str(), data->lookups.NumSamples(),
+      data->lookups.NumTranscendentals(), gpuDraws);
 
   rdcarray<uint32_t> lines;
   info.GetDisassembly(&lines);
