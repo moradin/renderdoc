@@ -406,6 +406,12 @@ void WarnOnce(bool &warned, const char *msg)
 }
 };
 
+// for pixel history, which draws with the constant colour shaders too (d3d9_pixelhistory.cpp)
+uint32_t D3D9BoundVertexShaderMajor(IDirect3DDevice9 *dev)
+{
+  return BoundVertexShaderMajor(dev);
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // setup
 

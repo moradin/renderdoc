@@ -427,7 +427,7 @@ values and why each failed, offers "Debug Pixel" with the fragment's primitive i
 | # | Chunk | Done when |
 |---|---|---|
 | 6.1 | ~~**Native probe** (a probe and a report, no driver change): an occlusion query scissored to one pixel counts its fragments (and samples, multisampled); a 1x1 StretchRect of each render target format copies it bit for bit, and a multisampled one resolves it; a draw of part of a primitive range covers the same pixels with the same values as the whole draw, for each topology, DrawPrimitiveUP and instancing; stencil INCR_SAT counts fragments in primitive order; whether Clear and ColorFill honour the scissor and viewport; whether `D3DRS_CLIPPING` FALSE stops depth clipping; user clip planes; sRGB writes~~ | Done, see "What the GPU does for pixel history" below (`d3d9_step6_1_native_probe.md`). All as hoped but two: a strip triangle drawn alone from an odd vertex has the opposite winding, and depth clipping can't be turned off, so `depthClipped` can't be found |
-| 6.2 | **Events and their values:** `PixelHistory` lists each event that touched the pixel, one modification each, with `preMod` and `postMod` colour (1x1 StretchRect) and depth and stencil (bisection at the pixel); Clear, ColorFill, the copies and GenerateMipSubLevels as `directShaderWrite`; `pixelHistory` on. A new `D3D9_Pixel_History` demo, modelled on `D3D11_Pixel_History` with the same markers where D3D9 can, which also records the target's pixel natively after each event | Every event's values are the GPU's (the native run's), in a new test; the UI's pixel history lists them |
+| 6.2 | ~~**Events and their values:** `PixelHistory` lists each event that touched the pixel, one modification each, with `preMod` and `postMod` colour (1x1 StretchRect) and depth and stencil (bisection at the pixel); Clear, ColorFill, the copies and GenerateMipSubLevels as `directShaderWrite`; `pixelHistory` on. A new `D3D9_Pixel_History` demo, modelled on `D3D11_Pixel_History` with the same markers where D3D9 can, which also records the target's pixel natively after each event~~ | Done, see "Pixel history" below (`d3d9_step6_2_events_values.md`). As on D3D11, Clear and ColorFill are modifications of their own rather than `directShaderWrite`, which only the copies and GenerateMipSubLevels are |
 | 6.3 | **Why fragments failed:** the occlusion query per test above, for every shader model and fixed function | The demo's culled, scissored, alpha tested, `texkill`ed, depth and stencil failing (two-sided too), clip plane and sample masked draws are flagged as natively |
 | 6.4 | **Fragments within a draw:** the count, each fragment's `shaderOut` (colour and depth) and `postMod`, the `preMod`s chained, per fragment depth failures (`CheckDepthTestQuantised`) and discards, with blending | The demo's overlapping, blended and partly discarded draws match the native run fragment by fragment |
 | 6.5 | **Primitive IDs and debugging:** the bisection above, for each topology, DrawPrimitiveUP and instancing; `DebugPixel` honouring `DebugPixelInputs.primitive` | Primitive IDs as the demo drew them; debugging a fragment from the pixel history gives that fragment's outputs, including a hidden one, a ps_1_x one and one rejected by the alpha test |
@@ -556,6 +556,7 @@ The tests (`util/test/tests/D3D9`, and `tests/D3D11/D3D11_D3DPERF_Markers.py`) s
 | `D3D9_Custom_Shaders` | Custom display shaders. The demo samples each of its textures natively with a ps_3_0 shader and writes what the GPU returned; the test builds the same shader as a custom shader and checks its output against that at 6 texels of every subresource: a default pool 2D texture with 3 mips, a managed one (decoded on the CPU until step 8 moved replay to a plain D3D9 device, sampled directly since), L8 (sampled as L, L, L, 1), a cube and a volume texture with 2 mips, a render target surface, and a D24S8 depth stencil (depth and stencil from its clears). `SV_Position` and `TEXCOORD0` match the native draw. The prefix's values (`RD_TexDim`, the mip, slice, sample and type, the range) are checked for each texture, a global the prefix doesn't fill is 0, `Texture2D` and `SamplerState` sample like `sampler2D`, the UI's template builds, and a shader with an error or for ps_2_0 doesn't |
 | `D3D9_Shader_Editing` | Shader editing. The demo draws nine quads with vs_1_1, vs_2_0 and vs_3_0, ps_1_1, ps_1_4, ps_2_0 and ps_3_0 shaders, bound when the frame starts, by a state block recorded before the frame, by `Set*Shader`, created during the frame, shared by two draws, and with fixed function pixel processing; natively it draws the scene with each of 10 edits in place of the original and writes what the GPU drew at 36 texels. The test builds each edit (HLSL, assembly or bytecode), replaces the original and checks the texels against the GPU's, checks the pipeline state (the original's ID, the edit's reflection) and, for vertex shaders, VS Out; then removes it and checks the original is back. An edit with a constant table keeps it, and the assembly edit, which has none, has the original's names. Every shader's disassembly assembles back to the same instructions, with no constant table, and replacing the original gives it the original's constants and samplers exactly (the 7 shaders with a table). Errors (HLSL, assembly, ps_1_x HLSL, a profile or bytecode of the other stage, bytecode with no end token, other stages) are reported, HLSL with no profile is shader model 3, a pixel shader doesn't replace a vertex shader, and freeing a replacement removes it |
 | `D3D9_Shader_Debug_Zoo` | Vertex shader debugging. Each vertex of each instance of the vs_1_1 (hand assembled: `m4x4`, `a0` relative addressing, `expp`, `logp`, `lit`, `dst`, `frc`, comparisons, `oFog`, `oPts`), vs_2_0 (HLSL: a `loop` by `i0` over a relatively addressed array, a branch on `b0`, `sincos`, `pow`), vs_2_x (assembly: predicates, `setp`, `if_lt`, `break_gt`, a call), vs_3_0 (HLSL: a dynamic loop with a `break`, `texldl`) and instanced vs_3_0 (base vertex, start index, 2 instances) draws is debugged with `check_vertex_debug`: its outputs, through the trace's source variables, equal VS Out exactly, and `process_trace` steps the changes forwards and backwards consistently. Each step is on an instruction of the disassembly (not a declaration), registers are named and sized by register (`oFog` 1 column, `aL` an integer, `p0` booleans), the API says it can debug shaders, the fixed function draw says why it can't be debugged, and `DebugVertex` on the fixed function draw gives no debugger. The pipeline state's model for the vs_2_x shader is `vs_2_x`. Since 5.3 also a vs_2_x draw with nested calls (`rep` around `call l1`, which calls `l3`, then `callnz l2, b0`) and a vs_3_0 HLSL draw whose constant table has a row_major matrix, an array of structs, a matrix with two of its columns allocated and a bool array, and which makes an infinity (`1 / zero`). Every state's call stack ends with the label its instruction is in, and the call stacks each draw goes through are the expected ones; only `texldl` is flagged as a sample, and only the steps writing a NaN or infinity to a component they write (the names draw's `rcp` and the `mul` after it) are flagged as such. The names draw's constants are named, shaped and placed as the table allocates them (`texMat` as 4x2, nothing for `lights[2]`), each named register is also under "Registers", values read through them are the application's, and the compiler's literals are under "Literals" and nowhere else Since 5.7 also pixel shader debugging, with draws to two A32B32G32R32F targets of a ps_2_0 shader (arithmetic on colours and coordinates with constants), a ps_2_x one (`ps_2_a`: `ddx`, `ddy` and two targets) and a ps_3_0 one (vPos, vFace with a clockwise and a counter-clockwise triangle, a loop, a branch, derivatives, two targets and oDepth), each two triangles whose vertices have different w. The demo writes what the GPU wrote at 7 pixels of each (a whole quad, and others either side of the diagonal) natively; at each, the replay's pixels have to be those bit for bit, and the debugged pixel's `oC#` too, within 1e-6 relative for ps_2_0 and 1e-5 with derivatives, where the driver fuses a `mul` and an `add` (each difference is logged). `oDepth` has to match the D24S8 target to 24 bits, and `process_trace` has to step consistently. The ps_3_0 trace's vPos is the pixel, its vFace +1 or -1 by the triangle, `oC0`, `oC1`, `oDepth` (1 column) and `r0` are listed, and every step is on an instruction. A ps_1_1 draw says why it can't be debugged yet, and gives no debugger, as don't a pixel outside a draw and the fixed function draw's pixel. Since 5.8 also lookups and transcendentals, in 12 more draws (two more pairs of targets): `texld`, `texldp` and `texldb` of a trilinear mipmapped texture (ps_2_0), `texldd` with derivatives from `ddx`/`ddy` on an anisotropic sampler (ps_2_a), and in ps_3_0 a rotated anisotropic mapping, a cube and a volume texture with mips (`texldb`, `texldl`), a border colour with `texldl`, sRGB, a managed texture with `SetLOD(2)`, an 8x8 D24S8 shadow map drawn in the frame (`texldp` and `texldb`, compared and filtered), samplers with nothing bound, the 4x4 point sampled float texture, and transcendentals in HLSL and assembled. The debugger's outputs have to be the GPU's bit for bit at all 7 pixels of each, but the HLSL transcendentals' (1e-6, logged). The steps that sampled, and only those, are flagged as such, by instruction, and a trace stepped with the replay at another event still gives the GPU's outputs. A draw the GPU can't make (no D24S8 textures, no sRGB reads) is left out natively and skipped, with a line in the log. Since 5.10 also which fragment, in 8 more draws (two more pairs of targets, one whose first target is A8R8G8B8, one 4x multisampled with its own depth stencil): overlapping layers in one draw where depth writes with `texkill` (ps_3_0), `texkill` (ps_2_0), the alpha test (ps_2_a, with derivatives), stencil writes with `texkill` (ps_3_0) and the alpha test on the A8R8G8B8 target (whose oC0 is compared as it stores it) decide which is written, point sprites (ps_2_a), centroid inputs (ps_3_0), and depth layers on the multisampled target. The debugger's outputs have to be the GPU's bit for bit at all 7 pixels of each |
+| `D3D9_Pixel_History` | Pixel history. The demo draws `D3D11_Pixel_History`'s batch (upstream's shared vertices and markers, where D3D9 has the feature) and then D3D9's own writes: a Clear with rects, one limited by the viewport and the scissor rect, ColorFill, StretchRect, UpdateSurface, a fixed function UP draw and an indexed draw with a base vertex, into an A8R8G8B8 target with an INTZ depth stencil, then into one with no depth stencil. Natively its third frame records 24 probe pixels before each batch and after every event (657 events): the colour, the depth (INTZ sampled) and stencil (stencil tests), and for each draw whether it rasterises anything at the probe (an occlusion query, as pixel history makes). The test checks every probe's history of the colour target of both batches and of the depth stencil, at the batch's last event: the events listed are exactly the draws the native queries found (for the depth stencil, those with the depth or stencil test on) and the clears and copies whose rectangles hold the probe; each one's colour before and after is the GPU's bit for bit, its depth within 1e-7 and its stencil exactly; copies and only copies are direct writes; a colour target's clears and copies and the batch without a depth stencil have no depth (-1), the depth stencil's modifications no colour. At "Simple Test" only the events up to it are listed. `APIProperties.pixelHistory` is on |
 | `D3D11_D3DPERF_Markers` | `d3d11_d3dperf_check.py`: the markers nest as drawn, with their colours |
 
 What they don't cover:
@@ -2561,7 +2562,7 @@ change:
 - **The python bindings.** `debug_api.py` (in the report's folder) runs a whole vertex and pixel
   session on the zoo's capture through the bindings alone, and passes in python 3.14 (the test
   module) and in qrenderdoc's embedded 3.6, with the same output:
-  - `APIProperties.shaderDebugging` is on and `pixelHistory` off.
+  - `APIProperties.shaderDebugging` is on and `pixelHistory` off (on since step 6.2).
   - `DebugVertex` and `DebugPixel` give a `ShaderDebugTrace` with a `ShaderDebugger`, its inputs,
     constant blocks, samplers, source variables and `instInfo`; `ContinueDebug` gives the states
     in order until it gives none, and none again after that; every call stack starts with "main".
@@ -2586,6 +2587,66 @@ change:
   what D3D9 debug information is read (the constant table, not `/Zi`'s), and has a section on what
   can be debugged, the names, how a pixel is read and which fragment is debugged. Not built here
   (no Sphinx on this machine).
+
+## Pixel history
+
+`d3d9_pixelhistory.cpp`, built in chunks (see "Step 6 plan"). Step 6.2 lists the events that wrote
+a pixel, with the pixel's values before and after each (`d3d9_step6_2_events_values.md`).
+
+How it works:
+- **The events.** The replay controller passes the target's write events up to the current one, from
+  `GetUsage`: draws with it bound as a render target, or as the depth stencil with the depth or
+  stencil test on; Clear and ColorFill; StretchRect, UpdateSurface and UpdateTexture; and
+  GenerateMipSubLevels. The frame is replayed up to each in turn with the counters' partial replays
+  (`ReplayLog(start, event, eReplay_WithoutDraw)`, then the event alone). An event that didn't
+  write the pixel is replayed with the next range.
+- **Which draws touched the pixel.** The draw is replayed inside an occlusion query with the
+  constant colour shader of the vertex shader's model (ps_3_0 for vs_3_0, ps_2_0 for the others and
+  fixed function, as the overlays use) and a one pixel scissor rect, with culling, the depth and
+  stencil tests, the alpha test, user clip planes and colour writes off, then the draw is replayed
+  as it was. So, as on D3D11, a draw is listed if it rasterises anything at the pixel, whether or
+  not its fragments then pass their tests. A draw is checked only where the target is bound: the
+  usage is per texture, so a draw to another level or face of it isn't.
+- **Clears and copies** are decided on the CPU. Each Clear, ColorFill, StretchRect and UpdateSurface
+  keeps where it writes when the capture loads (`D3D9WriteRegion`, from its chunk): a Clear writes
+  inside the device's viewport, its scissor rect when the scissor test is on, and its rects; the
+  others only in their destination rectangle, of their destination subresource. UpdateTexture and
+  GenerateMipSubLevels are listed for every pixel of what they write (every level of the
+  destination, the levels below the top one).
+- **Values.** A colour target's pixel is copied with a 1x1 StretchRect into a 1x1 render target of
+  its format (a 1x1 render target texture for formats that only exist as textures), read back with
+  GetRenderTargetData and decoded as pick pixel decodes. A multisampled target's copy is that pixel
+  resolved. A depth stencil's pixel is read with the depth and stencil tests, the readback's
+  bisection scissored to the pixel (`ReadDepthStencilPixel` in `d3d9_depth.cpp`); lockable depth
+  formats are locked. A colour target's draws have the bound depth stencil's depth and stencil too.
+- **What's reported,** as on D3D11 and as upstream's shared test expects: one modification per
+  event, with `preMod` and `postMod`. A clear is a modification of its own and its `shaderOut` is
+  what it wrote; copies and GenerateMipSubLevels are `directShaderWrite`. A colour target's clears
+  and copies have no depth (-1), a depth target's modifications no colour (0). A depth stencil that
+  can't be read gives -2, unknown.
+
+Decisions:
+- Both values are read for every event, rather than taking an event's `preMod` from the one
+  before's `postMod`: the depth stencil of a colour target's draws is also written by events that
+  aren't the target's, and a lockable render target can be written by locks, which the controller
+  doesn't pass.
+- D3D9 can't tell a draw without pixel output from one with: `unboundPS` is never set. Its demo
+  draws "Unbound Shader" with a vs_2_0 shader and fixed function pixel processing instead.
+
+Not done yet, in later chunks: why fragments failed (6.3), the fragments within a draw and their
+shader outputs (6.4, until then `shaderOut` is unavailable for draws), primitive IDs (6.5, until then
+`~0U`, unknown), formats that can't be read with a 1x1 copy (A8, L8 and L16) and per sample values
+(6.6).
+
+Limitations:
+- Depth clipping can't be turned off (6.1), so a draw whose fragments at the pixel are all outside
+  the depth range isn't listed: D3D11 lists it as depth clipped.
+- A draw made while a state block is being recorded can't be checked, since the query's state calls
+  would go into the state block, so it's listed whether or not it touched the pixel.
+
+Tested by `D3D9_Pixel_History` (see "Automated tests"): 24 probe pixels of two batches, the colour
+target of both and the depth stencil of one, every listed event's values against the GPU's native
+values.
 
 ## Pixel shader interpreter (steps 5.5 and 5.6)
 
@@ -2702,7 +2763,8 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
   table of the API, so they follow one pattern; edit them by hand now.
 - `d3d9_contents.*` - resource contents: reading them back, shadow copies, lock tracking. The
   comment at the top of `d3d9_contents.h` describes how each kind of object is read.
-- `d3d9_depth.cpp` - reading back depth stencils that can't be locked, and writing them at replay.
+- `d3d9_depth.cpp` - reading back depth stencils that can't be locked (whole, or a pixel for pixel
+  history), and writing them at replay.
 - `d3d9_replay.*` - the replay driver the replay controller talks to (`D3D9Replay`), and creating
   the replay device.
 - `d3d9_postvs.*` - post-transform vertices for the mesh viewer (3e), on the CPU with
@@ -2726,6 +2788,8 @@ Unlock wrote. With `-c zip.xml` the contents are stored as files in the zip next
 - `d3d9_overlay.cpp` - the texture viewer's overlays, `IsRenderOutput` and `GetPassEvents` (phase
   3e).
 - `d3d9_counters.cpp` - the GPU duration and samples passed counters.
+- `d3d9_pixelhistory.cpp` - pixel history: which events wrote a pixel, and its values before and
+  after each.
 - `d3d9_pipestate.cpp` also records resource usage while loading (`AddDrawUsage`, `GetUsage`).
 - Failed calls: `RecordFailedCall` (`d3d9_device.h`, `d3d9_device.cpp`), the `RECORD_FAILED_CALL`
   macros in `d3d9_device_wrap.cpp`, and `Serialise_FailedCall` in `d3d9_device_serialise.cpp`.

@@ -1,0 +1,54 @@
+APIProperties.pixelHistory True
+at event 1319 colour target ResourceId::34 depth target ResourceId::36
+
+(275, 258) colour: 3 modifications in 0.080s
+  EID 12 Begin RenderPass         before (1.0000, 1.0000, 1.0000, 1.0000)  after (0.2000, 0.2000, 0.2000, 1.0000)  primitive unknown 
+  EID 97 Background               before (0.2000, 0.2000, 0.2000, 1.0000) depth 1.00000000 stencil 0  after (1.0000, 0.0000, 1.0000, 1.0000) depth 0.94999999 stencil 0  primitive unknown shaderOut unavailable
+  EID 1150 Depth Test               before (1.0000, 0.0000, 1.0000, 1.0000) depth 0.94999999 stencil 0  after (1.0000, 1.0000, 1.0000, 1.0000) depth 0.05000002 stencil 0  primitive unknown shaderOut unavailable
+
+(275, 258) depth stencil: 3 modifications in 0.059s
+  EID 13 Begin RenderPass         before  depth 0.05000002 stencil 0  after  depth 1.00000000 stencil 0  primitive unknown 
+  EID 97 Background               before  depth 1.00000000 stencil 0  after  depth 0.94999999 stencil 0  primitive unknown shaderOut unavailable
+  EID 1150 Depth Test               before  depth 0.94999999 stencil 0  after  depth 0.05000002 stencil 0  primitive unknown shaderOut unavailable
+
+(110, 100) colour: 3 modifications in 0.057s
+  EID 12 Begin RenderPass         before (1.0000, 0.0000, 0.0000, 1.0000)  after (0.2000, 0.2000, 0.2000, 1.0000)  primitive unknown 
+  EID 59 Unbound Shader           before (0.2000, 0.2000, 0.2000, 1.0000) depth 1.00000000 stencil 0  after (1.0000, 0.0000, 0.0000, 1.0000) depth 0.89999998 stencil 51  primitive unknown shaderOut unavailable
+  EID 78 Stencil Write            before (1.0000, 0.0000, 0.0000, 1.0000) depth 0.89999998 stencil 51  after (1.0000, 0.0000, 0.0000, 1.0000) depth 0.89999998 stencil 85  primitive unknown shaderOut unavailable
+
+(110, 100) depth stencil: 3 modifications in 0.058s
+  EID 13 Begin RenderPass         before  depth 0.89999998 stencil 85  after  depth 1.00000000 stencil 0  primitive unknown 
+  EID 59 Unbound Shader           before  depth 1.00000000 stencil 0  after  depth 0.89999998 stencil 51  primitive unknown shaderOut unavailable
+  EID 78 Stencil Write            before  depth 0.89999998 stencil 51  after  depth 0.89999998 stencil 85  primitive unknown shaderOut unavailable
+
+(150, 250) colour: 2 modifications in 0.058s
+  EID 12 Begin RenderPass         before (0.2000, 0.2000, 0.2000, 1.0000)  after (0.2000, 0.2000, 0.2000, 1.0000)  primitive unknown 
+  EID 97 Background               before (0.2000, 0.2000, 0.2000, 1.0000) depth 1.00000000 stencil 0  after (0.2000, 0.2000, 0.2000, 1.0000) depth 1.00000000 stencil 0  primitive unknown shaderOut unavailable
+
+(150, 250) depth stencil: 2 modifications in 0.057s
+  EID 13 Begin RenderPass         before  depth 1.00000000 stencil 0  after  depth 1.00000000 stencil 0  primitive unknown 
+  EID 97 Background               before  depth 1.00000000 stencil 0  after  depth 1.00000000 stencil 0  primitive unknown shaderOut unavailable
+
+(60, 30) colour: 2 modifications in 0.055s
+  EID 12 Begin RenderPass         before (0.0980, 0.9020, 0.0980, 1.0000)  after (0.2000, 0.2000, 0.2000, 1.0000)  primitive unknown 
+  EID 1271 Clear Viewport Scissor   before (0.2000, 0.2000, 0.2000, 1.0000)  after (0.0980, 0.9020, 0.0980, 1.0000)  primitive unknown 
+
+(60, 30) depth stencil: 2 modifications in 0.057s
+  EID 13 Begin RenderPass         before  depth 0.25000003 stencil 66  after  depth 1.00000000 stencil 0  primitive unknown 
+  EID 1271 Clear Viewport Scissor   before  depth 1.00000000 stencil 0  after  depth 0.25000003 stencil 66  primitive unknown 
+
+(330, 30) colour: 3 modifications in 0.055s
+  EID 12 Begin RenderPass         before (0.9020, 0.8627, 0.0784, 1.0000)  after (0.2000, 0.2000, 0.2000, 1.0000)  primitive unknown 
+  EID 1267 Clear Rects              before (0.2000, 0.2000, 0.2000, 1.0000)  after (0.9020, 0.0980, 0.0980, 1.0000)  primitive unknown 
+  EID 1277 StretchRect              before (0.9020, 0.0980, 0.0980, 1.0000)  after (0.9020, 0.8627, 0.0784, 1.0000)  primitive unknown direct write
+
+(330, 30) depth stencil: 1 modifications in 0.056s
+  EID 13 Begin RenderPass         before  depth 1.00000000 stencil 0  after  depth 1.00000000 stencil 0  primitive unknown 
+
+(355, 60) colour: 2 modifications in 0.057s
+  EID 12 Begin RenderPass         before (0.1569, 0.4706, 0.9804, 1.0000)  after (0.2000, 0.2000, 0.2000, 1.0000)  primitive unknown 
+  EID 1297 Fixed Function           before (0.2000, 0.2000, 0.2000, 1.0000) depth 1.00000000 stencil 0  after (0.1569, 0.4706, 0.9804, 1.0000) depth 0.50000006 stencil 0  primitive unknown shaderOut unavailable
+
+(355, 60) depth stencil: 2 modifications in 0.058s
+  EID 13 Begin RenderPass         before  depth 0.50000006 stencil 0  after  depth 1.00000000 stencil 0  primitive unknown 
+  EID 1297 Fixed Function           before  depth 1.00000000 stencil 0  after  depth 0.50000006 stencil 0  primitive unknown shaderOut unavailable

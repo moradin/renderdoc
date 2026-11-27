@@ -491,6 +491,12 @@ rdcstr DecodeSubresource(D3DFORMAT format, const D3D9SubresourceData &data, uint
 }
 };
 
+// for pixel history's readback of single pixels (d3d9_pixelhistory.cpp)
+bool D3D9DecodeTexel(D3DFORMAT format, const byte *p, FloatVector &out)
+{
+  return DecodeTexel(format, p, out);
+}
+
 D3D9Replay::DecodedSubresource &D3D9Replay::GetDecoded(ResourceId id, const Subresource &sub)
 {
   DecodedKey key;

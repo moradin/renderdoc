@@ -123,6 +123,7 @@
     <ClCompile Include="d3d9_pipestate.cpp" />
     <ClCompile Include="d3d9_replay.cpp" />
     <ClCompile Include="d3d9_pixel.cpp" />
+    <ClCompile Include="d3d9_pixelhistory.cpp" />
     <ClCompile Include="d3d9_rendermesh.cpp" />
     <ClCompile Include="d3d9_rendertexture.cpp" />
     <ClCompile Include="d3d9_replay_device.cpp" />

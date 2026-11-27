@@ -237,6 +237,7 @@
     <ClCompile Include="d3d9\d3d9_failed_calls.cpp" />
     <ClCompile Include="d3d9\d3d9_frame_start_state.cpp" />
     <ClCompile Include="d3d9\d3d9_overlay_test.cpp" />
+    <ClCompile Include="d3d9\d3d9_pixel_history.cpp" />
     <ClCompile Include="d3d9\d3d9_resource_usage.cpp" />
     <ClCompile Include="d3d9\d3d9_mesh_output.cpp" />
     <ClCompile Include="d3d9\d3d9_dirty_regions.cpp" />

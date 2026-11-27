@@ -52,6 +52,17 @@ UINT VertexCountForPrimitives(D3DPRIMITIVETYPE type, UINT primCount)
     default: return 0;
   }
 }
+
+// a rectangle in a surface, or all of it for NULL
+RECT SurfaceRect(IDirect3DSurface9 *surf, const RECT *rect)
+{
+  if(rect)
+    return *rect;
+  D3DSURFACE_DESC desc = {};
+  if(surf)
+    surf->GetDesc(&desc);
+  return {0, 0, (LONG)desc.Width, (LONG)desc.Height};
+}
 };
 
 rdcstr WrappedD3DDevice9::GetChunkName(uint32_t idx)
@@ -158,6 +169,13 @@ bool WrappedD3DDevice9::Serialise_Clear(SerialiserType &ser, DWORD Count, CONST 
     if(IsLoading(m_State))
     {
       AddEvent();
+
+      D3D9WriteRegion &region = m_WriteRegions[m_CurEventID];
+      region.clear = true;
+      region.clearFlags = Flags;
+      if(pRects)
+        for(DWORD i = 0; i < Count; i++)
+          region.rects.push_back({pRects[i].x1, pRects[i].y1, pRects[i].x2, pRects[i].y2});
 
       // AddAction fills in the bound targets as the outputs. The copy destination is what the
       // texture viewer jumps to: render target 0 for a colour clear, otherwise the depth stencil.
@@ -978,6 +996,25 @@ bool WrappedD3DDevice9::Serialise_UpdateSurface(SerialiserType &ser,
   {
     UpdateSurface(pSourceSurface, pSourceRect, pDestinationSurface, pDestPoint);
 
+    if(IsLoading(m_State))
+    {
+      // the source rectangle (or all of the source) at the destination point
+      RECT src = {};
+      if(pSourceRect)
+      {
+        src = *pSourceRect;
+      }
+      else if(pSourceSurface)
+      {
+        D3DSURFACE_DESC desc = {};
+        pSourceSurface->GetDesc(&desc);
+        src = {0, 0, (LONG)desc.Width, (LONG)desc.Height};
+      }
+      const LONG dx = pDestPoint ? pDestPoint->x : 0, dy = pDestPoint ? pDestPoint->y : 0;
+      m_WriteRegions[m_CurEventID].rects.push_back(
+          {dx, dy, dx + src.right - src.left, dy + src.bottom - src.top});
+    }
+
     AddCopyAction(ActionFlags::Copy, pSourceSurface, pDestinationSurface);
   }
 
@@ -1053,6 +1090,9 @@ bool WrappedD3DDevice9::Serialise_StretchRect(SerialiserType &ser, IDirect3DSurf
   {
     StretchRect(pSourceSurface, pSourceRect, pDestSurface, pDestRect, Filter);
 
+    if(IsLoading(m_State))
+      m_WriteRegions[m_CurEventID].rects.push_back(SurfaceRect(pDestSurface, pDestRect));
+
     D3DSURFACE_DESC srcDesc = {};
     if(pSourceSurface)
       pSourceSurface->GetDesc(&srcDesc);
@@ -1086,6 +1126,8 @@ bool WrappedD3DDevice9::Serialise_ColorFill(SerialiserType &ser, IDirect3DSurfac
     if(IsLoading(m_State))
     {
       AddEvent();
+
+      m_WriteRegions[m_CurEventID].rects.push_back(SurfaceRect(pSurface, pRect));
 
       ActionDescription action;
       action.flags = ActionFlags::Clear | ActionFlags::ClearColor;

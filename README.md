@@ -56,6 +56,11 @@ The detailed status, with how each part works and how it was tested, is in
     choose it, and with a copy of the depth stencil, so the draw's own fragments test against
     each other. Multisampled targets too, at the pixel centre. Both are documented in
     `docs/how/how_debug_shader.rst`, and work the same from Python;
+  - pixel history (the Texture Viewer's History button), so far as the events that wrote the pixel,
+    each with the pixel's colour, depth and stencil before and after it, read from the GPU. Draws
+    are listed if they rasterise anything at the pixel, clears and copies if they write it. Why
+    fragments failed, the fragments within a draw, their shader outputs and primitives aren't
+    there yet;
   - GPU durations (the Event Browser's Duration column) and samples passed, in the Performance
     Counter Viewer too;
   - resource usage: the Resource Inspector's usage list and the timeline's usage markers;
@@ -76,7 +81,9 @@ Not implemented:
   debugged either, since it isn't a shader. They say why in the UI;
 - stepping through HLSL source: shaders are debugged in their assembly, since the debug
   information `/Zi` adds to shader model 2 and 3 bytecode isn't read;
-- pixel history;
+- in pixel history, why fragments failed, the fragments within a draw, their shader outputs and
+  primitive IDs (step 6 of the plan, in progress). Draws whose fragments at the pixel are all
+  outside the depth range aren't listed, since D3D9 can't turn depth clipping off;
 - GPU counters other than duration and samples passed: D3D9 has no pipeline statistics query;
 - messages from the D3D9 debug runtime, which doesn't run on Windows 8 and later. Only the calls
   the runtime rejects are reported;

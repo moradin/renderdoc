@@ -724,7 +724,7 @@ APIProperties D3D9Replay::GetAPIProperties()
   ret.degraded = false;
   // vertex shaders only so far: each shader's reflection says whether it can be debugged
   ret.shaderDebugging = true;
-  ret.pixelHistory = false;
+  ret.pixelHistory = true;
 
   return ret;
 }

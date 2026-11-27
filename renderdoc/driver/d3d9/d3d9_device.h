@@ -52,6 +52,19 @@ struct D3D9UserPrimitiveData
   bool index32 = false;
 };
 
+// Where a Clear, ColorFill, StretchRect or UpdateSurface writes in its destination, kept at load
+// for pixel history (d3d9_pixelhistory.cpp), which decides on the CPU whether they wrote a pixel.
+struct D3D9WriteRegion
+{
+  // a Clear, of the targets clearFlags says: its rects, or the whole target with none. It's also
+  // limited to the viewport, and the scissor rect when the scissor test is on, which are the
+  // device's at the event.
+  bool clear = false;
+  DWORD clearFlags = 0;
+  // a ColorFill, StretchRect or UpdateSurface: the rectangle written in the destination surface
+  rdcarray<RECT> rects;
+};
+
 class WrappedD3DDevice9 final : public IDirect3DDevice9Ex, public IFrameCapturer
 {
 public:
@@ -202,6 +215,17 @@ public:
     auto it = m_UserPrimitives.find(eventId);
     return it == m_UserPrimitives.end() ? NULL : &it->second;
   }
+  // a Clear, ColorFill, StretchRect or UpdateSurface event's destination region, or NULL
+  const D3D9WriteRegion *GetWriteRegion(uint32_t eventId) const
+  {
+    auto it = m_WriteRegions.find(eventId);
+    return it == m_WriteRegions.end() ? NULL : &it->second;
+  }
+  // one pixel of a depth stencil, read with the depth and stencil tests (d3d9_depth.cpp): depth
+  // as 0-1, and stencil, or -1 when the format has none. sample is ignored unless it's
+  // multisampled. Returns why it couldn't be read, or nothing.
+  rdcstr ReadDepthStencilPixel(IDirect3DSurface9 *realDS, uint32_t x, uint32_t y, uint32_t sample,
+                               float &depth, int32_t &stencil);
   SDFile *DetachStructuredFile();
   // drops the references replay holds on the objects it created
   void ReleaseReplayObjects();
@@ -848,7 +872,9 @@ private:
 
   // reading depth stencils that can't be locked, see d3d9_depth.cpp. note describes how the
   // contents are laid out, when they were read.
-  rdcstr ReadDepthStencil(IDirect3DSurface9 *realDS, D3D9SubresourceData &sub, rdcstr &note);
+  // With pixel, only that pixel is read, and sub is 1x1.
+  rdcstr ReadDepthStencil(IDirect3DSurface9 *realDS, D3D9SubresourceData &sub, rdcstr &note,
+                          const POINT *pixel = NULL);
   bool InitDepthReadback(rdcstr &err);
 
   // the shaders that draw for ReadDepthStencil, on the real device, created on first use
@@ -989,6 +1015,7 @@ private:
   // capture (D3D9_ForceReplayOnExDevice), where their SetLOD does nothing
   std::set<ResourceId> m_ManagedInDefaultPool;
   std::map<uint32_t, D3D9UserPrimitiveData> m_UserPrimitives;
+  std::map<uint32_t, D3D9WriteRegion> m_WriteRegions;
   HWND m_ReplayWindow = NULL;
   ResourceId m_NextWrapperID;
   // the objects replay created, holding the reference the creation returned

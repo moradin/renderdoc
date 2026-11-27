@@ -729,12 +729,7 @@ void D3D9Replay::ReloadShaderDebugInformation()
 {
 }
 
-rdcarray<PixelModification> D3D9Replay::PixelHistory(rdcarray<EventUsage> events, ResourceId target,
-                                                     uint32_t x, uint32_t y, const Subresource &sub,
-                                                     CompType typeCast)
-{
-  return {};
-}
+// PixelHistory is in d3d9_pixelhistory.cpp
 
 // DebugVertex, DebugPixel, ContinueDebug and FreeDebugger are in d3d9_shaderdebug.cpp. D3D9 has no
 // compute or mesh shaders.
