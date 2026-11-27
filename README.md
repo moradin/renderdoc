@@ -54,7 +54,8 @@ The detailed status, with how each part works and how it was tested, is in
     stops on the lookups. The debugged fragment is the one the GPU wrote: the event is drawn
     again with the original shader, so its `texkill` and `oDepth` and the draw's alpha test
     choose it, and with a copy of the depth stencil, so the draw's own fragments test against
-    each other. Multisampled targets too, at the pixel centre;
+    each other. Multisampled targets too, at the pixel centre. Both are documented in
+    `docs/how/how_debug_shader.rst`, and work the same from Python;
   - GPU durations (the Event Browser's Duration column) and samples passed, in the Performance
     Counter Viewer too;
   - resource usage: the Resource Inspector's usage list and the timeline's usage markers;
@@ -173,6 +174,8 @@ Not tested yet:
   - the shader editor highlights D3D9 assembly like HLSL, says it can't insert snippets into it,
     and saves it as `.asm`;
   - the shader editing docs have a D3D9 section.
+- **Shader debugging docs**: `docs/how/how_debug_shader.rst` lists D3D9 among the APIs that can
+  debug shaders, and has a D3D9 section.
 - **Shader debugger constants** (`ShaderViewer.cpp`, every API): a constant's value is only read
   as a constant block binding when the source variable points at a whole block (or an element of
   an array of them). Before, any value whose bits looked like a binding showed the bound block

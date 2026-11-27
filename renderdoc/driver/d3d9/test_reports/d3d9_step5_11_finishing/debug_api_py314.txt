@@ -1,0 +1,101 @@
+python 3.14.3, API D3D9
+  ok   APIProperties.shaderDebugging is True
+  ok   APIProperties.pixelHistory is False
+vertex: "vs_2_x calls", the first vertex
+  reflection: Vertex, entry main, encoding D3D9Bytecode, source files 0 (Unknown), source info False, debuggable True, status ""
+  ok   the vertex shader is debuggable
+  ok   DebugVertex gives a ShaderDebugTrace with a ShaderDebugger
+  stage Vertex, debugger ShaderDebugger
+  inputs: v0 (1x4 Float), v1 (1x4 Float)
+  constantBlocks: c [5], i [1], b [1]
+  readOnlyResources: 
+  samplers: 
+  readWriteResources: 0
+  sourceVars: 17, e.g. POSITION -> v0.0(Input) v0.1(Input) v0.2(Input) v0.3(Input), COLOR -> v1.0(Input) v1.1(Input) v1.2(Input) v1.3(Input), POSITION -> oPos.0(Variable) oPos.1(Variable) oPos.2(Variable) oPos.3(Variable), COLOR -> oD0.0(Variable) oD0.1(Variable) oD0.2(Variable) oD0.3(Variable)
+  instInfo: 23, first lines [(0, 2), (1, 3), (2, 4), (3, 5)]
+  ok   the trace is a vertex shader's
+  ok   ContinueDebug gives ShaderDebugState
+  ok   31 states, stepIndex 0 to 30 in order
+  ok   every nextInstruction has an instInfo entry
+  ok   11 changes after the first state, each before and after the same register
+  ok   every callstack is a list of str starting with "main"
+  ok   ContinueDebug after the end gives nothing
+  ok   the deepest call stack is ['main', 'l1', 'l3']
+  ok   oPos (-0.44999998807907104, -0.800000011920929, 0.0, 1.0) is VS Out's position [-0.44999998807907104, -0.800000011920929, 0.0, 1.0]
+  ok   DebugPixelInputs() is NoPreference for all three
+pixel: "ps_3_0" at (240, 60)
+  reflection: Pixel, entry main, encoding D3D9Bytecode, source files 0 (Unknown), source info False, debuggable True, status ""
+  ok   the pixel shader is debuggable
+  ok   DebugPixel with the defaults gives a ShaderDebugTrace with a ShaderDebugger
+  stage Pixel, debugger ShaderDebugger
+  inputs: v0 (1x4 Float), v1 (1x4 Float), v2 (1x4 Float), v3 (1x4 Float), vPos (1x2 Float), vFace (1x1 Float)
+  constantBlocks: c [3], i [1]
+  readOnlyResources: 
+  samplers: 
+  readWriteResources: 0
+  sourceVars: 22, e.g. COLOR -> v0.0(Input) v0.1(Input) v0.2(Input) v0.3(Input), TEXCOORD0 -> v1.0(Input) v1.1(Input), TEXCOORD1 -> v2.0(Input) v2.1(Input) v2.2(Input) v2.3(Input), TEXCOORD2 -> v3.0(Input) v3.1(Input)
+  instInfo: 45, first lines [(0, 17), (1, 18), (2, 19), (3, 20)]
+  ok   the trace is a pixel shader's
+  ok   ContinueDebug gives ShaderDebugState
+  ok   40 states, stepIndex 0 to 39 in order
+  ok   every nextInstruction has an instInfo entry
+  ok   34 changes after the first state, each before and after the same register
+  ok   every callstack is a list of str starting with "main"
+  steps flagged SampleLoadGather: []
+  ok   with the defaults oC0 is [0.14927971363067627, 0.012632429599761963, -0.5582892298698425, 1.682253122329712], the GPU wrote [0.14927971363067627, 0.012632429599761963, -0.5582892298698425, 1.682253122329712]
+pixel: "ps_3_0 anisotropic" at (40, 60)
+  reflection: Pixel, entry main, encoding D3D9Bytecode, source files 0 (Unknown), source info False, debuggable True, status ""
+  ok   the pixel shader is debuggable
+  ok   DebugPixel with the defaults gives a ShaderDebugTrace with a ShaderDebugger
+  stage Pixel, debugger ShaderDebugger
+  inputs: v0 (1x4 Float)
+  constantBlocks: c [1]
+  readOnlyResources: s0
+  samplers: s0
+  readWriteResources: 0
+  sourceVars: 7, e.g. TEXCOORD -> v0.0(Input) v0.1(Input), COLOR0 -> oC0.0(Variable) oC0.1(Variable) oC0.2(Variable) oC0.3(Variable), COLOR1 -> oC1.0(Variable) oC1.1(Variable) oC1.2(Variable) oC1.3(Variable), Literals.c0 -> c[0].0(Constant) c[0].1(Constant) c[0].2(Constant) c[0].3(Constant)
+  instInfo: 8, first lines [(0, 17), (1, 18), (2, 19), (3, 20)]
+  ok   the trace is a pixel shader's
+  ok   ContinueDebug gives ShaderDebugState
+  ok   6 states, stepIndex 0 to 5 in order
+  ok   every nextInstruction has an instInfo entry
+  ok   5 changes after the first state, each before and after the same register
+  ok   every callstack is a list of str starting with "main"
+  steps flagged SampleLoadGather: [1]
+  ok   with the defaults oC0 is [0.478522926568985, 0.7624170184135437, 0.4460211992263794, 1.0], the GPU wrote [0.478522926568985, 0.7624170184135437, 0.4460211992263794, 1.0]
+pixel: "ps_3_0 multisampled" at (40, 60)
+  reflection: Pixel, entry main, encoding D3D9Bytecode, source files 0 (Unknown), source info False, debuggable True, status ""
+  ok   the pixel shader is debuggable
+  ok   DebugPixel with the defaults gives a ShaderDebugTrace with a ShaderDebugger
+  stage Pixel, debugger ShaderDebugger
+  inputs: v0 (1x4 Float), v1 (1x4 Float), v2 (1x4 Float)
+  constantBlocks: 
+  readOnlyResources: 
+  samplers: 
+  readWriteResources: 0
+  sourceVars: 7, e.g. COLOR -> v0.0(Input), TEXCOORD0 -> v1.0(Input) v1.1(Input), TEXCOORD1 -> v2.2(Input), COLOR -> oC0.0(Variable) oC0.1(Variable) oC0.2(Variable) oC0.3(Variable)
+  instInfo: 6, first lines [(0, 6), (1, 7), (2, 8), (3, 9)]
+  ok   the trace is a pixel shader's
+  ok   ContinueDebug gives ShaderDebugState
+  ok   4 states, stepIndex 0 to 3 in order
+  ok   every nextInstruction has an instInfo entry
+  ok   3 changes after the first state, each before and after the same register
+  ok   every callstack is a list of str starting with "main"
+  steps flagged SampleLoadGather: []
+  ok   with the defaults oC0 is [-0.2499999850988388, 0.2745762765407562, 0.3796609938144684, 0.506101667881012], the GPU wrote [-0.2499999850988388, 0.2745762765407562, 0.3796609938144684, 0.506101667881012]
+  ok   DebugPixel with sample 0, primitive 0, view 0 gives a ShaderDebugTrace with a ShaderDebugger
+  ok   with sample 0, primitive 0, view 0 oC0 is [-0.2499999850988388, 0.2745762765407562, 0.3796609938144684, 0.506101667881012], the GPU wrote [-0.2499999850988388, 0.2745762765407562, 0.3796609938144684, 0.506101667881012]
+  ok   DebugPixel with sample 1, primitive 0, view 0 gives a ShaderDebugTrace with a ShaderDebugger
+  ok   with sample 1, primitive 0, view 0 oC0 is [-0.2499999850988388, 0.2745762765407562, 0.3796609938144684, 0.506101667881012], the GPU wrote [-0.2499999850988388, 0.2745762765407562, 0.3796609938144684, 0.506101667881012]
+  ok   DebugPixel with sample 2, primitive 0, view 0 gives a ShaderDebugTrace with a ShaderDebugger
+  ok   with sample 2, primitive 0, view 0 oC0 is [-0.2499999850988388, 0.2745762765407562, 0.3796609938144684, 0.506101667881012], the GPU wrote [-0.2499999850988388, 0.2745762765407562, 0.3796609938144684, 0.506101667881012]
+  ok   DebugPixel with sample 3, primitive 0, view 0 gives a ShaderDebugTrace with a ShaderDebugger
+  ok   with sample 3, primitive 0, view 0 oC0 is [-0.2499999850988388, 0.2745762765407562, 0.3796609938144684, 0.506101667881012], the GPU wrote [-0.2499999850988388, 0.2745762765407562, 0.3796609938144684, 0.506101667881012]
+  ok   sample, primitive and view change nothing
+not debuggable
+  reflection: Pixel, entry main, encoding D3D9Bytecode, source files 0 (Unknown), source info False, debuggable False, status "Debugging ps_1_x pixel shaders isn't supported yet"
+  ok   ps_1_1: not debuggable, and DebugPixel gives a trace without a debugger
+  ok   ContinueDebug(None) gives nothing
+  ok   DebugThread gives a trace without a debugger
+  ok   DebugMeshThread gives a trace without a debugger
+0 checks failed

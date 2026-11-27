@@ -75,7 +75,8 @@ Where it starts from:
   5.3. Since 5.5 and 5.6, ps_1_1 to ps_3_0 shaders run in their own interpreter
   (`d3d9_ps_emulate.cpp`), and since 5.7 `DebugPixel` debugs ps_2_0 to ps_3_0 shaders, with inputs
   read from the GPU, since 5.8 lookups and transcendentals made on the GPU, and since 5.10 the
-  fragment the GPU wrote. ps_1_x (5.9) is put off for now.
+  fragment the GPU wrote. ps_1_x (5.9) is put off for now. 5.11 documented it
+  (`docs/how/how_debug_shader.rst`) and checked it from Python and the UI.
 - **Already works for any driver:** qrenderdoc's shader viewer, "Debug this vertex", "Debug
   pixel", and the tests' `process_trace`. The driver returns a `ShaderDebugTrace` with the starting
   state, the steps with what each changed, and each instruction's disassembly line
@@ -96,7 +97,7 @@ Where it starts from:
 | 5.8 | ~~**Sampling on the GPU:** each sample is a one-pixel `texldd`/`texldl`/`texldb` draw with the original texture and sampler state, cached. Transcendentals on the GPU too, since 5.4 found they differ~~ | Done, see "Debugging pixel shaders" below (`d3d9_step5_8_gpu_sampling.md`). Not one-pixel `texldd` draws: a quad's `texld`, `texldp` or `texldb` is one draw of its four coordinates into a 2x2 target with the same instruction, so the GPU works out the derivatives itself. 77 pixels of 11 zoo draws that look up (2D, cube and volume textures, mips, anisotropic, border, sRGB, `SetLOD`, a D24S8 shadow map, unbound samplers, `texldp`, `texldb`, `texldd`, `texldl`): the debugger's outputs are the GPU's bit for bit, all 588 components. Transcendentals of inputs are too; in an HLSL draw 4 of 56 components aren't, where the driver works out their arguments its own way |
 | 5.9 | **ps_1_x end to end, and the texture viewer:** ps_1_1-1_4 debugging on, texture addressing through 5.8's sampling; fixed function pixel stages say why they can't be debugged | ps_1_x zoo draws pass; UI screenshots of "Debug" in the texture viewer stepping a ps_1_x and a ps_3_0 shader |
 | 5.10 | ~~**Which fragment, and edge cases:** for ps_2_0 and later, the original shader with its inputs written to extra targets, so its own `texkill` and alpha test pick the fragment (5.4); multisampling (pixel centre, sample 0), point sprites, centroid~~ | Done, see "Debugging pixel shaders" below (`d3d9_step5_10_which_fragment.md`). Also a copy of the depth stencil, so one draw's fragments test against each other as they did. 8 zoo draws (depth writes with `texkill`, `texkill`, the alpha test on float and A8R8G8B8 targets, stencil writes, point sprites, centroid, a 4x multisampled target): the debugger's outputs are the GPU's bit for bit at all 56 pixels, where 5.8's way gets 4 of the 35 pixels of the five draws whose layers it can't tell apart. Multisampled draws: the fragment covering the pixel centre, read with `MULTISAMPLEANTIALIAS` FALSE (not sample 0: masking to one sample moves the shading there). D3D9 has no multiple render targets with multisampling, so a replacement reads those, and `texkill` and the alpha test don't choose |
-| 5.11 | **Finishing:** a D3D9 section in `docs/how/how_debug_shader.rst`, README, STATUS.md, the Python bindings checked | UI screenshots of a full vertex and pixel session; a full test run |
+| 5.11 | ~~**Finishing:** a D3D9 section in `docs/how/how_debug_shader.rst`, README, STATUS.md, the Python bindings checked~~ | Done, see "From Python and the UI" below (`d3d9_step5_11_finishing.md`). The docs page lists D3D9 and has a section on it. A whole vertex and pixel session through the bindings alone passes in python 3.14 and in qrenderdoc's 3.6 with the same output, and in the UI (breakpoints, Run, watches, the call stack, a lookup, outputs against VS Out and the GPU). Nothing needed fixing |
 | 5.12 | *Optional:* **HLSL source probe:** compile SM2/SM3 with `D3DXSHADER_DEBUG` (fxc `/Zi`), dump its comment blocks, work out the undocumented format | A report on the format |
 | 5.13 | *Optional:* **HLSL source debugging:** instructions mapped to file and line, variables to registers, so the viewer steps through HLSL | The zoo has a `/Zi` shader whose steps show its source lines and variables |
 
@@ -2299,6 +2300,40 @@ ps_2_x gradient instructions; lookups in divergent flow control
 (each pixel's coordinate is what its neighbours had at the same instruction); `nrm`'s `rsq` against
 the GPU's own `nrm`; how long a shader with many lookups takes to debug (each is a draw and a
 readback); other GPUs.
+
+### From Python and the UI
+
+Step 5.11 (`d3d9_step5_11_finishing.md`) checked shader debugging as a user meets it, with no driver
+change:
+
+- **The python bindings.** `debug_api.py` (in the report's folder) runs a whole vertex and pixel
+  session on the zoo's capture through the bindings alone, and passes in python 3.14 (the test
+  module) and in qrenderdoc's embedded 3.6, with the same output:
+  - `APIProperties.shaderDebugging` is on and `pixelHistory` off.
+  - `DebugVertex` and `DebugPixel` give a `ShaderDebugTrace` with a `ShaderDebugger`, its inputs,
+    constant blocks, samplers, source variables and `instInfo`; `ContinueDebug` gives the states
+    in order until it gives none, and none again after that; every call stack starts with "main".
+    The vertex's `oPos` is VS Out's, and the pixels' `oC0` the GPU's.
+  - `DebugPixelInputs`' `sample`, `primitive` and `view` change nothing: a multisampled pixel with
+    samples 0 to 3 gives what the defaults give, the fragment at the centre. Its default is
+    `ReplayController.NoPreference` (the docs' `NoPreference`; there's no `renderdoc.NoPreference`).
+  - A ps_1_1 shader's reflection isn't debuggable and says why; `DebugPixel` there,
+    `DebugThread` and `DebugMeshThread` (D3D9 has no compute or mesh shaders) give a trace without
+    a debugger, and `ContinueDebug(None)` gives nothing.
+  - The reflection's `encoding` is `D3D9Bytecode`. Its `debugInfo.encoding` is `Unknown`, with no
+    source files, which is what it describes: the encoding of embedded source.
+- **The UI.** qrenderdoc on the same capture, driven by a script on its UI thread: the mesh viewer,
+  "Debug this Vertex" for the vs_2_x calls draw (a breakpoint in `l3`, Run, watches, the call stack
+  `l3`, `l1`, `main`, and the outputs against VS Out), and in the texture viewer pixels of the
+  anisotropic lookup and ps_3_0 draws (the lookup's value is the picked pixel, a breakpoint in the
+  loop, vFace, vPos and the outputs against the GPU's). The ps_1_1 draw's Debug button is disabled.
+  The debugger windows are opened with `DebugShader` as the buttons' handlers open them, since
+  qrenderdoc has no PySide2 to click the buttons from inside: the handlers' own code (finding the
+  vertex from the selected row) isn't covered.
+- **The docs.** `docs/how/how_debug_shader.rst` lists D3D9 among the APIs that debug shaders, says
+  what D3D9 debug information is read (the constant table, not `/Zi`'s), and has a section on what
+  can be debugged, the names, how a pixel is read and which fragment is debugged. Not built here
+  (no Sphinx on this machine).
 
 ## Pixel shader interpreter (steps 5.5 and 5.6)
 
