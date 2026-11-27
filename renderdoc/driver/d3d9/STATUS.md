@@ -41,7 +41,7 @@ the testing were on separate machines.
 | | ~~Debug messages: the D3D9 debug runtime doesn't run on Windows 8 and later, so report failed calls (`D3DERR_INVALIDCALL` and similar) instead~~ | 0.5 | Done, see "Debug messages" below |
 | | ~~Custom display shaders in the texture viewer~~ | 0.5-1 | Done, see "Custom display shaders" below |
 | 4 | ~~**Shader editing and replacement**, including Edit Generated Stub~~ | 1.5-2 | Done, see "Shader editing" below |
-| 5 | **Shader debugging** | 5-8 (about 11 sessions) | The biggest item. Split into chunks that each fit one session, see "Step 5 plan" below |
+| 5 | ~~**Shader debugging**~~ | 5-8 (about 11 sessions) | Done but for three chunks, see "Step 5 plan" below: closed on 2026-11-27 without 5.9 (ps_1_x pixels) and the optional 5.12-5.13 (HLSL source), which are put off with notes for picking them up ("Put off from step 5") |
 | 6 | **Pixel history:** which draws touched the pixel (occlusion queries per event), which primitive wrote it (drawing one primitive at a time, since D3D9 has no primitive ID), values before and after (`GetRenderTargetData`), depth (the existing bisection), and debugging the pixel (step 5) | 3-5 | |
 | 7 | **Remote replay:** display textures through the proxy | 1-2 | Parked: not worth it for now. Mostly mapping D3D9 formats onto the proxy's D3D11 textures |
 | 8 | **Limitations worth fixing**, in this order, before steps 5 and 6 | 3-4 | |
@@ -75,8 +75,9 @@ Where it starts from:
   5.3. Since 5.5 and 5.6, ps_1_1 to ps_3_0 shaders run in their own interpreter
   (`d3d9_ps_emulate.cpp`), and since 5.7 `DebugPixel` debugs ps_2_0 to ps_3_0 shaders, with inputs
   read from the GPU, since 5.8 lookups and transcendentals made on the GPU, and since 5.10 the
-  fragment the GPU wrote. ps_1_x (5.9) is put off for now. 5.11 documented it
-  (`docs/how/how_debug_shader.rst`) and checked it from Python and the UI.
+  fragment the GPU wrote. 5.11 documented it (`docs/how/how_debug_shader.rst`) and checked it
+  from Python and the UI. Step 5 was closed after that, with ps_1_x pixels (5.9) and HLSL source
+  (5.12-5.13) put off ("Put off from step 5" below).
 - **Already works for any driver:** qrenderdoc's shader viewer, "Debug this vertex", "Debug
   pixel", and the tests' `process_trace`. The driver returns a `ShaderDebugTrace` with the starting
   state, the steps with what each changed, and each instruction's disassembly line
@@ -95,14 +96,156 @@ Where it starts from:
 | 5.6 | ~~**ps_1_x interpreter** (portable, unit tested): `texcoord`, `tex`, `texbem`/`texbeml`, `texreg2*`, the `texm3x2*`/`texm3x3*` families, `texdp3*`, `texdepth`, `bem`, ps_1_4's `texcrd`/`texld`/`phase`, co-issue, the ps_1_x modifiers, `cnd`, and the clamps 5.4 measured (constants, `texcoord`, the output; no range limit)~~ | Done, see "Pixel shader interpreter" below (`d3d9_step5_6_ps1_interpreter.md`). 29 assembled ps_1_1-1_4 cases match the GPU's r0 and discards bit for bit, but for two values 1 ulp apart through `rcp` |
 | 5.7 | ~~**`DebugPixel`, inputs from the GPU:** redraw the event with a generated pixel shader writing the original's inputs and their `dsx`/`dsy` to float32 targets, scissored to the quad (ps_2_x for ps_1_x/2_x originals, since ps_2_0 has no `dsx`; ps_3_0 with the original's declarations for ps_3_0); `vPos` computed, `vFace` read with `cmp`; the quad's other pixels from the derivatives. Debugging on for ps_2_0/3_0 shaders that don't sample; those that do say why not yet~~ | Done, see "Debugging pixel shaders" below (`d3d9_step5_7_debug_pixel.md`). 21 pixels of the zoo's ps_2_0, ps_2_x and ps_3_0 draws: the replay's pixels are the GPU's bit for bit, and the debugger's `oC#` are too in 109 of 140 components; the others are within 2.8e-6, where the driver fused a `mul` and an `add` the bytecode has apart. `oDepth` matches the D24 target. The quad's other pixels aren't extrapolated: ps_3_0 reads them exactly, and so does ps_2_x where the same primitive covers them |
 | 5.8 | ~~**Sampling on the GPU:** each sample is a one-pixel `texldd`/`texldl`/`texldb` draw with the original texture and sampler state, cached. Transcendentals on the GPU too, since 5.4 found they differ~~ | Done, see "Debugging pixel shaders" below (`d3d9_step5_8_gpu_sampling.md`). Not one-pixel `texldd` draws: a quad's `texld`, `texldp` or `texldb` is one draw of its four coordinates into a 2x2 target with the same instruction, so the GPU works out the derivatives itself. 77 pixels of 11 zoo draws that look up (2D, cube and volume textures, mips, anisotropic, border, sRGB, `SetLOD`, a D24S8 shadow map, unbound samplers, `texldp`, `texldb`, `texldd`, `texldl`): the debugger's outputs are the GPU's bit for bit, all 588 components. Transcendentals of inputs are too; in an HLSL draw 4 of 56 components aren't, where the driver works out their arguments its own way |
-| 5.9 | **ps_1_x end to end, and the texture viewer:** ps_1_1-1_4 debugging on, texture addressing through 5.8's sampling; fixed function pixel stages say why they can't be debugged | ps_1_x zoo draws pass; UI screenshots of "Debug" in the texture viewer stepping a ps_1_x and a ps_3_0 shader |
+| 5.9 | **ps_1_x end to end, and the texture viewer:** ps_1_1-1_4 debugging on, texture addressing through 5.8's sampling; fixed function pixel stages say why they can't be debugged | ps_1_x zoo draws pass; UI screenshots of "Debug" in the texture viewer stepping a ps_1_x and a ps_3_0 shader. **Put off** (the fixed function part is done: it says why). Notes in "Put off from step 5" below; the ps_3_0 screenshots were taken in 5.11 |
 | 5.10 | ~~**Which fragment, and edge cases:** for ps_2_0 and later, the original shader with its inputs written to extra targets, so its own `texkill` and alpha test pick the fragment (5.4); multisampling (pixel centre, sample 0), point sprites, centroid~~ | Done, see "Debugging pixel shaders" below (`d3d9_step5_10_which_fragment.md`). Also a copy of the depth stencil, so one draw's fragments test against each other as they did. 8 zoo draws (depth writes with `texkill`, `texkill`, the alpha test on float and A8R8G8B8 targets, stencil writes, point sprites, centroid, a 4x multisampled target): the debugger's outputs are the GPU's bit for bit at all 56 pixels, where 5.8's way gets 4 of the 35 pixels of the five draws whose layers it can't tell apart. Multisampled draws: the fragment covering the pixel centre, read with `MULTISAMPLEANTIALIAS` FALSE (not sample 0: masking to one sample moves the shading there). D3D9 has no multiple render targets with multisampling, so a replacement reads those, and `texkill` and the alpha test don't choose |
 | 5.11 | ~~**Finishing:** a D3D9 section in `docs/how/how_debug_shader.rst`, README, STATUS.md, the Python bindings checked~~ | Done, see "From Python and the UI" below (`d3d9_step5_11_finishing.md`). The docs page lists D3D9 and has a section on it. A whole vertex and pixel session through the bindings alone passes in python 3.14 and in qrenderdoc's 3.6 with the same output, and in the UI (breakpoints, Run, watches, the call stack, a lookup, outputs against VS Out and the GPU). Nothing needed fixing |
-| 5.12 | *Optional:* **HLSL source probe:** compile SM2/SM3 with `D3DXSHADER_DEBUG` (fxc `/Zi`), dump its comment blocks, work out the undocumented format | A report on the format |
-| 5.13 | *Optional:* **HLSL source debugging:** instructions mapped to file and line, variables to registers, so the viewer steps through HLSL | The zoo has a `/Zi` shader whose steps show its source lines and variables |
+| 5.12 | *Optional:* **HLSL source probe:** compile SM2/SM3 with `D3DXSHADER_DEBUG` (fxc `/Zi`), dump its comment blocks, work out the undocumented format | A report on the format. **Put off**, notes in "Put off from step 5" below |
+| 5.13 | *Optional:* **HLSL source debugging:** instructions mapped to file and line, variables to registers, so the viewer steps through HLSL | The zoo has a `/Zi` shader whose steps show its source lines and variables. **Put off**, notes in "Put off from step 5" below |
 
 Order: 5.4 comes before 5.5-5.10. 5.5 and 5.6 don't depend on each other; both come before 5.7.
 Step 6 (pixel history) reuses 5.7-5.10.
+
+#### Put off from step 5
+
+Step 5 was closed on 2026-11-27 without 5.9, 5.12 and 5.13, at the user's choice. These notes are
+for picking them up: what's already in place, what's left, and what isn't known yet. None of it
+has been started.
+
+##### 5.9: debugging ps_1_x pixel shaders
+
+About one or two sessions. Most of the parts were built along the way, and are unit tested but
+never run together on a ps_1_x draw:
+
+- **The interpreter** (5.6) runs ps_1_1 to ps_1_4, matching the GPU's r0 and discards bit for bit
+  in 29 assembled cases (`d3d9_ps1_test_data.h`). The texture stage state it needs comes in
+  `PSStageState` (bump matrix, luminance scale and offset, `D3DTTFF_PROJECTED`), an array of
+  `NumTextureStages` passed to `PSQuad::Start`, where NULL means D3D9's defaults.
+- **Reading the inputs:** `BuildInputReadback` with `ReadbackShader::Replacement` builds ps_1_x's
+  readback from the `t#` and `v#` it reads (unit test "ps_1_x: the colours and coordinates read",
+  `[psdebug]`). The original-with-reading shader refuses ps_1_x, since r0 is its only output, so
+  ps_1_x always gets the replacement. The quad's other pixels come as for ps_2_x: the readback is
+  ps_2_x, with `dsx` and `dsy`, drawn again at the neighbours.
+- **Lookups:** `PSInstructionSamples` lists ps_1_x's texture instructions, and
+  `GPULookups::SampleQuad` (`d3d9_shaderdebug.cpp`) gives their samples (type `Unknown`, as ps_1_x
+  declares no samplers) the type of the texture bound to the stage (`BoundType`). The quad's four
+  coordinates, as the instruction worked them out (bumped, reflected, projected), are looked up
+  with `texld` in one 2x2 draw, so the GPU works out the derivatives of those coordinates. The
+  divides go to the GPU's `rcp` through `Transcendental`.
+- **Fixed function pixel processing** already says why it can't be debugged ("fixed function pixel
+  processing isn't a shader", `d3d9_shaderdebug.cpp`), which was 5.9's other part.
+
+What's left:
+
+1. **Turn it on:** `PixelShaderDebuggable` (`d3d9_ps_debug.cpp`) refuses `prog.version.IsSM1()`
+   with "Debugging ps_1_x pixel shaders isn't supported yet".
+2. **Fill `PSStageState`** for each stage from the device at the event:
+   `D3DTSS_BUMPENVMAT00`, `01`, `10` and `11`, `D3DTSS_BUMPENVLSCALE` and `BUMPENVLOFFSET` (floats
+   stored as DWORD bits), and `D3DTSS_TEXTURETRANSFORMFLAGS` & `D3DTTFF_PROJECTED`. `DebugPixel`
+   passes NULL in both places now: the GPU pass's `run.Start(..., NULL)` and
+   `debugger->Begin(..., NULL)`. Keep the array in the debugger's owner data with the constants,
+   since the UI steps later, with the replay elsewhere.
+3. **The zoo** (`D3D9_Shader_Debug_Zoo`) has one ps_1_x draw, "ps_1_1" (`mov r0, v0`), and its test
+   checks that it *can't* be debugged; that check turns around. The new draws should cover:
+   - ps_1_1 `tex` with `texcoord`;
+   - `texbem` and `texbeml` with a bump matrix, on a signed bump map (V8U8 or Q8W8V8U8, which 5.6's
+     float textures didn't cover);
+   - `texm3x2tex`, `texm3x3tex` on a cube map, `texm3x3spec`, `texreg2ar` and `texreg2gb`;
+   - ps_1_2/1_3 `texdp3tex`; `texdepth` or `texm3x2depth` (depth written);
+   - ps_1_4 `texcrd` and `texld` with `phase`, and `bem`;
+   - a co-issued pair, `cnd`, `texkill`, `D3DTTFF_PROJECTED`, and one draw with the alpha test.
+
+   Check each pixel's oC0 against the native run, as the other draws do, and run `process_trace`.
+   r0 is clamped to [0, 1], so the zoo's float targets compare exactly.
+4. **The UI:** the texture viewer's Debug on a ps_1_x draw, with screenshots of stepping, the
+   `texcoord#` inputs, the `t#` registers, a co-issued pair as one step, and `phase`.
+5. **Docs:** `docs/how/how_debug_shader.rst`'s D3D9 section and the README's "What's missing" say
+   ps_1_x can't be debugged. `debug_api.py` in the 5.11 report checks the same; it's a record of
+   that run, so leave it.
+
+Not known yet, or risks:
+
+- **Which fragment.** A replacement reads ps_1_x, so a fragment that `texkill` or the alpha test
+  rejected can be the one debugged (5.4: 6 of 27 right with the alpha test). The log already says
+  which way each pixel was read. One idea, not tried: draw the original ps_1_x first, with its
+  alpha test and `texkill`, into the depth copy with depth writes on, then the replacement with
+  `D3DCMP_EQUAL` against that. 5.4's depth EQUAL redraw got 12 of 27, through fragments at equal
+  depths, so it would need measuring. Translating ps_1_x to ps_2_x for the readback is the other
+  way, but the texture instructions have no direct equivalents.
+- `texdepth` and `texm3x2depth` write a depth the replacement doesn't, so a draw writing depth
+  tests its readback at the interpolated depth.
+- The level and anisotropy the GPU picks for a computed coordinate (`texbem`, `texm3x*`) from the
+  quad's four coordinates, against what it picked for the draw: expected to match, as `texld` did
+  in 5.8, but not measured. Mips and filtering weren't in 5.6's ps_1_x tests.
+- Projection with fixed function vertex processing (texture transforms, `D3DTSS_TEXCOORDINDEX`)
+  isn't tested; the readback reads whatever coordinates arrive, so it should only matter to
+  `D3DTTFF_PROJECTED`.
+
+##### 5.12: what `/Zi` puts in SM2/SM3 bytecode
+
+How D3D11 does HLSL debugging, and what of it can be reused:
+
+- fxc's `/Zi` writes an SPDB chunk into the DXBC container: a whole PDB (MSF format) with the
+  source files and their text, a file and line per instruction, inlined functions' call stacks,
+  and each local's registers over ranges of instructions.
+  `renderdoc/driver/shaders/dxbc/dxbc_spdb.cpp` reads it (`dxbc_sdbg.cpp` the older SDBG chunk);
+  both implement `DXBC::IDebugInfo` (`dxbc_common.h`: `Files`, `GetLineInfo`, `GetCallstack`,
+  `GetLocals`), and `dxbc_debug.cpp` turns that into the reflection's `debugInfo.files` and the
+  trace's `instInfo[].lineInfo` and `instInfo[].sourceVars`.
+- **Reusable:** everything after that. The shader viewer, source stepping, locals and watches only
+  read the trace and the reflection, whatever the API.
+- **Not reusable:** the parser. SM2/SM3 bytecode isn't a DXBC container and has no SPDB.
+  Compiling the source again for SM4 to get one doesn't help: its instructions and registers
+  aren't the D3D9 shader's.
+- D3D9's `/Zi` information is in comment tokens, like the constant table: believed to be a comment
+  whose four character code is `DBUG`, but not checked here, and not documented. The bytecode
+  parser already keeps every comment (`Program::comments` and `Program::FindComment(fourcc)`,
+  `d3d9_bytecode.h`), so only the format is missing.
+
+The probe (a report, no driver change), kept next to the 5.4 probes and not in `demos.vcxproj`:
+
+- **Compilers:** d3dcompiler_47 (D3DCompile with `D3DCOMPILE_DEBUG`, and the Windows SDK's fxc
+  `/Zi`). D3DX9's `D3DXCompileShader` (d3dx9_43.dll) only if it's already installed: don't
+  download it. D3D9-era games were built with D3DX9's compiler or older fxc, so the format may
+  differ by compiler; record which writes what.
+- **Shaders:** vs_2_0, vs_3_0, ps_2_0 and ps_3_0, with a function in an `#include` file, inlined
+  functions, locals, a struct, an array, a loop, a branch, a sampler, and a variable that moves
+  between registers. Each compiled with and without `/Zi`, and with and without `/Od`.
+- **Method:** dump every comment (code, length, hex), diff with and without `/Zi`, then change one
+  thing at a time (rename a variable, move a line, add a file) to map the fields.
+- **Questions:**
+  - Does `/Zi` change the instructions (with `/Od` the same on both sides)?
+  - Is the source text in it, or only file names? Without the text, files are found on disk, as
+    D3D11 does through the shader search paths.
+  - Is there a file and line per instruction, and are instructions counted with or without
+    comments, `dcl` and `def`?
+  - Are variables mapped to registers, per range of instructions? Are inlined calls recorded?
+  - Which flags strip it (`/Qstrip_debug`, D3DX9's flags)? CreateVertexShader and
+    CreatePixelShader take it, so games could ship it, but rarely do.
+- **Outcome:** the format, and what 5.13 can do with it. If d3dcompiler_47 writes nothing for
+  SM2/SM3, 5.13 would only help shaders from older compilers: decide then whether it's worth it.
+
+##### 5.13: stepping through HLSL
+
+Depends on 5.12. With the format known:
+
+- **A parser** in the D3D9 driver, reading the comment from `Program` (portable, unit tested on
+  5.12's compiled shaders, in the way `d3d9_ctab_test_data.h` tests the constant table).
+- **The reflection** (`d3d9_shader_reflect.cpp`): `debugInfo.files` (name and text, from the
+  comment if it has the text, otherwise from disk), `sourceDebugInformation` true, encoding HLSL,
+  the entry point, and `compileFlags` if they're recorded. That may also give the shader editor
+  the HLSL source to edit: shader editing already compiles vs_1_1 to ps_3_0 HLSL with D3DCompile
+  (`d3d9_shaderedit.cpp`); check it.
+- **The trace** (`StepDebugger` in `d3d9_vs_debug.h`, used by the vertex and pixel debuggers):
+  each `instInfo[i].lineInfo`'s file, lines and column; its call stack from inlined calls if
+  they're recorded; and `instInfo[i].sourceVars`, the locals valid at that instruction, each
+  component mapped to `r#`, `v#`, `c#` or `o#` components, as `dxbc_debug.cpp` does from
+  `GetLocals`.
+- The viewer should then show the HLSL and step it by line, with nothing changed in qrenderdoc;
+  check that.
+- **Done when:** the zoo has a `/Zi` vertex and pixel shader, its test checks their lines and
+  variables, and UI screenshots show HLSL being stepped.
+- **Worth knowing:** shipped games rarely keep `/Zi` information, so this mostly helps people
+  debugging their own builds.
 
 #### What the GPU does with pixel shaders
 

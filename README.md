@@ -74,6 +74,8 @@ Not implemented:
 
 - pixel shader debugging for ps_1_x shaders. Fixed function vertex and pixel processing can't be
   debugged either, since it isn't a shader. They say why in the UI;
+- stepping through HLSL source: shaders are debugged in their assembly, since the debug
+  information `/Zi` adds to shader model 2 and 3 bytecode isn't read;
 - pixel history;
 - GPU counters other than duration and samples passed: D3D9 has no pipeline statistics query;
 - messages from the D3D9 debug runtime, which doesn't run on Windows 8 and later. Only the calls
