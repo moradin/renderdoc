@@ -21,6 +21,51 @@ WRITES = {
 }
 
 
+# The stages the demo turns on in order after the first (which only rasterises), as pixel history
+# does, and the flag for the first that leaves nothing at the pixel
+STAGE_FLAGS = ['backfaceCulled', 'viewClipped', 'scissorClipped', 'sampleMasked', 'shaderDiscarded',
+               'depthTestFailed', 'stencilTestFailed']
+# flags D3D9 never sets
+NEVER_FLAGS = ['depthClipped', 'depthBoundsFailed', 'predicationSkipped']
+
+# What the demo's draws are made to do at these probes, as (marker, probe): the flag expected in
+# each batch, None for passing. The native run's counts have to agree, so that the draws test what
+# they're meant to.
+DESIGNED = {
+    ('Cull Front', (170, 160)): {'*': 'backfaceCulled'},
+    ('Scissor Fail', (106, 248)): {'*': 'scissorClipped'},
+    ('Background', (150, 250)): {'*': 'shaderDiscarded'},
+    ('Background', (170, 140)): {'Basic': 'depthTestFailed', '*': None},
+    ('Simple Test', (170, 140)): {'Basic': 'stencilTestFailed', '*': None},
+    ('Simple Test', (170, 160)): {'Basic': 'depthTestFailed', '*': None},
+    ('Alpha Test FF', (26, 268)): {'*': 'shaderDiscarded'},
+    ('Alpha Test FF', (26, 282)): {'*': None},
+    ('Alpha Test', (46, 268)): {'*': 'shaderDiscarded'},
+    ('Alpha Test', (46, 282)): {'*': None},
+    ('Texkill ps_1_1', (66, 268)): {'*': 'shaderDiscarded'},
+    ('Texkill ps_1_1', (66, 282)): {'*': None},
+    ('Texkill ps_2_0', (86, 268)): {'*': 'shaderDiscarded'},
+    ('Texkill ps_2_0', (86, 282)): {'*': None},
+    # only with a depth stencil
+    ('Two Sided Stencil', (106, 268)): {'Basic': 'stencilTestFailed', '*': None},
+    ('Two Sided Stencil', (106, 282)): {'*': None},
+    ('Clip Plane', (126, 268)): {'*': 'viewClipped'},
+    ('Clip Plane', (126, 282)): {'*': None},
+    # the sample mask does nothing on single sampled targets
+    ('Sample Mask 0', (146, 268)): {'Multisampled': 'sampleMasked', '*': None},
+    ('Sample Mask 0', (146, 282)): {'Multisampled': 'sampleMasked', '*': None},
+    ('Sample Mask 5', (166, 268)): {'*': None},
+}
+
+
+def stage_failure(stages):
+    """The flag for the first stage that leaves nothing, None if the draw passes there."""
+    for i, flag in enumerate(STAGE_FLAGS):
+        if stages[i + 1] == 0:
+            return flag
+    return None
+
+
 def float_of(bits: int):
     return struct.unpack('<f', struct.pack('<I', bits))[0]
 
@@ -60,6 +105,7 @@ class D3D9_Pixel_History(rdtest.D3D9_Test):
                     rgba = int(parts[4], 16)
                     rec['probes'][(x, y)] = {
                         'covered': int(parts[3]),
+                        'stages': [int(v) for v in parts[7].split(',')] if parts[7] != '-' else None,
                         'col': [unorm8((rgba >> s) & 0xff) for s in (24, 16, 8, 0)],
                         'depth': float_of(int(parts[5], 16)),
                         'stencil': int(parts[6]),
@@ -118,10 +164,20 @@ class D3D9_Pixel_History(rdtest.D3D9_Test):
                                               f"{[(e[0], e[2]) for e in expected]}")
 
         depth_diff = 0.0
+        failures = {}
         for m, (eid, kind, marker, _, before, after) in zip(modifs, expected):
             name = f"{what} event {eid} ({marker})"
             if m.directShaderWrite != (kind == 'copy'):
                 raise rdtest.TestFailureException(f"{name}: directShaderWrite is {m.directShaderWrite}")
+            # why a draw's fragments failed, from the native counts; clears and copies never fail
+            failure = stage_failure(after['probes'][probe]['stages']) if kind == 'draw' else None
+            got_flags = [f for f in STAGE_FLAGS + NEVER_FLAGS if getattr(m, f)]
+            if got_flags != ([failure] if failure else []):
+                raise rdtest.TestFailureException(f"{name}: failed {got_flags}, natively "
+                                                  f"{failure or 'passed'} (samples with each stage on: "
+                                                  f"{after['probes'][probe]['stages']})")
+            if kind == 'draw':
+                failures[failure or 'passed'] = failures.get(failure or 'passed', 0) + 1
             if m.primitiveID != 0xFFFFFFFF or m.unboundPS:
                 raise rdtest.TestFailureException(f"{name}: primitive {m.primitiveID}, unboundPS {m.unboundPS}")
             if kind == 'draw' and m.shaderOut.IsValid():
@@ -148,7 +204,24 @@ class D3D9_Pixel_History(rdtest.D3D9_Test):
                     raise rdtest.TestFailureException(f"{name}: depth and stencil {label} are {val.depth} "
                                                       f"{val.stencil}, expected none (-1)")
 
-        return len(modifs), depth_diff
+        return len(modifs), depth_diff, failures
+
+    def check_designed(self, batch_name: str, events):
+        """The native run's counts agree with what the demo's draws are made to do."""
+        for (marker, probe), per_batch in DESIGNED.items():
+            expected = per_batch.get(batch_name, per_batch['*'])
+            recs = [e[5] for e in events if e[1] == 'draw' and e[2] == marker]
+            if not recs:
+                # the multisampled batch has only the clear and D3D9's tests
+                if batch_name == 'Multisampled':
+                    continue
+                raise rdtest.TestFailureException(f"{batch_name}: no draw '{marker}'")
+            for rec in recs:
+                stages = rec['probes'][probe]['stages']
+                if stages[0] == 0 or stage_failure(stages) != expected:
+                    raise rdtest.TestFailureException(
+                        f"{batch_name}: natively, '{marker}' at {probe} leaves {stages} with each "
+                        f"stage on, but it's made to give {expected or 'passed'}")
 
     def check_d3d9_capture(self):
         self.check_api()
@@ -181,6 +254,8 @@ class D3D9_Pixel_History(rdtest.D3D9_Test):
                     nth = clears[marker] - 1
                 events.append((a.eventId, rec['kind'], marker, nth, records[i], rec))
 
+            self.check_designed(batch_name, events)
+
             # the targets, as the last draw has them bound
             last = actions[-1][0]
             self.set_event(last.eventId, True)
@@ -197,19 +272,26 @@ class D3D9_Pixel_History(rdtest.D3D9_Test):
             start = time.time()
             listed = 0
             depth_diff = 0.0
+            failures = {}
             for target, depth_target in targets:
                 for probe in probes:
-                    n, diff = self.check_history(batch_name, events, target, depth_target, has_depth, probe,
-                                                 last.eventId)
+                    n, diff, fails = self.check_history(batch_name, events, target, depth_target, has_depth,
+                                                        probe, last.eventId)
                     listed += n
                     depth_diff = max(depth_diff, diff)
+                    for k, v in fails.items():
+                        failures[k] = failures.get(k, 0) + v
             elapsed = time.time() - start
             rdtest.log.success(f"{batch_name}: {len(targets) * len(probes)} pixel histories list {listed} "
                                f"events, each with the colour, depth and stencil the GPU had natively before "
                                f"and after it (depth within {depth_diff:.3g}), in {elapsed:.1f}s")
+            rdtest.log.success(f"{batch_name}: the draws listed failed as they did natively: " +
+                               ", ".join(f"{k} {v}" for k, v in sorted(failures.items())))
 
             # only the events up to the current one
-            simple = next(e for e in events if e[2] == 'Simple Test')
+            simple = next((e for e in events if e[2] == 'Simple Test'), None)
+            if simple is None:
+                continue
             self.set_event(simple[0], True)
             for probe in [(110, 100), (170, 140), (60, 30)]:
                 self.check_history(batch_name, events, colour, False, has_depth, probe, simple[0])

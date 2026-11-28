@@ -25,6 +25,10 @@
 #include <functional>
 #include "d3d9_test.h"
 
+typedef HRESULT(WINAPI *pD3DAssemble)(LPCVOID pSrcData, SIZE_T SrcDataSize, LPCSTR pSourceName,
+                                      const D3D_SHADER_MACRO *pDefines, ID3DInclude *pInclude,
+                                      UINT Flags, ID3DBlob **ppShader, ID3DBlob **ppErrorMsgs);
+
 #define CHECK_HR(expr)                                    \
   do                                                      \
   {                                                       \
@@ -39,9 +43,12 @@ RD_TEST(D3D9_Pixel_History, D3D9GraphicsTest)
       "Tests pixel history. Each batch draws D3D11_Pixel_History's draws (the shared PixelHistory "
       "vertices, with the same markers where D3D9 has the feature), then D3D9's own writes: clears "
       "with rects and with the viewport and scissor, ColorFill, StretchRect, UpdateSurface, a "
-      "fixed function draw and an indexed one. Run natively, its third frame records each probe "
-      "pixel before the batch and after every event (colour, depth and stencil, and for draws "
-      "whether they rasterise anything there) in D3D9_Pixel_History_reference.txt in its tmp "
+      "fixed function draw and an indexed one, and draws that fail D3D9's tests: the alpha test "
+      "(fixed function and ps_3_0), texkill (ps_1_1 and ps_2_0), two-sided stencil, a user clip "
+      "plane and the sample mask. A third, 4x multisampled batch has only the clear and those "
+      "draws. Run natively, its third frame records each probe pixel before the batch and after "
+      "every event (colour, depth and stencil, and for draws what they rasterise there as each "
+      "stage of the pipeline is turned on) in D3D9_Pixel_History_reference.txt in its tmp "
       "folder.";
 
   // the vertices' colours, as D3D11_Pixel_History's ProcessColor: negative is an overflow
@@ -98,6 +105,40 @@ float4 main(float3 pos : POSITION, float4 col : COLOR0, out float4 outCol : COLO
 
 )EOSHADER";
 
+  // the failure tests' shaders: the vertex colour, and texkill where its alpha is below 0.5
+  const std::string plainPixel = R"EOSHADER(
+
+float4 main(float4 col : TEXCOORD0) : COLOR0
+{
+  return col;
+}
+
+)EOSHADER";
+
+  const std::string killVertex = R"EOSHADER(
+
+float4 main(float3 pos : POSITION, float4 col : COLOR0, out float4 outCol : COLOR0,
+            out float4 kill : TEXCOORD0) : POSITION
+{
+  outCol = col;
+  kill = col.aaaa - 0.5f;
+  return float4(pos, 1.0f);
+}
+
+)EOSHADER";
+
+  const std::string killPixel20 = R"EOSHADER(
+
+float4 main(float4 col : COLOR0, float4 kill : TEXCOORD0) : COLOR0
+{
+  clip(kill.x);
+  return col;
+}
+
+)EOSHADER";
+
+  const std::string killPixel11Asm = "ps_1_1\ntexkill t0\nmov r0, v0\n";
+
   // the native run's own shaders: a constant colour for the coverage queries, as pixel history's
   const std::string whitePixel = R"EOSHADER(
 
@@ -149,8 +190,13 @@ float4 main() : COLOR0
     D3DCOLOR col;
   };
 
-  // the pixels the shared Pixel_History test looks at, then D3D9's own writes' ones
-  static constexpr int NumProbes = 24;
+  // The failure tests' draws are in columns of two 12x12 squares, from x = 20 every 20 pixels: one
+  // that fails, at y 262 to 274, and one that passes, at y 276 to 288
+  static constexpr int NumTestColumns = 8;
+
+  // the pixels the shared Pixel_History test looks at, then D3D9's own writes' ones, then the
+  // failure tests' (a failing and a passing one per column)
+  static constexpr int NumProbes = 24 + NumTestColumns * 2;
   const int Probes[NumProbes][2] = {
       {110, 100},
       {170, 140},
@@ -177,6 +223,23 @@ float4 main() : COLOR0
       {330, 30},
       {370, 30},
       {355, 60},
+      // the failure tests
+      {26, 268},
+      {26, 282},
+      {46, 268},
+      {46, 282},
+      {66, 268},
+      {66, 282},
+      {86, 268},
+      {86, 282},
+      {106, 268},
+      {106, 282},
+      {126, 268},
+      {126, 282},
+      {146, 268},
+      {146, 282},
+      {166, 268},
+      {166, 282},
   };
 
   // what D3D9_Pixel_History.py mirrors to know where the clears and copies write
@@ -203,6 +266,12 @@ float4 main() : COLOR0
     DWORD readMask = 0xff;
     DWORD writeMask = 0xff;
     DWORD colourWrite = 0xf;
+    // the alpha test is GREATER than 0x80
+    BOOL alphaTest = FALSE;
+    BOOL twoSided = FALSE;
+    DWORD ccwStencilFunc = D3DCMP_ALWAYS;
+    DWORD clipPlanes = 0;
+    DWORD sampleMask = ~0U;
   };
 
   struct Batch
@@ -212,13 +281,23 @@ float4 main() : COLOR0
     IDirect3DSurface9Ptr col;
     IDirect3DTexture9Ptr depthTex;
     IDirect3DSurface9Ptr depth;
+    // 4x multisampled, with only the clear and the failure tests
+    bool msaa = false;
   };
+
+  // The stages of the pipeline turned on in order to see why a draw's fragments fail, as pixel
+  // history does: none (whether the draw rasterises anything at the pixel), then culling, user
+  // clip planes, the scissor test, the sample mask, the pixel shader with the alpha test, the depth
+  // test and the stencil test
+  static constexpr int NumStages = 8;
 
   // one probe's values before the batch or after an event, natively
   struct ProbeValue
   {
     // 1 or 0 for draws, -1 for the rest
     int covered = -1;
+    // for draws, the samples left with the stages up to each on
+    DWORD stages[NumStages] = {};
     uint32_t rgba = 0;
     float depth = -1.0f;
     int stencil = -1;
@@ -245,7 +324,7 @@ float4 main() : COLOR0
   IDirect3DVertexDeclaration9Ptr quadDecl;
   IDirect3DQuery9Ptr occlusion;
   IDirect3DStateBlock9Ptr saved;
-  IDirect3DSurface9Ptr colourSys, depthRT, depthSys, stencilRT, stencilSys;
+  IDirect3DSurface9Ptr colourSys, resolveRT, depthRT, depthSys, stencilRT, stencilSys;
 
   void Marker(const std::string &name)
   {
@@ -272,38 +351,81 @@ float4 main() : COLOR0
     dev->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
     dev->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_REPLACE);
     dev->SetRenderState(D3DRS_COLORWRITEENABLE, s.colourWrite);
+    dev->SetRenderState(D3DRS_ALPHATESTENABLE, s.alphaTest);
+    dev->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATER);
+    dev->SetRenderState(D3DRS_ALPHAREF, 0x80);
+    dev->SetRenderState(D3DRS_TWOSIDEDSTENCILMODE, hasDepth && s.twoSided);
+    dev->SetRenderState(D3DRS_CCW_STENCILFUNC, s.ccwStencilFunc);
+    dev->SetRenderState(D3DRS_CCW_STENCILFAIL, D3DSTENCILOP_KEEP);
+    dev->SetRenderState(D3DRS_CCW_STENCILZFAIL, D3DSTENCILOP_KEEP);
+    dev->SetRenderState(D3DRS_CCW_STENCILPASS, D3DSTENCILOP_REPLACE);
+    dev->SetRenderState(D3DRS_CLIPPLANEENABLE, s.clipPlanes);
+    dev->SetRenderState(D3DRS_MULTISAMPLEMASK, s.sampleMask);
   }
 
-  // what a draw would rasterise at a probe, natively: pixel history's query
-  bool Covers(const std::function<void()> &draw, int vsModel, int probe)
+  // What a draw leaves at a probe natively, with the stages of the pipeline up to each turned on
+  // (NumStages): pixel history's queries. Nothing is written.
+  void Stages(const std::function<void()> &draw, int vsModel, int probe, DWORD out[NumStages])
   {
     saved->Capture();
 
-    dev->SetPixelShader(vsModel >= 3 ? whitePS3 : whitePS2);
-    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-    dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
-    dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-    dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
-    dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-    dev->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
-    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
-    dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0);
-    dev->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
-    const RECT rect = {Probes[probe][0], Probes[probe][1], Probes[probe][0] + 1,
-                       Probes[probe][1] + 1};
-    dev->SetScissorRect(&rect);
+    DWORD cull = 0, clipPlanes = 0, scissorTest = 0, sampleMask = 0, alphaTest = 0, zenable = 0,
+          stencil = 0, twoSided = 0;
+    dev->GetRenderState(D3DRS_CULLMODE, &cull);
+    dev->GetRenderState(D3DRS_CLIPPLANEENABLE, &clipPlanes);
+    dev->GetRenderState(D3DRS_SCISSORTESTENABLE, &scissorTest);
+    dev->GetRenderState(D3DRS_MULTISAMPLEMASK, &sampleMask);
+    dev->GetRenderState(D3DRS_ALPHATESTENABLE, &alphaTest);
+    dev->GetRenderState(D3DRS_ZENABLE, &zenable);
+    dev->GetRenderState(D3DRS_STENCILENABLE, &stencil);
+    dev->GetRenderState(D3DRS_TWOSIDEDSTENCILMODE, &twoSided);
+    RECT scissor = {};
+    dev->GetScissorRect(&scissor);
+    IDirect3DPixelShader9Ptr ps;
+    dev->GetPixelShader(&ps);
 
-    occlusion->Issue(D3DISSUE_BEGIN);
-    draw();
-    occlusion->Issue(D3DISSUE_END);
+    const int px = Probes[probe][0], py = Probes[probe][1];
+    // the scissor test, with the pixel's own rect
+    const bool inScissor = !scissorTest || (px >= scissor.left && px < scissor.right &&
+                                            py >= scissor.top && py < scissor.bottom);
+    const RECT rect = {px, py, px + 1, py + 1};
+
+    for(int s = 0; s < NumStages; s++)
+    {
+      if((s > 0 && out[s - 1] == 0) || (s >= 3 && !inScissor))
+      {
+        out[s] = 0;
+        continue;
+      }
+
+      IDirect3DPixelShader9 *white = vsModel >= 3 ? whitePS3 : whitePS2;
+      dev->SetPixelShader(s >= 5 ? ps.GetInterfacePtr() : white);
+      dev->SetRenderState(D3DRS_ALPHATESTENABLE, s >= 5 ? alphaTest : FALSE);
+      dev->SetRenderState(D3DRS_CULLMODE, s >= 1 ? cull : D3DCULL_NONE);
+      dev->SetRenderState(D3DRS_CLIPPLANEENABLE, s >= 2 ? clipPlanes : 0);
+      dev->SetRenderState(D3DRS_MULTISAMPLEMASK, s >= 4 ? sampleMask : ~0U);
+      dev->SetRenderState(D3DRS_ZENABLE, s >= 6 ? zenable : D3DZB_FALSE);
+      dev->SetRenderState(D3DRS_STENCILENABLE, s >= 7 ? stencil : FALSE);
+      dev->SetRenderState(D3DRS_TWOSIDEDSTENCILMODE, s >= 7 ? twoSided : FALSE);
+      dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+      dev->SetRenderState(D3DRS_STENCILWRITEMASK, 0);
+      dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+      dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0);
+      dev->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+      dev->SetScissorRect(&rect);
+
+      occlusion->Issue(D3DISSUE_BEGIN);
+      draw();
+      occlusion->Issue(D3DISSUE_END);
+
+      DWORD samples = 0;
+      while(occlusion->GetData(&samples, sizeof(samples), D3DGETDATA_FLUSH) == S_FALSE)
+      {
+      }
+      out[s] = samples;
+    }
 
     saved->Apply();
-
-    DWORD samples = 0;
-    while(occlusion->GetData(&samples, sizeof(samples), D3DGETDATA_FLUSH) == S_FALSE)
-    {
-    }
-    return samples > 0;
   }
 
   void DrawQuad()
@@ -338,6 +460,9 @@ float4 main() : COLOR0
     dev->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
     dev->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
     dev->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_KEEP);
+    dev->SetRenderState(D3DRS_TWOSIDEDSTENCILMODE, FALSE);
+    dev->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
+    dev->SetRenderState(D3DRS_MULTISAMPLEMASK, ~0U);
     for(DWORD i = 1; i < 4; i++)
       dev->SetRenderTarget(i, NULL);
 
@@ -382,7 +507,16 @@ float4 main() : COLOR0
 
     dev->EndScene();
 
-    CHECK_HR(dev->GetRenderTargetData(curBatch->col, colourSys));
+    if(curBatch->msaa)
+    {
+      // resolved
+      CHECK_HR(dev->StretchRect(curBatch->col, NULL, resolveRT, NULL, D3DTEXF_NONE));
+      CHECK_HR(dev->GetRenderTargetData(resolveRT, colourSys));
+    }
+    else
+    {
+      CHECK_HR(dev->GetRenderTargetData(curBatch->col, colourSys));
+    }
     if(hasDepth)
     {
       CHECK_HR(dev->GetRenderTargetData(stencilRT, stencilSys));
@@ -426,15 +560,20 @@ float4 main() : COLOR0
   }
 
   // An event of the batch. Natively, when recording, the probes' values after it, and for draws
-  // whether they cover each probe.
+  // what they rasterise at each probe with each stage on.
   void Event(const char *kind, const std::function<void()> &issue)
   {
     const bool draw = !strcmp(kind, "draw");
 
     Record rec;
     if(recording && draw)
+    {
       for(int p = 0; p < NumProbes; p++)
-        rec.probes[p].covered = Covers(issue, cur.vsModel, p) ? 1 : 0;
+      {
+        Stages(issue, cur.vsModel, p, rec.probes[p].stages);
+        rec.probes[p].covered = rec.probes[p].stages[0] > 0 ? 1 : 0;
+      }
+    }
 
     issue();
 
@@ -445,12 +584,15 @@ float4 main() : COLOR0
     rec.marker = curMarker;
     rec.kind = kind;
     rec.depthUsed = draw && curBatch->depth && (cur.zenable || cur.stencil);
-    int covered[NumProbes];
+    ProbeValue tested[NumProbes];
     for(int p = 0; p < NumProbes; p++)
-      covered[p] = rec.probes[p].covered;
+      tested[p] = rec.probes[p];
     ReadProbes(rec.probes);
     for(int p = 0; p < NumProbes; p++)
-      rec.probes[p].covered = covered[p];
+    {
+      rec.probes[p].covered = tested[p].covered;
+      memcpy(rec.probes[p].stages, tested[p].stages, sizeof(tested[p].stages));
+    }
     records.push_back(rec);
   }
 
@@ -465,7 +607,8 @@ float4 main() : COLOR0
       return;
     }
     // E: batch, marker, kind, whether the draw uses depth or stencil. P: probe x, y, covered,
-    // colour as RRGGBBAA, depth as float bits, stencil. Batch starts have kind "start".
+    // colour as RRGGBBAA, depth as float bits, stencil, and for draws the samples with each stage
+    // on, separated by commas ("-" for the rest). Batch starts have kind "start".
     for(const Record &r : records)
     {
       fprintf(f, "E\t%s\t%s\t%s\t%d\n", r.batch.c_str(), r.marker.c_str(), r.kind.c_str(),
@@ -474,8 +617,16 @@ float4 main() : COLOR0
       {
         uint32_t depthBits;
         memcpy(&depthBits, &r.probes[p].depth, sizeof(depthBits));
-        fprintf(f, "P\t%d\t%d\t%d\t%08x\t%08x\t%d\n", Probes[p][0], Probes[p][1],
-                r.probes[p].covered, r.probes[p].rgba, depthBits, r.probes[p].stencil);
+        std::string stages = "-";
+        if(r.probes[p].covered >= 0)
+        {
+          stages.clear();
+          for(int s = 0; s < NumStages; s++)
+            stages += (s ? "," : "") + std::to_string(r.probes[p].stages[s]);
+        }
+        fprintf(f, "P\t%d\t%d\t%d\t%08x\t%08x\t%d\t%s\n", Probes[p][0], Probes[p][1],
+                r.probes[p].covered, r.probes[p].rgba, depthBits, r.probes[p].stencil,
+                stages.c_str());
       }
     }
     fclose(f);
@@ -541,6 +692,26 @@ float4 main() : COLOR0
     IDirect3DPixelShader9Ptr ps = CreatePS(Compile(common + pixel, "main", "ps_3_0"));
     IDirect3DVertexShader9Ptr vs2 = CreateVS(Compile(vertex2, "main", "vs_2_0"));
 
+    IDirect3DPixelShader9Ptr plainPS = CreatePS(Compile(plainPixel, "main", "ps_3_0"));
+    IDirect3DVertexShader9Ptr killVS = CreateVS(Compile(killVertex, "main", "vs_2_0"));
+    IDirect3DPixelShader9Ptr killPS20 = CreatePS(Compile(killPixel20, "main", "ps_2_0"));
+    IDirect3DPixelShader9Ptr killPS11;
+    {
+      // the compiler doesn't make ps_1_x any more
+      HMODULE d3dcompiler = LoadLibraryA("d3dcompiler_47.dll");
+      pD3DAssemble assemble =
+          d3dcompiler ? (pD3DAssemble)GetProcAddress(d3dcompiler, "D3DAssemble") : NULL;
+      ID3DBlobPtr code, errors;
+      if(!assemble || FAILED(assemble(killPixel11Asm.c_str(), killPixel11Asm.size(), NULL, NULL,
+                                      NULL, 0, &code, &errors)))
+      {
+        TEST_ERROR("Couldn't assemble the ps_1_1 shader: %s",
+                   errors ? (const char *)errors->GetBufferPointer() : "no D3DAssemble");
+        return 5;
+      }
+      CHECK_HR(dev->CreatePixelShader((const DWORD *)code->GetBufferPointer(), &killPS11));
+    }
+
     quadVS = CreateVS(Compile(quadVertex, "main", "vs_3_0"));
     whitePS2 = CreatePS(Compile(whitePixel, "main", "ps_2_0"));
     whitePS3 = CreatePS(Compile(whitePixel, "main", "ps_3_0"));
@@ -561,6 +732,8 @@ float4 main() : COLOR0
       CHECK_HR(dev->CreateStateBlock(D3DSBT_ALL, &saved));
       CHECK_HR(dev->CreateOffscreenPlainSurface(screenWidth, screenHeight, D3DFMT_A8R8G8B8,
                                                 D3DPOOL_SYSTEMMEM, &colourSys, NULL));
+      CHECK_HR(dev->CreateRenderTarget(screenWidth, screenHeight, D3DFMT_A8R8G8B8,
+                                       D3DMULTISAMPLE_NONE, 0, FALSE, &resolveRT, NULL));
       CHECK_HR(dev->CreateRenderTarget(screenWidth, screenHeight, D3DFMT_R32F, D3DMULTISAMPLE_NONE,
                                        0, FALSE, &depthRT, NULL));
       CHECK_HR(dev->CreateOffscreenPlainSurface(screenWidth, screenHeight, D3DFMT_R32F,
@@ -613,6 +786,81 @@ float4 main() : COLOR0
       }
       batches.push_back(batch);
     }
+    if(SUCCEEDED(d3d->CheckDeviceMultiSampleType(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, D3DFMT_A8R8G8B8,
+                                                 TRUE, D3DMULTISAMPLE_4_SAMPLES, NULL)))
+    {
+      Batch batch;
+      batch.name = "Multisampled";
+      batch.msaa = true;
+      CHECK_HR(dev->CreateRenderTarget(screenWidth, screenHeight, D3DFMT_A8R8G8B8,
+                                       D3DMULTISAMPLE_4_SAMPLES, 0, FALSE, &batch.col, NULL));
+      batches.push_back(batch);
+    }
+    else
+    {
+      TEST_WARN("4x multisampled A8R8G8B8 isn't supported, leaving out the multisampled batch");
+    }
+
+    // The failure tests' draws: per column, a square that fails at y 262 to 274 and one that
+    // passes at y 276 to 288, in clip space for the viewport below. Clockwise, so front facing,
+    // or the failing one counter-clockwise.
+    auto testSquares = [&](int column, Vec4f failCol, Vec4f passCol, bool failCCW) {
+      std::vector<DefaultA2V> ret;
+      const float l = 20.0f + 20.0f * column, r = l + 12.0f;
+      auto clip = [&](float px, float py) {
+        return Vec3f((px - 10.0f) / (screenWidth - 20) * 2.0f - 1.0f,
+                     1.0f - (py - 10.0f) / (screenHeight - 20) * 2.0f, 0.5f);
+      };
+      for(int sq = 0; sq < 2; sq++)
+      {
+        const float t = sq == 0 ? 262.0f : 276.0f, b = t + 12.0f;
+        const Vec4f col = sq == 0 ? failCol : passCol;
+        Vec3f tl = clip(l, t), tr = clip(r, t), bl = clip(l, b), br = clip(r, b);
+        if(sq == 0 && failCCW)
+        {
+          std::swap(tr, bl);
+        }
+        // tl tr bl, tr br bl clockwise; with tr and bl swapped both are counter-clockwise
+        ret.push_back({tl, col, Vec2f()});
+        ret.push_back({tr, col, Vec2f()});
+        ret.push_back({bl, col, Vec2f()});
+        ret.push_back({tr, col, Vec2f()});
+        ret.push_back({br, col, Vec2f()});
+        ret.push_back({bl, col, Vec2f()});
+      }
+      return ret;
+    };
+    const Vec4f orange(0.9f, 0.5f, 0.1f, 1.0f);
+    const Vec4f alphaFail(0.2f, 0.7f, 0.9f, 0.25f), alphaPass(0.2f, 0.7f, 0.9f, 0.75f);
+    const std::vector<DefaultA2V> alphaSquares = testSquares(1, alphaFail, alphaPass, false);
+    const std::vector<DefaultA2V> kill11Squares = testSquares(2, alphaFail, alphaPass, false);
+    const std::vector<DefaultA2V> kill20Squares = testSquares(3, alphaFail, alphaPass, false);
+    const std::vector<DefaultA2V> twoSidedSquares = testSquares(4, orange, orange, true);
+    const std::vector<DefaultA2V> clipSquares = testSquares(5, orange, orange, false);
+    const std::vector<DefaultA2V> mask0Squares = testSquares(6, orange, orange, false);
+    const std::vector<DefaultA2V> mask5Squares = testSquares(7, orange, orange, false);
+
+    // the fixed function alpha test, pre-transformed, in column 0
+    FFVertex ffAlpha[12];
+    for(int sq = 0; sq < 2; sq++)
+    {
+      const float l = 20.0f, r = 32.0f, t = sq == 0 ? 262.0f : 276.0f, b = t + 12.0f;
+      const D3DCOLOR col = D3DCOLOR_ARGB(sq == 0 ? 0x40 : 0xC0, 250, 200, 40);
+      const FFVertex tl = {l, t, 0.5f, 1.0f, col}, tr = {r, t, 0.5f, 1.0f, col},
+                     bl = {l, b, 0.5f, 1.0f, col}, br = {r, b, 0.5f, 1.0f, col};
+      FFVertex *v = ffAlpha + sq * 6;
+      v[0] = tl;
+      v[1] = tr;
+      v[2] = bl;
+      v[3] = tr;
+      v[4] = br;
+      v[5] = bl;
+    }
+
+    // -y + d >= 0 keeps clip space y <= d, the pixels below y = 275, so it clips column 5's top
+    // square
+    const float clipPlane[4] = {0.0f, -1.0f, 0.0f,
+                                1.0f - (275.0f - 10.0f) / (screenHeight - 20) * 2.0f};
 
     // D3D11_Pixel_History's states
     State base;
@@ -668,6 +916,48 @@ float4 main() : COLOR0
     ffState.vs = NULL;
     ffState.ps = NULL;
     ffState.vsModel = 0;
+
+    // the failure tests: no depth test, so only what's tested fails
+    State testState = scissorState;
+    testState.ps = plainPS;
+
+    State alphaFFState = ffState;
+    alphaFFState.zenable = FALSE;
+    alphaFFState.zwrite = FALSE;
+    alphaFFState.alphaTest = TRUE;
+
+    State alphaState = testState;
+    alphaState.alphaTest = TRUE;
+
+    State kill11State = testState;
+    kill11State.vs = killVS;
+    kill11State.ps = killPS11;
+    kill11State.vsModel = 2;
+
+    State kill20State = kill11State;
+    kill20State.ps = killPS20;
+
+    // back faces fail
+    State twoSidedState = testState;
+    twoSidedState.cull = D3DCULL_NONE;
+    twoSidedState.stencil = TRUE;
+    twoSidedState.twoSided = TRUE;
+    twoSidedState.ccwStencilFunc = D3DCMP_NEVER;
+
+    State clipState = testState;
+    clipState.clipPlanes = D3DCLIPPLANE0;
+
+    // on single sampled targets the mask does nothing
+    State mask0State = testState;
+    mask0State.sampleMask = 0;
+
+    State mask5State = testState;
+    mask5State.sampleMask = 0x5;
+
+    auto drawUP = [&](const std::vector<DefaultA2V> &v) {
+      dev->SetVertexDeclaration(defaultDecl);
+      dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, UINT(v.size() / 3), v.data(), sizeof(DefaultA2V));
+    };
 
     auto drawList = [&](const PixelHistory::draw &d) {
       dev->SetVertexDeclaration(defaultDecl);
@@ -727,168 +1017,217 @@ float4 main() : COLOR0
         dev->SetScissorRect(&scissor);
         dev->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
 
-        pushMarker("Setup");
+        dev->SetClipPlane(0, clipPlane);
+
+        // the multisampled batch has only the failure tests
+        if(!b.msaa)
         {
-          Marker("Depth Write");
-          SetState(depthWriteState);
-          Event("draw", [&]() { drawList(PixelHistory::DepthWrite); });
-
-          Marker("Depth Equal Setup");
-          Event("draw", [&]() { drawList(PixelHistory::DepthEqualSetup); });
-
-          Marker("Unbound Shader");
-          SetState(noPsState);
-          Event("draw", [&]() { drawList(PixelHistory::UnboundPS); });
-
-          Marker("Stencil Write");
-          SetState(stencilWriteState);
-          Event("draw", [&]() { drawList(PixelHistory::StencilWrite); });
-
-          Marker("Background");
-          SetState(backgroundState);
-          Event("draw", [&]() { drawList(PixelHistory::Background); });
-
-          Marker("Cull Front");
-          SetState(cullFrontState);
-          Event("draw", [&]() { drawList(PixelHistory::CullFront); });
-
-          // D3D9 has no depth bounds test
-        }
-        popMarker();
-
-        pushMarker("Stress Test");
-        {
-          pushMarker("Lots of Drawcalls");
+          pushMarker("Setup");
           {
-            Marker("300 Draws");
+            Marker("Depth Write");
             SetState(depthWriteState);
-            for(int d = 0; d < 300; ++d)
-              Event("draw", [&]() { drawList(PixelHistory::Draws300); });
+            Event("draw", [&]() { drawList(PixelHistory::DepthWrite); });
+
+            Marker("Depth Equal Setup");
+            Event("draw", [&]() { drawList(PixelHistory::DepthEqualSetup); });
+
+            Marker("Unbound Shader");
+            SetState(noPsState);
+            Event("draw", [&]() { drawList(PixelHistory::UnboundPS); });
+
+            Marker("Stencil Write");
+            SetState(stencilWriteState);
+            Event("draw", [&]() { drawList(PixelHistory::StencilWrite); });
+
+            Marker("Background");
+            SetState(backgroundState);
+            Event("draw", [&]() { drawList(PixelHistory::Background); });
+
+            Marker("Cull Front");
+            SetState(cullFrontState);
+            Event("draw", [&]() { drawList(PixelHistory::CullFront); });
+
+            // D3D9 has no depth bounds test
           }
           popMarker();
 
-          Marker("300 Instances");
-          Event("draw", [&]() {
-            dev->SetVertexDeclaration(instanceDecl);
-            dev->SetStreamSource(0, vb, 0, sizeof(DefaultA2V));
-            dev->SetStreamSource(1, instanceVB, 0, sizeof(float) * 4);
-            dev->SetStreamSourceFreq(0, D3DSTREAMSOURCE_INDEXEDDATA | 300);
-            dev->SetStreamSourceFreq(1, UINT(D3DSTREAMSOURCE_INSTANCEDATA | 1));
-            dev->SetIndices(ib);
-            dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, PixelHistory::Instances300.first, 0, 3, 0,
-                                      1);
-            dev->SetStreamSourceFreq(0, 1);
-            dev->SetStreamSourceFreq(1, 1);
-            dev->SetStreamSource(1, NULL, 0, 0);
-          });
-        }
-        popMarker();
+          pushMarker("Stress Test");
+          {
+            pushMarker("Lots of Drawcalls");
+            {
+              Marker("300 Draws");
+              SetState(depthWriteState);
+              for(int d = 0; d < 300; ++d)
+                Event("draw", [&]() { drawList(PixelHistory::Draws300); });
+            }
+            popMarker();
 
-        Marker("Simple Test");
-        SetState(basicState);
-        Event("draw", [&]() { drawList(PixelHistory::MainTest); });
+            Marker("300 Instances");
+            Event("draw", [&]() {
+              dev->SetVertexDeclaration(instanceDecl);
+              dev->SetStreamSource(0, vb, 0, sizeof(DefaultA2V));
+              dev->SetStreamSource(1, instanceVB, 0, sizeof(float) * 4);
+              dev->SetStreamSourceFreq(0, D3DSTREAMSOURCE_INDEXEDDATA | 300);
+              dev->SetStreamSourceFreq(1, UINT(D3DSTREAMSOURCE_INSTANCEDATA | 1));
+              dev->SetIndices(ib);
+              dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, PixelHistory::Instances300.first, 0, 3,
+                                        0, 1);
+              dev->SetStreamSourceFreq(0, 1);
+              dev->SetStreamSourceFreq(1, 1);
+              dev->SetStreamSource(1, NULL, 0, 0);
+            });
+          }
+          popMarker();
 
-        SetState(scissorState);
+          Marker("Simple Test");
+          SetState(basicState);
+          Event("draw", [&]() { drawList(PixelHistory::MainTest); });
 
-        Marker("Scissor Fail");
-        dev->SetScissorRect(&scissorFail);
-        Event("draw", [&]() { drawList(PixelHistory::ScissorFail); });
+          SetState(scissorState);
 
-        Marker("Scissor Pass");
-        dev->SetScissorRect(&scissorPass);
-        Event("draw", [&]() { drawList(PixelHistory::ScissorPass); });
+          Marker("Scissor Fail");
+          dev->SetScissorRect(&scissorFail);
+          Event("draw", [&]() { drawList(PixelHistory::ScissorFail); });
 
-        dev->SetScissorRect(&scissor);
+          Marker("Scissor Pass");
+          dev->SetScissorRect(&scissorPass);
+          Event("draw", [&]() { drawList(PixelHistory::ScissorPass); });
 
-        Marker("Stencil Ref");
-        SetState(stencilRefState);
-        Event("draw", [&]() { drawList(PixelHistory::StencilRef); });
-
-        Marker("Stencil Mask");
-        SetState(stencilMaskState);
-        Event("draw", [&]() { drawList(PixelHistory::StencilMask); });
-
-        Marker("Depth Test");
-        SetState(depthState);
-        Event("draw", [&]() { drawList(PixelHistory::DepthTest); });
-
-        // D3D9 has no sample index, so this is drawn with the usual shader
-        Marker("Sample Colouring");
-        SetState(sampleColourState);
-        Event("draw", [&]() { drawList(PixelHistory::SampleColour); });
-
-        Marker("Depth Equal Fail");
-        SetState(depthEqualState);
-        Event("draw", [&]() { drawList(PixelHistory::DepthEqualFail); });
-
-        // INTZ has D24's depth
-        Marker("Depth Equal Pass");
-        SetState(depthEqualState);
-        Event("draw", [&]() { drawList(PixelHistory::DepthEqualPass24); });
-
-        Marker("Colour Masked");
-        SetState(colourMaskState);
-        Event("draw", [&]() { drawList(PixelHistory::ColourMask); });
-
-        Marker("Overflowing");
-        SetState(backgroundState);
-        Event("draw", [&]() { drawList(PixelHistory::OverflowingDraw); });
-
-        Marker("Per-Fragment discarding");
-        SetState(backgroundState);
-        Event("draw", [&]() { drawList(PixelHistory::PerFragDiscard); });
-
-        // D3D9 has no pixel shaders without output, so no "No Output Shader"
-
-        pushMarker("D3D9 Writes");
-        {
-          Marker("Clear Rects");
-          Event("clear", [&]() {
-            dev->Clear(2, ClearRects, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 230, 25, 25), 1.0f, 0);
-          });
-
-          Marker("Clear Viewport Scissor");
-          dev->SetViewport(&ClearViewport);
-          dev->SetScissorRect(&ClearScissor);
-          Event("clear", [&]() {
-            dev->Clear(0, NULL, D3DCLEAR_TARGET | (b.depth ? D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL : 0),
-                       D3DCOLOR_ARGB(255, 25, 230, 25), 0.25f, 0x42);
-          });
-          dev->SetViewport(&viewport);
           dev->SetScissorRect(&scissor);
 
-          Marker("ColorFill");
-          Event("clear",
-                [&]() { dev->ColorFill(b.col, &FillRect, D3DCOLOR_ARGB(255, 25, 230, 230)); });
+          Marker("Stencil Ref");
+          SetState(stencilRefState);
+          Event("draw", [&]() { drawList(PixelHistory::StencilRef); });
 
-          Marker("StretchRect");
-          Event("copy", [&]() {
-            const RECT src = {0, 0, 20, 20};
-            dev->StretchRect(stretchSrc, &src, b.col, &StretchDest, D3DTEXF_POINT);
-          });
+          Marker("Stencil Mask");
+          SetState(stencilMaskState);
+          Event("draw", [&]() { drawList(PixelHistory::StencilMask); });
 
-          Marker("UpdateSurface");
-          Event("copy", [&]() {
-            HRESULT hr = dev->UpdateSurface(updateSrc, NULL, b.col, &UpdateDest);
-            if(FAILED(hr))
-              TEST_ERROR("UpdateSurface into the render target failed: %x", hr);
-          });
+          Marker("Depth Test");
+          SetState(depthState);
+          Event("draw", [&]() { drawList(PixelHistory::DepthTest); });
 
-          Marker("Fixed Function");
-          SetState(ffState);
+          // D3D9 has no sample index, so this is drawn with the usual shader
+          Marker("Sample Colouring");
+          SetState(sampleColourState);
+          Event("draw", [&]() { drawList(PixelHistory::SampleColour); });
+
+          Marker("Depth Equal Fail");
+          SetState(depthEqualState);
+          Event("draw", [&]() { drawList(PixelHistory::DepthEqualFail); });
+
+          // INTZ has D24's depth
+          Marker("Depth Equal Pass");
+          SetState(depthEqualState);
+          Event("draw", [&]() { drawList(PixelHistory::DepthEqualPass24); });
+
+          Marker("Colour Masked");
+          SetState(colourMaskState);
+          Event("draw", [&]() { drawList(PixelHistory::ColourMask); });
+
+          Marker("Overflowing");
+          SetState(backgroundState);
+          Event("draw", [&]() { drawList(PixelHistory::OverflowingDraw); });
+
+          Marker("Per-Fragment discarding");
+          SetState(backgroundState);
+          Event("draw", [&]() { drawList(PixelHistory::PerFragDiscard); });
+
+          // D3D9 has no pixel shaders without output, so no "No Output Shader"
+
+          pushMarker("D3D9 Writes");
+          {
+            Marker("Clear Rects");
+            Event("clear", [&]() {
+              dev->Clear(2, ClearRects, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 230, 25, 25), 1.0f, 0);
+            });
+
+            Marker("Clear Viewport Scissor");
+            dev->SetViewport(&ClearViewport);
+            dev->SetScissorRect(&ClearScissor);
+            Event("clear", [&]() {
+              dev->Clear(0, NULL,
+                         D3DCLEAR_TARGET | (b.depth ? D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL : 0),
+                         D3DCOLOR_ARGB(255, 25, 230, 25), 0.25f, 0x42);
+            });
+            dev->SetViewport(&viewport);
+            dev->SetScissorRect(&scissor);
+
+            Marker("ColorFill");
+            Event("clear",
+                  [&]() { dev->ColorFill(b.col, &FillRect, D3DCOLOR_ARGB(255, 25, 230, 230)); });
+
+            Marker("StretchRect");
+            Event("copy", [&]() {
+              const RECT src = {0, 0, 20, 20};
+              dev->StretchRect(stretchSrc, &src, b.col, &StretchDest, D3DTEXF_POINT);
+            });
+
+            Marker("UpdateSurface");
+            Event("copy", [&]() {
+              HRESULT hr = dev->UpdateSurface(updateSrc, NULL, b.col, &UpdateDest);
+              if(FAILED(hr))
+                TEST_ERROR("UpdateSurface into the render target failed: %x", hr);
+            });
+
+            Marker("Fixed Function");
+            SetState(ffState);
+            Event("draw", [&]() {
+              dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+              dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, ffQuad, sizeof(FFVertex));
+            });
+
+            Marker("Indexed");
+            SetState(backgroundState);
+            Event("draw", [&]() {
+              dev->SetVertexDeclaration(defaultDecl);
+              dev->SetStreamSource(0, vb, 0, sizeof(DefaultA2V));
+              dev->SetIndices(ib);
+              dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, indexedFirst, 0, 3, 0, 1);
+            });
+          }
+          popMarker();
+        }
+
+        // draws that fail D3D9's tests at the top squares and pass at the bottom ones
+        pushMarker("D3D9 Tests");
+        {
+          Marker("Alpha Test FF");
+          SetState(alphaFFState);
           Event("draw", [&]() {
             dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
-            dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, ffQuad, sizeof(FFVertex));
+            dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 4, ffAlpha, sizeof(FFVertex));
           });
 
-          Marker("Indexed");
-          SetState(backgroundState);
-          Event("draw", [&]() {
-            dev->SetVertexDeclaration(defaultDecl);
-            dev->SetStreamSource(0, vb, 0, sizeof(DefaultA2V));
-            dev->SetIndices(ib);
-            dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, indexedFirst, 0, 3, 0, 1);
-          });
+          Marker("Alpha Test");
+          SetState(alphaState);
+          Event("draw", [&]() { drawUP(alphaSquares); });
+
+          Marker("Texkill ps_1_1");
+          SetState(kill11State);
+          Event("draw", [&]() { drawUP(kill11Squares); });
+
+          Marker("Texkill ps_2_0");
+          SetState(kill20State);
+          Event("draw", [&]() { drawUP(kill20Squares); });
+
+          Marker("Two Sided Stencil");
+          SetState(twoSidedState);
+          Event("draw", [&]() { drawUP(twoSidedSquares); });
+
+          Marker("Clip Plane");
+          SetState(clipState);
+          Event("draw", [&]() { drawUP(clipSquares); });
+
+          Marker("Sample Mask 0");
+          SetState(mask0State);
+          Event("draw", [&]() { drawUP(mask0Squares); });
+
+          Marker("Sample Mask 5");
+          SetState(mask5State);
+          Event("draw", [&]() { drawUP(mask5Squares); });
+
+          SetState(testState);
         }
         popMarker();
 

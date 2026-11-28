@@ -619,6 +619,8 @@ private:
       s += tr("\nDepth Clipped");
     if(mod.depthBoundsFailed)
       s += tr("\nDepth bounds test failed");
+    if(mod.viewClipped)
+      s += tr("\nView clipped");
     if(mod.scissorClipped)
       s += tr("\nScissor Clipped");
     if(mod.shaderDiscarded)

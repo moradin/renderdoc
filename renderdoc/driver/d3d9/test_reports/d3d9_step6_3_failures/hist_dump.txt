@@ -1,0 +1,111 @@
+
+Basic colour (170, 140): 5 modifications in 0.100s
+  EID 12    Begin RenderPass       passed
+  EID 80    Unbound Shader         passed
+  EID 109   Stencil Write          passed
+  EID 138   Background             depthTestFailed
+  EID 1138  Simple Test            stencilTestFailed
+
+Basic colour (170, 160): 5 modifications in 0.077s
+  EID 12    Begin RenderPass       passed
+  EID 47    Depth Write            passed
+  EID 138   Background             depthTestFailed
+  EID 167   Cull Front             backfaceCulled
+  EID 1138  Simple Test            depthTestFailed
+
+Basic colour (150, 250): 2 modifications in 0.070s
+  EID 12    Begin RenderPass       passed
+  EID 138   Background             shaderDiscarded
+
+Basic colour (106, 248): 6 modifications in 0.076s
+  EID 12    Begin RenderPass       passed
+  EID 138   Background             passed
+  EID 1168  Scissor Fail           scissorClipped
+  EID 1173  Scissor Pass           passed
+  EID 1203  Stencil Ref            passed
+  EID 1232  Stencil Mask           passed
+
+Basic colour (26, 268): 2 modifications in 0.067s
+  EID 12    Begin RenderPass       passed
+  EID 1538  Alpha Test FF          shaderDiscarded
+
+Basic colour (46, 268): 3 modifications in 0.072s
+  EID 12    Begin RenderPass       passed
+  EID 138   Background             passed
+  EID 1566  Alpha Test             shaderDiscarded
+
+Basic colour (66, 268): 3 modifications in 0.071s
+  EID 12    Begin RenderPass       passed
+  EID 138   Background             passed
+  EID 1594  Texkill ps_1_1         shaderDiscarded
+
+Basic colour (86, 268): 3 modifications in 0.071s
+  EID 12    Begin RenderPass       passed
+  EID 138   Background             passed
+  EID 1622  Texkill ps_2_0         shaderDiscarded
+
+Basic colour (106, 268): 3 modifications in 0.071s
+  EID 12    Begin RenderPass       passed
+  EID 138   Background             passed
+  EID 1650  Two Sided Stencil      stencilTestFailed
+
+Basic colour (106, 282): 2 modifications in 0.070s
+  EID 12    Begin RenderPass       passed
+  EID 1650  Two Sided Stencil      passed
+
+Basic colour (126, 268): 3 modifications in 0.098s
+  EID 12    Begin RenderPass       passed
+  EID 138   Background             passed
+  EID 1678  Clip Plane             viewClipped
+
+Basic colour (146, 268): 3 modifications in 0.080s
+  EID 12    Begin RenderPass       passed
+  EID 138   Background             passed
+  EID 1706  Sample Mask 0          passed
+
+Basic depth stencil (170, 140): 5 modifications in 0.072s
+  EID 13    Begin RenderPass       passed
+  EID 80    Unbound Shader         passed
+  EID 109   Stencil Write          passed
+  EID 138   Background             depthTestFailed
+  EID 1138  Simple Test            stencilTestFailed
+
+Basic depth stencil (106, 268): 3 modifications in 0.071s
+  EID 13    Begin RenderPass       passed
+  EID 138   Background             passed
+  EID 1650  Two Sided Stencil      stencilTestFailed
+
+Colour Only colour (170, 140): 5 modifications in 0.072s
+  EID 1772  Begin RenderPass       passed
+  EID 1839  Unbound Shader         passed
+  EID 1868  Stencil Write          passed
+  EID 1897  Background             passed
+  EID 2897  Simple Test            passed
+
+Colour Only colour (106, 268): 3 modifications in 0.072s
+  EID 1772  Begin RenderPass       passed
+  EID 1897  Background             passed
+  EID 3409  Two Sided Stencil      passed
+
+Colour Only colour (146, 268): 3 modifications in 0.072s
+  EID 1772  Begin RenderPass       passed
+  EID 1897  Background             passed
+  EID 3465  Sample Mask 0          passed
+
+Multisampled colour (146, 268): 2 modifications in 0.016s
+  EID 3531  Begin RenderPass       passed
+  EID 3732  Sample Mask 0          sampleMasked
+
+Multisampled colour (166, 268): 2 modifications in 0.016s
+  EID 3531  Begin RenderPass       passed
+  EID 3760  Sample Mask 5          passed
+
+Multisampled colour (126, 268): 2 modifications in 0.016s
+  EID 3531  Begin RenderPass       passed
+  EID 3704  Clip Plane             viewClipped
+
+Basic colour (60, 130): 301 modifications in 0.484s
+  0 failed
+
+Basic depth stencil (60, 130): 301 modifications in 0.450s
+  0 failed

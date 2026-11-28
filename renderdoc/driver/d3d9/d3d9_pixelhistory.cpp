@@ -41,6 +41,11 @@
 //   test, user clip planes and colour writes off, as D3D11 does. So everything the draw rasterises
 //   at the pixel counts, whether or not it then passed its tests. Depth clipping can't be turned
 //   off, so a draw whose fragments at the pixel are all outside the depth range isn't listed.
+// * Why a listed draw's fragments failed: the query is repeated with the pipeline's stages turned
+//   back on in order (culling, user clip planes, the sample mask, the pixel shader with the alpha
+//   test, the depth test, the stencil test), and the first that leaves nothing is the reason, as
+//   D3D11's tests are. The scissor test is decided on the CPU. D3D9's user clip planes are
+//   reported as viewClipped, since no other flag is closer.
 // * Clears and copies are decided on the CPU: Clear writes inside the viewport, the scissor rect
 //   when the scissor test is on, and its rects; ColorFill, StretchRect and UpdateSurface only in
 //   their destination rectangle (D3D9WriteRegion, kept at load). UpdateTexture and
@@ -52,9 +57,9 @@
 // * As on D3D11, clears are modifications of their own, the copies and GenerateMipSubLevels are
 //   direct writes, and a colour clear has no depth and a depth clear no colour.
 //
-// Each draw is one modification for now. Why its fragments failed, the fragments within a draw,
-// their shader outputs and primitive IDs are the next chunks of step 6 (STATUS.md), so shaderOut
-// is unavailable and the primitive unknown.
+// Each draw is one modification for now, failed only if all its fragments at the pixel did. The
+// fragments within a draw, their shader outputs and primitive IDs are the next chunks of step 6
+// (STATUS.md), so shaderOut is unavailable and the primitive unknown.
 
 // d3d9_pixel.cpp and d3d9_overlay.cpp
 bool D3D9DecodeTexel(D3DFORMAT format, const byte *p, FloatVector &out);
@@ -227,52 +232,131 @@ rdcarray<PixelModification> D3D9Replay::PixelHistory(rdcarray<EventUsage> events
     return false;
   };
 
-  // whether the draw at eventId rasterises anything at the pixel
-  auto drawTouches = [&](uint32_t eventId) {
+  // Whether the draw at eventId rasterises anything at the pixel, and if so, why its fragments
+  // there all failed, in fails. Each stage of the pipeline is turned back on in order, and the
+  // first after which nothing is left is the reason: culling, user clip planes, the scissor test,
+  // the sample mask, the pixel shader (texkill) with the alpha test and alpha to coverage, the
+  // depth test, then the stencil test. Nothing is written by these draws.
+  auto testDraw = [&](uint32_t eventId, PixelModification &fails) {
     D3D9DeviceState state;
     // a state block is being recorded: our state calls would go into it, so it can't be tested
     if(!canQuery || !m_pDevice->SaveReplayDrawState(state))
       return true;
 
-    const float colour[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-    dev->SetPixelShader(D3D9BoundVertexShaderMajor(dev) >= 3 ? m_Overlay.colourPS3
-                                                             : m_Overlay.colourPS2);
-    dev->SetPixelShaderConstantF(0, colour, 1);
+    DWORD cull = D3DCULL_NONE, clipPlanes = 0, scissorTest = FALSE, sampleMask = ~0U,
+          alphaTest = FALSE, atoc = D3DFMT_UNKNOWN, zenable = D3DZB_FALSE, stencil = FALSE,
+          twoSided = FALSE;
+    dev->GetRenderState(D3DRS_CULLMODE, &cull);
+    dev->GetRenderState(D3DRS_CLIPPLANEENABLE, &clipPlanes);
+    dev->GetRenderState(D3DRS_SCISSORTESTENABLE, &scissorTest);
+    dev->GetRenderState(D3DRS_MULTISAMPLEMASK, &sampleMask);
+    dev->GetRenderState(D3DRS_ALPHATESTENABLE, &alphaTest);
+    dev->GetRenderState(D3DRS_ADAPTIVETESS_Y, &atoc);
+    dev->GetRenderState(D3DRS_ZENABLE, &zenable);
+    dev->GetRenderState(D3DRS_STENCILENABLE, &stencil);
+    dev->GetRenderState(D3DRS_TWOSIDEDSTENCILMODE, &twoSided);
+    RECT scissor = {};
+    dev->GetScissorRect(&scissor);
+    IDirect3DPixelShader9 *ps = NULL;
+    dev->GetPixelShader(&ps);
+    float psConst0[4] = {};
+    dev->GetPixelShaderConstantF(0, psConst0, 1);
+    const bool hasDepthStencil = m_pDevice->GetBoundDepthStencil() != NULL;
 
-    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-    dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
-    dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-    dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
-    dev->SetRenderState(D3DRS_TWOSIDEDSTENCILMODE, FALSE);
-    dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-    dev->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
-    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
-    dev->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
-    dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0);
-    dev->SetRenderState(D3DRS_COLORWRITEENABLE1, 0);
-    dev->SetRenderState(D3DRS_COLORWRITEENABLE2, 0);
-    dev->SetRenderState(D3DRS_COLORWRITEENABLE3, 0);
-    dev->SetRenderState(D3DRS_MULTISAMPLEMASK, 0xFFFFFFFF);
-    // NVIDIA's alpha to coverage switch
-    dev->SetRenderState(D3DRS_ADAPTIVETESS_Y, D3DFMT_UNKNOWN);
-
+    IDirect3DPixelShader9 *colourPS =
+        D3D9BoundVertexShaderMajor(dev) >= 3 ? m_Overlay.colourPS3 : m_Overlay.colourPS2;
+    const float white[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     const RECT pixel = {LONG(x), LONG(y), LONG(x + 1), LONG(y + 1)};
-    dev->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
-    dev->SetScissorRect(&pixel);
 
-    occlusion->Issue(D3DISSUE_BEGIN);
-    m_pDevice->ReplayLog(0, eventId, eReplay_OnlyDraw);
-    occlusion->Issue(D3DISSUE_END);
+    enum Stage
+    {
+      Stage_Rasterise,
+      Stage_Cull,
+      Stage_ClipPlanes,
+      Stage_SampleMask,
+      Stage_Shader,
+      Stage_Depth,
+      Stage_Stencil,
+    };
+
+    bool queryFailed = false;
+
+    // the samples the draw leaves at the pixel with the stages up to s on
+    auto samplesWith = [&](Stage s) -> DWORD {
+      const bool shader = s >= Stage_Shader;
+      dev->SetPixelShader(shader ? ps : colourPS);
+      dev->SetPixelShaderConstantF(0, shader ? psConst0 : white, 1);
+      dev->SetRenderState(D3DRS_ALPHATESTENABLE, shader ? alphaTest : FALSE);
+      // NVIDIA's alpha to coverage switch
+      dev->SetRenderState(D3DRS_ADAPTIVETESS_Y, shader ? atoc : D3DFMT_UNKNOWN);
+
+      dev->SetRenderState(D3DRS_CULLMODE, s >= Stage_Cull ? cull : D3DCULL_NONE);
+      dev->SetRenderState(D3DRS_CLIPPLANEENABLE, s >= Stage_ClipPlanes ? clipPlanes : 0);
+      dev->SetRenderState(D3DRS_MULTISAMPLEMASK, s >= Stage_SampleMask ? sampleMask : ~0U);
+      dev->SetRenderState(D3DRS_ZENABLE, s >= Stage_Depth ? zenable : D3DZB_FALSE);
+      dev->SetRenderState(D3DRS_STENCILENABLE, s >= Stage_Stencil ? stencil : FALSE);
+      dev->SetRenderState(D3DRS_TWOSIDEDSTENCILMODE, s >= Stage_Stencil ? twoSided : FALSE);
+
+      // never written
+      dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+      dev->SetRenderState(D3DRS_STENCILWRITEMASK, 0);
+      dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+      dev->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
+      dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0);
+      dev->SetRenderState(D3DRS_COLORWRITEENABLE1, 0);
+      dev->SetRenderState(D3DRS_COLORWRITEENABLE2, 0);
+      dev->SetRenderState(D3DRS_COLORWRITEENABLE3, 0);
+
+      // the scissor test is decided on the CPU, below
+      dev->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+      dev->SetScissorRect(&pixel);
+
+      occlusion->Issue(D3DISSUE_BEGIN);
+      m_pDevice->ReplayLog(0, eventId, eReplay_OnlyDraw);
+      occlusion->Issue(D3DISSUE_END);
+
+      DWORD samples = 0;
+      if(!WaitForQuery(occlusion, &samples, sizeof(samples)))
+      {
+        RDCWARN("Pixel history: no occlusion result for event %u", eventId);
+        queryFailed = true;
+        // listed, and not failed
+        return 1;
+      }
+      return samples;
+    };
+
+    const bool touches = samplesWith(Stage_Rasterise) > 0;
+
+    if(touches && !queryFailed)
+    {
+      // only the first test that removes everything is the reason
+      if(cull != D3DCULL_NONE && samplesWith(Stage_Cull) == 0)
+        fails.backfaceCulled = true;
+      // no flag is closer for D3D9's user clip planes, which clip as the view volume does
+      else if(clipPlanes != 0 && samplesWith(Stage_ClipPlanes) == 0)
+        fails.viewClipped = true;
+      else if(scissorTest && !Contains(scissor, x, y))
+        fails.scissorClipped = true;
+      else if(sampleMask != ~0U && samplesWith(Stage_SampleMask) == 0)
+        fails.sampleMasked = true;
+      // fixed function pixel processing has no texkill
+      else if((ps || alphaTest || atoc != D3DFMT_UNKNOWN) && samplesWith(Stage_Shader) == 0)
+        fails.shaderDiscarded = true;
+      else if(zenable != D3DZB_FALSE && hasDepthStencil && samplesWith(Stage_Depth) == 0)
+        fails.depthTestFailed = true;
+      else if(stencil && hasDepthStencil && samplesWith(Stage_Stencil) == 0)
+        fails.stencilTestFailed = true;
+
+      // a test whose query didn't come back isn't reported
+      if(queryFailed)
+        fails = PixelModification();
+    }
 
     m_pDevice->RestoreReplayDrawState(state);
+    SAFE_RELEASE(ps);
 
-    DWORD samples = 0;
-    if(!WaitForQuery(occlusion, &samples, sizeof(samples)))
-    {
-      RDCWARN("Pixel history: no occlusion result for event %u, listing it", eventId);
-      return true;
-    }
-    return samples > 0;
+    return touches;
   };
 
   // whether a Clear at the current event covers the pixel
@@ -355,6 +439,8 @@ rdcarray<PixelModification> D3D9Replay::PixelHistory(rdcarray<EventUsage> events
     const D3D9WriteRegion *region = m_pDevice->GetWriteRegion(eventId);
 
     bool written = false, clear = false, direct = false, draw = false;
+    // why a draw's fragments at the pixel failed, if they all did
+    PixelModification fails = {};
 
     if(region && region->clear)
     {
@@ -365,7 +451,7 @@ rdcarray<PixelModification> D3D9Replay::PixelHistory(rdcarray<EventUsage> events
     else if(action->flags & ActionFlags::Drawcall)
     {
       draw = true;
-      written = boundAsTarget() && drawTouches(eventId);
+      written = boundAsTarget() && testDraw(eventId, fails);
     }
     else if(action->flags &
             (ActionFlags::Clear | ActionFlags::Copy | ActionFlags::Resolve | ActionFlags::GenMips))
@@ -399,7 +485,7 @@ rdcarray<PixelModification> D3D9Replay::PixelHistory(rdcarray<EventUsage> events
     if(!written)
       continue;
 
-    PixelModification mod = {};
+    PixelModification mod = fails;
     mod.eventId = eventId;
     mod.directShaderWrite = direct;
     mod.unboundPS = false;

@@ -1,0 +1,60 @@
+Basic        Background         (150, 250) [1, 1, 1, 1, 1, 0, 0, 0]         shader
+Basic        Background         (170, 140) [1, 1, 1, 1, 1, 1, 0, 0]         depth
+Basic        Cull Front         (170, 160) [1, 0, 0, 0, 0, 0, 0, 0]         culled
+Basic        Simple Test        (170, 140) [1, 1, 1, 1, 1, 1, 1, 0]         stencil
+Basic        Simple Test        (170, 160) [1, 1, 1, 1, 1, 1, 0, 0]         depth
+Basic        Scissor Fail       (106, 248) [1, 1, 1, 0, 0, 0, 0, 0]         scissor
+Basic        Alpha Test FF      (26, 268)  [1, 1, 1, 1, 1, 0, 0, 0]         shader
+Basic        Alpha Test FF      (26, 282)  [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Basic        Alpha Test         (46, 268)  [1, 1, 1, 1, 1, 0, 0, 0]         shader
+Basic        Alpha Test         (46, 282)  [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Basic        Texkill ps_1_1     (66, 268)  [1, 1, 1, 1, 1, 0, 0, 0]         shader
+Basic        Texkill ps_1_1     (66, 282)  [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Basic        Texkill ps_2_0     (86, 268)  [1, 1, 1, 1, 1, 0, 0, 0]         shader
+Basic        Texkill ps_2_0     (86, 282)  [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Basic        Two Sided Stencil  (106, 268) [1, 1, 1, 1, 1, 1, 1, 0]         stencil
+Basic        Two Sided Stencil  (106, 282) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Basic        Clip Plane         (126, 268) [1, 1, 0, 0, 0, 0, 0, 0]         clip plane
+Basic        Clip Plane         (126, 282) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Basic        Sample Mask 0      (146, 268) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Basic        Sample Mask 0      (146, 282) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Basic        Sample Mask 5      (166, 268) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Basic        Sample Mask 5      (166, 282) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Colour Only  Background         (150, 250) [1, 1, 1, 1, 1, 0, 0, 0]         shader
+Colour Only  Background         (170, 140) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Colour Only  Cull Front         (170, 160) [1, 0, 0, 0, 0, 0, 0, 0]         culled
+Colour Only  Simple Test        (170, 140) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Colour Only  Simple Test        (170, 160) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Colour Only  Scissor Fail       (106, 248) [1, 1, 1, 0, 0, 0, 0, 0]         scissor
+Colour Only  Alpha Test FF      (26, 268)  [1, 1, 1, 1, 1, 0, 0, 0]         shader
+Colour Only  Alpha Test FF      (26, 282)  [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Colour Only  Alpha Test         (46, 268)  [1, 1, 1, 1, 1, 0, 0, 0]         shader
+Colour Only  Alpha Test         (46, 282)  [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Colour Only  Texkill ps_1_1     (66, 268)  [1, 1, 1, 1, 1, 0, 0, 0]         shader
+Colour Only  Texkill ps_1_1     (66, 282)  [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Colour Only  Texkill ps_2_0     (86, 268)  [1, 1, 1, 1, 1, 0, 0, 0]         shader
+Colour Only  Texkill ps_2_0     (86, 282)  [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Colour Only  Two Sided Stencil  (106, 268) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Colour Only  Two Sided Stencil  (106, 282) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Colour Only  Clip Plane         (126, 268) [1, 1, 0, 0, 0, 0, 0, 0]         clip plane
+Colour Only  Clip Plane         (126, 282) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Colour Only  Sample Mask 0      (146, 268) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Colour Only  Sample Mask 0      (146, 282) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Colour Only  Sample Mask 5      (166, 268) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Colour Only  Sample Mask 5      (166, 282) [1, 1, 1, 1, 1, 1, 1, 1]         passed
+Multisampled Alpha Test FF      (26, 268)  [4, 4, 4, 4, 4, 0, 0, 0]         shader
+Multisampled Alpha Test FF      (26, 282)  [4, 4, 4, 4, 4, 4, 4, 4]         passed
+Multisampled Alpha Test         (46, 268)  [4, 4, 4, 4, 4, 0, 0, 0]         shader
+Multisampled Alpha Test         (46, 282)  [4, 4, 4, 4, 4, 4, 4, 4]         passed
+Multisampled Texkill ps_1_1     (66, 268)  [4, 4, 4, 4, 4, 0, 0, 0]         shader
+Multisampled Texkill ps_1_1     (66, 282)  [4, 4, 4, 4, 4, 4, 4, 4]         passed
+Multisampled Texkill ps_2_0     (86, 268)  [4, 4, 4, 4, 4, 0, 0, 0]         shader
+Multisampled Texkill ps_2_0     (86, 282)  [4, 4, 4, 4, 4, 4, 4, 4]         passed
+Multisampled Two Sided Stencil  (106, 268) [4, 4, 4, 4, 4, 4, 4, 4]         passed
+Multisampled Two Sided Stencil  (106, 282) [4, 4, 4, 4, 4, 4, 4, 4]         passed
+Multisampled Clip Plane         (126, 268) [4, 4, 0, 0, 0, 0, 0, 0]         clip plane
+Multisampled Clip Plane         (126, 282) [4, 4, 4, 4, 4, 4, 4, 4]         passed
+Multisampled Sample Mask 0      (146, 268) [4, 4, 4, 4, 0, 0, 0, 0]         sample mask
+Multisampled Sample Mask 0      (146, 282) [4, 4, 4, 4, 0, 0, 0, 0]         sample mask
+Multisampled Sample Mask 5      (166, 268) [4, 4, 4, 4, 2, 2, 2, 2]         passed
+Multisampled Sample Mask 5      (166, 282) [4, 4, 4, 4, 2, 2, 2, 2]         passed
